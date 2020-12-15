@@ -18,3 +18,4 @@ from .gribmaplayer import GribMapLayer
 from .isochronesmaplayer import IsochronesMapLayer
 from .trackmaplayer import TrackMapLayer
 from .poimaplayer import POIMapLayer
+from .aismaplayer import AISMapLayer
