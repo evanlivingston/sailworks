@@ -21,8 +21,7 @@ from . import utils
 from .. import log
 from .poimanager import POI
 from .track import Track
-from .routing import Routing
-from .boat import Boat
+import weatherrouting
 from . import GribManager, TrackManager, POIManager, EventDispatcher
 
 logger = logging.getLogger("gweatherrouting")
@@ -62,13 +61,15 @@ class Core(EventDispatcher):
 
     # Simulation
     def createRouting(self, algorithm, boatModel, track, startDatetime, startPosition):
-        boat = Boat(boatModel)
-        routing = Routing(
-            algorithm(boat.polar, self.gribManager),
-            boat,
+        polar = weatherrouting.Polar (os.path.abspath(os.path.dirname(__file__)) + '/../data/boats/' + boatModel + '/polar.pol')
+
+        routing = weatherrouting.Routing(
+            algorithm,
+            polar,
             track,
             self.gribManager,
             startDatetime=startDatetime,
+            utils.pointValidity,
             startPosition=startPosition
         )
         return routing
