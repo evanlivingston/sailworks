@@ -14,6 +14,6 @@ GNU General Public License for more details.
 For detail about GNU see <http://www.gnu.org/licenses/>.
 '''
 
-from .datasource import DataSource
+from .datasource import DataSource, NMEADataPacket, DataPacket
 from .serialdatasource import SerialDataSource
 from .connmanager import ConnManager
