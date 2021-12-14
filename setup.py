@@ -42,7 +42,6 @@ setup(name='gweatherrouting',
 	setup_requires='setuptools',
 	author_email=['gessadavide@gmail.com', 'riccardo.apolloni@gmail.com'],
 	packages=['gweatherrouting', 'gweatherrouting.conn', 
-		'gweatherrouting.ui.kivy', 'gweatherrouting.ui.kivy.maplayers',
 		'gweatherrouting.ui.common',
 		'gweatherrouting.ui', 'gweatherrouting.ui.gtk', 'gweatherrouting.ui.gtk.maplayers', 
 		'gweatherrouting.ui.gtk.settings', 'gweatherrouting.ui.gtk.logs',
@@ -51,14 +50,12 @@ setup(name='gweatherrouting',
 	package_data={
 		'gweatherrouting': [
 			'data/*', 'data/boats/*', 'data/polars/*', 
-			'ui/kivy/*.kv',  # Kivy
-			'ui/gtk/*.glade', 'ui/gtk/settings/*.glade', 'ui/gtk/logs/*.glade' # Gtk
+			'ui/gtk/*.glade', 'ui/gtk/settings/*.glade', 'ui/gtk/logs/*.glade'
 		]
 	},
 	entry_points={
 		'console_scripts': [
 			'gweatherrouting=gweatherrouting.main:startUIGtk',
-			'gweatherrouting-kivy=gweatherrouting.main:startUIKivy'
 			# 'gweatherrouting_cli=gweatherrouting.main:startCli'
 		],
 	},
