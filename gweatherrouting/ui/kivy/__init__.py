@@ -16,3 +16,4 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 from .gribscreen import GribScreen
 from .trackscreen import TrackScreen
 from .settingsscreen import SettingsScreen
+from .regattascreen import RegattaScreen
