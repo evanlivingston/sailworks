@@ -14,11 +14,8 @@ GNU General Public License for more details.
 For detail about GNU see <http://www.gnu.org/licenses/>.
 '''
 
-# Fix for python-for-android relative imports
 import sys
-sys.path.append("..")
-sys.path.append("...")
-
+import os
 import logging
 from . import log
 from .core import Core
@@ -41,5 +38,5 @@ def startUIGtk ():
     Gtk.main()
 
 
-if __name__ == "__main__":
-    startUIKivy()
+# if __name__ == "__main__":
+#     startUIKivy()
