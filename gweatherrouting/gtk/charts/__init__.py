@@ -15,3 +15,4 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 '''
 
 from .chartmanager import ChartManager
+from .cm93driver import CM93Driver
