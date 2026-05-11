@@ -27,7 +27,7 @@ def start_ui_gtk():
     import gi
 
     gi.require_version("Gtk", "3.0")
-    from gi.repository import GLib, Gtk
+    from gi.repository import GLib, Gtk, GLibUnix
 
     from gweatherrouting.gtk.mainwindow import MainWindow
 
@@ -38,7 +38,7 @@ def start_ui_gtk():
         main_window.quit(None, None)
         return GLib.SOURCE_REMOVE
 
-    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, on_sigint)
+    GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, on_sigint)
 
     Gtk.main()
 
