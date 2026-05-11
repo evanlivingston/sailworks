@@ -38,7 +38,10 @@ def start_ui_gtk():
         main_window.quit(None, None)
         return GLib.SOURCE_REMOVE
 
-    GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, on_sigint)
+    try:
+        GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, on_sigint)
+    except:
+        pass
 
     Gtk.main()
 
