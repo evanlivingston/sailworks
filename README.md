@@ -45,6 +45,8 @@ GWeatherRouting is an open-source sailing routing and navigation software writte
 - Gtk4 interface
 - Display settings for smooth, cursor-centered zoom and gentle pan inertia;
   both can be switched off independently and apply immediately.
+- Wind overlays crop GRIB samples to the view and render in the background;
+  cached images keep panning and zooming responsive while detail refreshes.
 - NMEA instruments support
 - NMEA / GPX log analysys
 - AIS rendering
