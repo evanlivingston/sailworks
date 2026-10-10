@@ -201,6 +201,81 @@ class TestWindOverlay(unittest.TestCase):
         self.renderer._completed(self.canvas, old, self.surface, None)
         self.assertIsNone(self.renderer._states[self.canvas].frame)
 
+    def clear_output(self):
+        self.cr.save()
+        self.cr.set_operator(cairo.OPERATOR_CLEAR)
+        self.cr.paint()
+        self.cr.restore()
+
+    def test_playback_keeps_gradient_until_latest_forecast_is_complete(self):
+        self.draw()
+        self.drain()
+        self.clear_output()
+        self.draw()
+        self.surface.flush()
+        initial = bytes(self.surface.get_data())
+        self.assertTrue(any(initial))
+        self.renderer._start_next = Mock()
+        jobs = []
+        for _ in range(5):
+            self.clock.time += timedelta(hours=1)
+            self.clear_output()
+            self.draw()
+            self.surface.flush()
+            self.assertEqual(bytes(self.surface.get_data()), initial)
+            jobs.append(self.renderer._states[self.canvas].requested)
+        # An obsolete forecast must not replace the visible image.
+        latest = jobs[-1]
+        replacement = cairo.ImageSurface(cairo.FORMAT_ARGB32,
+                                         latest.viewport.width, latest.viewport.height)
+        context = cairo.Context(replacement)
+        context.set_source_rgba(0, 0, 1, .3)
+        context.paint()
+        self.renderer._completed(self.canvas, jobs[0], replacement, None)
+        self.clear_output()
+        self.draw()
+        self.surface.flush()
+        self.assertEqual(bytes(self.surface.get_data()), initial)
+        self.renderer._completed(self.canvas, latest, replacement, None)
+        self.clear_output()
+        self.draw()
+        self.surface.flush()
+        self.assertNotEqual(bytes(self.surface.get_data()), initial)
+        self.assertTrue(any(bytes(self.surface.get_data())))
+
+    def test_playback_preview_never_keeps_removed_sources_or_old_style(self):
+        self.draw()
+        self.drain()
+        self.renderer._start_next = Mock()
+        for change in (lambda: setattr(self.settings, 'gribArrowOpacity', .2),
+                       lambda: setattr(self.settings, 'gribArrowOnGround', False),
+                       lambda: setattr(self.canvas, 'factor', 2),
+                       lambda: setattr(self.manager, 'gribs', [object()])):
+            self.settings.gribArrowOpacity = .8
+            self.settings.gribArrowOnGround = True
+            self.canvas.factor = 1
+            self.manager.gribs = [self.source]
+            change()
+            self.clear_output()
+            self.draw()
+            self.surface.flush()
+            self.assertFalse(any(bytes(self.surface.get_data())))
+
+    def test_forecast_without_data_replaces_preview_with_empty_image(self):
+        self.draw()
+        self.drain()
+        self.clock.time += timedelta(hours=1000)
+        self.renderer._load_wind.return_value = []
+        self.clear_output()
+        self.draw()
+        self.surface.flush()
+        self.assertTrue(any(bytes(self.surface.get_data())))
+        self.drain()
+        self.clear_output()
+        self.draw()
+        self.surface.flush()
+        self.assertFalse(any(bytes(self.surface.get_data())))
+
     def test_land_mask_is_reused_between_painters(self):
         wind_on_ground.cache_clear()
         self.addCleanup(wind_on_ground.cache_clear)

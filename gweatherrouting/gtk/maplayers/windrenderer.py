@@ -83,6 +83,12 @@ class WindOverlayRenderer(ENCOverlayRenderer):
         self._gribs = OrderedDict()
         self._land_mask = WindLandMask()
 
+    def _can_preview(self, job, key):
+        # Playback changes the forecast before its replacement image is ready.
+        # Keep the last completed forecast visible, then swap complete images.
+        # Changes to sources, display style or pixel density still invalidate it.
+        return job.key[1:] == key[1:] and job.palette[1:] == key[0][1:]
+
     def _worker_grib(self, source):
         grib = self._gribs.get(source)
         if grib is None:

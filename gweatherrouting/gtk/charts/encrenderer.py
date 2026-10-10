@@ -125,8 +125,11 @@ class ENCOverlayRenderer:
             state.requested = job
             self._pending[canvas] = job
             self._start_next()
-        if frame and frame[0].key == key:
+        if frame and self._can_preview(frame[0], key):
             self._paint(canvas, cr, *frame)
+
+    def _can_preview(self, job, key):
+        return job.key == key
 
     @staticmethod
     def _paint(canvas, cr, job, surface):
