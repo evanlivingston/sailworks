@@ -72,6 +72,7 @@ class ChartStack(
         self.pack_start(self.builder.get_object("chartcontent"), True, True, 0)
 
         self.map = MapWidget()
+        self.map.bind_display_settings(self.settings_manager)
         self._wind_cursor = WindCursorSampler()
         self.map.connect("destroy", self._wind_cursor.close)
         self.map.connect("unmap", lambda *args: self._wind_cursor.cancel())

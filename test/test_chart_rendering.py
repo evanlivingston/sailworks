@@ -11,22 +11,7 @@ from gweatherrouting.gtk.charts.chartmanager import ChartManager
 from gweatherrouting.gtk.charts.gdalvectorchart import GDALVectorChart
 from gweatherrouting.gtk.charts.vectordrawer.s57chartdrawer import S57ChartDrawer
 from gweatherrouting.gtk.widgets.mapwidget import MapPoint, MapViewport
-
-
-class TestMap(MapViewport):
-    def __init__(self):
-        self._center_lat = 47.6
-        self._center_lon = -122.4
-        self._zoom = 12
-        self.width = 400
-        self.height = 300
-        self.queue_draw = Mock()
-        self.add_tick_callback = Mock(return_value=1)
-        self.remove_tick_callback = Mock()
-        self.factor = 1
-
-    def get_scale_factor(self):
-        return self.factor
+from test.map_helpers import MapCanvas as TestMap
 
 
 class DotLayer:
@@ -280,7 +265,7 @@ class TestBackgroundENC(unittest.TestCase):
         self.assertNotIn(self.canvas, self.renderer._states)
 
     def test_preview_stays_geographically_aligned_during_pan_and_zoom(self):
-        from gweatherrouting.gtk.charts.encrenderer import MARGIN
+        from gweatherrouting.gtk.widgets.overlayrenderer import MARGIN
 
         self.renderer._start_next = Mock()
         self.renderer.draw(self.canvas, self.cr, self.specs, "cm93")
@@ -324,7 +309,7 @@ class TestBackgroundENC(unittest.TestCase):
         manager._enc_renderer.forget(self.canvas)
 
     def test_background_surface_preserves_retina_resolution(self):
-        from gweatherrouting.gtk.charts.encrenderer import MARGIN, RenderJob
+        from gweatherrouting.gtk.widgets.overlayrenderer import MARGIN, RenderJob
 
         viewport = MapViewport(self.canvas, MARGIN, lambda: None)
         job = RenderJob((), viewport, (), 2, "cm93")

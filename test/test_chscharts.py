@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from threading import Event
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import cairo
@@ -19,7 +20,28 @@ from gweatherrouting.core.chscharts import (
     tile_in_canada,
 )
 from gweatherrouting.gtk.charts.chsrenderer import CHSRenderer
-from test.test_chart_rendering import TestMap
+from test.map_helpers import MapCanvas as TestMap
+
+
+class TestCHSPreferences(unittest.TestCase):
+    def test_settings_window_switch_persists(self):
+        from gweatherrouting.gtk.settings.settingsmanager import SettingsManager
+        from gweatherrouting.gtk.settings.settingswindow import SettingsWindow
+
+        with TemporaryDirectory() as directory:
+            with patch("gweatherrouting.core.storage.DATA_DIR", directory):
+                settings = SettingsManager()
+                parent = SimpleNamespace(chart_manager=SimpleNamespace(charts=[]))
+                core = SimpleNamespace(
+                    connectionManager=SimpleNamespace(connections=[])
+                )
+                window = SettingsWindow(parent, settings, core)
+                self.addCleanup(window.window.destroy)
+                switch = window.builder.get_object("canadian-charts")
+                self.assertTrue(switch.get_active())
+                switch.set_active(False)
+                self.assertFalse(settings.canadianCharts)
+                self.assertFalse(SettingsManager().canadianCharts)
 
 
 def tile_key(lat=49.3, lon=-123.17, zoom=14, factor=1):

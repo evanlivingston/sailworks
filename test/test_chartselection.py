@@ -11,10 +11,11 @@ from osgeo import ogr
 
 from gweatherrouting.core.enccharts import ENCCatalog, ENCCell, chart_scale_rank
 from gweatherrouting.gtk.charts.chartmanager import ChartManager
-from gweatherrouting.gtk.charts.encrenderer import ENCOverlayRenderer, RenderJob
+from gweatherrouting.gtk.charts.encrenderer import ENCOverlayRenderer
+from gweatherrouting.gtk.widgets.overlayrenderer import RenderJob
 from gweatherrouting.gtk.charts.gdalvectorchart import GDALVectorChart
 from gweatherrouting.gtk.widgets.mapwidget import MapViewport
-from test.test_chart_rendering import TestMap
+from test.map_helpers import MapCanvas as TestMap
 
 PANEL = [(0, 0), (0, 4), (4, 4), (4, 0)]
 

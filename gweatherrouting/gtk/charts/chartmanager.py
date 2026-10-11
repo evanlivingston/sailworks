@@ -37,7 +37,8 @@ from .chartlayer import ChartLayer
 from .chsrenderer import CHSRenderer
 from .gdalrasterchart import GDALRasterChart
 from .gdalvectorchart import GDALVectorChart
-from .encrenderer import ENCOverlayRenderer, paint_viewport
+from .encrenderer import ENCOverlayRenderer
+from gweatherrouting.gtk.widgets.overlayrenderer import paint_viewport
 from .vectordrawer.s57chartdrawer import S57ChartDrawer
 from .gshhs import (
     AskDownloadDialog,
@@ -71,7 +72,6 @@ class ChartManager(GObject.GObject):
 
     def add_map(self, m):
         self.maps.append(m)
-        m.bind_display_settings(self.settings_manager)
         m.connect("destroy", lambda canvas: self._enc_renderer.forget(canvas))
         m.connect("destroy", lambda canvas: self._chs_renderer.forget(canvas))
         m.connect("unmap", lambda canvas: self._chs_renderer.forget(canvas))

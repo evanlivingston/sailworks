@@ -11,7 +11,7 @@ from gi.repository import GLib
 
 from gweatherrouting.gtk.chartstack import ChartStack
 from gweatherrouting.gtk.maplayers.windcursor import WindCursorSampler
-from test.test_chart_rendering import TestMap
+from test.map_helpers import MapCanvas as TestMap
 
 
 class TestCursorEvents(unittest.TestCase):

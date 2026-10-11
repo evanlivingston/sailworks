@@ -14,7 +14,7 @@ from gweatherrouting.gtk.widgets.mapmotion import (
     ZoomAnimation,
 )
 from gweatherrouting.gtk.widgets.mapwidget import MapPoint, MapWidget
-from test.test_chart_rendering import TestMap
+from test.map_helpers import MapCanvas as TestMap
 
 
 class MotionMap(TestMap):
@@ -213,9 +213,4 @@ class TestDisplayPreferences(unittest.TestCase):
                     self.assertTrue(switch.get_active())
                     switch.set_active(False)
                     self.assertFalse(settings[key])
-                chs = window.builder.get_object("canadian-charts")
-                self.assertTrue(chs.get_active())
-                chs.set_active(False)
-                self.assertFalse(settings.canadianCharts)
-                self.assertFalse(SettingsManager().canadianCharts)
                 window.window.destroy()

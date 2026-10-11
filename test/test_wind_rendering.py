@@ -21,7 +21,7 @@ from gweatherrouting.gtk.maplayers.gribmaplayer import (
     wind_on_ground,
 )
 from gweatherrouting.gtk.maplayers.windrenderer import DisplayGrib, WindLandMask
-from test.test_chart_rendering import TestMap
+from test.map_helpers import MapCanvas as TestMap
 
 
 class TestDisplayGrib(unittest.TestCase):

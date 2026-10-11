@@ -12,7 +12,7 @@ from osgeo import ogr
 
 from gweatherrouting.core.grib import Grib
 from gweatherrouting.core.utils import COUNTRY_SHAPES, point_in_bbox
-from gweatherrouting.gtk.charts.encrenderer import ENCOverlayRenderer
+from gweatherrouting.gtk.widgets.overlayrenderer import OverlayRenderer
 
 logger = logging.getLogger("gweatherrouting")
 
@@ -84,8 +84,8 @@ class DisplayGrib(Grib):
         return list(zip(lats.ravel(), lons.ravel(), u.ravel(), v.ravel()))
 
 
-class WindOverlayRenderer(ENCOverlayRenderer):
-    """Share the chart renderer's bounded queue, cancellation and image reuse."""
+class WindOverlayRenderer(OverlayRenderer):
+    """Render wind using a bounded queue, cancellation and image reuse."""
 
     def __init__(self, painter):
         super().__init__()
