@@ -12,15 +12,24 @@ from unittest.mock import Mock, patch
 import cairo
 from gi.repository import GLib
 
-from gweatherrouting.core.chscharts import CHSTileSource, HALF_WORLD, tile_bbox, tile_in_canada
+from gweatherrouting.core.chscharts import (
+    CHSTileSource,
+    HALF_WORLD,
+    tile_bbox,
+    tile_in_canada,
+)
 from gweatherrouting.gtk.charts.chsrenderer import CHSRenderer
 from test.test_chart_rendering import TestMap
 
 
 def tile_key(lat=49.3, lon=-123.17, zoom=14, factor=1):
     n = 2**zoom
-    return (zoom, int((lon + 180) / 360 * n),
-            int((1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * n), factor)
+    return (
+        zoom,
+        int((lon + 180) / 360 * n),
+        int((1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * n),
+        factor,
+    )
 
 
 def png(factor=1):
@@ -61,20 +70,20 @@ class TestCHSTileSource(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.source.path(key)
 
-    @patch('gweatherrouting.core.chscharts.requests.get')
+    @patch("gweatherrouting.core.chscharts.requests.get")
     def test_fetch_is_atomic_and_retina_requests_keep_logical_scale(self, get):
         get.return_value = self.response(png(2))
         key = tile_key(factor=2)
         data, modified = self.source.fetch(key)
         self.assertEqual(self.source.cached(key)[0], data)
         self.assertGreater(modified, 0)
-        params = get.call_args.kwargs['params']
-        self.assertEqual(params['size'], '512,512')
-        self.assertEqual(params['dpi'], 192)
-        self.assertEqual(params['transparent'], 'true')
-        self.assertFalse(list(Path(self.temporary.name).rglob('*.tmp')))
+        params = get.call_args.kwargs["params"]
+        self.assertEqual(params["size"], "512,512")
+        self.assertEqual(params["dpi"], 192)
+        self.assertEqual(params["transparent"], "true")
+        self.assertFalse(list(Path(self.temporary.name).rglob("*.tmp")))
 
-    @patch('gweatherrouting.core.chscharts.requests.get')
+    @patch("gweatherrouting.core.chscharts.requests.get")
     def test_rejects_errors_without_overwriting_cached_chart(self, get):
         path = self.source.path(self.key)
         path.parent.mkdir(parents=True)
@@ -92,7 +101,11 @@ class TestCHSBackgroundRendering(unittest.TestCase):
         self.renderer = CHSRenderer(self.temporary.name)
         self.renderer.set_enabled(True)
         self.canvas = TestMap()
-        self.canvas._center_lat, self.canvas._center_lon, self.canvas._zoom = 49.3, -123.17, 14
+        self.canvas._center_lat, self.canvas._center_lon, self.canvas._zoom = (
+            49.3,
+            -123.17,
+            14,
+        )
         self.surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 400, 300)
         self.cr = cairo.Context(self.surface)
         self.addCleanup(self.renderer.set_enabled, False)
@@ -105,15 +118,17 @@ class TestCHSBackgroundRendering(unittest.TestCase):
         deadline = time.monotonic() + 2
         while not done() and time.monotonic() < deadline:
             context.iteration(False)
-            time.sleep(.001)
+            time.sleep(0.001)
         self.assertTrue(done())
 
     def test_slow_worker_never_blocks_draw_and_concurrency_is_bounded(self):
         started, release = Event(), Event()
+
         def slow(key):
             started.set()
             release.wait(2)
             return png(), time.time()
+
         self.renderer.source.cached = Mock(return_value=None)
         self.renderer.source.fetch = Mock(side_effect=slow)
         self.draw()
@@ -131,17 +146,23 @@ class TestCHSBackgroundRendering(unittest.TestCase):
 
     def test_disk_cache_renders_offline_without_network(self):
         self.renderer.source.cached = Mock(return_value=(png(), time.time()))
-        self.renderer.source.fetch = Mock(side_effect=AssertionError('Network used for cached tile'))
+        self.renderer.source.fetch = Mock(
+            side_effect=AssertionError("Network used for cached tile")
+        )
         self.draw()
         self.drain(lambda: not self.renderer._inflight and not self.renderer._pending)
         self.draw()
-        with patch('gweatherrouting.gtk.charts.chsrenderer.time.monotonic',
-                   return_value=time.monotonic() + 1):
+        with patch(
+            "gweatherrouting.gtk.charts.chsrenderer.time.monotonic",
+            return_value=time.monotonic() + 1,
+        ):
             self.draw()
         self.renderer.source.fetch.assert_not_called()
         self.surface.flush()
         offset = 150 * self.surface.get_stride() + 200 * 4
-        self.assertEqual(bytes(self.surface.get_data())[offset:offset + 4], b'\x00\x00\xff\xff')
+        self.assertEqual(
+            bytes(self.surface.get_data())[offset : offset + 4], b"\x00\x00\xff\xff"
+        )
 
     def test_stale_tiles_stay_visible_when_refresh_fails(self):
         self.renderer._pump = Mock()
@@ -153,7 +174,7 @@ class TestCHSBackgroundRendering(unittest.TestCase):
         self.draw()
         self.assertTrue(all(self.renderer._pending.values()))
         key = next(iter(keys))
-        self.renderer._ready(key, None, 0, 'offline')
+        self.renderer._ready(key, None, 0, "offline")
         self.assertIn(key, self.renderer._tiles)
         self.assertGreater(self.renderer._retry[key], time.time())
 
@@ -206,8 +227,12 @@ class TestCHSBackgroundRendering(unittest.TestCase):
         self.assertTrue(self.renderer._fallback_preview(self.cr, parent, 0, 0, 1))
         self.surface.flush()
         data = bytes(self.surface.get_data())
-        self.assertEqual(data[64 * self.surface.get_stride() + 64 * 4:][:4], b'\x00\x00\xff\xff')
-        self.assertEqual(data[192 * self.surface.get_stride() + 192 * 4:][:4], b'\x00\x00\x00\x00')
+        self.assertEqual(
+            data[64 * self.surface.get_stride() + 64 * 4 :][:4], b"\x00\x00\xff\xff"
+        )
+        self.assertEqual(
+            data[192 * self.surface.get_stride() + 192 * 4 :][:4], b"\x00\x00\x00\x00"
+        )
 
     def test_large_zoom_out_gesture_bounds_tile_enumeration(self):
         self.renderer._pump = Mock()
@@ -223,7 +248,7 @@ class TestCHSBackgroundRendering(unittest.TestCase):
     def pixel(self, x=64, y=64):
         self.surface.flush()
         offset = y * self.surface.get_stride() + x * 4
-        return tuple(bytes(self.surface.get_data())[offset:offset + 4])
+        return tuple(bytes(self.surface.get_data())[offset : offset + 4])
 
     def test_crossfade_preserves_brightness_and_transparent_replacement(self):
         old = CHSRenderer._decode(tile_key(), png())
@@ -232,7 +257,7 @@ class TestCHSBackgroundRendering(unittest.TestCase):
         context.set_source_rgb(0, 0, 1)
         context.rectangle(0, 0, 128, 256)
         context.fill()
-        for alpha in (0, .5, 1):
+        for alpha in (0, 0.5, 1):
             self.cr.set_source_rgb(1, 1, 1)
             self.cr.paint()
             self.renderer._crossfade(self.cr, old, new, 0, 0, 1, alpha)
@@ -256,14 +281,20 @@ class TestCHSBackgroundRendering(unittest.TestCase):
         self.renderer._tiles[parent] = (old, time.time())
         new = cairo.ImageSurface(cairo.FORMAT_ARGB32, 256, 256)
         self.renderer._tiles[key] = (new, time.time())
-        with patch('gweatherrouting.gtk.charts.chsrenderer.time.monotonic', return_value=10):
+        with patch(
+            "gweatherrouting.gtk.charts.chsrenderer.time.monotonic", return_value=10
+        ):
             self.draw()
             previous = self.renderer._blends[self.canvas][key][2]
             self.assertIsNotNone(previous)
             self.canvas.add_tick_callback.assert_called_once()
-        with patch('gweatherrouting.gtk.charts.chsrenderer.time.monotonic', return_value=10.1):
+        with patch(
+            "gweatherrouting.gtk.charts.chsrenderer.time.monotonic", return_value=10.1
+        ):
             self.assertTrue(self.renderer._tick(self.canvas, None))
-        with patch('gweatherrouting.gtk.charts.chsrenderer.time.monotonic', return_value=10.3):
+        with patch(
+            "gweatherrouting.gtk.charts.chsrenderer.time.monotonic", return_value=10.3
+        ):
             self.assertFalse(self.renderer._tick(self.canvas, None))
             self.draw()
             self.assertIsNone(self.renderer._blends[self.canvas][key][2])

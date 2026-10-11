@@ -29,7 +29,9 @@ from .settingswindow_connections import SettingsWindowConnections
 from .settingswindow_display import SettingsWindowDisplay
 
 
-class SettingsWindow(SettingsWindowConnections, SettingsWindowCharts, SettingsWindowDisplay):
+class SettingsWindow(
+    SettingsWindowConnections, SettingsWindowCharts, SettingsWindowDisplay
+):
     def __init__(
         self, parent: Gtk.Window, settings_manager: SettingsManager, core: Core
     ):

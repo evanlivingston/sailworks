@@ -339,7 +339,11 @@ class MapWidget(Gtk.DrawingArea):
 
     def _animate_motion(self, widget, frame_clock):
         now = frame_clock.get_frame_time() / 1000000
-        elapsed = min(0.05, max(0, now - self._last_frame_time)) if self._last_frame_time else 1 / 60
+        elapsed = (
+            min(0.05, max(0, now - self._last_frame_time))
+            if self._last_frame_time
+            else 1 / 60
+        )
         self._last_frame_time = now
         if self._zoom_animation:
             motion = self._zoom_animation
@@ -378,7 +382,9 @@ class MapWidget(Gtk.DrawingArea):
             return
         if self._smooth_zoom:
             now = GLib.get_monotonic_time() / 1000000
-            self._zoom_animation = ZoomAnimation(self._zoom, target, now, anchor, (x, y))
+            self._zoom_animation = ZoomAnimation(
+                self._zoom, target, now, anchor, (x, y)
+            )
             self._zoom_animating = True
             self._ensure_motion_tick()
         else:
@@ -407,7 +413,9 @@ class MapWidget(Gtk.DrawingArea):
             self._drag_start_lat = self._center_lat
             self._drag_start_lon = self._center_lon
             self._drag_velocity = DragVelocity()
-            self._drag_velocity.add(GLib.get_monotonic_time() / 1000000, event.x, event.y)
+            self._drag_velocity.add(
+                GLib.get_monotonic_time() / 1000000, event.x, event.y
+            )
         return False
 
     def _on_button_release(self, widget, event):
@@ -426,7 +434,9 @@ class MapWidget(Gtk.DrawingArea):
 
     def _on_motion(self, widget, event):
         if self._dragging:
-            self._drag_velocity.add(GLib.get_monotonic_time() / 1000000, event.x, event.y)
+            self._drag_velocity.add(
+                GLib.get_monotonic_time() / 1000000, event.x, event.y
+            )
             dx = event.x - self._drag_start_x
             dy = event.y - self._drag_start_y
 
@@ -502,10 +512,14 @@ class MapWidget(Gtk.DrawingArea):
             self._pan(pan_pixels, 0)
             return True
         elif name in ("plus", "equal", "KP_Add"):
-            self._request_zoom(1, self.get_allocated_width() / 2, self.get_allocated_height() / 2)
+            self._request_zoom(
+                1, self.get_allocated_width() / 2, self.get_allocated_height() / 2
+            )
             return True
         elif name in ("minus", "KP_Subtract"):
-            self._request_zoom(-1, self.get_allocated_width() / 2, self.get_allocated_height() / 2)
+            self._request_zoom(
+                -1, self.get_allocated_width() / 2, self.get_allocated_height() / 2
+            )
             return True
 
         return False
@@ -523,7 +537,6 @@ class MapWidget(Gtk.DrawingArea):
         self._center_lon = self._x_to_lon(cx + dx)
         self._center_lat = self._y_to_lat(cy + dy)
         self._center_lat = max(-85.0, min(85.0, self._center_lat))
-
 
 
 class MapViewport:

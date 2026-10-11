@@ -219,10 +219,12 @@ class ChartStack(
 
         def show(wind):
             # Forecast/source/visibility changes also invalidate a queued readout.
-            if (forecast != self.time_control.time
-                    or sources != tuple(self.core.grib_manager.gribs)
-                    or view != (map._center_lat, map._center_lon, map._zoom)
-                    or (wind and not self.gribMapLayer.visible)):
+            if (
+                forecast != self.time_control.time
+                or sources != tuple(self.core.grib_manager.gribs)
+                or view != (map._center_lat, map._center_lon, map._zoom)
+                or (wind and not self.gribMapLayer.visible)
+            ):
                 return
             text = position
             if wind:
@@ -231,8 +233,11 @@ class ChartStack(
             self.status_bar.push(context, text)
 
         show(None)
-        moving = (map._dragging or getattr(map, "_zoom_animating", False)
-                  or getattr(map, "_inertia", None))
+        moving = (
+            map._dragging
+            or getattr(map, "_zoom_animating", False)
+            or getattr(map, "_inertia", None)
+        )
         if self.gribMapLayer.visible and not moving:
             self._wind_cursor.request(sources, forecast, lat, lon, show)
         else:

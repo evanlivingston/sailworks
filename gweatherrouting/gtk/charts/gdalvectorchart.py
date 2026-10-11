@@ -116,7 +116,9 @@ class GDALVectorChart(ChartLayer):
             if not chart_scale_visible(self._native_scale, gpsmap.get_scale()):
                 return
             # Avoid scanning offscreen charts, including their attribute layers.
-            if self._coverage and not any(g.Intersects(bounding_geometry) for g in self._coverage):
+            if self._coverage and not any(
+                g.Intersects(bounding_geometry) for g in self._coverage
+            ):
                 return
         self.drawer.draw(gpsmap, cr, self.vector_file, bounding_geometry)
 

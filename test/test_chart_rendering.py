@@ -48,7 +48,9 @@ class TestChartSurfaceCache(unittest.TestCase):
     def setUp(self):
         self.canvas = TestMap()
         self.layer = DotLayer()
-        self.manager = SimpleNamespace(charts=[self.layer], _chart_surfaces=WeakKeyDictionary())
+        self.manager = SimpleNamespace(
+            charts=[self.layer], _chart_surfaces=WeakKeyDictionary()
+        )
         self.draw = lambda cr: ChartManager._draw_base(
             self.manager, self.canvas, cr, self.manager.charts
         )
@@ -63,7 +65,9 @@ class TestChartSurfaceCache(unittest.TestCase):
         self.render()
         self.render()
         self.assertEqual(self.layer.draws, 1)
-        self.canvas._center_lon = self.canvas._x_to_lon(self.canvas._lon_to_x(-122.4) + 10)
+        self.canvas._center_lon = self.canvas._x_to_lon(
+            self.canvas._lon_to_x(-122.4) + 10
+        )
         surface = self.render()
         self.assertEqual(self.layer.draws, 1)
         # The world-fixed dot moves ten pixels left, without rendering it again.
@@ -100,7 +104,7 @@ class TestChartSurfaceCache(unittest.TestCase):
     def test_palette_invalidates(self):
         self.render()
         self.manager.maps = []
-        ChartManager.on_chart_palette_changed(self.manager, 'dark')
+        ChartManager.on_chart_palette_changed(self.manager, "dark")
         self.render()
         self.assertEqual(self.layer.draws, 2)
 
@@ -164,7 +168,7 @@ class TestSoundingBatches(unittest.TestCase):
             geometry.AddGeometry(point)
         drawer = S57ChartDrawer.__new__(S57ChartDrawer)
         areas, lines, points = [], [], []
-        drawer._collect('SOUNDG', {}, geometry, areas, lines, points)
+        drawer._collect("SOUNDG", {}, geometry, areas, lines, points)
         self.assertEqual(len(points), 1)
         self.assertEqual(len(points[0].geometry), 100)
         self.assertEqual(points[0].geometry[0], (47.6, -122.4, 0.5))
@@ -174,18 +178,18 @@ class TestSoundingBatches(unittest.TestCase):
         from collections import OrderedDict
         from osgeo import ogr
 
-        geometry = ogr.CreateGeometryFromWkt('LINESTRING(-122.4 47.6, -122.3 47.7)')
+        geometry = ogr.CreateGeometryFromWkt("LINESTRING(-122.4 47.6, -122.3 47.7)")
         feature = Mock()
         feature.GetFID.return_value = 10
         feature.GetGeometryRef.return_value = geometry
         drawer = S57ChartDrawer.__new__(S57ChartDrawer)
         drawer._feature_cache = OrderedDict()
         dataset = object()
-        first = drawer._prepare_feature(dataset, 'DEPCNT', feature, [], 0.00001)
-        second = drawer._prepare_feature(dataset, 'DEPCNT', feature, [], 0.00001)
+        first = drawer._prepare_feature(dataset, "DEPCNT", feature, [], 0.00001)
+        second = drawer._prepare_feature(dataset, "DEPCNT", feature, [], 0.00001)
         self.assertIs(first, second)
         feature.GetGeometryRef.assert_called_once()
-        drawer._prepare_feature(dataset, 'DEPCNT', feature, [], 0.000005)
+        drawer._prepare_feature(dataset, "DEPCNT", feature, [], 0.000005)
         self.assertEqual(feature.GetGeometryRef.call_count, 2)
 
 
@@ -195,7 +199,7 @@ class TestBackgroundENC(unittest.TestCase):
 
         self.canvas = TestMap()
         self.renderer = ENCOverlayRenderer()
-        self.specs = (('test.000', 12000, ()),)
+        self.specs = (("test.000", 12000, ()),)
         self.surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 400, 300)
         self.cr = cairo.Context(self.surface)
         self.addCleanup(self.renderer.forget, self.canvas)
@@ -214,17 +218,18 @@ class TestBackgroundENC(unittest.TestCase):
             return cairo.ImageSurface(cairo.FORMAT_ARGB32, 912, 812)
 
         self.renderer._render = slow_render
-        self.renderer.draw(self.canvas, self.cr, self.specs, 'cm93')
+        self.renderer.draw(self.canvas, self.cr, self.specs, "cm93")
         self.assertTrue(started.wait(1))
         for index in range(20):
             self.canvas._center_lon += 0.00001
-            self.renderer.draw(self.canvas, self.cr, self.specs, 'cm93')
+            self.renderer.draw(self.canvas, self.cr, self.specs, "cm93")
         self.assertFalse(finished.is_set())
         release.set()
         self.assertTrue(finished.wait(1))
         # Deliver the worker's completion on the main thread.
         context = GLib.MainContext.default()
         import time
+
         deadline = time.monotonic() + 1
         while self.renderer._running and time.monotonic() < deadline:
             context.iteration(False)
@@ -238,7 +243,7 @@ class TestBackgroundENC(unittest.TestCase):
         for index in range(20):
             self.canvas._zoom = 10 + index % 4
             self.canvas._center_lon += 0.5
-            self.renderer.draw(self.canvas, self.cr, self.specs, 'cm93')
+            self.renderer.draw(self.canvas, self.cr, self.specs, "cm93")
             jobs.append(self.renderer._states[self.canvas].requested)
         self.assertEqual(len(self.renderer._pending), 1)
         self.assertTrue(all(job.cancel.is_set() for job in jobs[:-1]))
@@ -247,26 +252,26 @@ class TestBackgroundENC(unittest.TestCase):
 
     def test_zoom_animation_waits_until_settled_to_request_detail(self):
         self.renderer._start_next = Mock()
-        self.renderer.draw(self.canvas, self.cr, self.specs, 'cm93')
+        self.renderer.draw(self.canvas, self.cr, self.specs, "cm93")
         state = self.renderer._states[self.canvas]
         original = state.requested
         self.canvas._zoom_animating = True
         for zoom in (12.1, 12.3, 12.7, 12.99):
             self.canvas._zoom = zoom
-            self.renderer.draw(self.canvas, self.cr, self.specs, 'cm93')
+            self.renderer.draw(self.canvas, self.cr, self.specs, "cm93")
         self.renderer._start_next.assert_called_once()
         self.canvas._zoom_animating = False
         self.canvas._zoom = 13
-        self.renderer.draw(self.canvas, self.cr, self.specs, 'cm93')
+        self.renderer.draw(self.canvas, self.cr, self.specs, "cm93")
         self.assertTrue(original.cancel.is_set())
         self.assertEqual(state.requested.viewport._zoom, 13)
         self.assertEqual(self.renderer._start_next.call_count, 2)
 
     def test_stale_palette_or_destroyed_map_cannot_publish(self):
         self.renderer._start_next = Mock()
-        self.renderer.draw(self.canvas, self.cr, self.specs, 'cm93')
+        self.renderer.draw(self.canvas, self.cr, self.specs, "cm93")
         old = self.renderer._states[self.canvas].requested
-        self.renderer.draw(self.canvas, self.cr, self.specs, 'dark')
+        self.renderer.draw(self.canvas, self.cr, self.specs, "dark")
         self.renderer._completed(self.canvas, old, self.surface, None)
         self.assertIsNone(self.renderer._states[self.canvas].frame)
         new = self.renderer._states[self.canvas].requested
@@ -278,18 +283,22 @@ class TestBackgroundENC(unittest.TestCase):
         from gweatherrouting.gtk.charts.encrenderer import MARGIN
 
         self.renderer._start_next = Mock()
-        self.renderer.draw(self.canvas, self.cr, self.specs, 'cm93')
+        self.renderer.draw(self.canvas, self.cr, self.specs, "cm93")
         state = self.renderer._states[self.canvas]
         job = state.requested
-        image = cairo.ImageSurface(cairo.FORMAT_ARGB32, job.viewport.width, job.viewport.height)
+        image = cairo.ImageSurface(
+            cairo.FORMAT_ARGB32, job.viewport.width, job.viewport.height
+        )
         context = cairo.Context(image)
         context.set_source_rgb(1, 0, 0)
         context.rectangle(200 + MARGIN - 2, 150 + MARGIN - 2, 4, 4)
         context.fill()
         state.frame = (job, image)
         self.canvas._zoom += 1
-        self.canvas._center_lon = self.canvas._x_to_lon(self.canvas._lon_to_x(-122.4) + 10)
-        self.renderer.draw(self.canvas, self.cr, self.specs, 'cm93')
+        self.canvas._center_lon = self.canvas._x_to_lon(
+            self.canvas._lon_to_x(-122.4) + 10
+        )
+        self.renderer.draw(self.canvas, self.cr, self.specs, "cm93")
         self.surface.flush()
         data = bytes(self.surface.get_data())
         self.assertEqual(data[150 * self.surface.get_stride() + 190 * 4 + 2], 255)
@@ -297,15 +306,17 @@ class TestBackgroundENC(unittest.TestCase):
 
     def test_manager_never_draws_enc_features_on_the_ui_thread(self):
         manager = ChartManager(Mock())
-        manager._palette = 'cm93'
+        manager._palette = "cm93"
         manager._enc_renderer._start_next = Mock()
         chart = GDALVectorChart.__new__(GDALVectorChart)
         chart.drawer = S57ChartDrawer.__new__(S57ChartDrawer)
-        chart.path = 'test.000'
+        chart.path = "test.000"
         chart.enabled = True
         chart._native_scale = 12000
         chart._coverage_envelopes = ()
-        chart.do_draw = Mock(side_effect=AssertionError('UI thread rendered chart features'))
+        chart.do_draw = Mock(
+            side_effect=AssertionError("UI thread rendered chart features")
+        )
         manager.charts = [chart]
         manager.do_draw(self.canvas, self.cr)
         chart.do_draw.assert_not_called()
@@ -316,7 +327,7 @@ class TestBackgroundENC(unittest.TestCase):
         from gweatherrouting.gtk.charts.encrenderer import MARGIN, RenderJob
 
         viewport = MapViewport(self.canvas, MARGIN, lambda: None)
-        job = RenderJob((), viewport, (), 2, 'cm93')
+        job = RenderJob((), viewport, (), 2, "cm93")
         viewport.render_cancelled = job.cancel.is_set
         surface = self.renderer._render(job)
         self.assertEqual(surface.get_device_scale(), (2.0, 2.0))

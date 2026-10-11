@@ -254,8 +254,11 @@ class GribMapLayer(GObject.GObject):
             gpsmap.connect("unmap", lambda canvas: self._renderer.forget(canvas))
         # All values are captured on the UI thread; workers have private GDAL
         # handles and never consult live widgets, settings, or the routing GRIB.
-        style = (self.time_control.time, self.settings_manager.gribArrowOpacity,
-                 self.settings_manager.gribArrowOnGround)
+        style = (
+            self.time_control.time,
+            self.settings_manager.gribArrowOpacity,
+            self.settings_manager.gribArrowOnGround,
+        )
         sources = tuple((grib,) for grib in self.grib_manager.gribs)
         self._renderer.draw(gpsmap, cr, sources, style)
 

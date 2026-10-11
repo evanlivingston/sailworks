@@ -63,7 +63,9 @@ class ChartManager(GObject.GObject):
         self.settings_manager.register_on_change(
             "chartPalette", self.on_chart_palette_changed
         )
-        self.settings_manager.register_on_change("canadianCharts", self.on_canadian_charts_changed)
+        self.settings_manager.register_on_change(
+            "canadianCharts", self.on_canadian_charts_changed
+        )
 
     def add_map(self, m):
         self.maps.append(m)
@@ -161,16 +163,31 @@ class ChartManager(GObject.GObject):
     def detailed_chart_at(self, lat, lon, scale, enabled=None):
         """Return the loaded chart best suited to this point and display scale."""
         candidates = (c for c in self.charts if enabled is None or c.enabled == enabled)
-        candidates = sorted(candidates, key=lambda c: (
-            chart_scale_rank(getattr(c, "_native_scale", 0), scale), not c.enabled, c.path
-        ))
+        candidates = sorted(
+            candidates,
+            key=lambda c: (
+                chart_scale_rank(getattr(c, "_native_scale", 0), scale),
+                not c.enabled,
+                c.path,
+            ),
+        )
         for chart in candidates:
-            if isinstance(chart, GDALVectorChart) and chart.covers_point(lat, lon, scale):
+            if isinstance(chart, GDALVectorChart) and chart.covers_point(
+                lat, lon, scale
+            ):
                 return chart
             if isinstance(chart, GDALRasterChart):
                 for _, bbox, *_ in chart.metadata or []:
-                    if min(bbox[0][0], bbox[1][0]) <= lat <= max(bbox[0][0], bbox[1][0]):
-                        if min(bbox[0][1], bbox[1][1]) <= lon <= max(bbox[0][1], bbox[1][1]):
+                    if (
+                        min(bbox[0][0], bbox[1][0])
+                        <= lat
+                        <= max(bbox[0][0], bbox[1][0])
+                    ):
+                        if (
+                            min(bbox[0][1], bbox[1][1])
+                            <= lon
+                            <= max(bbox[0][1], bbox[1][1])
+                        ):
                             return chart
         return None
 
@@ -179,16 +196,26 @@ class ChartManager(GObject.GObject):
         active = self.detailed_chart_at(lat, lon, scale, enabled=True)
         disabled = self.detailed_chart_at(lat, lon, scale, enabled=False)
         cell = catalog.chart_at(lat, lon, scale)
+
         def rank(chart):
             return chart_scale_rank(getattr(chart, "_native_scale", 0), scale)
 
         if disabled and (active is None or rank(disabled) < rank(active)):
             if cell is None or rank(disabled) <= chart_scale_rank(cell.scale, scale):
                 return None, disabled
-        if cell and (active is None or chart_scale_rank(cell.scale, scale) < rank(active)):
+        if cell and (
+            active is None or chart_scale_rank(cell.scale, scale) < rank(active)
+        ):
             # A catalog cell may already have been imported from another directory.
-            imported = next((c for c in self.charts
-                             if os.path.splitext(os.path.basename(c.path))[0].upper() == cell.name), None)
+            imported = next(
+                (
+                    c
+                    for c in self.charts
+                    if os.path.splitext(os.path.basename(c.path))[0].upper()
+                    == cell.name
+                ),
+                None,
+            )
             if imported and imported.enabled:
                 return None, None
             return cell, imported
@@ -227,9 +254,13 @@ class ChartManager(GObject.GObject):
     def do_draw(self, gpsmap, cr):
         base, enc = [], []
         for chart in self.charts:
-            if isinstance(chart, GDALVectorChart) and isinstance(chart.drawer, S57ChartDrawer):
+            if isinstance(chart, GDALVectorChart) and isinstance(
+                chart.drawer, S57ChartDrawer
+            ):
                 if chart.enabled:
-                    enc.append((chart.path, chart._native_scale, chart._coverage_envelopes))
+                    enc.append(
+                        (chart.path, chart._native_scale, chart._coverage_envelopes)
+                    )
             else:
                 base.append(chart)
         self._draw_base(gpsmap, cr, base)
@@ -243,13 +274,21 @@ class ChartManager(GObject.GObject):
         width, height = gpsmap.get_allocated_width(), gpsmap.get_allocated_height()
         factor = gpsmap.get_scale_factor()
         signature = (
-            width, height, factor, gpsmap._zoom,
-            tuple((id(c), c.enabled, getattr(c, "force_downscale", False)) for c in charts),
+            width,
+            height,
+            factor,
+            gpsmap._zoom,
+            tuple(
+                (id(c), c.enabled, getattr(c, "force_downscale", False)) for c in charts
+            ),
         )
         cached = self._chart_surfaces.get(gpsmap)
         if cached and getattr(gpsmap, "_zoom_animating", False):
             old_signature = cached[0]
-            if old_signature[:3] == signature[:3] and old_signature[4:] == signature[4:]:
+            if (
+                old_signature[:3] == signature[:3]
+                and old_signature[4:] == signature[4:]
+            ):
                 paint_viewport(gpsmap, cr, cached[1], cached[2])
                 return
         offset_x = offset_y = 0.0
@@ -259,7 +298,12 @@ class ChartManager(GObject.GObject):
             offset_x -= viewport._lon_to_x(gpsmap._center_lon)
             offset_y = viewport._lat_to_y(viewport._center_lat)
             offset_y -= viewport._lat_to_y(gpsmap._center_lat)
-        if not cached or cached[0] != signature or max(abs(offset_x), abs(offset_y)) > margin:
+        if (
+            not cached
+            or cached[0] != signature
+            or max(abs(offset_x), abs(offset_y)) > margin
+        ):
+
             def invalidate():
                 self._chart_surfaces.pop(gpsmap, None)
                 gpsmap.queue_draw()

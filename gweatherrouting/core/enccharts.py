@@ -80,19 +80,30 @@ class ENCCell:
                 if longitudes:
                     lon += 360 * round((longitudes[-1] - lon) / 360)
                 longitudes.append(lon)
-            self._bounds.append((min(y for y, _ in vertices), max(y for y, _ in vertices),
-                                 min(longitudes), max(longitudes)))
+            self._bounds.append(
+                (
+                    min(y for y, _ in vertices),
+                    max(y for y, _ in vertices),
+                    min(longitudes),
+                    max(longitudes),
+                )
+            )
 
     def contains(self, lat, lon):
         # Most catalog cells are far away. Reject them without walking polygons
         # on the GTK thread; exact coverage still decides the remaining matches.
         if not any(
-            south <= lat <= north and west <= lon + 360 * round(((west + east) / 2 - lon) / 360) <= east
+            south <= lat <= north
+            and west <= lon + 360 * round(((west + east) / 2 - lon) / 360) <= east
             for south, north, west, east in self._bounds
         ):
             return False
-        exterior = any(polygon_contains(v, lat, lon) for t, v in self.panels if t == "E")
-        excluded = any(polygon_contains(v, lat, lon) for t, v in self.panels if t == "I")
+        exterior = any(
+            polygon_contains(v, lat, lon) for t, v in self.panels if t == "E"
+        )
+        excluded = any(
+            polygon_contains(v, lat, lon) for t, v in self.panels if t == "I"
+        )
         return exterior and not excluded
 
     @property
@@ -104,19 +115,31 @@ def parse_catalog(data):
     cells = []
     for node in ET.fromstring(data).findall("cell"):
         name = node.findtext("name", "")
-        if node.findtext("status") != "Active" or not re.fullmatch(r"US[A-Z0-9]{6}", name):
+        if node.findtext("status") != "Active" or not re.fullmatch(
+            r"US[A-Z0-9]{6}", name
+        ):
             continue
         panels = [
-            (p.findtext("type"), [
-                (float(v.findtext("lat")), float(v.findtext("long")))
-                for v in p.findall("vertex")
-            ])
+            (
+                p.findtext("type"),
+                [
+                    (float(v.findtext("lat")), float(v.findtext("long")))
+                    for v in p.findall("vertex")
+                ],
+            )
             for p in node.findall("cov/panel")
         ]
         scale = int(node.findtext("cscale", "0"))
         if panels and scale > 0:
-            cells.append(ENCCell(name, node.findtext("lname", name), scale,
-                                 int(node.findtext("zipfile_size", "0")), panels))
+            cells.append(
+                ENCCell(
+                    name,
+                    node.findtext("lname", name),
+                    scale,
+                    int(node.findtext("zipfile_size", "0")),
+                    panels,
+                )
+            )
     if not cells:
         raise ValueError("The NOAA chart catalog contains no active chart coverage.")
     return sorted(cells, key=lambda c: (c.scale, c.name))
@@ -155,13 +178,21 @@ class ENCCatalog:
         candidates = (c for c in self.cells if c.contains(lat, lon))
         if meters_per_pixel is None:
             return min(candidates, key=lambda c: (c.scale, c.name), default=None)
-        candidates = (c for c in candidates if chart_scale_visible(c.scale, meters_per_pixel))
-        return min(candidates, key=lambda c: (chart_scale_rank(c.scale, meters_per_pixel), c.name),
-                   default=None)
+        candidates = (
+            c for c in candidates if chart_scale_visible(c.scale, meters_per_pixel)
+        )
+        return min(
+            candidates,
+            key=lambda c: (chart_scale_rank(c.scale, meters_per_pixel), c.name),
+            default=None,
+        )
 
     def downloaded_path(self, cell):
         """Find a cached exchange set even if it hasn't been added to Settings."""
-        return next((str(p) for p in (self.directory / cell.name).rglob(cell.name + ".000")), None)
+        return next(
+            (str(p) for p in (self.directory / cell.name).rglob(cell.name + ".000")),
+            None,
+        )
 
     def download(self, cell):
         """Stage a complete exchange set (including updates), then install atomically."""

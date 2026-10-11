@@ -8,7 +8,11 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from gweatherrouting.gtk.widgets.mapmotion import DragVelocity, PanInertia, ZoomAnimation
+from gweatherrouting.gtk.widgets.mapmotion import (
+    DragVelocity,
+    PanInertia,
+    ZoomAnimation,
+)
 from gweatherrouting.gtk.widgets.mapwidget import MapPoint, MapWidget
 from test.test_chart_rendering import TestMap
 
@@ -29,10 +33,21 @@ class MotionMap(TestMap):
         self.remove_tick_callback = Mock()
 
 
-for name in ('_request_zoom', '_apply_zoom', '_cancel_motion', '_ensure_motion_tick',
-             '_animate_motion', '_move_pixels', '_set_smooth_zoom', '_set_pan_inertia',
-             '_destroy_motion', 'bind_display_settings', '_on_button_press',
-             '_on_motion', '_on_button_release'):
+for name in (
+    "_request_zoom",
+    "_apply_zoom",
+    "_cancel_motion",
+    "_ensure_motion_tick",
+    "_animate_motion",
+    "_move_pixels",
+    "_set_smooth_zoom",
+    "_set_pan_inertia",
+    "_destroy_motion",
+    "bind_display_settings",
+    "_on_button_press",
+    "_on_motion",
+    "_on_button_release",
+):
     setattr(MotionMap, name, getattr(MapWidget, name))
 
 
@@ -43,7 +58,12 @@ class TestMotion(unittest.TestCase):
             values = [animation.value_at(1 + i / 100)[0] for i in range(31)]
             self.assertEqual(values[0], start)
             self.assertEqual(values[-1], target)
-            self.assertTrue(all(min(start, target) <= value <= max(start, target) for value in values))
+            self.assertTrue(
+                all(
+                    min(start, target) <= value <= max(start, target)
+                    for value in values
+                )
+            )
             self.assertTrue(animation.value_at(1.21)[1])
             self.assertGreater(abs(values[10] - start), abs(target - start) / 2)
 
@@ -63,7 +83,10 @@ class TestMotion(unittest.TestCase):
         self.assertLess(distances[0], 96)
 
     def test_paused_release_and_tiny_drags_do_not_coast(self):
-        for points, release in (([(0, 0), (.03, 30)], .2), ([(0, 0), (.03, 1)], .04)):
+        for points, release in (
+            ([(0, 0), (0.03, 30)], 0.2),
+            ([(0, 0), (0.03, 1)], 0.04),
+        ):
             velocity = DragVelocity()
             for now, x in points:
                 velocity.add(now, x, 0)
@@ -84,8 +107,10 @@ class TestMotion(unittest.TestCase):
         anchor = canvas.convert_screen_to_geographic(*pointer)
         canvas._request_zoom(1, *pointer)
         start = canvas._zoom_animation.started_at
-        for offset in (.03, .08, .15, .25):
-            frame = SimpleNamespace(get_frame_time=lambda: int((start + offset) * 1000000))
+        for offset in (0.03, 0.08, 0.15, 0.25):
+            frame = SimpleNamespace(
+                get_frame_time=lambda: int((start + offset) * 1000000)
+            )
             canvas._animate_motion(canvas, frame)
             actual = canvas.convert_geographic_to_screen(anchor)
             self.assertAlmostEqual(actual[0], pointer[0], places=7)
@@ -121,7 +146,9 @@ class TestMotion(unittest.TestCase):
 
     def test_drag_release_coasts_in_drag_direction(self):
         canvas = MotionMap()
-        with patch('gweatherrouting.gtk.widgets.mapwidget.GLib.get_monotonic_time') as clock:
+        with patch(
+            "gweatherrouting.gtk.widgets.mapwidget.GLib.get_monotonic_time"
+        ) as clock:
             clock.return_value = 1000000
             canvas._on_button_press(canvas, SimpleNamespace(button=1, x=100, y=100))
             clock.return_value = 1040000
@@ -141,10 +168,11 @@ class TestMotion(unittest.TestCase):
 class TestDisplayPreferences(unittest.TestCase):
     def test_legacy_defaults_live_changes_and_persistence(self):
         from gweatherrouting.gtk.settings.settingsmanager import SettingsManager
+
         with TemporaryDirectory() as directory:
-            path = Path(directory) / 'settings.json'
-            path.write_text(json.dumps({'chartPalette': 'dark'}))
-            with patch('gweatherrouting.core.storage.DATA_DIR', directory):
+            path = Path(directory) / "settings.json"
+            path.write_text(json.dumps({"chartPalette": "dark"}))
+            with patch("gweatherrouting.core.storage.DATA_DIR", directory):
                 settings = SettingsManager()
                 self.assertTrue(settings.smoothZoom)
                 self.assertTrue(settings.panInertia)
@@ -157,7 +185,7 @@ class TestDisplayPreferences(unittest.TestCase):
                 reloaded = SettingsManager()
                 self.assertFalse(reloaded.smoothZoom)
                 self.assertFalse(reloaded.panInertia)
-                self.assertEqual(reloaded.chartPalette, 'dark')
+                self.assertEqual(reloaded.chartPalette, "dark")
                 canvas._destroy_motion()
                 settings.smoothZoom = True
                 self.assertFalse(canvas._smooth_zoom)
@@ -165,21 +193,27 @@ class TestDisplayPreferences(unittest.TestCase):
     def test_settings_window_display_switches_are_connected(self):
         from gweatherrouting.gtk.settings.settingsmanager import SettingsManager
         from gweatherrouting.gtk.settings.settingswindow import SettingsWindow
+
         with TemporaryDirectory() as directory:
-            with patch('gweatherrouting.core.storage.DATA_DIR', directory):
+            with patch("gweatherrouting.core.storage.DATA_DIR", directory):
                 settings = SettingsManager()
                 parent = SimpleNamespace(chart_manager=SimpleNamespace(charts=[]))
-                core = SimpleNamespace(connectionManager=SimpleNamespace(connections=[]))
+                core = SimpleNamespace(
+                    connectionManager=SimpleNamespace(connections=[])
+                )
                 window = SettingsWindow(parent, settings, core)
-                stack = window.builder.get_object('stack1')
-                display = window.builder.get_object('display-tab')
-                self.assertEqual(stack.child_get_property(display, 'title'), 'Display')
-                for widget, key in (('smooth-zoom', 'smoothZoom'), ('pan-inertia', 'panInertia')):
+                stack = window.builder.get_object("stack1")
+                display = window.builder.get_object("display-tab")
+                self.assertEqual(stack.child_get_property(display, "title"), "Display")
+                for widget, key in (
+                    ("smooth-zoom", "smoothZoom"),
+                    ("pan-inertia", "panInertia"),
+                ):
                     switch = window.builder.get_object(widget)
                     self.assertTrue(switch.get_active())
                     switch.set_active(False)
                     self.assertFalse(settings[key])
-                chs = window.builder.get_object('canadian-charts')
+                chs = window.builder.get_object("canadian-charts")
                 self.assertTrue(chs.get_active())
                 chs.set_active(False)
                 self.assertFalse(settings.canadianCharts)

@@ -46,8 +46,12 @@ def fits(viewport, canvas):
         return False
     if viewport.height != canvas.get_allocated_height() + 2 * MARGIN:
         return False
-    dx = viewport._lon_to_x(viewport._center_lon) - viewport._lon_to_x(canvas._center_lon)
-    dy = viewport._lat_to_y(viewport._center_lat) - viewport._lat_to_y(canvas._center_lat)
+    dx = viewport._lon_to_x(viewport._center_lon) - viewport._lon_to_x(
+        canvas._center_lon
+    )
+    dy = viewport._lat_to_y(viewport._center_lat) - viewport._lat_to_y(
+        canvas._center_lat
+    )
     return max(abs(dx), abs(dy)) <= MARGIN / 2
 
 
@@ -84,7 +88,6 @@ def coverage_path(cr, viewport, geometry):
             coverage_path(cr, viewport, geometry.GetGeometryRef(index))
 
 
-
 class ENCOverlayRenderer:
     def __init__(self):
         self._states = {}
@@ -110,13 +113,19 @@ class ENCOverlayRenderer:
         frame = state.frame
         fresh = frame and frame[0].key == key and fits(frame[0].viewport, canvas)
         requested = state.requested
-        pending = requested and requested.key == key and fits(requested.viewport, canvas)
+        pending = (
+            requested and requested.key == key and fits(requested.viewport, canvas)
+        )
         if fresh and requested and not pending:
             requested.cancel.set()
             self._pending.pop(canvas, None)
             state.requested = None
-        if (not fresh and not pending and not getattr(canvas, "_zoom_animating", False)
-                and time.monotonic() >= state.retry_after):
+        if (
+            not fresh
+            and not pending
+            and not getattr(canvas, "_zoom_animating", False)
+            and time.monotonic() >= state.retry_after
+        ):
             if requested:
                 requested.cancel.set()
             viewport = MapViewport(canvas, MARGIN, lambda: None)
@@ -154,7 +163,9 @@ class ENCOverlayRenderer:
     def _render(self, job):
         viewport = job.viewport
         surface = cairo.ImageSurface(
-            cairo.FORMAT_ARGB32, viewport.width * job.factor, viewport.height * job.factor
+            cairo.FORMAT_ARGB32,
+            viewport.width * job.factor,
+            viewport.height * job.factor,
         )
         surface.set_device_scale(job.factor, job.factor)
         cr = cairo.Context(surface)
@@ -166,7 +177,10 @@ class ENCOverlayRenderer:
         # Fill each location with its best available scale, independent of import
         # order. Other charts contribute only where that coverage ends.
         covered = None
-        charts = sorted(job.charts, key=lambda c: (chart_scale_rank(c[1], viewport.get_scale()), c[0]))
+        charts = sorted(
+            job.charts,
+            key=lambda c: (chart_scale_rank(c[1], viewport.get_scale()), c[0]),
+        )
         for path, native_scale, envelopes in charts:
             if job.cancel.is_set():
                 return None
@@ -182,7 +196,9 @@ class ENCOverlayRenderer:
             for geometry in chart._coverage:
                 region = geometry.Clone() if region is None else region.Union(geometry)
             known_coverage = region is not None
-            region = region.Intersection(bounding) if known_coverage else bounding.Clone()
+            region = (
+                region.Intersection(bounding) if known_coverage else bounding.Clone()
+            )
             if covered is not None:
                 region = region.Difference(covered)
             if region.IsEmpty():

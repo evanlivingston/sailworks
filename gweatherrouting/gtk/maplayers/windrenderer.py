@@ -28,10 +28,10 @@ class WindLandMask:
         point = ogr.Geometry(ogr.wkbPoint)
         point.AddPoint_2D(lon, lat)
         for index, feature in enumerate(COUNTRY_SHAPES):
-            if not point_in_bbox(feature['properties']['bbox'], lat, lon):
+            if not point_in_bbox(feature["properties"]["bbox"], lat, lon):
                 continue
             if index not in self._prepared:
-                geometry = ogr.CreateGeometryFromJson(json.dumps(feature['geometry']))
+                geometry = ogr.CreateGeometryFromJson(json.dumps(feature["geometry"]))
                 self._prepared[index] = (geometry, geometry.CreatePreparedGeometry())
             geometry, prepared = self._prepared[index]
             if (prepared or geometry).Contains(point):
@@ -47,16 +47,26 @@ class DisplayGrib(Grib):
     """
 
     def __init__(self, source):
-        super().__init__(source.path, source.name, source.centre, source.bounds,
-                         source.start_time, source.last_forecast)
+        super().__init__(
+            source.path,
+            source.name,
+            source.centre,
+            source.bounds,
+            source.start_time,
+            source.last_forecast,
+        )
         self._arrays = OrderedDict()
         transform = self.dataset.GetGeoTransform()
         self._lons = transform[0] + np.arange(self.dataset.RasterXSize) * transform[1]
         self._lats = transform[3] + np.arange(self.dataset.RasterYSize) * transform[5]
 
     def _get_wind_data(self, hour, bounds):
-        rows = np.flatnonzero((self._lats >= bounds[0][0]) & (self._lats <= bounds[1][0]))
-        columns = np.flatnonzero((self._lons >= bounds[0][1]) & (self._lons <= bounds[1][1]))
+        rows = np.flatnonzero(
+            (self._lats >= bounds[0][0]) & (self._lats <= bounds[1][0])
+        )
+        columns = np.flatnonzero(
+            (self._lons >= bounds[0][1]) & (self._lons <= bounds[1][1])
+        )
         if not len(rows) or not len(columns):
             return []
         arrays = self._arrays.get(hour)
@@ -101,10 +111,12 @@ class WindOverlayRenderer(ENCOverlayRenderer):
 
     def _load_wind(self, job):
         p1, p2 = (p.get_degrees() for p in job.viewport.get_bbox())
-        bounds = ((min(p1[0], p2[0]) - 1, min(p1[1], p2[1]) - 1),
-                  (max(p1[0], p2[0]) + 1, max(p1[1], p2[1]) + 1))
+        bounds = (
+            (min(p1[0], p2[0]) - 1, min(p1[1], p2[1]) - 1),
+            (max(p1[0], p2[0]) + 1, max(p1[1], p2[1]) + 1),
+        )
         columns = {}
-        for source, in job.charts:
+        for (source,) in job.charts:
             if job.cancel.is_set():
                 return []
             try:
@@ -116,18 +128,27 @@ class WindOverlayRenderer(ENCOverlayRenderer):
                 continue
             for point in wind:
                 columns.setdefault(point[2][1], []).append(point)
-        return [sorted(columns[lon], key=lambda point: point[2][0]) for lon in sorted(columns)]
+        return [
+            sorted(columns[lon], key=lambda point: point[2][0])
+            for lon in sorted(columns)
+        ]
 
     def _render(self, job):
         data = self._load_wind(job)
         if job.cancel.is_set():
             return None
         viewport = job.viewport
-        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32,
-                                     viewport.width * job.factor, viewport.height * job.factor)
+        surface = cairo.ImageSurface(
+            cairo.FORMAT_ARGB32,
+            viewport.width * job.factor,
+            viewport.height * job.factor,
+        )
         surface.set_device_scale(job.factor, job.factor)
-        settings = SimpleNamespace(gribArrowOpacity=job.palette[1],
-                                   gribArrowOnGround=job.palette[2])
-        self._painter(settings, self._land_mask.contains).draw(viewport, cairo.Context(surface), data)
+        settings = SimpleNamespace(
+            gribArrowOpacity=job.palette[1], gribArrowOnGround=job.palette[2]
+        )
+        self._painter(settings, self._land_mask.contains).draw(
+            viewport, cairo.Context(surface), data
+        )
         surface.flush()
         return None if job.cancel.is_set() else surface

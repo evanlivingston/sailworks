@@ -31,7 +31,9 @@ PALETTES = {"cm93": 0, "navionics": 1, "dark": 2}
 class SettingsWindowCharts(SettingsWindowBase):
     def __init__(self):
         self._loading_chs = True
-        self.builder.get_object("canadian-charts").set_active(self.settings_manager["canadianCharts"])
+        self.builder.get_object("canadian-charts").set_active(
+            self.settings_manager["canadianCharts"]
+        )
         self._loading_chs = False
         self.builder.get_object("chart-progress").hide()
         self.reload_chart()

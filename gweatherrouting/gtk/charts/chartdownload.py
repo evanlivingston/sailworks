@@ -53,7 +53,9 @@ class ChartDownloadHover:
         row.add(self.button)
         box.add(row)
         self.card.add(box)
-        self.card.add_events(Gdk.EventMask.ENTER_NOTIFY_MASK | Gdk.EventMask.LEAVE_NOTIFY_MASK)
+        self.card.add_events(
+            Gdk.EventMask.ENTER_NOTIFY_MASK | Gdk.EventMask.LEAVE_NOTIFY_MASK
+        )
         self.card.connect("enter-notify-event", self._enter_card)
         self.card.connect("leave-notify-event", self._leave)
         self.map.add_events(Gdk.EventMask.LEAVE_NOTIFY_MASK)
@@ -83,8 +85,11 @@ class ChartDownloadHover:
             self._view = view
             self._cancel()
             # Recheck a stationary cursor after zooming or coasting stops.
-            moving = (self.map._dragging or getattr(self.map, "_zoom_animating", False)
-                      or getattr(self.map, "_inertia", None))
+            moving = (
+                self.map._dragging
+                or getattr(self.map, "_zoom_animating", False)
+                or getattr(self.map, "_inertia", None)
+            )
             if self._pointer and not moving and not self._downloading:
                 self._position = self._pointer
                 self._timer = GLib.timeout_add(700, self._hover)
@@ -96,7 +101,9 @@ class ChartDownloadHover:
             return False
         self._clear_timer("_leave_timer")
         if self._position:
-            distance = math.hypot(event.x - self._position[0], event.y - self._position[1])
+            distance = math.hypot(
+                event.x - self._position[0], event.y - self._position[1]
+            )
             if distance < 8:
                 return False
         self._position = (event.x, event.y)
@@ -137,7 +144,9 @@ class ChartDownloadHover:
         self._cell, self._existing = self.manager.chart_suggestion_at(
             self.catalog, lat, lon, self.map.get_scale()
         )
-        self._download_path = self.catalog.downloaded_path(self._cell) if self._cell else None
+        self._download_path = (
+            self.catalog.downloaded_path(self._cell) if self._cell else None
+        )
         if not self._cell and not self._existing:
             return False
         if self._existing:
@@ -151,14 +160,20 @@ class ChartDownloadHover:
             self.button.set_label("Enable chart")
         else:
             self.title.set_text("Better chart for this zoom")
-            size = f" · {self._cell.size / 1024 / 1024:.1f} MB" if self._cell.size else ""
-            action = ("Use the chart already downloaded for this zoom level."
-                      if self._download_path else "Download this chart for offline use at this zoom level.")
-            self.description.set_text(
-                f"{self._cell.title}\nNOAA · 1:{self._cell.scale:,}{size}\n"
-                f"{action}"
+            size = (
+                f" · {self._cell.size / 1024 / 1024:.1f} MB" if self._cell.size else ""
             )
-            self.button.set_label("Use downloaded chart" if self._download_path else "Download chart")
+            action = (
+                "Use the chart already downloaded for this zoom level."
+                if self._download_path
+                else "Download this chart for offline use at this zoom level."
+            )
+            self.description.set_text(
+                f"{self._cell.title}\nNOAA · 1:{self._cell.scale:,}{size}\n" f"{action}"
+            )
+            self.button.set_label(
+                "Use downloaded chart" if self._download_path else "Download chart"
+            )
         self.button.set_sensitive(True)
         rectangle = Gdk.Rectangle()
         rectangle.x, rectangle.y = (int(v) for v in self._position)

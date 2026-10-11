@@ -12,7 +12,12 @@ import cairo
 from gi.repository import GLib
 
 from gweatherrouting.core.chscharts import (
-    CACHE_SECONDS, CHSTileSource, MAX_ZOOM, MIN_ZOOM, TILE_SIZE, tile_in_canada,
+    CACHE_SECONDS,
+    CHSTileSource,
+    MAX_ZOOM,
+    MIN_ZOOM,
+    TILE_SIZE,
+    tile_in_canada,
 )
 from gweatherrouting.gtk.widgets.mapwidget import MapViewport
 
@@ -54,8 +59,9 @@ class CHSRenderer:
 
     def _prune_pending(self):
         wanted = set().union(*self._wanted.values()) if self._wanted else set()
-        self._pending = OrderedDict((key, refresh) for key, refresh in self._pending.items()
-                                    if key in wanted)
+        self._pending = OrderedDict(
+            (key, refresh) for key, refresh in self._pending.items() if key in wanted
+        )
         return wanted
 
     def draw(self, canvas, cr):
@@ -83,15 +89,24 @@ class CHSRenderer:
         factor = min(2, max(1, canvas.get_scale_factor()))
         wanted = set()
         visible = []
-        for y in range(max(0, math.floor(top / TILE_SIZE)),
-                       min(2**zoom, math.ceil(bottom / TILE_SIZE))):
-            for x in range(max(0, math.floor(left / TILE_SIZE)),
-                           min(2**zoom, math.ceil(right / TILE_SIZE))):
+        for y in range(
+            max(0, math.floor(top / TILE_SIZE)),
+            min(2**zoom, math.ceil(bottom / TILE_SIZE)),
+        ):
+            for x in range(
+                max(0, math.floor(left / TILE_SIZE)),
+                min(2**zoom, math.ceil(right / TILE_SIZE)),
+            ):
                 if tile_in_canada(zoom, x, y):
                     key = (zoom, x, y, factor)
                     wanted.add(key)
-                    visible.append((key, (x * TILE_SIZE - left) * ratio,
-                                    (y * TILE_SIZE - top) * ratio))
+                    visible.append(
+                        (
+                            key,
+                            (x * TILE_SIZE - left) * ratio,
+                            (y * TILE_SIZE - top) * ratio,
+                        )
+                    )
         self._wanted[canvas] = wanted
         self._prune_pending()
         now = time.time()
@@ -123,14 +138,21 @@ class CHSRenderer:
                 drawn = True
             elif self._fallback_preview(cr, key, x, y, ratio):
                 drawn = True
-            if (not tile or now - tile[1] >= CACHE_SECONDS):
-                if (key not in self._inflight and self._retry.get(key, 0) <= now
-                        and not getattr(canvas, "_zoom_animating", False)):
+            if not tile or now - tile[1] >= CACHE_SECONDS:
+                if (
+                    key not in self._inflight
+                    and self._retry.get(key, 0) <= now
+                    and not getattr(canvas, "_zoom_animating", False)
+                ):
                     self._pending[key] = bool(tile)
         # Center tiles first, so useful detail arrives before the map edges.
-        self._pending = OrderedDict(sorted(self._pending.items(), key=lambda item:
-            (item[0][1] * TILE_SIZE + TILE_SIZE / 2 - cx) ** 2
-            + (item[0][2] * TILE_SIZE + TILE_SIZE / 2 - cy) ** 2))
+        self._pending = OrderedDict(
+            sorted(
+                self._pending.items(),
+                key=lambda item: (item[0][1] * TILE_SIZE + TILE_SIZE / 2 - cx) ** 2
+                + (item[0][2] * TILE_SIZE + TILE_SIZE / 2 - cy) ** 2,
+            )
+        )
         self._pump()
         if fading and canvas not in self._ticks:
             self._ticks[canvas] = canvas.add_tick_callback(self._tick)
@@ -140,16 +162,19 @@ class CHSRenderer:
     def _tick(self, canvas, frame_clock):
         canvas.queue_draw()
         now = time.monotonic()
-        active = any(now - state[1] < FADE_SECONDS
-                     for state in self._blends.get(canvas, {}).values())
+        active = any(
+            now - state[1] < FADE_SECONDS
+            for state in self._blends.get(canvas, {}).values()
+        )
         if not active:
             self._ticks.pop(canvas, None)
         return active
 
     def _preview_surface(self, key):
         factor = key[3]
-        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32,
-                                     TILE_SIZE * factor, TILE_SIZE * factor)
+        surface = cairo.ImageSurface(
+            cairo.FORMAT_ARGB32, TILE_SIZE * factor, TILE_SIZE * factor
+        )
         surface.set_device_scale(factor, factor)
         self._fallback_preview(cairo.Context(surface), key, 0, 0, 1)
         return surface
@@ -186,14 +211,21 @@ class CHSRenderer:
     def _parent_preview(self, cr, key, x, y, ratio):
         z, tx, ty, factor = key
         for distance in range(1, 4):
-            parent = self._tiles.get((z - distance, tx >> distance, ty >> distance, factor))
+            parent = self._tiles.get(
+                (z - distance, tx >> distance, ty >> distance, factor)
+            )
             if parent:
                 scale = 2**distance
                 cr.save()
                 cr.rectangle(x, y, TILE_SIZE * ratio, TILE_SIZE * ratio)
                 cr.clip()
-                self._paint(cr, parent[0], x - (tx % scale) * TILE_SIZE * ratio,
-                            y - (ty % scale) * TILE_SIZE * ratio, ratio * scale)
+                self._paint(
+                    cr,
+                    parent[0],
+                    x - (tx % scale) * TILE_SIZE * ratio,
+                    y - (ty % scale) * TILE_SIZE * ratio,
+                    ratio * scale,
+                )
                 cr.restore()
                 return True
         return False
@@ -216,14 +248,22 @@ class CHSRenderer:
                 else:
                     for subrow in range(2):
                         for subcolumn in range(2):
-                            grandchild = self._tiles.get((
-                                z + 2, tx * 4 + column * 2 + subcolumn,
-                                ty * 4 + row * 2 + subrow, factor,
-                            ))
+                            grandchild = self._tiles.get(
+                                (
+                                    z + 2,
+                                    tx * 4 + column * 2 + subcolumn,
+                                    ty * 4 + row * 2 + subrow,
+                                    factor,
+                                )
+                            )
                             if grandchild:
-                                self._paint(cr, grandchild[0],
-                                            offset_x + subcolumn * TILE_SIZE * ratio / 4,
-                                            offset_y + subrow * TILE_SIZE * ratio / 4, ratio / 4)
+                                self._paint(
+                                    cr,
+                                    grandchild[0],
+                                    offset_x + subcolumn * TILE_SIZE * ratio / 4,
+                                    offset_y + subrow * TILE_SIZE * ratio / 4,
+                                    ratio / 4,
+                                )
                                 found = True
         return found
 
@@ -271,7 +311,10 @@ class CHSRenderer:
     def _decode(key, data):
         surface = cairo.ImageSurface.create_from_png(io.BytesIO(data))
         factor = key[3]
-        if surface.get_width() != TILE_SIZE * factor or surface.get_height() != TILE_SIZE * factor:
+        if (
+            surface.get_width() != TILE_SIZE * factor
+            or surface.get_height() != TILE_SIZE * factor
+        ):
             raise ValueError("CHS returned an unexpected image size")
         surface.set_device_scale(factor, factor)
         return surface

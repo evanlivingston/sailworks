@@ -15,7 +15,11 @@ import numpy as np
 from osgeo import gdal
 
 from gweatherrouting.core.grib import Grib
-from gweatherrouting.gtk.maplayers.gribmaplayer import GribMapLayer, WindPainter, wind_on_ground
+from gweatherrouting.gtk.maplayers.gribmaplayer import (
+    GribMapLayer,
+    WindPainter,
+    wind_on_ground,
+)
 from gweatherrouting.gtk.maplayers.windrenderer import DisplayGrib, WindLandMask
 from test.test_chart_rendering import TestMap
 
@@ -24,17 +28,20 @@ class TestDisplayGrib(unittest.TestCase):
     def setUp(self):
         temporary = TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        path = str(Path(temporary.name) / 'wind.tif')
-        dataset = gdal.GetDriverByName('GTiff').Create(path, 4, 3, 4, gdal.GDT_Float32)
+        path = str(Path(temporary.name) / "wind.tif")
+        dataset = gdal.GetDriverByName("GTiff").Create(path, 4, 3, 4, gdal.GDT_Float32)
         dataset.SetGeoTransform((-124, 1, 0, 50, 0, -1))
         for index, (hour, element, value) in enumerate(
-                ((0, 'UGRD', 2), (0, 'VGRD', 4), (3, 'UGRD', 8), (3, 'VGRD', 10)), 1):
+            ((0, "UGRD", 2), (0, "VGRD", 4), (3, "UGRD", 8), (3, "VGRD", 10)), 1
+        ):
             band = dataset.GetRasterBand(index)
-            band.SetMetadata({'GRIB_ELEMENT': element, 'GRIB_FORECAST_SECONDS': str(hour * 3600)})
+            band.SetMetadata(
+                {"GRIB_ELEMENT": element, "GRIB_FORECAST_SECONDS": str(hour * 3600)}
+            )
             band.WriteArray(np.full((3, 4), value, dtype=np.float32))
         band = None
         dataset = None
-        self.source = Grib(path, 'wind', 'test', [], datetime(2026, 1, 1), 3)
+        self.source = Grib(path, "wind", "test", [], datetime(2026, 1, 1), 3)
         self.display = DisplayGrib(self.source)
 
     def test_visible_crop_matches_existing_forecast_interpolation(self):
@@ -67,20 +74,33 @@ class TestDisplayGrib(unittest.TestCase):
 
     def test_prepared_land_mask_matches_known_land_and_water(self):
         mask = WindLandMask()
-        for lat, lon, land in ((49.28, -123.12, True), (48.5, -125, False),
-                               (40, -100, True), (0, -140, False), (51.5, -.1, True)):
+        for lat, lon, land in (
+            (49.28, -123.12, True),
+            (48.5, -125, False),
+            (40, -100, True),
+            (0, -140, False),
+            (51.5, -0.1, True),
+        ):
             self.assertEqual(mask.contains(lat, lon), land)
             self.assertEqual(mask.contains(lat, lon), land)
         self.assertEqual(mask.contains.cache_info().hits, 5)
 
     def test_prepared_land_mask_preserves_holes(self):
-        shapes = [{'properties': {'bbox': [[0, 0], [4, 4]]},
-                   'geometry': {'type': 'Polygon', 'coordinates': [
-                       [[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]],
-                       [[1, 1], [1, 3], [3, 3], [3, 1], [1, 1]]]}}]
-        with patch('gweatherrouting.gtk.maplayers.windrenderer.COUNTRY_SHAPES', shapes):
+        shapes = [
+            {
+                "properties": {"bbox": [[0, 0], [4, 4]]},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]],
+                        [[1, 1], [1, 3], [3, 3], [3, 1], [1, 1]],
+                    ],
+                },
+            }
+        ]
+        with patch("gweatherrouting.gtk.maplayers.windrenderer.COUNTRY_SHAPES", shapes):
             mask = WindLandMask()
-            self.assertTrue(mask.contains(.5, .5))
+            self.assertTrue(mask.contains(0.5, 0.5))
             self.assertFalse(mask.contains(2, 2))
 
 
@@ -88,7 +108,7 @@ class TestWindOverlay(unittest.TestCase):
     def setUp(self):
         self.canvas = TestMap()
         self.canvas.connect = Mock()
-        self.settings = SimpleNamespace(gribArrowOpacity=.8, gribArrowOnGround=True)
+        self.settings = SimpleNamespace(gribArrowOpacity=0.8, gribArrowOnGround=True)
         self.clock = SimpleNamespace(time=datetime(2026, 1, 1), connect=Mock())
         self.source = object()
         self.manager = SimpleNamespace(gribs=[self.source])
@@ -96,9 +116,12 @@ class TestWindOverlay(unittest.TestCase):
         self.renderer = self.layer._renderer
         self.surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 400, 300)
         self.cr = cairo.Context(self.surface)
-        self.renderer._load_wind = Mock(return_value=[[
-            (180, 6, (47.5 + row * .1, -122.5 + col * .1))
-            for row in range(3)] for col in range(3)])
+        self.renderer._load_wind = Mock(
+            return_value=[
+                [(180, 6, (47.5 + row * 0.1, -122.5 + col * 0.1)) for row in range(3)]
+                for col in range(3)
+            ]
+        )
         self.addCleanup(self.layer._forget, self.canvas)
 
     def draw(self):
@@ -109,23 +132,25 @@ class TestWindOverlay(unittest.TestCase):
         context = GLib.MainContext.default()
         while self.renderer._running and time.monotonic() < deadline:
             context.iteration(False)
-            time.sleep(.001)
+            time.sleep(0.001)
         self.assertFalse(self.renderer._running)
 
     def test_slow_grib_load_never_blocks_ui_and_uses_one_worker(self):
         started, release = Event(), Event()
         self.addCleanup(release.set)
         ui_thread = get_ident()
+
         def slow(job):
             self.assertNotEqual(get_ident(), ui_thread)
             started.set()
             release.wait(2)
             return []
+
         self.renderer._load_wind.side_effect = slow
         self.draw()
         self.assertTrue(started.wait(1))
         for _ in range(20):
-            self.canvas._center_lon += .00001
+            self.canvas._center_lon += 0.00001
             self.draw()
         self.assertEqual(self.renderer._load_wind.call_count, 1)
         self.assertFalse(release.is_set())
@@ -137,7 +162,7 @@ class TestWindOverlay(unittest.TestCase):
         self.draw()
         self.drain()
         for _ in range(20):
-            self.canvas._center_lon += .00001
+            self.canvas._center_lon += 0.00001
             self.draw()
         self.canvas._zoom_animating = True
         for zoom in (12.1, 12.4, 12.8, 13):
@@ -152,11 +177,13 @@ class TestWindOverlay(unittest.TestCase):
     def test_forecast_style_sources_and_retina_invalidate_frame(self):
         self.draw()
         self.drain()
-        for change in (lambda: setattr(self.clock, 'time', self.clock.time + timedelta(hours=1)),
-                       lambda: setattr(self.settings, 'gribArrowOpacity', .3),
-                       lambda: setattr(self.settings, 'gribArrowOnGround', False),
-                       lambda: setattr(self.canvas, 'factor', 2),
-                       lambda: setattr(self.manager, 'gribs', [object()])):
+        for change in (
+            lambda: setattr(self.clock, "time", self.clock.time + timedelta(hours=1)),
+            lambda: setattr(self.settings, "gribArrowOpacity", 0.3),
+            lambda: setattr(self.settings, "gribArrowOnGround", False),
+            lambda: setattr(self.canvas, "factor", 2),
+            lambda: setattr(self.manager, "gribs", [object()]),
+        ):
             change()
             self.draw()
             self.drain()
@@ -226,10 +253,11 @@ class TestWindOverlay(unittest.TestCase):
             jobs.append(self.renderer._states[self.canvas].requested)
         # An obsolete forecast must not replace the visible image.
         latest = jobs[-1]
-        replacement = cairo.ImageSurface(cairo.FORMAT_ARGB32,
-                                         latest.viewport.width, latest.viewport.height)
+        replacement = cairo.ImageSurface(
+            cairo.FORMAT_ARGB32, latest.viewport.width, latest.viewport.height
+        )
         context = cairo.Context(replacement)
-        context.set_source_rgba(0, 0, 1, .3)
+        context.set_source_rgba(0, 0, 1, 0.3)
         context.paint()
         self.renderer._completed(self.canvas, jobs[0], replacement, None)
         self.clear_output()
@@ -247,11 +275,13 @@ class TestWindOverlay(unittest.TestCase):
         self.draw()
         self.drain()
         self.renderer._start_next = Mock()
-        for change in (lambda: setattr(self.settings, 'gribArrowOpacity', .2),
-                       lambda: setattr(self.settings, 'gribArrowOnGround', False),
-                       lambda: setattr(self.canvas, 'factor', 2),
-                       lambda: setattr(self.manager, 'gribs', [object()])):
-            self.settings.gribArrowOpacity = .8
+        for change in (
+            lambda: setattr(self.settings, "gribArrowOpacity", 0.2),
+            lambda: setattr(self.settings, "gribArrowOnGround", False),
+            lambda: setattr(self.canvas, "factor", 2),
+            lambda: setattr(self.manager, "gribs", [object()]),
+        ):
+            self.settings.gribArrowOpacity = 0.8
             self.settings.gribArrowOnGround = True
             self.canvas.factor = 1
             self.manager.gribs = [self.source]
@@ -279,7 +309,10 @@ class TestWindOverlay(unittest.TestCase):
     def test_land_mask_is_reused_between_painters(self):
         wind_on_ground.cache_clear()
         self.addCleanup(wind_on_ground.cache_clear)
-        with patch('gweatherrouting.gtk.maplayers.gribmaplayer.point_in_country', return_value=True) as mask:
+        with patch(
+            "gweatherrouting.gtk.maplayers.gribmaplayer.point_in_country",
+            return_value=True,
+        ) as mask:
             self.assertTrue(wind_on_ground(49, -123))
             self.assertTrue(wind_on_ground(49, -123))
             mask.assert_called_once()
@@ -290,11 +323,12 @@ class TestWindOverlay(unittest.TestCase):
         self.draw()
         job = self.renderer._states[self.canvas].requested
         unavailable, available = Mock(), Mock()
-        unavailable.get_wind.side_effect = ValueError('Missing forecast hour')
+        unavailable.get_wind.side_effect = ValueError("Missing forecast hour")
         point = (180, 6, (47.6, -122.4))
         available.get_wind.return_value = [point]
         self.renderer._worker_grib = Mock(side_effect=[unavailable, available])
         from gweatherrouting.gtk.maplayers.windrenderer import WindOverlayRenderer
+
         self.assertEqual(WindOverlayRenderer._load_wind(self.renderer, job), [[point]])
 
     def test_painter_keeps_colored_fill_and_barbs(self):

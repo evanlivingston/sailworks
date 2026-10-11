@@ -16,8 +16,17 @@ class S57ChartDrawer(CM93ChartDrawer):
     AREA_ORDER = {"DEPARE": 0, "DRGARE": 1, "LNDARE": 2}
     SKIP_LAYERS = {"DSID", "M_COVR", "M_QUAL", "M_NSYS", "M_CSCL", "M_SDAT", "M_VDAT"}
     AREA_LAYERS = {
-        "LNDARE", "DEPARE", "DRGARE", "BUAARE", "BUISGL", "LAKARE", "RIVERS",
-        "ACHARE", "ANCBRT", "RESARE", "CTNARE",
+        "LNDARE",
+        "DEPARE",
+        "DRGARE",
+        "BUAARE",
+        "BUISGL",
+        "LAKARE",
+        "RIVERS",
+        "ACHARE",
+        "ANCBRT",
+        "RESARE",
+        "CTNARE",
     }
     ATTRIBUTE_FIELDS = {"DEPARE": ("DRVAL1", "DRVAL2"), "BOYLAT": ("COLOUR",)}
 
@@ -25,24 +34,34 @@ class S57ChartDrawer(CM93ChartDrawer):
         palette = Style.chart_palettes[self.palette]
         cancelled = getattr(gpsmap, "render_cancelled", lambda: False)
         min_lon, max_lon, min_lat, max_lat = bounding.GetEnvelope()
-        tolerance = min(
-            (max_lon - min_lon) / gpsmap.get_allocated_width(),
-            (max_lat - min_lat) / gpsmap.get_allocated_height(),
-        ) * 0.5
+        tolerance = (
+            min(
+                (max_lon - min_lon) / gpsmap.get_allocated_width(),
+                (max_lat - min_lat) / gpsmap.get_allocated_height(),
+            )
+            * 0.5
+        )
         # Quantize downward so cached geometry never exceeds half-pixel error.
         tolerance = 2 ** math.floor(math.log2(tolerance)) if tolerance > 0 else 0
         if not hasattr(self, "_feature_cache"):
             self._feature_cache = OrderedDict()
-        layers = [vector_file.GetLayerByIndex(i) for i in range(vector_file.GetLayerCount())]
+        layers = [
+            vector_file.GetLayerByIndex(i) for i in range(vector_file.GetLayerCount())
+        ]
         areas, lines, points = [], [], []
         for layer in layers:
             name = layer.GetName()
-            if name in self.SKIP_LAYERS or layer.GetLayerDefn().GetGeomFieldCount() == 0:
+            if (
+                name in self.SKIP_LAYERS
+                or layer.GetLayerDefn().GetGeomFieldCount() == 0
+            ):
                 continue
             layer.SetSpatialFilter(bounding)
             layer.ResetReading()
             fields = self.ATTRIBUTE_FIELDS.get(name, ())
-            field_indexes = [(key, layer.GetLayerDefn().GetFieldIndex(key)) for key in fields]
+            field_indexes = [
+                (key, layer.GetLayerDefn().GetFieldIndex(key)) for key in fields
+            ]
             for feature in layer:
                 if cancelled():
                     return
@@ -77,9 +96,16 @@ class S57ChartDrawer(CM93ChartDrawer):
         geom = feature.GetGeometryRef()
         if geom is None:
             return collected
-        attributes = {key: feature.GetField(index) for key, index in field_indexes if index >= 0}
+        attributes = {
+            key: feature.GetField(index) for key, index in field_indexes if index >= 0
+        }
         kind = ogr.GT_Flatten(geom.GetGeometryType())
-        if kind in (ogr.wkbPolygon, ogr.wkbMultiPolygon, ogr.wkbLineString, ogr.wkbMultiLineString):
+        if kind in (
+            ogr.wkbPolygon,
+            ogr.wkbMultiPolygon,
+            ogr.wkbLineString,
+            ogr.wkbMultiLineString,
+        ):
             geom = geom.SimplifyPreserveTopology(tolerance)
         self._collect(name, attributes, geom, *collected)
         self._feature_cache[cache_key] = collected
@@ -94,7 +120,8 @@ class S57ChartDrawer(CM93ChartDrawer):
             # A sounding group can contain thousands of points. Project it once,
             # rather than allocate numpy arrays and run Mercator for each point.
             coordinates = [
-                geom.GetGeometryRef(i).GetPoint() for i in range(geom.GetGeometryCount())
+                geom.GetGeometryRef(i).GetPoint()
+                for i in range(geom.GetGeometryCount())
             ]
             feature.geometry = [(p[1], p[0], p[2]) for p in coordinates]
             points.append(feature)
@@ -115,10 +142,14 @@ class S57ChartDrawer(CM93ChartDrawer):
             points.append(feature)
         else:
             for i in range(geom.GetGeometryCount()):
-                self._collect(name, attributes, geom.GetGeometryRef(i), areas, lines, points)
+                self._collect(
+                    name, attributes, geom.GetGeometryRef(i), areas, lines, points
+                )
 
     def _render_area(self, gpsmap, cr, feature, palette):
-        fill, stroke = self._get_area_styles(feature.obj_name, feature.attributes, palette)
+        fill, stroke = self._get_area_styles(
+            feature.obj_name, feature.attributes, palette
+        )
         cr.new_path()
         # One path with even/odd fill preserves islands and polygon holes.
         cr.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
@@ -144,7 +175,8 @@ class S57ChartDrawer(CM93ChartDrawer):
         xs, ys = self._geo_to_screen_batch(gpsmap, feature.geometry)
         for p, x, y in zip(feature.geometry, xs, ys):
             if not (
-                0 <= x < gpsmap.get_allocated_width() and 0 <= y < gpsmap.get_allocated_height()
+                0 <= x < gpsmap.get_allocated_width()
+                and 0 <= y < gpsmap.get_allocated_height()
             ):
                 continue
             if not math.isfinite(p[2]):

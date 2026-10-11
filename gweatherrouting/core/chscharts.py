@@ -30,8 +30,12 @@ def tile_bbox(z, x, y):
 def tile_in_canada(z, x, y):
     west, south, east, north = tile_bbox(z, x, y)
     west, east = west / HALF_WORLD * 180, east / HALF_WORLD * 180
-    south, north = (math.degrees(math.atan(math.sinh(v / 6378137))) for v in (south, north))
-    return any(west < e and east > w and south < n and north > s for w, s, e, n in REGIONS)
+    south, north = (
+        math.degrees(math.atan(math.sinh(v / 6378137))) for v in (south, north)
+    )
+    return any(
+        west < e and east > w and south < n and north > s for w, s, e, n in REGIONS
+    )
 
 
 class CHSTileSource:
@@ -43,8 +47,12 @@ class CHSTileSource:
 
     def path(self, key):
         z, x, y, factor = key
-        if not (MIN_ZOOM <= z <= MAX_ZOOM and 0 <= x < 2**z and 0 <= y < 2**z
-                and factor in (1, 2)):
+        if not (
+            MIN_ZOOM <= z <= MAX_ZOOM
+            and 0 <= x < 2**z
+            and 0 <= y < 2**z
+            and factor in (1, 2)
+        ):
             raise ValueError("Invalid CHS tile")
         return self.directory / str(factor) / str(z) / str(x) / f"{y}.png"
 
@@ -71,13 +79,22 @@ class CHSTileSource:
             self._next_request = time.monotonic() + 0.25
         params = {
             "bbox": ",".join(str(v) for v in tile_bbox(z, x, y)),
-            "bboxSR": "3857", "imageSR": "3857",
-            "size": f"{TILE_SIZE * factor},{TILE_SIZE * factor}", "dpi": 96 * factor,
-            "format": "png", "f": "image", "transparent": "true",
+            "bboxSR": "3857",
+            "imageSR": "3857",
+            "size": f"{TILE_SIZE * factor},{TILE_SIZE * factor}",
+            "dpi": 96 * factor,
+            "format": "png",
+            "f": "image",
+            "transparent": "true",
             "layers": "show:0,1,2,3,4,5,6,7",
         }
-        with requests.get(EXPORT_URL, params=params, stream=True, timeout=(10, 30),
-                          headers={"User-Agent": "GWeatherRouting-CHS/1.0"}) as response:
+        with requests.get(
+            EXPORT_URL,
+            params=params,
+            stream=True,
+            timeout=(10, 30),
+            headers={"User-Agent": "GWeatherRouting-CHS/1.0"},
+        ) as response:
             response.raise_for_status()
             chunks, total = [], 0
             for chunk in response.iter_content(65536):
@@ -102,7 +119,7 @@ class CHSTileSource:
             return
         self._last_prune = now
         files = []
-        for path in self.directory.rglob('*.png'):
+        for path in self.directory.rglob("*.png"):
             try:
                 stat = path.stat()
                 files.append((stat.st_mtime, stat.st_size, path))
