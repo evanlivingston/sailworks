@@ -22,12 +22,11 @@ means our fork or that the parent's default branch is `main`.
 
 ## Transition from the existing development branch
 
-At the time this policy was added, our integrated work was on
-`charts/fluid-map-and-downloads`, and `dev` had not yet been created. Treat that
-branch as the development baseline until `dev` exists. When setting up `dev`,
-preserve the complete development history and any uncommitted work. Do not reset,
-rewrite, or repurpose a branch that may back an existing PR. If the working tree
-is dirty, prefer an isolated worktree for unrelated branch work.
+`dev` was created from `charts/fluid-map-and-downloads`, preserving its complete
+development history. Use `dev` for the working version. The old chart branch is
+retained for history; do not reset, rewrite, or repurpose branches that back PRs.
+If the working tree is dirty, prefer an isolated worktree for unrelated branch
+work. See `UPSTREAM.md` for the contribution branches and their upstream PRs.
 
 ## Structure work for both destinations
 
