@@ -56,7 +56,9 @@ class ChartManager(GObject.GObject):
         self.osmLayer: Optional[GDALVectorChart] = None
         self.settings_manager: SettingsManager = settings_manager
         self.maps: List = []
-        self._chart_surfaces = WeakKeyDictionary()
+        self._chart_surfaces: WeakKeyDictionary[
+            object, tuple[tuple, MapViewport, cairo.ImageSurface]
+        ] = WeakKeyDictionary()
         self._enc_renderer = ENCOverlayRenderer()
         self._chs_renderer = CHSRenderer(os.path.join(DATA_DIR, "chs-tiles"))
 
@@ -162,9 +164,8 @@ class ChartManager(GObject.GObject):
 
     def detailed_chart_at(self, lat, lon, scale, enabled=None):
         """Return the loaded chart best suited to this point and display scale."""
-        candidates = (c for c in self.charts if enabled is None or c.enabled == enabled)
         candidates = sorted(
-            candidates,
+            (c for c in self.charts if enabled is None or c.enabled == enabled),
             key=lambda c: (
                 chart_scale_rank(getattr(c, "_native_scale", 0), scale),
                 not c.enabled,

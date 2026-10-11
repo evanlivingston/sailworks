@@ -122,16 +122,7 @@ class WindPainter:
 
         # Draw wind barbs
         cr.set_line_width(1)
-        points = []
-        for x in data[::scale]:
-            if gpsmap.render_cancelled():
-                return
-            for y in x[::scale]:
-                if not self.settings_manager.gribArrowOnGround:
-                    if self._on_ground(y[2][0], y[2][1]):
-                        continue
-                points.append(y)
-
+        points = self._barb_points(gpsmap, data, scale)
         if points:
             lats = np.array([p[2][0] for p in points], dtype=np.float64)
             lons = np.array([p[2][1] for p in points], dtype=np.float64)
@@ -141,10 +132,19 @@ class WindPainter:
                     return
                 self.draw_wind_barb(cr, xx, yy, p[0], p[1])
 
-    def _draw_color_fill(self, gpsmap, cr, data, scale):
-        """Draw interpolated color fill between grid points."""
-        opacity = self.settings_manager.gribArrowOpacity * 0.3
+    def _barb_points(self, gpsmap, data, scale):
+        points = []
+        for row in data[::scale]:
+            if gpsmap.render_cancelled():
+                return []
+            for point in row[::scale]:
+                if not self.settings_manager.gribArrowOnGround:
+                    if self._on_ground(point[2][0], point[2][1]):
+                        continue
+                points.append(point)
+        return points
 
+    def _grid_screen_points(self, gpsmap, data, scale):
         # Batch-convert all grid points used as quad corners
         point_map = {}
         all_lats: List = []
@@ -165,6 +165,15 @@ class WindPainter:
         lats = np.array(all_lats, dtype=np.float64)
         lons = np.array(all_lons, dtype=np.float64)
         screen_xs, screen_ys = gpsmap.convert_geographic_to_screen_batch(lats, lons)
+        return point_map, screen_xs, screen_ys
+
+    def _draw_color_fill(self, gpsmap, cr, data, scale):
+        """Draw interpolated color fill between grid points."""
+        opacity = self.settings_manager.gribArrowOpacity * 0.3
+        projected = self._grid_screen_points(gpsmap, data, scale)
+        if projected is None:
+            return
+        point_map, screen_xs, screen_ys = projected
 
         for i in range(0, len(data) - scale, scale):
             if gpsmap.render_cancelled():

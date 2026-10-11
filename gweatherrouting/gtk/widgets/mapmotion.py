@@ -22,7 +22,7 @@ class ZoomAnimation:
 
 class DragVelocity:
     def __init__(self):
-        self.samples = deque()
+        self.samples: deque[tuple[float, float, float]] = deque()
 
     def add(self, now, x, y):
         self.samples.append((now, x, y))

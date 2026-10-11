@@ -4,7 +4,7 @@ import math
 import re
 import tempfile
 import time
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ElementTree
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,7 +40,7 @@ def chart_scale_visible(native_scale, meters_per_pixel):
 
 def polygon_contains(vertices, lat, lon):
     """Ray casting, unwrapping longitudes across the antimeridian."""
-    points = []
+    points: list[tuple[float, float]] = []
     for y, x in vertices:
         if points:
             x += 360 * round((points[-1][1] - x) / 360)
@@ -75,7 +75,7 @@ class ENCCell:
         for kind, vertices in self.panels:
             if kind != "E" or len(vertices) < 3:
                 continue
-            longitudes = []
+            longitudes: list[float] = []
             for _, lon in vertices:
                 if longitudes:
                     lon += 360 * round((longitudes[-1] - lon) / 360)
@@ -113,7 +113,7 @@ class ENCCell:
 
 def parse_catalog(data):
     cells = []
-    for node in ET.fromstring(data).findall("cell"):
+    for node in ElementTree.fromstring(data).findall("cell"):
         name = node.findtext("name", "")
         if node.findtext("status") != "Active" or not re.fullmatch(
             r"US[A-Z0-9]{6}", name
@@ -123,7 +123,7 @@ def parse_catalog(data):
             (
                 p.findtext("type"),
                 [
-                    (float(v.findtext("lat")), float(v.findtext("long")))
+                    (float(v.findtext("lat") or ""), float(v.findtext("long") or ""))
                     for v in p.findall("vertex")
                 ],
             )
@@ -159,7 +159,7 @@ class ENCCatalog:
                 self.cells = parse_catalog(cache.read_bytes())
                 if time.time() - cache.stat().st_mtime < CACHE_SECONDS:
                     return
-            except (ValueError, ET.ParseError):
+            except (ValueError, ElementTree.ParseError):
                 pass
         try:
             with requests.get(CATALOG_URL, timeout=(10, 45)) as response:
@@ -170,7 +170,7 @@ class ENCCatalog:
             temporary.write_bytes(data)
             temporary.replace(cache)
             self.cells = cells
-        except (requests.RequestException, ValueError, ET.ParseError, OSError):
+        except (requests.RequestException, ValueError, ElementTree.ParseError, OSError):
             if not self.cells:
                 raise
 

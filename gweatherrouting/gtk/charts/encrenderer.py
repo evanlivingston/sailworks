@@ -197,7 +197,9 @@ class ENCOverlayRenderer:
                 region = geometry.Clone() if region is None else region.Union(geometry)
             known_coverage = region is not None
             region = (
-                region.Intersection(bounding) if known_coverage else bounding.Clone()
+                region.Intersection(bounding)
+                if region is not None
+                else bounding.Clone()
             )
             if covered is not None:
                 region = region.Difference(covered)

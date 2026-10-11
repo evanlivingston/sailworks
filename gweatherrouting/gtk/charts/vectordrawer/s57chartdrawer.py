@@ -11,6 +11,10 @@ from gweatherrouting.gtk.style import Style
 
 from .cm93chartdrawer import CM93ChartDrawer, SOUNDING_STYLE
 
+CollectedFeatures = tuple[
+    list[SimpleNamespace], list[SimpleNamespace], list[SimpleNamespace]
+]
+
 
 class S57ChartDrawer(CM93ChartDrawer):
     AREA_ORDER = {"DEPARE": 0, "DRGARE": 1, "LNDARE": 2}
@@ -45,32 +49,10 @@ class S57ChartDrawer(CM93ChartDrawer):
         tolerance = 2 ** math.floor(math.log2(tolerance)) if tolerance > 0 else 0
         if not hasattr(self, "_feature_cache"):
             self._feature_cache = OrderedDict()
-        layers = [
-            vector_file.GetLayerByIndex(i) for i in range(vector_file.GetLayerCount())
-        ]
-        areas, lines, points = [], [], []
-        for layer in layers:
-            name = layer.GetName()
-            if (
-                name in self.SKIP_LAYERS
-                or layer.GetLayerDefn().GetGeomFieldCount() == 0
-            ):
-                continue
-            layer.SetSpatialFilter(bounding)
-            layer.ResetReading()
-            fields = self.ATTRIBUTE_FIELDS.get(name, ())
-            field_indexes = [
-                (key, layer.GetLayerDefn().GetFieldIndex(key)) for key in fields
-            ]
-            for feature in layer:
-                if cancelled():
-                    return
-                collected = self._prepare_feature(
-                    vector_file, name, feature, field_indexes, tolerance
-                )
-                areas.extend(collected[0])
-                lines.extend(collected[1])
-                points.extend(collected[2])
+        collected = self._collect_layers(vector_file, bounding, tolerance, cancelled)
+        if collected is None:
+            return
+        areas, lines, points = collected
         cr.set_line_join(cairo.LINE_JOIN_ROUND)
         for feature in sorted(areas, key=lambda f: self.AREA_ORDER.get(f.obj_name, 3)):
             if cancelled():
@@ -86,13 +68,39 @@ class S57ChartDrawer(CM93ChartDrawer):
                 return
             self._render_point(gpsmap, cr, feature, palette, gpsmap.get_scale())
 
+    def _collect_layers(self, vector_file, bounding, tolerance, cancelled):
+        collected: CollectedFeatures = ([], [], [])
+        for index in range(vector_file.GetLayerCount()):
+            layer = vector_file.GetLayerByIndex(index)
+            name = layer.GetName()
+            if (
+                name in self.SKIP_LAYERS
+                or layer.GetLayerDefn().GetGeomFieldCount() == 0
+            ):
+                continue
+            layer.SetSpatialFilter(bounding)
+            layer.ResetReading()
+            fields = self.ATTRIBUTE_FIELDS.get(name, ())
+            field_indexes = [
+                (key, layer.GetLayerDefn().GetFieldIndex(key)) for key in fields
+            ]
+            for feature in layer:
+                if cancelled():
+                    return None
+                prepared = self._prepare_feature(
+                    vector_file, name, feature, field_indexes, tolerance
+                )
+                for target, features in zip(collected, prepared):
+                    target.extend(features)
+        return collected
+
     def _prepare_feature(self, vector_file, name, feature, field_indexes, tolerance):
         cache_key = (id(vector_file), tolerance, name, feature.GetFID())
         cached = self._feature_cache.get(cache_key)
         if cached is not None:
             self._feature_cache.move_to_end(cache_key)
             return cached
-        collected = ([], [], [])
+        collected: CollectedFeatures = ([], [], [])
         geom = feature.GetGeometryRef()
         if geom is None:
             return collected

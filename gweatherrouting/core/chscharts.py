@@ -42,8 +42,8 @@ class CHSTileSource:
     def __init__(self, directory):
         self.directory = Path(directory)
         self._rate_lock = Lock()
-        self._next_request = 0
-        self._last_prune = 0
+        self._next_request = 0.0
+        self._last_prune = 0.0
 
     def path(self, key):
         z, x, y, factor = key

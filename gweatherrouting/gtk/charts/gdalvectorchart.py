@@ -63,22 +63,26 @@ class GDALVectorChart(ChartLayer):
         if self.vector_file is None:
             raise Exception("Unable to open vector map %s" % path)
 
-        self._coverage = []
+        self._coverage: list[ogr.Geometry] = []
         self._native_scale = 0
         if drv_name == "S57":
-            identification = self.vector_file.GetLayerByName("DSID")
-            if identification:
-                identification.ResetReading()
-                feature = identification.GetNextFeature()
-                if feature and feature.GetFieldIndex("DSPM_CSCL") >= 0:
-                    self._native_scale = feature.GetField("DSPM_CSCL") or 0
-            self._coverage = self.read_coverage(self.vector_file)
+            self._load_enc_metadata()
         self._coverage_envelopes = tuple(g.GetEnvelope() for g in self._coverage)
+
+    def _load_enc_metadata(self):
+        identification = self.vector_file.GetLayerByName("DSID")
+        if identification:
+            identification.ResetReading()
+            feature = identification.GetNextFeature()
+            if feature and feature.GetFieldIndex("DSPM_CSCL") >= 0:
+                self._native_scale = feature.GetField("DSPM_CSCL") or 0
+        self._coverage = self.read_coverage(self.vector_file)
 
     @staticmethod
     def read_coverage(vector_file):
         """Read actual ENC coverage, preserving holes and no-coverage panels."""
-        coverage, exclusions = [], []
+        coverage: list[ogr.Geometry] = []
+        exclusions: list[ogr.Geometry] = []
         layer = vector_file.GetLayerByName("M_COVR")
         if layer is None:
             return coverage

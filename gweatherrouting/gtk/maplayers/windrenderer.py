@@ -115,7 +115,7 @@ class WindOverlayRenderer(ENCOverlayRenderer):
             (min(p1[0], p2[0]) - 1, min(p1[1], p2[1]) - 1),
             (max(p1[0], p2[0]) + 1, max(p1[1], p2[1]) + 1),
         )
-        columns = {}
+        columns: dict[float, list[tuple[float, float, tuple[float, float]]]] = {}
         for (source,) in job.charts:
             if job.cancel.is_set():
                 return []

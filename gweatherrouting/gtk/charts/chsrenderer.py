@@ -6,6 +6,7 @@ import logging
 import math
 from threading import Thread
 import time
+from typing import Optional
 from weakref import WeakKeyDictionary
 
 import cairo
@@ -19,10 +20,12 @@ from gweatherrouting.core.chscharts import (
     TILE_SIZE,
     tile_in_canada,
 )
-from gweatherrouting.gtk.widgets.mapwidget import MapViewport
+from gweatherrouting.gtk.widgets.mapwidget import MapViewport, MapWidget
 
 logger = logging.getLogger("gweatherrouting")
 FADE_SECONDS = 0.20
+TileKey = tuple[int, int, int, int]
+TileBlend = tuple[cairo.ImageSurface, float, Optional[cairo.ImageSurface]]
 
 
 class CHSRenderer:
@@ -33,10 +36,12 @@ class CHSRenderer:
         self._pending = OrderedDict()
         self._inflight = set()
         self._retry = {}
-        self._views = WeakKeyDictionary()
-        self._wanted = WeakKeyDictionary()
-        self._blends = WeakKeyDictionary()
-        self._ticks = WeakKeyDictionary()
+        self._views: WeakKeyDictionary[MapWidget, int] = WeakKeyDictionary()
+        self._wanted: WeakKeyDictionary[MapWidget, set[TileKey]] = WeakKeyDictionary()
+        self._blends: WeakKeyDictionary[MapWidget, dict[TileKey, TileBlend]] = (
+            WeakKeyDictionary()
+        )
+        self._ticks: WeakKeyDictionary[MapWidget, int] = WeakKeyDictionary()
 
     def set_enabled(self, enabled):
         self.enabled = bool(enabled)
@@ -67,46 +72,12 @@ class CHSRenderer:
     def draw(self, canvas, cr):
         if not self.enabled:
             return
-        # Keep a stable tile level while zooming; transform it at every frame.
-        zoom = max(MIN_ZOOM, min(MAX_ZOOM, int(math.floor(canvas._zoom + 0.5))))
         if canvas._zoom < MIN_ZOOM - 0.5:
             self.forget(canvas)
             return
-        if getattr(canvas, "_zoom_animating", False):
-            zoom = self._views.get(canvas, zoom)
-            # Bound work if repeated input zooms out several levels at once.
-            zoom = max(MIN_ZOOM, min(zoom, math.ceil(canvas._zoom + 1)))
-        else:
-            self._views[canvas] = zoom
-        viewport = MapViewport(canvas)
-        viewport._zoom = zoom
-        cx = viewport._lon_to_x(canvas._center_lon)
-        cy = viewport._lat_to_y(canvas._center_lat)
-        ratio = 2.0 ** (canvas._zoom - zoom)
-        width, height = canvas.get_allocated_width(), canvas.get_allocated_height()
-        left, top = cx - width / (2 * ratio), cy - height / (2 * ratio)
-        right, bottom = cx + width / (2 * ratio), cy + height / (2 * ratio)
-        factor = min(2, max(1, canvas.get_scale_factor()))
-        wanted = set()
-        visible = []
-        for y in range(
-            max(0, math.floor(top / TILE_SIZE)),
-            min(2**zoom, math.ceil(bottom / TILE_SIZE)),
-        ):
-            for x in range(
-                max(0, math.floor(left / TILE_SIZE)),
-                min(2**zoom, math.ceil(right / TILE_SIZE)),
-            ):
-                if tile_in_canada(zoom, x, y):
-                    key = (zoom, x, y, factor)
-                    wanted.add(key)
-                    visible.append(
-                        (
-                            key,
-                            (x * TILE_SIZE - left) * ratio,
-                            (y * TILE_SIZE - top) * ratio,
-                        )
-                    )
+        zoom = self._tile_zoom(canvas)
+        visible, ratio, cx, cy = self._visible_tiles(canvas, zoom)
+        wanted = {key for key, _, _ in visible}
         self._wanted[canvas] = wanted
         self._prune_pending()
         now = time.time()
@@ -115,36 +86,14 @@ class CHSRenderer:
         for key in list(blends):
             if key not in wanted:
                 del blends[key]
-        fading = False
-        drawn = False
+        fading, drawn = False, False
         for key, x, y in visible:
-            tile = self._tiles.get(key)
-            if tile:
-                self._tiles.move_to_end(key)
-                state = blends.get(key)
-                if state is None or state[0] is not tile[0]:
-                    previous = state[0] if state else self._preview_surface(key)
-                    state = (tile[0], frame_time, previous)
-                    blends[key] = state
-                progress = min(1, (frame_time - state[1]) / FADE_SECONDS)
-                if progress < 1:
-                    # Smoothstep keeps the beginning and end of the blend gentle.
-                    alpha = progress * progress * (3 - 2 * progress)
-                    self._crossfade(cr, state[2], tile[0], x, y, ratio, alpha)
-                    fading = True
-                else:
-                    self._paint(cr, tile[0], x, y, ratio)
-                    blends[key] = (tile[0], state[1], None)
-                drawn = True
-            elif self._fallback_preview(cr, key, x, y, ratio):
-                drawn = True
-            if not tile or now - tile[1] >= CACHE_SECONDS:
-                if (
-                    key not in self._inflight
-                    and self._retry.get(key, 0) <= now
-                    and not getattr(canvas, "_zoom_animating", False)
-                ):
-                    self._pending[key] = bool(tile)
+            tile_drawn, tile_fading = self._draw_tile(
+                cr, key, x, y, ratio, blends, frame_time
+            )
+            drawn = drawn or tile_drawn
+            fading = fading or tile_fading
+            self._queue_tile(canvas, key, now)
         # Center tiles first, so useful detail arrives before the map edges.
         self._pending = OrderedDict(
             sorted(
@@ -157,7 +106,80 @@ class CHSRenderer:
         if fading and canvas not in self._ticks:
             self._ticks[canvas] = canvas.add_tick_callback(self._tick)
         if drawn:
-            self._attribution(cr, width, height)
+            self._attribution(
+                cr, canvas.get_allocated_width(), canvas.get_allocated_height()
+            )
+
+    def _tile_zoom(self, canvas):
+        # Keep a stable tile level while zooming; transform it at every frame.
+        zoom = max(MIN_ZOOM, min(MAX_ZOOM, int(math.floor(canvas._zoom + 0.5))))
+        if getattr(canvas, "_zoom_animating", False):
+            zoom = self._views.get(canvas, zoom)
+            # Bound work if repeated input zooms out several levels at once.
+            zoom = max(MIN_ZOOM, min(zoom, math.ceil(canvas._zoom + 1)))
+        else:
+            self._views[canvas] = zoom
+        return zoom
+
+    def _visible_tiles(self, canvas, zoom):
+        viewport = MapViewport(canvas)
+        viewport._zoom = zoom
+        cx = viewport._lon_to_x(canvas._center_lon)
+        cy = viewport._lat_to_y(canvas._center_lat)
+        ratio = 2.0 ** (canvas._zoom - zoom)
+        width, height = canvas.get_allocated_width(), canvas.get_allocated_height()
+        left, top = cx - width / (2 * ratio), cy - height / (2 * ratio)
+        right, bottom = cx + width / (2 * ratio), cy + height / (2 * ratio)
+        factor = min(2, max(1, canvas.get_scale_factor()))
+        visible = []
+        for y in range(
+            max(0, math.floor(top / TILE_SIZE)),
+            min(2**zoom, math.ceil(bottom / TILE_SIZE)),
+        ):
+            for x in range(
+                max(0, math.floor(left / TILE_SIZE)),
+                min(2**zoom, math.ceil(right / TILE_SIZE)),
+            ):
+                if tile_in_canada(zoom, x, y):
+                    key = (zoom, x, y, factor)
+                    visible.append(
+                        (
+                            key,
+                            (x * TILE_SIZE - left) * ratio,
+                            (y * TILE_SIZE - top) * ratio,
+                        )
+                    )
+        return visible, ratio, cx, cy
+
+    def _draw_tile(self, cr, key, x, y, ratio, blends, frame_time):
+        tile = self._tiles.get(key)
+        if not tile:
+            return self._fallback_preview(cr, key, x, y, ratio), False
+        self._tiles.move_to_end(key)
+        state = blends.get(key)
+        if state is None or state[0] is not tile[0]:
+            previous = state[0] if state else self._preview_surface(key)
+            state = (tile[0], frame_time, previous)
+            blends[key] = state
+        progress = min(1, (frame_time - state[1]) / FADE_SECONDS)
+        if progress < 1:
+            # Smoothstep keeps the beginning and end of the blend gentle.
+            alpha = progress * progress * (3 - 2 * progress)
+            self._crossfade(cr, state[2], tile[0], x, y, ratio, alpha)
+            return True, True
+        self._paint(cr, tile[0], x, y, ratio)
+        blends[key] = (tile[0], state[1], None)
+        return True, False
+
+    def _queue_tile(self, canvas, key, now):
+        tile = self._tiles.get(key)
+        if not tile or now - tile[1] >= CACHE_SECONDS:
+            if (
+                key not in self._inflight
+                and self._retry.get(key, 0) <= now
+                and not getattr(canvas, "_zoom_animating", False)
+            ):
+                self._pending[key] = bool(tile)
 
     def _tick(self, canvas, frame_clock):
         canvas.queue_draw()
