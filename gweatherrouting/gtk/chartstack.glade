@@ -469,6 +469,21 @@ loaded to created a routing</property>
                   </packing>
                 </child>
                 <child>
+                  <object class="GtkToggleToolButton" id="marine-layer-toggle">
+                    <property name="visible">True</property>
+                    <property name="can-focus">False</property>
+                    <property name="tooltip-text" translatable="yes">Show / hide the Tides &amp; currents panel</property>
+                    <property name="label" translatable="yes">Tides / currents</property>
+                    <property name="icon-name">tides-currents-symbolic</property>
+                    <property name="active">False</property>
+                    <signal name="toggled" handler="on_toggle_marine" swapped="no"/>
+                  </object>
+                  <packing>
+                    <property name="expand">False</property>
+                    <property name="homogeneous">True</property>
+                  </packing>
+                </child>
+                <child>
                   <object class="GtkToggleToolButton">
                     <property name="visible">True</property>
                     <property name="can-focus">False</property>
@@ -1190,6 +1205,7 @@ loaded to created a routing</property>
                   <object class="GtkProgressBar" id="progressbar">
                     <property name="visible">True</property>
                     <property name="can-focus">False</property>
+                    <property name="show-text">True</property>
                   </object>
                   <packing>
                     <property name="expand">False</property>

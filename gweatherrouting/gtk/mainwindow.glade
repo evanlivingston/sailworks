@@ -214,6 +214,32 @@
           </packing>
         </child>
         <child>
+          <object class="GtkButton" id="marine-button">
+            <property name="visible">True</property>
+            <property name="can-focus">True</property>
+            <property name="receives-default">True</property>
+            <property name="tooltip-text" translatable="yes">Show / hide the Tides &amp; currents panel</property>
+            <property name="margin-end">6</property>
+            <signal name="clicked" handler="on_marine_manager" swapped="no"/>
+            <child internal-child="accessible">
+              <object class="AtkObject" id="marine-button-accessible">
+                <property name="accessible-name" translatable="yes">Tides &amp; currents</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkImage">
+                <property name="visible">True</property>
+                <property name="can-focus">False</property>
+                <property name="icon-name">tides-currents-symbolic</property>
+              </object>
+            </child>
+          </object>
+          <packing>
+            <property name="pack-type">end</property>
+            <property name="position">5</property>
+          </packing>
+        </child>
+        <child>
           <object class="GtkButton" id="grib-button">
             <property name="visible">True</property>
             <property name="can-focus">True</property>

@@ -16,6 +16,8 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 
 import json
 import logging
+import os
+import tempfile
 from datetime import datetime, timedelta, timezone
 from typing import Callable, List
 
@@ -178,16 +180,27 @@ class NOAAGFSSource(GribSource):
         identifier: str,
         dest_dir: str,
         percentage_callback: Callable[[int], None],
+        cancel=None,
     ) -> str:
         config = json.loads(identifier)
         date_str = config["date"]
         cycle = config["cycle"]
         max_hours = config["hours"]
 
-        forecast_steps = [h for h in GFS_FORECAST_HOURS if h <= max_hours]
+        forecast_steps = [
+            h
+            for h in GFS_FORECAST_HOURS
+            if config.get("start_hour", 0) <= h <= max_hours
+        ]
+        if not forecast_steps:
+            raise ValueError("No GFS forecast hours in the requested interval")
         total_steps = len(forecast_steps)
 
         filename = f"gfs_{date_str}_{cycle}z_{max_hours}h.grib2"
+        if "cache_key" in config:
+            filename = (
+                f"gfs_{date_str}_{cycle}z_{max_hours}h_{config['cache_key']}.grib2"
+            )
         final_path = dest_dir + "/" + filename
 
         logger.info(
@@ -199,32 +212,72 @@ class NOAAGFSSource(GribSource):
         )
 
         bytes_written = 0
-        with open(final_path, "wb") as outfile:
-            for i, fhour in enumerate(forecast_steps):
-                params = self._build_filter_url(date_str, cycle, fhour)
-                logger.debug("Downloading forecast hour %d", fhour)
 
-                response = requests.get(GFS_FILTER_URL, params=params, stream=True)
-                try:
-                    response.raise_for_status()
+        def check_cancel():
+            if cancel is not None and cancel.is_set():
+                from gweatherrouting.core.marine.chs import DownloadCancelledError
 
-                    for chunk in response.iter_content(chunk_size=8192):
-                        outfile.write(chunk)
-                        bytes_written += len(chunk)
-                finally:
-                    response.close()
+                raise DownloadCancelledError()
 
-                percentage = int(100 * (i + 1) / total_steps)
-                percentage_callback(percentage)
-
-        if bytes_written == 0:
-            import os
-
-            os.remove(final_path)
-            raise RuntimeError(
-                "GFS download returned empty data. The requested forecast "
-                "may not be available yet. Try a different cycle or date."
-            )
-
+        check_cancel()
+        temporary = tempfile.NamedTemporaryFile(
+            dir=dest_dir, suffix=".part", delete=False
+        )
+        try:
+            with temporary as outfile:
+                self._write_forecasts(
+                    outfile,
+                    forecast_steps,
+                    date_str,
+                    cycle,
+                    percentage_callback,
+                    check_cancel,
+                )
+                bytes_written = outfile.tell()
+            check_cancel()
+            if bytes_written == 0:
+                raise RuntimeError(
+                    "GFS download returned empty data. Try a different cycle or date."
+                )
+            os.replace(temporary.name, final_path)
+        finally:
+            if os.path.exists(temporary.name):
+                os.remove(temporary.name)
         logger.info("GFS download completed: %s (%d bytes)", filename, bytes_written)
         return final_path
+
+    def _write_forecasts(
+        self,
+        outfile,
+        forecast_steps,
+        date_str,
+        cycle,
+        percentage_callback,
+        check_cancel,
+    ):
+        total_steps = len(forecast_steps)
+        bytes_written = 0
+        for i, fhour in enumerate(forecast_steps):
+            check_cancel()
+            params = self._build_filter_url(date_str, cycle, fhour)
+            logger.debug("Downloading forecast hour %d", fhour)
+
+            response = requests.get(
+                GFS_FILTER_URL, params=params, stream=True, timeout=(10, 60)
+            )
+            try:
+                response.raise_for_status()
+
+                for chunk in response.iter_content(chunk_size=8192):
+                    check_cancel()
+                    outfile.write(chunk)
+                    bytes_written += len(chunk)
+                    if bytes_written > 256 * 1024 * 1024:
+                        raise ValueError(
+                            "Wind download exceeded 256 MiB; choose a smaller route area"
+                        )
+            finally:
+                response.close()
+
+            percentage = int(100 * (i + 1) / total_steps)
+            percentage_callback(percentage)

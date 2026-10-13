@@ -1,0 +1,979 @@
+
+  _     ._   __/__   _ _  _  _ _/_   Recorded: 16:24:23  Samples:  72104
+ /_//_/// /_\ / //_// / //_'/ //     Duration: 81.766    CPU time: 81.054
+/   _/                      v5.1.3
+
+Profile at /private/tmp/gwr-routing-profile/run.py:37
+
+81.766 run  run.py:27
+`- 81.766 Routing.step  weatherrouting/routing.py:109
+   |- 81.765 CurrentIsoRouter.route  gweatherrouting/core/marine/routing.py:507
+   |  |- 81.640 CurrentIsoRouter.route_frontier  gweatherrouting/core/marine/frontierrouting.py:314
+   |  |  |- 78.666 CurrentIsoRouter.propagate  gweatherrouting/core/marine/frontierrouting.py:178
+   |  |  |  |- 33.649 velocities  gweatherrouting/core/marine/frontierrouting.py:207
+   |  |  |  |  |- 32.217 ArrayEnvironment.sample  gweatherrouting/core/marine/frontierrouting.py:138
+   |  |  |  |  |  |- 30.147 FieldSelection.sample_arrays  gweatherrouting/core/marine/fields.py:452
+   |  |  |  |  |  |  |- 21.107 FieldSelection._resolve_missing  gweatherrouting/core/marine/fields.py:431
+   |  |  |  |  |  |  |  |- 21.093 FieldSelection._nearest  gweatherrouting/core/marine/fields.py:406
+   |  |  |  |  |  |  |  |  |- 20.921 CurrentField.sample_nearest  gweatherrouting/core/marine/fields.py:233
+   |  |  |  |  |  |  |  |  |  |- 13.435 CurrentIsoRouter.valid_current_neighbor  gweatherrouting/core/marine/routing.py:389
+   |  |  |  |  |  |  |  |  |  |  |- 13.410 CurrentIsoRouter.valid  gweatherrouting/core/marine/routing.py:392
+   |  |  |  |  |  |  |  |  |  |  |  |- 6.710 GSHHSVectorChart.points_validity  gweatherrouting/gtk/charts/gshhs.py:502
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 3.643 [self]  gweatherrouting/gtk/charts/gshhs.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 1.655 flatnonzero  numpy/_core/numeric.py:679
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.576 nonzero  numpy/_core/fromnumeric.py:1993
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.413 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.182 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.166 ndarray.nonzero  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.065 getattr  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.162 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.508 ravel  numpy/_core/fromnumeric.py:1879
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.282 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.101 ndarray.ravel  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.070 asanyarray  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.055 isinstance  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.472 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.056 _ravel_dispatcher  numpy/_core/fromnumeric.py:1875
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.043 _nonzero_dispatcher  numpy/_core/fromnumeric.py:1989
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.345 Geometry.GetEnvelope  osgeo/ogr.py:6511
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.206 Geometry_GetEnvelope  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.139 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.218 GSHHSVectorChart._routing_land  gweatherrouting/gtk/charts/gshhs.py:466
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.121 [self]  gweatherrouting/gtk/charts/gshhs.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.047 Layer.__iter__  osgeo/ogr.py:1954
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.047 Layer.GetNextFeature  osgeo/ogr.py:1054
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |     |- 0.027 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |     `- 0.020 Layer_GetNextFeature  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.017 floor  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.015 OrderedDict.move_to_end  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.010 ceil  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.005 hasattr  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.004 Geometry.Intersection  osgeo/ogr.py:5987
+   |  |  |  |  |  |  |  |  |  |  |  |  |     `- 0.004 Geometry_Intersection  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.186 _amin  numpy/_core/_methods.py:43
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.161 ufunc.reduce  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.025 [self]  numpy/_core/_methods.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.129 _amax  numpy/_core/_methods.py:39
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.103 ufunc.reduce  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.026 [self]  numpy/_core/_methods.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.122 PreparedGeometry.Contains  osgeo/ogr.py:6857
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.093 PreparedGeometry_Contains  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.029 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.115 Geometry.__init__  osgeo/ogr.py:5274
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.057 Geometry_swiginit  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.033 new_Geometry  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.025 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.083 ones  numpy/_core/numeric.py:170
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.060 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.019 empty  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.004 copyto  numpy/_core/multiarray.py:1085
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.066 _flatnonzero_dispatcher  numpy/_core/numeric.py:675
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.048 asarray  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.042 Geometry.AddPoint  osgeo/ogr.py:5370
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.023 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.019 Geometry_AddPoint  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.018 len  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.016 ndarray.min  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.012 ndarray.tolist  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  `- 0.011 ndarray.max  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |- 6.554 GSHHSVectorChart.lines_validity  gweatherrouting/gtk/charts/gshhs.py:528
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 3.642 [self]  gweatherrouting/gtk/charts/gshhs.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 1.607 flatnonzero  numpy/_core/numeric.py:679
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.575 nonzero  numpy/_core/fromnumeric.py:1993
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.414 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.187 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.167 ndarray.nonzero  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.060 getattr  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.161 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.486 ravel  numpy/_core/fromnumeric.py:1879
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.298 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.092 ndarray.ravel  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.049 asanyarray  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.047 isinstance  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.453 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.047 _nonzero_dispatcher  numpy/_core/fromnumeric.py:1989
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.045 _ravel_dispatcher  numpy/_core/fromnumeric.py:1875
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.323 Geometry.GetEnvelope  osgeo/ogr.py:6511
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.162 Geometry_GetEnvelope  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.161 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.163 _amin  numpy/_core/_methods.py:43
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.145 ufunc.reduce  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.018 [self]  numpy/_core/_methods.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.154 PreparedGeometry.Intersects  osgeo/ogr.py:6853
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.137 PreparedGeometry_Intersects  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.017 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.141 GSHHSVectorChart._routing_land  gweatherrouting/gtk/charts/gshhs.py:466
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.092 [self]  gweatherrouting/gtk/charts/gshhs.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.021 floor  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.012 ceil  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.012 OrderedDict.move_to_end  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.004 hasattr  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.122 _amax  numpy/_core/_methods.py:39
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.101 ufunc.reduce  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.021 [self]  numpy/_core/_methods.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.095 Geometry.AddPoint  osgeo/ogr.py:5370
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.063 Geometry_AddPoint  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.032 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.093 ones  numpy/_core/numeric.py:170
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.074 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.014 empty  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.005 copyto  numpy/_core/multiarray.py:1085
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.089 Geometry.__init__  osgeo/ogr.py:5274
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.038 Geometry_swiginit  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.030 new_Geometry  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.021 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.048 _flatnonzero_dispatcher  numpy/_core/numeric.py:675
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.041 asarray  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.013 ndarray.min  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.008 len  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.008 ndarray.max  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  `- 0.007 ndarray.tolist  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.135 [self]  gweatherrouting/core/marine/routing.py
+   |  |  |  |  |  |  |  |  |  |  |  `- 0.010 all  <built-in>
+   |  |  |  |  |  |  |  |  |  |  `- 0.025 [self]  gweatherrouting/core/marine/routing.py
+   |  |  |  |  |  |  |  |  |  |- 3.659 CurrentField.manifest  gweatherrouting/core/marine/fields.py:156
+   |  |  |  |  |  |  |  |  |  |  |- 3.309 loads  json/__init__.py:299
+   |  |  |  |  |  |  |  |  |  |  |  |- 3.237 JSONDecoder.decode  json/decoder.py:332
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 3.123 JSONDecoder.raw_decode  json/decoder.py:343
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.065 [self]  json/decoder.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.034 Pattern.match  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.008 Match.end  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  `- 0.007 len  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.054 [self]  json/__init__.py
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.012 str.startswith  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  `- 0.006 isinstance  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |- 0.165 datetime.isoformat  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |- 0.138 [self]  gweatherrouting/core/marine/fields.py
+   |  |  |  |  |  |  |  |  |  |  `- 0.047 datetime.fromtimestamp  <built-in>
+   |  |  |  |  |  |  |  |  |  |- 1.697 [self]  gweatherrouting/core/marine/fields.py
+   |  |  |  |  |  |  |  |  |  |- 0.297 _all  numpy/_core/_methods.py:64
+   |  |  |  |  |  |  |  |  |  |  |- 0.247 ufunc.reduce  <built-in>
+   |  |  |  |  |  |  |  |  |  |  `- 0.050 [self]  numpy/_core/_methods.py
+   |  |  |  |  |  |  |  |  |  |- 0.291 canonical_json  gweatherrouting/core/marine/models.py:28
+   |  |  |  |  |  |  |  |  |  |  |- 0.270 dumps  json/__init__.py:183
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.220 JSONEncoder.encode  json/encoder.py:183
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.189 JSONEncoder.iterencode  json/encoder.py:205
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.025 [self]  json/encoder.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.004 isinstance  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  `- 0.002 str.join  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.034 [self]  json/__init__.py
+   |  |  |  |  |  |  |  |  |  |  |  `- 0.016 JSONEncoder.__init__  json/encoder.py:105
+   |  |  |  |  |  |  |  |  |  |  `- 0.021 [self]  gweatherrouting/core/marine/models.py
+   |  |  |  |  |  |  |  |  |  |- 0.288 utc_time  gweatherrouting/core/marine/models.py:20
+   |  |  |  |  |  |  |  |  |  |  |- 0.188 [self]  gweatherrouting/core/marine/models.py
+   |  |  |  |  |  |  |  |  |  |  |- 0.056 isinstance  <built-in>
+   |  |  |  |  |  |  |  |  |  |  `- 0.044 datetime.astimezone  <built-in>
+   |  |  |  |  |  |  |  |  |  |- 0.280 <genexpr>  gweatherrouting/core/marine/fields.py:243
+   |  |  |  |  |  |  |  |  |  |- 0.243 searchsorted  numpy/_core/fromnumeric.py:1421
+   |  |  |  |  |  |  |  |  |  |  |- 0.181 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.118 ndarray.searchsorted  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.054 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  |  |  |  `- 0.009 getattr  <built-in>
+   |  |  |  |  |  |  |  |  |  |  `- 0.062 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  |  |- 0.226 Geod.__init__  pyproj/geod.py:143
+   |  |  |  |  |  |  |  |  |  |  |- 0.146 [self]  pyproj/geod.py
+   |  |  |  |  |  |  |  |  |  |  |- 0.066 _params_from_ellps_map  pyproj/geod.py:35
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.039 _params_from_kwargs  pyproj/geod.py:59
+   |  |  |  |  |  |  |  |  |  |  |  `- 0.027 [self]  pyproj/geod.py
+   |  |  |  |  |  |  |  |  |  |  |- 0.008 dict.items  <built-in>
+   |  |  |  |  |  |  |  |  |  |  `- 0.006 fabs  <built-in>
+   |  |  |  |  |  |  |  |  |  |- 0.163 array  <built-in>
+   |  |  |  |  |  |  |  |  |  |- 0.115 datetime.timestamp  <built-in>
+   |  |  |  |  |  |  |  |  |  |- 0.069 Geod.inv  pyproj/geod.py:331
+   |  |  |  |  |  |  |  |  |  |- 0.059 sorted  <built-in>
+   |  |  |  |  |  |  |  |  |  |- 0.031 any  <built-in>
+   |  |  |  |  |  |  |  |  |  |- 0.017 QueryResult.__init__  <string>:2
+   |  |  |  |  |  |  |  |  |  |- 0.017 _searchsorted_dispatcher  numpy/_core/fromnumeric.py:1417
+   |  |  |  |  |  |  |  |  |  |- 0.016 ndarray.all  <built-in>
+   |  |  |  |  |  |  |  |  |  |- 0.013 list.append  <built-in>
+   |  |  |  |  |  |  |  |  |  `- 0.004 <lambda>  gweatherrouting/core/marine/fields.py:272
+   |  |  |  |  |  |  |  |  `- 0.172 [self]  gweatherrouting/core/marine/fields.py
+   |  |  |  |  |  |  |  `- 0.014 [self]  gweatherrouting/core/marine/fields.py
+   |  |  |  |  |  |  |- 5.389 CurrentField.sample_arrays  gweatherrouting/core/marine/fields.py:310
+   |  |  |  |  |  |  |  |- 4.390 [self]  gweatherrouting/core/marine/fields.py
+   |  |  |  |  |  |  |  |- 0.534 full  numpy/_core/numeric.py:323
+   |  |  |  |  |  |  |  |  |- 0.501 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  |  |  |- 0.031 empty  <built-in>
+   |  |  |  |  |  |  |  |  `- 0.001 copyto  numpy/_core/multiarray.py:1085
+   |  |  |  |  |  |  |  |- 0.339 searchsorted  numpy/_core/fromnumeric.py:1421
+   |  |  |  |  |  |  |  |  |- 0.318 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  |  |  |- 0.307 ndarray.searchsorted  <built-in>
+   |  |  |  |  |  |  |  |  |  |- 0.008 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  |  `- 0.003 getattr  <built-in>
+   |  |  |  |  |  |  |  |  `- 0.021 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |- 0.062 flatnonzero  numpy/_core/numeric.py:679
+   |  |  |  |  |  |  |  |  |- 0.035 nonzero  numpy/_core/fromnumeric.py:1993
+   |  |  |  |  |  |  |  |  |  |- 0.028 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  |  |  |  |- 0.020 ndarray.nonzero  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |- 0.007 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  |  |  `- 0.001 getattr  <built-in>
+   |  |  |  |  |  |  |  |  |  `- 0.007 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  |- 0.013 ravel  numpy/_core/fromnumeric.py:1879
+   |  |  |  |  |  |  |  |  |  |- 0.010 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  |  |- 0.002 ndarray.ravel  <built-in>
+   |  |  |  |  |  |  |  |  |  `- 0.001 isinstance  <built-in>
+   |  |  |  |  |  |  |  |  |- 0.010 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  |  |  |- 0.003 _nonzero_dispatcher  numpy/_core/fromnumeric.py:1989
+   |  |  |  |  |  |  |  |  `- 0.001 _ravel_dispatcher  numpy/_core/fromnumeric.py:1875
+   |  |  |  |  |  |  |  |- 0.042 zeros  <built-in>
+   |  |  |  |  |  |  |  |- 0.010 len  <built-in>
+   |  |  |  |  |  |  |  |- 0.007 where  numpy/_core/multiarray.py:403
+   |  |  |  |  |  |  |  |- 0.004 _searchsorted_dispatcher  numpy/_core/fromnumeric.py:1417
+   |  |  |  |  |  |  |  `- 0.001 list.append  <built-in>
+   |  |  |  |  |  |  |- 3.067 [self]  gweatherrouting/core/marine/fields.py
+   |  |  |  |  |  |  |- 0.421 full  numpy/_core/numeric.py:323
+   |  |  |  |  |  |  |  |- 0.405 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  |  `- 0.016 empty  <built-in>
+   |  |  |  |  |  |  |- 0.072 CurrentSamples.query  gweatherrouting/core/marine/fields.py:386
+   |  |  |  |  |  |  |  |- 0.037 field_query  gweatherrouting/core/marine/fields.py:357
+   |  |  |  |  |  |  |  |  |- 0.023 QueryResult.__init__  <string>:2
+   |  |  |  |  |  |  |  |  `- 0.014 [self]  gweatherrouting/core/marine/fields.py
+   |  |  |  |  |  |  |  |- 0.022 [self]  gweatherrouting/core/marine/fields.py
+   |  |  |  |  |  |  |  `- 0.013 CurrentSamples.identifier  gweatherrouting/core/marine/fields.py:380
+   |  |  |  |  |  |  |- 0.040 ArrayEnvironment.check_cancel  gweatherrouting/core/marine/frontierrouting.py:134
+   |  |  |  |  |  |  |  |- 0.031 [self]  gweatherrouting/core/marine/frontierrouting.py
+   |  |  |  |  |  |  |  `- 0.009 Event.is_set  threading.py:575
+   |  |  |  |  |  |  |- 0.023 datetime.fromtimestamp  <built-in>
+   |  |  |  |  |  |  |- 0.012 zeros  <built-in>
+   |  |  |  |  |  |  |- 0.008 arange  <built-in>
+   |  |  |  |  |  |  |- 0.007 len  <built-in>
+   |  |  |  |  |  |  `- 0.001 set.add  <built-in>
+   |  |  |  |  |  |- 1.324 ArrayWind.query_us  gweatherrouting/core/marine/batchwind.py:39
+   |  |  |  |  |  |  |- 0.950 [self]  gweatherrouting/core/marine/batchwind.py
+   |  |  |  |  |  |  |- 0.116 unique  numpy/lib/_arraysetops_impl.py:145
+   |  |  |  |  |  |  |  |- 0.109 _unique1d  numpy/lib/_arraysetops_impl.py:350
+   |  |  |  |  |  |  |  |  |- 0.038 ndarray.argsort  <built-in>
+   |  |  |  |  |  |  |  |  |- 0.037 cumsum  numpy/_core/fromnumeric.py:2838
+   |  |  |  |  |  |  |  |  |  `- 0.037 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  |  |     |- 0.036 ndarray.cumsum  <built-in>
+   |  |  |  |  |  |  |  |  |     `- 0.001 getattr  <built-in>
+   |  |  |  |  |  |  |  |  |- 0.034 [self]  numpy/lib/_arraysetops_impl.py
+   |  |  |  |  |  |  |  |  `- 0.001 ndarray.flatten  <built-in>
+   |  |  |  |  |  |  |  `- 0.007 [self]  numpy/lib/_arraysetops_impl.py
+   |  |  |  |  |  |  |- 0.097 full  numpy/_core/numeric.py:323
+   |  |  |  |  |  |  |  |- 0.058 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  |  |- 0.034 empty  <built-in>
+   |  |  |  |  |  |  |  |- 0.003 asarray  <built-in>
+   |  |  |  |  |  |  |  `- 0.001 copyto  numpy/_core/multiarray.py:1085
+   |  |  |  |  |  |  |- 0.066 searchsorted  numpy/_core/fromnumeric.py:1421
+   |  |  |  |  |  |  |  `- 0.066 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |     `- 0.066 ndarray.searchsorted  <built-in>
+   |  |  |  |  |  |  |- 0.025 clip  numpy/_core/fromnumeric.py:2207
+   |  |  |  |  |  |  |  |- 0.024 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  |  |- 0.022 _clip  numpy/_core/_methods.py:96
+   |  |  |  |  |  |  |  |  |  |- 0.012 [self]  numpy/_core/_methods.py
+   |  |  |  |  |  |  |  |  |  |- 0.005 iinfo.min  numpy/_core/getlimits.py:423
+   |  |  |  |  |  |  |  |  |  `- 0.005 iinfo.max  numpy/_core/getlimits.py:436
+   |  |  |  |  |  |  |  |  |- 0.001 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  `- 0.001 ndarray.clip  <built-in>
+   |  |  |  |  |  |  |  `- 0.001 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |- 0.019 flatnonzero  numpy/_core/numeric.py:679
+   |  |  |  |  |  |  |  |- 0.017 nonzero  numpy/_core/fromnumeric.py:1993
+   |  |  |  |  |  |  |  |  |- 0.016 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  |  |  |- 0.015 ndarray.nonzero  <built-in>
+   |  |  |  |  |  |  |  |  |  `- 0.001 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  `- 0.001 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |- 0.001 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  |  `- 0.001 _ravel_dispatcher  numpy/_core/fromnumeric.py:1875
+   |  |  |  |  |  |  |- 0.015 ndarray.astype  <built-in>
+   |  |  |  |  |  |  |- 0.014 FractionalRoutingGrib._get_wind_data  gweatherrouting/core/marine/routing.py:275
+   |  |  |  |  |  |  |  |- 0.009 [self]  gweatherrouting/core/marine/routing.py
+   |  |  |  |  |  |  |  |- 0.004 <genexpr>  gweatherrouting/core/marine/routing.py:276
+   |  |  |  |  |  |  |  `- 0.001 FractionalRoutingGrib._read_window  gweatherrouting/core/marine/routing.py:295
+   |  |  |  |  |  |  |- 0.006 _amin  numpy/_core/_methods.py:43
+   |  |  |  |  |  |  |  `- 0.006 ufunc.reduce  <built-in>
+   |  |  |  |  |  |  |- 0.005 _amax  numpy/_core/_methods.py:39
+   |  |  |  |  |  |  |  `- 0.005 ufunc.reduce  <built-in>
+   |  |  |  |  |  |  |- 0.003 zeros  <built-in>
+   |  |  |  |  |  |  |- 0.002 _any  numpy/_core/_methods.py:55
+   |  |  |  |  |  |  |  |- 0.001 [self]  numpy/_core/_methods.py
+   |  |  |  |  |  |  |  `- 0.001 ufunc.reduce  <built-in>
+   |  |  |  |  |  |  |- 0.002 FractionalRoutingGrib.__getattr__  gweatherrouting/core/marine/routing.py:263
+   |  |  |  |  |  |  |- 0.002 asarray  <built-in>
+   |  |  |  |  |  |  |- 0.001 ArrayWind.check_cancel  gweatherrouting/core/marine/batchwind.py:24
+   |  |  |  |  |  |  |  `- 0.001 Event.is_set  threading.py:575
+   |  |  |  |  |  |  `- 0.001 ndarray.min  <built-in>
+   |  |  |  |  |  |- 0.589 [self]  gweatherrouting/core/marine/frontierrouting.py
+   |  |  |  |  |  |- 0.071 full  numpy/_core/numeric.py:323
+   |  |  |  |  |  |  |- 0.039 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  `- 0.031 empty  <built-in>
+   |  |  |  |  |  |- 0.027 _all  numpy/_core/_methods.py:64
+   |  |  |  |  |  |  |- 0.026 ufunc.reduce  <built-in>
+   |  |  |  |  |  |  `- 0.001 [self]  numpy/_core/_methods.py
+   |  |  |  |  |  |- 0.026 column_stack  numpy/lib/_shape_base_impl.py:625
+   |  |  |  |  |  |  |- 0.025 [self]  numpy/lib/_shape_base_impl.py
+   |  |  |  |  |  |  `- 0.001 array  <built-in>
+   |  |  |  |  |  |- 0.011 zeros  <built-in>
+   |  |  |  |  |  |- 0.011 flatnonzero  numpy/_core/numeric.py:679
+   |  |  |  |  |  |  |- 0.008 nonzero  numpy/_core/fromnumeric.py:1993
+   |  |  |  |  |  |  |  `- 0.008 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |     `- 0.008 ndarray.nonzero  <built-in>
+   |  |  |  |  |  |  |- 0.002 ravel  numpy/_core/fromnumeric.py:1879
+   |  |  |  |  |  |  `- 0.001 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |- 0.006 ndarray.copy  <built-in>
+   |  |  |  |  |  |- 0.003 ndarray.astype  <built-in>
+   |  |  |  |  |  |- 0.002 ArrayEnvironment.check_cancel  gweatherrouting/core/marine/frontierrouting.py:134
+   |  |  |  |  |  `- 0.001 _column_stack_dispatcher  numpy/lib/_shape_base_impl.py:621
+   |  |  |  |  |- 0.713 [self]  gweatherrouting/core/marine/frontierrouting.py
+   |  |  |  |  |- 0.630 polar_many  gweatherrouting/core/marine/frontierrouting.py:56
+   |  |  |  |  |  |- 0.339 [self]  gweatherrouting/core/marine/frontierrouting.py
+   |  |  |  |  |  |- 0.248 searchsorted  numpy/_core/fromnumeric.py:1421
+   |  |  |  |  |  |  |- 0.246 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  `- 0.246 ndarray.searchsorted  <built-in>
+   |  |  |  |  |  |  `- 0.002 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |- 0.036 asarray  <built-in>
+   |  |  |  |  |  |- 0.004 zeros  <built-in>
+   |  |  |  |  |  |- 0.002 len  <built-in>
+   |  |  |  |  |  `- 0.001 _searchsorted_dispatcher  numpy/_core/fromnumeric.py:1417
+   |  |  |  |  |- 0.054 column_stack  numpy/lib/_shape_base_impl.py:625
+   |  |  |  |  |  |- 0.052 [self]  numpy/lib/_shape_base_impl.py
+   |  |  |  |  |  `- 0.002 array  <built-in>
+   |  |  |  |  |- 0.028 zeros  <built-in>
+   |  |  |  |  |- 0.003 _all  numpy/_core/_methods.py:64
+   |  |  |  |  |  `- 0.003 ufunc.reduce  <built-in>
+   |  |  |  |  |- 0.002 _column_stack_dispatcher  numpy/lib/_shape_base_impl.py:621
+   |  |  |  |  |  |- 0.001 _arrays_for_stack_dispatcher  numpy/_core/shape_base.py:206
+   |  |  |  |  |  `- 0.001 [self]  numpy/lib/_shape_base_impl.py
+   |  |  |  |  `- 0.002 _any  numpy/_core/_methods.py:55
+   |  |  |  |     `- 0.002 ufunc.reduce  <built-in>
+   |  |  |  |- 19.919 valid  gweatherrouting/core/marine/frontierrouting.py:225
+   |  |  |  |  |- 11.063 GSHHSVectorChart.lines_validity  gweatherrouting/gtk/charts/gshhs.py:528
+   |  |  |  |  |  |- 4.797 [self]  gweatherrouting/gtk/charts/gshhs.py
+   |  |  |  |  |  |- 2.242 PreparedGeometry.Intersects  osgeo/ogr.py:6853
+   |  |  |  |  |  |  |- 1.806 PreparedGeometry_Intersects  <built-in>
+   |  |  |  |  |  |  `- 0.435 [self]  osgeo/ogr.py
+   |  |  |  |  |  |- 2.041 Geometry.AddPoint  osgeo/ogr.py:5370
+   |  |  |  |  |  |  |- 1.121 Geometry_AddPoint  <built-in>
+   |  |  |  |  |  |  `- 0.921 [self]  osgeo/ogr.py
+   |  |  |  |  |  |- 1.726 Geometry.__init__  osgeo/ogr.py:5274
+   |  |  |  |  |  |  |- 0.840 Geometry_swiginit  <built-in>
+   |  |  |  |  |  |  |- 0.514 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  `- 0.372 new_Geometry  <built-in>
+   |  |  |  |  |  |- 0.151 flatnonzero  numpy/_core/numeric.py:679
+   |  |  |  |  |  |  |- 0.076 nonzero  numpy/_core/fromnumeric.py:1993
+   |  |  |  |  |  |  |  |- 0.068 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  |  |- 0.049 ndarray.nonzero  <built-in>
+   |  |  |  |  |  |  |  |  |- 0.014 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  `- 0.005 getattr  <built-in>
+   |  |  |  |  |  |  |  `- 0.008 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |- 0.040 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  |- 0.032 ravel  numpy/_core/fromnumeric.py:1879
+   |  |  |  |  |  |  |  |- 0.017 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |- 0.007 ndarray.ravel  <built-in>
+   |  |  |  |  |  |  |  |- 0.005 asanyarray  <built-in>
+   |  |  |  |  |  |  |  `- 0.003 isinstance  <built-in>
+   |  |  |  |  |  |  |- 0.002 _nonzero_dispatcher  numpy/_core/fromnumeric.py:1989
+   |  |  |  |  |  |  `- 0.001 _ravel_dispatcher  numpy/_core/fromnumeric.py:1875
+   |  |  |  |  |  |- 0.045 ndarray.tolist  <built-in>
+   |  |  |  |  |  |- 0.033 Geometry.GetEnvelope  osgeo/ogr.py:6511
+   |  |  |  |  |  |  |- 0.025 Geometry_GetEnvelope  <built-in>
+   |  |  |  |  |  |  `- 0.008 [self]  osgeo/ogr.py
+   |  |  |  |  |  |- 0.008 ones  numpy/_core/numeric.py:170
+   |  |  |  |  |  |  |- 0.007 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  `- 0.001 empty  <built-in>
+   |  |  |  |  |  |- 0.006 _amin  numpy/_core/_methods.py:43
+   |  |  |  |  |  |  |- 0.005 ufunc.reduce  <built-in>
+   |  |  |  |  |  |  `- 0.001 [self]  numpy/_core/_methods.py
+   |  |  |  |  |  |- 0.006 GSHHSVectorChart._routing_land  gweatherrouting/gtk/charts/gshhs.py:466
+   |  |  |  |  |  |- 0.004 _amax  numpy/_core/_methods.py:39
+   |  |  |  |  |  |  `- 0.004 ufunc.reduce  <built-in>
+   |  |  |  |  |  `- 0.004 _flatnonzero_dispatcher  numpy/_core/numeric.py:675
+   |  |  |  |  |- 8.035 GSHHSVectorChart.points_validity  gweatherrouting/gtk/charts/gshhs.py:502
+   |  |  |  |  |  |- 3.173 [self]  gweatherrouting/gtk/charts/gshhs.py
+   |  |  |  |  |  |- 1.766 Geometry.__init__  osgeo/ogr.py:5274
+   |  |  |  |  |  |  |- 0.845 Geometry_swiginit  <built-in>
+   |  |  |  |  |  |  |- 0.545 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  `- 0.375 new_Geometry  <built-in>
+   |  |  |  |  |  |- 1.549 PreparedGeometry.Contains  osgeo/ogr.py:6857
+   |  |  |  |  |  |  |- 1.116 PreparedGeometry_Contains  <built-in>
+   |  |  |  |  |  |  `- 0.433 [self]  osgeo/ogr.py
+   |  |  |  |  |  |- 0.776 Geometry.AddPoint  osgeo/ogr.py:5370
+   |  |  |  |  |  |  |- 0.422 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  `- 0.354 Geometry_AddPoint  <built-in>
+   |  |  |  |  |  |- 0.556 GSHHSVectorChart._routing_land  gweatherrouting/gtk/charts/gshhs.py:466
+   |  |  |  |  |  |  |- 0.375 Layer.__iter__  osgeo/ogr.py:1954
+   |  |  |  |  |  |  |  `- 0.375 Layer.GetNextFeature  osgeo/ogr.py:1054
+   |  |  |  |  |  |  |     |- 0.338 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  |     |- 0.036 Layer_GetNextFeature  <built-in>
+   |  |  |  |  |  |  |     `- 0.001 Feature.__setattr__  osgeo/ogr.py:3776
+   |  |  |  |  |  |  |- 0.113 GSHHSVectorChart._routing_source  gweatherrouting/gtk/charts/gshhs.py:452
+   |  |  |  |  |  |  |  |- 0.111 Geometry.IsValid  osgeo/ogr.py:6179
+   |  |  |  |  |  |  |  |  |- 0.110 Geometry_IsValid  <built-in>
+   |  |  |  |  |  |  |  |  `- 0.001 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  |  |- 0.001 Feature.GetGeometryRef  osgeo/ogr.py:2393
+   |  |  |  |  |  |  |  |  `- 0.001 Feature._add_geom_ref  osgeo/ogr.py:4051
+   |  |  |  |  |  |  |  `- 0.001 [self]  gweatherrouting/gtk/charts/gshhs.py
+   |  |  |  |  |  |  |- 0.064 Geometry.Intersection  osgeo/ogr.py:5987
+   |  |  |  |  |  |  |  |- 0.063 Geometry_Intersection  <built-in>
+   |  |  |  |  |  |  |  `- 0.001 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  |- 0.002 [self]  gweatherrouting/gtk/charts/gshhs.py
+   |  |  |  |  |  |  |- 0.002 Feature.__del__  osgeo/ogr.py:3990
+   |  |  |  |  |  |  |  `- 0.002 Feature._invalidate_geom_refs  osgeo/ogr.py:4063
+   |  |  |  |  |  |  |     `- 0.002 WeakSet.__iter__  _weakrefset.py:63
+   |  |  |  |  |  |  |        |- 0.001 _IterationGuard.__exit__  _weakrefset.py:27
+   |  |  |  |  |  |  |        |  `- 0.001 WeakSet._commit_removals  _weakrefset.py:53
+   |  |  |  |  |  |  |        `- 0.001 [self]  _weakrefset.py
+   |  |  |  |  |  |  `- 0.001 Geometry.CreatePreparedGeometry  osgeo/ogr.py:6808
+   |  |  |  |  |  |     `- 0.001 Geometry_CreatePreparedGeometry  <built-in>
+   |  |  |  |  |  |- 0.129 flatnonzero  numpy/_core/numeric.py:679
+   |  |  |  |  |  |  |- 0.045 nonzero  numpy/_core/fromnumeric.py:1993
+   |  |  |  |  |  |  |  |- 0.037 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  |  |- 0.024 ndarray.nonzero  <built-in>
+   |  |  |  |  |  |  |  |  `- 0.013 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  `- 0.008 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |- 0.042 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  |- 0.038 ravel  numpy/_core/fromnumeric.py:1879
+   |  |  |  |  |  |  |  |- 0.025 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |- 0.007 asanyarray  <built-in>
+   |  |  |  |  |  |  |  |- 0.004 ndarray.ravel  <built-in>
+   |  |  |  |  |  |  |  `- 0.002 isinstance  <built-in>
+   |  |  |  |  |  |  |- 0.002 _ravel_dispatcher  numpy/_core/fromnumeric.py:1875
+   |  |  |  |  |  |  `- 0.002 _nonzero_dispatcher  numpy/_core/fromnumeric.py:1989
+   |  |  |  |  |  |- 0.043 Geometry.GetEnvelope  osgeo/ogr.py:6511
+   |  |  |  |  |  |  |- 0.031 Geometry_GetEnvelope  <built-in>
+   |  |  |  |  |  |  `- 0.012 [self]  osgeo/ogr.py
+   |  |  |  |  |  |- 0.034 ndarray.tolist  <built-in>
+   |  |  |  |  |  |- 0.006 _flatnonzero_dispatcher  numpy/_core/numeric.py:675
+   |  |  |  |  |  |- 0.002 _amax  numpy/_core/_methods.py:39
+   |  |  |  |  |  |  `- 0.002 ufunc.reduce  <built-in>
+   |  |  |  |  |  `- 0.001 ones  numpy/_core/numeric.py:170
+   |  |  |  |  |- 0.510 [self]  gweatherrouting/core/marine/frontierrouting.py
+   |  |  |  |  |- 0.192 asarray  <built-in>
+   |  |  |  |  |- 0.115 column_stack  numpy/lib/_shape_base_impl.py:625
+   |  |  |  |  |  |- 0.114 [self]  numpy/lib/_shape_base_impl.py
+   |  |  |  |  |  `- 0.001 list.append  <built-in>
+   |  |  |  |  |- 0.003 _column_stack_dispatcher  numpy/lib/_shape_base_impl.py:621
+   |  |  |  |  |  `- 0.003 _arrays_for_stack_dispatcher  numpy/_core/shape_base.py:206
+   |  |  |  |  |     |- 0.002 hasattr  <built-in>
+   |  |  |  |  |     `- 0.001 [self]  numpy/_core/shape_base.py
+   |  |  |  |  `- 0.001 ones  numpy/_core/numeric.py:170
+   |  |  |  |- 12.884 ArrayEnvironment.sample  gweatherrouting/core/marine/frontierrouting.py:138
+   |  |  |  |  |- 11.858 FieldSelection.sample_arrays  gweatherrouting/core/marine/fields.py:452
+   |  |  |  |  |  |- 7.278 FieldSelection._resolve_missing  gweatherrouting/core/marine/fields.py:431
+   |  |  |  |  |  |  |- 7.274 FieldSelection._nearest  gweatherrouting/core/marine/fields.py:406
+   |  |  |  |  |  |  |  |- 7.230 CurrentField.sample_nearest  gweatherrouting/core/marine/fields.py:233
+   |  |  |  |  |  |  |  |  |- 4.573 CurrentIsoRouter.valid_current_neighbor  gweatherrouting/core/marine/routing.py:389
+   |  |  |  |  |  |  |  |  |  |- 4.567 CurrentIsoRouter.valid  gweatherrouting/core/marine/routing.py:392
+   |  |  |  |  |  |  |  |  |  |  |- 2.267 GSHHSVectorChart.points_validity  gweatherrouting/gtk/charts/gshhs.py:502
+   |  |  |  |  |  |  |  |  |  |  |  |- 1.193 [self]  gweatherrouting/gtk/charts/gshhs.py
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.534 flatnonzero  numpy/_core/numeric.py:679
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.197 nonzero  numpy/_core/fromnumeric.py:1993
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.138 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.056 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.054 ndarray.nonzero  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.028 getattr  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.059 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.154 ravel  numpy/_core/fromnumeric.py:1879
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.096 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.025 ndarray.ravel  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.017 isinstance  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.016 asanyarray  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.154 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.015 _ravel_dispatcher  numpy/_core/fromnumeric.py:1875
+   |  |  |  |  |  |  |  |  |  |  |  |  `- 0.014 _nonzero_dispatcher  numpy/_core/fromnumeric.py:1989
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.163 GSHHSVectorChart._routing_land  gweatherrouting/gtk/charts/gshhs.py:466
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.072 Layer.__iter__  osgeo/ogr.py:1954
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.072 Layer.GetNextFeature  osgeo/ogr.py:1054
+   |  |  |  |  |  |  |  |  |  |  |  |  |     |- 0.069 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |     `- 0.003 Layer_GetNextFeature  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.034 [self]  gweatherrouting/gtk/charts/gshhs.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.034 GSHHSVectorChart._routing_source  gweatherrouting/gtk/charts/gshhs.py:452
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.034 Geometry.IsValid  osgeo/ogr.py:6179
+   |  |  |  |  |  |  |  |  |  |  |  |  |     `- 0.034 Geometry_IsValid  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.009 floor  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.005 ceil  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.004 Geometry.Intersection  osgeo/ogr.py:5987
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.004 Geometry_Intersection  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.002 hasattr  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.002 OrderedDict.move_to_end  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.001 CreateGeometryFromWkt  osgeo/ogr.py:5185
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.001 CreateGeometryFromWkt  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  `- 0.001 Dataset.GetLayerByIndex  osgeo/gdal.py:6181
+   |  |  |  |  |  |  |  |  |  |  |  |     `- 0.001 Dataset._add_child_ref  osgeo/gdal.py:7054
+   |  |  |  |  |  |  |  |  |  |  |  |        `- 0.001 WeakSet.add  _weakrefset.py:85
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.121 Geometry.GetEnvelope  osgeo/ogr.py:6511
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.067 Geometry_GetEnvelope  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  `- 0.054 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.058 _amax  numpy/_core/_methods.py:39
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.045 ufunc.reduce  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  `- 0.013 [self]  numpy/_core/_methods.py
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.055 _amin  numpy/_core/_methods.py:43
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.046 ufunc.reduce  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  `- 0.009 [self]  numpy/_core/_methods.py
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.032 PreparedGeometry.Contains  osgeo/ogr.py:6857
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.027 PreparedGeometry_Contains  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  `- 0.005 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.028 Geometry.__init__  osgeo/ogr.py:5274
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.012 Geometry_swiginit  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.009 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  |  |  |  |  |  |  `- 0.007 new_Geometry  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.025 ones  numpy/_core/numeric.py:170
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.022 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  |  |  |  |  |  |  `- 0.003 empty  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.018 _flatnonzero_dispatcher  numpy/_core/numeric.py:675
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.015 Geometry.AddPoint  osgeo/ogr.py:5370
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.010 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  |  |  |  |  |  |  `- 0.005 Geometry_AddPoint  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.013 asarray  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.005 ndarray.min  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.003 ndarray.max  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.002 len  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  `- 0.001 ndarray.tolist  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |- 2.241 GSHHSVectorChart.lines_validity  gweatherrouting/gtk/charts/gshhs.py:528
+   |  |  |  |  |  |  |  |  |  |  |  |- 1.229 [self]  gweatherrouting/gtk/charts/gshhs.py
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.561 flatnonzero  numpy/_core/numeric.py:679
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.198 nonzero  numpy/_core/fromnumeric.py:1993
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.152 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.074 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.057 ndarray.nonzero  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.021 getattr  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.046 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.175 ravel  numpy/_core/fromnumeric.py:1879
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.110 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.034 ndarray.ravel  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  |- 0.017 isinstance  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |  `- 0.014 asanyarray  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.152 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.019 _nonzero_dispatcher  numpy/_core/fromnumeric.py:1989
+   |  |  |  |  |  |  |  |  |  |  |  |  `- 0.017 _ravel_dispatcher  numpy/_core/fromnumeric.py:1875
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.106 Geometry.GetEnvelope  osgeo/ogr.py:6511
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.059 Geometry_GetEnvelope  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  `- 0.047 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.063 _amin  numpy/_core/_methods.py:43
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.051 ufunc.reduce  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  `- 0.012 [self]  numpy/_core/_methods.py
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.058 PreparedGeometry.Intersects  osgeo/ogr.py:6853
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.054 PreparedGeometry_Intersects  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  `- 0.004 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.056 GSHHSVectorChart._routing_land  gweatherrouting/gtk/charts/gshhs.py:466
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.037 [self]  gweatherrouting/gtk/charts/gshhs.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.009 ceil  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.006 floor  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.002 OrderedDict.move_to_end  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  `- 0.002 hasattr  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.039 Geometry.AddPoint  osgeo/ogr.py:5370
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.023 Geometry_AddPoint  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  `- 0.016 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.038 _amax  numpy/_core/_methods.py:39
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.031 ufunc.reduce  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  `- 0.007 [self]  numpy/_core/_methods.py
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.026 Geometry.__init__  osgeo/ogr.py:5274
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.012 Geometry_swiginit  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.008 new_Geometry  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  `- 0.006 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.025 ones  numpy/_core/numeric.py:170
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.017 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  |  |  |  |  |  |  |- 0.006 empty  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |  `- 0.002 copyto  numpy/_core/multiarray.py:1085
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.019 _flatnonzero_dispatcher  numpy/_core/numeric.py:675
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.012 asarray  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.004 ndarray.tolist  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.002 ndarray.min  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.001 len  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  `- 0.001 ndarray.max  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |- 0.057 [self]  gweatherrouting/core/marine/routing.py
+   |  |  |  |  |  |  |  |  |  |  `- 0.003 all  <built-in>
+   |  |  |  |  |  |  |  |  |  `- 0.006 [self]  gweatherrouting/core/marine/routing.py
+   |  |  |  |  |  |  |  |  |- 1.361 CurrentField.manifest  gweatherrouting/core/marine/fields.py:156
+   |  |  |  |  |  |  |  |  |  |- 1.217 loads  json/__init__.py:299
+   |  |  |  |  |  |  |  |  |  |  |- 1.193 JSONDecoder.decode  json/decoder.py:332
+   |  |  |  |  |  |  |  |  |  |  |  |- 1.152 JSONDecoder.raw_decode  json/decoder.py:343
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.025 [self]  json/decoder.py
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.010 Pattern.match  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.004 len  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  `- 0.002 Match.end  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |- 0.018 [self]  json/__init__.py
+   |  |  |  |  |  |  |  |  |  |  |- 0.004 str.startswith  <built-in>
+   |  |  |  |  |  |  |  |  |  |  `- 0.002 isinstance  <built-in>
+   |  |  |  |  |  |  |  |  |  |- 0.068 datetime.isoformat  <built-in>
+   |  |  |  |  |  |  |  |  |  |- 0.051 [self]  gweatherrouting/core/marine/fields.py
+   |  |  |  |  |  |  |  |  |  `- 0.025 datetime.fromtimestamp  <built-in>
+   |  |  |  |  |  |  |  |  |- 0.571 [self]  gweatherrouting/core/marine/fields.py
+   |  |  |  |  |  |  |  |  |- 0.104 _all  numpy/_core/_methods.py:64
+   |  |  |  |  |  |  |  |  |  |- 0.082 ufunc.reduce  <built-in>
+   |  |  |  |  |  |  |  |  |  `- 0.022 [self]  numpy/_core/_methods.py
+   |  |  |  |  |  |  |  |  |- 0.103 utc_time  gweatherrouting/core/marine/models.py:20
+   |  |  |  |  |  |  |  |  |  |- 0.064 [self]  gweatherrouting/core/marine/models.py
+   |  |  |  |  |  |  |  |  |  |- 0.023 isinstance  <built-in>
+   |  |  |  |  |  |  |  |  |  `- 0.016 datetime.astimezone  <built-in>
+   |  |  |  |  |  |  |  |  |- 0.095 <genexpr>  gweatherrouting/core/marine/fields.py:243
+   |  |  |  |  |  |  |  |  |- 0.094 canonical_json  gweatherrouting/core/marine/models.py:28
+   |  |  |  |  |  |  |  |  |  |- 0.088 dumps  json/__init__.py:183
+   |  |  |  |  |  |  |  |  |  |  |- 0.065 JSONEncoder.encode  json/encoder.py:183
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.052 JSONEncoder.iterencode  json/encoder.py:205
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.010 [self]  json/encoder.py
+   |  |  |  |  |  |  |  |  |  |  |  |- 0.002 str.join  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |  `- 0.001 isinstance  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |- 0.015 [self]  json/__init__.py
+   |  |  |  |  |  |  |  |  |  |  `- 0.008 JSONEncoder.__init__  json/encoder.py:105
+   |  |  |  |  |  |  |  |  |  `- 0.006 [self]  gweatherrouting/core/marine/models.py
+   |  |  |  |  |  |  |  |  |- 0.088 Geod.__init__  pyproj/geod.py:143
+   |  |  |  |  |  |  |  |  |  |- 0.059 [self]  pyproj/geod.py
+   |  |  |  |  |  |  |  |  |  |- 0.022 _params_from_ellps_map  pyproj/geod.py:35
+   |  |  |  |  |  |  |  |  |  |  |- 0.011 _params_from_kwargs  pyproj/geod.py:59
+   |  |  |  |  |  |  |  |  |  |  `- 0.011 [self]  pyproj/geod.py
+   |  |  |  |  |  |  |  |  |  |- 0.004 fabs  <built-in>
+   |  |  |  |  |  |  |  |  |  `- 0.003 dict.items  <built-in>
+   |  |  |  |  |  |  |  |  |- 0.080 searchsorted  numpy/_core/fromnumeric.py:1421
+   |  |  |  |  |  |  |  |  |  |- 0.065 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  |  |  |  |- 0.037 ndarray.searchsorted  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |- 0.020 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  |  |  `- 0.008 getattr  <built-in>
+   |  |  |  |  |  |  |  |  |  `- 0.015 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  |- 0.047 array  <built-in>
+   |  |  |  |  |  |  |  |  |- 0.038 datetime.timestamp  <built-in>
+   |  |  |  |  |  |  |  |  |- 0.026 Geod.inv  pyproj/geod.py:331
+   |  |  |  |  |  |  |  |  |- 0.014 sorted  <built-in>
+   |  |  |  |  |  |  |  |  |- 0.012 any  <built-in>
+   |  |  |  |  |  |  |  |  |- 0.009 QueryResult.__init__  <string>:2
+   |  |  |  |  |  |  |  |  |- 0.006 ndarray.all  <built-in>
+   |  |  |  |  |  |  |  |  |- 0.004 _searchsorted_dispatcher  numpy/_core/fromnumeric.py:1417
+   |  |  |  |  |  |  |  |  |- 0.004 list.append  <built-in>
+   |  |  |  |  |  |  |  |  `- 0.001 <lambda>  gweatherrouting/core/marine/fields.py:272
+   |  |  |  |  |  |  |  `- 0.044 [self]  gweatherrouting/core/marine/fields.py
+   |  |  |  |  |  |  `- 0.004 [self]  gweatherrouting/core/marine/fields.py
+   |  |  |  |  |  |- 2.700 CurrentField.sample_arrays  gweatherrouting/core/marine/fields.py:310
+   |  |  |  |  |  |  |- 2.201 [self]  gweatherrouting/core/marine/fields.py
+   |  |  |  |  |  |  |- 0.268 full  numpy/_core/numeric.py:323
+   |  |  |  |  |  |  |  |- 0.247 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  |  `- 0.021 empty  <built-in>
+   |  |  |  |  |  |  |- 0.182 searchsorted  numpy/_core/fromnumeric.py:1421
+   |  |  |  |  |  |  |  |- 0.174 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  |  |- 0.165 ndarray.searchsorted  <built-in>
+   |  |  |  |  |  |  |  |  |- 0.005 getattr  <built-in>
+   |  |  |  |  |  |  |  |  `- 0.003 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  `- 0.008 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |- 0.019 flatnonzero  numpy/_core/numeric.py:679
+   |  |  |  |  |  |  |  |- 0.009 nonzero  numpy/_core/fromnumeric.py:1993
+   |  |  |  |  |  |  |  |  `- 0.009 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  |     |- 0.007 ndarray.nonzero  <built-in>
+   |  |  |  |  |  |  |  |     `- 0.002 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |- 0.006 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  |  `- 0.004 ravel  numpy/_core/fromnumeric.py:1879
+   |  |  |  |  |  |  |     |- 0.003 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |     `- 0.001 ndarray.ravel  <built-in>
+   |  |  |  |  |  |  |- 0.018 zeros  <built-in>
+   |  |  |  |  |  |  |- 0.007 len  <built-in>
+   |  |  |  |  |  |  |- 0.003 list.append  <built-in>
+   |  |  |  |  |  |  |- 0.001 _flatnonzero_dispatcher  numpy/_core/numeric.py:675
+   |  |  |  |  |  |  `- 0.001 _searchsorted_dispatcher  numpy/_core/fromnumeric.py:1417
+   |  |  |  |  |  |- 1.463 [self]  gweatherrouting/core/marine/fields.py
+   |  |  |  |  |  |- 0.350 full  numpy/_core/numeric.py:323
+   |  |  |  |  |  |  |- 0.334 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  |- 0.015 empty  <built-in>
+   |  |  |  |  |  |  `- 0.001 copyto  numpy/_core/multiarray.py:1085
+   |  |  |  |  |  |- 0.023 CurrentSamples.query  gweatherrouting/core/marine/fields.py:386
+   |  |  |  |  |  |  |- 0.011 field_query  gweatherrouting/core/marine/fields.py:357
+   |  |  |  |  |  |  |  |- 0.007 QueryResult.__init__  <string>:2
+   |  |  |  |  |  |  |  `- 0.004 [self]  gweatherrouting/core/marine/fields.py
+   |  |  |  |  |  |  |- 0.007 [self]  gweatherrouting/core/marine/fields.py
+   |  |  |  |  |  |  `- 0.005 CurrentSamples.identifier  gweatherrouting/core/marine/fields.py:380
+   |  |  |  |  |  |- 0.020 ArrayEnvironment.check_cancel  gweatherrouting/core/marine/frontierrouting.py:134
+   |  |  |  |  |  |  |- 0.016 [self]  gweatherrouting/core/marine/frontierrouting.py
+   |  |  |  |  |  |  `- 0.004 Event.is_set  threading.py:575
+   |  |  |  |  |  |- 0.008 zeros  <built-in>
+   |  |  |  |  |  |- 0.007 datetime.fromtimestamp  <built-in>
+   |  |  |  |  |  |- 0.005 len  <built-in>
+   |  |  |  |  |  `- 0.003 arange  <built-in>
+   |  |  |  |  |- 0.660 ArrayWind.query_us  gweatherrouting/core/marine/batchwind.py:39
+   |  |  |  |  |  |- 0.469 [self]  gweatherrouting/core/marine/batchwind.py
+   |  |  |  |  |  |- 0.059 unique  numpy/lib/_arraysetops_impl.py:145
+   |  |  |  |  |  |  |- 0.058 _unique1d  numpy/lib/_arraysetops_impl.py:350
+   |  |  |  |  |  |  |  |- 0.025 ndarray.argsort  <built-in>
+   |  |  |  |  |  |  |  |- 0.017 [self]  numpy/lib/_arraysetops_impl.py
+   |  |  |  |  |  |  |  |- 0.013 cumsum  numpy/_core/fromnumeric.py:2838
+   |  |  |  |  |  |  |  |  `- 0.013 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  |     |- 0.012 ndarray.cumsum  <built-in>
+   |  |  |  |  |  |  |  |     `- 0.001 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |- 0.001 ndarray.reshape  <built-in>
+   |  |  |  |  |  |  |  |- 0.001 ndarray.flatten  <built-in>
+   |  |  |  |  |  |  |  `- 0.001 empty  <built-in>
+   |  |  |  |  |  |  `- 0.001 [self]  numpy/lib/_arraysetops_impl.py
+   |  |  |  |  |  |- 0.043 full  numpy/_core/numeric.py:323
+   |  |  |  |  |  |  |- 0.030 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  `- 0.013 empty  <built-in>
+   |  |  |  |  |  |- 0.036 searchsorted  numpy/_core/fromnumeric.py:1421
+   |  |  |  |  |  |  |- 0.035 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  `- 0.035 ndarray.searchsorted  <built-in>
+   |  |  |  |  |  |  `- 0.001 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |- 0.014 flatnonzero  numpy/_core/numeric.py:679
+   |  |  |  |  |  |  |- 0.009 nonzero  numpy/_core/fromnumeric.py:1993
+   |  |  |  |  |  |  |  `- 0.009 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |     `- 0.009 ndarray.nonzero  <built-in>
+   |  |  |  |  |  |  |- 0.004 ravel  numpy/_core/fromnumeric.py:1879
+   |  |  |  |  |  |  |  |- 0.002 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  `- 0.002 ndarray.ravel  <built-in>
+   |  |  |  |  |  |  `- 0.001 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |- 0.013 clip  numpy/_core/fromnumeric.py:2207
+   |  |  |  |  |  |  |- 0.012 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  `- 0.012 _clip  numpy/_core/_methods.py:96
+   |  |  |  |  |  |  |     |- 0.010 [self]  numpy/_core/_methods.py
+   |  |  |  |  |  |  |     `- 0.002 iinfo.__init__  numpy/_core/getlimits.py:412
+   |  |  |  |  |  |  `- 0.001 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |- 0.009 ndarray.astype  <built-in>
+   |  |  |  |  |  |- 0.004 FractionalRoutingGrib._get_wind_data  gweatherrouting/core/marine/routing.py:275
+   |  |  |  |  |  |- 0.003 _amax  numpy/_core/_methods.py:39
+   |  |  |  |  |  |  `- 0.003 ufunc.reduce  <built-in>
+   |  |  |  |  |  |- 0.003 _amin  numpy/_core/_methods.py:43
+   |  |  |  |  |  |  `- 0.003 ufunc.reduce  <built-in>
+   |  |  |  |  |  |- 0.002 _any  numpy/_core/_methods.py:55
+   |  |  |  |  |  |  `- 0.002 ufunc.reduce  <built-in>
+   |  |  |  |  |  |- 0.002 FractionalRoutingGrib.__getattr__  gweatherrouting/core/marine/routing.py:263
+   |  |  |  |  |  |- 0.001 asarray  <built-in>
+   |  |  |  |  |  |- 0.001 len  <built-in>
+   |  |  |  |  |  |- 0.001 set.add  <built-in>
+   |  |  |  |  |  `- 0.001 _flatnonzero_dispatcher  numpy/_core/numeric.py:675
+   |  |  |  |  |- 0.279 [self]  gweatherrouting/core/marine/frontierrouting.py
+   |  |  |  |  |- 0.036 full  numpy/_core/numeric.py:323
+   |  |  |  |  |  |- 0.020 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  `- 0.015 empty  <built-in>
+   |  |  |  |  |- 0.015 _all  numpy/_core/_methods.py:64
+   |  |  |  |  |  `- 0.015 ufunc.reduce  <built-in>
+   |  |  |  |  |- 0.014 column_stack  numpy/lib/_shape_base_impl.py:625
+   |  |  |  |  |  |- 0.013 [self]  numpy/lib/_shape_base_impl.py
+   |  |  |  |  |  `- 0.001 array  <built-in>
+   |  |  |  |  |- 0.005 flatnonzero  numpy/_core/numeric.py:679
+   |  |  |  |  |  |- 0.004 nonzero  numpy/_core/fromnumeric.py:1993
+   |  |  |  |  |  |  `- 0.004 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |     `- 0.004 ndarray.nonzero  <built-in>
+   |  |  |  |  |  `- 0.001 ravel  numpy/_core/fromnumeric.py:1879
+   |  |  |  |  |- 0.005 ndarray.copy  <built-in>
+   |  |  |  |  |- 0.004 zeros  <built-in>
+   |  |  |  |  |- 0.004 ndarray.astype  <built-in>
+   |  |  |  |  |- 0.002 ArrayEnvironment.check_cancel  gweatherrouting/core/marine/frontierrouting.py:134
+   |  |  |  |  |- 0.001 ndarray.all  <built-in>
+   |  |  |  |  `- 0.001 len  <built-in>
+   |  |  |  |- 4.614 distances  gweatherrouting/core/marine/batchrouting.py:23
+   |  |  |  |  |- 4.606 Geod.inv  pyproj/geod.py:331
+   |  |  |  |  |  |- 4.589 [self]  pyproj/geod.py
+   |  |  |  |  |  `- 0.017 _copytobuffer  pyproj/utils.py:89
+   |  |  |  |  |     |- 0.010 ndarray.astype  <built-in>
+   |  |  |  |  |     |- 0.004 [self]  pyproj/utils.py
+   |  |  |  |  |     `- 0.003 hasattr  <built-in>
+   |  |  |  |  `- 0.008 full  numpy/_core/numeric.py:323
+   |  |  |  |     |- 0.005 [self]  numpy/_core/numeric.py
+   |  |  |  |     |- 0.002 asarray  <built-in>
+   |  |  |  |     `- 0.001 empty  <built-in>
+   |  |  |  |- 3.240 move_many  gweatherrouting/core/marine/batchrouting.py:13
+   |  |  |  |  |- 3.131 Geod.fwd  pyproj/geod.py:239
+   |  |  |  |  |  |- 3.110 [self]  pyproj/geod.py
+   |  |  |  |  |  |- 0.020 _copytobuffer  pyproj/utils.py:89
+   |  |  |  |  |  |  |- 0.011 ndarray.astype  <built-in>
+   |  |  |  |  |  |  |- 0.008 [self]  pyproj/utils.py
+   |  |  |  |  |  |  `- 0.001 hasattr  <built-in>
+   |  |  |  |  |  `- 0.001 _convertback  pyproj/utils.py:146
+   |  |  |  |  |- 0.109 [self]  gweatherrouting/core/marine/batchrouting.py
+   |  |  |  |  `- 0.001 column_stack  numpy/lib/_shape_base_impl.py:625
+   |  |  |  |- 2.523 CurrentIsoRouter.headings  gweatherrouting/core/marine/routing.py:473
+   |  |  |  |  |- 1.371 CurrentRoutingEnvironment.sample  gweatherrouting/core/marine/routing.py:148
+   |  |  |  |  |  |- 1.328 CurrentRoutingEnvironment._sample  gweatherrouting/core/marine/routing.py:159
+   |  |  |  |  |  |  |- 1.055 FieldSelection.sample  gweatherrouting/core/marine/fields.py:418
+   |  |  |  |  |  |  |  |- 0.889 CurrentField.sample  gweatherrouting/core/marine/fields.py:189
+   |  |  |  |  |  |  |  |  |- 0.461 [self]  gweatherrouting/core/marine/fields.py
+   |  |  |  |  |  |  |  |  |- 0.174 utc_time  gweatherrouting/core/marine/models.py:20
+   |  |  |  |  |  |  |  |  |  |- 0.119 [self]  gweatherrouting/core/marine/models.py
+   |  |  |  |  |  |  |  |  |  |- 0.029 isinstance  <built-in>
+   |  |  |  |  |  |  |  |  |  `- 0.026 datetime.astimezone  <built-in>
+   |  |  |  |  |  |  |  |  |- 0.135 QueryResult.__init__  <string>:2
+   |  |  |  |  |  |  |  |  |- 0.052 searchsorted  numpy/_core/fromnumeric.py:1421
+   |  |  |  |  |  |  |  |  |  |- 0.040 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  |  |  |  |- 0.027 ndarray.searchsorted  <built-in>
+   |  |  |  |  |  |  |  |  |  |  |- 0.010 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  |  |  `- 0.003 getattr  <built-in>
+   |  |  |  |  |  |  |  |  |  `- 0.012 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |  |- 0.046 datetime.timestamp  <built-in>
+   |  |  |  |  |  |  |  |  |- 0.011 isfinite  <built-in>
+   |  |  |  |  |  |  |  |  |- 0.006 _searchsorted_dispatcher  numpy/_core/fromnumeric.py:1417
+   |  |  |  |  |  |  |  |  `- 0.003 list.append  <built-in>
+   |  |  |  |  |  |  |  |- 0.095 FieldSelection._resolve_missing  gweatherrouting/core/marine/fields.py:431
+   |  |  |  |  |  |  |  |  `- 0.095 FieldSelection._nearest  gweatherrouting/core/marine/fields.py:406
+   |  |  |  |  |  |  |  |     |- 0.094 CurrentField.sample_nearest  gweatherrouting/core/marine/fields.py:233
+   |  |  |  |  |  |  |  |     |  |- 0.056 CurrentIsoRouter.valid_current_neighbor  gweatherrouting/core/marine/routing.py:389
+   |  |  |  |  |  |  |  |     |  |  `- 0.056 CurrentIsoRouter.valid  gweatherrouting/core/marine/routing.py:392
+   |  |  |  |  |  |  |  |     |  |     |- 0.032 GSHHSVectorChart.points_validity  gweatherrouting/gtk/charts/gshhs.py:502
+   |  |  |  |  |  |  |  |     |  |     |  |- 0.018 [self]  gweatherrouting/gtk/charts/gshhs.py
+   |  |  |  |  |  |  |  |     |  |     |  |- 0.009 flatnonzero  numpy/_core/numeric.py:679
+   |  |  |  |  |  |  |  |     |  |     |  |  |- 0.004 ravel  numpy/_core/fromnumeric.py:1879
+   |  |  |  |  |  |  |  |     |  |     |  |  |  |- 0.002 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |     |  |     |  |  |  `- 0.002 ndarray.ravel  <built-in>
+   |  |  |  |  |  |  |  |     |  |     |  |  |- 0.003 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  |  |     |  |     |  |  `- 0.002 nonzero  numpy/_core/fromnumeric.py:1993
+   |  |  |  |  |  |  |  |     |  |     |  |     `- 0.002 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  |     |  |     |  |        |- 0.001 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  |  |     |  |     |  |        `- 0.001 ndarray.nonzero  <built-in>
+   |  |  |  |  |  |  |  |     |  |     |  |- 0.003 Geometry.GetEnvelope  osgeo/ogr.py:6511
+   |  |  |  |  |  |  |  |     |  |     |  |  |- 0.002 Geometry_GetEnvelope  <built-in>
+   |  |  |  |  |  |  |  |     |  |     |  |  `- 0.001 [self]  osgeo/ogr.py
+   |  |  |  |  |  |  |  |     |  |     |  |- 0.001 Geometry.AddPoint  osgeo/ogr.py:5370
+   |  |  |  |  |  |  |  |     |  |     |  |  `- 0.001 Geometry_AddPoint  <built-in>
+   |  |  |  |  |  |  |  |     |  |     |  `- 0.001 _flatnonzero_dispatcher  numpy/_core/numeric.py:675
+   |  |  |  |  |  |  |  |     |  |     `- 0.024 GSHHSVectorChart.lines_validity  gweatherrouting/gtk/charts/gshhs.py:528
+   |  |  |  |  |  |  |  |     |  |        |- 0.015 [self]  gweatherrouting/gtk/charts/gshhs.py
+   |  |  |  |  |  |  |  |     |  |        |- 0.005 flatnonzero  numpy/_core/numeric.py:679
+   |  |  |  |  |  |  |  |     |  |        |  |- 0.003 [self]  numpy/_core/numeric.py
+   |  |  |  |  |  |  |  |     |  |        |  |- 0.001 ravel  numpy/_core/fromnumeric.py:1879
+   |  |  |  |  |  |  |  |     |  |        |  `- 0.001 nonzero  numpy/_core/fromnumeric.py:1993
+   |  |  |  |  |  |  |  |     |  |        |     `- 0.001 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  |     |  |        |- 0.001 PreparedGeometry.Intersects  osgeo/ogr.py:6853
+   |  |  |  |  |  |  |  |     |  |        |  `- 0.001 PreparedGeometry_Intersects  <built-in>
+   |  |  |  |  |  |  |  |     |  |        |- 0.001 asarray  <built-in>
+   |  |  |  |  |  |  |  |     |  |        |- 0.001 Geometry.__init__  osgeo/ogr.py:5274
+   |  |  |  |  |  |  |  |     |  |        |  `- 0.001 new_Geometry  <built-in>
+   |  |  |  |  |  |  |  |     |  |        `- 0.001 GSHHSVectorChart._routing_land  gweatherrouting/gtk/charts/gshhs.py:466
+   |  |  |  |  |  |  |  |     |  |- 0.019 CurrentField.manifest  gweatherrouting/core/marine/fields.py:156
+   |  |  |  |  |  |  |  |     |  |  |- 0.017 loads  json/__init__.py:299
+   |  |  |  |  |  |  |  |     |  |  |  `- 0.017 JSONDecoder.decode  json/decoder.py:332
+   |  |  |  |  |  |  |  |     |  |  |     |- 0.016 JSONDecoder.raw_decode  json/decoder.py:343
+   |  |  |  |  |  |  |  |     |  |  |     `- 0.001 [self]  json/decoder.py
+   |  |  |  |  |  |  |  |     |  |  `- 0.002 datetime.fromtimestamp  <built-in>
+   |  |  |  |  |  |  |  |     |  |- 0.007 [self]  gweatherrouting/core/marine/fields.py
+   |  |  |  |  |  |  |  |     |  |- 0.003 utc_time  gweatherrouting/core/marine/models.py:20
+   |  |  |  |  |  |  |  |     |  |  |- 0.002 [self]  gweatherrouting/core/marine/models.py
+   |  |  |  |  |  |  |  |     |  |  `- 0.001 datetime.astimezone  <built-in>
+   |  |  |  |  |  |  |  |     |  |- 0.002 canonical_json  gweatherrouting/core/marine/models.py:28
+   |  |  |  |  |  |  |  |     |  |  |- 0.001 [self]  gweatherrouting/core/marine/models.py
+   |  |  |  |  |  |  |  |     |  |  `- 0.001 dumps  json/__init__.py:183
+   |  |  |  |  |  |  |  |     |  |- 0.002 searchsorted  numpy/_core/fromnumeric.py:1421
+   |  |  |  |  |  |  |  |     |  |  `- 0.002 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  |     |  |     `- 0.002 ndarray.searchsorted  <built-in>
+   |  |  |  |  |  |  |  |     |  |- 0.002 <genexpr>  gweatherrouting/core/marine/fields.py:243
+   |  |  |  |  |  |  |  |     |  |- 0.002 Geod.__init__  pyproj/geod.py:143
+   |  |  |  |  |  |  |  |     |  `- 0.001 _all  numpy/_core/_methods.py:64
+   |  |  |  |  |  |  |  |     |     `- 0.001 ufunc.reduce  <built-in>
+   |  |  |  |  |  |  |  |     `- 0.001 [self]  gweatherrouting/core/marine/fields.py
+   |  |  |  |  |  |  |  |- 0.070 [self]  gweatherrouting/core/marine/fields.py
+   |  |  |  |  |  |  |  `- 0.001 set.add  <built-in>
+   |  |  |  |  |  |  |- 0.257 CurrentRoutingEnvironment._wind_sample  gweatherrouting/core/marine/routing.py:193
+   |  |  |  |  |  |  |  |- 0.187 FrozenRoutingWind.get_wind_at  gweatherrouting/core/marine/routing.py:336
+   |  |  |  |  |  |  |  |  |- 0.147 FractionalRoutingGrib.get_wind_at  gweatherrouting/core/marine/routing.py:278
+   |  |  |  |  |  |  |  |  |  |- 0.049 FractionalRoutingGrib._get_wind_data  gweatherrouting/core/marine/routing.py:275
+   |  |  |  |  |  |  |  |  |  |  |- 0.036 [self]  gweatherrouting/core/marine/routing.py
+   |  |  |  |  |  |  |  |  |  |  `- 0.013 <genexpr>  gweatherrouting/core/marine/routing.py:276
+   |  |  |  |  |  |  |  |  |  |- 0.042 [self]  gweatherrouting/core/marine/routing.py
+   |  |  |  |  |  |  |  |  |  |- 0.036 FractionalRoutingGrib._find_bracketing_hours  gweatherrouting/core/grib.py:170
+   |  |  |  |  |  |  |  |  |  |  |- 0.035 [self]  gweatherrouting/core/grib.py
+   |  |  |  |  |  |  |  |  |  |  `- 0.001 len  <built-in>
+   |  |  |  |  |  |  |  |  |  |- 0.009 FractionalRoutingGrib._transform_time  gweatherrouting/core/marine/routing.py:266
+   |  |  |  |  |  |  |  |  |  |  |- 0.006 [self]  gweatherrouting/core/marine/routing.py
+   |  |  |  |  |  |  |  |  |  |  `- 0.003 datetime.timestamp  <built-in>
+   |  |  |  |  |  |  |  |  |  |- 0.003 atan2  <built-in>
+   |  |  |  |  |  |  |  |  |  |- 0.003 floor  <built-in>
+   |  |  |  |  |  |  |  |  |  |- 0.002 ceil  <built-in>
+   |  |  |  |  |  |  |  |  |  |- 0.002 degrees  <built-in>
+   |  |  |  |  |  |  |  |  |  `- 0.001 sqrt  <built-in>
+   |  |  |  |  |  |  |  |  |- 0.032 [self]  gweatherrouting/core/marine/routing.py
+   |  |  |  |  |  |  |  |  `- 0.008 FractionalRoutingGrib.__getattr__  gweatherrouting/core/marine/routing.py:263
+   |  |  |  |  |  |  |  |     |- 0.007 [self]  gweatherrouting/core/marine/routing.py
+   |  |  |  |  |  |  |  |     `- 0.001 getattr  <built-in>
+   |  |  |  |  |  |  |  |- 0.035 [self]  gweatherrouting/core/marine/routing.py
+   |  |  |  |  |  |  |  |- 0.015 datetime.isoformat  <built-in>
+   |  |  |  |  |  |  |  |- 0.006 routing_utc  gweatherrouting/core/marine/routing.py:32
+   |  |  |  |  |  |  |  |  |- 0.004 [self]  gweatherrouting/core/marine/routing.py
+   |  |  |  |  |  |  |  |  `- 0.002 datetime.astimezone  <built-in>
+   |  |  |  |  |  |  |  |- 0.004 <genexpr>  gweatherrouting/core/marine/routing.py:199
+   |  |  |  |  |  |  |  |  |- 0.003 [self]  gweatherrouting/core/marine/routing.py
+   |  |  |  |  |  |  |  |  `- 0.001 isfinite  <built-in>
+   |  |  |  |  |  |  |  |- 0.003 hypot  <built-in>
+   |  |  |  |  |  |  |  |- 0.002 radians  <built-in>
+   |  |  |  |  |  |  |  |- 0.002 all  <built-in>
+   |  |  |  |  |  |  |  |- 0.002 sin  <built-in>
+   |  |  |  |  |  |  |  `- 0.001 atan2  <built-in>
+   |  |  |  |  |  |  |- 0.010 [self]  gweatherrouting/core/marine/routing.py
+   |  |  |  |  |  |  `- 0.005 routing_utc  gweatherrouting/core/marine/routing.py:32
+   |  |  |  |  |  |     |- 0.003 [self]  gweatherrouting/core/marine/routing.py
+   |  |  |  |  |  |     `- 0.002 datetime.astimezone  <built-in>
+   |  |  |  |  |  |- 0.024 [self]  gweatherrouting/core/marine/routing.py
+   |  |  |  |  |  |- 0.018 CurrentRoutingEnvironment._cache_sample  gweatherrouting/core/marine/routing.py:163
+   |  |  |  |  |  |  |- 0.011 [self]  gweatherrouting/core/marine/routing.py
+   |  |  |  |  |  |  |- 0.005 OrderedDict.popitem  <built-in>
+   |  |  |  |  |  |  |- 0.001 OrderedDict.move_to_end  <built-in>
+   |  |  |  |  |  |  `- 0.001 len  <built-in>
+   |  |  |  |  |  `- 0.001 OrderedDict.move_to_end  <built-in>
+   |  |  |  |  |- 0.830 Polar.get_speed  weatherrouting/polar.py:77
+   |  |  |  |  |  |- 0.813 [self]  weatherrouting/polar.py
+   |  |  |  |  |  `- 0.017 len  <built-in>
+   |  |  |  |  |- 0.169 <listcomp>  gweatherrouting/core/marine/routing.py:475
+   |  |  |  |  |  |- 0.116 [self]  gweatherrouting/core/marine/routing.py
+   |  |  |  |  |  `- 0.053 radians  <built-in>
+   |  |  |  |  |- 0.103 [self]  gweatherrouting/core/marine/routing.py
+   |  |  |  |  |- 0.021 distance_bearing  gweatherrouting/core/marine/routing.py:37
+   |  |  |  |  |  |- 0.013 Geod.inv  pyproj/geod.py:331
+   |  |  |  |  |  |- 0.007 [self]  gweatherrouting/core/marine/routing.py
+   |  |  |  |  |  `- 0.001 radians  <built-in>
+   |  |  |  |  |- 0.018 abs  <built-in>
+   |  |  |  |  |- 0.008 asin  <built-in>
+   |  |  |  |  |- 0.002 sin  <built-in>
+   |  |  |  |  `- 0.001 cos  <built-in>
+   |  |  |  |- 0.735 <listcomp>  gweatherrouting/core/marine/frontierrouting.py:199
+   |  |  |  |  |- 0.285 [self]  gweatherrouting/core/marine/frontierrouting.py
+   |  |  |  |  |- 0.204 routing_utc  gweatherrouting/core/marine/routing.py:32
+   |  |  |  |  |  |- 0.138 [self]  gweatherrouting/core/marine/routing.py
+   |  |  |  |  |  `- 0.066 datetime.astimezone  <built-in>
+   |  |  |  |  |- 0.164 datetime.timestamp  <built-in>
+   |  |  |  |  `- 0.081 round  <built-in>
+   |  |  |  |- 0.711 [self]  gweatherrouting/core/marine/frontierrouting.py
+   |  |  |  |- 0.186 array  <built-in>
+   |  |  |  |- 0.091 <listcomp>  gweatherrouting/core/marine/frontierrouting.py:197
+   |  |  |  |- 0.055 asarray  <built-in>
+   |  |  |  |- 0.016 ndarray.copy  <built-in>
+   |  |  |  |- 0.012 ufunc.reduce  <built-in>
+   |  |  |  |- 0.012 list.extend  <built-in>
+   |  |  |  |- 0.011 zeros  <built-in>
+   |  |  |  |- 0.005 ndarray.astype  <built-in>
+   |  |  |  |- 0.002 full  numpy/_core/numeric.py:323
+   |  |  |  `- 0.001 ones  numpy/_core/numeric.py:170
+   |  |  |- 1.274 <listcomp>  gweatherrouting/core/marine/frontierrouting.py:426
+   |  |  |  |- 1.270 materialize  gweatherrouting/core/marine/frontierrouting.py:385
+   |  |  |  |  |- 1.031 ArraySamples.metadata  gweatherrouting/core/marine/frontierrouting.py:111
+   |  |  |  |  |  |- 0.400 searchsorted  numpy/_core/fromnumeric.py:1421
+   |  |  |  |  |  |  |- 0.283 _wrapfunc  numpy/_core/fromnumeric.py:48
+   |  |  |  |  |  |  |  |- 0.146 ndarray.searchsorted  <built-in>
+   |  |  |  |  |  |  |  |- 0.103 getattr  <built-in>
+   |  |  |  |  |  |  |  `- 0.033 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |  `- 0.117 [self]  numpy/_core/fromnumeric.py
+   |  |  |  |  |  |- 0.250 [self]  gweatherrouting/core/marine/frontierrouting.py
+   |  |  |  |  |  |- 0.182 instant  gweatherrouting/core/marine/batchwind.py:11
+   |  |  |  |  |  |  |- 0.068 datetime.replace  <built-in>
+   |  |  |  |  |  |  |- 0.065 [self]  gweatherrouting/core/marine/batchwind.py
+   |  |  |  |  |  |  |- 0.035 datetime.fromtimestamp  <built-in>
+   |  |  |  |  |  |  `- 0.014 divmod  <built-in>
+   |  |  |  |  |  |- 0.139 datetime.isoformat  <built-in>
+   |  |  |  |  |  |- 0.043 CurrentSamples.identifier  gweatherrouting/core/marine/fields.py:380
+   |  |  |  |  |  |- 0.011 _searchsorted_dispatcher  numpy/_core/fromnumeric.py:1417
+   |  |  |  |  |  `- 0.006 loads  json/__init__.py:299
+   |  |  |  |  |     |- 0.005 JSONDecoder.decode  json/decoder.py:332
+   |  |  |  |  |     |  |- 0.003 JSONDecoder.raw_decode  json/decoder.py:343
+   |  |  |  |  |     |  |- 0.001 Pattern.match  <built-in>
+   |  |  |  |  |     |  `- 0.001 Match.end  <built-in>
+   |  |  |  |  |     `- 0.001 [self]  json/__init__.py
+   |  |  |  |  |- 0.193 [self]  gweatherrouting/core/marine/frontierrouting.py
+   |  |  |  |  |- 0.026 restore_time  gweatherrouting/core/marine/frontierrouting.py:33
+   |  |  |  |  |  |- 0.020 instant  gweatherrouting/core/marine/batchwind.py:11
+   |  |  |  |  |  |  |- 0.008 [self]  gweatherrouting/core/marine/batchwind.py
+   |  |  |  |  |  |  |- 0.007 datetime.replace  <built-in>
+   |  |  |  |  |  |  `- 0.005 datetime.fromtimestamp  <built-in>
+   |  |  |  |  |  |- 0.003 [self]  gweatherrouting/core/marine/frontierrouting.py
+   |  |  |  |  |  `- 0.003 datetime.astimezone  <built-in>
+   |  |  |  |  |- 0.010 Geod.inv  pyproj/geod.py:331
+   |  |  |  |  |- 0.004 max  <built-in>
+   |  |  |  |  |- 0.002 degrees  <built-in>
+   |  |  |  |  |- 0.002 IsoPoint.__init__  <string>:2
+   |  |  |  |  `- 0.002 list.extend  <built-in>
+   |  |  |  `- 0.004 [self]  gweatherrouting/core/marine/frontierrouting.py
+   |  |  |- 0.515 [self]  gweatherrouting/core/marine/frontierrouting.py
+   |  |  |- 0.482 distances  gweatherrouting/core/marine/batchrouting.py:23
+   |  |  |  `- 0.482 Geod.inv  pyproj/geod.py:331
+   |  |  |- 0.465 Geod.inv  pyproj/geod.py:331
+   |  |  |- 0.182 <listcomp>  gweatherrouting/core/marine/frontierrouting.py:354
+   |  |  |  |- 0.129 [self]  gweatherrouting/core/marine/frontierrouting.py
+   |  |  |  `- 0.053 round  <built-in>
+   |  |  |- 0.053 array  <built-in>
+   |  |  `- 0.002 CurrentIsoRouter.result  gweatherrouting/core/marine/routing.py:605
+   |  |- 0.114 [self]  gweatherrouting/core/marine/routing.py
+   |  |- 0.010 array_clock_compatible  gweatherrouting/core/marine/frontierrouting.py:42
+   |  |  |- 0.009 <genexpr>  gweatherrouting/core/marine/frontierrouting.py:44
+   |  |  |  |- 0.006 [self]  gweatherrouting/core/marine/frontierrouting.py
+   |  |  |  `- 0.003 datetime.timestamp  <built-in>
+   |  |  `- 0.001 [self]  gweatherrouting/core/marine/frontierrouting.py
+   |  `- 0.001 <listcomp>  gweatherrouting/core/marine/routing.py:516
+   `- 0.001 [self]  weatherrouting/routing.py

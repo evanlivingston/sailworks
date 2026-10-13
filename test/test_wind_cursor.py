@@ -29,6 +29,7 @@ class TestCursorEvents(unittest.TestCase):
             tools_map_layer=Mock(),
             map=self.canvas,
             gribMapLayer=SimpleNamespace(visible=False),
+            marine_map_layer=SimpleNamespace(cursor_text=Mock(return_value="")),
             _wind_cursor=Mock(),
         )
         self.stack.tools_map_layer.on_mouse_move.return_value = False
@@ -41,6 +42,7 @@ class TestCursorEvents(unittest.TestCase):
         for _ in range(50):
             self.move()
         self.stack.core.grib_manager.get_wind_at.assert_not_called()
+
         self.stack._wind_cursor.request.assert_not_called()
         self.assertIn("Latitude:", self.stack.status_bar.push.call_args.args[1])
 
@@ -52,6 +54,18 @@ class TestCursorEvents(unittest.TestCase):
             setattr(self.canvas, field, False)
         self.stack._wind_cursor.request.assert_not_called()
         self.stack.core.grib_manager.get_wind_at.assert_not_called()
+        self.stack.marine_map_layer.cursor_text.assert_not_called()
+
+    def test_current_readout_uses_latest_source_when_wind_finishes(self):
+        self.stack.gribMapLayer.visible = True
+        self.stack.marine_map_layer.cursor_text.return_value = "Current 1.0 kn (first)"
+        self.move()
+        callback = self.stack._wind_cursor.request.call_args.args[-1]
+        self.stack.marine_map_layer.cursor_text.return_value = "Current 2.0 kn (new)"
+        callback((180, 10))
+        self.assertIn(
+            "Current 2.0 kn (new)", self.stack.status_bar.push.call_args.args[1]
+        )
 
     def test_frame_motion_cancels_hover_queued_before_zoom(self):
         self.canvas._dragging = False

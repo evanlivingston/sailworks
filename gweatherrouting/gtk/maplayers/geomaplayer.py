@@ -26,6 +26,7 @@ from gi.repository import GObject
 from gweatherrouting.core import Core, TimeControl, utils
 from gweatherrouting.gtk.style import Style
 from gweatherrouting.gtk.widgets.mapwidget import MapPoint
+from .isochronesmaplayer import draw_current_exclusions
 
 
 def _speed_color(speed):
@@ -66,6 +67,9 @@ class GeoMapLayer(GObject.GObject):
         self.hl_track_item = index
 
     def do_draw(self, gpsmap, cr):  # noqa: C901
+        # Legacy route times and the map clock are local and naive; newer
+        # routes carry UTC offsets. Compare instants without discarding offsets.
+        display_time = self.time_control.time.timestamp()
         prevx = None
         prevy = None
         prevp = None
@@ -88,6 +92,12 @@ class GeoMapLayer(GObject.GObject):
                 continue
 
             highlight = tr.name == self.hl_routing
+            if highlight:
+                draw_current_exclusions(
+                    gpsmap,
+                    cr,
+                    (tr.provenance or {}).get("excluded_current_samples", ()),
+                )
 
             prevx = None
             prevy = None
@@ -118,18 +128,15 @@ class GeoMapLayer(GObject.GObject):
 
                 # Interpolated boat position on route
                 if prevp is not None:
-                    tprev = dateutil.parser.parse(prevp[2])
-                    tcurr = dateutil.parser.parse(p[2])
+                    tprev = dateutil.parser.parse(prevp[2]).timestamp()
+                    tcurr = dateutil.parser.parse(p[2]).timestamp()
 
-                    if (
-                        tcurr >= self.time_control.time
-                        and tprev < self.time_control.time
-                    ):
-                        dt = (tcurr - tprev).total_seconds()
+                    if tprev < display_time <= tcurr:
+                        dt = tcurr - tprev
                         dl = (
                             utils.point_distance(prevp[0], prevp[1], p[0], p[1])
                             / dt
-                            * (self.time_control.time - tprev).total_seconds()
+                            * (display_time - tprev)
                         )
 
                         rp = utils.routage_point_distance(

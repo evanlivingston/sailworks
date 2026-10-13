@@ -30,13 +30,14 @@ jobs:
             mingw-w64-x86_64-python-numpy
             mingw-w64-x86_64-python-matplotlib
             mingw-w64-x86_64-python-pyproj
+            mingw-w64-x86_64-python-shapely
             mingw-w64-x86_64-gdk-pixbuf2
             mingw-w64-x86_64-adwaita-icon-theme
 
       - name: Install Python Dependencies
         shell: msys2 {0}
         run: |
-          pip install --break-system-packages requests colorlog geojson_utils bs4 pyserial pynmea2 gpxpy nmeatoolkit weatherrouting appdirs
+          pip install --break-system-packages requests keyring colorlog geojson_utils bs4 pyserial pynmea2 gpxpy nmeatoolkit weatherrouting appdirs
           pip install --break-system-packages --no-build-isolation --no-deps .
 
       - name: Create portable distribution

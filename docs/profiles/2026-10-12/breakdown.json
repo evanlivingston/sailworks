@@ -1,0 +1,16 @@
+{
+  "duration": 81.7660276889801,
+  "samples": 72104,
+  "cpu_seconds": 81.054474,
+  "phases": {
+    "Routing orchestration / other": 7.028022999999934,
+    "Coastline checks": 36.92706699999881,
+    "Polar interpolation": 0.6296029999999995,
+    "Current sampling and selection": 24.821832999999454,
+    "Geodesic calculations": 9.118488000000003,
+    "Wind sampling": 1.9845469999999956,
+    "Frontier point/provenance creation": 1.260395999999998
+  },
+  "cprofile_seconds": 87.14081208299997,
+  "builtin_seconds": 17.720681301999996
+}
