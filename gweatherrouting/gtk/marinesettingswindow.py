@@ -1,6 +1,7 @@
 """Marine source and prediction controls opened directly from chart palettes."""
 
 from .marinemanagerwindow import MarineManagerWindow
+from .icons import TIDES_CURRENTS_ICON, icon_label
 
 
 class MarineSettingsWindow(MarineManagerWindow):
@@ -14,8 +15,12 @@ class MarineSettingsWindow(MarineManagerWindow):
             sources_only=True,
         )
         self.set_title("Marine settings")
-        self.sections.set_tab_label_text(self.spatial_panel, "Currents")
-        self.sections.set_tab_label_text(self.sections.get_nth_page(1), "Tides")
+        self.sections.set_tab_label(
+            self.spatial_panel, icon_label("Currents", TIDES_CURRENTS_ICON)
+        )
+        self.sections.set_tab_label(
+            self.sections.get_nth_page(1), icon_label("Tides", TIDES_CURRENTS_ICON)
+        )
         manager.connect("changed", self._station_sources_changed)
         manager.fields.connect("changed", self._current_sources_changed)
         self.connect("destroy", self._cleanup_sources)

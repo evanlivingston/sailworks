@@ -32,6 +32,7 @@ from .chartstack_poi import ChartStackPOI
 from .chartstack_routing import ChartStackRouting
 from .chartstack_track import ChartStackTrack
 from .gribmanagerwindow import GribFileFilter
+from .icons import TIDES_CURRENTS_ICON
 from .maplayers import AISMapLayer, GeoMapLayer, GribMapLayer, ToolsMapLayer
 from .maplayers.windcursor import WindCursorSampler
 from .maplayers.marinemaplayer import MarineMapLayer
@@ -160,8 +161,10 @@ class ChartStack(
             settings_callback=self.marine_panel.open_settings,
             core=self.core,
         )
-        self.tool_dock.register("currents", "Currents", self.marine_panel)
-        self.tool_dock.register("tides", "Tides", self.tide_panel)
+        self.tool_dock.register(
+            "currents", "Currents", self.marine_panel, TIDES_CURRENTS_ICON
+        )
+        self.tool_dock.register("tides", "Tides", self.tide_panel, TIDES_CURRENTS_ICON)
         self.tool_dock.connect("panel-visibility-changed", self._panel_visibility)
 
         self.show_all()

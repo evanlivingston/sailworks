@@ -31,6 +31,7 @@ from gweatherrouting.core.storage import POLAR_DIR
 from gweatherrouting.core.marine.routing import CurrentIsoRouter
 
 from .polarmanagerwindow import PolarManagerWindow
+from .icons import TIDES_CURRENTS_ICON, icon_label
 from .timepickerdialog import TimePickerDialog
 from .widgets.polar import PolarWidget
 
@@ -106,7 +107,7 @@ class RoutingWizardDialog:
         self.auto_currents.set_sensitive(False)
         self.use_currents.connect("toggled", self._on_currents_toggled)
         marine.pack_start(self.auto_currents, False, False, 0)
-        notebook.append_page(marine, Gtk.Label(label="Currents"))
+        notebook.append_page(marine, icon_label("Currents", TIDES_CURRENTS_ICON))
 
         self.dialog.show_all()
 

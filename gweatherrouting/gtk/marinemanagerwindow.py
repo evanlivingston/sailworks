@@ -11,6 +11,7 @@ from gi.repository import Gtk
 from gweatherrouting.core.marine.chs import CHSProvider
 from gweatherrouting.core.marine.models import Capability
 from .marinedownloadjobs import MarineDownloadJobs
+from .icons import TIDES_CURRENTS_ICON, icon_label
 from .spatialmarinepanel import SpatialMarinePanel
 
 
@@ -42,9 +43,11 @@ class MarineManagerWindow(Gtk.Window, MarineDownloadJobs):
             self, core, map_widget, planner=planner, sources_only=sources_only
         )
         sections.append_page(
-            self.spatial_panel, Gtk.Label(label="Route / area currents")
+            self.spatial_panel, icon_label("Route / area currents", TIDES_CURRENTS_ICON)
         )
-        sections.append_page(box, Gtk.Label(label="Individual stations (advanced)"))
+        sections.append_page(
+            box, icon_label("Individual stations (advanced)", TIDES_CURRENTS_ICON)
+        )
         note = Gtk.Label(
             label="CHS Pacific station predictions · Available offline after download\n"
             "These selections are saved for marine queries; station predictions "

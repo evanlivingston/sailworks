@@ -5,6 +5,8 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, GObject, Gtk
 
+from ..icons import icon_label
+
 
 class ToolDock(Gtk.Paned):
     __gsignals__ = {
@@ -67,9 +69,10 @@ class ToolDock(Gtk.Paned):
         grip.show_all()
         return notebook
 
-    def register(self, key, title, content):
+    def register(self, key, title, content, icon_name=None):
         panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         panel.tool_key, panel.tool_title = key, title
+        panel.tool_icon_name = icon_name
         panel.tool_visible = False
         panel.tool_floating = False
         panel.tool_home = self.notebook
@@ -143,7 +146,11 @@ class ToolDock(Gtk.Paned):
         target.show()
 
     def _add(self, notebook, panel):
-        label = Gtk.Label(label=panel.tool_title)
+        label = (
+            icon_label(panel.tool_title, panel.tool_icon_name)
+            if panel.tool_icon_name
+            else Gtk.Label(label=panel.tool_title)
+        )
         label.show()
         notebook.append_page(panel, label)
 
