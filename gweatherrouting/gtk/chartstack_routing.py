@@ -40,6 +40,8 @@ from gweatherrouting.core.marine.routing import RoutingDataGapError
 gi.require_version("Gtk", "3.0")
 
 from gi.repository import Gdk, GLib, Gtk
+
+from gweatherrouting.gtk.widgets.filechooser import file_chooser
 from weatherrouting import RoutingNoWindError
 
 from gweatherrouting.core import utils
@@ -789,16 +791,8 @@ class ChartStackRouting(ChartStackBase):
         if routing is None:
             return
 
-        dialog = Gtk.FileChooserDialog(
-            "Please select a destination",
-            self.parent,
-            Gtk.FileChooserAction.SAVE,
-            (
-                Gtk.STOCK_CANCEL,
-                Gtk.ResponseType.CANCEL,
-                Gtk.STOCK_SAVE,
-                Gtk.ResponseType.OK,
-            ),
+        dialog = file_chooser(
+            "Please select a destination", self.parent, Gtk.FileChooserAction.SAVE
         )
 
         filter_gpx = Gtk.FileFilter()
@@ -809,7 +803,7 @@ class ChartStackRouting(ChartStackBase):
 
         response = dialog.run()
 
-        if response == Gtk.ResponseType.OK:
+        if response == Gtk.ResponseType.ACCEPT:
             filepath = dialog.get_filename()
 
             if not filepath.endswith(".gpx"):

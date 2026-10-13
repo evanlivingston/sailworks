@@ -20,6 +20,8 @@ gi.require_version("Gtk", "3.0")
 
 from gi.repository import GObject, Gtk
 
+from gweatherrouting.gtk.widgets.filechooser import file_chooser
+
 from .chartstack_base import ChartStackBase
 
 
@@ -73,16 +75,8 @@ class ChartStackTrack(ChartStackBase):
         GObject.timeout_add(100, _inner)
 
     def on_track_export(self, widget):
-        dialog = Gtk.FileChooserDialog(
-            "Please select a destination",
-            self.parent,
-            Gtk.FileChooserAction.SAVE,
-            (
-                Gtk.STOCK_CANCEL,
-                Gtk.ResponseType.CANCEL,
-                Gtk.STOCK_SAVE,
-                Gtk.ResponseType.OK,
-            ),
+        dialog = file_chooser(
+            "Please select a destination", self.parent, Gtk.FileChooserAction.SAVE
         )
 
         if self.core.trackManager.has_active():
@@ -97,7 +91,7 @@ class ChartStackTrack(ChartStackBase):
 
         response = dialog.run()
 
-        if response == Gtk.ResponseType.OK:
+        if response == Gtk.ResponseType.ACCEPT:
             filepath = dialog.get_filename()
 
             if not filepath.endswith(".gpx"):

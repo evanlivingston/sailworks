@@ -20,6 +20,8 @@ gi.require_version("Gtk", "3.0")
 
 from gi.repository import Gtk
 
+from gweatherrouting.gtk.widgets.filechooser import file_chooser
+
 from .chartstack_base import ChartStackBase
 
 
@@ -93,16 +95,8 @@ class ChartStackPOI(ChartStackBase):
             self.update_poi()
 
     def export_pois_as_nmea_pfec(self, widget):
-        dialog = Gtk.FileChooserDialog(
-            "Export POIs as NMEA PFEC",
-            self.parent,
-            Gtk.FileChooserAction.SAVE,
-            (
-                Gtk.STOCK_CANCEL,
-                Gtk.ResponseType.CANCEL,
-                Gtk.STOCK_SAVE,
-                Gtk.ResponseType.OK,
-            ),
+        dialog = file_chooser(
+            "Export POIs as NMEA PFEC", self.parent, Gtk.FileChooserAction.SAVE
         )
         dialog.set_do_overwrite_confirmation(True)
 
@@ -113,7 +107,7 @@ class ChartStackPOI(ChartStackBase):
         dialog.add_filter(filter_gpx)
 
         response = dialog.run()
-        if response == Gtk.ResponseType.OK:
+        if response == Gtk.ResponseType.ACCEPT:
             filename = dialog.get_filename()
             dialog.destroy()
             s = self.core.poiManager.to_nmea_fpec()
