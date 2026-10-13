@@ -350,7 +350,7 @@ loaded to created a routing</property>
             <property name="visible">True</property>
             <property name="can-focus">False</property>
             <child>
-              <object class="GtkToolbar">
+              <object class="GtkToolbar" id="chart-toolbar">
                 <property name="visible">True</property>
                 <property name="can-focus">False</property>
                 <property name="toolbar-style">icons</property>
@@ -416,7 +416,7 @@ loaded to created a routing</property>
                   </packing>
                 </child>
                 <child>
-                  <object class="GtkToggleToolButton">
+                  <object class="GtkToggleToolButton" id="navigation-toggle">
                     <property name="use-action-appearance">True</property>
                     <property name="visible">True</property>
                     <property name="can-focus">False</property>
@@ -434,16 +434,16 @@ loaded to created a routing</property>
                   </packing>
                 </child>
                 <child>
-                  <object class="GtkToggleToolButton">
+                  <object class="GtkToggleToolButton" id="nmea-toggle">
                     <property name="use-action-appearance">True</property>
                     <property name="visible">True</property>
                     <property name="can-focus">False</property>
-                    <property name="tooltip-text" translatable="yes">Enable / Disable connections</property>
+                    <property name="tooltip-text" translatable="yes">Show NMEA streaming and playback controls</property>
                     <property name="margin-end">4</property>
-                    <property name="label" translatable="yes">Data</property>
+                    <property name="label" translatable="yes">NMEA</property>
                     <property name="use-underline">True</property>
                     <property name="icon-name">gnome-dev-wavelan</property>
-                    <property name="active">True</property>
+                    <property name="is-important">True</property>
                     <signal name="toggled" handler="on_toggle_connections" swapped="no"/>
                   </object>
                   <packing>
@@ -452,7 +452,7 @@ loaded to created a routing</property>
                   </packing>
                 </child>
                 <child>
-                  <object class="GtkToggleToolButton">
+                  <object class="GtkToggleToolButton" id="wind-toggle">
                     <property name="visible">True</property>
                     <property name="can-focus">False</property>
                     <property name="tooltip-text" translatable="yes">Show / Hide gribs</property>
@@ -484,7 +484,7 @@ loaded to created a routing</property>
                   </packing>
                 </child>
                 <child>
-                  <object class="GtkToggleToolButton">
+                  <object class="GtkToggleToolButton" id="dashboard-toggle">
                     <property name="visible">True</property>
                     <property name="can-focus">False</property>
                     <property name="tooltip-text" translatable="yes">Show / Hide instrument dashboard</property>
@@ -569,7 +569,7 @@ loaded to created a routing</property>
           </packing>
         </child>
         <child>
-          <object class="GtkBox">
+          <object class="GtkBox" id="chart-body">
             <property name="visible">True</property>
             <property name="can-focus">False</property>
             <property name="vexpand">True</property>

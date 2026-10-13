@@ -176,3 +176,129 @@ recording through the same binary input path used by the real interface. Stop
 with Ctrl-C, then remove the simulated connection before connecting the boat.
 `--duration 60` runs a one-minute simulation. The simulator needs only Python's
 standard library; Windows pseudo-terminals are not supported.
+
+### Restore your workspace between launches
+
+The app automatically remembers its active tab, Charts and Logs map positions
+and zoom, chart display toggles, Logs graph selections, selected polar and
+performance filters, and live-stream and playback-speed preferences. It also
+restores sidebar components, selected component tabs, groups, divider positions,
+sidebar width, floating-window geometry, and the main window's normal size and
+maximized state. Polar Manager's selected tab and ORC search text are remembered.
+
+View changes are saved after a short idle period and again on normal exit.
+Saving waits while a map is being panned or zoomed. Workspace preferences use a
+separate versioned `workspace.json` in the app's data directory (on macOS,
+`~/Library/Application Support/gweatherrouting/`). Files are replaced atomically;
+missing or unreadable workspace files fall back to the default view. Saved
+windows are fitted onto the available monitors when the display arrangement changes.
+
+Sample history, loaded NMEA files, recording state, and playback position are
+session-only. Launching starts with live input selected and the saved streaming
+preference; it does not reopen or automatically play a log. Existing settings,
+connections, tracks, routes, and downloaded data retain their own storage.
+
+### Shared NMEA streaming and playback
+
+Open **NMEA** from the toolbar in **Charts**, **Logs**, or **Polars**. All three
+tabs share one sidebar and one NMEA component. Open components stay visible
+when switching tabs, including components opened from another tab's toolbar.
+The selected component, tab groups, vertical splits, sidebar width, and floating
+windows stay in place. Closing a component hides it everywhere; any NMEA toolbar
+button reopens that same component.
+
+Source selection, live streaming, loaded log, play/pause, playback position,
+and speed also persist when switching tabs, hiding panels, or floating them.
+The session stays in memory until the app closes.
+Configure instrument inputs in **Settings > Connections**, then choose
+**Live connections** and enable **Stream live NMEA**.
+
+Use **Load NMEA log…** to open an interpreted `.nmea`, `.log`, or `.txt` file.
+Select the primary interpreted file for NMEA 2000 recordings, rather than its
+raw `.n2k.log` companion. Loading runs in the background and shows the full
+track in Logs and measured samples in Polars. **Play** starts from the beginning
+and feeds the replay to all three tabs; **Pause** retains the position, and
+**Restart** clears replay progress. Choose a playback speed from 0.5× to 10×.
+Playback uses NMEA UTC timestamps, including midnight rollover. Logs without
+timestamps use ten sentences per second, stated in the panel. Files are limited
+to one million valid sentences. Incoming live data is excluded while a log is
+selected. Return to **Live connections** to resume instrument input.
+
+Recording and saving remain in **Logs**. Changing away from live input or
+pausing its stream stops an active recording. Loading and playing a log does
+not overwrite the working recording. Cropping a loaded log filters its plotted
+track and subsequent saved copy; the original file and raw archive are preserved.
+
+### Compare actual performance with your polars
+
+In **Polars**, select a polar and open **Performance** from the toolbar.
+The controls live in a side panel: drag its tab or grip out to float it, or
+drag the floating panel to the right edge to dock it again. Closing the panel
+hides its controls while preserving samples, settings, live collection, and
+the plotted overlay. Reopen it using the toolbar button.
+
+Enable **Show actual performance** in the panel. Solid curves show predicted boat speed; dots show measured speed at each true wind
+angle, preserving port and starboard tacks. Both use the same radial boat-speed
+scale. Dot colors match the nearest polar true-wind-speed curve, with band
+boundaries halfway between neighboring wind speeds. Measurements outside the
+polar's wind-speed range are excluded. Use the wind-speed selector to isolate
+one band. Hover over a curve to immediately see its true wind speed and angle;
+other curves dim until you move away. Hover over a dot to inspect its measurements.
+
+**Live connections** collects valid instrument true-wind reports (MWV with reference
+T) paired with speed readings no more than five seconds old. Choose **Speed
+through water** for a direct performance comparison, or **Speed over ground**
+to include current effects. These sources are kept separate; a missing water
+speed is never replaced with GPS speed. Apparent wind is not converted into
+true wind for this overlay. Supported NMEA 2000 inputs use the same instrument
+conversions described above.
+
+**Load NMEA log…** opens a saved interpreted NMEA log, including the primary
+file saved from Logs. Select that file rather than its raw `.n2k.log` companion.
+These interpreted logs have no receipt timestamps, so import pairs each wind
+report with speed within the preceding 50 lines instead of applying a time
+limit. Logs without instrument true wind or a usable speed reading produce no
+points. Loaded samples appear immediately; during playback the overlay grows
+with the replay.
+
+Live collection retains the latest 20,000 samples in memory, with at most one
+sample per second per speed basis. Import retains the latest 20,000 samples
+without time resampling. **Stream live NMEA** in the shared NMEA panel pauses or resumes input;
+**Clear samples** in Performance clears the selected live/log history. The comparison
+uses the same samples when you select a different polar, so clear the history
+when changing boats or sail configurations. Save recordings through **Logs**
+to keep them across app restarts.
+
+### Manage polars in a component
+
+Click **Polar manager** in Polars or the routing wizard to open its component.
+It shares the sidebar and floating-window behavior of NMEA and Performance, and
+keeps its search, selection, and loaded catalog when hidden and reopened.
+
+In **Local polars**, use **Open polar…** to import a `.pol` file, toggle its
+**Enabled** checkbox, or select a file and click **Remove**. In **ORC catalog**,
+search by sail number, boat name, or type, select a result, and click **Download
+selected polar**. Already downloaded entries are disabled. Local polar lists
+and the routing wizard update as changes happen; closing the component is not
+required to refresh them.
+
+### Select a polar in a component
+
+Use **Polar selector** in the Polars toolbar to show or hide the polar list.
+The selector can dock alongside the other components or float in its own
+window. Selecting a row updates the chart and speed table immediately.
+Your selection survives hiding, floating, redocking, and polar-list updates;
+if the selected polar is removed or disabled, the first available polar is
+selected instead. The speed table remains beside the chart.
+
+### Stack components vertically
+
+Drag a component’s named tab to the upper or lower part of another component
+below its tab strip in the sidebar. A blue horizontal line marks where it will be placed; release to
+create a vertical stack. Drag the divider between groups to adjust their
+heights. Each group can still contain multiple tabs.
+
+Drop on a group's tab strip or middle to combine components as tabs. The dotted grip
+moves a whole tab group: drag it out to float, or back over the sidebar to
+place that group above, below, or inside another group. Hiding a group keeps
+its component state; reopening a component restores its place in the stack.
