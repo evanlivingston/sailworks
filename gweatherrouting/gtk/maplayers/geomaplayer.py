@@ -24,6 +24,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import GObject
 
 from gweatherrouting.core import Core, TimeControl, utils
+from gweatherrouting.core.timecontrol import naive_wall_time
 from gweatherrouting.gtk.style import Style
 from gweatherrouting.gtk.widgets.mapwidget import MapPoint
 
@@ -118,18 +119,19 @@ class GeoMapLayer(GObject.GObject):
 
                 # Interpolated boat position on route
                 if prevp is not None:
-                    tprev = dateutil.parser.parse(prevp[2])
-                    tcurr = dateutil.parser.parse(p[2])
+                    tprev = naive_wall_time(dateutil.parser.parse(prevp[2]))
+                    tcurr = naive_wall_time(dateutil.parser.parse(p[2]))
+                    current_time = naive_wall_time(self.time_control.time)
 
                     if (
-                        tcurr >= self.time_control.time
-                        and tprev < self.time_control.time
+                        tcurr >= current_time
+                        and tprev < current_time
                     ):
                         dt = (tcurr - tprev).total_seconds()
                         dl = (
                             utils.point_distance(prevp[0], prevp[1], p[0], p[1])
                             / dt
-                            * (self.time_control.time - tprev).total_seconds()
+                            * (current_time - tprev).total_seconds()
                         )
 
                         rp = utils.routage_point_distance(

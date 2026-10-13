@@ -19,6 +19,13 @@ import datetime
 from gweatherrouting.core.utils import EventDispatcher
 
 
+def naive_wall_time(value: datetime.datetime) -> datetime.datetime:
+    """Return a datetime without its timezone, preserving the displayed time."""
+    if value.tzinfo is not None:
+        return value.replace(tzinfo=None)
+    return value
+
+
 class TimeControl(EventDispatcher):
     DFORMAT = "%Y/%m/%d, %H:%M"
 
@@ -33,7 +40,7 @@ class TimeControl(EventDispatcher):
 
     @property
     def time(self):
-        return self._time.replace(tzinfo=None)  # datetime.timezone.utc)
+        return naive_wall_time(self._time)
 
     def get_timestamp(self) -> int:
         return int(self.time.timestamp())
