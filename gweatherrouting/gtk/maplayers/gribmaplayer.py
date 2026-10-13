@@ -175,6 +175,9 @@ class WindPainter:
             return
         point_map, screen_xs, screen_ys = projected
 
+        # A shared mesh avoids independently composited, antialiased cell edges.
+        pat = cairo.MeshPattern()
+        patches = 0
         for i in range(0, len(data) - scale, scale):
             if gpsmap.render_cancelled():
                 return
@@ -187,19 +190,19 @@ class WindPainter:
                 except IndexError:
                     continue
 
-                try:
-                    x_tl = screen_xs[point_map[(i, j)]]
-                    y_tl = screen_ys[point_map[(i, j)]]
-                    x_tr = screen_xs[point_map[(i, j + scale)]]
-                    y_tr = screen_ys[point_map[(i, j + scale)]]
-                    x_bl = screen_xs[point_map[(i + scale, j)]]
-                    y_bl = screen_ys[point_map[(i + scale, j)]]
-                    x_br = screen_xs[point_map[(i + scale, j + scale)]]
-                    y_br = screen_ys[point_map[(i + scale, j + scale)]]
-                except KeyError:
-                    continue
+                x_tl = screen_xs[point_map[(i, j)]]
+                y_tl = screen_ys[point_map[(i, j)]]
+                x_tr = screen_xs[point_map[(i, j + scale)]]
+                y_tr = screen_ys[point_map[(i, j + scale)]]
+                x_bl = screen_xs[point_map[(i + scale, j)]]
+                y_bl = screen_ys[point_map[(i + scale, j)]]
+                x_br = screen_xs[point_map[(i + scale, j + scale)]]
+                y_br = screen_ys[point_map[(i + scale, j + scale)]]
 
-                pat = cairo.MeshPattern()
+                # Rows are longitude columns. Never join different latitude
+                # intervals when partial forecast coverage leaves a ragged grid.
+                if d_tl[2][0] != d_bl[2][0] or d_tr[2][0] != d_br[2][0]:
+                    continue
                 pat.begin_patch()
                 # Path: TL → TR → BR → BL (clockwise)
                 pat.move_to(x_tl, y_tl)
@@ -218,13 +221,13 @@ class WindPainter:
                 pat.set_corner_color_rgba(3, r, g, b, opacity)
                 pat.end_patch()
 
-                cr.set_source(pat)
-                cr.move_to(x_tl, y_tl)
-                cr.line_to(x_tr, y_tr)
-                cr.line_to(x_br, y_br)
-                cr.line_to(x_bl, y_bl)
-                cr.close_path()
-                cr.fill()
+                patches += 1
+
+        if patches:
+            cr.save()
+            cr.set_source(pat)
+            cr.paint()
+            cr.restore()
 
 
 class GribMapLayer(GObject.GObject):
