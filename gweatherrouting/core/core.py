@@ -196,6 +196,7 @@ class Core(EventDispatcher):
 
         parsers = {
             "MWV": self._parse_mwv,
+            "VTG": self._parse_vtg,
             "DBT": self._parse_dbt,
             "VHW": self._parse_vhw,
             "MTW": self._parse_mtw,
@@ -209,6 +210,15 @@ class Core(EventDispatcher):
                 parser(sentence)
             except (ValueError, TypeError, AttributeError) as e:
                 logger.debug("Error parsing NMEA sentence %s: %s", sentence_type, e)
+
+    def _parse_vtg(self, sentence):
+        """Update GPS speed/course independently of position messages."""
+        speed = getattr(sentence, "spd_over_grnd_kts", None)
+        course = getattr(sentence, "true_track", None)
+        if speed is not None and speed != "":
+            self.boat_info.sog = float(speed)
+        if course is not None and course != "":
+            self.boat_info.cog = float(course)
 
     def _parse_mwv(self, sentence):
         """Parse MWV (wind speed and angle)."""

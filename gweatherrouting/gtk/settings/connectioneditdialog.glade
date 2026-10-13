@@ -116,11 +116,11 @@
                     <child>
                       <object class="GtkComboBoxText" id="serial-data-port-combo">
                         <property name="visible">True</property>
-                        <property name="can-focus">False</property>
+                        <property name="can-focus">True</property>
                         <property name="has-entry">True</property>
                         <child internal-child="entry">
                           <object class="GtkEntry">
-                            <property name="can-focus">False</property>
+                            <property name="can-focus">True</property>
                           </object>
                         </child>
                       </object>

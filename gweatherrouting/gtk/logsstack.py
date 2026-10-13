@@ -32,6 +32,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, Gtk
 
 from gweatherrouting.core import Core
+from gweatherrouting.core.instrumentrecording import InstrumentRecording
 from gweatherrouting.core.timecontrol import TimeControl
 from gweatherrouting.gtk.charts import ChartManager
 from gweatherrouting.gtk.settings import SettingsManager
@@ -61,7 +62,7 @@ class LogsStack(Gtk.Box, nt.Output, nt.Input):
         self.recording = False
         self.loading = False
         self.data: List[nt.TrackPoint] = []
-        self.recorded_data: Optional[io.TextIOWrapper] = None
+        self.recorder = InstrumentRecording(LOG_TEMP_FILE)
         self.to_send: List = []
 
         self.depth_chart = False
@@ -76,6 +77,7 @@ class LogsStack(Gtk.Box, nt.Output, nt.Input):
         self.crop_b = None
 
         self.core.connectionManager.connect("data", self.data_handler)
+        self.core.connectionManager.connect("nmea2000", self.recorder.write_nmea2000)
 
         self.builder = Gtk.Builder()
         self.builder.add_from_file(
@@ -133,6 +135,8 @@ class LogsStack(Gtk.Box, nt.Output, nt.Input):
             self.map.queue_draw()
 
     def on_load_click(self, widget):
+        if self.recording or self.loading:
+            return
         dialog = Gtk.FileChooserDialog(
             "Please choose a file",
             self.parent,
@@ -186,7 +190,7 @@ class LogsStack(Gtk.Box, nt.Output, nt.Input):
 
     def __del__(self):
         if self.recording:
-            self.stopRecording()
+            self.on_stop_recording_click(None)
             if self.recording_thread:
                 self.recording_thread.join()
 
@@ -202,6 +206,8 @@ class LogsStack(Gtk.Box, nt.Output, nt.Input):
         self.graph_area.queue_draw()
 
     def crop_data(self, widget):
+        if self.recording or self.loading:
+            return
         if self.crop_a is None and self.crop_b is None:
             return
 
@@ -218,9 +224,7 @@ class LogsStack(Gtk.Box, nt.Output, nt.Input):
         self.rebuild_track()
         self.graph_area.queue_draw()
 
-        if self.recorded_data:
-            self.recorded_data.flush()
-            self.recorded_data.close()
+        self.recorder.close()
 
         os.system(f"mv {LOG_TEMP_FILE} {LOG_TEMP_FILE}.2")
 
@@ -237,20 +241,24 @@ class LogsStack(Gtk.Box, nt.Output, nt.Input):
         self.crop_b = None
 
     def on_recording_click(self, widget):
-        if self.recording:
+        if self.recording or self.loading:
             return
 
         self.builder.get_object("record-button").hide()
         self.builder.get_object("stop-button").show()
 
+        self.recorder.start()
+        self.data = []
+        self.to_send = []
+        self.core.logManager.log_history.clear()
+        self.recording = True
         self.status_bar.push(0, "Recording from devices...")
         self.recording_thread = Thread(target=self.start_recording, args=())
         self.recording_thread.start()
 
     def on_stop_recording_click(self, widget):
         self.recording = False
-        if self.recorded_data:
-            self.recorded_data.close()
+        self.recorder.close()
         self.to_send = []
         logger.debug("Stopping recording...")
 
@@ -260,6 +268,7 @@ class LogsStack(Gtk.Box, nt.Output, nt.Input):
 
         if self.recording_thread:
             self.recording_thread.join()
+        self.graph_area.queue_draw()
 
     def toggle_speed_chart(self, widget):
         self.speed_chart = not self.speed_chart
@@ -287,10 +296,10 @@ class LogsStack(Gtk.Box, nt.Output, nt.Input):
 
     def data_handler(self, d):
         if self.recording:
+            self.recorder.write_packets(d)
             for x in d:
-                if self.recorded_data:
-                    self.recorded_data.write(str(x.data) + "\n")
-                self.to_send.append(x.data)
+                if x.data is not None:
+                    self.to_send.append(x.data)
 
     def read_sentence(self):
         if len(self.to_send) > 0:
@@ -310,6 +319,11 @@ class LogsStack(Gtk.Box, nt.Output, nt.Input):
             Gdk.threads_enter()
             self.time_control.set_time(data.time)
 
+            # Keep the plots live without redrawing matplotlib for every
+            # incoming instrument update.
+            if self.recording and len(self.data) % 10 == 0:
+                self.graph_area.queue_draw()
+
             if len(self.data) % 150 == 0:
                 self.core.logManager.log_history.add(data.lat, data.lon)
 
@@ -321,6 +335,7 @@ class LogsStack(Gtk.Box, nt.Output, nt.Input):
             Gdk.threads_leave()
 
     def close(self):
+        self.loading = False
         if len(self.data) < 2:
             return
 
@@ -330,7 +345,6 @@ class LogsStack(Gtk.Box, nt.Output, nt.Input):
         self.map.set_center_and_zoom(self.data[0].lat, self.data[0].lon, 12)
         self.map.queue_draw()
         self.graph_area.queue_draw()
-        self.loading = False
         Gdk.threads_leave()
 
     def on_save_click(self, widget):
@@ -350,7 +364,7 @@ class LogsStack(Gtk.Box, nt.Output, nt.Input):
         if response == Gtk.ResponseType.OK:
             filename = dialog.get_filename()
             dialog.destroy()
-            os.system(f"cp {LOG_TEMP_FILE} {filename}")
+            self.recorder.save(filename)
 
             self.status_bar.push(0, f"Saved to {filename}")
         else:
@@ -381,21 +395,38 @@ class LogsStack(Gtk.Box, nt.Output, nt.Input):
                 nt.TrueWindPipe(),
             ],
         )
-        pip.run()
+        try:
+            pip.run()
+        finally:
+            # Empty or very short files may not produce enough points for
+            # close() to initialize the map, but they must still release the
+            # recording controls after loading finishes.
+            self.loading = False
 
         if filepath != LOG_TEMP_FILE:
-            os.system(f"cp {filepath} {LOG_TEMP_FILE}")
+            import shutil
+            from pathlib import Path
+
+            shutil.copyfile(filepath, LOG_TEMP_FILE)
+            raw = Path(str(filepath) + ".n2k.log")
+            if raw.exists():
+                shutil.copyfile(raw, self.recorder.raw_path)
+            else:
+                self.recorder.raw_path.unlink(missing_ok=True)
         # self.status_bar.push(0, "Load completed!")
 
     def save_to_file(self, filepath):
         pass
 
     def clear_data(self, widget):
+        if self.recording or self.loading:
+            return
         self.data = []
 
-        if self.recorded_data:
-            self.recorded_data.close()
-        self.recorded_data = open(LOG_TEMP_FILE, "w")
+        self.recorder.close()
+        self.recorder.start()
+        if not self.recording:
+            self.recorder.close()
         self.to_send = []
         self.core.logManager.log_history.clear()
         self.map.queue_draw()
@@ -410,8 +441,6 @@ class LogsStack(Gtk.Box, nt.Output, nt.Input):
 
     def start_recording(self):
         logger.debug("Recording started")
-        self.recording = True
-        self.recorded_data = open(LOG_TEMP_FILE, "w")
 
         pip = nt.Pipeline(
             self,

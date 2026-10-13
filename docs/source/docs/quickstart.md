@@ -1,5 +1,5 @@
 Quickstart
-====================================
+==========
 
 Installation
 ------------
@@ -101,3 +101,72 @@ time control's buttons.
 
 
 <img src="../_static/images/quickstart/10.gif">
+
+Recording NMEA 2000 instruments
+------------------------------
+
+The app reads complete NMEA 2000 PGNs from gateways that provide Actisense BST
+or Actisense N2K ASCII output. The NGT-1 uses BST; an NGX-1 must be in transfer
+mode, and its hardware compatibility has not yet been verified. N2K ASCII
+gateways must reassemble fast and ISO transport packets before sending them to
+the app. These connections are input only: Actisense BST receives one
+gateway-local receive-mode command at connection time, but the app does not send
+vessel-control or NMEA 2000 transmit messages.
+
+1. Connect the gateway to the powered NMEA 2000 network and your computer.
+2. In **Settings > Connections**, add a connection using the output format your
+   gateway provides. For an Actisense NGT-1, choose **NMEA 2000 — Actisense BST**.
+   For a gateway configured to output Actisense N2K ASCII, choose
+   **NMEA 2000 — N2K ASCII**; that format can use a serial port or a TCP/UDP
+   network connection.
+3. For a serial gateway, select its serial port (on macOS, normally
+   `/dev/cu.usbserial-...`). If your
+   operating system does not expose the port, install the appropriate Actisense
+   USB driver. The Actisense BST connection defaults to **230400** baud; use
+   **115200** for an older/configured interface. Set the gateway's output format
+   to N2K ASCII before selecting that connection type.
+4. Save the connection and check that instrument readings and its packet count
+   update. In **Logs**, click **Record**, then **Stop** and **Save** after sailing.
+
+Saving `sail.nmea` also saves `sail.nmea.n2k.log` when NMEA 2000 messages have been
+received. The first file contains converted NMEA 0183 sentences for the existing
+Logs display. The companion contains validated original PGN payloads in CANboat
+raw text format, with UTC receipt timestamps, priorities, source/destination
+addresses and PGN numbers. Unknown/proprietary PGNs are retained there too.
+The companion is a complete session archive: cropping in Logs affects only the
+converted NMEA file. Save each sail before starting another recording or using
+Clear; the working recording is temporary and a new session replaces it.
+
+Supported display conversions include heading (127250), speed through water
+(128259), depth (128267), GPS position (129025/129029), COG/SOG (129026), wind
+(130306) and sea temperature (130310/130312/130316). Geographic wind directions
+and ground-referenced true wind are kept in the original archive rather than
+converted into water-referenced wind angles. Position sentences use the Mac/PC
+UTC receipt time; synchronize its clock before sailing. Original GNSS/system
+clock data remain available in the PGN archive.
+
+The Logs speed graph uses GPS speed over ground. Its existing true-wind
+estimation is a review aid, not a calibrated polar calculation. Use the original
+wind and water-speed PGNs for performance analysis. The converted file is not
+yet a verified Polarize import; raw-file conversion and source selection need
+validation against an actual recording. The display consumes supported
+measurements from all received sources, so duplicate sensors may alternate;
+the raw archive preserves source addresses for later selection.
+
+### Try it without a boat
+
+On macOS or Linux, run this from the source checkout in a separate terminal:
+
+```sh
+python3 tools/simulate_actisense.py
+```
+
+The simulator prints a pseudo-terminal path, such as `/dev/ttys012`. Enter that
+path in the connection dialog's serial-port field, choose **NMEA 2000 —
+Actisense BST** and 230400 baud, and leave the simulator running. It sends
+synthetic sailing data near Vancouver: GPS position, heading, wind, water speed,
+depth and temperature. You can watch the dashboard and make/save a Logs
+recording through the same binary input path used by the real interface. Stop
+with Ctrl-C, then remove the simulated connection before connecting the boat.
+`--duration 60` runs a one-minute simulation. The simulator needs only Python's
+standard library; Windows pseudo-terminals are not supported.

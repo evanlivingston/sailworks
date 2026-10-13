@@ -22,12 +22,14 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk
 
 from gweatherrouting.core import SerialDataSource
+from gweatherrouting.core.nmea2000datasource import N2K_FORMATS
 
 ctypes = ["Network", "Serial"]
 ntypes = ["TCP", "UDP"]
 directions = ["In", "Out", "Both"]
-protocols = ["NMEA0183"]
-baudrates = [9600, 19200, 38400, 57600, 115200]
+protocols = ["nmea0183"] + list(N2K_FORMATS)
+protocol_labels = ["NMEA 0183"] + [config["label"] for config in N2K_FORMATS.values()]
+baudrates = [4800, 9600, 19200, 38400, 57600, 115200, 230400]
 
 
 def lower(s):
@@ -67,8 +69,8 @@ class ConnectionEditDialog:
         self.directionCombo.set_active(0)
 
         self.protocolCombo = self.builder.get_object("protocol-combo")
-        for x in protocols:
-            self.protocolCombo.append_text(x)
+        for protocol, label in zip(protocols, protocol_labels):
+            self.protocolCombo.append(protocol, label)
         self.protocolCombo.set_active(0)
 
         self.serialDataPortCombo = self.builder.get_object("serial-data-port-combo")
@@ -79,20 +81,20 @@ class ConnectionEditDialog:
         self.serialBaudrateCombo = self.builder.get_object("serial-baudrate-combo")
         for xb in baudrates:
             self.serialBaudrateCombo.append_text(str(xb))
-        self.serialBaudrateCombo.set_active(0)
+        self.serialBaudrateCombo.set_active(baudrates.index(9600))
+
+        self.protocolCombo.connect("changed", self.on_protocol_change)
 
         if self.data is not None:
             # Set data
             if self.data["type"] == "serial":
-                self.typeCombo.set_active(0)
-                self.builder.get_object("serial-data-port").set_text(
-                    self.data["data-port"]
-                )
+                self.typeCombo.set_active(1)
+                self.serialDataPortCombo.get_child().set_text(self.data["data-port"])
                 self.serialBaudrateCombo.set_active(
-                    list(map(lower, baudrates)).index(self.data["baudrate"])
+                    baudrates.index(self.data["baudrate"])
                 )
             elif self.data["type"] == "network":
-                self.typeCombo.set_active(1)
+                self.typeCombo.set_active(0)
                 self.networkTypeCombo.set_active(
                     list(map(lower, ntypes)).index(self.data["network"])
                 )
@@ -119,15 +121,27 @@ class ConnectionEditDialog:
             self.builder.get_object("network-frame").hide()
             self.builder.get_object("serial-frame").show()
 
+    def on_protocol_change(self, widget):
+        protocol = self.protocolCombo.get_active_id()
+        nmea2000 = protocol in N2K_FORMATS
+        if nmea2000:
+            self.directionCombo.set_active(0)
+            if self.data is None:
+                baud = N2K_FORMATS[protocol]["baudrate"]
+                self.serialBaudrateCombo.set_active(baudrates.index(baud))
+        self.directionCombo.set_sensitive(not nmea2000)
+
     def save_data(self):
         self.data = {
             "type": lower(self.typeCombo.get_active_text()),
-            "protocol": lower(self.protocolCombo.get_active_text()),
+            "protocol": self.protocolCombo.get_active_id(),
             "direction": lower(self.directionCombo.get_active_text()),
         }
         if self.data["type"] == "serial":
             self.data["data-port"] = self.serialDataPortCombo.get_active_text()
             self.data["baudrate"] = int(self.serialBaudrateCombo.get_active_text())
+            if not self.data["data-port"]:
+                raise ValueError("Choose a serial port")
         elif self.data["type"] == "network":
             self.data["network"] = lower(self.networkTypeCombo.get_active_text())
             self.data["host"] = self.builder.get_object("network-host").get_text()

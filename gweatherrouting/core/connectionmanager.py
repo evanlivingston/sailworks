@@ -22,6 +22,9 @@ from typing import Dict, List
 from gweatherrouting.core import DataSource, NetworkDataSource, SerialDataSource
 from gweatherrouting.core.utils import EventDispatcher, Storage
 
+from .actisensedatasource import ActisenseDataSource
+from .nmea2000datasource import N2K_PROTOCOLS, NMEA2000DataSource
+
 logger = logging.getLogger("gweatherrouting")
 
 
@@ -35,6 +38,34 @@ class ConnectionManagerStorage(Storage):
         Storage.__init__(self, "conn-manager")
         self.connections = []
         self.load_or_save_default()
+
+
+def create_data_source(config):
+    """Build a source from its transport and wire-format configuration."""
+    protocol = config["protocol"]
+    if protocol in N2K_PROTOCOLS:
+        if protocol == "actisense" and config["type"] == "serial":
+            return ActisenseDataSource(
+                protocol,
+                config["direction"],
+                config["data-port"],
+                config["baudrate"],
+            )
+        return NMEA2000DataSource(config)
+    if config["type"] == "serial":
+        return SerialDataSource(
+            protocol,
+            config["direction"],
+            config["data-port"],
+            config["baudrate"],
+        )
+    return NetworkDataSource(
+        protocol,
+        config["direction"],
+        config["host"],
+        config["port"],
+        config["network"],
+    )
 
 
 # { type: 'serial|network', protocol: 'nmea0183', direction: 'in|out|both' }
@@ -110,24 +141,20 @@ class ConnectionManager(EventDispatcher):
             self.sources = {}
             for x in self.storage.connections:
                 if x["type"] == "serial":
-                    self.sources[x["data-port"]] = SerialDataSource(
-                        x["protocol"], x["direction"], x["data-port"], x["baudrate"]
-                    )
-                    if self.sources[x["data-port"]].connect():
-                        logger.info("Data source %s connected", x["data-port"])
-
+                    key = x["data-port"]
                 elif x["type"] == "network":
-                    self.sources[x["host"] + ":" + str(x["port"])] = NetworkDataSource(
-                        x["protocol"],
-                        x["direction"],
-                        x["host"],
-                        x["port"],
-                        x["network"],
-                    )
-                    if self.sources[x["host"] + ":" + str(x["port"])].connect():
-                        logger.info("Data source %s:%d connected", x["host"], x["port"])
+                    key = x["host"] + ":" + str(x["port"])
+                else:
+                    continue
+
+                source = create_data_source(x)
+                self.sources[key] = source
+                if source.connect():
+                    logger.info("Data source %s connected", key)
 
     def add_connection(self, d):
+        if d["protocol"] in N2K_PROTOCOLS and d["direction"] != "in":
+            raise ValueError("NMEA 2000 connections require input direction")
         if d["type"] == "serial":
             if not list(
                 filter(
@@ -170,9 +197,14 @@ class ConnectionManager(EventDispatcher):
             rf += 1
             try:
                 d = ds.read()
+                raw = getattr(ds, "raw_messages", [])
+                if raw:
+                    self.dispatch("nmea2000", raw)
                 if len(d):
                     dd += d
-                    self._packets[key] = self._packets.get(key, 0) + len(d)
+                self._packets[key] = self._packets.get(key, 0) + (
+                    len(raw) if raw else len(d)
+                )
             except Exception as e:
                 logger.error("Error reading data from source: %s", e)
                 ds.connected = False
