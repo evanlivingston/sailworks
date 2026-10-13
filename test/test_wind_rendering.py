@@ -331,6 +331,51 @@ class TestWindOverlay(unittest.TestCase):
 
         self.assertEqual(WindOverlayRenderer._load_wind(self.renderer, job), [[point]])
 
+    def test_overlapping_forecasts_use_newest_once_and_keep_older_gap_coverage(self):
+        from gweatherrouting.gtk.maplayers.windrenderer import WindOverlayRenderer
+
+        old = SimpleNamespace(start_time=self.clock.time)
+        new = SimpleNamespace(start_time=self.clock.time + timedelta(hours=6))
+        old_points = [(90, 3, (0, 0)), (90, 3, (1, 0)), (90, 3, (0, 1))]
+        new_points = [(180, 8, (0, 0)), (180, 8, (1, 0))]
+        self.renderer._worker_grib = lambda source: SimpleNamespace(
+            get_wind=lambda *_: new_points if source is new else old_points
+        )
+        job = SimpleNamespace(
+            viewport=self.canvas,
+            palette=(self.clock.time,),
+            charts=((old,), (new,)),
+            cancel=Event(),
+        )
+        data = WindOverlayRenderer._load_wind(self.renderer, job)
+        self.assertEqual(data, [new_points, [old_points[-1]]])
+        self.assertEqual(len([p for row in data for p in row]), 3)
+
+    def test_gradient_has_no_alpha_seam_at_fractional_cell_boundaries(self):
+        painter = WindPainter(self.settings)
+        view = SimpleNamespace(
+            render_cancelled=lambda: False,
+            convert_geographic_to_screen_batch=lambda lat, lon: (
+                10.25 + lon * 90,
+                10.25 + lat * 90,
+            ),
+        )
+        data = [[(90, 8, (lat, lon)) for lat in range(3)] for lon in range(3)]
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 200, 200)
+        painter._draw_color_fill(view, cairo.Context(surface), data, 1)
+        surface.flush()
+        pixels = np.ndarray(
+            (200, 200, 4),
+            dtype=np.uint8,
+            buffer=surface.get_data(),
+            strides=(surface.get_stride(), 4, 1),
+        )
+        # Cross a cell edge and the intersection of four cells. Equal wind
+        # speeds should give equal opacity even at subpixel mesh boundaries.
+        alpha = pixels[98:103, 98:103, 3]
+        self.assertGreater(int(alpha.min()), 0)
+        self.assertLessEqual(int(alpha.max()) - int(alpha.min()), 1)
+
     def test_painter_keeps_colored_fill_and_barbs(self):
         self.draw()
         self.drain()
