@@ -15,6 +15,9 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
 import math
+from functools import lru_cache
+
+import numpy
 
 import dateutil.parser
 import gi
@@ -47,6 +50,13 @@ def _speed_color(speed):
         return (1.0, 0.3, 0.1, 0.9)
 
 
+@lru_cache(maxsize=16384)
+def _route_datetime(value):
+    # Cache parsing, keeping timestamp() conversion at draw time so legacy
+    # naive route times still follow the process's local timezone.
+    return dateutil.parser.parse(value)
+
+
 class GeoMapLayer(GObject.GObject):
     def __init__(self, core: Core, time_control: TimeControl):
         GObject.GObject.__init__(self)
@@ -70,22 +80,7 @@ class GeoMapLayer(GObject.GObject):
         # Legacy route times and the map clock are local and naive; newer
         # routes carry UTC offsets. Compare instants without discarding offsets.
         display_time = self.time_control.time.timestamp()
-        prevx = None
-        prevy = None
-        prevp = None
-
-        for p in self.core.logManager.log:
-            x, y = gpsmap.convert_geographic_to_screen(MapPoint.new_degrees(p[0], p[1]))
-
-            if prevx is not None and prevy is not None:
-                Style.Track.LogTrack.apply(cr)
-                cr.move_to(prevx, prevy)
-                cr.line_to(x, y)
-                cr.stroke()
-
-            prevx = x
-            prevy = y
-            prevp = p
+        self._draw_log(gpsmap, cr)
 
         for tr in self.core.routingManager:
             if not tr.visible:
@@ -128,8 +123,8 @@ class GeoMapLayer(GObject.GObject):
 
                 # Interpolated boat position on route
                 if prevp is not None:
-                    tprev = dateutil.parser.parse(prevp[2]).timestamp()
-                    tcurr = dateutil.parser.parse(p[2]).timestamp()
+                    tprev = _route_datetime(prevp[2]).timestamp()
+                    tcurr = _route_datetime(p[2]).timestamp()
 
                     if tprev < display_time <= tcurr:
                         dt = tcurr - tprev
@@ -289,6 +284,34 @@ class GeoMapLayer(GObject.GObject):
             # cr.move_to(x-5, y-5)
             # cr.line_to(x+5,y-5)
             # cr.stroke()
+
+    def _draw_log(self, gpsmap, cr):
+        points = self.core.logManager.log
+        count = len(points)
+        if count < 2:
+            return
+        # Build from current points each frame so appends, edits and source
+        # changes cannot leave stale geometry in a cache.
+        lats = numpy.fromiter((p[0] for p in points), dtype=float, count=count)
+        lons = numpy.fromiter((p[1] for p in points), dtype=float, count=count)
+        xs, ys = gpsmap.convert_geographic_to_screen_batch(lats, lons)
+        style = Style.Track.LogTrack
+        style.apply(cr)
+        padding = (style.line_width or 1) / 2 + 2
+        width, height = gpsmap.get_allocated_width(), gpsmap.get_allocated_height()
+        # Reject only segments wholly beyond the same edge. Crossing segments
+        # remain visible even when neither endpoint lies inside the viewport.
+        visible = (
+            (numpy.maximum(xs[:-1], xs[1:]) >= -padding)
+            & (numpy.minimum(xs[:-1], xs[1:]) <= width + padding)
+            & (numpy.maximum(ys[:-1], ys[1:]) >= -padding)
+            & (numpy.minimum(ys[:-1], ys[1:]) <= height + padding)
+        )
+        for index in numpy.flatnonzero(visible):
+            # Keep separate strokes, preserving alpha overlap, caps and dashes.
+            cr.move_to(xs[index], ys[index])
+            cr.line_to(xs[index + 1], ys[index + 1])
+            cr.stroke()
 
     def do_render(self, gpsmap):
         pass
