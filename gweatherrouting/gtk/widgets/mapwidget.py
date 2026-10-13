@@ -15,6 +15,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
 import math
+import sys
 from typing import Callable, Protocol
 
 import numpy as np
@@ -105,6 +106,8 @@ class MapWidget(Gtk.DrawingArea):
         self._motion_destroyed = False
         self._display_bound = False
         self._drag_velocity = DragVelocity()
+        self._pinch = None
+        self._trackpad_scroll_pans = sys.platform == "darwin"
 
         # Layers
         self._layers = []
@@ -127,6 +130,8 @@ class MapWidget(Gtk.DrawingArea):
             | Gdk.EventMask.POINTER_MOTION_MASK
             | Gdk.EventMask.SCROLL_MASK
             | Gdk.EventMask.SMOOTH_SCROLL_MASK
+            | Gdk.EventMask.TOUCH_MASK
+            | Gdk.EventMask.TOUCHPAD_GESTURE_MASK
             | Gdk.EventMask.KEY_PRESS_MASK
         )
 
@@ -138,6 +143,13 @@ class MapWidget(Gtk.DrawingArea):
         self.connect("key-press-event", self._on_key_press)
         self.connect("unmap", self._cancel_motion)
         self.connect("destroy", self._destroy_motion)
+
+        self._zoom_gesture = Gtk.GestureZoom.new(self)
+        self._zoom_gesture.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        self._zoom_gesture.connect("begin", self._on_pinch_begin)
+        self._zoom_gesture.connect("scale-changed", self._on_pinch_scale)
+        self._zoom_gesture.connect("end", self._on_pinch_end)
+        self._zoom_gesture.connect("cancel", self._on_pinch_end)
 
     # --- Mercator projection helpers ---
 
@@ -336,6 +348,7 @@ class MapWidget(Gtk.DrawingArea):
         self._zoom_animating = False
         self._inertia = None
         self._last_frame_time = None
+        self._pinch = None
 
     def _destroy_motion(self, *args):
         self._cancel_motion()
@@ -462,7 +475,37 @@ class MapWidget(Gtk.DrawingArea):
             self.queue_draw()
         return False
 
+    def _on_pinch_begin(self, gesture, sequence):
+        self._cancel_motion()
+        self._dragging = False
+        valid, x, y = gesture.get_bounding_box_center()
+        if not valid:
+            x, y = self.get_allocated_width() / 2, self.get_allocated_height() / 2
+        anchor = self.convert_screen_to_geographic(x, y).get_degrees()
+        self._pinch = (self._zoom, anchor, (x, y))
+        self._zoom_animating = True
+
+    def _on_pinch_scale(self, gesture, scale):
+        if self._pinch is None or not math.isfinite(scale) or scale <= 0:
+            return
+        start, anchor, pointer = self._pinch
+        zoom = max(self.MIN_ZOOM, min(self.MAX_ZOOM, start + math.log2(scale)))
+        self._apply_zoom(zoom, anchor, pointer)
+        self.queue_draw()
+
+    def _on_pinch_end(self, gesture, sequence):
+        if self._pinch is not None:
+            self._pinch = None
+            self._zoom_animating = False
+            self.queue_draw()
+
     def _on_scroll(self, widget, event):
+        # Quartz emits a discrete compatibility event after precise scrolling.
+        # Handling both would pan and zoom for the same trackpad movement.
+        if self._trackpad_scroll_pans and event.get_pointer_emulated():
+            return True
+        if self._pinch is not None:
+            return True
         amount = 0.0
         if event.direction == Gdk.ScrollDirection.UP:
             amount = 1.0
@@ -470,8 +513,17 @@ class MapWidget(Gtk.DrawingArea):
             amount = -1.0
         elif event.direction == Gdk.ScrollDirection.SMOOTH:
             _, dx, dy = event.get_scroll_deltas()
-            if self._smooth_zoom:
-                amount = max(-2.0, min(2.0, -dy * 0.35))
+            if self._trackpad_scroll_pans and not event.state & (
+                Gdk.ModifierType.CONTROL_MASK
+                | Gdk.ModifierType.META_MASK
+                | Gdk.ModifierType.MOD2_MASK  # Quartz Command modifier
+            ):
+                # macOS supplies pixel deltas, including native momentum.
+                self._pan(dx, dy)
+                return True
+            if self._trackpad_scroll_pans or self._smooth_zoom:
+                sensitivity = 0.01 if self._trackpad_scroll_pans else 0.35
+                amount = max(-2.0, min(2.0, -dy * sensitivity))
             elif dy:
                 amount = 1.0 if dy < 0 else -1.0
         if amount:
