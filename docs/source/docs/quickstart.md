@@ -37,6 +37,12 @@ Download the latest [Windows portable ZIP](https://github.com/dakk/gweatherrouti
 You can install gweatherrouting from source, following the instructions in the repository [README.md](https://github.com/dakk/gweatherrouting).
 
 
+### Chart navigation on macOS
+
+Pinch the trackpad to zoom around the pointer. Scroll with two fingers to pan
+the chart horizontally or vertically; macOS scroll momentum is preserved.
+Control-scroll or Command-scroll also zooms. A mouse wheel zooms as before.
+
 First run
 ---------
 

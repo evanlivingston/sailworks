@@ -14,6 +14,8 @@ GNU General Public License for more details.
 For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
+from copy import deepcopy
+
 import gpxpy
 from weatherrouting import IsoPoint
 
@@ -21,9 +23,19 @@ from gweatherrouting.core.geo.track import Track
 
 
 class Routing(Track):
-    def __init__(self, name, points=[], isochrones=[], visible=True, collection=None):
+    def __init__(
+        self,
+        name,
+        points=[],
+        isochrones=[],
+        visible=True,
+        collection=None,
+        provenance=None,
+    ):
         super().__init__(name, points, visible, collection)
         self.isochrones = isochrones
+        # None explicitly means provenance is unknown, including legacy routes.
+        self.provenance = deepcopy(provenance)
 
     def to_gpx_object(self):
         gpx_route = gpxpy.gpx.GPXRoute()
@@ -38,10 +50,11 @@ class Routing(Track):
         c["isochrones"] = list(
             map(lambda x: list(map(lambda y: y.to_list(), x)), self.isochrones)
         )
+        c["provenance"] = deepcopy(self.provenance)
         return c
 
     @staticmethod
     def from_json(j):
         d = Track.from_json(j)
         ic = list(map(lambda x: list(map(IsoPoint.from_list, x)), j["isochrones"]))
-        return Routing(d.name, d.points, ic, d.visible)
+        return Routing(d.name, d.points, ic, d.visible, provenance=j.get("provenance"))

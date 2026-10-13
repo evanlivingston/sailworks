@@ -15,6 +15,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
 import logging
+from pathlib import Path
 from typing import Callable, List, Optional
 
 try:
@@ -38,6 +39,9 @@ from gweatherrouting.core.geo import (
     TrackCollection,
 )
 from gweatherrouting.core.polarwrapper import PolarWrapper
+from gweatherrouting.core.marine import MarineManager
+from gweatherrouting.core.marine.credentials import SystemCredentialStore
+from gweatherrouting.core.storage import DATA_DIR
 from gweatherrouting.core.utils import EventDispatcher
 
 logger = logging.getLogger("gweatherrouting")
@@ -117,6 +121,9 @@ class Core(EventDispatcher):
         self.routingManager = RoutingCollection()
         self.poiManager = POICollection()
         self.grib_manager = GribManager()
+        self.marine_manager = MarineManager(
+            Path(DATA_DIR) / "marine", credential_store=SystemCredentialStore()
+        )
         self.polar_manager = PolarManager()
         self.boat_info = BoatInfo()
         self.logManager = LogTrackCollection()
@@ -306,6 +313,7 @@ class Core(EventDispatcher):
         disable_coastline_checks=False,
         grib_override=None,
         polar_efficiency=None,
+        use_currents=False,
     ):
         polar = weatherrouting.Polar(polar_file)
 
@@ -327,6 +335,23 @@ class Core(EventDispatcher):
 
         grib = grib_override if grib_override is not None else self.grib_manager
 
+        environment = None
+        if use_currents:
+            from functools import partial
+            from gweatherrouting.core.marine.routing import (
+                CurrentIsoRouter,
+                CurrentRoutingEnvironment,
+                FrozenRoutingWind,
+                routing_utc,
+            )
+
+            grib = FrozenRoutingWind(self.grib_manager, grib_override)
+            start_datetime = routing_utc(start_datetime)
+            environment = CurrentRoutingEnvironment(
+                grib, self.marine_manager.fields.snapshot()
+            )
+            algorithm = partial(CurrentIsoRouter, environment=environment)
+
         routing = weatherrouting.Routing(
             algorithm,
             polar,
@@ -341,6 +366,7 @@ class Core(EventDispatcher):
             points_validity=pval,
             lines_validity=lval,
         )
+        routing.current_environment = environment
         return routing
 
     # Import a GPX file (tracks, pois and routings)

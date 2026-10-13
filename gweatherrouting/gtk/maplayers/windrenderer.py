@@ -116,7 +116,19 @@ class WindOverlayRenderer(OverlayRenderer):
             (max(p1[0], p2[0]) + 1, max(p1[1], p2[1]) + 1),
         )
         columns: dict[float, list[tuple[float, float, tuple[float, float]]]] = {}
-        for (source,) in job.charts:
+        # Merge overlapping forecasts by issue time, with one value per grid
+        # coordinate. Duplicate vertices make ragged, overlapping gradient cells.
+        points: dict[tuple, tuple] = {}
+        sources = sorted(
+            job.charts,
+            key=lambda item: (
+                item[0].start_time.timestamp()
+                if hasattr(item[0], "start_time")
+                else float("-inf")
+            ),
+            reverse=True,
+        )
+        for (source,) in sources:
             if job.cancel.is_set():
                 return []
             try:
@@ -127,7 +139,10 @@ class WindOverlayRenderer(OverlayRenderer):
                 logger.debug("Wind display source unavailable: %s", exc)
                 continue
             for point in wind:
-                columns.setdefault(point[2][1], []).append(point)
+                if np.isfinite(point[:2]).all():
+                    points.setdefault(tuple(point[2]), point)
+        for point in points.values():
+            columns.setdefault(point[2][1], []).append(point)
         return [
             sorted(columns[lon], key=lambda point: point[2][0])
             for lon in sorted(columns)

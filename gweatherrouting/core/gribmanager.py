@@ -107,9 +107,18 @@ class GribManager(weatherrouting.Grib):
         return len(self.gribs) > 0
 
     def get_wind_at(self, t, lat: float, lon: float):
-        for x in self.gribs:
+        """Use the newest enabled model run; older runs fill coverage gaps.
+
+        Equal reference times retain enabled-file order. Download time does not
+        affect priority, and sampling does not reorder the user's enabled list.
+        """
+        for x in sorted(
+            self.gribs, key=lambda g: g.start_time.timestamp(), reverse=True
+        ):
             try:
-                return x.get_wind_at(t, lat, lon)
+                answer = x.get_wind_at(t, lat, lon)
+                if answer is not None:
+                    return answer
             except Exception:
                 pass
 

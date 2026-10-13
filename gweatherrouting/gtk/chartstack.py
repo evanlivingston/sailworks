@@ -32,11 +32,16 @@ from .chartstack_poi import ChartStackPOI
 from .chartstack_routing import ChartStackRouting
 from .chartstack_track import ChartStackTrack
 from .gribmanagerwindow import GribFileFilter
+from .icons import TIDES_CURRENTS_ICON
 from .maplayers import AISMapLayer, GeoMapLayer, GribMapLayer, ToolsMapLayer
 from .maplayers.windcursor import WindCursorSampler
+from .maplayers.marinemaplayer import MarineMapLayer
 from .settings import SettingsManager
 from .widgets.mapwidget import MapWidget
 from .widgets.timetravel import TimeTravelWidget
+from .widgets.tooldock import ToolDock
+from .marinetoolpanel import MarineToolPanel
+from .tidetoolpanel import TideToolPanel
 
 logger = logging.getLogger("gweatherrouting")
 
@@ -69,7 +74,8 @@ class ChartStack(
         )
         self.builder.connect_signals(self)
 
-        self.pack_start(self.builder.get_object("chartcontent"), True, True, 0)
+        self.tool_dock = ToolDock(self.builder.get_object("chartcontent"), parent)
+        self.pack_start(self.tool_dock, True, True, 0)
 
         self.map = MapWidget()
         self.map.bind_display_settings(self.settings_manager)
@@ -102,6 +108,11 @@ class ChartStack(
         )
         self.map.layer_add(self.gribMapLayer)
 
+        self.marine_map_layer = MarineMapLayer(
+            self.core.marine_manager, self.time_control
+        )
+        self.map.layer_add(self.marine_map_layer)
+
         self.geo_map_layer = GeoMapLayer(self.core, self.time_control)
         self.map.layer_add(self.geo_map_layer)
 
@@ -125,11 +136,36 @@ class ChartStack(
         self.core.connect("boat_position", self.boat_info_handler)
 
         self.timetravel_widget = TimeTravelWidget(
-            self.parent, self.time_control, self.map
+            self.parent,
+            self.time_control,
+            self.map,
+            grib_manager=self.core.grib_manager,
+            marine_manager=self.core.marine_manager,
         )
         self.builder.get_object("timetravelcontainer").pack_start(
             self.timetravel_widget, True, True, 0
         )
+
+        self.marine_panel = MarineToolPanel(
+            self.core.marine_manager,
+            self.time_control,
+            self.map,
+            self.marine_map_layer,
+            self.core,
+        )
+        self.tide_panel = TideToolPanel(
+            self.core.marine_manager,
+            self.time_control,
+            self.map,
+            self.marine_map_layer,
+            settings_callback=self.marine_panel.open_settings,
+            core=self.core,
+        )
+        self.tool_dock.register(
+            "currents", "Currents", self.marine_panel, TIDES_CURRENTS_ICON
+        )
+        self.tool_dock.register("tides", "Tides", self.tide_panel, TIDES_CURRENTS_ICON)
+        self.tool_dock.connect("panel-visibility-changed", self._panel_visibility)
 
         self.show_all()
 
@@ -178,6 +214,17 @@ class ChartStack(
         self._wind_cursor.cancel()
         self.map.queue_draw()
 
+    def on_toggle_marine(self, widget):
+        if widget.get_active():
+            self.tool_dock.show_group(("currents", "tides"))
+        else:
+            self.tool_dock.hide_group(("currents", "tides"))
+
+    def _panel_visibility(self, dock, key, visible):
+        if key in ("currents", "tides"):
+            opened = any(self.tool_dock.is_open(k) for k in ("currents", "tides"))
+            self.builder.get_object("marine-layer-toggle").set_active(opened)
+
     def on_toggle_connections(self, widget):
         s = widget.get_active()
         if s:
@@ -221,6 +268,11 @@ class ChartStack(
         context = self.status_bar.get_context_id("Info")
         position = "Latitude: %f, Longitude: %f" % (lat, lon)
         view = (map._center_lat, map._center_lon, map._zoom)
+        moving = (
+            map._dragging
+            or getattr(map, "_zoom_animating", False)
+            or getattr(map, "_inertia", None)
+        )
 
         def show(wind):
             # Forecast/source/visibility changes also invalidate a queued readout.
@@ -232,17 +284,16 @@ class ChartStack(
             ):
                 return
             text = position
+            if not moving:
+                marine = self.marine_map_layer.cursor_text(lat, lon)
+                if marine:
+                    text = marine + " - " + text
             if wind:
                 text = "Wind %.1f°, %.1f kts - " % (wind[0], wind[1] * 1.94384) + text
             self.status_bar.pop(context)
             self.status_bar.push(context, text)
 
         show(None)
-        moving = (
-            map._dragging
-            or getattr(map, "_zoom_animating", False)
-            or getattr(map, "_inertia", None)
-        )
         if self.gribMapLayer.visible and not moving:
             self._wind_cursor.request(sources, forecast, lat, lon, show)
         else:
