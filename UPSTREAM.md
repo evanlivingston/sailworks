@@ -328,3 +328,65 @@ including NMEA session timing and measured polar collection in addition to the
 workspace/UI/rendering checks above. The integrated component changes share
 initialization and dock lifecycles in `55481bf`; upstream extraction should adapt
 one focused contribution at a time and validate each resulting branch.
+
+## NMEA recording controls
+
+- Status: candidate; reviewed in fork [PR #4](https://github.com/evanlivingston/gweatherrouting/pull/4)
+  on `feature/nmea-recording-controls` from `dev`. Functional commit: `e10f896`.
+- Scope: move recording into the shared NMEA component with a DAW transport
+  (Restart, Play/Pause, square Stop, red Record toggle). Both stop controls
+  preserve the captured data and plots. Remove Save, Clear, and the Logs time
+  cursor controls, crop markers, and crop action. Hide playback speed in live
+  mode. Loaded logs retain their full plotted track throughout playback, with
+  a moving cursor on each subplot.
+- Recordings: continuously write interpreted sentences and raw NMEA 2000
+  companion archives into the app data directory's `recordings` folder. Each
+  capture uses a UTC timestamp and exclusive creation, with a suffix for name
+  collisions. Starting another capture and closing the app retain prior files.
+  Show the current file path and explicit automatic-saving/stopped status in
+  the panel; the native load chooser starts in the recordings folder when it
+  exists and retains the interpreted-log file filters.
+- Dependencies: shared NMEA session/component and NMEA 2000 recording support
+  already present in `dev`; queue upstream extraction on those prerequisites.
+- Validation: 92 tests and 8 subtests pass across NMEA session/controls,
+  transport/recording, workspace, and polar UI. Tests verify files are readable while
+  capture is active, interpreted/raw archives survive shutdown and later
+  recordings, name collisions preserve existing files, and both stop controls
+  retain identical Matplotlib plots. Playback tests cover full-data plots,
+  cursor visibility on every subplot with a Retina/high-DPI canvas, pause,
+  restart, EOF, source switching, and hidden live-mode speed controls.
+  Static plots are cached; a native 300-point preview measured 505 ms for the
+  initial plot and 0.5 ms per cursor redraw including session notifications.
+  Existing graph sampling is retained, with the final point always included.
+  Black, Flake8, scoped mypy, native panel
+  preview, and diff checks pass. Hardware recording has not been exercised.
+- Intended upstream scope: session recording ownership, persistent timestamped
+  captures, reusable NMEA controls, Logs cleanup, and regression tests.
+  Exclude fork tracking.
+
+## Native filesystem pickers
+
+- Status: candidate; reviewed in fork [PR #4](https://github.com/evanlivingston/gweatherrouting/pull/4).
+  Functional commit: `aa7cdf6`; branch: `feature/nmea-recording-controls`.
+- Scope: use one GTK native-picker helper for all ten Open, Save, and folder
+  chooser locations: NMEA, GRIB, polar, GPX/track/route/POI, and chart directories.
+  Retain filters, default filenames/directories, modal parenting, and overwrite
+  confirmation; handle native ACCEPT/CANCEL responses.
+- Dependencies: existing picker migrations are independent; the NMEA callsite
+  depends on the shared NMEA component.
+- Validation: full suite passes 761 tests and 71 subtests. Native Open, Save,
+  and Select Folder configuration smoke checks pass. Black, Flake8, scoped
+  mypy, and diff checks pass. Polar import tests verify cancellation and import
+  with the floating window as parent.
+- Intended upstream scope: shared helper and focused callsite migrations,
+  with their import/cancel regression coverage. Exclude unrelated NMEA and
+  fork tracking changes.
+
+Fork PR #4 pre-merge validation: 761 tests and 71 subtests pass locally.
+CI reports an existing complexity failure in `ConnectionEditDialog.__init__`
+and four type errors in NMEA 2000 source/settings code. These files are unchanged
+by this PR; the complexity failure and all four type errors reproduce on `dev`
+in an isolated baseline worktree. With installed optional libraries, local full
+mypy reports additional existing library-typing errors on both branches; scoped
+checks of the changed source pass. The two full-tree Black formatting differences
+are also in unchanged baseline files. No new lint/type failures were introduced.

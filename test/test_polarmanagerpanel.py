@@ -183,7 +183,7 @@ class TestPolarManagerPanel(unittest.TestCase):
         dialog = Mock()
         dialog.run.return_value = Gtk.ResponseType.CANCEL
         with patch(
-            "gweatherrouting.gtk.polarmanagerwindow.Gtk.FileChooserDialog",
+            "gweatherrouting.gtk.polarmanagerwindow.file_chooser",
             return_value=dialog,
         ) as create:
             self.panel.on_open(None)
@@ -191,10 +191,10 @@ class TestPolarManagerPanel(unittest.TestCase):
         dialog.destroy.assert_called_once()
         self.assertEqual(len(self.manager.polars_files), 2)
         dialog.reset_mock()
-        dialog.run.return_value = Gtk.ResponseType.OK
+        dialog.run.return_value = Gtk.ResponseType.ACCEPT
         dialog.get_filename.return_value = "/tmp/imported.pol"
         with patch(
-            "gweatherrouting.gtk.polarmanagerwindow.Gtk.FileChooserDialog",
+            "gweatherrouting.gtk.polarmanagerwindow.file_chooser",
             return_value=dialog,
         ):
             self.panel.on_open(None)

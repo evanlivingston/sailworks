@@ -8,6 +8,8 @@ import requests
 gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk
 
+from gweatherrouting.gtk.widgets.filechooser import file_chooser
+
 logger = logging.getLogger("gweatherrouting")
 
 PolFileFilter = Gtk.FileFilter()
@@ -209,16 +211,8 @@ class PolarManagerPanel(Gtk.Box):
         parent_window = (
             toplevel if isinstance(toplevel, Gtk.Window) else self.parent_window
         )
-        dialog = Gtk.FileChooserDialog(
-            "Please choose a file",
-            parent_window,
-            Gtk.FileChooserAction.OPEN,
-            (
-                Gtk.STOCK_CANCEL,
-                Gtk.ResponseType.CANCEL,
-                Gtk.STOCK_OPEN,
-                Gtk.ResponseType.OK,
-            ),
+        dialog = file_chooser(
+            "Please choose a file", parent_window, Gtk.FileChooserAction.OPEN
         )
 
         dialog.add_filter(PolFileFilter)
@@ -226,7 +220,7 @@ class PolarManagerPanel(Gtk.Box):
         response = dialog.run()
         filepath = dialog.get_filename()
         dialog.destroy()
-        if response == Gtk.ResponseType.OK:
+        if response == Gtk.ResponseType.ACCEPT:
             self.polar_manager.add_polar_file(filepath)
 
     def refresh_polars_tab(self, widget=None):

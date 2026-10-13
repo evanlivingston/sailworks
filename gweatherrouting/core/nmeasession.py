@@ -1,6 +1,8 @@
 """One selected instrument stream for charts, logs and polar performance."""
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from threading import RLock
 from typing import List, Optional, Tuple
 
@@ -8,7 +10,9 @@ import pynmea2
 import nmeatoolkit as nt
 
 from .datasource import AISDataPacket, DataPacket, NMEADataPacket
+from .instrumentrecording import InstrumentRecording
 from .polarperformance import PerformanceHistory
+from .storage import DATA_DIR
 from .utils import EventDispatcher
 
 
@@ -20,6 +24,7 @@ class NMEALog:
     timestamped: bool
     samples: tuple = ()
     points: tuple = ()
+    point_offsets: tuple = ()
 
     @property
     def duration(self):
@@ -73,6 +78,7 @@ def read_nmea_log(path):
     """
     entries: List[Tuple[float, DataPacket]] = []
     skipped = 0
+    point_offsets = []
     timing = _LogTiming()
     history = PerformanceHistory(max_age=50, interval=0)
     translator = nt.TrackPointTranslator()
@@ -89,7 +95,11 @@ def read_nmea_log(path):
                 elapsed = timing.offset(packet, len(entries))
                 setattr(packet, "log_index", line_index)
                 history.ingest(packet.data, now=line_index)
+                previous_points = len(translator.track)
                 _track_sentence(translator, wind_pipe, packet)
+                point_offsets.extend(
+                    [elapsed] * (len(translator.track) - previous_points)
+                )
                 entries.append((elapsed, packet))
             except (pynmea2.ParseError, ValueError, AttributeError):
                 skipped += 1
@@ -107,6 +117,7 @@ def read_nmea_log(path):
         timing.first_stamp is not None,
         history.snapshot()[1],
         tuple(translator.track),
+        tuple(point_offsets),
     )
 
 
@@ -117,7 +128,7 @@ class NMEASession(EventDispatcher):
     atomic, so live data cannot be mixed into a replay batch.
     """
 
-    def __init__(self, connections):
+    def __init__(self, connections, recording_directory=None):
         super().__init__()
         self.connections = connections
         self.lock = RLock()
@@ -133,8 +144,15 @@ class NMEASession(EventDispatcher):
         self.error = ""
         self.history = PerformanceHistory()
         self.replay_history = PerformanceHistory(max_age=50, interval=0)
+        self.recording = False
+        self._closed = False
+        self.recorder: Optional[InstrumentRecording] = None
+        self.recording_directory = Path(
+            recording_directory or Path(DATA_DIR) / "recordings"
+        )
         self._generation = 0
         connections.connect("data", self._live_data)
+        connections.connect("nmea2000", self._record_raw)
 
     @property
     def active_history(self):
@@ -152,12 +170,16 @@ class NMEASession(EventDispatcher):
     def _live_data(self, packets):
         with self.lock:
             if self.source == "live" and self.streaming and not self.loading:
+                if self.recording:
+                    assert self.recorder is not None
+                    self.recorder.write_packets(packets)
                 self._deliver(packets)
 
     def select_source(self, source):
         with self.lock:
             if source == self.source:
                 return
+            self.stop_recording()
             self.playing = False
             self.source = source
             if source == "log":
@@ -168,11 +190,14 @@ class NMEASession(EventDispatcher):
 
     def set_streaming(self, active):
         with self.lock:
+            if not active:
+                self.stop_recording()
             self.streaming = active
             self.dispatch("changed", None)
 
     def begin_load(self):
         with self.lock:
+            self.stop_recording()
             self._generation += 1
             self.loading = True
             self.playing = False
@@ -241,9 +266,71 @@ class NMEASession(EventDispatcher):
                 self.playing = False
             self.dispatch("changed", None)
 
+    @property
+    def recording_path(self):
+        """The current or most recent capture, already saved on disk."""
+        return self.recorder.path if self.recorder is not None else None
+
+    def start_recording(self):
+        with self.lock:
+            if (
+                self._closed
+                or self.recording
+                or self.loading
+                or self.source != "live"
+                or not self.streaming
+            ):
+                return
+            self.recording_directory.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+            index = 0
+            while True:
+                suffix = f"-{index}" if index else ""
+                recorder = InstrumentRecording(
+                    self.recording_directory / f"nmea-{stamp}{suffix}.log"
+                )
+                try:
+                    recorder.start(exclusive=True)
+                except FileExistsError:
+                    index += 1
+                    continue
+                self.recorder = recorder
+                break
+            self.recording = True
+            self.dispatch("reset", None)
+            self.dispatch("changed", None)
+
+    def stop_recording(self):
+        with self.lock:
+            if not self.recording:
+                return
+            self.recording = False
+            assert self.recorder is not None
+            self.recorder.close()
+            self.dispatch("changed", None)
+
+    def stop(self):
+        """Stop capture or replay without resetting either data history."""
+        with self.lock:
+            if self.recording:
+                self.stop_recording()
+            elif self.playing:
+                self.set_playing(False)
+
+    def _record_raw(self, messages):
+        with self.lock:
+            if self.recording:
+                assert self.recorder is not None
+                self.recorder.write_nmea2000(messages)
+
     def close(self):
         with self.lock:
+            if self._closed:
+                return
+            self._closed = True
+            self.stop_recording()
             self.playing = False
             self.streaming = False
             self._generation += 1
             self.connections.disconnect("data", self._live_data)
+            self.connections.disconnect("nmea2000", self._record_raw)

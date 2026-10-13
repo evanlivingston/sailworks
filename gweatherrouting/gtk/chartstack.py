@@ -23,6 +23,8 @@ gi.require_version("Gtk", "3.0")
 
 from gi.repository import Gdk, Gtk
 
+from gweatherrouting.gtk.widgets.filechooser import file_chooser
+
 from gweatherrouting.core import Core, TimeControl
 
 from .charts.chartmanager import ChartManager
@@ -419,17 +421,7 @@ class ChartStack(
         )
 
     def export_as_gpx(self, widget):
-        dialog = Gtk.FileChooserDialog(
-            "Export as GPX",
-            self.parent,
-            Gtk.FileChooserAction.SAVE,
-            (
-                Gtk.STOCK_CANCEL,
-                Gtk.ResponseType.CANCEL,
-                Gtk.STOCK_SAVE,
-                Gtk.ResponseType.OK,
-            ),
-        )
+        dialog = file_chooser("Export as GPX", self.parent, Gtk.FileChooserAction.SAVE)
         dialog.set_do_overwrite_confirmation(True)
 
         filter_gpx = Gtk.FileFilter()
@@ -439,7 +431,7 @@ class ChartStack(
         dialog.add_filter(filter_gpx)
 
         response = dialog.run()
-        if response == Gtk.ResponseType.OK:
+        if response == Gtk.ResponseType.ACCEPT:
             filename = dialog.get_filename()
             dialog.destroy()
             self.core.export_gpx(filename)
@@ -449,16 +441,8 @@ class ChartStack(
             dialog.destroy()
 
     def on_import(self, widget):
-        dialog = Gtk.FileChooserDialog(
-            "Please choose a file",
-            self.parent,
-            Gtk.FileChooserAction.OPEN,
-            (
-                Gtk.STOCK_CANCEL,
-                Gtk.ResponseType.CANCEL,
-                Gtk.STOCK_OPEN,
-                Gtk.ResponseType.OK,
-            ),
+        dialog = file_chooser(
+            "Please choose a file", self.parent, Gtk.FileChooserAction.OPEN
         )
 
         filter_gpx = Gtk.FileFilter()
@@ -471,7 +455,7 @@ class ChartStack(
 
         response = dialog.run()
 
-        if response == Gtk.ResponseType.OK:
+        if response == Gtk.ResponseType.ACCEPT:
             filepath = dialog.get_filename()
             dialog.destroy()
 

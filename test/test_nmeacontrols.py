@@ -12,7 +12,7 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk
 
-from gweatherrouting.core.nmeasession import read_nmea_log
+from gweatherrouting.core.nmeasession import NMEASession, read_nmea_log
 from gweatherrouting.core.utils import EventDispatcher
 from gweatherrouting.gtk.nmeacontrols import NMEAControls
 from gweatherrouting.gtk.widgets.tooldock import ToolDock
@@ -22,7 +22,12 @@ from test.test_polarperformance import water, wind
 
 class TestSharedNMEAControls(unittest.TestCase):
     def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
         self.core = SimpleNamespace(connectionManager=EventDispatcher())
+        self.core.nmea_session = NMEASession(
+            self.core.connectionManager, directory.name
+        )
         self.window = Gtk.Window()
         self.tabs = Gtk.Notebook()
         self.window.add(self.tabs)
@@ -105,36 +110,58 @@ class TestSharedNMEAControls(unittest.TestCase):
         self.assertEqual(self.views[1].source.get_active(), 1)
         self.assertTrue(self.views[2].load_button.get_sensitive())
 
+    def test_recording_controls_share_state_and_survive_view_destruction(self):
+        for view in self.views:
+            self.assertFalse(hasattr(view, "save_button"))
+            self.assertFalse(hasattr(view, "clear_button"))
+        self.views[0].record_button.clicked()
+        self.assertTrue(self.core.nmea_session.recording)
+        for view in self.views:
+            self.assertTrue(view.record_button.get_active())
+            self.assertTrue(view.stop_button.get_sensitive())
+            self.assertIn("saving automatically", view.status.get_text())
+            self.assertIn(
+                str(self.core.nmea_session.recording_path),
+                view.recording_file.get_text(),
+            )
+        self.views[0].destroy()
+        self.assertTrue(self.core.nmea_session.recording)
+        self.views[1].stop_button.clicked()
+        self.assertFalse(self.core.nmea_session.recording)
+        self.assertTrue(
+            all(
+                "Recording stopped" in view.status.get_text() for view in self.views[1:]
+            )
+        )
+        self.assertTrue(self.core.nmea_session.recording_path.exists())
+        self.views[1].live.set_active(False)
+        self.assertFalse(self.views[2].record_button.get_sensitive())
+
+    def test_playback_speed_hidden_for_live_even_after_show_all(self):
+        for view in self.views:
+            self.assertFalse(view.playback_speed_box.get_visible())
+        self.views[0].source.set_active(1)
+        for view in self.views:
+            self.assertTrue(view.playback_speed_box.get_visible())
+            self.assertTrue(view.speed.get_visible())
+        self.views[1].speed.set_active_id("5")
+        self.views[2].source.set_active(0)
+        self.window.show_all()
+        for view in self.views:
+            self.assertFalse(view.playback_speed_box.get_visible())
+        self.views[0].source.set_active(1)
+        self.assertEqual(self.views[0].speed.get_active_id(), "5")
+
+    def test_logs_builder_has_no_recording_crop_or_cursor_controls(self):
+        builder = Gtk.Builder()
+        builder.add_from_file(
+            str(Path(__file__).parents[1] / "gweatherrouting/gtk/logsstack.glade")
+        )
+        for name in ("record-button", "stop-button", "timetravelcontainer"):
+            self.assertIsNone(builder.get_object(name))
+
 
 class TestLogsSelectedSource(unittest.TestCase):
-    def test_save_loaded_log_and_cropped_copy_preserve_raw_archive(self):
-        from gweatherrouting.gtk.logsstack import LogsStack
-        import datetime
-
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "race.log"
-            path.write_text("\n".join([rmc("120000"), rmc("120010"), rmc("120020")]))
-            raw = Path(str(path) + ".n2k.log")
-            raw.write_text("original PGN archive")
-            log = read_nmea_log(path)
-            host = SimpleNamespace(
-                session=SimpleNamespace(source="log", log=log), _export_crop=None
-            )
-            saved = Path(directory) / "saved.log"
-            LogsStack.save_to_file(host, saved)
-            self.assertEqual(len(read_nmea_log(saved).entries), 3)
-            self.assertEqual(Path(str(saved) + ".n2k.log").read_text(), raw.read_text())
-            host._export_crop = (
-                datetime.datetime(2026, 1, 1, 12, 0, 5),
-                datetime.datetime(2026, 1, 1, 12, 0, 15),
-            )
-            LogsStack.save_to_file(host, saved)
-            cropped = read_nmea_log(saved)
-            self.assertEqual(len(cropped.entries), 1)
-            self.assertEqual(cropped.entries[0][1].data.timestamp.second, 10)
-            self.assertEqual(len(read_nmea_log(path).entries), 3)
-            self.assertEqual(Path(str(saved) + ".n2k.log").read_text(), raw.read_text())
-
     def test_queued_live_packets_are_discarded_after_source_reset(self):
         from gweatherrouting.gtk.logsstack import LogsStack
 

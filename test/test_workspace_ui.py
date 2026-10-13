@@ -82,6 +82,7 @@ class TestWorkspacePreferences(unittest.TestCase):
 
     def build(self):
         core = Core()
+        core.nmea_session.recording_directory = self.path.parent / "recordings"
         core.logManager.log.points.clear()
         core.routingManager.elements.clear()
         core.trackManager.elements.clear()
@@ -199,3 +200,141 @@ class TestWorkspacePreferences(unittest.TestCase):
             (saved["window"]["width"], saved["window"]["height"]),
         )
         self.assertEqual(restored.polarStack.body.get_position(), 430)
+
+    def test_both_recording_stop_buttons_preserve_capture_and_matplotlib_plot(self):
+        import cairo
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from gweatherrouting.core.datasource import NMEADataPacket
+        from test.test_nmeasession import rmc
+        from test.test_polarperformance import water, wind
+
+        app = self.build()
+        session = app.core.nmea_session
+        controls = app.logsStack.nmea
+        # A previously loaded log must not interfere with stopping live capture.
+        previous = self.path.parent / "previous.log"
+        previous.write_text("\n".join([rmc("110000"), rmc("110010")]))
+        controls.load_path(str(previous))
+        deadline = time.monotonic() + 5
+        while session.loading and time.monotonic() < deadline:
+            self.drain()
+        self.assertIsNotNone(session.log)
+        session.select_source("live")
+        for button_name in ("record_button", "stop_button"):
+            with self.subTest(stop_button=button_name):
+                controls.record_button.clicked()
+                packets = [
+                    NMEADataPacket.parse(str(sentence))
+                    for sentence in (rmc("120000"), water(), wind(), rmc("120010"))
+                ]
+                app.core.connectionManager.dispatch("data", packets)
+                self.drain()
+                points = tuple(app.logsStack.data)
+                history = session.active_history.snapshot()[1]
+                self.assertTrue(points)
+
+                def render_plot():
+                    surface = cairo.ImageSurface(cairo.FORMAT_RGB24, 900, 600)
+                    widget = SimpleNamespace(
+                        get_allocation=lambda: SimpleNamespace(width=900, height=600)
+                    )
+                    app.logsStack.on_graph_draw(widget, cairo.Context(surface))
+                    surface.flush()
+                    return bytes(surface.get_data())
+
+                before = render_plot()
+                self.assertTrue(any(before))
+                reset = Mock()
+                session.connect("reset", reset)
+                getattr(controls, button_name).clicked()
+                self.drain()
+                session.disconnect("reset", reset)
+                reset.assert_not_called()
+                self.assertFalse(session.recording)
+                self.assertFalse(controls.record_button.get_active())
+                self.assertFalse(controls.stop_button.get_sensitive())
+                self.assertIn(
+                    "Recording stopped · saved automatically",
+                    controls.status.get_text(),
+                )
+                self.assertEqual(session.active_history.snapshot()[1], history)
+                self.assertEqual(tuple(app.logsStack.data), points)
+                self.assertEqual(render_plot(), before)
+                saved = session.recording_path
+                self.assertEqual(len(saved.read_text().splitlines()), len(packets))
+
+    def test_log_playback_keeps_full_plots_and_moves_cursor_without_rerendering(self):
+        import cairo
+        import numpy
+        import matplotlib.pyplot as plt
+        from types import SimpleNamespace
+        from gweatherrouting.core.nmeasession import read_nmea_log
+        from test.test_nmeasession import rmc
+        from test.test_polarperformance import water, wind
+
+        app = self.build()
+        session = app.core.nmea_session
+        stack = app.logsStack
+        path = self.path.parent / "playback.log"
+        path.write_text(
+            "\n".join(
+                map(str, [rmc("120000"), water(), wind(), rmc("120010"), rmc("120020")])
+            )
+        )
+        log = read_nmea_log(path)
+        session.finish_load(session.begin_load(), log)
+        self.assertEqual(tuple(stack.data), log.points)
+        widget = SimpleNamespace(
+            get_allocation=lambda: SimpleNamespace(width=900, height=600)
+        )
+
+        def render():
+            surface = cairo.ImageSurface(cairo.FORMAT_RGB24, 900, 600)
+            stack.on_graph_draw(widget, cairo.Context(surface))
+            surface.flush()
+            pixels = numpy.frombuffer(surface.get_data(), dtype=numpy.uint8).reshape(
+                600, 900, 4
+            )
+            amber = (
+                (pixels[:, :, 2] > 180)
+                & (pixels[:, :, 1] > 100)
+                & (pixels[:, :, 0] < 100)
+            )
+            for left, top, width, height, start, end in stack._plot_cache[3]:
+                rows = numpy.any(amber[int(top) : int(top + height)], axis=1)
+                self.assertGreater(numpy.count_nonzero(rows), height / 2)
+            return bytes(surface.get_data())
+
+        with (
+            patch.dict(plt.rcParams, {"figure.dpi": 200}),
+            patch.object(stack, "_render_graph", wraps=stack._render_graph) as draw,
+        ):
+            initial = render()
+            session.set_playing(True)
+            self.assertEqual(tuple(stack.data), log.points)
+            beginning = render()
+            session.advance(5)
+            self.drain()
+            middle = render()
+            self.assertEqual(tuple(stack.data), log.points)
+            self.assertNotEqual(middle, beginning)
+            self.assertEqual(stack._playback_time().second, 5)
+            session.stop()
+            self.assertEqual(render(), middle)
+            draw.assert_called_once()  # Moving/pausing only repaints the cursor.
+        session.restart()
+        self.assertEqual(tuple(stack.data), log.points)
+        self.assertEqual(render(), initial)
+        session.set_playing(True)
+        session.advance(100)
+        self.drain()
+        self.assertFalse(session.playing)
+        self.assertEqual(tuple(stack.data), log.points)
+        self.assertEqual(stack._playback_time().second, 20)
+        session.select_source("live")
+        self.assertEqual(stack.data, [])
+        self.assertIsNone(stack._playback_time())
+        session.select_source("log")
+        self.assertEqual(tuple(stack.data), log.points)
+        self.assertEqual(render(), initial)

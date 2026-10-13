@@ -24,6 +24,8 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, GObject, Gtk
 
+from gweatherrouting.gtk.widgets.filechooser import file_chooser
+
 logger = logging.getLogger("gweatherrouting")
 
 GribFileFilter = Gtk.FileFilter()
@@ -264,23 +266,15 @@ class GribManagerWindow:
         self.update_local_gribs()
 
     def on_open(self, widget):
-        dialog = Gtk.FileChooserDialog(
-            "Please choose a file",
-            self.window,
-            Gtk.FileChooserAction.OPEN,
-            (
-                Gtk.STOCK_CANCEL,
-                Gtk.ResponseType.CANCEL,
-                Gtk.STOCK_OPEN,
-                Gtk.ResponseType.OK,
-            ),
+        dialog = file_chooser(
+            "Please choose a file", self.window, Gtk.FileChooserAction.OPEN
         )
 
         dialog.add_filter(GribFileFilter)
 
         response = dialog.run()
 
-        if response == Gtk.ResponseType.OK:
+        if response == Gtk.ResponseType.ACCEPT:
             filepath = dialog.get_filename()
             dialog.destroy()
 

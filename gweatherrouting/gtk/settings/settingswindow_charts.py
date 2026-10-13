@@ -21,6 +21,8 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, Gtk
 
+from gweatherrouting.gtk.widgets.filechooser import file_chooser
+
 from gweatherrouting.gtk.charts.chartlayer import ChartLayer
 
 from .settingswindow_base import SettingsWindowBase
@@ -127,21 +129,15 @@ class SettingsWindowCharts(SettingsWindowBase):
         self.reload_chart()
 
     def on_add_raster_chart(self, widget):
-        dialog = Gtk.FileChooserDialog(
+        dialog = file_chooser(
             "Please select a directory",
             self.window,
             Gtk.FileChooserAction.SELECT_FOLDER,
-            (
-                Gtk.STOCK_CANCEL,
-                Gtk.ResponseType.CANCEL,
-                Gtk.STOCK_OPEN,
-                Gtk.ResponseType.OK,
-            ),
         )
 
         response = dialog.run()
 
-        if response == Gtk.ResponseType.OK:
+        if response == Gtk.ResponseType.ACCEPT:
             path = dialog.get_filename() + "/"
             rast_l = self.parent.chart_manager.load_raster_layer(path)
             dialog.destroy()
@@ -157,21 +153,15 @@ class SettingsWindowCharts(SettingsWindowBase):
             dialog.destroy()
 
     def on_add_vector_chart(self, widget):
-        dialog = Gtk.FileChooserDialog(
+        dialog = file_chooser(
             "Please select a vector chart directory",
             self.window,
             Gtk.FileChooserAction.SELECT_FOLDER,
-            (
-                Gtk.STOCK_CANCEL,
-                Gtk.ResponseType.CANCEL,
-                Gtk.STOCK_OPEN,
-                Gtk.ResponseType.OK,
-            ),
         )
 
         response = dialog.run()
 
-        if response == Gtk.ResponseType.OK:
+        if response == Gtk.ResponseType.ACCEPT:
             path = dialog.get_filename() + "/"
             dialog.destroy()
 
