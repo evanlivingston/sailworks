@@ -20,6 +20,44 @@ for integrating tested work into our development version.
 Verify actual remotes and branches before using them; do not assume `origin`
 means our fork or that the parent's default branch is `main`.
 
+## Default workflow for every task
+
+Develop and validate locally first. Fork review and upstream contribution are
+separate delivery tracks; upstream discussions, review latency, or rejection
+must not block authorized development or approved integration into `dev`.
+
+1. Start independent work from `dev`, using an isolated worktree when another
+   task has uncommitted changes. Base dependent work on its prerequisite feature
+   branch when necessary, and record that dependency.
+2. Implement the complete local behavior and run checks appropriate to the
+   change. Preserve calculation fidelity when optimizing; report measured
+   performance and any changed approximation or source-selection behavior.
+3. Keep commits usable on their own. Separate reusable code from fork policy,
+   local profiling artifacts, and unrelated work. Do not make broken commits
+   merely to achieve smaller upstream patches.
+4. When PR creation is authorized, open a regular PR in our fork for human
+   review. Report validation results honestly, distinguishing new failures from
+   failures reproduced on the base branch. Use the fork PR template.
+5. After the user approves merging, integrate tested work into `dev` without
+   waiting for upstream. Start subsequent independent features from `dev`.
+6. Keep possible upstream contributions recorded in `UPSTREAM.md`. Preparing or
+   submitting them is a separate task: fetch parent `master`, extract one
+   focused contribution, and validate it in its own worktree. Do not freeze
+   local development while waiting for that contribution to be accepted.
+
+For each substantial fork PR, update its `UPSTREAM.md` entry with the review
+link, functional commits, dependencies, validation, and intended upstream scope.
+Classify upstream work as a candidate, queued on a dependency, submitted, landed,
+or fork-only. This is lightweight contribution tracking, not a requirement to
+start upstream discussions for every local change. Apply upstream contribution
+requirements when preparing the upstream submission, including AI disclosure.
+
+Bug fixes found during fork or upstream review must return to `dev` and relevant
+active feature branches after validation. Use focused follow-up commits; avoid
+rewriting shared history or requiring new local features to wait for upstream
+review. Reconcile code after upstream squash merges before dropping or replaying
+local changes. Keep fork-only changes documented when upstream declines them.
+
 ## Review in our fork first
 
 - Open regular PRs in `evanlivingston/gweatherrouting` for the user's review
@@ -31,7 +69,8 @@ means our fork or that the parent's default branch is `main`.
 - After fork review, prepare focused `upstream/<topic>` branches from freshly
   fetched parent `master` and validate them independently. Split the reviewed
   fork changes into smaller upstream contributions as needed; keep policy,
-  local benchmark artifacts, and unrelated work out of those branches.
+  local benchmark artifacts, the fork PR template, and unrelated work out
+  of those branches.
 - Keep review fixes in the fork feature branch and any dependent branch. If a
   dependent PR targets that branch, retarget it to `dev` after its prerequisite
   merges and verify its resulting diff and checks before merging it.

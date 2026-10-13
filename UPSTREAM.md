@@ -58,3 +58,29 @@ work, and forecast recovery may need separate upstream contributions. The
 newest-run wind policy relates to upstream issue #185; marine routing relates to
 #158 but does not implement arbitrary current GRIB imports. Existing upstream
 PRs #267–#270 are unchanged by these fork reviews.
+
+## Contribution queue
+
+This queue records review and extraction boundaries. Local development continues
+while an item waits for human review, a dependency, or upstream feedback.
+"Candidate" means a possible future submission, not authorization to publish it.
+Keep validation tied to the tested snapshot; rerun relevant checks after review
+fixes, retargeting, or adapting code to upstream.
+
+| Contribution | Fork review | Functional commits | Local validation | Upstream disposition |
+| --- | --- | --- | --- | --- |
+| Latest wind selection and gradient fixes | [#2](https://github.com/evanlivingston/gweatherrouting/pull/2), targets `dev` | `5646ea4` | 420 tests, 38 subtests; Black and Flake8 pass | Candidate: focused adaptation for issue #185; coordinate display changes with existing upstream PR #270 |
+| Tides and current-aware routing | [#3](https://github.com/evanlivingston/gweatherrouting/pull/3), targets `feature/latest-wind` | `0dc8392`, depends on `5646ea4` | 624 tests, 54 subtests; Black and Flake8 pass; wheel build passes | Candidates: separate data/provider, UI, routing, recovery and performance contributions; assess prerequisites before submission; related to #158 |
+| Local profiling records | Included in fork #3 | `f662d8f` | Historical measurements and reproduction notes | Fork-only artifacts; extract portable benchmark tools separately if useful |
+| Fork workflow and PR template | Included in fork #3 | Separate policy commits | Documentation and diff checks | Fork-only; exclude from parent-project PRs |
+
+Both code snapshots reproduce the same 31 repository-wide mypy errors in six
+unchanged files as baseline `dev` in the current native environment, with no new
+errors. Earlier validation results above used a different dependency environment;
+they are historical records rather than evidence that the current full type
+check passes.
+
+After fork #2 merges with user approval, retarget #3 to `dev`, verify that its
+diff contains only the remaining work, and rerun relevant checks before merging.
+Upstream submission requires separate authorization. Neither fork PR has been
+merged as part of establishing this workflow.
