@@ -44,9 +44,12 @@ def create_data_source(config):
     """Build a source from its transport and wire-format configuration."""
     protocol = config["protocol"]
     if protocol in N2K_PROTOCOLS:
-        if protocol == "actisense" and config["type"] == "serial":
+        wire_format = config.get("format", protocol)
+        if wire_format == "nmea2000":
+            wire_format = "actisense"
+        if wire_format == "actisense" and config["type"] == "serial":
             return ActisenseDataSource(
-                protocol,
+                wire_format,
                 config["direction"],
                 config["data-port"],
                 config["baudrate"],
@@ -68,7 +71,8 @@ def create_data_source(config):
     )
 
 
-# { type: 'serial|network', protocol: 'nmea0183', direction: 'in|out|both' }
+# { type: 'serial|network', protocol: 'nmea0183|nmea2000', direction: 'in|out|both' }
+# NMEA 2000 connections also store the gateway's output format separately.
 # Serial: { data-port: '/dev/ttyACM0', baudrate: 9600 }
 # Network: { network: 'tcp|udp', host: 'localhost', port: '1234' }
 

@@ -19,6 +19,8 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk
 
+from gweatherrouting.core.nmea2000datasource import N2K_FORMATS
+
 from .connectioneditdialog import ConnectionEditDialog
 from .settingswindow_base import SettingsWindowBase
 
@@ -29,11 +31,22 @@ class ConnectionListBoxRow(Gtk.ListBoxRow):
         self.data = data
 
         label = Gtk.Label()
+        protocol = data["protocol"]
+        wire_format = data.get("format")
+        if protocol in N2K_FORMATS:
+            wire_format = wire_format or protocol
+            protocol = "nmea2000"
+        protocol_label = {
+            "nmea0183": "NMEA 0183",
+            "nmea2000": "NMEA 2000",
+        }.get(protocol, protocol)
+        if protocol == "nmea2000" and wire_format in N2K_FORMATS:
+            protocol_label += " / " + N2K_FORMATS[wire_format]["label"]
 
         if self.data["type"] == "serial":
             label.set_markup(
                 "<b>Serial [{}, {}]</b> Port: {} (Baudrate: {})".format(
-                    data["protocol"],
+                    protocol_label,
                     data["direction"],
                     data["data-port"],
                     data["baudrate"],
@@ -42,7 +55,7 @@ class ConnectionListBoxRow(Gtk.ListBoxRow):
         elif self.data["type"] == "network":
             label.set_markup(
                 "<b>Network [{}, {}]</b> Host: {} (Port: {})".format(
-                    data["protocol"], data["direction"], data["host"], data["port"]
+                    protocol_label, data["direction"], data["host"], data["port"]
                 )
             )
 

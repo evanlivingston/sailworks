@@ -19,7 +19,10 @@ from gweatherrouting.core.nmea2000 import (
 )
 from gweatherrouting.core.actisensedatasource import ActisenseDataSource
 from gweatherrouting.core.nmea2000datasource import NMEA2000DataSource
-from gweatherrouting.core.connectionmanager import ConnectionManager
+from gweatherrouting.core.connectionmanager import (
+    ConnectionManager,
+    create_data_source,
+)
 from gweatherrouting.core.instrumentrecording import InstrumentRecording
 
 NOW = datetime(2026, 10, 12, 23, 59, 59, 123000, tzinfo=timezone.utc)
@@ -271,6 +274,24 @@ def test_n2k_ascii_network_source_reads_tcp_stream():
         assert source.read()[0].data.sentence_type == "HDT"
         assert source.raw_messages[0].pgn == 127250
         source.close()
+
+
+def test_nmea2000_protocol_keeps_gateway_format_separate():
+    source = create_data_source(
+        {
+            "type": "network",
+            "protocol": "nmea2000",
+            "format": "n2k_ascii",
+            "direction": "in",
+            "network": "tcp",
+            "host": "127.0.0.1",
+            "port": 10110,
+        }
+    )
+    assert isinstance(source, NMEA2000DataSource)
+    assert source.protocol == "nmea2000"
+    assert source.format == "n2k_ascii"
+    assert source.decoder.__class__ is N2KAsciiDecoder
 
 
 def test_input_only():

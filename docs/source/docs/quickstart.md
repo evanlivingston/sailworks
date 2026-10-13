@@ -114,10 +114,10 @@ gateway-local receive-mode command at connection time, but the app does not send
 vessel-control or NMEA 2000 transmit messages.
 
 1. Connect the gateway to the powered NMEA 2000 network and your computer.
-2. In **Settings > Connections**, add a connection using the output format your
-   gateway provides. For an Actisense NGT-1, choose **NMEA 2000 — Actisense BST**.
-   For a gateway configured to output Actisense N2K ASCII, choose
-   **NMEA 2000 — N2K ASCII**; that format can use a serial port or a TCP/UDP
+2. In **Settings > Connections**, set **Protocol** to **NMEA 2000**, then
+   choose the **Gateway data format** your gateway provides. For an Actisense
+   NGT-1, choose **Actisense BST**. For a gateway configured to output
+   **N2K ASCII**, choose that format; it can use a serial port or a TCP/UDP
    network connection.
 3. For a serial gateway, select its serial port (on macOS, normally
    `/dev/cu.usbserial-...`). If your
@@ -162,8 +162,8 @@ python3 tools/simulate_actisense.py
 ```
 
 The simulator prints a pseudo-terminal path, such as `/dev/ttys012`. Enter that
-path in the connection dialog's serial-port field, choose **NMEA 2000 —
-Actisense BST** and 230400 baud, and leave the simulator running. It sends
+path in the connection dialog's serial-port field, choose **NMEA 2000** and
+**Actisense BST**, set 230400 baud, and leave the simulator running. It sends
 synthetic sailing data near Vancouver: GPS position, heading, wind, water speed,
 depth and temperature. You can watch the dashboard and make/save a Logs
 recording through the same binary input path used by the real interface. Stop

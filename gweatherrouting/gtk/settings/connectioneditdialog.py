@@ -27,8 +27,8 @@ from gweatherrouting.core.nmea2000datasource import N2K_FORMATS
 ctypes = ["Network", "Serial"]
 ntypes = ["TCP", "UDP"]
 directions = ["In", "Out", "Both"]
-protocols = ["nmea0183"] + list(N2K_FORMATS)
-protocol_labels = ["NMEA 0183"] + [config["label"] for config in N2K_FORMATS.values()]
+protocols = ["nmea0183", "nmea2000"]
+protocol_labels = ["NMEA 0183", "NMEA 2000"]
 baudrates = [4800, 9600, 19200, 38400, 57600, 115200, 230400]
 
 
@@ -73,6 +73,14 @@ class ConnectionEditDialog:
             self.protocolCombo.append(protocol, label)
         self.protocolCombo.set_active(0)
 
+        self.n2kFormatCombo = self.builder.get_object("n2k-format-combo")
+        for wire_format, config in N2K_FORMATS.items():
+            self.n2kFormatCombo.append(wire_format, config["label"])
+        self.n2kFormatCombo.set_active(0)
+        self.n2kFormatLabel = self.builder.get_object("n2k-format-label")
+        self.n2kFormatLabel.hide()
+        self.n2kFormatCombo.hide()
+
         self.serialDataPortCombo = self.builder.get_object("serial-data-port-combo")
         for x in SerialDataSource.detect():
             self.serialDataPortCombo.append_text(x)
@@ -84,6 +92,7 @@ class ConnectionEditDialog:
         self.serialBaudrateCombo.set_active(baudrates.index(9600))
 
         self.protocolCombo.connect("changed", self.on_protocol_change)
+        self.n2kFormatCombo.connect("changed", self.on_format_change)
 
         if self.data is not None:
             # Set data
@@ -100,9 +109,14 @@ class ConnectionEditDialog:
                 )
                 self.builder.get_object("network-host").set_text(self.data["host"])
                 self.builder.get_object("network-port").set_text(str(self.data["port"]))
-            self.protocolCombo.set_active(
-                list(map(lower, protocols)).index(self.data["protocol"])
-            )
+            saved_protocol = self.data["protocol"]
+            saved_format = self.data.get("format")
+            if saved_protocol in N2K_FORMATS:
+                saved_format = saved_format or saved_protocol
+                saved_protocol = "nmea2000"
+            self.protocolCombo.set_active(protocols.index(saved_protocol))
+            if saved_protocol == "nmea2000" and saved_format in N2K_FORMATS:
+                self.n2kFormatCombo.set_active_id(saved_format)
             self.directionCombo.set_active(
                 list(map(lower, directions)).index(self.data["direction"])
             )
@@ -123,20 +137,35 @@ class ConnectionEditDialog:
 
     def on_protocol_change(self, widget):
         protocol = self.protocolCombo.get_active_id()
-        nmea2000 = protocol in N2K_FORMATS
+        nmea2000 = protocol == "nmea2000"
         if nmea2000:
+            self.n2kFormatLabel.show()
+            self.n2kFormatCombo.show()
             self.directionCombo.set_active(0)
             if self.data is None:
-                baud = N2K_FORMATS[protocol]["baudrate"]
+                wire_format = self.n2kFormatCombo.get_active_id()
+                baud = N2K_FORMATS[wire_format]["baudrate"]
                 self.serialBaudrateCombo.set_active(baudrates.index(baud))
+        else:
+            self.n2kFormatLabel.hide()
+            self.n2kFormatCombo.hide()
         self.directionCombo.set_sensitive(not nmea2000)
 
+    def on_format_change(self, widget):
+        if self.data is None and self.protocolCombo.get_active_id() == "nmea2000":
+            wire_format = self.n2kFormatCombo.get_active_id()
+            baud = N2K_FORMATS[wire_format]["baudrate"]
+            self.serialBaudrateCombo.set_active(baudrates.index(baud))
+
     def save_data(self):
+        protocol = self.protocolCombo.get_active_id()
         self.data = {
             "type": lower(self.typeCombo.get_active_text()),
-            "protocol": self.protocolCombo.get_active_id(),
+            "protocol": protocol,
             "direction": lower(self.directionCombo.get_active_text()),
         }
+        if protocol == "nmea2000":
+            self.data["format"] = self.n2kFormatCombo.get_active_id()
         if self.data["type"] == "serial":
             self.data["data-port"] = self.serialDataPortCombo.get_active_text()
             self.data["baudrate"] = int(self.serialBaudrateCombo.get_active_text())

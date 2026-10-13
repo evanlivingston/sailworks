@@ -13,19 +13,19 @@ logger = logging.getLogger("gweatherrouting")
 
 N2K_FORMATS = {
     "actisense": {
-        "label": "NMEA 2000 — Actisense BST",
+        "label": "Actisense BST",
         "baudrate": 230400,
         "decoder": ActisenseDecoder,
         "configure_gateway": True,
     },
     "n2k_ascii": {
-        "label": "NMEA 2000 — N2K ASCII",
+        "label": "N2K ASCII",
         "baudrate": 115200,
         "decoder": N2KAsciiDecoder,
         "configure_gateway": False,
     },
 }
-N2K_PROTOCOLS = frozenset(N2K_FORMATS)
+N2K_PROTOCOLS = frozenset((*N2K_FORMATS, "nmea2000"))
 
 
 class NMEA2000DataSource:
@@ -38,6 +38,13 @@ class NMEA2000DataSource:
     def __init__(self, config):
         self.config = config
         self.protocol = config["protocol"]
+        # Accept legacy connections where the gateway format was stored in
+        # `protocol`, while keeping protocol and format separate in new ones.
+        self.format = config.get("format")
+        if self.format is None:
+            self.format = (
+                self.protocol if self.protocol in N2K_FORMATS else "actisense"
+            )
         self.direction = config.get("direction", "in")
         self.connection_type = config["type"]
         self.baudrate = config.get("baudrate", 230400)
@@ -48,12 +55,12 @@ class NMEA2000DataSource:
 
         if self.direction != "in":
             raise ValueError("NMEA 2000 connections currently support input only")
-        if self.protocol not in N2K_PROTOCOLS:
+        if self.protocol not in N2K_PROTOCOLS or self.format not in N2K_FORMATS:
             raise ValueError("Unsupported NMEA 2000 gateway format")
         self.decoder = self._new_decoder()
 
     def _new_decoder(self):
-        return N2K_FORMATS[self.protocol]["decoder"]()
+        return N2K_FORMATS[self.format]["decoder"]()
 
     @property
     def name(self):
@@ -87,7 +94,7 @@ class NMEA2000DataSource:
             else:
                 raise ValueError("Unsupported NMEA 2000 transport")
 
-            if N2K_FORMATS[self.protocol]["configure_gateway"]:
+            if N2K_FORMATS[self.format]["configure_gateway"]:
                 # This gateway-local command selects receive-all output; it
                 # does not transmit vessel-control PGNs onto the bus.
                 writer(frame(0xA1, b"\x11\x02\x00"))
