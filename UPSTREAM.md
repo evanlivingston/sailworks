@@ -34,3 +34,27 @@ New work starts on `feature/<topic>` from `dev`. Apply upstream review fixes on
 the relevant contribution branch, validate that branch, and bring the fixes
 back into `dev`. Keep `AGENTS.md`, this tracking file, and fork-only CI triggers
 out of upstream PRs. Preserve `master` as the parent-tracking branch.
+
+## Fork review before upstream submission
+
+New work is reviewed through regular PRs in this fork first. Independent PRs
+start from `dev`; dependent PRs can target their prerequisite feature branch so
+the review shows only the additional work. Nothing is merged or submitted to
+upstream until the user approves that action. After approval, extract focused
+changes onto fresh `upstream/<topic>` branches and validate them independently.
+
+Current review order:
+
+1. `feature/latest-wind` → `dev`: newest enabled wind model run, fallback to
+   older coverage, duplicate-free weather grids, and gradient seam fixes.
+2. `feature/tides-currents-plan` → `feature/latest-wind`: marine data providers,
+   tide caching, current-aware routing, coverage recovery/prefetch, batched
+   calculation, and Currents/Tides controls. Retarget this PR to `dev` after
+   the wind PR merges and verify the diff again.
+
+The full marine feature is a fork integration review, not one proposed upstream
+patch. Its data/provider layer, UI, current-aware routing, geometry/performance
+work, and forecast recovery may need separate upstream contributions. The
+newest-run wind policy relates to upstream issue #185; marine routing relates to
+#158 but does not implement arbitrary current GRIB imports. Existing upstream
+PRs #267–#270 are unchanged by these fork reviews.

@@ -20,6 +20,22 @@ for integrating tested work into our development version.
 Verify actual remotes and branches before using them; do not assume `origin`
 means our fork or that the parent's default branch is `main`.
 
+## Review in our fork first
+
+- Open regular PRs in `evanlivingston/gweatherrouting` for the user's review
+  before preparing new upstream submissions. Use `dev` as the base for
+  independent features; use a feature branch as the base for a dependent PR
+  when this keeps its review diff focused, and document the merge order.
+- Leave PRs unmerged until the user approves merging. Fork review or merging
+  does not authorize creating or updating an upstream PR.
+- After fork review, prepare focused `upstream/<topic>` branches from freshly
+  fetched parent `master` and validate them independently. Split the reviewed
+  fork changes into smaller upstream contributions as needed; keep policy,
+  local benchmark artifacts, and unrelated work out of those branches.
+- Keep review fixes in the fork feature branch and any dependent branch. If a
+  dependent PR targets that branch, retarget it to `dev` after its prerequisite
+  merges and verify its resulting diff and checks before merging it.
+
 ## Transition from the existing development branch
 
 `dev` was created from `charts/fluid-map-and-downloads`, preserving its complete
