@@ -33,6 +33,9 @@ from .chartstack import ChartStack
 from .gribmanagerwindow import GribManagerWindow
 from .logsstack import LogsStack
 from .polarstack import PolarStack
+from .nmeacontrols import NMEAPlaybackClock
+from .widgets.workspacedock import WorkspaceDock
+from .workspace import WorkspacePreferences
 from .projectpropertieswindow import ProjectPropertiesWindow
 from .settings import SettingsManager, SettingsWindow
 
@@ -40,7 +43,7 @@ logger = logging.getLogger("gweatherrouting")
 
 
 class MainWindow:
-    def __init__(self, core):
+    def __init__(self, core, workspace_path=None):
         self.core = core
         self.settings_manager = SettingsManager()
 
@@ -73,8 +76,6 @@ class MainWindow:
         self.window.set_title("GWeatherRouting")
         self.window.connect("delete-event", self.quit)
         self.window.set_default_size(1280, 768)
-        self.window.show_all()
-        self.window.maximize()
 
         self.builder.get_object("project-properties-button").hide()
 
@@ -90,15 +91,26 @@ class MainWindow:
 
         Gdk.threads_init()
 
+        self.nmea_clock = NMEAPlaybackClock(self.core.nmea_session)
+        self.tool_dock = WorkspaceDock(self.window)
+
         self.chartStack = ChartStack(
-            self.window, self.chart_manager, self.core, self.settings_manager
+            self.window,
+            self.chart_manager,
+            self.core,
+            self.settings_manager,
+            tool_dock=self.tool_dock,
         )
         self.builder.get_object("chartcontainer").pack_start(
             self.chartStack, True, True, 0
         )
 
         self.logsStack = LogsStack(
-            self.window, self.chart_manager, self.core, self.settings_manager
+            self.window,
+            self.chart_manager,
+            self.core,
+            self.settings_manager,
+            tool_dock=self.tool_dock,
         )
         self.builder.get_object("logscontainer").pack_start(
             self.logsStack, True, True, 0
@@ -109,13 +121,21 @@ class MainWindow:
         # self.builder.get_object("regattacontainer").pack_start(self.regattaStack, True, True, 0)
 
         # self.builder.get_object("polarcontainertop").hide()
-        self.polarStack = PolarStack(self.window, self.core, self.settings_manager)
+        self.polarStack = PolarStack(
+            self.window, self.core, self.settings_manager, tool_dock=self.tool_dock
+        )
         self.builder.get_object("polarcontainer").pack_start(
             self.polarStack, True, True, 0
         )
+        self.tool_dock.bind(self.builder.get_object("stack1"))
+        self.workspace = WorkspacePreferences(self, workspace_path)
+        self.window.show()
 
     def quit(self, a, b):
         logger.info("Quitting...")
+        self.workspace.close()
+        self.nmea_clock.close()
+        self.core.nmea_session.close()
         self.core.connectionManager.stop_polling()
         Gtk.main_quit()
 

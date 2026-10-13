@@ -43,6 +43,8 @@ from .widgets.tooldock import ToolDock
 from .marinetoolpanel import MarineToolPanel
 from .tidetoolpanel import TideToolPanel
 
+from .nmeacontrols import NMEAControls
+
 logger = logging.getLogger("gweatherrouting")
 
 
@@ -55,6 +57,7 @@ class ChartStack(
         chart_manager: ChartManager,
         core: Core,
         settings_manager: SettingsManager,
+        tool_dock=None,
     ):
         Gtk.Widget.__init__(self)
 
@@ -74,8 +77,18 @@ class ChartStack(
         )
         self.builder.connect_signals(self)
 
-        self.tool_dock = ToolDock(self.builder.get_object("chartcontent"), parent)
-        self.pack_start(self.tool_dock, True, True, 0)
+        content = self.builder.get_object("chartcontent")
+        body = self.builder.get_object("chart-body")
+        body_container = body.get_parent()
+        body_container.remove(body)
+        self.tool_dock = tool_dock if tool_dock is not None else ToolDock(body, parent)
+        mount = (
+            tool_dock.add_view("Charts", body)
+            if tool_dock is not None
+            else self.tool_dock
+        )
+        body_container.pack_start(mount, True, True, 0)
+        self.pack_start(content, True, True, 0)
 
         self.map = MapWidget()
         self.map.bind_display_settings(self.settings_manager)
@@ -134,6 +147,7 @@ class ChartStack(
         ChartStackAIS.__init__(self)
 
         self.core.connect("boat_position", self.boat_info_handler)
+        self.core.connect("nmea_reset", self._reset_nmea)
 
         self.timetravel_widget = TimeTravelWidget(
             self.parent,
@@ -165,8 +179,10 @@ class ChartStack(
             "currents", "Currents", self.marine_panel, TIDES_CURRENTS_ICON
         )
         self.tool_dock.register("tides", "Tides", self.tide_panel, TIDES_CURRENTS_ICON)
+        self.nmea = NMEAControls.attach(parent, core, self.tool_dock)
         self.tool_dock.connect("panel-visibility-changed", self._panel_visibility)
 
+        body.show_all()
         self.show_all()
 
         self.builder.get_object("mob-button").hide()
@@ -221,16 +237,17 @@ class ChartStack(
             self.tool_dock.hide_group(("currents", "tides"))
 
     def _panel_visibility(self, dock, key, visible):
+        if key == "nmea":
+            self.builder.get_object("nmea-toggle").set_active(visible)
         if key in ("currents", "tides"):
             opened = any(self.tool_dock.is_open(k) for k in ("currents", "tides"))
             self.builder.get_object("marine-layer-toggle").set_active(opened)
 
     def on_toggle_connections(self, widget):
-        s = widget.get_active()
-        if s:
-            self.core.connectionManager.start_polling()
+        if widget.get_active():
+            self.tool_dock.show_panel("nmea")
         else:
-            self.core.connectionManager.stop_polling()
+            self.tool_dock.hide_panel("nmea")
 
     def on_toggle_ais(self, widget):
         self.ais_map_layer.set_visible(widget.get_active())
@@ -242,6 +259,10 @@ class ChartStack(
 
     def on_toggle_notebook(self, widget):
         self.builder.get_object("notebook").set_visible(widget.get_active())
+
+    def _reset_nmea(self, _):
+        self.tools_map_layer.gps_clear()
+        self.map.queue_draw()
 
     def boat_info_handler(self, bi):
         self.tools_map_layer.gps_add(bi.latitude, bi.longitude, bi.heading, bi.speed)

@@ -46,13 +46,12 @@
               </packing>
             </child>
             <child>
-              <object class="GtkToolButton">
+              <object class="GtkToggleToolButton" id="nmea-toggle">
                 <property name="visible">True</property>
-                <property name="can-focus">False</property>
-                <property name="label" translatable="yes">Load</property>
-                <property name="use-underline">True</property>
-                <property name="icon-name">document-open-symbolic</property>
-                <signal name="clicked" handler="on_load_click" swapped="no"/>
+                <property name="label">NMEA</property>
+                <property name="is-important">True</property>
+                <property name="icon-name">gnome-dev-wavelan</property>
+                <signal name="toggled" handler="on_toggle_nmea" swapped="no"/>
               </object>
               <packing>
                 <property name="expand">False</property>
@@ -167,7 +166,7 @@
             <property name="visible">True</property>
             <property name="can-focus">False</property>
             <child>
-              <object class="GtkToggleButton">
+              <object class="GtkToggleButton" id="speed-chart-toggle">
                 <property name="label" translatable="yes">Speed</property>
                 <property name="visible">True</property>
                 <property name="can-focus">True</property>
@@ -182,7 +181,7 @@
               </packing>
             </child>
             <child>
-              <object class="GtkToggleButton">
+              <object class="GtkToggleButton" id="apparent-wind-chart-toggle">
                 <property name="label" translatable="yes">Wind (A)</property>
                 <property name="visible">True</property>
                 <property name="can-focus">True</property>
@@ -196,7 +195,7 @@
               </packing>
             </child>
             <child>
-              <object class="GtkToggleButton">
+              <object class="GtkToggleButton" id="true-wind-chart-toggle">
                 <property name="label" translatable="yes">Wind (T)</property>
                 <property name="visible">True</property>
                 <property name="can-focus">True</property>
@@ -211,7 +210,7 @@
               </packing>
             </child>
             <child>
-              <object class="GtkToggleButton">
+              <object class="GtkToggleButton" id="depth-chart-toggle">
                 <property name="label" translatable="yes">Depth</property>
                 <property name="visible">True</property>
                 <property name="can-focus">True</property>
@@ -225,7 +224,7 @@
               </packing>
             </child>
             <child>
-              <object class="GtkToggleButton">
+              <object class="GtkToggleButton" id="heading-chart-toggle">
                 <property name="label" translatable="yes">HDG</property>
                 <property name="visible">True</property>
                 <property name="can-focus">True</property>
@@ -240,7 +239,7 @@
               </packing>
             </child>
             <child>
-              <object class="GtkToggleButton">
+              <object class="GtkToggleButton" id="relative-wind-chart-toggle">
                 <property name="label" translatable="yes">RW</property>
                 <property name="visible">True</property>
                 <property name="can-focus">True</property>

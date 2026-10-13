@@ -31,6 +31,7 @@ import weatherrouting
 from gweatherrouting.core import GribManager, PolarManager, utils
 from gweatherrouting.core.aismanager import AISManager
 from gweatherrouting.core.connectionmanager import ConnectionManager
+from gweatherrouting.core.nmeasession import NMEASession
 from gweatherrouting.core.datasource import AISDataPacket, DataPacket
 from gweatherrouting.core.geo import (
     POICollection,
@@ -129,11 +130,26 @@ class Core(EventDispatcher):
         self.logManager = LogTrackCollection()
         self.ais_manager = AISManager()
 
-        self.connectionManager.connect("data", self.data_handler)
+        self._nmea_revision = 0
+        self.nmea_session = NMEASession(self.connectionManager)
+        self.nmea_session.connect("data", self.data_handler)
+        self.nmea_session.connect("reset", self._reset_nmea)
         logger.info("Initialized")
 
         self.connectionManager.plug_all()
         self.connectionManager.start_polling()
+
+    def _reset_nmea(self, _):
+        self._nmea_revision += 1
+        self.boat_info = BoatInfo()
+        self.logManager.log.clear()
+        self.dispatch("boat_data", self.boat_info)
+        self.dispatch("nmea_reset", None)
+
+    def _dispatch_nmea(self, event, info, revision):
+        if revision == self._nmea_revision:
+            self.dispatch(event, info)
+        return False
 
     def set_boat_position(self, lat, lon):
         self.connectionManager.dispatch(
@@ -167,7 +183,9 @@ class Core(EventDispatcher):
             self._parse_nmea_extra(x)
 
         if _has_glib:
-            GLib.idle_add(self.dispatch, "boat_data", self.boat_info)
+            GLib.idle_add(
+                self._dispatch_nmea, "boat_data", self.boat_info, self._nmea_revision
+            )
         else:
             self.dispatch("boat_data", self.boat_info)
 
@@ -190,7 +208,12 @@ class Core(EventDispatcher):
                 pass
 
         if _has_glib:
-            GLib.idle_add(self.dispatch, "boat_position", self.boat_info)
+            GLib.idle_add(
+                self._dispatch_nmea,
+                "boat_position",
+                self.boat_info,
+                self._nmea_revision,
+            )
         else:
             self.dispatch("boat_position", self.boat_info)
 

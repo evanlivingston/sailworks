@@ -541,7 +541,9 @@ class TestCurrentRouting(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             core = SimpleNamespace(
-                polar_manager=SimpleNamespace(polars=[]),
+                polar_manager=SimpleNamespace(
+                    polars=[], connect=Mock(), disconnect=Mock()
+                ),
                 poiManager=[],
                 trackManager=[],
                 marine_manager=MarineManager(directory),

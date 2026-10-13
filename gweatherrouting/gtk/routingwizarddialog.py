@@ -30,17 +30,18 @@ from gweatherrouting.core import TimeControl
 from gweatherrouting.core.storage import POLAR_DIR
 from gweatherrouting.core.marine.routing import CurrentIsoRouter
 
-from .polarmanagerwindow import PolarManagerWindow
+from .polarmanagerwindow import PolarManagerPanel
 from .icons import TIDES_CURRENTS_ICON, icon_label
 from .timepickerdialog import TimePickerDialog
 from .widgets.polar import PolarWidget
+from .widgets.tooldock import ToolDock
 
 
 class RoutingWizardDialog:
     def __init__(self, core, parent):
         self.core = core
         self.polar_manager = core.polar_manager
-        self.polars = self.polar_manager.polars
+        self.polars = list(self.polar_manager.polars)
         self.polar = None
 
         self.paramWidgets = {}
@@ -92,6 +93,14 @@ class RoutingWizardDialog:
         )
 
         notebook = self.builder.get_object("wizard-notebook")
+        content = notebook.get_parent()
+        content.remove(notebook)
+        self.tool_dock = ToolDock(notebook, self.dialog, width=320)
+        content.pack_start(self.tool_dock, True, True, 0)
+        content.reorder_child(self.tool_dock, 0)
+        self.manager_panel = None
+        self.polar_manager.connect("polars-list-updated", self._refresh_boat_store)
+        self.dialog.connect("destroy", self._disconnect_polar_manager)
         marine = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=16)
         self.use_currents = Gtk.CheckButton(label="Include currents")
         self.use_currents.set_tooltip_text(
@@ -187,20 +196,34 @@ class RoutingWizardDialog:
         p.value = widget.get_active()
 
     def on_polar_manager(self, widget):
-        w = PolarManagerWindow(self.polar_manager, parent=self.dialog)
-        w.window.connect("delete-event", lambda *_: self._refresh_boat_store())
-        w.show()
+        if self.manager_panel is None:
+            self.manager_panel = PolarManagerPanel(self.polar_manager, self.dialog)
+            self.tool_dock.register(
+                "polar-manager", "Polar Manager", self.manager_panel
+            )
+        self.tool_dock.show_panel("polar-manager")
 
-    def _refresh_boat_store(self):
-        self.polars = self.polar_manager.polars
+    def _disconnect_polar_manager(self, widget):
+        self.polar_manager.disconnect("polars-list-updated", self._refresh_boat_store)
+
+    def _refresh_boat_store(self, event=None):
+        active = self.builder.get_object("boat-select").get_active()
+        selected = self.polars[active] if 0 <= active < len(self.polars) else None
+        self.polars = list(self.polar_manager.polars)
         self.boat_store.clear()
         for polar in self.polars:
             self.boat_store.append([polar])
         if self.polars:
-            self.builder.get_object("boat-select").set_active(0)
+            index = self.polars.index(selected) if selected in self.polars else 0
+            self.builder.get_object("boat-select").set_active(index)
 
     def on_boat_select(self, widget):
-        pfile = self.polars[self.builder.get_object("boat-select").get_active()]
+        active = self.builder.get_object("boat-select").get_active()
+        if active < 0 or active >= len(self.polars):
+            self.polar = None
+            self.polarWidget.set_polar(None)
+            return
+        pfile = self.polars[active]
         self.polar = weatherrouting.Polar(os.path.join(POLAR_DIR, pfile))
         self.polarWidget.set_polar(self.polar)
 
