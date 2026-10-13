@@ -19,33 +19,6 @@
             <property name="visible">True</property>
             <property name="can-focus">False</property>
             <child>
-              <object class="GtkToolButton" id="record-button">
-                <property name="visible">True</property>
-                <property name="can-focus">False</property>
-                <property name="label" translatable="yes">Record</property>
-                <property name="use-underline">True</property>
-                <property name="icon-name">media-record-symbolic</property>
-                <signal name="clicked" handler="on_recording_click" swapped="no"/>
-              </object>
-              <packing>
-                <property name="expand">False</property>
-                <property name="homogeneous">True</property>
-              </packing>
-            </child>
-            <child>
-              <object class="GtkToolButton" id="stop-button">
-                <property name="can-focus">False</property>
-                <property name="label" translatable="yes">Stop</property>
-                <property name="use-underline">True</property>
-                <property name="icon-name">media-playback-stop-symbolic</property>
-                <signal name="clicked" handler="on_stop_recording_click" swapped="no"/>
-              </object>
-              <packing>
-                <property name="expand">False</property>
-                <property name="homogeneous">True</property>
-              </packing>
-            </child>
-            <child>
               <object class="GtkToggleToolButton" id="nmea-toggle">
                 <property name="visible">True</property>
                 <property name="label">NMEA</property>
@@ -58,107 +31,11 @@
                 <property name="homogeneous">True</property>
               </packing>
             </child>
-            <child>
-              <object class="GtkToolButton">
-                <property name="visible">True</property>
-                <property name="can-focus">False</property>
-                <property name="label" translatable="yes">Save</property>
-                <property name="use-underline">True</property>
-                <property name="icon-name">document-save-symbolic</property>
-                <signal name="clicked" handler="on_save_click" swapped="no"/>
-              </object>
-              <packing>
-                <property name="expand">False</property>
-                <property name="homogeneous">True</property>
-              </packing>
-            </child>
-            <child>
-              <object class="GtkToolButton">
-                <property name="visible">True</property>
-                <property name="can-focus">False</property>
-                <property name="label" translatable="yes">Clear</property>
-                <property name="use-underline">True</property>
-                <property name="icon-name">edit-delete-symbolic</property>
-                <signal name="clicked" handler="clear_data" swapped="no"/>
-              </object>
-              <packing>
-                <property name="expand">False</property>
-                <property name="homogeneous">True</property>
-              </packing>
-            </child>
-            <child>
-              <object class="GtkSeparatorToolItem">
-                <property name="visible">True</property>
-                <property name="can-focus">False</property>
-              </object>
-              <packing>
-                <property name="expand">False</property>
-                <property name="homogeneous">True</property>
-              </packing>
-            </child>
-            <child>
-              <object class="GtkToolButton">
-                <property name="visible">True</property>
-                <property name="can-focus">False</property>
-                <property name="tooltip-text" translatable="yes">Crop between start and end</property>
-                <property name="label" translatable="yes">Crop</property>
-                <property name="use-underline">True</property>
-                <property name="icon-name">edit-cut-symbolic</property>
-                <signal name="clicked" handler="crop_data" swapped="no"/>
-              </object>
-              <packing>
-                <property name="expand">False</property>
-                <property name="homogeneous">True</property>
-              </packing>
-            </child>
-            <child>
-              <object class="GtkToolButton">
-                <property name="visible">True</property>
-                <property name="can-focus">False</property>
-                <property name="tooltip-text" translatable="yes">Set current cursor as start point</property>
-                <property name="label" translatable="yes">A</property>
-                <property name="use-underline">True</property>
-                <signal name="clicked" handler="set_crop_a" swapped="no"/>
-              </object>
-              <packing>
-                <property name="expand">False</property>
-                <property name="homogeneous">True</property>
-              </packing>
-            </child>
-            <child>
-              <object class="GtkToolButton">
-                <property name="visible">True</property>
-                <property name="can-focus">False</property>
-                <property name="tooltip-text" translatable="yes">Set current cursor as end point</property>
-                <property name="label" translatable="yes">B</property>
-                <property name="use-underline">True</property>
-                <signal name="clicked" handler="set_crop_b" swapped="no"/>
-              </object>
-              <packing>
-                <property name="expand">False</property>
-                <property name="homogeneous">True</property>
-              </packing>
-            </child>
           </object>
           <packing>
             <property name="expand">False</property>
             <property name="fill">True</property>
             <property name="position">0</property>
-          </packing>
-        </child>
-        <child>
-          <object class="GtkBox" id="timetravelcontainer">
-            <property name="visible">True</property>
-            <property name="can-focus">False</property>
-            <property name="orientation">vertical</property>
-            <child>
-              <placeholder/>
-            </child>
-          </object>
-          <packing>
-            <property name="expand">True</property>
-            <property name="fill">True</property>
-            <property name="position">1</property>
           </packing>
         </child>
         <child>

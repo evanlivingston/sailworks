@@ -12,13 +12,18 @@ class InstrumentRecording:
         self.lock = Lock()
         self.text = None
         self.raw = None
+        self.exclusive = False
 
-    def start(self):
+    def start(self, exclusive=False):
         with self.lock:
             self._close()
-            self.text = self.path.open("w", buffering=1)
+            if exclusive and self.raw_path.exists():
+                raise FileExistsError(str(self.raw_path))
+            self.text = self.path.open("x" if exclusive else "w", buffering=1)
+            self.exclusive = exclusive
             # Open raw lazily, so NMEA 0183 recordings have no empty companion.
-            self.raw_path.unlink(missing_ok=True)
+            if not exclusive:
+                self.raw_path.unlink(missing_ok=True)
 
     def write_packets(self, packets):
         with self.lock:
@@ -31,7 +36,9 @@ class InstrumentRecording:
             if self.text is None:
                 return
             if self.raw is None:
-                self.raw = self.raw_path.open("w", buffering=1)
+                self.raw = self.raw_path.open(
+                    "x" if self.exclusive else "w", buffering=1
+                )
             for message in messages:
                 self.raw.write(message.to_canboat() + "\n")
 
