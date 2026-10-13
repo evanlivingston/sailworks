@@ -1,0 +1,144 @@
+         126313271 function calls (126313238 primitive calls) in 87.141 seconds
+
+   Ordered by: cumulative time
+   List reduced from 454 to 65 due to restriction <65>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+       94    0.002    0.000   87.352    0.929 routing.py:109(step)
+       93    0.083    0.001   87.349    0.939 routing.py:507(route)
+       93    0.492    0.005   87.244    0.938 frontierrouting.py:314(route_frontier)
+       93    0.794    0.009   84.227    0.906 frontierrouting.py:178(propagate)
+     2289    0.921    0.000   49.370    0.022 frontierrouting.py:138(sample)
+     2289    5.094    0.002   46.042    0.020 fields.py:452(sample_arrays)
+     1526    0.591    0.000   36.781    0.024 frontierrouting.py:207(velocities)
+    45390    0.021    0.000   32.366    0.001 fields.py:431(_resolve_missing)
+    45390    0.288    0.000   32.345    0.001 fields.py:406(_nearest)
+   892363    2.580    0.000   32.052    0.000 fields.py:233(sample_nearest)
+   112060   10.245    0.000   21.759    0.000 gshhs.py:528(lines_validity)
+     1526    0.552    0.000   21.608    0.014 frontierrouting.py:225(valid)
+    58214    0.035    0.000   20.674    0.000 routing.py:389(valid_current_neighbor)
+   116428    0.234    0.000   20.639    0.000 routing.py:392(valid)
+   117954    8.668    0.000   19.397    0.000 gshhs.py:502(points_validity)
+    30410    5.985    0.000    7.565    0.000 fields.py:310(sample_arrays)
+  2795136    1.927    0.000    6.329    0.000 numeric.py:679(flatnonzero)
+   126831    0.260    0.000    5.265    0.000 fields.py:156(manifest)
+   160375    5.222    0.000    5.254    0.000 geod.py:331(inv)
+      949    0.007    0.000    4.683    0.005 batchrouting.py:23(distances)
+   128088    0.102    0.000    4.671    0.000 __init__.py:299(loads)
+   128088    0.156    0.000    4.537    0.000 decoder.py:332(decode)
+   128088    4.289    0.000    4.289    0.000 decoder.py:343(raw_decode)
+  6009306    1.448    0.000    4.104    0.000 ogr.py:5274(__init__)
+  8973992    1.671    0.000    3.282    0.000 ogr.py:5370(AddPoint)
+  3414470    0.958    0.000    3.246    0.000 fromnumeric.py:48(_wrapfunc)
+    16250    0.141    0.000    2.883    0.000 routing.py:473(headings)
+     1526    0.134    0.000    2.746    0.002 batchrouting.py:13(move_many)
+     1526    2.558    0.002    2.589    0.002 geod.py:239(fwd)
+  2964686    0.527    0.000    2.531    0.000 ogr.py:6853(Intersects)
+  2795136    0.595    0.000    2.219    0.000 fromnumeric.py:1993(nonzero)
+     2289    1.205    0.001    2.062    0.001 batchwind.py:39(query_us)
+  2964686    2.004    0.000    2.004    0.000 {built-in method osgeo._ogr.PreparedGeometry_Intersects}
+    46991    1.677    0.000    1.869    0.000 numeric.py:323(full)
+  3044620    0.518    0.000    1.852    0.000 ogr.py:6857(Contains)
+  2795136    1.126    0.000    1.829    0.000 fromnumeric.py:1879(ravel)
+  6009306    1.790    0.000    1.790    0.000 {built-in method osgeo._ogr.Geometry_swiginit}
+   614756    0.192    0.000    1.721    0.000 fromnumeric.py:1421(searchsorted)
+    16250    0.032    0.000    1.694    0.000 routing.py:148(sample)
+    16250    0.014    0.000    1.629    0.000 routing.py:159(_sample)
+  8973992    1.611    0.000    1.611    0.000 {built-in method osgeo._ogr.Geometry_AddPoint}
+  3044620    1.334    0.000    1.334    0.000 {built-in method osgeo._ogr.PreparedGeometry_Contains}
+       91    0.006    0.000    1.332    0.015 frontierrouting.py:426(<listcomp>)
+    16250    0.200    0.000    1.326    0.000 frontierrouting.py:385(materialize)
+   230014    0.380    0.000    1.292    0.000 gshhs.py:466(_routing_land)
+  1316601    1.252    0.000    1.252    0.000 {method 'reduce' of 'numpy.ufunc' objects}
+    16250    0.095    0.000    1.225    0.000 fields.py:418(sample)
+   614756    1.224    0.000    1.224    0.000 {method 'searchsorted' of 'numpy.ndarray' objects}
+  2754585    0.565    0.000    1.129    0.000 ogr.py:6511(GetEnvelope)
+   174948    0.299    0.000    1.069    0.000 frontierrouting.py:111(metadata)
+   353004    0.535    0.000    1.030    0.000 fields.py:189(sample)
+  6009306    0.866    0.000    0.866    0.000 {built-in method osgeo._ogr.new_Geometry}
+       93    0.401    0.004    0.862    0.009 frontierrouting.py:199(<listcomp>)
+   126613    0.786    0.000    0.809    0.000 polar.py:77(get_speed)
+  1245367    0.514    0.000    0.761    0.000 models.py:20(utc_time)
+     1526    0.395    0.000    0.704    0.000 frontierrouting.py:56(polar_many)
+   464606    0.102    0.000    0.664    0.000 {method 'min' of 'numpy.ndarray' objects}
+  2795136    0.627    0.000    0.627    0.000 {method 'nonzero' of 'numpy.ndarray' objects}
+   385007    0.093    0.000    0.622    0.000 {method 'all' of 'numpy.ndarray' objects}
+   892363    0.203    0.000    0.598    0.000 {built-in method builtins.any}
+  2754585    0.564    0.000    0.564    0.000 {built-in method osgeo._ogr.Geometry_GetEnvelope}
+   464606    0.095    0.000    0.562    0.000 _methods.py:43(_amin)
+   385007    0.089    0.000    0.529    0.000 _methods.py:64(_all)
+      685    0.000    0.000    0.502    0.001 ogr.py:1954(__iter__)
+      685    0.000    0.000    0.502    0.001 ogr.py:1054(GetNextFeature)
+
+
+         126313271 function calls (126313238 primitive calls) in 87.141 seconds
+
+   Ordered by: internal time
+   List reduced from 454 to 65 due to restriction <65>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+   112060   10.245    0.000   21.759    0.000 gshhs.py:528(lines_validity)
+   117954    8.668    0.000   19.397    0.000 gshhs.py:502(points_validity)
+    30410    5.985    0.000    7.565    0.000 fields.py:310(sample_arrays)
+   160375    5.222    0.000    5.254    0.000 geod.py:331(inv)
+     2289    5.094    0.002   46.042    0.020 fields.py:452(sample_arrays)
+   128088    4.289    0.000    4.289    0.000 decoder.py:343(raw_decode)
+   892363    2.580    0.000   32.052    0.000 fields.py:233(sample_nearest)
+     1526    2.558    0.002    2.589    0.002 geod.py:239(fwd)
+  2964686    2.004    0.000    2.004    0.000 {built-in method osgeo._ogr.PreparedGeometry_Intersects}
+  2795136    1.927    0.000    6.329    0.000 numeric.py:679(flatnonzero)
+  6009306    1.790    0.000    1.790    0.000 {built-in method osgeo._ogr.Geometry_swiginit}
+    46991    1.677    0.000    1.869    0.000 numeric.py:323(full)
+  8973992    1.671    0.000    3.282    0.000 ogr.py:5370(AddPoint)
+  8973992    1.611    0.000    1.611    0.000 {built-in method osgeo._ogr.Geometry_AddPoint}
+  6009306    1.448    0.000    4.104    0.000 ogr.py:5274(__init__)
+  3044620    1.334    0.000    1.334    0.000 {built-in method osgeo._ogr.PreparedGeometry_Contains}
+  1316601    1.252    0.000    1.252    0.000 {method 'reduce' of 'numpy.ufunc' objects}
+   614756    1.224    0.000    1.224    0.000 {method 'searchsorted' of 'numpy.ndarray' objects}
+     2289    1.205    0.001    2.062    0.001 batchwind.py:39(query_us)
+  2795136    1.126    0.000    1.829    0.000 fromnumeric.py:1879(ravel)
+  3414470    0.958    0.000    3.246    0.000 fromnumeric.py:48(_wrapfunc)
+     2289    0.921    0.000   49.370    0.022 frontierrouting.py:138(sample)
+  6009306    0.866    0.000    0.866    0.000 {built-in method osgeo._ogr.new_Geometry}
+       93    0.794    0.009   84.227    0.906 frontierrouting.py:178(propagate)
+   126613    0.786    0.000    0.809    0.000 polar.py:77(get_speed)
+  2795136    0.627    0.000    0.627    0.000 {method 'nonzero' of 'numpy.ndarray' objects}
+  2795136    0.595    0.000    2.219    0.000 fromnumeric.py:1993(nonzero)
+     1526    0.591    0.000   36.781    0.024 frontierrouting.py:207(velocities)
+  2754585    0.565    0.000    1.129    0.000 ogr.py:6511(GetEnvelope)
+  2754585    0.564    0.000    0.564    0.000 {built-in method osgeo._ogr.Geometry_GetEnvelope}
+     1526    0.552    0.000   21.608    0.014 frontierrouting.py:225(valid)
+   353004    0.535    0.000    1.030    0.000 fields.py:189(sample)
+  2964686    0.527    0.000    2.531    0.000 ogr.py:6853(Intersects)
+  3044620    0.518    0.000    1.852    0.000 ogr.py:6857(Contains)
+  1245367    0.514    0.000    0.761    0.000 models.py:20(utc_time)
+      685    0.501    0.001    0.502    0.001 {built-in method osgeo._ogr.Layer_GetNextFeature}
+       93    0.492    0.005   87.244    0.938 frontierrouting.py:314(route_frontier)
+  2450063    0.445    0.000    0.445    0.000 fields.py:243(<genexpr>)
+   444991    0.429    0.000    0.429    0.000 {method 'isoformat' of 'datetime.datetime' objects}
+   401309    0.402    0.000    0.402    0.000 {built-in method numpy.array}
+       93    0.401    0.004    0.862    0.009 frontierrouting.py:199(<listcomp>)
+  2480367    0.397    0.000    0.397    0.000 {method 'timestamp' of 'datetime.datetime' objects}
+     1526    0.395    0.000    0.704    0.000 frontierrouting.py:56(polar_many)
+   246018    0.383    0.000    0.383    0.000 {built-in method numpy.asarray}
+   230014    0.380    0.000    1.292    0.000 gshhs.py:466(_routing_land)
+  5509145    0.365    0.000    0.365    0.000 {built-in method builtins.isinstance}
+  3467864    0.355    0.000    0.355    0.000 {built-in method builtins.getattr}
+  2795136    0.329    0.000    0.329    0.000 {method 'ravel' of 'numpy.ndarray' objects}
+   174948    0.299    0.000    1.069    0.000 frontierrouting.py:111(metadata)
+       36    0.294    0.008    0.294    0.008 {built-in method osgeo._gdal_array.BandRasterIONumPy}
+    45390    0.288    0.000   32.345    0.001 fields.py:406(_nearest)
+   126831    0.260    0.000    5.265    0.000 fields.py:156(manifest)
+   231633    0.248    0.000    0.328    0.000 numeric.py:170(ones)
+    95298    0.247    0.000    0.377    0.000 geod.py:143(__init__)
+   283238    0.243    0.000    0.243    0.000 {built-in method numpy.empty}
+   116428    0.234    0.000   20.639    0.000 routing.py:392(valid)
+     6867    0.212    0.000    0.222    0.000 _shape_base_impl.py:625(column_stack)
+   892363    0.203    0.000    0.598    0.000 {built-in method builtins.any}
+    16250    0.200    0.000    1.326    0.000 frontierrouting.py:385(materialize)
+  2795136    0.194    0.000    0.194    0.000 numeric.py:675(_flatnonzero_dispatcher)
+   614756    0.192    0.000    1.721    0.000 fromnumeric.py:1421(searchsorted)
+    45208    0.190    0.000    0.190    0.000 encoder.py:205(iterencode)
+       93    0.180    0.002    0.244    0.003 frontierrouting.py:354(<listcomp>)
+  2795136    0.177    0.000    0.177    0.000 fromnumeric.py:1875(_ravel_dispatcher)
+  2795136    0.177    0.000    0.177    0.000 fromnumeric.py:1989(_nonzero_dispatcher)
