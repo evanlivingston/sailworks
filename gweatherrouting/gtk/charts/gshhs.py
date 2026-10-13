@@ -15,11 +15,19 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
 import logging
+import math
+from collections import OrderedDict
 import time
 from threading import Thread
 
 import gi
 import requests
+import numpy as np
+
+try:
+    import shapely
+except ImportError:
+    shapely = None
 from osgeo import ogr
 
 gi.require_version("Gtk", "3.0")
@@ -446,105 +454,157 @@ class GSHHSVectorChart(ChartLayer, LinePointValidityProvider):
     def on_register(self, on_tick_handler=None):
         pass
 
-    def points_validity(self, latlons):
-        vf = self.lpvFile
+    def _routing_source(self, layer_index, feature):
+        key = (layer_index, feature.GetFID())
+        if key not in self._routing_sources:
+            geometry = feature.GetGeometryRef().Clone()
+            if not geometry.IsValid():
+                geometry = geometry.MakeValid()
+            if geometry is None:
+                raise ValueError("Unable to repair routing shoreline geometry")
+            self._routing_sources[key] = geometry
+            if len(self._routing_sources) > 64:
+                self._routing_sources.popitem(last=False)
+        self._routing_sources.move_to_end(key)
+        return self._routing_sources[key]
 
-        points = ogr.Geometry(ogr.wkbLinearRing)
-        pointsa = []
-        res = [True for x in latlons]
-
-        for x in latlons:
-            point = ogr.Geometry(ogr.wkbPoint)
-            point.AddPoint(x[1], x[0])
-            points.AddPoint(x[1], x[0])
-            pointsa.append(point)
-        points.AddPoint(latlons[0][1], latlons[0][0])
-
-        ev = points.GetEnvelope()
-        bounding_geometry = ogr.CreateGeometryFromWkt(
-            self.get_bounding_wkt_of_coords(
-                ev[1] - 0.1, ev[0] - 0.1, ev[3] + 0.1, ev[2] + 0.1
-            )
+    def _routing_land(self, west, south, east, north):
+        """Cache exact local shoreline geometry, repairing invalid source polygons."""
+        # Tile bounds make consecutive integration queries share the same clip.
+        bounds = (
+            math.floor(west * 4) / 4 - 0.001,
+            math.floor(south * 4) / 4 - 0.001,
+            math.ceil(east * 4) / 4 + 0.001,
+            math.ceil(north * 4) / 4 + 0.001,
         )
+        if not hasattr(self, "_routing_clips"):
+            self._routing_clips: OrderedDict[tuple, tuple] = OrderedDict()
+            self._routing_sources: OrderedDict[tuple, ogr.Geometry] = OrderedDict()
+        if bounds in self._routing_clips:
+            self._routing_clips.move_to_end(bounds)
+            return self._routing_clips[bounds]
+        left, bottom, right, top = bounds
+        clip = ogr.CreateGeometryFromWkt(
+            f"POLYGON (({left} {bottom}, {right} {bottom}, {right} {top}, "
+            f"{left} {top}, {left} {bottom}))"
+        )
+        geometries = []
+        for i in range(self.lpvFile.GetLayerCount()):
+            layer = self.lpvFile.GetLayerByIndex(i)
+            layer.SetSpatialFilterRect(*bounds)
+            layer.ResetReading()
+            for feature in layer:
+                geometry = self._routing_source(i, feature).Intersection(clip)
+                if geometry is None:
+                    raise ValueError("Unable to clip routing shoreline geometry")
+                if not geometry.IsEmpty():
+                    geometries.append((geometry, geometry.CreatePreparedGeometry()))
+        self._routing_clips[bounds] = tuple(geometries)
+        if len(self._routing_clips) > 64:
+            self._routing_clips.popitem(last=False)
+        return self._routing_clips[bounds]
 
-        for i in range(vf.GetLayerCount()):
-            layer = vf.GetLayerByIndex(i)
-            layer.SetSpatialFilter(bounding_geometry)
+    def _native_routing_land(self, land):
+        """Convert each immutable clipped polygon once for native batch predicates."""
+        if not hasattr(self, "_routing_native_clips"):
+            self._routing_native_clips: OrderedDict = OrderedDict()
+        key = id(land)
+        if key not in self._routing_native_clips:
+            polygons = []
+            for geometry, _ in land:
+                native = shapely.from_wkb(bytes(geometry.ExportToWkb()))
+                shapely.prepare(native)
+                polygons.append((*geometry.GetEnvelope(), native))
+            # Retain land itself so its identity cannot be reused while cached.
+            self._routing_native_clips[key] = (land, tuple(polygons))
+            if len(self._routing_native_clips) > 64:
+                self._routing_native_clips.popitem(last=False)
+        self._routing_native_clips.move_to_end(key)
+        return self._routing_native_clips[key][1]
 
-            feat = layer.GetNextFeature()
-            while feat is not None:
-                if not feat:
-                    continue
-
-                geom = feat.GetGeometryRef()
-                geom = bounding_geometry.Intersection(geom)
-
-                for ii, x in enumerate(pointsa):
-                    if not res[ii]:
-                        continue
-                    if geom.Contains(x):
-                        res[ii] = False
-
-                del geom
-                del feat
-
-                if len(list(filter(lambda x: x, res))) == 0:
-                    return res
-
-                feat = layer.GetNextFeature()
-            del layer
-
-        return res
+    def points_validity(self, latlons):
+        """Screen polygon envelopes in arrays, then use exact containment."""
+        if not len(latlons):
+            return []
+        points = np.asarray(latlons, dtype=float)
+        latitudes, longitudes = points[:, 0], points[:, 1]
+        land = self._routing_land(
+            longitudes.min(), latitudes.min(), longitudes.max(), latitudes.max()
+        )
+        valid = np.ones(len(points), dtype=bool)
+        if shapely is not None and getattr(self, "use_native_geometry", True):
+            for west, east, south, north, native in self._native_routing_land(land):
+                possible = np.flatnonzero(
+                    valid
+                    & (longitudes >= west)
+                    & (longitudes <= east)
+                    & (latitudes >= south)
+                    & (latitudes <= north)
+                )
+                valid[possible] &= ~shapely.contains_xy(
+                    native, longitudes[possible], latitudes[possible]
+                )
+            return valid.tolist()
+        for geometry, prepared in land:
+            west, east, south, north = geometry.GetEnvelope()
+            possible = np.flatnonzero(
+                valid
+                & (longitudes >= west)
+                & (longitudes <= east)
+                & (latitudes >= south)
+                & (latitudes <= north)
+            )
+            for i in possible:
+                point = ogr.Geometry(ogr.wkbPoint)
+                point.AddPoint(float(longitudes[i]), float(latitudes[i]))
+                if (prepared or geometry).Contains(point):
+                    valid[i] = False
+        return valid.tolist()
 
     def lines_validity(self, latlons):
-        vf = self.lpvFile
-
-        lines = ogr.Geometry(ogr.wkbLinearRing)
-        linesa = []
-        res = [True for x in latlons]
-
-        for x in latlons:
-            line = ogr.Geometry(ogr.wkbLineString)
-            line.AddPoint(x[1], x[0])
-            line.AddPoint(x[3], x[2])
-            lines.AddGeometry(line)
-            linesa.append(line)
-        lines.AddPoint(latlons[0][1], latlons[0][0])
-
-        ev = lines.GetEnvelope()
-        bounding_geometry = ogr.CreateGeometryFromWkt(
-            self.get_bounding_wkt_of_coords(
-                ev[1] - 0.1, ev[0] - 0.1, ev[3] + 0.1, ev[2] + 0.1
-            )
-        )
-
-        for i in range(vf.GetLayerCount()):
-            layer = vf.GetLayerByIndex(i)
-            layer.SetSpatialFilter(bounding_geometry)
-
-            feat = layer.GetNextFeature()
-            while feat is not None:
-                if not feat:
+        """Screen envelopes without weakening the exact segment intersection."""
+        if not len(latlons):
+            return []
+        lines = np.asarray(latlons, dtype=float)
+        left = np.minimum(lines[:, 1], lines[:, 3])
+        right = np.maximum(lines[:, 1], lines[:, 3])
+        bottom = np.minimum(lines[:, 0], lines[:, 2])
+        top = np.maximum(lines[:, 0], lines[:, 2])
+        land = self._routing_land(left.min(), bottom.min(), right.max(), top.max())
+        valid = np.ones(len(lines), dtype=bool)
+        if shapely is not None and getattr(self, "use_native_geometry", True):
+            segments = None
+            for west, east, south, north, native in self._native_routing_land(land):
+                possible = np.flatnonzero(
+                    valid
+                    & (right >= west)
+                    & (left <= east)
+                    & (top >= south)
+                    & (bottom <= north)
+                )
+                if not len(possible):
                     continue
-
-                geom = feat.GetGeometryRef()
-
-                for ii, x in enumerate(linesa):
-                    if not res[ii]:
-                        continue
-                    if geom.Intersects(x):
-                        res[ii] = False
-
-                del geom
-                del feat
-
-                if len(list(filter(lambda x: x, res))) == 0:
-                    return res
-
-                feat = layer.GetNextFeature()
-            del layer
-
-        return res
+                if segments is None:
+                    segments = shapely.linestrings(lines.reshape(-1, 2, 2)[:, :, ::-1])
+                valid[possible] &= ~shapely.intersects(native, segments[possible])
+            return valid.tolist()
+        for geometry, prepared in land:
+            west, east, south, north = geometry.GetEnvelope()
+            possible = np.flatnonzero(
+                valid
+                & (right >= west)
+                & (left <= east)
+                & (top >= south)
+                & (bottom <= north)
+            )
+            for i in possible:
+                lat1, lon1, lat2, lon2 = lines[i]
+                line = ogr.Geometry(ogr.wkbLineString)
+                line.AddPoint(float(lon1), float(lat1))
+                line.AddPoint(float(lon2), float(lat2))
+                if (prepared or geometry).Intersects(line):
+                    valid[i] = False
+        return valid.tolist()
 
     def do_draw(self, gpsmap, cr):
         bounding_geometry = self.get_bounding_geometry(gpsmap)

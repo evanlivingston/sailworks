@@ -15,10 +15,12 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
 import math
+from dataclasses import dataclass
 
 import cairo
 import gi
-from weatherrouting import utils
+import numpy as np
+from pyproj import Geod
 
 gi.require_version("Gtk", "3.0")
 
@@ -26,110 +28,124 @@ from gi.repository import GObject
 
 from gweatherrouting.gtk.style import Style
 from gweatherrouting.gtk.widgets.mapwidget import MapPoint
+from gweatherrouting.gtk.widgets.overlayrenderer import OverlayRenderer
+
+
+def draw_current_exclusions(gpsmap, cr, samples):
+    """Mark sampled rejection locations, without claiming a surveyed gap polygon."""
+    if not samples:
+        return
+    cr.save()
+    drawn = set()
+    for sample in samples:
+        x, y = gpsmap.convert_geographic_to_screen(
+            MapPoint.new_degrees(sample["latitude"], sample["longitude"])
+        )
+        key = (round(x / 4), round(y / 4))
+        if key in drawn:
+            continue
+        drawn.add(key)
+        cr.set_source_rgba(0.9, 0.05, 0.05, 0.18)
+        cr.arc(x, y, 7, 0, 2 * math.pi)
+        cr.fill()
+        cr.set_source_rgba(0.85, 0.02, 0.02, 0.9)
+        cr.set_line_width(1.5)
+        cr.move_to(x - 3, y - 3)
+        cr.line_to(x + 3, y + 3)
+        cr.move_to(x - 3, y + 3)
+        cr.line_to(x + 3, y - 3)
+        cr.stroke()
+    cr.restore()
+
+
+@dataclass(frozen=True, eq=False)
+class IsochroneFrame:
+    isochrones: tuple
+    path: tuple
+    exclusions: tuple
+
+
+class IsochronesRenderer(OverlayRenderer):
+    def _can_preview(self, job, key):
+        return job.key[:2] == key[:2]
+
+    def _render(self, job):
+        frame = job.charts[0][0]
+        surface = cairo.ImageSurface(
+            cairo.FORMAT_ARGB32,
+            job.viewport.width * job.factor,
+            job.viewport.height * job.factor,
+        )
+        surface.set_device_scale(job.factor, job.factor)
+        render_isochrones(job.viewport, cairo.Context(surface), frame, job.cancel)
+        surface.flush()
+        return surface
+
+
+def render_isochrones(view, cr, frame, cancel):
+    """Project and draw every point off the GTK thread; keep the same 3 km joins."""
+    geod = Geod(ellps="WGS84")
+    cr.set_line_join(cairo.LINE_JOIN_ROUND)
+    for frontier in frame.isochrones:
+        if cancel.is_set():
+            return
+        if len(frontier) < 2:
+            continue
+        positions = np.array([p.pos for p in frontier])
+        xs, ys = view.convert_geographic_to_screen_batch(
+            positions[:, 0], positions[:, 1]
+        )
+        _, _, distance = geod.inv(
+            positions[:-1, 1], positions[:-1, 0], positions[1:, 1], positions[1:, 0]
+        )
+        cr.set_source_rgba(0, 0, 0.8, 0.5)
+        cr.set_line_width(1.5)
+        for index in np.flatnonzero(distance <= 3000):
+            cr.move_to(xs[index], ys[index])
+            cr.line_to(xs[index + 1], ys[index + 1])
+            cr.stroke()
+    previous = None
+    for point in frame.path:
+        if cancel.is_set():
+            return
+        latitude, longitude = point.pos if hasattr(point, "pos") else point[:2]
+        x, y = view.convert_geographic_to_screen(
+            MapPoint.new_degrees(latitude, longitude)
+        )
+        if previous is not None:
+            Style.Track.RoutingTrack.apply(cr)
+            cr.move_to(*previous)
+            cr.line_to(x, y)
+            cr.stroke()
+        Style.Track.RoutingTrackCircle.apply(cr)
+        cr.arc(x, y, 5, 0, 2 * math.pi)
+        cr.stroke()
+        previous = x, y
+    if not cancel.is_set():
+        draw_current_exclusions(view, cr, frame.exclusions)
 
 
 class IsochronesMapLayer(GObject.GObject):
     def __init__(self):
         GObject.GObject.__init__(self)
-        self.isochrones = []
-        self.path = []
+        self.renderer = IsochronesRenderer()
+        self.set_isochrones([], [])
 
-    def set_isochrones(self, isoc, path):
-        self.isochrones = isoc
-        self.path = path
+    def set_isochrones(self, isoc, path, excluded_current_samples=()):
+        self.isochrones = tuple(tuple(frontier) for frontier in isoc)
+        self.path = tuple(path)
+        self.excluded_current_samples = tuple(dict(s) for s in excluded_current_samples)
+        self.frame = IsochroneFrame(
+            self.isochrones, self.path, self.excluded_current_samples
+        )
 
     def do_draw(self, gpsmap, cr):
-        cr.set_source_rgba(0, 0, 0, 0.6)
-        cr.set_line_width(1)
-        cr.set_line_join(cairo.LINE_JOIN_ROUND)
-
-        # Render partial routing
-        prevx = None
-        prevy = None
-        i = 0
-
-        if self.path:
-            for p in self.path:
-                if not isinstance(p, list):
-                    p = p.to_list()
-                i += 1
-                x, y = gpsmap.convert_geographic_to_screen(
-                    MapPoint.new_degrees(p[0], p[1])
-                )
-
-                if prevx is None:
-                    Style.Track.RoutingTrackFont.apply(cr)
-                    cr.move_to(x + 10, y)
-                    cr.stroke()
-
-                # Style.Track.RoutingTrackFont.apply(cr)
-                cr.move_to(x - 4, y + 18)
-                # cr.show_text(str(p[2]))
-                # cr.stroke()
-
-                if prevx is not None and prevy is not None:
-                    Style.Track.RoutingTrack.apply(cr)
-
-                    cr.move_to(prevx, prevy)
-                    cr.line_to(x, y)
-                    cr.stroke()
-
-                Style.Track.RoutingTrackCircle.apply(cr)
-                cr.arc(x, y, 5, 0, 2 * math.pi)
-                cr.stroke()
-
-                prevx = x
-                prevy = y
-
-        # Render isochrones
-        i = 0
-        for ic in self.isochrones:
-            # cr.set_source_rgba (0,0,0, 1.0 - i / len(self.isochrones))
-            prev = None
-            for icpoint in ic:
-                cr.set_source_rgba(0, 0, 0.8, 0.5)
-                cr.set_line_width(1.5)
-
-                x, y = gpsmap.convert_geographic_to_screen(
-                    MapPoint.new_degrees(icpoint.pos[0], icpoint.pos[1])
-                )
-
-                if prev is not None:
-                    cr.move_to(prev[0], prev[1])
-                    d, r = utils.ortodromic(
-                        prev[2].pos[0], prev[2].pos[1], icpoint.pos[0], icpoint.pos[1]
-                    )
-
-                    if d <= 3:
-                        cr.line_to(x, y)
-                        cr.stroke()
-
-                    # if i > 0:
-                    #     cr.set_source_rgba(1, 0, 0, 0.8)
-                    #     cr.set_line_width(0.6)
-                    #     xa, ya = gpsmap.convert_geographic_to_screen(
-                    #         MapPoint.new_degrees(
-                    #             self.isochrones[i - 1][icpoint[2]][0],
-                    #             self.isochrones[i - 1][icpoint[2]][1],
-                    #         )
-                    #     )
-                    #     cr.move_to(xa, ya)
-                    #     cr.line_to(x, y)
-                    cr.stroke()
-
-                prev = (x, y, icpoint)
-
-            # Close the path
-            # cr.set_source_rgba (0,0,0,0.3)
-            # cr.set_line_width (1)
-            # cr.move_to (prev[0], prev[1])
-            # x, y = gpsmap.convert_geographic_to_screen (MapPoint.new_degrees
-            #  (ic[0][0], ic[0][1]))
-            # # cr.line_to (x, y)
-            # cr.move_to (x, y)
-            # cr.stroke ()
-
-            i += 1
+        charts = (
+            ((self.frame,),)
+            if self.isochrones or self.path or self.excluded_current_samples
+            else ()
+        )
+        self.renderer.draw(gpsmap, cr, charts, "isochrones")
 
     def do_render(self, gpsmap):
         pass

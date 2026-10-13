@@ -15,14 +15,16 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
 import os
+from datetime import datetime
 
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import GObject, Gtk
+from gi.repository import GLib, Gtk
 
 from gweatherrouting.core import TimeControl
 from gweatherrouting.gtk.timepickerdialog import TimePickerDialog
+from .timescrubber import TimeScrubber
 
 TIME_UNITS = {
     "30s": 30,
@@ -46,10 +48,13 @@ class TimeTravelWidget(Gtk.Box):
         time_control: TimeControl,
         map,
         smaller_unit=False,
+        grib_manager=None,
+        marine_manager=None,
     ):
-        super(TimeTravelWidget, self).__init__()
+        super().__init__(orientation=Gtk.Orientation.VERTICAL)
 
         self.play = False
+        self._play_timer = 0
         self.parent = parent
         self.time_control = time_control
         self.map = map
@@ -62,19 +67,28 @@ class TimeTravelWidget(Gtk.Box):
 
         self.pack_start(self.builder.get_object("timetravel"), True, True, 0)
 
-        self.show_all()
-
-        # self.timeAdjust = self.builder.get_object('time-adjustment')
+        self.scrubber = None
+        if grib_manager is not None or marine_manager is not None:
+            self.scrubber = TimeScrubber(
+                self.time_control,
+                self._scrub_to,
+                grib_manager,
+                marine_manager,
+                on_interact=lambda: self.on_stop_click(None),
+            )
+            self.pack_start(self.scrubber, False, False, 0)
         self.timeLabel = self.builder.get_object("time-label")
         self.timeUnitCombo = self.builder.get_object("time-unit-combo")
         self.time_control.connect("time_change", self.on_time_change)
         self.on_time_change(self.time_control.time)
 
-        self.seconds = smaller_unit
+        self.seconds = 300 if smaller_unit else 900
         if smaller_unit:
             self.timeUnitCombo.set_active(2)
         else:
             self.timeUnitCombo.set_active(3)
+        self.connect("destroy", self._destroy)
+        self.show_all()
 
     def get_change_unit(self):
         return self.seconds
@@ -84,7 +98,7 @@ class TimeTravelWidget(Gtk.Box):
         self.seconds = TIME_UNITS[u]
 
     def on_time_change(self, t):
-        date_str = t.strftime("%a %d %b")
+        date_str = t.astimezone().strftime("%a %d %b %Z")
         time_str = t.strftime("%H:%M")
         self.timeLabel.set_markup(
             f'<span font_weight="bold" font_size="large">{time_str}</span>'
@@ -93,29 +107,51 @@ class TimeTravelWidget(Gtk.Box):
         self.map.queue_draw()
 
     def on_time_now(self, event):
+        self.on_stop_click(None)
         self.time_control.now()
 
     def on_play_click(self, event):
+        if self.play:
+            return
         self.play = True
-        GObject.timeout_add(10, self.on_play_step)
+        self._play_timer = GLib.timeout_add(1000, self.on_play_step)
 
     def on_play_step(self):
+        if not self.play:
+            return False
         self.on_foward_click(None)
-        if self.play:
-            GObject.timeout_add(1000, self.on_play_step)
+        if self.scrubber and self.scrubber.bounds:
+            if self.time_control.time.timestamp() >= self.scrubber.bounds[1]:
+                self.on_stop_click(None)
+        return self.play
 
     def on_stop_click(self, event):
         self.play = False
+        if self._play_timer:
+            GLib.source_remove(self._play_timer)
+            self._play_timer = 0
+
+    def _scrub_to(self, instant):
+        self.on_stop_click(None)
+        self.time_control.set_time(instant)
+
+    def _step(self, seconds):
+        if self.scrubber and self.scrubber.bounds:
+            start, end = self.scrubber.bounds
+            stamp = max(start, min(end, self.time_control.time.timestamp() + seconds))
+            self.time_control.set_time(datetime.fromtimestamp(stamp))
+        else:
+            self.time_control.increase(seconds=seconds)
 
     def on_foward_click(self, event):
-        self.time_control.increase(seconds=self.seconds)
+        self._step(self.seconds)
         self.map.queue_draw()
 
     def on_backward_click(self, event):
-        # if self.time_control.time > 0:
-        self.time_control.decrease(seconds=self.seconds)
+        self._step(-self.seconds)
 
     def on_time_select(self, event):
+        self.on_stop_click(None)
         tp = TimePickerDialog(self.parent)
         tp.set_from_date_time(self.time_control.time)
         response = tp.run()
@@ -125,9 +161,6 @@ class TimeTravelWidget(Gtk.Box):
 
         tp.destroy()
 
-    # def updateTimeSlider(self):
-    # 	self.timeAdjust.set_value(int(self.time_control.time))
-
-    def on_time_slide(self, widget):
-        self.time_control.set_time(int(self.timeAdjust.get_value()))
-        self.map.queue_draw()
+    def _destroy(self, *args):
+        self.on_stop_click(None)
+        self.time_control.disconnect("time_change", self.on_time_change)

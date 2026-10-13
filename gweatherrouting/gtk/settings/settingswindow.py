@@ -25,6 +25,7 @@ from gweatherrouting.core import Core
 
 from .settingsmanager import SettingsManager
 from .settingswindow_charts import SettingsWindowCharts
+from .settingswindow_currents import CurrentsSettingsPanel
 from .settingswindow_connections import SettingsWindowConnections
 from .settingswindow_display import SettingsWindowDisplay
 
@@ -63,6 +64,12 @@ class SettingsWindow(
         SettingsWindowConnections.__init__(self)
         SettingsWindowCharts.__init__(self)
         SettingsWindowDisplay.__init__(self)
+        self.currents_settings = CurrentsSettingsPanel(
+            core.marine_manager.coverage_planner
+        )
+        self.builder.get_object("stack1").add_titled(
+            self.currents_settings, "currents", "Currents"
+        )
 
     def show(self):
         self.window.show_all()

@@ -193,13 +193,15 @@ class TestDisplayPreferences(unittest.TestCase):
     def test_settings_window_display_switches_are_connected(self):
         from gweatherrouting.gtk.settings.settingsmanager import SettingsManager
         from gweatherrouting.gtk.settings.settingswindow import SettingsWindow
+        from gweatherrouting.core.marine.coverage import CoveragePlanner
 
         with TemporaryDirectory() as directory:
             with patch("gweatherrouting.core.storage.DATA_DIR", directory):
                 settings = SettingsManager()
                 parent = SimpleNamespace(chart_manager=SimpleNamespace(charts=[]))
                 core = SimpleNamespace(
-                    connectionManager=SimpleNamespace(connections=[])
+                    connectionManager=SimpleNamespace(connections=[]),
+                    marine_manager=SimpleNamespace(coverage_planner=CoveragePlanner()),
                 )
                 window = SettingsWindow(parent, settings, core)
                 stack = window.builder.get_object("stack1")

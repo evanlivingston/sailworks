@@ -28,6 +28,7 @@ from gi.repository import Gtk
 from gweatherrouting.common import resource_path
 from gweatherrouting.core import TimeControl
 from gweatherrouting.core.storage import POLAR_DIR
+from gweatherrouting.core.marine.routing import CurrentIsoRouter
 
 from .polarmanagerwindow import PolarManagerWindow
 from .timepickerdialog import TimePickerDialog
@@ -89,6 +90,24 @@ class RoutingWizardDialog:
             datetime.datetime.today().strftime(TimeControl.DFORMAT)
         )
 
+        notebook = self.builder.get_object("wizard-notebook")
+        marine = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12, margin=16)
+        self.use_currents = Gtk.CheckButton(label="Include currents")
+        self.use_currents.set_tooltip_text(
+            "Include ocean and tidal currents in routing."
+        )
+        self.use_currents.set_active(False)
+        marine.pack_start(self.use_currents, False, False, 0)
+        self.auto_currents = Gtk.CheckButton(label="Download data automatically")
+        self.auto_currents.set_tooltip_text(
+            "Use the latest GFS wind run and download missing wind and current coverage."
+        )
+        self.auto_currents.set_active(True)
+        self.auto_currents.set_sensitive(False)
+        self.use_currents.connect("toggled", self._on_currents_toggled)
+        marine.pack_start(self.auto_currents, False, False, 0)
+        notebook.append_page(marine, Gtk.Label(label="Currents"))
+
         self.dialog.show_all()
 
     def run(self):
@@ -101,9 +120,7 @@ class RoutingWizardDialog:
         return self.dialog.destroy()
 
     def on_routing_algo_select(self, widget):
-        ralgo = weatherrouting.list_routing_algorithms()[
-            self.builder.get_object("routing-select").get_active()
-        ]["class"]
+        ralgo = self.get_selected_algorithm()
 
         if len(ralgo.PARAMS.keys()) == 0:
             self.builder.get_object("router-params").hide()
@@ -201,6 +218,12 @@ class RoutingWizardDialog:
     def get_coastline_checks(self):
         return self.builder.get_object("coastline-check").get_active()
 
+    def get_use_currents(self):
+        return self.use_currents.get_active()
+
+    def get_auto_currents(self):
+        return self.use_currents.get_active() and self.auto_currents.get_active()
+
     def get_start_datetime(self):
         return datetime.datetime.strptime(
             self.builder.get_object("time-entry").get_text(), TimeControl.DFORMAT
@@ -215,9 +238,23 @@ class RoutingWizardDialog:
             return self.core.trackManager[s]
 
     def get_selected_algorithm(self):
+        if getattr(self, "use_currents", None) and self.use_currents.get_active():
+            return CurrentIsoRouter
         return weatherrouting.list_routing_algorithms()[
             self.builder.get_object("routing-select").get_active()
         ]["class"]
+
+    def _on_currents_toggled(self, button):
+        self.auto_currents.set_sensitive(button.get_active())
+        store = self.builder.get_object("routing-store")
+        store.clear()
+        if button.get_active():
+            self.builder.get_object("coastline-check").set_active(True)
+            store.append(["Isochrone · currents"])
+        else:
+            for algorithm in weatherrouting.list_routing_algorithms():
+                store.append([algorithm["name"]])
+        self.builder.get_object("routing-select").set_active(0)
 
     def get_selected_polar(self):
         return self.polars[self.builder.get_object("boat-select").get_active()]

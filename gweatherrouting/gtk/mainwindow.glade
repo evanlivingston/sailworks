@@ -214,6 +214,19 @@
           </packing>
         </child>
         <child>
+          <object class="GtkButton" id="marine-button">
+            <property name="visible">True</property>
+            <property name="label" translatable="yes">Tides &amp; currents</property>
+            <property name="tooltip-text" translatable="yes">Show / hide the Tides &amp; currents panel</property>
+            <property name="margin-end">6</property>
+            <signal name="clicked" handler="on_marine_manager" swapped="no"/>
+          </object>
+          <packing>
+            <property name="pack-type">end</property>
+            <property name="position">5</property>
+          </packing>
+        </child>
+        <child>
           <object class="GtkButton" id="grib-button">
             <property name="visible">True</property>
             <property name="can-focus">True</property>

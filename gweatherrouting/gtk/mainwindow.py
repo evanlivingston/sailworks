@@ -137,6 +137,10 @@ class MainWindow:
         w = GribManagerWindow(self.core.grib_manager, self.refresh_map)
         w.show()
 
+    def on_marine_manager(self, event):
+        self.builder.get_object("stack1").set_visible_child_name("Charts")
+        self.chartStack.tool_dock.toggle_group(("currents", "tides"))
+
     def refresh_map(self):
         if self.chartStack.map:
             self.chartStack.map.queue_draw()

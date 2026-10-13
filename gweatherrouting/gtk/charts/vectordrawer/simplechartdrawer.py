@@ -17,12 +17,17 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 import cairo
 import numpy as np
 
+from gweatherrouting.core.geo.shoreline import ShorelineGeometryCache
 from gweatherrouting.gtk.style import Style
 
 from .vectorchartdrawer import VectorChartDrawer
 
 
 class SimpleChartDrawer(VectorChartDrawer):
+    def __init__(self, settings_manager):
+        super().__init__(settings_manager)
+        self._shorelines = ShorelineGeometryCache()
+
     def draw(self, gpsmap, cr, vector_file, bounding):
         stroke_style = Style.chart_palettes[self.palette].land_stroke
         fill_style = Style.chart_palettes[self.palette].land_fill
@@ -35,6 +40,7 @@ class SimpleChartDrawer(VectorChartDrawer):
         for i in range(vector_file.GetLayerCount()):
             layer = vector_file.GetLayerByIndex(i)
             layer.SetSpatialFilter(bounding)
+            layer.ResetReading()
 
             # Iterate over features
             feat = layer.GetNextFeature()
@@ -42,8 +48,11 @@ class SimpleChartDrawer(VectorChartDrawer):
                 if not feat:
                     continue
 
-                geom = feat.GetGeometryRef()
-                geom = bounding.Intersection(geom)
+                geom = self._shorelines.clip(
+                    (vector_file.GetDescription(), i, feat.GetFID()),
+                    feat.GetGeometryRef(),
+                    bounding,
+                )
                 self.feature_render(
                     gpsmap,
                     cr,
@@ -86,10 +95,11 @@ class SimpleChartDrawer(VectorChartDrawer):
             stroke_style.apply(cr)
             g = geom.GetGeometryRef(i)
 
-            if g.GetGeometryName() == "POLYGON":
+            if g.GetGeometryName() in ("POLYGON", "MULTIPOLYGON", "GEOMETRYCOLLECTION"):
                 self.feature_render(
                     gpsmap, cr, g, feat, layer, stroke_style, fill_style, contourn_style
                 )
+                continue
 
             xs, ys = self._geom_to_screen_batch(gpsmap, g)
             if xs is not None:
