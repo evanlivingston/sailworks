@@ -1003,7 +1003,8 @@ into `dev`; no upstream PR was created or updated.
   documentation remain fork-only pending an explicit upstream request.
 - Branch/base: `feature/qt-routing-options`, independent from `dev` at `5b4363d`
   after approved marine PR #16. No pending merge dependency or upstream submission.
-- Review: regular fork PR pending creation; leave unmerged for user review.
+- Review: [fork PR #18](https://github.com/evanlivingston/gweatherrouting/pull/18),
+  open for user review; not merged.
 - Functional commits: `1daf76b` adds immutable parameter/scenario inputs and
   toolkit-neutral current preparation to the shared worker job; `2f35fcc` migrates
   Qt routing parameters, start/track choices, Compare/Currents pages, sequential
