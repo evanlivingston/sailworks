@@ -943,7 +943,8 @@ into `dev`; no upstream PR was created or updated.
   documentation are fork-only. Branch: `feature/qt-marine-controls`, based on
   `dev` at `2fddc69` after the approved merge of fork PR #15. No pending dependency
   or upstream submission.
-- Review: fork PR pending creation; leave unmerged for human review.
+- Review: [fork PR #16](https://github.com/evanlivingston/gweatherrouting/pull/16),
+  open and unmerged for human review; CI is running.
 - Functional commits: `1376489` extracts production marine rendering/shoreline
   masking and pure coverage/tide-download/interval helpers while retaining GTK
   compatibility modules and APIs; `4a54dc4` integrates separate Qt Currents/Tides
@@ -969,6 +970,8 @@ into `dev`; no upstream PR was created or updated.
   no routing calculations, interpolation, units or source policies change.
 - Validation: full suite passes 794 tests and 101 subtests; the final isolated Qt
   wrapper passes all 65 checks after strengthened priority/reset/checkbox assertions.
+  Follow-up `8a87b14` isolates restarted windows from installed shoreline data; its
+  focused restart check also passes.
   Existing marine/model/GTK checks pass 94 tests. Eight new Qt checks cover grouped
   source selection/removal and coverage, tide values/display/provenance/priority,
   frozen requests/UI-thread commits, provider partial failure, cancel/close late

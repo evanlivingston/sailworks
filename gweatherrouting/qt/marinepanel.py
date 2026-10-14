@@ -212,8 +212,14 @@ class CurrentSources(QWidget):
             parent = QTreeWidgetItem(
                 self.tree,
                 [
-                    "%s\n%d downloads · %g m\n%s"
-                    % (key[1], len(fields), key[2], intervals),
+                    "%s\n%d download%s · %g m\n%s"
+                    % (
+                        key[1],
+                        len(fields),
+                        "" if len(fields) == 1 else "s",
+                        key[2],
+                        intervals,
+                    ),
                     "%g m" % key[2],
                     intervals,
                 ],
