@@ -944,7 +944,10 @@ into `dev`; no upstream PR was created or updated.
   `dev` at `2fddc69` after the approved merge of fork PR #15. No pending dependency
   or upstream submission.
 - Review: [fork PR #16](https://github.com/evanlivingston/gweatherrouting/pull/16),
-  open and unmerged for human review; CI is running.
+  merged into `dev` with user approval (merge `bf1da59`). All builds, including
+  macOS, and docs passed. CI failures match the existing connection-dialog
+  complexity, four type errors and missing `nmeatoolkit` test dependency;
+  remaining test jobs were cancelled by fail-fast.
 - Functional commits: `1376489` extracts production marine rendering/shoreline
   masking and pure coverage/tide-download/interval helpers while retaining GTK
   compatibility modules and APIs; `4a54dc4` integrates separate Qt Currents/Tides
@@ -981,7 +984,7 @@ into `dev`; no upstream PR was created or updated.
   floating/reset, correct active tab and clean shutdown without GTK imports.
   QA used temporary model/workspace data and disabled user-settings writes.
   Scoped Black/Flake8 and mypy (29 files) pass. Full mypy retains 32 baseline errors
-  in eight existing files. Sphinx is unavailable locally; docs CI is pending.
+  in eight existing files. Sphinx is unavailable locally; docs CI passed.
 - Integration fixes: defer source-table rebuilds until checkbox signals finish
   to avoid deleting a live native item; force tab activation when a pre-show raise
   left a marine dock last in sibling order behind another active tab. Tests use
