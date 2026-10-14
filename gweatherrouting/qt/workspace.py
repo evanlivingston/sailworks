@@ -90,6 +90,8 @@ class WorkspacePreferences(QObject):
         window.navigation_panel.track_split.splitterMoved.connect(self.changed)
         window.navigation_panel.route_split.splitterMoved.connect(self.changed)
         window.ais_action.toggled.connect(self.changed)
+        for action in window.map_toolbar_actions:
+            action.toggled.connect(self.changed)
         for action in window.log_toggles.values():
             action.toggled.connect(self.changed)
         panel = window.routing_panel
@@ -175,12 +177,16 @@ class WorkspacePreferences(QObject):
                 "split": window.logs_view.sizes(),
                 "series": dict(window.plots.series),
                 "map": {
+                    "dashboard": window.log_map.dashboard_visible,
+                    "wind": window.log_map.wind_visible,
                     "latitude": window.log_map._center_lat,
                     "longitude": (window.log_map._center_lon + 180) % 360 - 180,
                     "zoom": window.log_map._zoom,
                 },
             },
             "map": {
+                "dashboard": window.map.dashboard_visible,
+                "wind": window.map.wind_visible,
                 "latitude": window.map._center_lat,
                 "longitude": (window.map._center_lon + 180) % 360 - 180,
                 "zoom": window.map._zoom,
@@ -236,6 +242,8 @@ class WorkspacePreferences(QObject):
         canvas._zoom = number(saved_map.get("zoom"), canvas._zoom, 1, 20)
         canvas.queue_draw()
         self._restore_routing(mapping(state.get("routing")))
+        self._restore_map_display(self.window.map, saved_map)
+        self.window._sync_map_actions()
         nmea = mapping(state.get("nmea"))
         speed = nmea.get("speed")
         if type(speed) in (int, float) and speed in (0.5, 1, 2, 5, 10):
@@ -330,6 +338,7 @@ class WorkspacePreferences(QObject):
                 self.window.log_toggles[key].setChecked(value)
         saved_map = mapping(logs.get("map"))
         canvas = self.window.log_map
+        self._restore_map_display(canvas, saved_map)
         canvas._center_lat = number(
             saved_map.get("latitude"), canvas._center_lat, -85, 85
         )
@@ -338,6 +347,13 @@ class WorkspacePreferences(QObject):
         )
         canvas._zoom = number(saved_map.get("zoom"), canvas._zoom, 1, 20)
         canvas.queue_draw()
+
+    @staticmethod
+    def _restore_map_display(canvas, saved):
+        if isinstance(saved.get("dashboard"), bool):
+            canvas.set_dashboard_visible(saved["dashboard"])
+        if isinstance(saved.get("wind"), bool):
+            canvas.set_wind_visible(saved["wind"])
 
     def _restore_routing(self, saved):
         panel = self.window.routing_panel

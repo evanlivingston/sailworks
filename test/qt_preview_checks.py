@@ -1878,6 +1878,205 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertTrue(panel.task.closed)
         self.assertFalse(self.controller.core.trackManager.elements)
 
+    def wait_for_cursor(self, done):
+        deadline = time.monotonic() + 3
+        while not done() and time.monotonic() < deadline:
+            self.drain()
+            time.sleep(0.005)
+        self.assertTrue(done())
+
+    def test_map_dashboard_tracks_core_playback_stop_and_source_reset(self):
+        canvas = self.window.map
+        self.assertTrue(canvas.dashboard_visible)
+        self.load(
+            [
+                rmc("120000"),
+                water(),
+                wind(reference="R"),
+                wind(),
+                rmc("120010"),
+                rmc("120020"),
+            ]
+        )
+        self.controller.session.set_playing(True)
+        self.controller.session.advance(15)
+        self.window.views.setCurrentWidget(canvas)
+        self.drain()
+        canvas._dashboard_image()
+        values = {g.label: g.value for g in canvas.dashboard._gauges}
+        self.assertEqual(values["SOG"], self.controller.core.boat_info.sog)
+        self.assertIsNotNone(values["AWS"])
+        self.assertIsNotNone(values["TWS"])
+        self.controller.session.stop()
+        canvas._dashboard_image()
+        self.assertEqual({g.label: g.value for g in canvas.dashboard._gauges}, values)
+        background = canvas.background
+        self.controller.core.boat_info.depth = 3.2
+        self.controller.boat_changed.emit(self.controller.core.boat_info)
+        self.drain()
+        self.assertIs(canvas.background, background)
+        canvas._dashboard_image()
+        self.assertEqual(canvas.dashboard._gauges[-1].value, 3.2)
+        self.controller.session.select_source("live")
+        canvas._dashboard_image()
+        self.assertTrue(all(g.value is None for g in canvas.dashboard._gauges))
+
+    def test_map_display_controls_are_independent_and_survive_restart(self):
+        self.window.grib_action.trigger()
+        self.window.dashboard_action.trigger()
+        self.assertFalse(self.window.map.wind_visible)
+        self.assertFalse(self.window.map.dashboard_visible)
+        self.window.views.setCurrentWidget(self.window.logs_view)
+        self.assertTrue(self.window.grib_action.isChecked())
+        self.assertTrue(self.window.dashboard_action.isChecked())
+        self.assertTrue(self.window.dashboard_action.isVisible())
+        self.window.workspace.save()
+        self.restart_workspace()
+        self.assertFalse(self.window.map.wind_visible)
+        self.assertFalse(self.window.map.dashboard_visible)
+        self.assertTrue(self.window.log_map.wind_visible)
+        self.assertTrue(self.window.log_map.dashboard_visible)
+        self.assertTrue(self.window.dashboard_action.isChecked())
+        self.window.views.setCurrentWidget(self.window.polar_workspace)
+        self.assertFalse(self.window.grib_action.isVisible())
+        self.assertFalse(self.window.dashboard_action.isVisible())
+        self.window.views.setCurrentWidget(self.window.map)
+        self.assertFalse(self.window.dashboard_action.isChecked())
+        self.window.grib_action.trigger()
+        self.window.dashboard_action.trigger()
+        self.assertTrue(self.window.map.dashboard_visible)
+
+    def test_cursor_coordinates_and_hidden_or_moving_weather_never_sample(self):
+        from unittest.mock import Mock
+
+        canvas = self.window.map
+        canvas._wind_cursor._sample = Mock(return_value=(180, 10))
+        self.controller.core.grib_manager.gribs = [object()]
+        self.controller.core.grib_manager.get_wind_at = Mock(
+            side_effect=AssertionError("UI GRIB query")
+        )
+        canvas.set_wind_visible(False)
+        canvas.mouseMoveEvent(SimpleNamespace(position=lambda: QPointF(100, 100)))
+        self.assertIn("Latitude:", self.window.cursor_status.text())
+        canvas.set_wind_visible(True)
+        canvas.drag = QPointF(100, 100)
+        canvas.mouseMoveEvent(SimpleNamespace(position=lambda: QPointF(110, 100)))
+        canvas.mouseReleaseEvent(None)
+        canvas._zoom_animating = True
+        canvas.mouseMoveEvent(SimpleNamespace(position=lambda: QPointF(110, 100)))
+        canvas._zoom_animating = False
+        self.assertFalse(canvas._wind_cursor._timer)
+        canvas._wind_cursor._sample.assert_not_called()
+        self.controller.core.grib_manager.get_wind_at.assert_not_called()
+
+    def test_cursor_debounces_and_reads_wind_off_thread_with_ui_delivery(self):
+        from unittest.mock import Mock
+
+        canvas = self.window.map
+        self.controller.core.grib_manager.gribs = [object()]
+        ui_thread = get_ident()
+        workers, delivered = [], []
+
+        def sample(*args):
+            workers.append(get_ident())
+            return (180, 10)
+
+        canvas._wind_cursor._sample = Mock(side_effect=sample)
+        canvas.cursor_readout.connect(
+            lambda text: delivered.append((get_ident(), text))
+        )
+        for x in range(30):
+            canvas.mouseMoveEvent(
+                SimpleNamespace(position=lambda x=x: QPointF(100 + x, 100))
+            )
+        self.assertIn("Latitude:", self.window.cursor_status.text())
+        self.assertNotIn("Wind", self.window.cursor_status.text())
+        self.wait_for_cursor(lambda: "19.4 kts" in self.window.cursor_status.text())
+        canvas._wind_cursor._sample.assert_called_once()
+        self.assertTrue(self.window.cursor_status.isVisible())
+        self.window.refresh()
+        self.assertTrue(self.window.cursor_status.isVisible())
+        self.assertNotEqual(workers[0], ui_thread)
+        self.assertTrue(all(thread == ui_thread for thread, text in delivered))
+        self.assertEqual(canvas.background[0][4], canvas._zoom)
+
+    def test_cursor_stale_results_cancel_after_view_time_sources_visibility_and_leave(
+        self,
+    ):
+        from unittest.mock import Mock
+        from datetime import timedelta
+        from PySide6.QtCore import QEvent
+
+        canvas = self.window.map
+        self.controller.core.grib_manager.gribs = [object()]
+        canvas._wind_cursor.request = Mock()
+        for change in (
+            lambda: self.controller.time_control.set_time(
+                self.controller.time_control.time + timedelta(hours=1)
+            ),
+            lambda: setattr(canvas, "_zoom", canvas._zoom + 1),
+            lambda: self.controller.core.grib_manager.gribs.append(object()),
+            lambda: canvas.set_wind_visible(False),
+            lambda: canvas.leaveEvent(QEvent(QEvent.Type.Leave)),
+            lambda: self.window.views.setCurrentWidget(self.window.logs_view),
+        ):
+            self.window.views.setCurrentWidget(canvas)
+            canvas.set_wind_visible(True)
+            canvas.mouseMoveEvent(SimpleNamespace(position=lambda: QPointF(120, 100)))
+            callback = canvas._wind_cursor.request.call_args.args[-1]
+            change()
+            current = self.window.cursor_status.text()
+            callback((180, 10))
+            self.assertEqual(self.window.cursor_status.text(), current)
+
+    def test_cursor_private_real_forecast_and_blocked_close_release_handles(self):
+        from datetime import datetime
+        from gweatherrouting.core.grib import Grib
+        from gweatherrouting.rendering.windcursor import CursorGrib
+
+        source = Grib(
+            str(self.wind_fixture()), "wind", "test", [], datetime(2026, 1, 1), 3
+        )
+        self.controller.core.grib_manager.gribs = [source]
+        self.controller.time_control.set_time(source.start_time)
+        canvas = self.window.map
+        canvas.fit_coordinates([(48.99, -123.01), (49.01, -122.99)])
+        canvas.mouseMoveEvent(
+            SimpleNamespace(
+                position=lambda: QPointF(canvas.width() / 2, canvas.height() / 2)
+            )
+        )
+        expected = source.get_wind_at(source.start_time, 49, -123)
+        self.wait_for_cursor(lambda: "Wind" in self.window.cursor_status.text())
+        self.assertIn(
+            "%.1f kts" % (expected[1] * 1.94384), self.window.cursor_status.text()
+        )
+        private = canvas._wind_cursor._gribs[source]
+        self.assertIsNot(private.dataset, source.dataset)
+        started, release, done = Event(), Event(), Event()
+        self.addCleanup(release.set)
+
+        def slow(forecast, lat, lon):
+            started.set()
+            release.wait(3)
+            done.set()
+            return expected
+
+        private.get_wind_at = slow
+        canvas.mouseMoveEvent(
+            SimpleNamespace(
+                position=lambda: QPointF(canvas.width() / 2 + 1, canvas.height() / 2)
+            )
+        )
+        self.wait_for_cursor(started.is_set)
+        self.window.close()
+        release.set()
+        self.wait_for_cursor(lambda: done.is_set() and not canvas._wind_cursor._gribs)
+        self.assertIsNone(private.dataset)
+        self.assertTrue(canvas._wind_cursor._closed)
+        self.assertIsNotNone(source.dataset)
+        self.assertTrue(issubclass(type(private), CursorGrib))
+
     def test_frontend_does_not_import_gtk(self):
         self.assertNotIn("gi.repository.Gtk", sys.modules)
         self.assertFalse(

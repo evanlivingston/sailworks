@@ -266,6 +266,43 @@ nearest-TWS wind filter, sample count and Clear samples. It reads the same activ
 NMEA history and wind-band policy; clearing observations retains logs/plots.
 Efficiency controls and polar editing/export remain separate migration work.
 
+## Map instruments and cursor wind
+
+Charts and Logs show GTK's instrument dashboard at the bottom of their maps:
+SOG, COG, AWS, AWA, TWS, TWA and depth, with connection status above. The Dashboard
+toolbar switch hides/shows it. Each map remembers its own Dashboard and Grib
+visibility choices. Polars hides these map-specific toolbar controls.
+
+The dashboard uses the shared Core boat state at the current playback position
+or from live connections. Stop retains the current readings; a source reset clears
+them. Reported true wind takes precedence. When TWS is missing, the original GTK
+apparent-wind/SOG fallback supplies TWS/TWA without modifying recorded data.
+Unknown measurements display `---`, and valid zero measurements remain zero.
+Connection summaries use the existing nonblocking status snapshot, including
+packet counts and disconnected-source details.
+
+The production GTK Cairo gauge styles, units, colors and formulas are shared.
+Sixteen comparisons with pre-extraction GTK at two sizes, two pixel scales and
+four instrument/connection states produced zero changed pixels on wide maps.
+The same gauges now wrap in their original order on narrow maps in both
+frontends; this fixes the clipped row when sidebars are open.
+
+Move the pointer over a map to see its coordinates in the status bar. With Grib
+enabled and forecast coverage available, a stationary pointer also shows wind
+direction and speed in knots for that map's forecast time. Queries debounce for
+120 ms and run on a worker using private GDAL handles. Enabled-file order,
+coverage fallback, sampling and the `1.94384` knots conversion match GTK's cursor
+sampler. This preserves the existing cursor priority; it does not change the
+separate wind overlay's newest-run ordering.
+
+Dragging, zooming, placing a point, leaving/hiding the map, changing time/sources
+or hiding Grib cancels the readout. Late results cannot replace a newer position
+or a different view. Forecast data never loads on the pointer event thread.
+The worker keeps at most two private files and four array hours per file; file
+eviction and shutdown explicitly release those handles. Twelve real-raster
+time/position probes match legacy wind values exactly. Connection status refresh
+does not hide an active cursor readout; instrument updates reuse the chart image.
+
 ## Workspace preferences
 
 Qt automatically saves its window’s normal size/position and maximized state,
@@ -298,8 +335,8 @@ recording, playback or calculation starts because a workspace was restored.
 
 ## Still to migrate
 
-- Advanced routing controls, marine current/tide overlays,
-  map dashboard and wind-cursor details; see the parity checklist.
+- Advanced routing controls and marine current/tide overlays;
+  see the parity checklist.
 - Base coastline installation/download UI and additional chart providers.
 - Smooth/inertial gestures, dateline behavior, large-file performance, live
   hardware validation and distributable macOS/Linux/Windows bundles.
@@ -312,8 +349,8 @@ and packaging reach parity.
 
 ## Validation
 
-The full repository suite passes 783 tests and 84 subtests locally.
-The optional Qt wrapper runs forty-three integration checks in a separate
+The full repository suite passes 791 tests and 101 subtests locally.
+The optional Qt wrapper runs forty-nine integration checks in a separate
 process. Coverage includes transport/recording, queued Core notifications,
 stale-source rejection, overlay completion without GLib, callback cancellation
 on shutdown, real OGR ENC/raster fixtures, forecast/palette changes, projection,

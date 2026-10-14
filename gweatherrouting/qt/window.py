@@ -253,6 +253,20 @@ class PreviewWindow(QMainWindow):
         self.chart_toolbar_actions.append(self.ais_action)
         for action in self.chart_toolbar_actions[-5:]:
             toolbar.insertAction(open_forecast, action)
+        self.map_toolbar_actions = []
+        self.grib_action = toolbar.addAction("Grib")
+        self.dashboard_action = toolbar.addAction("Dashboard")
+        for action, label in (
+            (self.grib_action, "wind"),
+            (self.dashboard_action, "dashboard"),
+        ):
+            action.setCheckable(True)
+            action.setChecked(True)
+            action.toggled.connect(
+                lambda enabled, label=label: self._toggle_map_display(label, enabled)
+            )
+            toolbar.insertAction(open_forecast, action)
+            self.map_toolbar_actions.append(action)
         file_menu.addAction("Import GPX…", self.navigation_panel.import_gpx)
         file_menu.addAction("Export navigation…", self._export_navigation)
         toolbar.addSeparator()
@@ -310,6 +324,16 @@ class PreviewWindow(QMainWindow):
         self.routing_panel._plan_changed()
         self.routing_panel._select_route(0)
         self.instruments = QLabel("Waiting for position")
+        self.cursor_status = QLabel()
+        self.cursor_status.setMinimumWidth(0)
+        self.cursor_status.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
+        self.statusBar().addWidget(self.cursor_status, 1)
+        for canvas in (self.map, self.log_map):
+            canvas.cursor_readout.connect(
+                lambda text, canvas=canvas: self._cursor_readout(canvas, text)
+            )
         self.statusBar().addPermanentWidget(self.instruments)
         controller.boat_changed.connect(self._boat_changed)
         controller.changed.connect(self.refresh)
@@ -348,6 +372,9 @@ class PreviewWindow(QMainWindow):
         self.navigation_dock.setVisible(current is self.map and self.navigation_open)
         self.navigation_syncing = False
         self.navigation_action.setChecked(self.navigation_open)
+        self._sync_map_actions()
+        if hasattr(self, "cursor_status"):
+            self.cursor_status.clear()
         before = (
             self.polar_toolbar_actions[-1]
             if current is self.polar_workspace
@@ -368,6 +395,8 @@ class PreviewWindow(QMainWindow):
             action.setVisible(current is self.logs_view)
         for action in self.polar_toolbar_actions:
             action.setVisible(current is self.polar_workspace)
+        for action in self.map_toolbar_actions:
+            action.setVisible(current in (self.map, self.logs_view))
         if current is self.polar_workspace and not self.polars_visited:
             self.polars_visited = True
             self.polar_selector_dock.show()
@@ -376,6 +405,37 @@ class PreviewWindow(QMainWindow):
 
     def _toggle_log(self, key, checked):
         self.plots.set_series(key, checked)
+
+    def _active_map(self):
+        return (
+            self.log_map if self.views.currentWidget() is self.logs_view else self.map
+        )
+
+    def _sync_map_actions(self):
+        canvas = self._active_map()
+        for action, enabled in (
+            (self.grib_action, canvas.wind_visible),
+            (self.dashboard_action, canvas.dashboard_visible),
+        ):
+            action.blockSignals(True)
+            action.setChecked(enabled)
+            action.blockSignals(False)
+
+    def _toggle_map_display(self, layer, enabled):
+        canvas = self._active_map()
+        if layer == "wind":
+            canvas.set_wind_visible(enabled)
+        else:
+            canvas.set_dashboard_visible(enabled)
+
+    def _cursor_readout(self, canvas, text):
+        if (
+            canvas is self._active_map()
+            and self.views.currentWidget() is not self.polar_workspace
+        ):
+            self.cursor_status.setText(text)
+            self.cursor_status.setToolTip(text)
+            self.statusBar().showMessage("" if text else self._connection_message())
 
     def _fit_track(self):
         canvas = (
@@ -647,12 +707,7 @@ class PreviewWindow(QMainWindow):
         )
         self.recording_file.setToolTip(str(path or session.recording_directory))
         self.statusBar().showMessage(
-            "NMEA connections closed"
-            if self.controller.offline
-            else (
-                self.controller.connection_task.message
-                or "Using saved NMEA connections"
-            )
+            "" if self.cursor_status.text() else self._connection_message()
         )
         self.syncing = False
         self._refresh_data()
@@ -666,7 +721,19 @@ class PreviewWindow(QMainWindow):
                 + timedelta(seconds=session.position - offset)
             )
 
+    def _connection_message(self):
+        return (
+            "NMEA connections closed"
+            if self.controller.offline
+            else (
+                self.controller.connection_task.message
+                or "Using saved NMEA connections"
+            )
+        )
+
     def _refresh_data(self):
+        self.map.refresh_instruments()
+        self.log_map.refresh_instruments()
         session = self.session
         key = (
             (session.source, id(session.log))
