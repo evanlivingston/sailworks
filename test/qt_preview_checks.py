@@ -886,9 +886,9 @@ class QtPreviewChecks(unittest.TestCase):
 
         data.run("forecast-list", "Loading…", slow)
         self.assertTrue(started.wait(1))
-        self.window.views.setCurrentWidget(self.window.plots)
+        self.window.views.setCurrentWidget(self.window.logs_view)
         self.drain()
-        self.assertIs(self.window.views.currentWidget(), self.window.plots)
+        self.assertIs(self.window.views.currentWidget(), self.window.logs_view)
         self.controller.data.close()
         release.set()
         data.task.worker_thread.join(2)
@@ -899,7 +899,7 @@ class QtPreviewChecks(unittest.TestCase):
         from PySide6.QtGui import QPalette
 
         log = self.load()
-        self.assertIs(self.window.views.currentWidget(), self.window.plots)
+        self.assertIs(self.window.views.currentWidget(), self.window.logs_view)
         self.assertLess(
             self.app.palette().color(QPalette.ColorRole.Window).lightness(), 80
         )
@@ -918,7 +918,7 @@ class QtPreviewChecks(unittest.TestCase):
             [self.window.routing_dock],
         )
         self.window._show_panel(self.window.nmea_dock)
-        self.window.views.setCurrentWidget(self.window.plots)
+        self.window.views.setCurrentWidget(self.window.logs_view)
         self.drain()
         self.assertEqual(self.controller.session.position, 5)
         self.assertTrue(self.controller.session.playing)
@@ -997,7 +997,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.controller.session.set_streaming(False)
         self.controller.session.set_playing(True)
         self.controller.session.advance(1)
-        self.window.views.setCurrentWidget(self.window.plots)
+        self.window.views.setCurrentWidget(self.window.logs_view)
         (
             self.window.map._center_lat,
             self.window.map._center_lon,
@@ -1034,7 +1034,7 @@ class QtPreviewChecks(unittest.TestCase):
             self.window.dockWidgetArea(self.window.routing_dock),
             Qt.DockWidgetArea.LeftDockWidgetArea,
         )
-        self.assertIs(self.window.views.currentWidget(), self.window.plots)
+        self.assertIs(self.window.views.currentWidget(), self.window.logs_view)
         self.assertEqual(self.window.routing_panel.pages.currentIndex(), 1)
         self.assertEqual(self.window.routing_panel.routes.currentData().name, "second")
         self.assertFalse(self.window.routing_panel.coastlines.isChecked())
@@ -1210,10 +1210,17 @@ class QtPreviewChecks(unittest.TestCase):
 
         self.controller.polars = PolarController(self.controller)
         self.controller.polars.changed.connect(self.window.routing_panel.refresh_polars)
+        self.controller.polars.changed.connect(
+            self.window.polar_workspace.refresh_selector
+        )
         self.controller.polars.use_requested.connect(self.window._use_polar)
         self.window.routing_panel.refresh_polars()
+        from gweatherrouting.qt.polarlibrary import PolarLibrary
+
+        self.window.polar_manager_panel = PolarLibrary(self.controller, self.window)
+        self.window.polar_manager_dock.setWidget(self.window.polar_manager_panel)
         self.window.show_polars()
-        panel = self.window.library_dialog.polars_panel
+        panel = self.window.polar_manager_panel
         return root, panel
 
     def wait_for_polars(self, error=False):
@@ -1281,7 +1288,7 @@ class QtPreviewChecks(unittest.TestCase):
                 self.window.routing_panel.polar.currentText(), "custom.pol"
             )
             self.assertIs(self.window.views.currentWidget(), self.window.map)
-            self.assertFalse(self.window.library_dialog.isVisible())
+            self.assertTrue(self.window.routing_panel.isVisible())
             panel.local.item(panel.names.index("custom.pol"), 0).setCheckState(
                 Qt.CheckState.Unchecked
             )
@@ -1393,15 +1400,219 @@ class QtPreviewChecks(unittest.TestCase):
 
         self.assertTrue(polars.run("install", "Importing…", slow))
         self.assertTrue(started.wait(1))
-        self.window.views.setCurrentWidget(self.window.plots)
+        self.window.views.setCurrentWidget(self.window.logs_view)
         self.drain()
-        self.assertIs(self.window.views.currentWidget(), self.window.plots)
+        self.assertIs(self.window.views.currentWidget(), self.window.logs_view)
         polars.close()
         release.set()
         polars.task.worker_thread.join(2)
         self.drain()
         self.assertNotIn("late.pol", polars.manager.polars)
         self.assertEqual(polars.error, "")
+
+    def wait_for_polar_view(self):
+        deadline = time.monotonic() + 5
+        while (
+            self.window.polar_workspace.chart.polar is None
+            and time.monotonic() < deadline
+        ):
+            self.drain()
+            time.sleep(0.005)
+        self.drain()
+        self.assertIsNotNone(
+            self.window.polar_workspace.chart.polar,
+            self.window.polar_workspace.status.text(),
+        )
+
+    def test_gtk_workspace_structure_polar_table_full_circle_and_context_toolbar(self):
+        workspace = self.window.polar_workspace
+        self.assertEqual(
+            [self.window.workspace_tabs.tabText(i) for i in range(3)],
+            ["Charts", "Logs", "Polars"],
+        )
+        self.window.workspace_tabs.setCurrentIndex(2)
+        self.wait_for_polar_view()
+        self.assertIs(self.window.views.currentWidget(), workspace)
+        self.assertTrue(workspace.table.isVisible())
+        self.assertTrue(workspace.chart.isVisible())
+        self.assertTrue(workspace.chart.full_circle)
+        self.assertFalse(self.window.polar_selector_dock.isHidden())
+        self.assertFalse(self.window.performance_dock.isHidden())
+        self.assertTrue(all(a.isVisible() for a in self.window.polar_toolbar_actions))
+        self.assertFalse(any(a.isVisible() for a in self.window.chart_toolbar_actions))
+        polar = workspace.chart.polar
+        step = int(len(polar.twa) / 10) if len(polar.twa) > 20 else 1
+        self.assertEqual(workspace.table.rowCount(), len(polar.twa[::step]))
+        self.assertEqual(
+            float(workspace.table.item(1, 2).text()), polar.speed_table[step][1]
+        )
+        self.window.grab()
+        self.drain()
+        xs = [
+            x for ax, _, bx, _, _ in workspace.chart._curve_segments for x in (ax, bx)
+        ]
+        center = workspace.chart._chart_center[0]
+        self.assertLess(min(xs), center)
+        self.assertGreater(max(xs), center)
+        self.window.workspace_tabs.setCurrentIndex(1)
+        self.assertIs(self.window.views.currentWidget(), self.window.logs_view)
+        self.assertTrue(all(a.isVisible() for a in self.window.log_toolbar_actions))
+        self.assertFalse(any(a.isVisible() for a in self.window.polar_toolbar_actions))
+        self.window.workspace_tabs.setCurrentIndex(0)
+        self.assertTrue(all(a.isVisible() for a in self.window.chart_toolbar_actions))
+
+    def test_gtk_performance_controls_use_shared_history_basis_band_and_clear_only_samples(
+        self,
+    ):
+        from gweatherrouting.core.polarperformance import PerformanceSample
+
+        workspace = self.window.polar_workspace
+        self.window.show_polar_workspace()
+        self.wait_for_polar_view()
+        history = self.controller.session.active_history
+        samples = [
+            PerformanceSample(45, 10, 5, "stw"),
+            PerformanceSample(315, 10, 6, "stw"),
+            PerformanceSample(90, 14, 7, "stw"),
+            PerformanceSample(60, 10, 8, "sog"),
+            PerformanceSample(60, 100, 8, "stw"),
+        ]
+        with history.lock:
+            history.samples.extend(samples)
+            history.revision += 1
+        controls = workspace.performance
+        controls.refresh()
+        self.assertEqual(workspace.chart.samples, tuple(samples[:3]))
+        self.assertEqual(controls.count.text(), "3 / 4 STW samples in range")
+        controls.wind.setCurrentIndex(controls.wind.findData(10))
+        self.assertEqual(workspace.chart.samples, tuple(samples[:2]))
+        self.assertEqual(
+            workspace.chart.wind_filter, list(workspace.chart.polar.tws).index(10)
+        )
+        controls.basis.setCurrentIndex(1)
+        self.assertEqual(workspace.chart.samples, (samples[3],))
+        controls.show_points.setChecked(False)
+        self.assertEqual(workspace.chart.samples, ())
+        self.load()
+        points = tuple(self.controller.points)
+        source_log = self.controller.session.log
+        controls.clear.click()
+        self.assertEqual(self.controller.session.active_history.snapshot()[1], ())
+        self.assertIs(self.controller.session.log, source_log)
+        self.assertEqual(tuple(self.controller.points), points)
+
+    def test_gtk_logs_layout_full_data_and_direction_switches_preserve_shared_playback(
+        self,
+    ):
+        log = self.load()
+        self.assertIs(self.window.views.currentWidget(), self.window.logs_view)
+        self.assertIs(self.window.logs_view.widget(0), self.window.log_map)
+        self.assertIs(self.window.logs_view.widget(1), self.window.plots)
+        self.controller.session.set_playing(True)
+        self.controller.session.advance(5)
+        self.drain()
+        self.assertEqual(self.window.log_map.position, 5)
+        from gweatherrouting.core.timecontrol import naive_wall_time
+
+        formatter = self.window.plots.axes[-1].xaxis.get_major_formatter()
+        self.assertEqual(
+            formatter(log.point_offsets[0], 0),
+            naive_wall_time(log.points[0].time).strftime("%H:%M:%S"),
+        )
+        self.assertEqual(self.window.map.position, 5)
+        self.assertEqual(self.window.log_map.points, self.window.map.points)
+        self.assertEqual(len(self.window.log_map.points), len(log.points))
+        chart_time = self.controller.time_control.time
+        self.assertIsNot(self.window.log_map.time_control, self.window.map.time_control)
+        self.window.log_toggles["aws"].setChecked(True)
+        self.window.log_toggles["twa"].setChecked(True)
+        groups = self.window.plots._plot_groups()
+        self.assertEqual([field for field, _, _ in groups[1][1]], ["aws", "tws"])
+        self.assertEqual(
+            [field for field, _, _ in groups[-1][1]],
+            ["awd", "awa", "twd", "twa", "hdg"],
+        )
+        from types import SimpleNamespace
+
+        point = SimpleNamespace(awa=50, twa=70, hdg=350)
+        self.assertEqual(self.window.plots._value(point, "awd"), 40)
+        self.assertEqual(self.window.plots._value(point, "twd"), 60)
+        self.window.log_toggles["depth"].setChecked(True)
+        self.assertEqual(len(self.window.plots.axes), 4)
+        self.assertEqual(self.controller.time_control.time, chart_time)
+        self.assertEqual(self.controller.session.position, 5)
+        self.assertTrue(self.controller.session.playing)
+        self.window.show_polar_workspace()
+        self.window.views.setCurrentWidget(self.window.logs_view)
+        self.assertEqual(self.controller.session.position, 5)
+        self.assertEqual(
+            len(self.window.plots.axes[0].lines[0].get_xdata()), len(log.points)
+        )
+
+    def test_gtk_polar_preferences_log_map_and_panel_placement_roundtrip(self):
+        workspace = self.window.polar_workspace
+        self.window.show_polar_workspace()
+        self.wait_for_polar_view()
+        workspace.performance.basis.setCurrentIndex(1)
+        workspace.performance.wind.setCurrentIndex(
+            workspace.performance.wind.findData(12)
+        )
+        workspace.performance.show_points.setChecked(False)
+        (
+            self.window.log_map._center_lat,
+            self.window.log_map._center_lon,
+            self.window.log_map._zoom,
+        ) = (41, -70, 8)
+        self.window.log_toggles["depth"].setChecked(True)
+        self.window.performance_dock.hide()
+        self.window.polar_selector_dock.setFloating(True)
+        self.window.polar_selector_dock.setGeometry(100, 100, 430, 400)
+        self.restart_workspace()
+        self.wait_for_polar_view()
+        self.assertIs(self.window.views.currentWidget(), self.window.polar_workspace)
+        self.assertTrue(self.window.polar_selector_dock.isFloating())
+        self.assertTrue(self.window.performance_dock.isHidden())
+        self.assertEqual(
+            self.window.polar_workspace.performance.basis.currentIndex(), 1
+        )
+        self.assertEqual(self.window.polar_workspace.performance.wind.currentData(), 12)
+        self.assertFalse(
+            self.window.polar_workspace.performance.show_points.isChecked()
+        )
+        self.assertEqual(
+            (
+                self.window.log_map._center_lat,
+                self.window.log_map._center_lon,
+                self.window.log_map._zoom,
+            ),
+            (41, -70, 8),
+        )
+        self.assertTrue(self.window.log_toggles["depth"].isChecked())
+
+    def test_gtk_workspace_header_stays_above_context_toolbar_for_old_qt_layout(self):
+        from PySide6.QtWidgets import QMainWindow
+        from gweatherrouting.core.workspacestate import WorkspaceStateStore
+
+        old = QMainWindow()
+        toolbar = QToolBar("Navigation", old)
+        toolbar.setObjectName("navigation")
+        old.addToolBar(toolbar)
+        encoded = bytes(old.saveState(1).toBase64()).decode("ascii")
+        old.close()
+
+        def write(path):
+            WorkspaceStateStore(path).save({"layout": encoded, "view": "Charts"})
+
+        self.restart_workspace(write)
+        self.drain()
+        self.assertLess(
+            self.window.workspace_toolbar.y(), self.window.navigation_toolbar.y()
+        )
+        self.window.show_polar_workspace()
+        self.assertTrue(self.window.polar_selector_dock.toggleViewAction().isVisible())
+        self.window.views.setCurrentWidget(self.window.map)
+        self.assertTrue(self.window.polar_selector_dock.toggleViewAction().isVisible())
+        self.assertTrue(self.window.performance_dock.toggleViewAction().isVisible())
 
     def test_frontend_does_not_import_gtk(self):
         self.assertNotIn("gi.repository.Gtk", sys.modules)

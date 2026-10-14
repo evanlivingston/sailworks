@@ -2,6 +2,7 @@
 
 import os
 import sys
+from datetime import timedelta
 
 from PySide6.QtCore import Qt, QTimer, QDateTime, QSize
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QKeySequence
@@ -17,6 +18,11 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QTabWidget,
+    QTabBar,
+    QSplitter,
+    QScrollArea,
+    QFrame,
+    QSizePolicy,
     QStyle,
     QToolBar,
     QToolButton,
@@ -25,6 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gweatherrouting.core.timecontrol import TimeControl, naive_wall_time
 from gweatherrouting.rendering.style import Style
 from gweatherrouting.common import resource_path
 from .theme import section_label, symbol_icon, transport_icon
@@ -34,12 +41,17 @@ from .settingsdialog import SettingsDialog
 from .datalibrary import DataLibrary, FORECAST_FILTER
 from .plots import LogPlots, elapsed_offsets
 from .workspace import WorkspacePreferences
+from .polarworkspace import PolarWorkspace
+from .polarlibrary import PolarLibrary
 
 
 class PreviewWindow(QMainWindow):
     def __init__(self, controller, workspace_path=None):
         super().__init__()
         self.setAutoFillBackground(True)
+        self.setDockOptions(
+            self.dockOptions() | QMainWindow.DockOption.AllowNestedDocks
+        )
         self.controller = controller
         self.session = controller.session
         self.syncing = False
@@ -52,7 +64,29 @@ class PreviewWindow(QMainWindow):
         if sys.platform == "darwin":
             self.setUnifiedTitleAndToolBarOnMac(True)
         self.map = TrackMap(controller, self)
+        header = QToolBar("Workspaces", self)
+        header.setObjectName("workspaces")
+        self.workspace_toolbar = header
+        header.setMovable(False)
+        self.addToolBar(header)
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        header.addWidget(spacer)
+        self.workspace_tabs = QTabBar()
+        self.workspace_tabs.setExpanding(False)
+        for name in ("Charts", "Logs", "Polars"):
+            self.workspace_tabs.addTab(name)
+        header.addWidget(self.workspace_tabs)
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        header.addWidget(spacer)
+        header.addAction(
+            symbol_icon("weather-windy-symbolic"), "Forecasts", self.show_forecasts
+        )
+        header.addAction("Settings", self.show_settings)
+        self.addToolBarBreak()
         toolbar = QToolBar("Navigation", self)
+        self.navigation_toolbar = toolbar
         toolbar.setObjectName("navigation")
         toolbar.setMovable(False)
         toolbar.setAutoFillBackground(True)
@@ -83,17 +117,34 @@ class PreviewWindow(QMainWindow):
         self.palette_combo.currentTextChanged.connect(self._palette_changed)
         toolbar.addWidget(self.palette_combo)
         self.plots = LogPlots(self)
+        self.log_time = TimeControl()
+        self.log_map = TrackMap(controller, self, time_control=self.log_time)
+        self.logs_view = QSplitter(Qt.Orientation.Vertical)
+        self.logs_view.addWidget(self.log_map)
+        self.logs_view.addWidget(self.plots)
+        self.logs_view.setSizes([350, 300])
+        self.logs_view.setCollapsible(0, False)
+        self.logs_view.setCollapsible(1, False)
+        self.polar_workspace = PolarWorkspace(controller, self)
         self.views = QTabWidget()
         self.views.setDocumentMode(True)
         self.views.addTab(self.map, "Charts")
-        self.views.addTab(self.plots, "Logs")
+        self.views.addTab(self.logs_view, "Logs")
+        self.views.addTab(self.polar_workspace, "Polars")
+        self.views.tabBar().hide()
+        self.workspace_tabs.currentChanged.connect(self.views.setCurrentIndex)
+        self.views.currentChanged.connect(self.workspace_tabs.setCurrentIndex)
         self.setCentralWidget(self.views)
         self.nmea_dock = QDockWidget("NMEA", self)
         self.nmea_dock.setObjectName("nmea")
         self.nmea_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
         )
-        self.nmea_dock.setWidget(self._nmea_panel())
+        nmea_scroll = QScrollArea()
+        nmea_scroll.setWidgetResizable(True)
+        nmea_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        nmea_scroll.setWidget(self._nmea_panel())
+        self.nmea_dock.setWidget(nmea_scroll)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.nmea_dock)
         self.routing_panel = RoutingPanel(controller)
         controller.polars.changed.connect(self.routing_panel.refresh_polars)
@@ -107,6 +158,23 @@ class PreviewWindow(QMainWindow):
         self.setTabPosition(
             Qt.DockWidgetArea.AllDockWidgetAreas, QTabWidget.TabPosition.North
         )
+        self.polar_selector_dock = self._dock(
+            "Polar selector", "polar-selector", self.polar_workspace.selector
+        )
+        self.performance_dock = self._dock(
+            "Performance", "nmea-performance", self.polar_workspace.performance
+        )
+        self.tabifyDockWidget(self.nmea_dock, self.polar_selector_dock)
+        self.tabifyDockWidget(self.nmea_dock, self.performance_dock)
+        self.polar_manager_panel = PolarLibrary(controller, self)
+        self.polar_manager_dock = self._dock(
+            "Polar Manager", "polar-manager", self.polar_manager_panel
+        )
+        self.tabifyDockWidget(self.nmea_dock, self.polar_manager_dock)
+        self.polar_manager_dock.hide()
+        self.polar_selector_dock.hide()
+        self.performance_dock.hide()
+        self.polars_visited = False
         self.nmea_dock.raise_()
         self.resizeDocks(
             [self.nmea_dock, self.routing_dock], [350, 350], Qt.Orientation.Horizontal
@@ -116,9 +184,9 @@ class PreviewWindow(QMainWindow):
             symbol_icon("document-open-symbolic"), "Open NMEA log…", self.load_log
         )
         open_log.setShortcut(QKeySequence.StandardKey.Open)
-        file_menu.addAction(open_forecast)
+        file_menu.addAction(open_forecast.icon(), open_forecast.text(), self.load_grib)
         file_menu.addAction("Data Library…", self.show_library)
-        file_menu.addAction("Polars…", self.show_polars)
+        file_menu.addAction("Polars", self.show_polar_workspace)
         file_menu.addSeparator()
         file_menu.addAction("Close window", self.close).setShortcut(
             QKeySequence.StandardKey.Close
@@ -130,14 +198,55 @@ class PreviewWindow(QMainWindow):
         view_menu = self.menuBar().addMenu("View")
         view_menu.addAction(self.nmea_dock.toggleViewAction())
         view_menu.addAction(self.routing_dock.toggleViewAction())
+        view_menu.addAction(self.polar_selector_dock.toggleViewAction())
+        view_menu.addAction(self.performance_dock.toggleViewAction())
+        view_menu.addAction(self.polar_manager_dock.toggleViewAction())
         view_menu.addAction(toolbar.toggleViewAction())
+        view_menu.addAction(header.toggleViewAction())
+        self.chart_toolbar_actions = list(toolbar.actions())
         toolbar.addSeparator()
-        toolbar.addAction("NMEA", lambda: self._show_panel(self.nmea_dock))
-        toolbar.addAction("Routing", lambda: self._show_panel(self.routing_dock))
+        self.nmea_action = self.nmea_dock.toggleViewAction()
+        toolbar.addAction(self.nmea_action)
+        self.routing_action = toolbar.addAction(
+            "Routing", lambda: self._show_panel(self.routing_dock)
+        )
+        self.chart_toolbar_actions.append(self.routing_action)
         fit_menu = self.menuBar().addMenu("Navigate")
-        fit_menu.addAction("Fit NMEA track", self.map.fit_track)
-        fit_menu.addAction("Fit route", self.map.fit_route)
-        toolbar.addAction("Fit view", self._fit_view)
+        fit_menu.addAction("Fit NMEA track", self._fit_track)
+        fit_menu.addAction("Fit route", self._fit_route)
+        self.chart_toolbar_actions.append(toolbar.addAction("Fit view", self._fit_view))
+        self.polar_toolbar_actions = [
+            toolbar.addAction("Polar manager", self.show_polars)
+        ]
+        for action in (
+            self.polar_selector_dock.toggleViewAction(),
+            self.performance_dock.toggleViewAction(),
+        ):
+            button = QToolButton()
+            button.setDefaultAction(action)
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            button.setAutoRaise(True)
+            self.polar_toolbar_actions.append(toolbar.addWidget(button))
+        self.log_toolbar_actions = []
+        self.log_toggles = {}
+        for key, label, enabled in (
+            ("speed", "Speed", True),
+            ("aws", "Wind (A)", False),
+            ("tws", "Wind (T)", True),
+            ("depth", "Depth", False),
+            ("hdg", "HDG", True),
+            ("twa", "RW", False),
+        ):
+            action = toolbar.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(enabled)
+            action.toggled.connect(
+                lambda checked, key=key: self._toggle_log(key, checked)
+            )
+            self.log_toggles[key] = action
+            self.log_toolbar_actions.append(action)
+        self.views.currentChanged.connect(self._view_changed)
+        self._view_changed()
         self.routing_panel.plan_changed.connect(self.map.set_route_plan)
         self.routing_panel.route_selected.connect(self._route_selected)
         self.routing_panel.fit_requested.connect(self.map.fit_route)
@@ -163,6 +272,74 @@ class PreviewWindow(QMainWindow):
         self.workspace = WorkspacePreferences(self, workspace_path)
         view_menu.addSeparator()
         view_menu.addAction("Reset layout", self.workspace.reset_layout)
+
+    def _dock(self, title, name, content):
+        dock = QDockWidget(title, self)
+        dock.setObjectName(name)
+        dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        dock.setWidget(content)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        return dock
+
+    def _order_toolbars(self):
+        hidden = self.workspace_toolbar.isHidden()
+        self.removeToolBarBreak(self.navigation_toolbar)
+        self.removeToolBar(self.workspace_toolbar)
+        self.insertToolBar(self.navigation_toolbar, self.workspace_toolbar)
+        self.insertToolBarBreak(self.navigation_toolbar)
+        self.workspace_toolbar.setVisible(not hidden)
+
+    def _view_changed(self, *_):
+        current = self.views.currentWidget()
+        before = (
+            self.polar_toolbar_actions[-1]
+            if current is self.polar_workspace
+            else (
+                self.log_toolbar_actions[0]
+                if current is self.logs_view
+                else self.routing_action
+            )
+        )
+        self.navigation_toolbar.insertAction(before, self.nmea_action)
+        for bar in self.findChildren(QTabBar):
+            if bar.parent() is self:
+                bar.setElideMode(Qt.TextElideMode.ElideNone)
+                bar.setUsesScrollButtons(True)
+        for action in self.chart_toolbar_actions:
+            action.setVisible(current is self.map)
+        for action in self.log_toolbar_actions:
+            action.setVisible(current is self.logs_view)
+        for action in self.polar_toolbar_actions:
+            action.setVisible(current is self.polar_workspace)
+        if current is self.polar_workspace and not self.polars_visited:
+            self.polars_visited = True
+            self.polar_selector_dock.show()
+            self.performance_dock.show()
+            self.polar_selector_dock.raise_()
+
+    def _toggle_log(self, key, checked):
+        self.plots.set_series(key, checked)
+
+    def _fit_track(self):
+        canvas = (
+            self.log_map if self.views.currentWidget() is self.logs_view else self.map
+        )
+        canvas.fit_track()
+
+    def _fit_route(self):
+        self.views.setCurrentWidget(self.map)
+        self.map.fit_route()
+
+    def show_forecasts(self):
+        self.show_library()
+        assert self.library_dialog is not None
+        self.library_dialog.tabs.setCurrentIndex(0)
+
+    def show_polar_workspace(self):
+        self.views.setCurrentWidget(self.polar_workspace)
+        self._show_panel(self.polar_selector_dock)
 
     def _route_selected(self, coordinates):
         route = self.routing_panel.routes.currentData()
@@ -363,6 +540,13 @@ class PreviewWindow(QMainWindow):
         self._refresh_data()
         self.plots.set_position(session.position)
         self.map.set_position(session.position if session.source == "log" else None)
+        self.log_map.set_position(session.position if session.source == "log" else None)
+        if session.source == "log" and session.log and session.log.points:
+            offset = session.log.point_offsets[0] if session.log.point_offsets else 0
+            self.log_time.set_time(
+                naive_wall_time(session.log.points[0].time)
+                + timedelta(seconds=session.position - offset)
+            )
 
     def _refresh_data(self):
         session = self.session
@@ -387,7 +571,17 @@ class PreviewWindow(QMainWindow):
             and session.log
             and (previous is None or previous != key)
         ):
-            self.views.setCurrentWidget(self.plots)
+            self.views.setCurrentWidget(self.logs_view)
+        self.log_map.set_points(
+            points,
+            offsets,
+            fit=bool(points)
+            and (
+                previous is None
+                or previous[0] != session.source
+                or session.source == "log"
+            ),
+        )
         self.map.set_points(
             points,
             offsets,
@@ -477,9 +671,8 @@ class PreviewWindow(QMainWindow):
             self.controller.data.scan_forecasts()
 
     def show_polars(self):
-        self._ensure_library()
-        assert self.library_dialog is not None
-        self.library_dialog.tabs.setCurrentWidget(self.library_dialog.polars_panel)
+        self.show_polar_workspace()
+        self._show_panel(self.polar_manager_dock)
 
     def _use_polar(self, name):
         index = self.routing_panel.polar.findText(name)
@@ -511,6 +704,7 @@ class PreviewWindow(QMainWindow):
 
     def closeEvent(self, event):  # noqa: N802 - Qt virtual method name
         self.workspace.close()
+        self.polar_workspace.dispose()
         self.live_timer.stop()
         self.controller.close()
         event.accept()

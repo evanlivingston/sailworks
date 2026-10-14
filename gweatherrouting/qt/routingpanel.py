@@ -129,7 +129,7 @@ class RoutingPanel(QWidget):
         results_layout.addWidget(self.fit)
         results_layout.addWidget(section_label("Waypoints"))
         self.waypoints = QTableWidget(0, 4)
-        self.waypoints.setMinimumHeight(150)
+        self.waypoints.setMinimumHeight(120)
         self.waypoints.setAlternatingRowColors(True)
         self.waypoints.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.waypoints.setHorizontalHeaderLabels(

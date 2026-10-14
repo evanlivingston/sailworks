@@ -23,7 +23,6 @@ from PySide6.QtWidgets import (
 )
 
 from .theme import section_label
-from .polarlibrary import PolarLibrary
 
 FORECAST_FILTER = "GRIB forecasts (*.grib *.grb *.grib2 *.grb2);;All files (*)"
 
@@ -89,8 +88,6 @@ class DataLibrary(QDialog):
         self.mutations = []
         self._forecasts()
         self._charts()
-        self.polars_panel = PolarLibrary(controller, self)
-        self.tabs.addTab(self.polars_panel, "Polars")
         self.progress = QProgressBar()
         layout.addWidget(self.progress)
         self.status = QLabel()
