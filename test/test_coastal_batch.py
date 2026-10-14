@@ -147,5 +147,5 @@ class TestCoastalBatch(unittest.TestCase):
         self.assertEqual(provider.points_validity(points), expected_points)
         self.assertEqual(provider.lines_validity(lines), expected_lines)
         # An existing installation can still use exact OGR checks without Shapely.
-        with patch("gweatherrouting.gtk.charts.gshhs.shapely", None):
+        with patch("gweatherrouting.rendering.gshhs.shapely", None):
             self.assertEqual(provider.lines_validity(lines), expected_lines)

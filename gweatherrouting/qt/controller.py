@@ -1,27 +1,62 @@
 """Qt scheduling and worker notifications around the existing NMEA session."""
 
+import logging
 import time
 from threading import Thread
 
 import nmeatoolkit as nt
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
-from gweatherrouting.core.connectionmanager import ConnectionManager
-from gweatherrouting.core.nmeasession import NMEASession, read_nmea_log
-from gweatherrouting.core.utils import EventDispatcher
+from gweatherrouting.core import Core, TimeControl
+from gweatherrouting.core.settings import SettingsManager
+from gweatherrouting.rendering.chartcollection import ChartCollection
+from gweatherrouting.core.nmeasession import read_nmea_log
+from .scheduling import UiScheduler
 
 
 class SessionController(QObject):
     changed = Signal()
+    boat_changed = Signal(object)
     model_changed = Signal()
     load_finished = Signal(int, object, object)
     packets = Signal(object, int)
 
-    def __init__(self, offline=False, recording_directory=None, parent=None):
+    def __init__(
+        self, offline=False, recording_directory=None, parent=None, load_charts=True
+    ):
         super().__init__(parent)
         self.offline = offline
-        self.connections = EventDispatcher() if offline else ConnectionManager()
-        self.session = NMEASession(self.connections, recording_directory)
+        self.scheduler = UiScheduler(self)
+        self.core = Core(
+            schedule=self.scheduler.submit,
+            start_connections=False,
+            recording_directory=recording_directory,
+        )
+        self.time_control = TimeControl()
+        self.settings = SettingsManager()
+        self.charts = ChartCollection(self.settings, self.scheduler.submit)
+        if offline:
+            self.charts._chs_renderer.set_enabled(False)
+        self.chart_errors = []
+        if load_charts:
+            self.charts.load_base_chart()
+            for kind in ("vector", "raster"):
+                loader = getattr(self.charts, "load_" + kind + "_layer")
+                for entry in self.settings[kind + "Charts"]:
+                    try:
+                        loader(
+                            entry["path"],
+                            entry.get("metadata"),
+                            entry.get("enabled", True),
+                        )
+                    except Exception as exc:
+                        self.chart_errors.append(str(exc))
+                        logging.getLogger("gweatherrouting").warning(
+                            "Unable to load chart %s: %s", entry["path"], exc
+                        )
+        self.core.connect("boat_data", self.boat_changed.emit)
+        self.connections = self.core.connectionManager
+        self.session = self.core.nmea_session
         self.points = []
         self.point_revision = 0
         self.generation = 0
@@ -41,7 +76,7 @@ class SessionController(QObject):
         self.timer.start()
 
     def start_connections(self):
-        if isinstance(self.connections, ConnectionManager):
+        if not self.offline:
             self.connections.start_polling()
 
     def _changed(self, _):
@@ -121,9 +156,14 @@ class SessionController(QObject):
             return
         self.closed = True
         self.timer.stop()
-        if isinstance(self.connections, ConnectionManager):
-            self.connections.stop_polling()
+        self.connections.stop_polling()
         self.session.close()
+        self.core.nmea_session.disconnect("data", self.core.data_handler)
+        for canvas in list(self.charts.maps):
+            canvas.dispose()
+        self.core.disconnect("boat_data", self.boat_changed.emit)
+        self.core.nmea_session.disconnect("reset", self.core._reset_nmea)
+        self.scheduler.close()
         for event, callback in (
             ("changed", self._changed),
             ("reset", self._reset),
