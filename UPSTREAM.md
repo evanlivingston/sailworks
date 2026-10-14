@@ -671,3 +671,52 @@ into `dev`; no upstream PR was created or updated.
   fork-only unless the parent adopts a Qt frontend. The shared atomic store is
   reused without changes.
 - Usage and assessment: `docs/qt-first-pass.md`.
+
+## Qt polar management
+
+- Status: Qt UI is fork-only. Shared polar-library lifecycle fixes and validated,
+  staged file/provider helpers are upstream candidates. Branch: `feature/qt-polars`,
+  started from `dev` after the approved merge of fork PR #10 and its tracking
+  update. No pending branch dependency; no upstream submission is authorized.
+- Review: fork PR to be opened against `dev`; leave unmerged for human review.
+- Scope: Data Library Polars page, File → Polars and Routing → Manage polars;
+  native `.pol` imports, enable/remove controls, curve/full-table previews,
+  enabled-polar routing selection and searchable ORC catalog/downloads. Provider
+  work and parsing run in workers; shared manager updates run on the UI thread.
+  Mutation controls serialize against data operations and route calculations;
+  window shutdown drops late notifications and model installation.
+- Functional commits: `782ae24` (shared manager/file lifecycle and seven tests),
+  `690557b` (Qt workflows and four additional isolated integration checks).
+- Selection fix: the previous shared refresh appended every local file to both
+  installed and enabled lists. Refresh now rebuilds the installed index without
+  duplicating or enabling files; explicitly empty enabled selections survive
+  restart. Deletes remove enable flags/metadata and stage the file for recovery
+  if persistence fails. Qt routing now lists enabled files only, refreshes after
+  changes and preserves an available selection; no enabled file disables Calculate.
+- Fidelity: imports preserve bytes and use the same routing engine parser and
+  interpolation. Validation rejects invalid axes, ragged tables and negative/
+  nonfinite speeds before installing. Collision suffixes preserve existing files.
+  Sixteen interpolation probes and full table/axis comparisons match the original
+  file exactly. ORC conversion reuses `json_to_polars` unchanged, including its
+  rounding/endpoints; invalid converted tables are rejected. Requests use the
+  existing ORC endpoints with explicit timeouts. Preview curves use stored points
+  directly; no calculation formulas, efficiencies or approximations change.
+- Validation: full suite passes 783 tests and 84 subtests. The Qt wrapper runs 33
+  isolated checks, including native-picker import, shared disk reload, immediate
+  route-selection updates, exact preview/table values, ORC proxy filtering and
+  download metadata, network failure, mutation blocking and late-close delivery.
+  Shared tests cover duplicate refresh, empty enabled reload, collision-safe
+  imports, unchanged interpolation, invalid data, failed-copy/delete recovery,
+  ORC conversion and retaining symlink targets. Scoped Black/Flake8 and mypy pass;
+  full mypy retains the same 32 baseline errors in eight files. Native macOS QA
+  inspected library/search, curves, full table and selecting an imported polar
+  for Routing. User storage writes were disabled, polar/workspace writes used
+  temporary paths and GTK was absent. Live ORC responses were not exercised.
+- Limits: ORC catalog is fetched on demand without a persistent catalog cache;
+  requests have timeouts but no new download Cancel control. Live polar
+  performance, efficiency controls, polar editing/export and current-aware
+  routing remain pending. GTK remains the default frontend.
+- Intended upstream scope: prepare focused shared library/file-validation changes
+  separately from Qt controls and fork documentation. No upstream publication
+  is part of this migration slice.
+- Usage and assessment: `docs/qt-first-pass.md`.

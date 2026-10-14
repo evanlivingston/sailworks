@@ -151,7 +151,7 @@ active instruments in a worker. Offline mode saves without opening transports.
 Window shutdown waits for connection lifecycle work before closing instruments.
 Status polling uses a cached snapshot while a transport is reconnecting.
 
-Data Library has Forecasts and Charts pages. Forecast imports validate wind
+Data Library has Forecasts, Charts and Polars pages. Forecast imports validate wind
 metadata before installing a persistent copy; duplicate filenames receive a
 timestamp suffix. Enable flags use the same GRIB storage as GTK. Removal deletes
 only the library copy after confirmation; externally opened files are protected.
@@ -178,6 +178,40 @@ GDAL files and shared on-disk storage. Provider timeout/cancellation behavior is
 retained: there is no new in-app download Cancel control. Qt still requires
 installed GSHHS data for that coastline layer; the bundled fallback and NOAA
 chart imports work without opening GTK.
+
+## Polar management
+
+Open File → Polars, Data Library → Polars or Routing → Manage polars. Import `.pol`
+files through the native picker, enable/disable them and remove installed copies
+with confirmation. Imports validate axes/table shape and finite, nonnegative
+speeds before staging a copy. Duplicate filenames receive timestamp suffixes;
+source files and existing installed copies are retained. Preview shows all stored
+wind-angle/speed values in a table and the corresponding curves. Use for routing
+selects an enabled polar in the Routing plan without starting a calculation.
+
+Load catalog fetches the existing ORC data source on demand. Search filters sail
+identifier, boat name and type with Qt’s proxy model. Select an available boat
+and Download selected to convert/install it and retain its metadata. Network work
+runs in a worker; manager updates and Qt notifications run on the application
+thread. Already installed ORC boats are marked and cannot be downloaded again.
+Provider errors appear in the status label. Requests have connection/read timeouts;
+there is no new download Cancel control. Catalog/download tests use deterministic
+responses; live ORC service availability has not been verified in this slice.
+
+The shared manager now separates installed files from enabled polars. Repeated
+refreshes no longer duplicate entries or enable all installed files; an explicitly
+empty enabled list survives restart. Deletes remove enabled state and metadata,
+while a failed save restores the staged file. Qt routing choices now use only
+enabled polars and refresh immediately, preserving an available selection. Disabling
+or deleting the selected polar falls back to another enabled entry, or disables
+Calculate when none remain. Polar/data mutations and route jobs are serialized.
+
+Imports keep their original bytes and use the existing routing engine parser and
+interpolation. Preview curves plot stored table points without resampling. ORC
+conversion retains the shared converter’s rounding/endpoint behavior; malformed
+or degenerate converted tables are rejected. The enabled-file selection fix also
+applies to GTK through the shared manager. Live performance samples, efficiency
+controls and polar editing/export remain separate migration work.
 
 ## Workspace preferences
 
@@ -211,22 +245,22 @@ recording, playback or calculation starts because a workspace was restored.
 
 ## Still to migrate
 
-- Advanced routing controls, POI and track tools, polar panels and marine
-  current/tide overlays.
+- Advanced routing controls, POI and track tools, live polar performance and marine
+  current/tide overlays and live polar-performance views.
 - Base coastline installation/download UI and additional chart providers.
 - Smooth/inertial gestures, dateline behavior, large-file performance, live
   hardware validation and distributable macOS/Linux/Windows bundles.
 - A compact macOS toolbar with traffic lights in the same row. Standard native
   window buttons work; the current preview keeps the normal title bar.
 
-The next slice can bring current-aware routing or polar management onto these
-shared models/renderers. GTK stays available until Qt's workflows
+The next slice can bring current-aware routing or live polar performance onto
+these shared models/renderers. GTK stays available until Qt's workflows
 and packaging reach parity.
 
 ## Validation
 
-The full repository suite passes 776 tests and 79 subtests locally.
-The optional Qt wrapper runs twenty-nine integration checks in a separate
+The full repository suite passes 783 tests and 84 subtests locally.
+The optional Qt wrapper runs thirty-three integration checks in a separate
 process. Coverage includes transport/recording, queued Core notifications,
 stale-source rejection, overlay completion without GLib, callback cancellation
 on shutdown, real OGR ENC/raster fixtures, forecast/palette changes, projection,
@@ -242,7 +276,11 @@ raster indexing, provider failure/staging, NOAA coverage, live connection worker
 responsiveness and shutdown guards. Workspace checks cover on-disk restart,
 floating/hidden panels and toolbar, active views, normal/maximized bounds,
 disconnected monitors, debounce during drag/playback, atomic save failure/retry
-and excluding instrument history.
+and excluding instrument history. Polar checks cover native-picker import,
+shared disk reloads and enable flags, routing selection/removal, exact preview
+values, ORC filtering/download metadata, provider failures and late completion.
+Shared manager tests cover refresh/reload, collisions, interpolation parity,
+invalid data, failed-copy/delete recovery and retaining symlink targets.
 
 ```sh
 .venv/bin/python -m pytest
