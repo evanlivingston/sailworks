@@ -246,7 +246,7 @@ recording, playback or calculation starts because a workspace was restored.
 ## Still to migrate
 
 - Advanced routing controls, POI and track tools, live polar performance and marine
-  current/tide overlays and live polar-performance views.
+  current/tide overlays.
 - Base coastline installation/download UI and additional chart providers.
 - Smooth/inertial gestures, dateline behavior, large-file performance, live
   hardware validation and distributable macOS/Linux/Windows bundles.

@@ -678,7 +678,8 @@ into `dev`; no upstream PR was created or updated.
   staged file/provider helpers are upstream candidates. Branch: `feature/qt-polars`,
   started from `dev` after the approved merge of fork PR #10 and its tracking
   update. No pending branch dependency; no upstream submission is authorized.
-- Review: fork PR to be opened against `dev`; leave unmerged for human review.
+- Review: [fork PR #11](https://github.com/evanlivingston/gweatherrouting/pull/11),
+  open against `dev` and left unmerged for human review.
 - Scope: Data Library Polars page, File → Polars and Routing → Manage polars;
   native `.pol` imports, enable/remove controls, curve/full-table previews,
   enabled-polar routing selection and searchable ORC catalog/downloads. Provider
@@ -687,6 +688,8 @@ into `dev`; no upstream PR was created or updated.
   window shutdown drops late notifications and model installation.
 - Functional commits: `782ae24` (shared manager/file lifecycle and seven tests),
   `690557b` (Qt workflows and four additional isolated integration checks).
+  Follow-up `f422ced` defers table refresh until checkbox events finish;
+  the final Qt/shared tests pass with actual checkbox toggles.
 - Selection fix: the previous shared refresh appended every local file to both
   installed and enabled lists. Refresh now rebuilds the installed index without
   duplicating or enabling files; explicitly empty enabled selections survive
