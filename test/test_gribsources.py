@@ -74,6 +74,8 @@ class TestNOAAGFSSource(unittest.TestCase):
         self.assertEqual(params["file"], "gfs.t00z.pgrb2.0p25.f000")
         self.assertEqual(params["var_UGRD"], "on")
         self.assertEqual(params["var_VGRD"], "on")
+        self.assertEqual(params["lev_mean_sea_level"], "on")
+        self.assertEqual(params["var_PRMSL"], "on")
         self.assertNotIn("subregion", params)
 
     def test_build_filter_url_with_bounds(self):

@@ -251,6 +251,7 @@ class TrackMap(QWidget, MercatorProjection):
             self.time_control.time,
             settings.gribArrowOpacity,
             settings.gribArrowOnGround,
+            getattr(settings, "gribIsobarsVisible", True),
             tuple(
                 (id(grib), getattr(grib, "name", None))
                 for grib in self.controller.core.grib_manager.gribs
@@ -917,6 +918,7 @@ class TrackMap(QWidget, MercatorProjection):
             self.time_control.time,
             settings.gribArrowOpacity,
             settings.gribArrowOnGround,
+            getattr(settings, "gribIsobarsVisible", True),
         )
         sources = tuple((grib,) for grib in self.controller.core.grib_manager.gribs)
         if self.wind_visible:

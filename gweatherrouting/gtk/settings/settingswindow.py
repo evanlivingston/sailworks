@@ -57,6 +57,9 @@ class SettingsWindow(
         self.builder.get_object("grib-arrow-onground").set_active(
             self.settings_manager.gribArrowOnGround
         )
+        self.builder.get_object("grib-isobars-visible").set_active(
+            getattr(self.settings_manager, "gribIsobarsVisible", None) is not False
+        )
         self.builder.get_object("grib-arrow-opacity-adjustment").set_value(
             self.settings_manager.gribArrowOpacity
         )
@@ -81,6 +84,9 @@ class SettingsWindow(
 
     def on_grib_arrow_on_ground_change(self, widget, v):
         self.settings_manager.gribArrowOnGround = widget.get_active()
+
+    def on_grib_isobars_visible_change(self, widget, v):
+        self.settings_manager.gribIsobarsVisible = widget.get_active()
 
     def on_grib_arrow_opacity_change(self, v):
         self.settings_manager.gribArrowOpacity = v.get_value()
