@@ -624,3 +624,48 @@ into `dev`; no upstream PR was created or updated.
   handling independently if useful. Keep Qt controls and fork documentation
   out of parent-project submissions.
 - Usage and assessment: `docs/qt-first-pass.md`.
+
+## Qt workspace persistence
+
+- Status: fork-only Qt UI. Branch: `feature/qt-workspace`, started from `dev`
+  after the approved merge of fork PR #9 and its integration tracking update.
+  No pending branch dependency; no upstream submission is part of this slice.
+- Review: [fork PR #10](https://github.com/evanlivingston/gweatherrouting/pull/10),
+  open against `dev` and left unmerged for human review.
+- Scope: restore and autosave normal/maximized window bounds, dock placement/
+  sizing/visibility, detached panel bounds, Navigation toolbar visibility,
+  active sidebar and Charts/Logs view, map center/zoom, routing view/polar/
+  algorithm/coastline preferences and selected saved route, NMEA speed and
+  live-stream preference. View can reopen hidden controls or reset the layout.
+- Functional commit: `0014dd1` (Qt preferences, viewport notifications, close/
+  application-quit flushing and five isolated integration checks).
+- Storage: reuse `WorkspaceStateStore`'s versioned atomic writes in a separate
+  `workspace-qt.json`; GTK retains `workspace.json`. Save after 750 ms idle,
+  defer during map drag/animation, skip identical states and flush on close.
+  Failed writes retain the previous file and can retry. Qt layout decoding is
+  bounded/validated; malformed data falls back safely. Main/detached bounds are
+  fitted to available monitor work areas. Maximization waits for native show
+  so returning to normal mode retains the saved size.
+- Fidelity: no calculation, forecast, instrument or chart-rendering changes.
+  Preferences exclude loaded log paths/samples, playback cursor, recording state,
+  route draft coordinates/departure and running jobs. Restoration does not
+  reopen logs or start recording/playback/calculation. A route selection is a
+  name referencing the existing shared route collection.
+- Validation: full repository suite passes 776 tests and 79 subtests. The Qt
+  wrapper now runs 29 isolated checks. New checks cover disk restart with hidden/
+  floating docks and toolbar, normal/maximized bounds, selected views/options,
+  missing monitors and malformed fields/layout, reset recovery, debounce during
+  drag/playback, atomic save failure/retry and exclusion of instrument history.
+  Final targeted run passes after adding toolbar recovery coverage. Changed-file
+  Black/Flake8 and scoped Qt mypy pass; full mypy retains 32 baseline errors in
+  eight files. Native macOS QA reopened the workspace repeatedly and verified
+  1000×650 normal bounds, active Routing/Results, map 48.3/-123.5/9.5, detached
+  430×500 panel bounds and maximize-to-normal restoration. GTK was absent and
+  user settings writes were disabled; workspace writes used a temporary path.
+- Limits: layout is Qt-specific rather than translated between frontends. Dialog
+  positions, log reloads and route drafts are not restored. GTK remains the
+  default launcher; polar management and current-aware routing are pending.
+- Intended upstream scope: keep Qt UI/preferences and migration documentation
+  fork-only unless the parent adopts a Qt frontend. The shared atomic store is
+  reused without changes.
+- Usage and assessment: `docs/qt-first-pass.md`.

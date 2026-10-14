@@ -33,10 +33,11 @@ from .routingpanel import RoutingPanel
 from .settingsdialog import SettingsDialog
 from .datalibrary import DataLibrary, FORECAST_FILTER
 from .plots import LogPlots, elapsed_offsets
+from .workspace import WorkspacePreferences
 
 
 class PreviewWindow(QMainWindow):
-    def __init__(self, controller):
+    def __init__(self, controller, workspace_path=None):
         super().__init__()
         self.setAutoFillBackground(True)
         self.controller = controller
@@ -52,6 +53,7 @@ class PreviewWindow(QMainWindow):
             self.setUnifiedTitleAndToolBarOnMac(True)
         self.map = TrackMap(controller, self)
         toolbar = QToolBar("Navigation", self)
+        toolbar.setObjectName("navigation")
         toolbar.setMovable(False)
         toolbar.setAutoFillBackground(True)
         toolbar.setMinimumHeight(32)
@@ -124,6 +126,7 @@ class PreviewWindow(QMainWindow):
         view_menu = self.menuBar().addMenu("View")
         view_menu.addAction(self.nmea_dock.toggleViewAction())
         view_menu.addAction(self.routing_dock.toggleViewAction())
+        view_menu.addAction(toolbar.toggleViewAction())
         toolbar.addSeparator()
         toolbar.addAction("NMEA", lambda: self._show_panel(self.nmea_dock))
         toolbar.addAction("Routing", lambda: self._show_panel(self.routing_dock))
@@ -153,6 +156,9 @@ class PreviewWindow(QMainWindow):
         self.live_timer.timeout.connect(self._refresh_data)
         self.live_timer.start()
         self.refresh()
+        self.workspace = WorkspacePreferences(self, workspace_path)
+        view_menu.addSeparator()
+        view_menu.addAction("Reset layout", self.workspace.reset_layout)
 
     def _route_selected(self, coordinates):
         route = self.routing_panel.routes.currentData()
@@ -164,6 +170,8 @@ class PreviewWindow(QMainWindow):
     def _show_panel(self, dock):
         dock.show()
         dock.raise_()
+        if hasattr(self, "workspace"):
+            self.workspace._dock_activated(dock)
         if dock is self.routing_dock:
             self.views.setCurrentWidget(self.map)
 
@@ -484,6 +492,7 @@ class PreviewWindow(QMainWindow):
             self.controller.data.import_forecast(path)
 
     def closeEvent(self, event):  # noqa: N802 - Qt virtual method name
+        self.workspace.close()
         self.live_timer.stop()
         self.controller.close()
         event.accept()
