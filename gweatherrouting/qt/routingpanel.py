@@ -18,6 +18,9 @@ from PySide6.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
+    QTabWidget,
+    QScrollArea,
+    QFrame,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -25,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from gweatherrouting.core.routingjob import RouteRequest
+from .theme import section_label
 
 
 class RoutingPanel(QWidget):
@@ -38,8 +42,28 @@ class RoutingPanel(QWidget):
         self.routing = controller.routing
         self.setMinimumWidth(330)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("Wind-only routing"))
+        layout.setContentsMargins(12, 8, 12, 12)
+        layout.setSpacing(8)
+        self.pages = QTabWidget()
+        self.pages.setDocumentMode(True)
+        setup_page = QWidget()
+        setup_layout = QVBoxLayout(setup_page)
+        setup_layout.setContentsMargins(0, 4, 0, 4)
+        setup_layout.setSpacing(8)
+        self.results_page = QWidget()
+        results_layout = QVBoxLayout(self.results_page)
+        results_layout.setContentsMargins(0, 4, 0, 4)
+        results_layout.setSpacing(8)
+        setup_scroll = QScrollArea()
+        setup_scroll.setWidgetResizable(True)
+        setup_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        setup_scroll.setWidget(setup_page)
+        self.pages.addTab(setup_scroll, "Plan")
+        self.pages.addTab(self.results_page, "Results")
+        layout.addWidget(self.pages, 1)
+        setup_layout.addWidget(section_label("Route setup"))
         form = QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
         self.polar = QComboBox()
         self.polar.addItems(controller.core.polar_manager.polars_files)
         form.addRow("Polar", self.polar)
@@ -71,33 +95,41 @@ class RoutingPanel(QWidget):
         self.coastlines = QCheckBox("Check coastlines")
         self.coastlines.setChecked(True)
         form.addRow(self.coastlines)
-        layout.addLayout(form)
+        setup_layout.addLayout(form)
         hint = QLabel("Right-click the map to choose a start or destination.")
         hint.setWordWrap(True)
-        layout.addWidget(hint)
+        hint.setProperty("secondary", True)
+        setup_layout.addWidget(hint)
+        setup_layout.addStretch()
         actions = QHBoxLayout()
         self.calculate = QPushButton("Calculate route")
+        self.calculate.setProperty("primary", True)
         self.calculate.clicked.connect(self._calculate)
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.clicked.connect(self.routing.cancel)
         actions.addWidget(self.calculate)
         actions.addWidget(self.cancel_button)
-        layout.addLayout(actions)
+
         self.progress = QProgressBar()
         layout.addWidget(self.progress)
         self.status = QLabel(self.routing.message)
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+        results_layout.addWidget(section_label("Saved routes"))
         self.routes = QComboBox()
         self.routes.currentIndexChanged.connect(self._select_route)
-        layout.addWidget(self.routes)
+        results_layout.addWidget(self.routes)
         self.summary = QLabel("No calculated route selected")
         self.summary.setWordWrap(True)
-        layout.addWidget(self.summary)
+        results_layout.addWidget(self.summary)
         self.fit = QPushButton("Fit route")
         self.fit.clicked.connect(self.fit_requested.emit)
-        layout.addWidget(self.fit)
+        results_layout.addWidget(self.fit)
+        results_layout.addWidget(section_label("Waypoints"))
         self.waypoints = QTableWidget(0, 4)
+        self.waypoints.setMinimumHeight(150)
+        self.waypoints.setAlternatingRowColors(True)
+        self.waypoints.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.waypoints.setHorizontalHeaderLabels(
             ["Latitude", "Longitude", "Time", "kn"]
         )
@@ -108,7 +140,13 @@ class RoutingPanel(QWidget):
         self.waypoints.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.ResizeToContents
         )
-        layout.addWidget(self.waypoints, 1)
+        results_layout.addWidget(self.waypoints, 1)
+        layout.addLayout(actions)
+        for combo in (self.polar, self.algorithm, self.destination, self.routes):
+            combo.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+            )
+            combo.setMinimumContentsLength(14)
         self.inputs = (
             self.polar,
             self.algorithm,
@@ -244,6 +282,7 @@ class RoutingPanel(QWidget):
 
     def _completed(self, route):
         self.refresh_routes(route)
+        self.pages.setCurrentWidget(self.results_page)
         self.fit_requested.emit()
 
     def _select_route(self, _):

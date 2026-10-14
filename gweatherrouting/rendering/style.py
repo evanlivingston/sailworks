@@ -145,3 +145,21 @@ class Style:
         QuadHL = CairoStyle(color=(1, 0, 0, 1), line_width=1.5)
         QuadIntHL = CairoStyle(color=(1, 0.9, 0.9, 0.7))
         FontHL = CairoStyle(color=(1, 0, 0, 0.9), font_size=10)
+
+
+def route_speed_color(speed):
+    """Map boat speed (kts) to a color gradient: blue (slow) -> green -> yellow -> red (fast)."""
+    if speed < 2:
+        return (0.3, 0.5, 1.0, 0.9)
+    elif speed < 4:
+        return (0.2, 0.7, 0.9, 0.9)
+    elif speed < 6:
+        return (0.2, 0.85, 0.5, 0.9)
+    elif speed < 8:
+        return (0.5, 0.9, 0.2, 0.9)
+    elif speed < 10:
+        return (0.9, 0.85, 0.1, 0.9)
+    elif speed < 12:
+        return (1.0, 0.6, 0.1, 0.9)
+    else:
+        return (1.0, 0.3, 0.1, 0.9)

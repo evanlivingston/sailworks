@@ -4,12 +4,12 @@ import math
 
 import cairo
 import numpy as np
-from PySide6.QtCore import QPointF, Qt, QTimer, Signal
+from PySide6.QtCore import QPointF, Qt, QTimer, Signal, QRectF
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget, QMenu
 
 from gweatherrouting.core.mapviewport import MercatorProjection, MapPoint
-from gweatherrouting.rendering.style import Style
+from gweatherrouting.rendering.style import Style, route_speed_color
 from gweatherrouting.rendering.windpainter import WindPainter
 from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
 
@@ -24,6 +24,7 @@ class TrackMap(QWidget, MercatorProjection):
         self._center_lat, self._center_lon, self._zoom = 48.4, -123.4, 6.0
         self.points = ()
         self.route = ()
+        self.route_speeds = ()
         self.selected_route_point = -1
         self.route_plan = ()
         self.route_preview = ()
@@ -140,8 +141,9 @@ class TrackMap(QWidget, MercatorProjection):
         self.route_plan = tuple(coordinates)
         self.update()
 
-    def set_route(self, coordinates):
+    def set_route(self, coordinates, speeds=()):
         self.route = tuple(coordinates)
+        self.route_speeds = tuple(speeds)
         self.selected_route_point = -1
         self.update()
 
@@ -197,17 +199,27 @@ class TrackMap(QWidget, MercatorProjection):
         painter.drawImage(QPointF(0, 0), self.background[1])
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         self._draw_route(painter, self.route_plan, "#5295d2", dashed=True)
-        self._draw_route(painter, self.route, "#26aa70")
         self._draw_route(painter, self.route_preview, "#ef5a8c", dashed=True)
         if self.route:
             lats, lons = zip(*self.route)
             rx, ry = self.convert_geographic_to_screen_batch(
                 np.array(lats), np.array(lons)
             )
-            painter.setPen(QPen(QColor("#26aa70"), 1))
             for index, (x, y) in enumerate(zip(rx, ry)):
+                color = QColor.fromRgbF(
+                    *route_speed_color(
+                        self.route_speeds[index]
+                        if index < len(self.route_speeds)
+                        else 0
+                    )
+                )
+                painter.setPen(QPen(color, 3))
+                if index:
+                    painter.drawLine(
+                        QPointF(rx[index - 1], ry[index - 1]), QPointF(x, y)
+                    )
                 selected = index == self.selected_route_point
-                painter.setBrush(QColor("#ffffff" if selected else "#26aa70"))
+                painter.setBrush(QColor("#ffffff") if selected else color)
                 radius = 5 if selected else 2
                 painter.drawEllipse(QPointF(x, y), radius, radius)
         if self.route_plan:
@@ -226,7 +238,8 @@ class TrackMap(QWidget, MercatorProjection):
                 np.array([p.lat for p in self.points]),
                 np.array([p.lon for p in self.points]),
             )
-            painter.setPen(QPen(QColor("#f2be62"), 2))
+            style = Style.Track.LogTrack
+            painter.setPen(QPen(QColor.fromRgbF(*style.color), style.line_width or 1))
             painter.drawPolyline(QPolygonF([QPointF(x, y) for x, y in zip(xs, ys)]))
             index = len(self.points) - 1
             if self.position is not None and self.offsets:
@@ -245,7 +258,17 @@ class TrackMap(QWidget, MercatorProjection):
         caption = "Drag to pan · Scroll to zoom"
         if self.controller.chart_errors:
             caption += " · Some saved charts could not be opened"
-        painter.drawText(12, self.height() - 12, caption)
+        caption = painter.fontMetrics().elidedText(
+            caption, Qt.TextElideMode.ElideRight, max(1, self.width() - 36)
+        )
+        caption_width = painter.fontMetrics().horizontalAdvance(caption)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 155))
+        painter.drawRoundedRect(
+            QRectF(8, self.height() - 34, caption_width + 16, 26), 4, 4
+        )
+        painter.setPen(QColor("#eeeeec"))
+        painter.drawText(16, self.height() - 16, caption)
         painter.end()
 
     def _base_image(self):

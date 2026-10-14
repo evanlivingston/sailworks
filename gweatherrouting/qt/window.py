@@ -3,8 +3,8 @@
 import os
 import sys
 
-from PySide6.QtCore import Qt, QTimer, QDateTime
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtCore import Qt, QTimer, QDateTime, QSize
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QSplitter,
+    QTabWidget,
     QStyle,
     QToolBar,
     QToolButton,
@@ -26,6 +26,8 @@ from PySide6.QtWidgets import (
 )
 
 from gweatherrouting.rendering.style import Style
+from gweatherrouting.common import resource_path
+from .theme import section_label, symbol_icon, transport_icon
 from .mapcanvas import TrackMap
 from .routingpanel import RoutingPanel
 from .plots import LogPlots, elapsed_offsets
@@ -39,7 +41,8 @@ class PreviewWindow(QMainWindow):
         self.session = controller.session
         self.syncing = False
         self.data_key = None
-        self.setWindowTitle("GWeatherRouting — Qt preview")
+        self.setWindowTitle("GWeatherRouting")
+        self.setWindowIcon(QIcon(resource_path("gweatherrouting", "data/icon.png")))
         self.resize(1200, 800)
         if sys.platform == "darwin":
             self.setUnifiedTitleAndToolBarOnMac(True)
@@ -49,11 +52,12 @@ class PreviewWindow(QMainWindow):
         toolbar.setAutoFillBackground(True)
         toolbar.setMinimumHeight(32)
         self.addToolBar(toolbar)
-        toolbar.addAction("Load NMEA log…", self.load_log)
+        open_forecast = toolbar.addAction(
+            symbol_icon("weather-windy-symbolic"), "Open forecast…", self.load_grib
+        )
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        toolbar.setIconSize(QSize(18, 18))
         toolbar.addSeparator()
-        toolbar.addAction("Fit track", lambda: self.map.fit_track())
-        toolbar.addSeparator()
-        toolbar.addAction("Open GRIB…", self.load_grib)
         toolbar.addWidget(QLabel("Forecast "))
         self.forecast = QDateTimeEdit(QDateTime(controller.time_control.time))
         self.forecast.setCalendarPopup(True)
@@ -66,38 +70,67 @@ class PreviewWindow(QMainWindow):
         self.palette_combo = QComboBox()
         self.palette_combo.addItems(list(Style.chart_palettes))
         self.palette_combo.setCurrentText(controller.settings.chartPalette)
-        self.palette_combo.setToolTip("Chart palette")
+        self.palette_combo.setAccessibleName("Chart palette")
+        self.palette_combo.setToolTip(
+            "Chart colors; independent of the workspace theme"
+        )
         self.palette_combo.currentTextChanged.connect(self._palette_changed)
         toolbar.addWidget(self.palette_combo)
         self.plots = LogPlots(self)
-        splitter = QSplitter(Qt.Orientation.Vertical)
-        splitter.addWidget(self.map)
-        splitter.addWidget(self.plots)
-        splitter.setSizes([430, 330])
-        self.setCentralWidget(splitter)
+        self.views = QTabWidget()
+        self.views.setDocumentMode(True)
+        self.views.addTab(self.map, "Charts")
+        self.views.addTab(self.plots, "Logs")
+        self.setCentralWidget(self.views)
         self.nmea_dock = QDockWidget("NMEA", self)
         self.nmea_dock.setObjectName("nmea")
         self.nmea_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
         )
         self.nmea_dock.setWidget(self._nmea_panel())
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.nmea_dock)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.nmea_dock)
         self.routing_panel = RoutingPanel(controller)
         self.routing_dock = QDockWidget("Routing", self)
         self.routing_dock.setObjectName("routing")
         self.routing_dock.setWidget(self.routing_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.routing_dock)
+        self.tabifyDockWidget(self.nmea_dock, self.routing_dock)
+        self.setTabPosition(
+            Qt.DockWidgetArea.AllDockWidgetAreas, QTabWidget.TabPosition.North
+        )
+        self.nmea_dock.raise_()
+        self.resizeDocks(
+            [self.nmea_dock, self.routing_dock], [350, 350], Qt.Orientation.Horizontal
+        )
+        file_menu = self.menuBar().addMenu("File")
+        open_log = file_menu.addAction(
+            symbol_icon("document-open-symbolic"), "Open NMEA log…", self.load_log
+        )
+        open_log.setShortcut(QKeySequence.StandardKey.Open)
+        file_menu.addAction(open_forecast)
+        file_menu.addSeparator()
+        file_menu.addAction("Close window", self.close).setShortcut(
+            QKeySequence.StandardKey.Close
+        )
         view_menu = self.menuBar().addMenu("View")
         view_menu.addAction(self.nmea_dock.toggleViewAction())
         view_menu.addAction(self.routing_dock.toggleViewAction())
+        toolbar.addSeparator()
+        toolbar.addAction("NMEA", lambda: self._show_panel(self.nmea_dock))
+        toolbar.addAction("Routing", lambda: self._show_panel(self.routing_dock))
+        fit_menu = self.menuBar().addMenu("Navigate")
+        fit_menu.addAction("Fit NMEA track", self.map.fit_track)
+        fit_menu.addAction("Fit route", self.map.fit_route)
+        toolbar.addAction("Fit view", self._fit_view)
         self.routing_panel.plan_changed.connect(self.map.set_route_plan)
-        self.routing_panel.route_selected.connect(self.map.set_route)
+        self.routing_panel.route_selected.connect(self._route_selected)
         self.routing_panel.fit_requested.connect(self.map.fit_route)
         self.routing_panel.waypoints.currentCellChanged.connect(
             lambda row, *_: self.map.select_route_point(row)
         )
         self.map.route_location.connect(self.routing_panel.set_location)
         controller.routing.preview_changed.connect(self.map.set_route_preview)
+        controller.routing.changed.connect(self._routing_changed)
         self.routing_panel._plan_changed()
         self.routing_panel._select_route(0)
         self.instruments = QLabel("Waiting for position")
@@ -111,14 +144,38 @@ class PreviewWindow(QMainWindow):
         self.live_timer.start()
         self.refresh()
 
+    def _route_selected(self, coordinates):
+        route = self.routing_panel.routes.currentData()
+        speeds = (
+            tuple(point[5] or 0 for point in route.points) if route is not None else ()
+        )
+        self.map.set_route(coordinates, speeds)
+
+    def _show_panel(self, dock):
+        dock.show()
+        dock.raise_()
+        if dock is self.routing_dock:
+            self.views.setCurrentWidget(self.map)
+
+    def _routing_changed(self):
+        if self.controller.routing.busy:
+            self.views.setCurrentWidget(self.map)
+
+    def _fit_view(self):
+        self.views.setCurrentWidget(self.map)
+        if self.routing_dock.isVisible() and self.routing_panel.isVisible():
+            self.map.fit_route()
+        else:
+            self.map.fit_track()
+
     def _nmea_panel(self):
         panel = QWidget()
         panel.setAutoFillBackground(True)
         panel.setMinimumWidth(250)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(12)
-        layout.addWidget(QLabel("Data source"))
+        layout.setContentsMargins(12, 8, 12, 12)
+        layout.setSpacing(8)
+        layout.addWidget(section_label("Data source"))
         self.source = QComboBox()
         self.source.addItems(["Live connections", "Loaded log"])
         self.source.currentIndexChanged.connect(self._source_changed)
@@ -130,6 +187,7 @@ class PreviewWindow(QMainWindow):
         load.clicked.connect(self.load_log)
         self.load_button = load
         layout.addWidget(load)
+        layout.addWidget(section_label("Transport"))
         transport = QHBoxLayout()
         transport.setSpacing(0)
         self.restart = self._button(
@@ -143,8 +201,9 @@ class PreviewWindow(QMainWindow):
         self.stop = self._button(QStyle.StandardPixmap.SP_MediaStop, "Stop")
         self.stop.clicked.connect(lambda: self.session.stop())
         self.record = QToolButton()
-        self.record.setFixedSize(46, 36)
+        self.record.setFixedSize(42, 34)
         self.record.setCheckable(True)
+        self.record.setIconSize(QSize(24, 24))
         icon = QPixmap(24, 24)
         icon.fill(Qt.GlobalColor.transparent)
         painter = QPainter(icon)
@@ -155,9 +214,8 @@ class PreviewWindow(QMainWindow):
         painter.end()
         self.record.setIcon(QIcon(icon))
         self.record.setAccessibleName("Record")
-        self.record.setStyleSheet(
-            "QToolButton:checked { background: #f5c9c9; border: 1px solid #c33; }"
-        )
+        self.record.setObjectName("record")
+        self.record.setProperty("transport", True)
         self.record.clicked.connect(self._record)
         for button in (self.restart, self.play, self.stop, self.record):
             transport.addWidget(button)
@@ -180,6 +238,7 @@ class PreviewWindow(QMainWindow):
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
         self.recording_file = QLabel()
+        self.recording_file.setProperty("secondary", True)
         self.recording_file.setWordWrap(True)
         self.recording_file.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
@@ -190,11 +249,18 @@ class PreviewWindow(QMainWindow):
 
     def _button(self, icon, label, checkable=False):
         button = QToolButton()
-        button.setIcon(self.style().standardIcon(icon))
+        names = {
+            QStyle.StandardPixmap.SP_MediaSkipBackward: "restart",
+            QStyle.StandardPixmap.SP_MediaPlay: "play",
+            QStyle.StandardPixmap.SP_MediaStop: "stop",
+        }
+        button.setIcon(transport_icon(names[icon]))
+        button.setIconSize(QSize(20, 20))
         button.setToolTip(label)
         button.setAccessibleName(label)
         button.setCheckable(checkable)
-        button.setFixedSize(46, 36)
+        button.setFixedSize(42, 34)
+        button.setProperty("transport", True)
         return button
 
     def refresh(self):
@@ -216,13 +282,7 @@ class PreviewWindow(QMainWindow):
             else "Start a new timestamped recording"
         )
         self.play.setChecked(session.playing)
-        self.play.setIcon(
-            self.style().standardIcon(
-                QStyle.StandardPixmap.SP_MediaPause
-                if session.playing
-                else QStyle.StandardPixmap.SP_MediaPlay
-            )
-        )
+        self.play.setIcon(transport_icon("pause" if session.playing else "play"))
         self.play.setToolTip("Pause" if session.playing else "Play")
         enabled = (
             session.source == "log" and session.log is not None and not session.loading
@@ -267,7 +327,7 @@ class PreviewWindow(QMainWindow):
         )
         self.recording_file.setToolTip(str(path or session.recording_directory))
         self.statusBar().showMessage(
-            "Offline preview"
+            "NMEA connections closed"
             if self.controller.offline
             else "Using saved NMEA connections"
         )
@@ -294,6 +354,12 @@ class PreviewWindow(QMainWindow):
             else elapsed_offsets(points)
         )
         self.plots.set_points(points, offsets, session.source == "log")
+        if (
+            session.source == "log"
+            and session.log
+            and (previous is None or previous != key)
+        ):
+            self.views.setCurrentWidget(self.plots)
         self.map.set_points(
             points,
             offsets,

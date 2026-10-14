@@ -31,7 +31,8 @@ or require a running GLib main loop.
 
 ## Implemented
 
-- Native Qt main window and toolbar, split map/plots, and floating NMEA dock.
+- Native Qt main window and toolbar, full-size Charts/Logs views, and a grouped
+  NMEA/Routing sidebar whose panels can still float.
 - The full Core: shared instrument/boat state, connections, NMEA session, and
   existing track, route, POI, GRIB, marine, AIS, and polar models. Position and
   speed over ground appear in the status bar.
@@ -83,9 +84,32 @@ not a controlled performance comparison or a large-chart benchmark. Native
 window controls, chart detail, wind, full curves, playback cursors and boat
 state were visually checked; GTK was absent from the Qt process.
 
+## Presentation
+
+The Qt workspace now follows GTK's dark presentation: dark controls and plots,
+blue accents, rounded controls, consistent spacing and the application's existing
+symbolic icons. Native macOS window buttons and default filesystem dialogs are
+retained. Qt uses Fusion controls with an explicit dark palette so the styling
+works consistently across platforms.
+
+Charts and Logs have separate full-size views. NMEA and Routing share a tabbed
+right sidebar; panels can still float, close and reopen through View or the
+toolbar. Opening a log selects Logs. Starting a routing calculation selects
+Charts. View/panel switching keeps playback, plots, map position and results.
+The routing form scrolls inside its Plan page on small windows; progress and
+Calculate/Cancel remain outside the scrolling area. Completed routes open Results.
+
+Chart palettes are independent of the workspace theme. This pass keeps the
+production Cairo chart/wind code, geometry and source selection unchanged.
+Route segments now use the same speed-color helper as GTK, and NMEA tracks use
+GTK's shared track style. Plots use GTK's speed, true-wind and heading colors
+with amber playback cursors. Qt-native layout/fonts still differ from GTK;
+this is a visual integration pass, not complete application parity.
+
 ## Routing workflow
 
-The Routing dock provides one complete wind-only workflow. Open a GRIB file,
+The Routing dock has Plan and Results pages for one complete wind-only workflow.
+Open a GRIB file,
 choose a local polar, set the departure time and start/destination coordinates,
 then calculate. Right-click the map to set either position, use the current
 boat position as the start, or choose a saved POI as the destination. Departure
@@ -132,7 +156,7 @@ and packaging reach parity.
 ## Validation
 
 The full repository suite passes 769 tests and 73 subtests locally.
-The optional Qt wrapper runs sixteen integration checks in a separate
+The optional Qt wrapper runs seventeen integration checks in a separate
 process. Coverage includes transport/recording, queued Core notifications,
 stale-source rejection, overlay completion without GLib, callback cancellation
 on shutdown, real OGR ENC/raster fixtures, forecast/palette changes, projection,
@@ -140,6 +164,9 @@ polygon holes and absence of GTK imports. Tests skip Qt when it is not installed
 Core scheduler and routing-job tests also run without Qt. Routing checks cover
 engine parity, forecast sampling/private handles, completion, cancellation,
 shutdown, unique names, prior-result retention and on-disk save/reload.
+Workspace checks verify grouped panels, view transitions, full playback curves,
+retained map position, independent chart palette and reachable compact-window
+Calculate/Cancel controls.
 
 ```sh
 .venv/bin/python -m pytest

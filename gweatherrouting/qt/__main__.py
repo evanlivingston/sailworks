@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+from typing import cast
 
 
 def main(argv=None):
@@ -21,9 +22,11 @@ def main(argv=None):
         )
     from .controller import SessionController
     from .window import PreviewWindow
+    from .theme import apply_theme
 
-    app = QApplication.instance() or QApplication([sys.argv[0]])
-    app.setApplicationName("GWeatherRouting Qt Preview")
+    app = cast(QApplication, QApplication.instance()) or QApplication([sys.argv[0]])
+    app.setApplicationName("GWeatherRouting")
+    apply_theme(app)
     controller = SessionController(offline=args.offline)
     window = PreviewWindow(controller)
     app.aboutToQuit.connect(controller.close)
