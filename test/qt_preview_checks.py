@@ -724,6 +724,11 @@ class QtPreviewChecks(unittest.TestCase):
             spatial = osr.SpatialReference()
             spatial.ImportFromEPSG(4326)
             raster.SetProjection(spatial.ExportToWkt())
+            colors = gdal.ColorTable()
+            colors.SetColorEntry(0, (0, 0, 0, 0))
+            colors.SetColorEntry(1, (20, 100, 150, 255))
+            raster.GetRasterBand(1).SetRasterColorTable(colors)
+            raster.GetRasterBand(1).Fill(1)
             raster = None
             (directory / "readme.txt").write_text("Ignore sidecars")
             data.import_chart(str(directory), "raster")

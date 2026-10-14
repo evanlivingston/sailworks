@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from PySide6.QtCore import QObject, Signal
+from osgeo import gdal
 
 from gweatherrouting.core.grib import Grib
 from gweatherrouting.core.enccharts import ENCCatalog
@@ -194,6 +195,15 @@ class DataController(QObject):
                     raise ValueError("No supported raster charts in this folder")
                 metadata = []
                 for index, file in enumerate(files):
+                    dataset = gdal.Open(str(file))
+                    if (
+                        dataset is None
+                        or dataset.GetRasterBand(1).GetRasterColorTable() is None
+                    ):
+                        raise ValueError(
+                            f"{file.name}: the raster renderer requires a palette chart"
+                        )
+                    dataset = None
                     metadata.append(GDALSingleRasterChart.get_file_info(str(file)))
                     progress(100 * (index + 1) / len(files))
                 chart = GDALRasterChart(
