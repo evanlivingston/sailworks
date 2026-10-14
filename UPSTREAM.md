@@ -530,6 +530,8 @@ GTK complexity/type failures unchanged. GTK remains the default frontend.
   is an upstream candidate. Branch: `feature/qt-visual-integration`, dependent on
   `feature/qt-routing` and fork PR #7. Review against that branch to keep the diff
   focused; merge #7 first, then retarget this PR to `dev` and verify it again.
+- Review: [fork PR #8](https://github.com/evanlivingston/gweatherrouting/pull/8),
+  open against `feature/qt-routing` and left unmerged.
 - Scope: align the optional Qt workspace with GTK's dark presentation using a
   dark Fusion palette, rounded controls, blue accents, consistent spacing,
   symbolic icons and dark Matplotlib plots. Replace the fixed map/plots split
@@ -541,7 +543,8 @@ GTK complexity/type failures unchanged. GTK remains the default frontend.
   Navigate menus, shortcuts and toolbar panel access make the migrated views
   easier to reach. Dock floating/hiding remains available.
 - Functional commits: `ba0abe1` (shared route speed colors; GTK compatibility),
-  `1acd87c` (Qt theme, plots, view/sidebar integration and regression coverage).
+  `1acd87c` (Qt theme, plots, view/sidebar integration and regression coverage),
+  `916ec79` (compact form wrapping and bounded combo sizing).
 - Fidelity: map route segments use GTK's existing speed thresholds/colors;
   NMEA tracks use the shared GTK log-track style. Plot series use GTK's speed,
   true-wind and heading colors with amber cursors. Chart palettes remain
@@ -556,7 +559,8 @@ GTK complexity/type failures unchanged. GTK remains the default frontend.
   Native macOS screenshots checked routing results, Charts, Logs, dark plots,
   transport glyphs, native window buttons and the Plan form at 1280×820 and
   1000×650. At 1000×650 both action buttons are visible without scrolling the
-  form. A real forecast route and 180-point playback ran without GTK imports;
+  form; final native and isolated checks also verify zero horizontal scrolling.
+  A real forecast route and 180-point playback ran without GTK imports;
   user settings writes were disabled during QA.
 - Limits: platform fonts/decorations still differ; Qt workspace persistence,
   unmigrated tools and compact traffic-light/toolbar layout remain pending.
