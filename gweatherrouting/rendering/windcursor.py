@@ -4,10 +4,26 @@ from collections import OrderedDict
 from threading import Thread
 
 from .windrenderer import DisplayGrib
+from gweatherrouting.core.grib import Grib
+
+
+class CursorGrib(DisplayGrib):
+    """Keep forecast-hour metadata and GDAL resources local to the cursor worker."""
+
+    def __init__(self, source):
+        super().__init__(source)
+        self._hours = Grib._get_available_forecast_hours.__wrapped__(self)
+
+    def _get_available_forecast_hours(self):  # type: ignore[override]
+        return self._hours
+
+    def close(self):
+        self._arrays.clear()
+        self.dataset = None
 
 
 class WindCursorSampler:
-    def __init__(self, call_later, cancel_later, dispatch, display_grib=DisplayGrib):
+    def __init__(self, call_later, cancel_later, dispatch, display_grib=CursorGrib):
         self._call_later = call_later
         self._cancel_later = cancel_later
         self._dispatch = dispatch
@@ -37,7 +53,18 @@ class WindCursorSampler:
         self.cancel()
         self._closed = True
         if not self._running:
-            self._gribs.clear()
+            self._clear_gribs()
+
+    def _clear_gribs(self):
+        for grib in self._gribs.values():
+            self._release_grib(grib)
+        self._gribs.clear()
+
+    @staticmethod
+    def _release_grib(grib):
+        close = getattr(grib, "close", None)
+        if close is not None:
+            close()
 
     def _start(self):
         self._timer = 0
@@ -52,7 +79,7 @@ class WindCursorSampler:
             except Exception:
                 result = None
             if self._closed:
-                self._gribs.clear()
+                self._clear_gribs()
             self._dispatch(self._ready, request, result)
 
         Thread(target=worker, name="wind-cursor", daemon=True).start()
@@ -66,7 +93,8 @@ class WindCursorSampler:
                     grib = self._display_grib(source)
                     self._gribs[source] = grib
                     if len(self._gribs) > 2:
-                        self._gribs.popitem(last=False)
+                        _, evicted = self._gribs.popitem(last=False)
+                        self._release_grib(evicted)
                 self._gribs.move_to_end(source)
                 wind = grib.get_wind_at(forecast, lat, lon)
                 if wind is not None:
@@ -81,7 +109,7 @@ class WindCursorSampler:
         if not self._closed and request[0] == self._generation:
             request[5](result)
         if self._closed:
-            self._gribs.clear()
+            self._clear_gribs()
         elif self._pending is not None and not self._timer:
             self._start()
         return False

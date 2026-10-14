@@ -2,7 +2,7 @@
 
 from gi.repository import GLib
 from gweatherrouting.rendering.windcursor import WindCursorSampler as SharedSampler
-from .windrenderer import DisplayGrib
+from gweatherrouting.rendering.windcursor import CursorGrib as DisplayGrib
 
 
 class WindCursorSampler(SharedSampler):
