@@ -40,6 +40,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+qt = ["PySide6-Essentials>=6.8,<7; python_version >= '3.10'"]
 marine-global = ["copernicusmarine>=2.2,<3"]
 appimage = [
     "vext @ git+https://github.com/vext-python/vext@32ad4d1c5f45797e244df1d2816f76b60f28e20e",
@@ -54,6 +55,7 @@ Source = "https://github.com/dakk/gweatherrouting"
 
 [project.scripts]
 gweatherrouting = "gweatherrouting.__main__:start_ui_gtk"
+gweatherrouting-qt = "gweatherrouting.qt.__main__:main"
 
 [tool.setuptools]
 packages = [
@@ -64,6 +66,7 @@ packages = [
     "gweatherrouting.core.gribsources",
     "gweatherrouting.core.marine",
     "gweatherrouting.common",
+    "gweatherrouting.qt",
     "gweatherrouting.gtk",
     "gweatherrouting.gtk.maplayers",
     "gweatherrouting.gtk.settings",

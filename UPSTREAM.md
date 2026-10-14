@@ -331,7 +331,7 @@ one focused contribution at a time and validate each resulting branch.
 
 ## NMEA recording controls
 
-- Status: candidate; reviewed in fork [PR #4](https://github.com/evanlivingston/gweatherrouting/pull/4)
+- Status: candidate; merged into `dev` through fork [PR #4](https://github.com/evanlivingston/gweatherrouting/pull/4)
   on `feature/nmea-recording-controls` from `dev`. Functional commit: `e10f896`.
 - Scope: move recording into the shared NMEA component with a DAW transport
   (Restart, Play/Pause, square Stop, red Record toggle). Both stop controls
@@ -366,7 +366,7 @@ one focused contribution at a time and validate each resulting branch.
 
 ## Native filesystem pickers
 
-- Status: candidate; reviewed in fork [PR #4](https://github.com/evanlivingston/gweatherrouting/pull/4).
+- Status: candidate; merged into `dev` through fork [PR #4](https://github.com/evanlivingston/gweatherrouting/pull/4).
   Functional commit: `aa7cdf6`; branch: `feature/nmea-recording-controls`.
 - Scope: use one GTK native-picker helper for all ten Open, Save, and folder
   chooser locations: NMEA, GRIB, polar, GPX/track/route/POI, and chart directories.
@@ -390,3 +390,35 @@ in an isolated baseline worktree. With installed optional libraries, local full
 mypy reports additional existing library-typing errors on both branches; scoped
 checks of the changed source pass. The two full-tree Black formatting differences
 are also in unchanged baseline files. No new lint/type failures were introduced.
+
+## Shared map projection and Qt first pass
+
+- Status: reusable projection is an upstream candidate; the Qt frontend is a
+  fork-only migration experiment on `feature/qt-first-pass` from merged `dev`.
+- Scope: extract existing Mercator/viewport math into a toolkit-independent core
+  module, retaining GTK import compatibility. Add an optional PySide6 frontend
+  with shared NMEA sessions, native file dialogs, timestamped recordings,
+  full-log Matplotlib plots with blitted cursors, a floating NMEA dock, and a
+  Cairo/QImage coastline/track canvas. GTK remains the default launcher.
+- Dependencies: shared NMEA session, persistent recordings, and viewport work
+  already integrated in `dev`. A complete application migration still needs
+  production chart/overlay adapters and toolkit-neutral Core scheduling.
+- Validation: 762 repository tests and 71 subtests pass; the optional Qt wrapper
+  executes seven isolated integration checks. Changed-file Black/Flake8 and
+  scoped mypy pass; editable installation and wheel contents are verified.
+  Native macOS window controls and playback were visually checked. Projection
+  parity: 2,000 coordinates, zero-pixel differences. Small native 180-point
+  run: full plot 40.3 ms, cursor 1.84 ms, cached coastline image 2.9 ms. Detailed
+  ENC/source-selection parity and hardware input are not established by this pass.
+- Review: [fork PR #5](https://github.com/evanlivingston/gweatherrouting/pull/5),
+  left unmerged for review. Functional commits: `20ba52e` (projection) and
+  `ec0bd44` (optional Qt frontend, tests, packaging, and assessment).
+- Intended upstream scope: shared projection extraction only; keep the optional
+  Qt experiment and fork documentation out of parent-project PRs unless invited.
+- Assessment and launch instructions: `docs/qt-first-pass.md`.
+
+Qt pre-merge CI review: add targeted naming exceptions for Qt virtual methods
+(`paintEvent`, input events and `closeEvent`). CI test collection also fails
+because the existing tox environment omits the runtime `nmeatoolkit` dependency;
+this is shared by both PRs and predates Qt. Builds/docs pass; existing GTK
+complexity/type failures remain. Local full-suite results above remain valid.

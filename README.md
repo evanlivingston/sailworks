@@ -99,6 +99,13 @@ The script installs the native GTK, GDAL, and GObject Introspection dependencies
 creates a local `.venv`, and installs GWeatherRouting and its Python dependencies. To install the
 Homebrew dependencies separately, run `brew bundle --file=tools/macos/Brewfile`.
 
+### Experimental Qt frontend
+
+A small optional Qt frontend exercises shared NMEA recording/playback, plots,
+and a map canvas. GTK remains the default application. See
+[the first-pass migration assessment](docs/qt-first-pass.md) for installation,
+launch commands, validation, and current limitations.
+
 ## License
 
 Read the LICENSE file.
