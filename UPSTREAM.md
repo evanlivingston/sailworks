@@ -574,3 +574,48 @@ retargeted presentation diff passes `git diff --check`. GitHub builds pass;
 CI test collection still lacks `nmeatoolkit`, and lint/type jobs retain the
 previously documented GTK complexity and four type errors. Both PRs are merged
 into `dev`; no upstream PR was created or updated.
+
+## Qt connection settings and data library
+
+- Status: Qt UI is fork-only. Connection configuration validation, replacement
+  lifecycle and nonblocking status snapshots are an upstream candidate.
+  Branch: `feature/qt-settings-data`, started from `dev` after approved merges
+  of fork PRs #7 and #8. No pending branch dependency.
+- Review: fork PR to be opened against `dev`; leave unmerged for human review.
+- Scope: serial/TCP/UDP connection add/edit/remove with draft Apply, legacy N2K
+  format loading, input-only N2K validation and offline-safe persistence; Qt
+  display preferences; a Forecasts/Charts library with local imports, enable
+  flags, removal and provider downloads. Native system pickers remain the
+  default. Start/reconnect work, forecast I/O and chart indexing run in workers;
+  chart/forecast model installation and Qt notifications run on the UI thread.
+- Functional commits: `28417f0` (shared connection configuration/lifecycle and
+  unit tests), `f66165b` (Qt settings/library, background work and integration
+  checks). Follow-up `e86df9c` palette-raster validation prevents silent blank imports.
+- Fidelity: preserves existing instrument data sources, GRIB source priority,
+  wind sampling, chart rendering and routing calculations. Connection edits
+  use the same storage as GTK. GRIB imports stage and validate before installing
+  library copies, preserving original files and adding timestamp suffixes on
+  filename collisions. NOAA GFS/OpenSkiron use existing provider APIs; GFS bounds
+  are explicit. NOAA ENC uses the existing coverage catalog/cache and atomic
+  exchange-set installer. Imported chart metadata and enable flags use GTK's
+  settings schema. Chart removal retains files; forecast-copy removal asks
+  confirmation and protects externally opened files. Base charts are read-only.
+- Validation: full suite passes 776 tests and 79 subtests. The optional Qt wrapper
+  runs 24 isolated checks, adding shared disk reloads, legacy N2K editing/offline
+  saves, forecast import/toggle/removal/collisions, real vector/raster indexing,
+  palette callback attachment, staged provider failure/success, NOAA coverage,
+  connection-worker responsiveness with playback and late-completion rejection.
+  Final scoped Black/Flake8 and mypy pass; full local mypy retains the same 32
+  baseline errors in eight files. Native macOS QA checked Settings/Display and
+  both library pages with installed data and compact chart actions; GTK remained
+  absent and user settings writes were disabled. Provider responses and physical
+  instrument hardware were not tested live. Existing CI dependency/lint/type
+  failures remain documented above.
+- Limits: provider-specific timeout/cancellation behavior is retained; no new
+  download Cancel control. Base GSHHS installation, polar management, current-
+  aware routing and workspace persistence remain separate migration slices.
+  GTK remains the default frontend. No upstream publication is authorized.
+- Intended upstream scope: extract connection validation/replacement/status
+  handling independently if useful. Keep Qt controls and fork documentation
+  out of parent-project submissions.
+- Usage and assessment: `docs/qt-first-pass.md`.

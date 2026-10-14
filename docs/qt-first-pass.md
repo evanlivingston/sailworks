@@ -22,8 +22,8 @@ The equivalent module command is:
 `--offline` leaves instrument connections closed and disables Canadian online
 chart tiles. Without it, Qt opens the saved instrument connections and honors
 the Canadian charts preference. Close GTK's live connections before opening
-the same serial device or listening port in Qt. There is no Qt connection
-editor yet; use the existing settings in GTK.
+the same serial device or listening port in Qt. Use File → Settings or the
+NMEA panel’s Configure connections button to edit instruments directly in Qt.
 
 The extra installs PySide6 Essentials. Base package dependencies still include
 PyGObject because GTK remains supported. The Qt frontend does not import GTK
@@ -36,7 +36,7 @@ or require a running GLib main loop.
 - The full Core: shared instrument/boat state, connections, NMEA session, and
   existing track, route, POI, GRIB, marine, AIS, and polar models. Position and
   speed over ground appear in the status bar.
-- Native file pickers for NMEA logs and wind forecasts. Playback transport,
+- Native file and folder pickers for NMEA logs, forecasts and charts. Playback transport,
   automatic timestamped interpreted/raw recording files, full-log plots,
   blitted playback cursors, and retained captures on either Stop control.
 - Pan, anchored wheel zoom, fit-to-track, full track and playback marker.
@@ -46,8 +46,9 @@ or require a running GLib main loop.
   Saved chart enable flags and palettes are retained. Missing saved chart
   files are logged and reported on the map while other layers remain usable.
 - Shared forecast-time model with a date/time control, wind-file loading, and
-  chart palette selection. Opening a forecast selects its initial time. Files
-  opened here are session additions; the complete GRIB library UI is pending.
+  chart palette selection. Opening a forecast imports a persistent library copy,
+  enables it and selects its initial time. File → Data Library manages imported
+  files, enable flags and provider downloads.
 
 Qt renders Cairo into an owned QImage buffer at the canvas's pixel density.
 The production renderers live in `rendering/`; GTK compatibility modules retain
@@ -138,25 +139,64 @@ This slice uses the available algorithms with their existing defaults. Algorithm
 parameter editing, current-aware routes, automatic forecast/current downloads,
 scenario comparisons, track destinations and route editing/export remain pending.
 
+## Settings and data management
+
+File → Settings includes connection add/edit/remove and display preferences.
+Connection edits remain drafts until Apply connections. Serial and TCP/UDP
+transports support NMEA 0183 and the existing NMEA 2000 gateway formats; legacy
+format identifiers load into the protocol/format controls. NMEA 2000 remains
+input-only. Duplicate endpoints and invalid fields are rejected before stopping
+instruments. Applying saves the shared connection configuration and reconnects
+active instruments in a worker. Offline mode saves without opening transports.
+Window shutdown waits for connection lifecycle work before closing instruments.
+Status polling uses a cached snapshot while a transport is reconnecting.
+
+Data Library has Forecasts and Charts pages. Forecast imports validate wind
+metadata before installing a persistent copy; duplicate filenames receive a
+timestamp suffix. Enable flags use the same GRIB storage as GTK. Removal deletes
+only the library copy after confirmation; externally opened files are protected.
+NOAA GFS downloads use explicit south/west/north/east bounds and the existing
+model-run/duration choices. OpenSkiron is also available. Lists and downloads
+run in workers; provider files are staged before importing, so a failed download
+does not overwrite an installed forecast. Forecast times follow the existing
+local-time model; NOAA remote run labels explicitly show UTC.
+
+Charts support vector files, CM93 folders and raster folders. Raster registration
+indexes palette-based KAP/BSB/TIFF/VRT charts, rejects rasters the existing
+renderer cannot display and skips unrelated sidecars. Enable flags
+and metadata persist in the settings used by GTK. Removing an imported chart
+retains its source files. Base layers are read-only in this library. NOAA ENC
+discovery searches coverage at a coordinate, with a Use map center shortcut;
+downloads use the existing catalog/cache and atomic exchange-set installation.
+Worker-local chart settings attach to live palette callbacks only on UI delivery.
+Library mutations and routing calculations are serialized to retain a consistent
+forecast/coastline selection. Closing the application drops late data results.
+
+Live provider responses and physical instrument hardware were not exercised in
+this slice. Integration checks use deterministic provider downloads plus real
+GDAL files and shared on-disk storage. Provider timeout/cancellation behavior is
+retained: there is no new in-app download Cancel control. Qt still requires
+installed GSHHS data for that coastline layer; the bundled fallback and NOAA
+chart imports work without opening GTK.
+
 ## Still to migrate
 
 - Advanced routing controls, POI and track tools, polar panels, marine current/tide
-  overlays, settings/connection editors and workspace persistence.
-- Chart discovery/download/import UI and the full GRIB library/download UI.
-  This slice loads charts already configured in GTK.
+  overlays and workspace persistence.
+- Base coastline installation/download UI and additional chart providers.
 - Smooth/inertial gestures, dateline behavior, large-file performance, live
   hardware validation and distributable macOS/Linux/Windows bundles.
 - A compact macOS toolbar with traffic lights in the same row. Standard native
   window buttons work; the current preview keeps the normal title bar.
 
-The next slice can bring current-aware routing or settings/download workflows
-onto these shared models/renderers. GTK stays available until Qt's workflows
+The next slice can bring current-aware routing, polar management or workspace
+persistence onto these shared models/renderers. GTK stays available until Qt's workflows
 and packaging reach parity.
 
 ## Validation
 
-The full repository suite passes 769 tests and 73 subtests locally.
-The optional Qt wrapper runs seventeen integration checks in a separate
+The full repository suite passes 776 tests and 79 subtests locally.
+The optional Qt wrapper runs twenty-four integration checks in a separate
 process. Coverage includes transport/recording, queued Core notifications,
 stale-source rejection, overlay completion without GLib, callback cancellation
 on shutdown, real OGR ENC/raster fixtures, forecast/palette changes, projection,
@@ -166,7 +206,10 @@ engine parity, forecast sampling/private handles, completion, cancellation,
 shutdown, unique names, prior-result retention and on-disk save/reload.
 Workspace checks verify grouped panels, view transitions, full playback curves,
 retained map position, independent chart palette and reachable compact-window
-Calculate/Cancel controls.
+Calculate/Cancel controls. Settings/library checks add disk reloads, legacy N2K
+editing, offline saves, imports/toggles/removal, duplicate filenames, real vector/
+raster indexing, provider failure/staging, NOAA coverage, live connection worker
+responsiveness and shutdown guards.
 
 ```sh
 .venv/bin/python -m pytest
