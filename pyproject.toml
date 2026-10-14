@@ -67,6 +67,8 @@ packages = [
     "gweatherrouting.core.marine",
     "gweatherrouting.common",
     "gweatherrouting.qt",
+    "gweatherrouting.rendering",
+    "gweatherrouting.rendering.vectordrawer",
     "gweatherrouting.gtk",
     "gweatherrouting.gtk.maplayers",
     "gweatherrouting.gtk.settings",

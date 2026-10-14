@@ -310,7 +310,7 @@ class TestWindOverlay(unittest.TestCase):
         wind_on_ground.cache_clear()
         self.addCleanup(wind_on_ground.cache_clear)
         with patch(
-            "gweatherrouting.gtk.maplayers.gribmaplayer.point_in_country",
+            "gweatherrouting.rendering.windpainter.point_in_country",
             return_value=True,
         ) as mask:
             self.assertTrue(wind_on_ground(49, -123))
