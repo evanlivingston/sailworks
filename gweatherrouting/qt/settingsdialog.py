@@ -246,7 +246,7 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(self.currents, "Currents")
         self.status = QLabel()
         self.status.setWordWrap(True)
-        layout.addWidget(self.status)
+        content.addWidget(self.status)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -288,7 +288,11 @@ class SettingsDialog(QDialog):
             if self.controller.offline
             else f"{connected} / {len(statuses)} connected · {packets:,} packets"
         )
-        self.status.setText(self.task.message)
+        message = self.task.message
+        if not busy and message == "Done":
+            message = ""
+        self.status.setText(message)
+        self.status.setVisible(bool(message))
 
     def edit_connection(self, edit):
         index = self.connections.currentRow()

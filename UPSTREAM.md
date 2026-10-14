@@ -1169,6 +1169,10 @@ into `dev`; no upstream PR was created or updated.
   Qt app/display identity is GWeatherRouting; direct interpreter launches retain
   Python's bundle menu name until macOS packaging. Focused action/shortcut test,
   scoped Flake8/mypy and native menu inspection pass (Python → Settings…).
+- Settings status follow-up: suppress generic idle Done text and confine useful
+  connection-task feedback to the Connections tab. Existing connection/menu
+  checks and direct empty/error/tab-visibility verification pass; scoped static
+  checks pass.
 - Intended upstream scope: shared acquisition/constants, resilient base-chart
   loading/reload and tests adapted against fresh parent master only if requested;
   exclude Qt frontend and fork policy/migration documentation.
