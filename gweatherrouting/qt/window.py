@@ -302,7 +302,7 @@ class PreviewWindow(QMainWindow):
         if path:
             self.controller.load_path(path)
 
-    def closeEvent(self, event):
+    def closeEvent(self, event):  # noqa: N802 - Qt virtual method name
         self.live_timer.stop()
         self.controller.close()
         event.accept()

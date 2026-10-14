@@ -416,3 +416,9 @@ are also in unchanged baseline files. No new lint/type failures were introduced.
 - Intended upstream scope: shared projection extraction only; keep the optional
   Qt experiment and fork documentation out of parent-project PRs unless invited.
 - Assessment and launch instructions: `docs/qt-first-pass.md`.
+
+Qt pre-merge CI review: add targeted naming exceptions for Qt virtual methods
+(`paintEvent`, input events and `closeEvent`). CI test collection also fails
+because the existing tox environment omits the runtime `nmeatoolkit` dependency;
+this is shared by both PRs and predates Qt. Builds/docs pass; existing GTK
+complexity/type failures remain. Local full-suite results above remain valid.

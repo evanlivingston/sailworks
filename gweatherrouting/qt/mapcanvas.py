@@ -79,7 +79,7 @@ class TrackMap(QWidget, MercatorProjection):
         self.position = position
         self.update()
 
-    def paintEvent(self, _):
+    def paintEvent(self, _):  # noqa: N802 - Qt virtual method name
         key = (
             self.width(),
             self.height(),
@@ -184,12 +184,12 @@ class TrackMap(QWidget, MercatorProjection):
             cr.line_to(x, y)
         cr.close_path()
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, event):  # noqa: N802 - Qt virtual method name
         if event.button() == Qt.MouseButton.LeftButton:
             self.drag = event.position()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
-    def mouseMoveEvent(self, event):
+    def mouseMoveEvent(self, event):  # noqa: N802 - Qt virtual method name
         if self.drag is None:
             return
         delta = event.position() - self.drag
@@ -201,11 +201,11 @@ class TrackMap(QWidget, MercatorProjection):
         self.drag = event.position()
         self.update()
 
-    def mouseReleaseEvent(self, _):
+    def mouseReleaseEvent(self, _):  # noqa: N802 - Qt virtual method name
         self.drag = None
         self.setCursor(Qt.CursorShape.OpenHandCursor)
 
-    def wheelEvent(self, event):
+    def wheelEvent(self, event):  # noqa: N802 - Qt virtual method name
         pointer = event.position()
         anchor = self.convert_screen_to_geographic(pointer.x(), pointer.y())
         delta = event.angleDelta().y() / 120 or event.pixelDelta().y() / 60
