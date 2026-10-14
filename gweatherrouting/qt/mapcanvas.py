@@ -213,8 +213,14 @@ class TrackMap(QWidget, MercatorProjection):
         if self.route_plan:
             for label, coordinates in zip(("Start", "Destination"), self.route_plan):
                 x, y = self.convert_geographic_to_screen(MapPoint(*coordinates))
-                painter.setPen(QColor("#5295d2"))
-                painter.drawText(QPointF(x + 5, y - 5), label)
+                painter.setPen(QPen(QColor("#5295d2"), 1))
+                painter.setBrush(QColor("#5295d2"))
+                painter.drawEllipse(QPointF(x, y), 3, 3)
+                text_width = painter.fontMetrics().horizontalAdvance(label)
+                text_x = max(5, min(x + 5, self.width() - text_width - 5))
+                painter.drawText(
+                    QPointF(text_x, max(15, min(y - 5, self.height() - 5))), label
+                )
         if self.points:
             xs, ys = self.convert_geographic_to_screen_batch(
                 np.array([p.lat for p in self.points]),
