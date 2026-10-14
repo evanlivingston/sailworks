@@ -61,7 +61,13 @@ class WorkspacePreferences(QObject):
 
     @property
     def docks(self):
-        return (self.window.nmea_dock, self.window.routing_dock)
+        return (
+            self.window.nmea_dock,
+            self.window.routing_dock,
+            self.window.polar_selector_dock,
+            self.window.performance_dock,
+            self.window.polar_manager_dock,
+        )
 
     def _watch(self):
         window = self.window
@@ -74,6 +80,13 @@ class WorkspacePreferences(QObject):
         window.tabifiedDockWidgetActivated.connect(self._dock_activated)
         window.views.currentChanged.connect(self.changed)
         window.map.view_changed.connect(self.changed)
+        window.log_map.view_changed.connect(self.changed)
+        window.logs_view.splitterMoved.connect(self.changed)
+        window.polar_workspace.splitter.splitterMoved.connect(self.changed)
+        window.polar_workspace.selection_changed.connect(self.changed)
+        window.polar_workspace.performance.changed.connect(self.changed)
+        for action in window.log_toggles.values():
+            action.toggled.connect(self.changed)
         panel = window.routing_panel
         for combo in (panel.polar, panel.algorithm, panel.routes):
             combo.currentIndexChanged.connect(self.changed)
@@ -138,6 +151,21 @@ class WorkspacePreferences(QObject):
             },
             "active_dock": self.active_dock,
             "view": window.views.tabText(window.views.currentIndex()),
+            "polars_visited": window.polars_visited,
+            "polars": {
+                "selected": window.polar_workspace.name,
+                "split": window.polar_workspace.splitter.sizes(),
+                "performance": window.polar_workspace.performance.save_state(),
+            },
+            "logs": {
+                "split": window.logs_view.sizes(),
+                "series": dict(window.plots.series),
+                "map": {
+                    "latitude": window.log_map._center_lat,
+                    "longitude": (window.log_map._center_lon + 180) % 360 - 180,
+                    "zoom": window.log_map._zoom,
+                },
+            },
             "map": {
                 "latitude": window.map._center_lat,
                 "longitude": (window.map._center_lon + 180) % 360 - 180,
@@ -175,7 +203,10 @@ class WorkspacePreferences(QObject):
     def restore(self, value):
         state = mapping(value)
         self._restore_docks(state)
+        self.window._order_toolbars()
         self._restore_window(mapping(state.get("window")))
+        self.window.polars_visited = state.get("polars_visited") is True
+        self._restore_views(state)
         view = state.get("view")
         for index in range(self.window.views.count()):
             if self.window.views.tabText(index) == view:
@@ -217,7 +248,13 @@ class WorkspacePreferences(QObject):
         for dock in self.docks:
             self._restore_dock(dock, mapping(saved_docks.get(dock.objectName())))
         active = state.get("active_dock")
-        if active in ("nmea", "routing"):
+        if active in (
+            "nmea",
+            "routing",
+            "polar-selector",
+            "nmea-performance",
+            "polar-manager",
+        ):
             self.active_dock = active
             for dock in self.docks:
                 if dock.objectName() == active and not dock.isHidden():
@@ -233,6 +270,34 @@ class WorkspacePreferences(QObject):
             )
         if isinstance(saved.get("visible"), bool):
             dock.setVisible(saved["visible"])
+
+    def _restore_views(self, state):
+        polars = mapping(state.get("polars"))
+        workspace = self.window.polar_workspace
+        selected = polars.get("selected")
+        if isinstance(selected, str) and selected in workspace.names:
+            workspace.select(selected)
+        workspace.performance.restore_state(polars.get("performance"))
+        logs = mapping(state.get("logs"))
+        for splitter, saved in (
+            (workspace.splitter, polars.get("split")),
+            (self.window.logs_view, logs.get("split")),
+        ):
+            if isinstance(saved, list) and len(saved) == 2:
+                splitter.setSizes([int(number(v, 300, 60, 10000)) for v in saved])
+        for key, value in mapping(logs.get("series")).items():
+            if key in self.window.log_toggles and isinstance(value, bool):
+                self.window.log_toggles[key].setChecked(value)
+        saved_map = mapping(logs.get("map"))
+        canvas = self.window.log_map
+        canvas._center_lat = number(
+            saved_map.get("latitude"), canvas._center_lat, -85, 85
+        )
+        canvas._center_lon = number(
+            saved_map.get("longitude"), canvas._center_lon, -180, 180
+        )
+        canvas._zoom = number(saved_map.get("zoom"), canvas._zoom, 1, 20)
+        canvas.queue_draw()
 
     def _restore_routing(self, saved):
         panel = self.window.routing_panel
@@ -256,6 +321,7 @@ class WorkspacePreferences(QObject):
         self.restoring = True
         try:
             self.window.restoreState(self.default_layout, LAYOUT_VERSION)
+            self.window.polars_visited = False
             self.window.views.setCurrentWidget(self.window.map)
             self.active_dock = "nmea"
             self.window.nmea_dock.raise_()

@@ -625,6 +625,48 @@ into `dev`; no upstream PR was created or updated.
   out of parent-project submissions.
 - Usage and assessment: `docs/qt-first-pass.md`.
 
+## Qt workspace parity with GTK
+
+- Status: Qt UI is fork-only; the toolkit-neutral polar renderer extraction is
+  an upstream candidate. Branch: `feature/qt-workspace-parity`, based on `dev`
+  at `77a9e2b` after the approved merge of fork PR #11. No pending dependency
+  or upstream submission.
+- Review: [fork PR #12](https://github.com/evanlivingston/gweatherrouting/pull/12),
+  open for human review; not merged.
+- Functional commits: `7f34bb8` (shared production polar renderer and GTK
+  adapter), `1bec52e` (Qt workspace, panels, plots and preference integration).
+- Scope: preserve GTK's Charts/Logs/Polars workspace organization and contextual
+  toolbars. Polars shows its speed table beside the full-circle chart, with
+  shared-dock Polar manager, Polar selector, NMEA and Performance panels.
+  Performance uses the shared active history, STW/SOG basis and wind-band policy;
+  clearing performance samples retains NMEA logs and plots. Logs shows an
+  independent map above full-data plots, GTK series switches/colors and local
+  time labels, with independent forecast time and camera. Preferences retain
+  both map views, splits, series switches and Polars choices; older Qt toolbar
+  layouts migrate to the new workspace header.
+- Fidelity: original Cairo polar curves, colors, grid, mirroring, sample rendering
+  and hover logic are shared without changing formulas or constants. Six direct
+  baseline comparisons at three sizes, with and without hover/measured samples,
+  produced zero changed pixels. Table row stride and speed values match GTK;
+  polar parsing, enabled flags and routing calculations remain unchanged.
+- Validation: full suite passed 783 tests and 84 subtests before the final
+  manager-dock/time-label polish; the final Qt wrapper passed all 38 isolated
+  checks. Targeted GTK performance/manager and Qt checks passed (14 tests and
+  three subtests). Scoped Black/Flake8 and mypy pass; full mypy retains 32
+  baseline errors in eight files. Native macOS GTK/Qt comparison verified the
+  Polars table/chart, Performance and Logs layout at 1280×820; Qt also fits
+  1000×650. QA disabled user-settings writes and used temporary workspace paths;
+  GTK was absent from the Qt process. Live hardware was not exercised.
+- Limits: remaining POI/track/AIS tools, marine overlays, dashboard, forecast
+  controls and routing parameters are listed in `docs/qt-parity.md`. Qt native
+  chrome/fonts differ; this is structural parity, not complete UI parity.
+  GTK remains the default launcher. Automatic recording, retained playback
+  plots/cursors and native filesystem pickers remain in place.
+- Intended upstream scope: the shared polar renderer can be reviewed separately
+  from Qt UI and fork migration documentation. No upstream publication is
+  authorized by this slice.
+- Usage and assessment: `docs/qt-first-pass.md`, `docs/qt-parity.md`.
+
 ## Qt workspace persistence
 
 - Status: fork-only Qt UI. Branch: `feature/qt-workspace`, started from `dev`

@@ -18,7 +18,7 @@ class TrackMap(QWidget, MercatorProjection):
     route_location = Signal(str, object)
     view_changed = Signal()
 
-    def __init__(self, controller, parent=None):
+    def __init__(self, controller, parent=None, time_control=None):
         super().__init__(parent)
         self.setMinimumSize(240, 180)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
@@ -41,7 +41,8 @@ class TrackMap(QWidget, MercatorProjection):
         self._next_tick = 0
         self.disposed = False
         self._zoom_animating = False
-        controller.time_control.connect("time_change", self._time_changed)
+        self.time_control = time_control or controller.time_control
+        self.time_control.connect("time_change", self._time_changed)
 
     def _time_changed(self, _):
         self.queue_draw()
@@ -78,7 +79,7 @@ class TrackMap(QWidget, MercatorProjection):
         self.wind.forget(self)
         for token in list(self._ticks):
             self.remove_tick_callback(token)
-        self.controller.time_control.disconnect("time_change", self._time_changed)
+        self.time_control.disconnect("time_change", self._time_changed)
 
     def hideEvent(self, event):  # noqa: N802 - Qt virtual method name
         self.charts._chs_renderer.forget(self)
@@ -287,7 +288,7 @@ class TrackMap(QWidget, MercatorProjection):
         self.charts.do_draw(self, cr)
         settings = self.controller.settings
         style = (
-            self.controller.time_control.time,
+            self.time_control.time,
             settings.gribArrowOpacity,
             settings.gribArrowOnGround,
         )
