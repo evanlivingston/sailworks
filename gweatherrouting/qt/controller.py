@@ -12,6 +12,7 @@ from gweatherrouting.core.settings import SettingsManager
 from gweatherrouting.rendering.chartcollection import ChartCollection
 from gweatherrouting.core.nmeasession import read_nmea_log
 from .scheduling import UiScheduler
+from .routingcontroller import RoutingController
 
 
 class SessionController(QObject):
@@ -57,6 +58,7 @@ class SessionController(QObject):
         self.core.connect("boat_data", self.boat_changed.emit)
         self.connections = self.core.connectionManager
         self.session = self.core.nmea_session
+        self.routing = RoutingController(self)
         self.points = []
         self.point_revision = 0
         self.generation = 0
@@ -155,6 +157,7 @@ class SessionController(QObject):
         if self.closed:
             return
         self.closed = True
+        self.routing.close()
         self.timer.stop()
         self.connections.stop_polling()
         self.session.close()

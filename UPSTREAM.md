@@ -478,3 +478,48 @@ After retargeting #6, 46 focused tests and two subtests passed; new CI runs
 were pending at merge. The Qt naming violations are fixed; prior CI test
 collection fails on the omitted `nmeatoolkit` tox dependency, with baseline
 GTK complexity/type failures unchanged. GTK remains the default frontend.
+
+## Qt wind-only routing workflow
+
+- Status: Qt UI is fork-only; the UI-neutral routing job is an upstream candidate.
+  Branch: `feature/qt-routing`, started from `dev` after approved merges of fork
+  PRs #5 and #6. No pending branch dependency.
+- Review: [fork PR #7](https://github.com/evanlivingston/gweatherrouting/pull/7),
+  opened against `dev` and left unmerged for review.
+- Scope: add a Routing dock with polar/algorithm selection, local departure time,
+  start/destination coordinates, boat-position and saved-POI shortcuts, map
+  context actions, coastline checks, background calculation/progress/cancel,
+  automatically saved results, a result selector, fit-to-route and a waypoint
+  table with map highlighting. Existing saved routes use the shared Core model.
+  Cancellation/errors/window closure retain prior routes and drop late results.
+- Functional commits: `ca88f0a` (shared routing job and engine/sampling tests),
+  `3943d63` (Qt workflow and isolated integration coverage). Follow-up commits
+  `f0cb4c9` and `3823537` keep compact map/table labels visible and handle the
+  nullable Qt header API. Final focused tests and scoped mypy pass.
+- Fidelity: uses Core's existing wind-only routing algorithm, defaults, source
+  priority, interpolation, coastline hooks and result serialization. A direct
+  constant-wind calculation matches the existing engine's route points exactly;
+  real raster sampling matches at four times including fractional hours. Private
+  GDAL handles and two-hour job-local caches are closed on success/error/cancel.
+  Existing arrival tolerance is retained, so the last generated point can be
+  before the destination; the UI displays its time and keeps the requested
+  destination visible when fitting, without synthesizing a final route leg.
+- Validation: full suite passes 769 tests and 73 subtests. Sixteen isolated Qt
+  checks include actual engine completion, distinct result names, result/waypoint
+  selection, map fitting/highlighting, cancellation, shutdown, prior-result
+  retention, missing wind and invalid positions. Temporary on-disk route storage
+  reloads through the same collection used by GTK, retaining points, active route
+  and provenance. Four toolkit-independent job tests cover parity, sampling,
+  cancellation and absent forecasts. The final targeted rerun passes after
+  improving the empty-wind error message and algorithm label. Changed-source
+  Black/Flake8 (including pep8-naming) pass; mypy retains the same 32 baseline
+  errors in eight files, with no new errors. Native macOS QA calculated against
+  installed forecasts and inspected charts, the dock, points and route display;
+  user settings writes were disabled and GTK was absent from the Qt process.
+- Limits: wind-only with existing algorithm defaults. Current-aware routing,
+  automatic downloads, parameter editing, scenario comparison, track destinations
+  and route editing/export remain pending. The default launcher remains GTK.
+- Intended upstream scope: extract the cancellable routing job separately if
+  useful upstream; keep Qt controls and fork migration documentation out of
+  parent-project contributions. No upstream publication is authorized here.
+- Assessment and launch instructions: `docs/qt-first-pass.md`.
