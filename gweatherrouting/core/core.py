@@ -327,6 +327,8 @@ class Core(EventDispatcher):
         grib_override=None,
         polar_efficiency=None,
         use_currents=False,
+        wind_sources=None,
+        current_selection=None,
     ):
         polar = weatherrouting.Polar(polar_file)
 
@@ -358,10 +360,18 @@ class Core(EventDispatcher):
                 routing_utc,
             )
 
-            grib = FrozenRoutingWind(self.grib_manager, grib_override)
+            grib = FrozenRoutingWind(
+                wind_sources if wind_sources is not None else self.grib_manager,
+                grib_override,
+            )
             start_datetime = routing_utc(start_datetime)
             environment = CurrentRoutingEnvironment(
-                grib, self.marine_manager.fields.snapshot()
+                grib,
+                (
+                    current_selection
+                    if current_selection is not None
+                    else self.marine_manager.fields.snapshot()
+                ),
             )
             algorithm = partial(CurrentIsoRouter, environment=environment)
 

@@ -1737,7 +1737,11 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(track.points[0], (*location, None))
         panel.remove_poi()
         self.assertFalse(self.controller.core.poiManager.elements)
-        self.assertEqual(self.window.routing_panel.destination.count(), 1)
+        destinations = self.window.routing_panel.destination
+        self.assertEqual(
+            [destinations.itemText(i) for i in range(destinations.count())],
+            ["Custom coordinates", "Track: " + track.name],
+        )
         panel.remove_track()
         self.assertIsNone(self.controller.core.trackManager.get_active())
         self.assertEqual(panel.track_points.rowCount(), 0)
@@ -2750,6 +2754,330 @@ class QtPreviewChecks(unittest.TestCase):
         account.password.setText("draft-secret")
         self.window.settings_dialog.hide()
         self.assertEqual(account.password.text(), "")
+
+    def test_routing_parameter_controls_snapshot_metadata_without_global_mutation(self):
+        panel = self.window.routing_panel
+        algorithm = panel.algorithm.currentData()
+        original = {key: param.value for key, param in algorithm.PARAMS.items()}
+        changes = []
+        panel.options_changed.connect(lambda: changes.append(True))
+        for key, param in algorithm.PARAMS.items():
+            control = panel.parameter_widgets[key]
+            self.assertEqual(control.toolTip(), param.tooltip)
+            if param.ttype != "bool":
+                self.assertEqual(
+                    (control.minimum(), control.maximum()), (param.lower, param.upper)
+                )
+                self.assertEqual(control.singleStep(), param.step)
+        panel.parameter_widgets["subdiv"].setValue(3)
+        panel.parameter_widgets["concurrent"].setChecked(True)
+        request, _ = panel._request()
+        panel.parameter_widgets["subdiv"].setValue(4)
+        self.assertEqual(dict(request.parameters)["subdiv"], 3)
+        self.assertTrue(dict(request.parameters)["concurrent"])
+        self.assertEqual(
+            {key: param.value for key, param in algorithm.PARAMS.items()}, original
+        )
+        self.assertTrue(changes)
+        panel.use_currents.setChecked(True)
+        self.assertEqual(panel.parameter_widgets, {})
+        self.assertTrue(panel.coastlines.isChecked())
+        panel.use_currents.setChecked(False)
+        self.assertEqual(panel.parameter_widgets["subdiv"].value(), 4)
+
+    def test_routing_comparison_scenarios_save_sequentially_on_ui_thread(self):
+        from test.test_routingjob import ConstantWind
+
+        self.controller.core.grib_manager.gribs = [ConstantWind()]
+        panel = self.window.routing_panel
+        panel.coastlines.setChecked(False)
+        panel.set_location("start", (0, 0))
+        panel.set_location("destination", (0, 0.15))
+        for key, text in (
+            ("time_offset_hours", "0, 1"),
+            ("polar_efficiency_pct", "85, 100"),
+        ):
+            enabled, entry = panel.comparison_axes[key]
+            enabled.setChecked(True)
+            entry.setText(text)
+        commits = []
+        original = self.controller.core.routingManager.append
+
+        def append(route):
+            commits.append(get_ident())
+            return original(route)
+
+        with patch.object(
+            self.controller.core.routingManager, "append", side_effect=append
+        ):
+            panel.calculate.click()
+            self.assertTrue(self.controller.routing.busy)
+            self.assertFalse(panel.comparison_axes["time_offset_hours"][1].isEnabled())
+            self.wait_for_route()
+        self.assertFalse(self.controller.routing.error)
+        self.assertEqual(len(self.controller.core.routingManager), 4)
+        self.assertEqual(commits, [get_ident()] * 4)
+        self.assertEqual(panel.status.text(), "4/4 scenarios complete")
+        names = [route.name for route in self.controller.core.routingManager]
+        self.assertTrue(names[0].endswith("eff85%"))
+        self.assertTrue(names[2].endswith("t+1h_eff85%"))
+        self.assertEqual(
+            [
+                route.provenance["options"]["polar_efficiency"]
+                for route in self.controller.core.routingManager
+            ],
+            [0.85, 1, 0.85, 1],
+        )
+        panel.comparison_axes["time_offset_hours"][1].setText("nan")
+        panel.calculate.click()
+        self.assertFalse(self.controller.routing.busy)
+        self.assertIn("finite", panel.status.text())
+        self.assertEqual(len(self.controller.core.routingManager), 4)
+
+    def wait_for_routing_stage(self, predicate):
+        deadline = time.monotonic() + 8
+        while not predicate() and time.monotonic() < deadline:
+            self.drain()
+            time.sleep(0.005)
+        self.assertTrue(predicate())
+
+    def test_routing_track_first_point_and_start_poi_freeze_requested_waypoints(self):
+        from test.test_routingjob import ConstantWind
+        from gweatherrouting.core.geo.track import Track
+        from gweatherrouting.core.geo.poi import POI
+        from gweatherrouting.core.routingjob import CalculatedRoute
+
+        track = Track("Course", [(0, 0, None), (0, 0.15, None), (0, 0.3, None)])
+        self.controller.core.trackManager.append(track)
+        poi = POI("Start buoy", (1, 2))
+        self.controller.core.poiManager.append(poi)
+        self.controller.core.grib_manager.gribs = [ConstantWind()]
+        panel = self.window.routing_panel
+        panel.refresh_destinations()
+        panel.destination.setCurrentText("Track: Course")
+        panel.start_mode.setCurrentText("POI: Start buoy")
+        self.assertEqual(panel._request()[0].start, (1, 2))
+        panel.start_mode.setCurrentText("First track point")
+        requested, _ = panel._request()
+        self.assertIsNone(requested.start)
+        self.assertEqual(requested.waypoints, ((0, 0), (0, 0.15), (0, 0.3)))
+        self.assertEqual(self.window.map.route_plan, requested.waypoints)
+        started, release = Event(), Event()
+        self.addCleanup(release.set)
+        captured = []
+
+        def calculate(core, request, *args):
+            captured.append(request)
+            started.set()
+            release.wait(5)
+            return CalculatedRoute(((0, 0, "2026-10-01", 0, 1, 1, 0),), (), {})
+
+        with patch(
+            "gweatherrouting.qt.routingcontroller.calculate_route",
+            side_effect=calculate,
+        ):
+            panel.calculate.click()
+            self.wait_for_routing_stage(started.is_set)
+            track.points[:] = [(50, 50, None)]
+            release.set()
+            self.wait_for_route()
+        self.assertEqual(captured[0].waypoints, requested.waypoints)
+        panel.destination.setCurrentIndex(0)
+        panel.calculate.click()
+        self.assertIn("requires a track", panel.status.text())
+        self.assertFalse(self.controller.routing.busy)
+
+    def test_routing_current_engine_preflight_and_provenance_use_shared_models(self):
+        from test.test_routingoptions import CurrentWind
+        from test.test_current_routing import START, current_field
+        from PySide6.QtCore import QDateTime
+
+        current = current_field(east=0.4)
+        self.controller.core.marine_manager.fields.add(current)
+        self.controller.core.grib_manager.gribs = [CurrentWind()]
+        panel = self.window.routing_panel
+        panel.use_currents.setChecked(True)
+        panel.auto_currents.setChecked(False)
+        panel.coastlines.setChecked(False)
+        panel.departure.setDateTime(QDateTime(START.astimezone().replace(tzinfo=None)))
+        panel.set_location("start", (0, 0))
+        panel.set_location("destination", (0, 0.005))
+        approvals = []
+
+        def confirm(report):
+            approvals.append((get_ident(), report))
+            return True
+
+        self.controller.routing.confirm = confirm
+        panel.calculate.click()
+        self.wait_for_route()
+        self.assertFalse(self.controller.routing.error)
+        self.assertTrue(approvals)
+        self.assertEqual(approvals[0][0], get_ident())
+        route = self.controller.core.routingManager[-1]
+        self.assertEqual(route.provenance["routing"], "isochrone-with-currents")
+        self.assertEqual(route.provenance["currents"]["actual_sources"], [current.id])
+        self.assertTrue(route.provenance["samples"])
+        self.assertIn("coverage checked", panel.summary.text())
+        self.assertTrue(route.points[-1][2].endswith("+00:00"))
+        self.assertEqual(route.points[-1][3], 270)
+        self.assertIn("currents included", panel.status.text())
+
+    def test_routing_blocked_preflight_has_cancel_only_and_close_dismisses_dialog(self):
+        from test.test_routingoptions import CurrentWind
+        from PySide6.QtCore import QTimer
+
+        self.controller.core.grib_manager.gribs = [CurrentWind()]
+        panel = self.window.routing_panel
+        panel.use_currents.setChecked(True)
+        panel.auto_currents.setChecked(False)
+        panel.coastlines.setChecked(False)
+        panel.set_location("start", (0, 0))
+        panel.set_location("destination", (0, 0.005))
+        observed = []
+        deadline = time.monotonic() + 5
+
+        def close_dialog():
+            dialog = panel.preflight_dialog
+            if dialog is None and time.monotonic() < deadline:
+                QTimer.singleShot(5, close_dialog)
+                return
+            if dialog is not None:
+                observed.append([button.text() for button in dialog.buttons()])
+            self.controller.routing.cancel()
+
+        QTimer.singleShot(5, close_dialog)
+        panel.calculate.click()
+        self.wait_for_route()
+        self.assertEqual(observed, [["Cancel routing"]])
+        self.assertFalse(self.controller.core.routingManager.elements)
+        self.assertIsNone(panel.preflight_dialog)
+        self.assertEqual(panel.status.text(), "Routing cancelled")
+        # A genuine parent close also breaks the worker's pending UI handoff.
+        observed.clear()
+        deadline = time.monotonic() + 5
+
+        def close_window():
+            if panel.preflight_dialog is None and time.monotonic() < deadline:
+                QTimer.singleShot(5, close_window)
+                return
+            observed.append(panel.preflight_dialog is not None)
+            self.window.close()
+
+        QTimer.singleShot(5, close_window)
+        panel.calculate.click()
+        worker = self.controller.routing.worker_thread
+        self.wait_for_routing_stage(lambda: bool(observed))
+        worker.join(2)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(observed, [True])
+        self.assertFalse(self.controller.core.routingManager.elements)
+
+    def test_routing_automatic_download_callbacks_commit_on_ui_thread(self):
+        from test.test_current_routing import current_field
+        from gweatherrouting.core.routingjob import CalculatedRoute
+
+        current = current_field()
+        panel = self.window.routing_panel
+        panel.use_currents.setChecked(True)
+        self.assertTrue(panel.auto_currents.isChecked())
+        self.assertFalse(self.controller.core.grib_manager.gribs)
+        commits = []
+        old_add = self.controller.core.marine_manager.fields.add
+
+        def add(field):
+            commits.append(("current", get_ident()))
+            return old_add(field)
+
+        def save_wind(gribs):
+            commits.append(("wind", get_ident()))
+
+        def calculate(core, request, sources, providers, cancel, progress, **callbacks):
+            self.assertTrue(request.auto_download)
+            self.assertEqual(sources, ())
+            self.assertFalse(callbacks["current_selection"].fields)
+            callbacks["report"]("Downloading missing coverage…")
+            callbacks["save_fields"]([current])
+            callbacks["save_gribs"]([])
+            return CalculatedRoute(((0, 0, "2026-10-01", 0, 1, 1, 0),), (), {})
+
+        with (
+            patch(
+                "gweatherrouting.qt.routingcontroller.calculate_route",
+                side_effect=calculate,
+            ),
+            patch.object(self.controller.routing, "_save_gribs", side_effect=save_wind),
+            patch.object(
+                self.controller.core.marine_manager.fields, "add", side_effect=add
+            ),
+        ):
+            panel.calculate.click()
+            self.wait_for_route()
+        self.assertFalse(self.controller.routing.error)
+        self.assertEqual(commits, [("current", get_ident()), ("wind", get_ident())])
+        self.assertIn(current.id, self.controller.core.marine_manager.fields.fields)
+        self.assertEqual(len(self.controller.core.routingManager), 1)
+
+    def test_routing_comparison_cancel_retains_only_completed_scenarios(self):
+        from test.test_routingjob import ConstantWind
+        from gweatherrouting.core.routingjob import CalculatedRoute
+
+        self.controller.core.grib_manager.gribs = [ConstantWind()]
+        panel = self.window.routing_panel
+        enabled, values = panel.comparison_axes["time_offset_hours"]
+        enabled.setChecked(True)
+        values.setText("0, 1, 2")
+        started, release = Event(), Event()
+        self.addCleanup(release.set)
+        calls = []
+
+        def calculate(core, request, *args):
+            calls.append(request)
+            if len(calls) == 2:
+                started.set()
+                release.wait(5)
+            return CalculatedRoute(((0, 0, "2026-10-01", 0, 1, 1, 0),), (), {})
+
+        with patch(
+            "gweatherrouting.qt.routingcontroller.calculate_route",
+            side_effect=calculate,
+        ):
+            panel.calculate.click()
+            self.wait_for_routing_stage(started.is_set)
+            panel.cancel_button.click()
+            release.set()
+            self.wait_for_route()
+        self.assertEqual(len(self.controller.core.routingManager), 1)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("1/3 scenarios saved", panel.status.text())
+        self.assertFalse(self.window.map.route_preview)
+
+    def test_routing_advanced_options_restore_without_calculations_or_downloads(self):
+        panel = self.window.routing_panel
+        panel.parameter_widgets["subdiv"].setValue(3)
+        panel.parameter_widgets["min_increase"].setValue(4.5)
+        enabled, values = panel.comparison_axes["polar_efficiency_pct"]
+        enabled.setChecked(True)
+        values.setText("90, 100")
+        panel.use_currents.setChecked(True)
+        panel.auto_currents.setChecked(False)
+        self.window.workspace.save()
+        payload = self.window.workspace.store.load()["routing"]["options"]
+        self.assertTrue(payload["use_currents"])
+        self.assertFalse(payload["auto_currents"])
+        self.restart_workspace()
+        panel = self.window.routing_panel
+        self.assertTrue(panel.use_currents.isChecked())
+        self.assertFalse(panel.auto_currents.isChecked())
+        self.assertFalse(self.controller.routing.busy)
+        self.assertFalse(self.controller.core.routingManager.elements)
+        self.assertEqual(
+            panel.comparison_axes["polar_efficiency_pct"][1].text(), "90, 100"
+        )
+        self.assertTrue(panel.comparison_axes["polar_efficiency_pct"][0].isChecked())
+        panel.use_currents.setChecked(False)
+        self.assertEqual(panel.parameter_widgets["subdiv"].value(), 3)
+        self.assertEqual(panel.parameter_widgets["min_increase"].value(), 4.5)
 
     def test_frontend_does_not_import_gtk(self):
         self.assertNotIn("gi.repository.Gtk", sys.modules)

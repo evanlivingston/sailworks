@@ -997,6 +997,62 @@ into `dev`; no upstream PR was created or updated.
   presentation helpers independently from Qt UI and fork documentation if requested.
 - Usage and assessment: `docs/qt-first-pass.md`, `docs/qt-parity.md`.
 
+## Qt routing options and current-aware calculations
+
+- Status: candidate for shared routing helpers; Qt frontend and fork migration
+  documentation remain fork-only pending an explicit upstream request.
+- Branch/base: `feature/qt-routing-options`, independent from `dev` at `5b4363d`
+  after approved marine PR #16; synchronized with `e9053e1` (merged map
+  smoothness PR #17). No pending merge dependency or upstream submission.
+- Review: [fork PR #18](https://github.com/evanlivingston/gweatherrouting/pull/18),
+  open for user review; not merged.
+- Functional commits: `1daf76b` adds immutable parameter/scenario inputs and
+  toolkit-neutral current preparation to the shared worker job; `2f35fcc` migrates
+  Qt routing parameters, start/track choices, Compare/Currents pages, sequential
+  scenario saves, coverage confirmation and workspace preferences.
+- Scope: Plan uses engine metadata for parameters and supports boat/POI/manual or
+  first-track-point starts. Track coordinates and parameters are snapshotted.
+  Compare retains GTK's four axes, Cartesian order, names and absolute efficiency;
+  invalid values and batches above 256 scenarios are rejected before calculation.
+  Completed scenarios survive later errors/cancellation. Currents retains existing
+  latest-wind preparation, preflight, blocked/nonblocked warning behavior and
+  bounded automatic recovery/prefetch. Download persistence and result commits
+  use UI handoffs; cancel/close dismisses pending dialogs and rejects late work.
+  Options restore without starting downloads/calculations. Current fields are
+  frozen at batch start; automatically acquired fields remain available to the
+  current run through the existing recovery mechanism and are persisted for later
+  calculations. Existing native filesystem pickers remain unchanged.
+- Fidelity: default Core calls and GTK remain compatible. Direct comparisons with
+  the original engines produce identical point tuples for a parameterized,
+  multi-waypoint wind scenario (efficiency/speed/direction changes) and a current
+  route. Current UTC timestamps, wind-bearing units and source/coverage provenance
+  match GTK. No interpolation, approximation or source priority changes. Engine
+  concurrency serializes private GDAL reads to avoid simultaneous dataset access.
+- Validation: full suite passes 801 tests and 101 subtests, repeated after
+  integrating map smoothness PR #17 (81.71s); isolated Qt wrapper
+  passes all 73 integration checks. Seven pure checks cover exact engine parity,
+  immutable parameters, scenarios/validation, serialized wind reads, blocked
+  preflight and automatic preparation hooks. Eight Qt checks cover parameter
+  metadata/cache, four-scenario results and UI-thread commits, frozen tracks/POI
+  starts, actual current calculation/provenance, modal cancel/close, automatic
+  persistence callbacks, partial batch cancellation and preference restoration.
+  Scoped Black/Flake8 and mypy (29 files, silent imported modules) pass. Full
+  Flake8 retains the existing connection-dialog C901; full mypy retains the same
+  32 errors in eight existing files (215 checked).
+- Native QA: separate macOS GTK/Qt fixture processes reviewed routing controls,
+  Compare/Currents tabs and a successful current result; Qt 1000×650 keeps
+  Calculate/Cancel reachable and closes without GTK imports. Fixtures used
+  temporary marine/workspace data, disabled settings writes and no live providers.
+  Qt widget captures were used because the OS screenshot command crashed; window
+  chrome capture is not part of this verification. Sphinx remains unavailable.
+- Limits: live routing downloads/accounts/hardware and distributable bundles are
+  unvalidated. Computed-route waypoint editing, remaining settings and chart setup
+  stay separate. GTK remains the default entry point.
+- Intended upstream scope: selected toolkit-neutral options/worker helpers and
+  tests, adapted against freshly fetched parent master only if requested; exclude
+  Qt UI, fork workflow and migration documentation.
+- Usage/assessment: `docs/qt-first-pass.md`, `docs/qt-parity.md`.
+
 ## Qt map pan and zoom smoothness
 
 - Status: Qt UI is fork-only. Branch: `feature/qt-map-smooth-pan`, based on

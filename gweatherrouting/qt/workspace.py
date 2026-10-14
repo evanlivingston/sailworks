@@ -104,6 +104,7 @@ class WorkspacePreferences(QObject):
         window.streaming.toggled.connect(self.changed)
         for panel in window.marine_panels.values():
             panel.toggle.toggled.connect(self.changed)
+        window.routing_panel.options_changed.connect(self.changed)
         window.timeline.step_changed.connect(self.changed)
         window.navigation_toolbar.visibilityChanged.connect(self.changed)
         window.workspace_toolbar.visibilityChanged.connect(self.changed)
@@ -210,6 +211,7 @@ class WorkspacePreferences(QObject):
                 "polar": panel.polar.currentText(),
                 "algorithm": panel.algorithm.currentText(),
                 "coastlines": panel.coastlines.isChecked(),
+                "options": panel.saved_options(),
                 "selected_route": route.name if route is not None else None,
             },
             "nmea": {
@@ -397,6 +399,7 @@ class WorkspacePreferences(QObject):
                 index = combo.findText(text)
                 if index >= 0:
                     combo.setCurrentIndex(index)
+        panel.restore_options(mapping(saved.get("options")))
         page = saved.get("page")
         if type(page) is int and 0 <= page < panel.pages.count():
             panel.pages.setCurrentIndex(page)
