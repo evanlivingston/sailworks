@@ -9,14 +9,17 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget, QMenu
 
 from gweatherrouting.core.mapviewport import MercatorProjection, MapPoint
-from gweatherrouting.rendering.style import Style, route_speed_color
+from gweatherrouting.rendering.style import Style
 from gweatherrouting.rendering.windpainter import WindPainter
 from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
+from gweatherrouting.rendering.navigation import NavigationRenderer
+from gweatherrouting.rendering.ais import AISRenderer
 
 
 class TrackMap(QWidget, MercatorProjection):
     route_location = Signal(str, object)
     view_changed = Signal()
+    navigation_request = Signal(str, object)
 
     def __init__(self, controller, parent=None, time_control=None):
         super().__init__(parent)
@@ -34,6 +37,12 @@ class TrackMap(QWidget, MercatorProjection):
         self.drag = None
         self.background = None
         self.controller = controller
+        self.navigation = NavigationRenderer(controller.core)
+        self.ais_renderer = AISRenderer()
+        self.ais_targets = ()
+        self.ais_visible = True
+        self.move_callback = None
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.charts = controller.charts
         self.charts.add_map(self)
         self.wind = WindOverlayRenderer(WindPainter, controller.scheduler.submit)
@@ -82,6 +91,7 @@ class TrackMap(QWidget, MercatorProjection):
         self.time_control.disconnect("time_change", self._time_changed)
 
     def hideEvent(self, event):  # noqa: N802 - Qt virtual method name
+        self.cancel_move()
         self.charts._chs_renderer.forget(self)
         self.wind.forget(self)
         super().hideEvent(event)
@@ -162,11 +172,19 @@ class TrackMap(QWidget, MercatorProjection):
         self.fit_coordinates((*self.route, *self.route_plan))
 
     def contextMenuEvent(self, event):  # noqa: N802 - Qt virtual method name
+        self.cancel_move()
         position = self.convert_screen_to_geographic(event.pos().x(), event.pos().y())
         menu = QMenu(self)
+        poi = menu.addAction("Add POI here")
+        point = menu.addAction("Add track point here")
+        menu.addSeparator()
         start = menu.addAction("Set routing start here")
         destination = menu.addAction("Set routing destination here")
         selected = menu.exec(event.globalPos())
+        if selected is poi or selected is point:
+            self.navigation_request.emit(
+                "poi" if selected is poi else "point", position.get_degrees()
+            )
         if selected is start or selected is destination:
             self.route_location.emit(
                 "start" if selected is start else "destination", position.get_degrees()
@@ -200,31 +218,23 @@ class TrackMap(QWidget, MercatorProjection):
             self.background = (key, self._base_image())
         painter = QPainter(self)
         painter.drawImage(QPointF(0, 0), self.background[1])
+        painter.drawImage(QPointF(0, 0), self._navigation_image())
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        active_route = self.controller.core.routingManager.get_by_name(
+            self.navigation.hl_routing
+        )
+        if (
+            active_route is not None
+            and active_route.visible
+            and 0 <= self.selected_route_point < len(active_route)
+        ):
+            point = active_route.points[self.selected_route_point]
+            x, y = self.convert_geographic_to_screen(MapPoint(point[0], point[1]))
+            painter.setPen(QPen(QColor("#5295d2"), 2))
+            painter.setBrush(QColor("#ffffff"))
+            painter.drawEllipse(QPointF(x, y), 5, 5)
         self._draw_route(painter, self.route_plan, "#5295d2", dashed=True)
         self._draw_route(painter, self.route_preview, "#ef5a8c", dashed=True)
-        if self.route:
-            lats, lons = zip(*self.route)
-            rx, ry = self.convert_geographic_to_screen_batch(
-                np.array(lats), np.array(lons)
-            )
-            for index, (x, y) in enumerate(zip(rx, ry)):
-                color = QColor.fromRgbF(
-                    *route_speed_color(
-                        self.route_speeds[index]
-                        if index < len(self.route_speeds)
-                        else 0
-                    )
-                )
-                painter.setPen(QPen(color, 3))
-                if index:
-                    painter.drawLine(
-                        QPointF(rx[index - 1], ry[index - 1]), QPointF(x, y)
-                    )
-                selected = index == self.selected_route_point
-                painter.setBrush(QColor("#ffffff") if selected else color)
-                radius = 5 if selected else 2
-                painter.drawEllipse(QPointF(x, y), radius, radius)
         if self.route_plan:
             for label, coordinates in zip(("Start", "Destination"), self.route_plan):
                 x, y = self.convert_geographic_to_screen(MapPoint(*coordinates))
@@ -259,6 +269,8 @@ class TrackMap(QWidget, MercatorProjection):
             painter.drawEllipse(QPointF(xs[index], ys[index]), 5, 5)
         painter.setPen(QColor("#e4edf2"))
         caption = "Drag to pan · Scroll to zoom"
+        if self.move_callback is not None:
+            caption = "Click to place the selected point · Esc to cancel"
         if self.controller.chart_errors:
             caption += " · Some saved charts could not be opened"
         caption = painter.fontMetrics().elidedText(
@@ -273,6 +285,49 @@ class TrackMap(QWidget, MercatorProjection):
         painter.setPen(QColor("#eeeeec"))
         painter.drawText(16, self.height() - 16, caption)
         painter.end()
+
+    def _navigation_image(self):
+        factor = self.get_scale_factor()
+        surface = cairo.ImageSurface(
+            cairo.FORMAT_ARGB32,
+            math.ceil(self.width() * factor),
+            math.ceil(self.height() * factor),
+        )
+        surface.set_device_scale(factor, factor)
+        cr = cairo.Context(surface)
+        self.navigation.draw_routes(self, cr, self.time_control.time.timestamp())
+        self.navigation.draw_navigation(self, cr)
+        if self.ais_visible:
+            self.ais_renderer.draw_targets(self, cr, self.ais_targets)
+        surface.flush()
+        image = QImage(
+            surface.get_data(),
+            surface.get_width(),
+            surface.get_height(),
+            surface.get_stride(),
+            QImage.Format.Format_ARGB32_Premultiplied,
+        ).copy()
+        image.setDevicePixelRatio(factor)
+        return image
+
+    def begin_move(self, callback):
+        self.move_callback = callback
+        self.drag = None
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self.setFocus()
+        self.update()
+
+    def cancel_move(self):
+        self.move_callback = None
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.update()
+
+    def keyPressEvent(self, event):  # noqa: N802 - Qt virtual method name
+        if event.key() == Qt.Key.Key_Escape and self.move_callback is not None:
+            self.cancel_move()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def _base_image(self):
         factor = self.get_scale_factor()
@@ -308,6 +363,14 @@ class TrackMap(QWidget, MercatorProjection):
 
     def mousePressEvent(self, event):  # noqa: N802 - Qt virtual method name
         if event.button() == Qt.MouseButton.LeftButton:
+            if self.move_callback is not None:
+                position = self.convert_screen_to_geographic(
+                    event.position().x(), event.position().y()
+                )
+                callback = self.move_callback
+                self.cancel_move()
+                callback(position.get_degrees())
+                return
             self.drag = event.position()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
 

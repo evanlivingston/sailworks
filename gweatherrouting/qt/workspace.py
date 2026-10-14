@@ -67,6 +67,7 @@ class WorkspacePreferences(QObject):
             self.window.polar_selector_dock,
             self.window.performance_dock,
             self.window.polar_manager_dock,
+            self.window.navigation_dock,
         )
 
     def _watch(self):
@@ -85,6 +86,10 @@ class WorkspacePreferences(QObject):
         window.polar_workspace.splitter.splitterMoved.connect(self.changed)
         window.polar_workspace.selection_changed.connect(self.changed)
         window.polar_workspace.performance.changed.connect(self.changed)
+        window.navigation_panel.tabs.currentChanged.connect(self.changed)
+        window.navigation_panel.track_split.splitterMoved.connect(self.changed)
+        window.navigation_panel.route_split.splitterMoved.connect(self.changed)
+        window.ais_action.toggled.connect(self.changed)
         for action in window.log_toggles.values():
             action.toggled.connect(self.changed)
         panel = window.routing_panel
@@ -152,6 +157,15 @@ class WorkspacePreferences(QObject):
             "active_dock": self.active_dock,
             "view": window.views.tabText(window.views.currentIndex()),
             "polars_visited": window.polars_visited,
+            "navigation": {
+                "visible": window.navigation_open,
+                "tab": window.navigation_panel.tabs.tabText(
+                    window.navigation_panel.tabs.currentIndex()
+                ),
+                "tracks_split": window.navigation_panel.track_split.sizes(),
+                "routes_split": window.navigation_panel.route_split.sizes(),
+                "ais_visible": window.ais_action.isChecked(),
+            },
             "polars": {
                 "selected": window.polar_workspace.name,
                 "split": window.polar_workspace.splitter.sizes(),
@@ -254,6 +268,7 @@ class WorkspacePreferences(QObject):
             "polar-selector",
             "nmea-performance",
             "polar-manager",
+            "chart-navigation",
         ):
             self.active_dock = active
             for dock in self.docks:
@@ -271,7 +286,32 @@ class WorkspacePreferences(QObject):
         if isinstance(saved.get("visible"), bool):
             dock.setVisible(saved["visible"])
 
+    def _restore_navigation(self, state):
+        navigation = mapping(state.get("navigation"))
+        if isinstance(navigation.get("visible"), bool):
+            self.window.navigation_open = navigation["visible"]
+        else:
+            self.window.navigation_open = True
+        self.window._view_changed()
+        self.window.navigation_action.setChecked(self.window.navigation_open)
+        panel = self.window.navigation_panel
+        for index in range(panel.tabs.count()):
+            if panel.tabs.tabText(index) == navigation.get(
+                "tab"
+            ) and panel.tabs.isTabVisible(index):
+                panel.tabs.setCurrentIndex(index)
+        for splitter, key in (
+            (panel.track_split, "tracks_split"),
+            (panel.route_split, "routes_split"),
+        ):
+            saved = navigation.get(key)
+            if isinstance(saved, list) and len(saved) == 2:
+                splitter.setSizes([int(number(v, 300, 60, 10000)) for v in saved])
+        if isinstance(navigation.get("ais_visible"), bool):
+            self.window.ais_action.setChecked(navigation["ais_visible"])
+
     def _restore_views(self, state):
+        self._restore_navigation(state)
         polars = mapping(state.get("polars"))
         workspace = self.window.polar_workspace
         selected = polars.get("selected")
@@ -322,7 +362,9 @@ class WorkspacePreferences(QObject):
         try:
             self.window.restoreState(self.default_layout, LAYOUT_VERSION)
             self.window.polars_visited = False
+            self.window.navigation_open = True
             self.window.views.setCurrentWidget(self.window.map)
+            self.window._view_changed()
             self.active_dock = "nmea"
             self.window.nmea_dock.raise_()
         finally:

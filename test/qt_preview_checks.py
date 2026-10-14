@@ -1614,6 +1614,270 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertTrue(self.window.polar_selector_dock.toggleViewAction().isVisible())
         self.assertTrue(self.window.performance_dock.toggleViewAction().isVisible())
 
+    def test_navigation_tabs_tracks_pois_and_map_placement(self):
+        from PySide6.QtTest import QTest
+        from PySide6.QtCore import QPoint
+
+        panel = self.window.navigation_panel
+        self.assertEqual(
+            [panel.tabs.tabText(i) for i in range(4)],
+            ["Tracks", "Routings", "POIs", "AIS"],
+        )
+        self.assertFalse(panel.tabs.isTabVisible(3))
+        self.assertFalse(self.window.navigation_dock.isHidden())
+        self.window.views.setCurrentWidget(self.window.logs_view)
+        self.assertTrue(self.window.navigation_dock.isHidden())
+        self.window.views.setCurrentWidget(self.window.map)
+        self.assertFalse(self.window.navigation_dock.isHidden())
+        self.window.navigation_action.trigger()
+        self.window.views.setCurrentWidget(self.window.polar_workspace)
+        self.window.views.setCurrentWidget(self.window.map)
+        self.assertTrue(self.window.navigation_dock.isHidden())
+        self.window._new_track()
+        track = self.controller.core.trackManager.get_active()
+        self.assertIsNotNone(track)
+        panel.add_point((48.4, -123.4))
+        panel.add_point((48.5, -123.5))
+        panel.track_points.setCurrentCell(0, 0)
+        panel.edit_point("duplicate")
+        self.assertEqual(
+            track.points,
+            [(48.4, -123.4, None), (48.5, -123.5, None), (48.4, -123.4, None)],
+        )
+        panel.track_points.setCurrentCell(1, 0)
+        panel.edit_point("move_up")
+        self.assertEqual(track.points[0][:2], (48.5, -123.5))
+        panel.tracks.item(0, 0).setText("Race course")
+        self.assertEqual(track.name, "Race course")
+        panel.tracks.item(0, 3).setCheckState(Qt.CheckState.Unchecked)
+        self.assertFalse(track.visible)
+        self.window._navigation_request("poi", (48.45, -123.45))
+        poi = panel.poi
+        self.assertEqual(self.window.map.navigation.hl_poi, poi.name)
+        self.assertGreater(self.window.routing_panel.destination.findText(poi.name), 0)
+        panel.pois.item(0, 0).setText("Finish")
+        self.assertEqual(poi.name, "Finish")
+        self.assertGreater(self.window.routing_panel.destination.findText("Finish"), 0)
+        panel.move_poi()
+        self.assertIsNotNone(self.window.map.move_callback)
+        QTest.keyClick(self.window.map, Qt.Key.Key_Escape)
+        self.assertIsNone(self.window.map.move_callback)
+        self.assertEqual(poi.position, (48.45, -123.45))
+        panel.move_poi()
+        location = self.window.map.convert_screen_to_geographic(120, 100).get_degrees()
+        QTest.mouseClick(
+            self.window.map, Qt.MouseButton.LeftButton, pos=QPoint(120, 100)
+        )
+        self.assertEqual(poi.position, location)
+        self.assertIsNone(self.window.map.move_callback)
+        panel.track_points.setCurrentCell(0, 0)
+        panel.move_point()
+        location = self.window.map.convert_screen_to_geographic(140, 110).get_degrees()
+        QTest.mouseClick(
+            self.window.map, Qt.MouseButton.LeftButton, pos=QPoint(140, 110)
+        )
+        self.assertEqual(track.points[0], (*location, None))
+        panel.remove_poi()
+        self.assertFalse(self.controller.core.poiManager.elements)
+        self.assertEqual(self.window.routing_panel.destination.count(), 1)
+        panel.remove_track()
+        self.assertIsNone(self.controller.core.trackManager.get_active())
+        self.assertEqual(panel.track_points.rowCount(), 0)
+        self.assertIsNone(self.window.map.navigation.hl_poi)
+
+    def test_navigation_gpx_native_picker_import_export_and_invalid_input(self):
+        import gpxpy
+        from gweatherrouting.qt.navigationpanel import gpx_document
+        from gweatherrouting.core.geo.routing import Routing
+
+        panel = self.window.navigation_panel
+        source = self.path / "course.gpx"
+        source.write_text(
+            '<gpx version="1.1"><wpt lat="48.5" lon="-123.5"><name>Finish</name></wpt>'
+            '<trk><name>Course</name><trkseg><trkpt lat="48.1" lon="-123.1"/>'
+            '<trkpt lat="48.2" lon="-123.2"/></trkseg></trk></gpx>'
+        )
+        with patch(
+            "gweatherrouting.qt.navigationpanel.QFileDialog.getOpenFileName",
+            return_value=(str(source), ""),
+        ) as picker:
+            panel.import_gpx()
+            picker.assert_called_once()
+        self.wait_for_navigation()
+        track = self.controller.core.trackManager.get_active()
+        self.assertEqual(track.points, [[48.1, -123.1], [48.2, -123.2]])
+        self.assertEqual(panel.pois.item(0, 0).text(), "Finish")
+        panel.import_path(source)
+        self.wait_for_navigation()
+        self.assertEqual(len(self.controller.core.trackManager), 2)
+        self.assertEqual(len({t.name for t in self.controller.core.trackManager}), 2)
+        bad = self.path / "bad.gpx"
+        bad.write_text('<gpx><wpt lat="91" lon="-123"/></gpx>')
+        previous = self.controller.core.poiManager.to_json()
+        panel.import_path(bad)
+        self.wait_for_navigation()
+        self.assertEqual(self.controller.core.poiManager.to_json(), previous)
+        self.assertIn("Could not import", panel.status.text())
+        route = Routing(
+            "Route",
+            [(48.1, -123.1, "2026-10-14T10:00:00", 45, 10, 5, 0)],
+            collection=self.controller.core.routingManager,
+        )
+        self.controller.core.routingManager.append(route)
+        panel.route = route
+        for method, filename in (
+            (panel.export_track, "track.gpx"),
+            (panel.export_route, "route.gpx"),
+            (panel.export_all, "all.gpx"),
+            (panel.export_pfec, "pois.nmea"),
+        ):
+            destination = self.path / filename
+            with patch(
+                "gweatherrouting.qt.navigationpanel.QFileDialog.getSaveFileName",
+                return_value=(str(destination), ""),
+            ) as picker:
+                method()
+                picker.assert_called_once()
+            if filename == "pois.nmea":
+                self.assertEqual(
+                    destination.read_text(),
+                    self.controller.core.poiManager.to_nmea_fpec(),
+                )
+            else:
+                parsed = gpxpy.parse(destination.read_text())
+                self.assertEqual(
+                    (len(parsed.tracks), len(parsed.routes), len(parsed.waypoints)),
+                    {
+                        "track.gpx": (1, 0, 0),
+                        "route.gpx": (0, 1, 0),
+                        "all.gpx": (2, 1, 2),
+                    }[filename],
+                )
+        self.assertTrue(gpx_document().to_xml())
+
+    def wait_for_navigation(self):
+        deadline = time.monotonic() + 5
+        while self.window.navigation_panel.task.busy and time.monotonic() < deadline:
+            self.drain()
+            time.sleep(0.005)
+        self.assertFalse(self.window.navigation_panel.task.busy)
+        self.drain()
+
+    def test_navigation_ais_sorting_visibility_expiry_and_map(self):
+        from gweatherrouting.core.aismanager import AISTarget, STALE_TIMEOUT
+        from gweatherrouting.qt.navigationpanel import distance_nm
+
+        panel = self.window.navigation_panel
+        manager = self.controller.core.ais_manager
+        self.controller.core.set_boat_position(48.4, -123.4)
+        near = AISTarget(123456789, 48.41, -123.4, 90, 5, 90, "Near", 36)
+        far = AISTarget(987654321, 49.4, -123.4, 180, 10, 180, "Far", 70)
+        invalid = AISTarget(100000000)
+        with manager._lock:
+            manager._targets = {t.mmsi: t for t in (far, near, invalid)}
+        panel.refresh_ais()
+        self.assertTrue(panel.tabs.isTabVisible(3))
+        self.assertEqual(panel.ais.item(0, 0).text(), str(near.mmsi))
+        self.assertEqual(panel.ais.rowCount(), 2)
+        self.assertEqual(self.window.log_map.ais_targets, (near, far))
+        self.assertEqual(self.window.map.ais_targets, (near, far))
+        self.assertAlmostEqual(distance_nm(0, 0, 1, 0), 60.04046, places=4)
+        panel.fit_ais(0)
+        self.assertEqual(self.window.map._center_lat, near.latitude)
+        self.window.ais_action.setChecked(False)
+        self.assertFalse(self.window.map.ais_visible)
+        self.assertFalse(self.window.log_map.ais_visible)
+        for target in (near, far, invalid):
+            target.last_update = time.time() - STALE_TIMEOUT - 1
+        panel.refresh_ais()
+        self.assertFalse(panel.tabs.isTabVisible(3))
+        self.assertFalse(self.window.map.ais_targets)
+
+    def test_navigation_route_controls_and_collection_persistence(self):
+        from gweatherrouting.core.geo.routing import Routing
+        from gweatherrouting.core.geo.trackcollection import TrackCollection
+        from gweatherrouting.core.geo.poicollection import POICollection
+
+        panel = self.window.navigation_panel
+        manager = self.controller.core.routingManager
+        route = Routing(
+            "Course",
+            [
+                (48.4, -123.4, "2026-10-14T10:00:00Z", 45, 10, 5, 0),
+                (48.5, -123.5, "2026-10-14T11:00:00Z", 50, 12, 6, 20),
+            ],
+            collection=manager,
+        )
+        manager.append(route)
+        panel.refresh()
+        panel.routes.setCurrentCell(0, 0)
+        self.assertIs(self.window.routing_panel.routes.currentData(), route)
+        self.assertEqual(self.window.map.navigation.hl_routing, "Course")
+        self.assertEqual(panel.route_points.rowCount(), 2)
+        panel.route_points.setCurrentCell(1, 0)
+        self.assertEqual(self.window.map.selected_route_point, 1)
+        panel.routes.item(0, 0).setText("Renamed")
+        self.assertEqual(self.window.routing_panel.routes.currentText(), "Renamed")
+        panel.routes.item(0, 2).setCheckState(Qt.CheckState.Unchecked)
+        self.assertFalse(route.visible)
+        with (
+            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+            patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
+        ):
+            for collection in (
+                self.controller.core.trackManager,
+                self.controller.core.poiManager,
+            ):
+                ORIGINAL_STORAGE_LOAD(collection.storage)
+            panel.new_track()
+            panel.add_point((48.4, -123.4))
+            panel.add_poi((48.5, -123.5))
+            panel.move_poi()
+            self.window.map.move_callback((48.6, -123.6))
+            self.window.map.cancel_move()
+            with patch.object(Storage, "load_or_save_default", ORIGINAL_STORAGE_LOAD):
+                tracks, pois = TrackCollection(), POICollection()
+            self.assertEqual(tracks.get_active().points, [[48.4, -123.4, None]])
+            self.assertEqual(pois[0].position, [48.6, -123.6])
+        panel.remove_route()
+        self.assertFalse(manager.elements)
+        self.assertFalse(self.window.map.route)
+
+    def test_navigation_workspace_restore_and_late_import_shutdown(self):
+        from threading import Event
+
+        panel = self.window.navigation_panel
+        self.window._show_panel(self.window.navigation_dock)
+        panel.tabs.setCurrentIndex(2)
+        self.window.ais_action.setChecked(False)
+        self.window.workspace.save()
+        state = self.window.workspace.store.load()
+        self.assertEqual(state["navigation"]["tab"], "POIs")
+        self.assertTrue(state["docks"]["chart-navigation"]["visible"])
+        panel.tabs.setCurrentIndex(0)
+        self.window.ais_action.setChecked(True)
+        self.window.navigation_dock.hide()
+        self.window.workspace.restoring = True
+        self.window.workspace.restore(state)
+        self.window.workspace.restoring = False
+        self.assertEqual(panel.tabs.currentIndex(), 2)
+        self.assertFalse(self.window.ais_action.isChecked())
+        self.assertFalse(self.window.navigation_dock.isHidden())
+        self.restart_workspace()
+        panel = self.window.navigation_panel
+        self.assertEqual(panel.tabs.currentIndex(), 2)
+        self.assertFalse(self.window.ais_action.isChecked())
+        self.assertFalse(self.window.navigation_dock.isHidden())
+        event = Event()
+        panel.task.start("Pending import", lambda _: event.wait(3))
+        self.window.close()
+        event.set()
+        panel.task.worker_thread.join(2)
+        self.drain()
+        self.assertFalse(panel.timer.isActive())
+        self.assertTrue(panel.task.closed)
+        self.assertFalse(self.controller.core.trackManager.elements)
+
     def test_frontend_does_not_import_gtk(self):
         self.assertNotIn("gi.repository.Gtk", sys.modules)
         self.assertFalse(

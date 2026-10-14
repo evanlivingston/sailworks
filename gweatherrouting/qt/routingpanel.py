@@ -184,6 +184,16 @@ class RoutingPanel(QWidget):
         self.polar.currentIndexChanged.emit(self.polar.currentIndex())
         self.refresh()
 
+    def refresh_destinations(self):
+        selected = self.destination.currentText()
+        self.destination.blockSignals(True)
+        self.destination.clear()
+        self.destination.addItem("Custom coordinates", None)
+        for poi in self.controller.core.poiManager:
+            self.destination.addItem(poi.name, tuple(poi.position))
+        self.destination.setCurrentIndex(max(0, self.destination.findText(selected)))
+        self.destination.blockSignals(False)
+
     @staticmethod
     def _coordinates(lat, lon):
         row = QWidget()
