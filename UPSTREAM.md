@@ -1005,7 +1005,9 @@ into `dev`; no upstream PR was created or updated.
   after approved marine PR #16; synchronized with `e9053e1` (merged map
   smoothness PR #17). No pending merge dependency or upstream submission.
 - Review: [fork PR #18](https://github.com/evanlivingston/gweatherrouting/pull/18),
-  open for user review; not merged.
+  merged into `dev` with user approval (merge `fced2da`). Docs CI passed;
+  lint/type failures match the existing connection-dialog complexity and four
+  type errors. Other CI jobs were still running at merge time.
 - Functional commits: `1daf76b` adds immutable parameter/scenario inputs and
   toolkit-neutral current preparation to the shared worker job; `2f35fcc` migrates
   Qt routing parameters, start/track choices, Compare/Currents pages, sequential
