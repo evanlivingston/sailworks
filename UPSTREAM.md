@@ -411,7 +411,7 @@ are also in unchanged baseline files. No new lint/type failures were introduced.
   run: full plot 40.3 ms, cursor 1.84 ms, cached coastline image 2.9 ms. Detailed
   ENC/source-selection parity and hardware input are not established by this pass.
 - Review: [fork PR #5](https://github.com/evanlivingston/gweatherrouting/pull/5),
-  left unmerged for review. Functional commits: `20ba52e` (projection) and
+  merged into `dev`. Functional commits: `20ba52e` (projection) and
   `ec0bd44` (optional Qt frontend, tests, packaging, and assessment).
 - Intended upstream scope: shared projection extraction only; keep the optional
   Qt experiment and fork documentation out of parent-project PRs unless invited.
@@ -423,7 +423,7 @@ are also in unchanged baseline files. No new lint/type failures were introduced.
   the Qt adapter/UI is fork-only. Branch: `feature/qt-production-charts`,
   dependent on `feature/qt-first-pass` and fork PR #5.
 - Review: [fork PR #6](https://github.com/evanlivingston/gweatherrouting/pull/6),
-  opened against `feature/qt-first-pass` and left unmerged.
+  retargeted to `dev` after PR #5 merged, then merged into `dev`.
 - Scope: inject Core notification scheduling while preserving GTK defaults;
   extract production Cairo chart/wind rendering and settings from GTK; retain
   compatibility imports, palettes, coastline quality thresholds, ENC source/
@@ -472,3 +472,9 @@ Qt pre-merge CI review: targeted naming exceptions allow Qt virtual methods.
 CI test collection fails because the existing tox environment omits runtime
 `nmeatoolkit`; this predates Qt. Builds/docs pass; existing GTK complexity/type
 failures remain. Local full-suite results above remain valid.
+
+Qt integration: fork PRs #5 and #6 merged into `dev` with user approval.
+After retargeting #6, 46 focused tests and two subtests passed; new CI runs
+were pending at merge. The Qt naming violations are fixed; prior CI test
+collection fails on the omitted `nmeatoolkit` tox dependency, with baseline
+GTK complexity/type failures unchanged. GTK remains the default frontend.
