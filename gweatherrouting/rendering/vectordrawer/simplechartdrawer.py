@@ -91,23 +91,33 @@ class SimpleChartDrawer(VectorChartDrawer):
     def feature_render(
         self, gpsmap, cr, geom, feat, layer, stroke_style, fill_style, contourn_style
     ):
-        for i in range(0, geom.GetGeometryCount()):
-            stroke_style.apply(cr)
-            g = geom.GetGeometryRef(i)
-
-            if g.GetGeometryName() in ("POLYGON", "MULTIPOLYGON", "GEOMETRYCOLLECTION"):
+        if geom is None or geom.IsEmpty():
+            return
+        if geom.GetGeometryName() in ("MULTIPOLYGON", "GEOMETRYCOLLECTION"):
+            for i in range(geom.GetGeometryCount()):
                 self.feature_render(
-                    gpsmap, cr, g, feat, layer, stroke_style, fill_style, contourn_style
+                    gpsmap,
+                    cr,
+                    geom.GetGeometryRef(i),
+                    feat,
+                    layer,
+                    stroke_style,
+                    fill_style,
+                    contourn_style,
                 )
+            return
+        cr.new_path()
+        for i in range(geom.GetGeometryCount()):
+            ring = geom.GetGeometryRef(i)
+            xs, ys = self._geom_to_screen_batch(gpsmap, ring)
+            if xs is None:
                 continue
-
-            xs, ys = self._geom_to_screen_batch(gpsmap, g)
-            if xs is not None:
-                cr.move_to(xs[0], ys[0])
-                for ii in range(1, len(xs)):
-                    cr.line_to(xs[ii], ys[ii])
-
+            cr.move_to(xs[0], ys[0])
+            for x, y in zip(xs[1:], ys[1:]):
+                cr.line_to(x, y)
             cr.close_path()
-            cr.stroke_preserve()
-            fill_style.apply(cr)
-            cr.fill()
+        cr.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
+        fill_style.apply(cr)
+        cr.fill_preserve()
+        stroke_style.apply(cr)
+        cr.stroke()
