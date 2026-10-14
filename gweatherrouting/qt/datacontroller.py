@@ -97,7 +97,12 @@ class DataController(QObject):
         self.error = ""
 
     def run(self, kind, message, operation):
-        if self.task.busy or self.task.closed or self.owner.routing.busy:
+        if (
+            self.task.busy
+            or self.task.closed
+            or self.owner.routing.busy
+            or self.owner.polars.task.busy
+        ):
             return False
         self.operation, self.error = kind, ""
         return self.task.start(message, operation)
@@ -125,7 +130,7 @@ class DataController(QObject):
         )
 
     def set_forecast_enabled(self, metadata, enabled):
-        if self.task.busy or self.owner.routing.busy:
+        if self.task.busy or self.owner.routing.busy or self.owner.polars.task.busy:
             return
         if enabled:
             self.run(
@@ -144,7 +149,7 @@ class DataController(QObject):
             self.changed.emit()
 
     def remove_forecast(self, metadata):
-        if self.task.busy or self.owner.routing.busy:
+        if self.task.busy or self.owner.routing.busy or self.owner.polars.task.busy:
             return
         path = Path(metadata.path).resolve()
         if path.parent != Path(GRIB_DIR).resolve():

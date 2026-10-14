@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from .theme import section_label
+from .polarlibrary import PolarLibrary
 
 FORECAST_FILTER = "GRIB forecasts (*.grib *.grb *.grib2 *.grb2);;All files (*)"
 
@@ -88,6 +89,8 @@ class DataLibrary(QDialog):
         self.mutations = []
         self._forecasts()
         self._charts()
+        self.polars_panel = PolarLibrary(controller, self)
+        self.tabs.addTab(self.polars_panel, "Polars")
         self.progress = QProgressBar()
         layout.addWidget(self.progress)
         self.status = QLabel()
@@ -101,6 +104,7 @@ class DataLibrary(QDialog):
         layout.addWidget(buttons)
         self.data.changed.connect(self.refresh)
         controller.routing.changed.connect(self.refresh)
+        controller.polars.changed.connect(self.refresh_buttons)
         self.refresh()
 
     def button(self, row, label, callback):
@@ -258,7 +262,11 @@ class DataLibrary(QDialog):
         self.refresh_buttons()
 
     def refresh_buttons(self):
-        blocked = self.data.task.busy or self.controller.routing.busy
+        blocked = (
+            self.data.task.busy
+            or self.controller.routing.busy
+            or self.controller.polars.task.busy
+        )
         for button in self.mutations:
             button.setEnabled(not blocked)
         self.forecasts.setEnabled(not blocked)
