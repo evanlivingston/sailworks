@@ -18,12 +18,6 @@ import logging
 from pathlib import Path
 from typing import Callable, List, Optional
 
-try:
-    from gi.repository import GLib
-
-    _has_glib = True
-except ImportError:
-    _has_glib = False
 
 import gpxpy
 import weatherrouting
@@ -32,6 +26,7 @@ from gweatherrouting.core import GribManager, PolarManager, utils
 from gweatherrouting.core.aismanager import AISManager
 from gweatherrouting.core.connectionmanager import ConnectionManager
 from gweatherrouting.core.nmeasession import NMEASession
+from gweatherrouting.core.scheduling import schedule_idle
 from gweatherrouting.core.datasource import AISDataPacket, DataPacket
 from gweatherrouting.core.geo import (
     POICollection,
@@ -115,7 +110,10 @@ class LogTrackCollection(TrackCollection):
 
 
 class Core(EventDispatcher):
-    def __init__(self):
+    def __init__(
+        self, schedule=schedule_idle, start_connections=True, recording_directory=None
+    ):
+        self.schedule = schedule
         EventDispatcher.__init__(self)
         self.connectionManager = ConnectionManager()
         self.trackManager = TrackCollection()
@@ -131,13 +129,14 @@ class Core(EventDispatcher):
         self.ais_manager = AISManager()
 
         self._nmea_revision = 0
-        self.nmea_session = NMEASession(self.connectionManager)
+        self.nmea_session = NMEASession(self.connectionManager, recording_directory)
         self.nmea_session.connect("data", self.data_handler)
         self.nmea_session.connect("reset", self._reset_nmea)
         logger.info("Initialized")
 
-        self.connectionManager.plug_all()
-        self.connectionManager.start_polling()
+        if start_connections:
+            self.connectionManager.plug_all()
+            self.connectionManager.start_polling()
 
     def _reset_nmea(self, _):
         self._nmea_revision += 1
@@ -182,12 +181,9 @@ class Core(EventDispatcher):
             # Parse additional NMEA sentence types
             self._parse_nmea_extra(x)
 
-        if _has_glib:
-            GLib.idle_add(
-                self._dispatch_nmea, "boat_data", self.boat_info, self._nmea_revision
-            )
-        else:
-            self.dispatch("boat_data", self.boat_info)
+        self.schedule(
+            self._dispatch_nmea, "boat_data", self.boat_info, self._nmea_revision
+        )
 
     def _parse_position(self, x: DataPacket):
         """Parse position data from an NMEA sentence."""
@@ -207,15 +203,9 @@ class Core(EventDispatcher):
             except (ValueError, TypeError):
                 pass
 
-        if _has_glib:
-            GLib.idle_add(
-                self._dispatch_nmea,
-                "boat_position",
-                self.boat_info,
-                self._nmea_revision,
-            )
-        else:
-            self.dispatch("boat_position", self.boat_info)
+        self.schedule(
+            self._dispatch_nmea, "boat_position", self.boat_info, self._nmea_revision
+        )
 
     def _parse_nmea_extra(self, x: DataPacket):
         """Parse additional NMEA sentences for instrument data."""
