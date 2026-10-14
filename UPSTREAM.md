@@ -825,3 +825,59 @@ into `dev`; no upstream PR was created or updated.
   Qt controls and fork documentation if authorized. No upstream publication is
   part of this slice.
 - Usage and assessment: `docs/qt-first-pass.md`, `docs/qt-parity.md`.
+
+## Qt map instruments and cursor wind
+
+- Status: Qt controls/preferences and migration documentation are fork-only.
+  Shared dashboard/gauges, responsive layout and cursor worker lifecycle are
+  upstream candidates. Branch: `feature/qt-map-instruments`, based on `dev`
+  at `c837717` after the approved merge of fork PR #13. No pending dependency
+  or upstream submission.
+- Review: pending fork PR creation.
+- Functional commits: `e80d964` (shared production gauges/dashboard and injectable
+  cursor scheduling, retaining GTK adapters), `85f3aa4` (wrap all gauges on narrow
+  maps, shared by GTK/Qt), `55c53ff` (private cursor forecast metadata and explicit
+  dataset release), `b4df8f3` (Qt instrument/readout integration and preferences).
+  Validation follow-up `6e6668c` probes distinct raster cells as well as times.
+- Scope: GTK's seven instrument gauges and connection summary on Charts/Logs;
+  Core playback/live readings, retained Stop readings and source-reset clearing.
+  Independent Dashboard/Grib toggles persist for both maps. Immediate pointer
+  coordinates and debounced asynchronous forecast wind appear in the status bar;
+  connection refresh leaves an active readout visible. Forecast/source/view changes,
+  map motion/leave/hide, point placement and shutdown cancel stale queries.
+  Instrument updates reuse chart images and status polling uses the existing
+  nonblocking connection snapshot.
+- Fidelity: reported true wind and the original apparent-wind/SOG fallback,
+  units, color thresholds and missing/zero handling are retained without changing
+  recorded data. Sixteen comparisons against original GTK gauge/dashboard code
+  at two sizes, two pixel scales and four states produce zero changed pixels on
+  wide maps. Narrow maps intentionally wrap the same gauges in order instead
+  of clipping the fixed row. No routing, forecast sampling or source-order changes:
+  the cursor retains GTK enabled-file order/fallback and the 1.94384 knots
+  conversion; the wind overlay retains its separate newest-run ordering.
+  Twelve time/position probes across distinct real raster cells match legacy
+  wind values exactly. Each cursor worker owns at most two private files/four
+  array hours per file; eviction and shutdown release datasets, avoiding the
+  inherited shared forecast-hour cache retaining the last handle.
+- Validation: full suite passed 791 tests and 101 subtests before final status-line
+  visibility polish; final Qt wrapper passed all 49 isolated checks afterward.
+  The raster-gradient follow-up passed three tests and 12 subtests. Shared dashboard/
+  cursor/GTK tests passed 20 tests and 17 subtests; existing GTK workspace/cursor
+  checks also passed. Six new Qt checks cover playback/Stop/reset readings, chart
+  image reuse, independent map preference restart, hidden/moving query suppression,
+  worker/UI delivery and debounce, stale-result cancellation, real forecast values,
+  blocked-worker close and visible cursor text during refresh. Scoped Black/Flake8
+  and mypy pass; full mypy retains 32 baseline errors in eight files. Native macOS
+  GTK/Qt comparison checked wide/wrapped dashboards, Logs, toggles and synthetic
+  pointer readout on a real local GDAL fixture at 1280×820 and 1000×650; Qt imports
+  no GTK and closes its cursor cache. QA disabled user-settings writes and used
+  temporary workspace/raster data. Live hardware/providers were not exercised.
+- Limits: marine cursor values/overlays, forecast timeline shortcuts, advanced
+  routing parameters and full GTK control parity remain separate slices. Cursor
+  file priority intentionally follows existing GTK cursor behavior rather than
+  changing it to the wind overlay's issue-time ordering. GTK remains the default
+  frontend; both processes continue to run independently.
+- Intended upstream scope: review extraction, responsive dashboard and cursor
+  resource fixes independently from Qt UI and fork documentation if authorized.
+  No upstream publication is part of this migration slice.
+- Usage and assessment: `docs/qt-first-pass.md`, `docs/qt-parity.md`.

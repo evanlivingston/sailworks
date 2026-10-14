@@ -24,7 +24,8 @@ structure. Regatta is hidden in GTK and should remain absent in Qt.
 | Track, route, POI and AIS portrayal | Shared GTK Cairo drawing, including selection styles, route-time markers, AIS orientation/vectors and label spacing |
 | Navigation visibility and layout | Charts-only by default; Tabs reopens it, dock can move/float; preference and splits survive restart |
 | Marine currents/tides controls and overlays | Pending |
-| Map instrument dashboard and wind-cursor details | Pending |
+| Map instrument dashboard | Shared GTK Cairo gauges/connection summary on Charts and Logs; unchanged wide layout, wrapped gauges on narrow maps |
+| Cursor wind details | Shared asynchronous sampler; position/wind status readout, private bounded GRIB handles and cancellation on time/source/view changes |
 | Forecast navigation/timeline shortcuts and broader settings | Partially migrated; GTK control parity remains pending |
 | Routing efficiency and algorithm parameter controls | GTK routing wizard has additional controls; Qt still uses the existing defaults |
 | GTK menu/header appearance | Qt native OS menus/decorations retained; exact fonts/chrome differ |
