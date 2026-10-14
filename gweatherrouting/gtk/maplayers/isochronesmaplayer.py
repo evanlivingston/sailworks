@@ -31,31 +31,7 @@ from gweatherrouting.gtk.widgets.mapwidget import MapPoint
 from gweatherrouting.gtk.widgets.overlayrenderer import OverlayRenderer
 
 
-def draw_current_exclusions(gpsmap, cr, samples):
-    """Mark sampled rejection locations, without claiming a surveyed gap polygon."""
-    if not samples:
-        return
-    cr.save()
-    drawn = set()
-    for sample in samples:
-        x, y = gpsmap.convert_geographic_to_screen(
-            MapPoint.new_degrees(sample["latitude"], sample["longitude"])
-        )
-        key = (round(x / 4), round(y / 4))
-        if key in drawn:
-            continue
-        drawn.add(key)
-        cr.set_source_rgba(0.9, 0.05, 0.05, 0.18)
-        cr.arc(x, y, 7, 0, 2 * math.pi)
-        cr.fill()
-        cr.set_source_rgba(0.85, 0.02, 0.02, 0.9)
-        cr.set_line_width(1.5)
-        cr.move_to(x - 3, y - 3)
-        cr.line_to(x + 3, y + 3)
-        cr.move_to(x - 3, y + 3)
-        cr.line_to(x + 3, y - 3)
-        cr.stroke()
-    cr.restore()
+from gweatherrouting.rendering.navigation import draw_current_exclusions  # noqa: F401
 
 
 @dataclass(frozen=True, eq=False)
