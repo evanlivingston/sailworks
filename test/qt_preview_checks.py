@@ -705,13 +705,23 @@ class QtPreviewChecks(unittest.TestCase):
             chart = self.controller.charts.charts[0]
             self.controller.settings.chartPalette = "dark"
             self.assertEqual(chart.drawer.palette, "dark")
+            second_path = self.path / "second.geojson"
+            second_path.write_bytes(path.read_bytes())
+            data.import_chart(str(second_path), "vector")
+            self.wait_for_data()
+            second_chart = self.controller.charts.charts[1]
             data.set_chart_enabled(chart, False)
+            self.assertEqual(
+                [e["path"] for e in self.controller.settings.vectorCharts],
+                [str(path), str(second_path)],
+            )
             with patch.object(Storage, "load_or_save_default", ORIGINAL_STORAGE_LOAD):
                 reloaded = SettingsManager()
             self.assertFalse(reloaded.vectorCharts[0]["enabled"])
             self.assertEqual(reloaded.vectorCharts[0]["path"], str(path))
             data.remove_chart(chart)
             self.assertTrue(path.exists())
+            data.remove_chart(second_chart)
             self.assertFalse(self.controller.settings.vectorCharts)
             from osgeo import gdal, osr
 

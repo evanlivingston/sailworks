@@ -236,15 +236,21 @@ class DataController(QObject):
     def _save_chart_entries(self, chart, enabled=None, remove=False):
         key = chart.ctype + "Charts"
         entries = [dict(e) for e in self.owner.settings[key]]
-        entries = [e for e in entries if e["path"] != chart.path]
-        if not remove:
-            entries.append(
-                {
-                    "path": chart.path,
-                    "metadata": chart.metadata,
-                    "enabled": chart.enabled if enabled is None else enabled,
-                }
+        if remove:
+            entries = [e for e in entries if e["path"] != chart.path]
+        else:
+            value = {
+                "path": chart.path,
+                "metadata": chart.metadata,
+                "enabled": chart.enabled if enabled is None else enabled,
+            }
+            index = next(
+                (i for i, e in enumerate(entries) if e["path"] == chart.path), None
             )
+            if index is None:
+                entries.append(value)
+            else:
+                entries[index] = value
         self.owner.settings[key] = entries
 
     def set_chart_enabled(self, chart, enabled):
@@ -318,10 +324,12 @@ class DataController(QObject):
         self._save_chart_entries(chart, True)
         settings.attach(self.owner.settings)
         chart.settings_manager = self.owner.settings
-        self.owner.charts.charts[:] = [
-            c for c in self.owner.charts.charts if c.path != chart.path
-        ]
-        self.owner.charts.charts.append(chart)
+        charts = self.owner.charts.charts
+        index = next((i for i, c in enumerate(charts) if c.path == chart.path), None)
+        if index is None:
+            charts.append(chart)
+        else:
+            charts[index] = chart
         self.redraw()
         self.task.message = "Chart enabled and saved"
 
