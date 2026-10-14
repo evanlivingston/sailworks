@@ -30,6 +30,7 @@ def main(argv=None):
     controller = SessionController(offline=args.offline)
     window = PreviewWindow(controller)
     app.aboutToQuit.connect(window.workspace.close)
+    app.aboutToQuit.connect(window.timeline.dispose)
     app.aboutToQuit.connect(controller.close)
     window.show()
     controller.start_connections()

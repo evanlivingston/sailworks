@@ -885,3 +885,50 @@ into `dev`; no upstream PR was created or updated.
   resource fixes independently from Qt UI and fork documentation if authorized.
   No upstream publication is part of this migration slice.
 - Usage and assessment: `docs/qt-first-pass.md`, `docs/qt-parity.md`.
+
+## Qt forecast timeline and floating panel integration
+
+- Status: shared forecast metadata/stepping is an upstream candidate; Qt controls,
+  panel chrome/theme and migration documentation are fork-only. Branch:
+  `feature/qt-forecast-timeline`, based on `dev` at `e9555fe` after the approved
+  merge of fork PR #14. No pending prerequisite or upstream submission.
+- Review: [fork PR #15](https://github.com/evanlivingston/gweatherrouting/pull/15),
+  open and unmerged for human review. CI was still running at handoff.
+- Functional commits: `0a54892` extracts GTK's enabled-source intervals, union
+  bounds, step choices and bounded/unbounded stepping without changing semantics;
+  `949b7b7` adds the Qt timeline/preferences and integrates the other agent's
+  floating panel chrome, scrolling/theme and Window menu changes. That integration
+  also fixes child-relative resize coordinates, duplicate resize helpers, lint/
+  typing issues and teardown callbacks accessing already-deleted Qt objects.
+- Scope: GTK-ordered forecast transport and step interval, local-time picker and
+  Charts-only range slider on the existing toolbar row. Play advances once per
+  second and pauses at the endpoint; slider changes coalesce at 75 ms. Metadata
+  bounds include enabled GRIBs, marine fields and stations, support dates beyond
+  2038, and do not sample/open data. Manual dates outside the range remain valid
+  with a caption. NMEA transport/recording and routing departure stay independent.
+  Restore retains only the step interval, with no autoplay or selected-time restore.
+  Floating panels retain dock tabs/splits, add compact headers, edge resize/snap,
+  double-click docking and Window → Reset Panels. Thin scrolling bars and the
+  unfocused dropdown/spinner wheel guard are included, with dark native macOS
+  appearance matching the existing dark palette. Filesystem dialogs remain native.
+- Fidelity: shared bounds/stepping retain GTK's local time, hourly Now rounding,
+  elapsed-time bounded steps and wall-time unbounded steps, including DST folds.
+  Union bounds can include gaps; they do not promise continuous coverage. No
+  forecast interpolation, route calculation or source priority changes.
+- Validation: full suite passes 794 tests and 101 subtests; final Qt wrapper passes
+  all 57 checks and exits normally after the destruction regression test was
+  strengthened. Shared timeline/GTK/time-control checks pass 31 tests. Scoped
+  Black/Flake8 and mypy (23 files) pass. Full mypy retains 32 baseline errors in
+  eight existing files. Sphinx was unavailable locally; documentation CI is pending.
+  Native macOS Qt checked 1280×820 and 1000×650, metadata
+  ranges, scrubbing, endpoint pause, unchanged routing departure, manual outside
+  dates, hidden Logs controls, floating panel/reset and clean shutdown; GTK
+  reference checked at 1280×820. QA used temporary workspace/raster data with
+  user-settings writes disabled. Live hardware/providers were not exercised.
+- Limits: marine controls/overlays, broader settings and advanced routing remain
+  pending. GTK remains the default frontend and retains its controls. Floating
+  snap behavior has not been validated on Linux/Windows or multiple monitors.
+- Intended upstream scope: consider the shared forecast extraction separately
+  from Qt UI and fork documentation if authorized; no upstream publication is
+  part of this slice.
+- Usage and assessment: `docs/qt-first-pass.md`, `docs/qt-parity.md`.

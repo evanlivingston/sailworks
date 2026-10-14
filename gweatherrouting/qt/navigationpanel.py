@@ -97,7 +97,7 @@ class NavigationPanel(QWidget):
     def __init__(self, controller, canvas, parent=None):
         super().__init__(parent)
         self.controller, self.core, self.canvas = controller, controller.core, canvas
-        self.setMinimumWidth(320)
+        self.setMinimumWidth(280)
         self.syncing = False
         self.poi = None
         self.route = None
