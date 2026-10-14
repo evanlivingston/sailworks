@@ -582,7 +582,9 @@ into `dev`; no upstream PR was created or updated.
   Branch: `feature/qt-settings-data`, started from `dev` after approved merges
   of fork PRs #7 and #8. No pending branch dependency.
 - Review: [fork PR #9](https://github.com/evanlivingston/gweatherrouting/pull/9),
-  open against `dev` and left unmerged for human review.
+  merged into `dev` with user approval (merge `ac8beef`).
+  Merge audit confirmed CI failures remain the missing `nmeatoolkit` dependency,
+  existing GTK complexity and four existing type errors; all builds pass.
 - Scope: serial/TCP/UDP connection add/edit/remove with draft Apply, legacy N2K
   format loading, input-only N2K validation and offline-safe persistence; Qt
   display preferences; a Forecasts/Charts library with local imports, enable
