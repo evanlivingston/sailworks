@@ -632,7 +632,10 @@ into `dev`; no upstream PR was created or updated.
   at `77a9e2b` after the approved merge of fork PR #11. No pending dependency
   or upstream submission.
 - Review: [fork PR #12](https://github.com/evanlivingston/gweatherrouting/pull/12),
-  open for human review; not merged.
+  merged into `dev` with user approval (merge `f5f18d6`). Merge audit confirmed
+  the existing connection-dialog complexity and four baseline CI type errors;
+  docs passed, with build/test jobs still running at integration. Local validation
+  is recorded below.
 - Functional commits: `7f34bb8` (shared production polar renderer and GTK
   adapter), `1bec52e` (Qt workspace, panels, plots and preference integration).
 - Scope: preserve GTK's Charts/Logs/Polars workspace organization and contextual
