@@ -101,7 +101,9 @@ class RoutingPanel(QWidget):
         self.waypoints.setHorizontalHeaderLabels(
             ["Latitude", "Longitude", "Time", "kn"]
         )
-        self.waypoints.horizontalHeaderItem(3).setToolTip("Boat speed in knots")
+        speed_header = self.waypoints.horizontalHeaderItem(3)
+        if speed_header is not None:
+            speed_header.setToolTip("Boat speed in knots")
         self.waypoints.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.waypoints.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.ResizeToContents
