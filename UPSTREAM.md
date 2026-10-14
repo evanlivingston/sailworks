@@ -631,7 +631,9 @@ into `dev`; no upstream PR was created or updated.
   after the approved merge of fork PR #9 and its integration tracking update.
   No pending branch dependency; no upstream submission is part of this slice.
 - Review: [fork PR #10](https://github.com/evanlivingston/gweatherrouting/pull/10),
-  open against `dev` and left unmerged for human review.
+  merged into `dev` with user approval (merge `6d08001`).
+  Merge audit confirmed the existing dependency/lint/type CI failures only;
+  all build jobs pass.
 - Scope: restore and autosave normal/maximized window bounds, dock placement/
   sizing/visibility, detached panel bounds, Navigation toolbar visibility,
   active sidebar and Charts/Logs view, map center/zoom, routing view/polar/
