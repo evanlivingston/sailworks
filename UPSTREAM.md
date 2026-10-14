@@ -484,6 +484,8 @@ GTK complexity/type failures unchanged. GTK remains the default frontend.
 - Status: Qt UI is fork-only; the UI-neutral routing job is an upstream candidate.
   Branch: `feature/qt-routing`, started from `dev` after approved merges of fork
   PRs #5 and #6. No pending branch dependency.
+- Review: [fork PR #7](https://github.com/evanlivingston/gweatherrouting/pull/7),
+  opened against `dev` and left unmerged for review.
 - Scope: add a Routing dock with polar/algorithm selection, local departure time,
   start/destination coordinates, boat-position and saved-POI shortcuts, map
   context actions, coastline checks, background calculation/progress/cancel,
@@ -491,7 +493,9 @@ GTK complexity/type failures unchanged. GTK remains the default frontend.
   table with map highlighting. Existing saved routes use the shared Core model.
   Cancellation/errors/window closure retain prior routes and drop late results.
 - Functional commits: `ca88f0a` (shared routing job and engine/sampling tests),
-  `3943d63` (Qt workflow and isolated integration coverage).
+  `3943d63` (Qt workflow and isolated integration coverage). Follow-up commits
+  `f0cb4c9` and `3823537` keep compact map/table labels visible and handle the
+  nullable Qt header API. Final focused tests and scoped mypy pass.
 - Fidelity: uses Core's existing wind-only routing algorithm, defaults, source
   priority, interpolation, coastline hooks and result serialization. A direct
   constant-wind calculation matches the existing engine's route points exactly;
