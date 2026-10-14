@@ -1282,7 +1282,10 @@ class QtPreviewChecks(unittest.TestCase):
             )
             self.assertIs(self.window.views.currentWidget(), self.window.map)
             self.assertFalse(self.window.library_dialog.isVisible())
-            self.controller.polars.set_enabled("custom.pol", False)
+            panel.local.item(panel.names.index("custom.pol"), 0).setCheckState(
+                Qt.CheckState.Unchecked
+            )
+            self.drain()
             self.assertNotIn(
                 "custom.pol",
                 [
@@ -1290,7 +1293,9 @@ class QtPreviewChecks(unittest.TestCase):
                     for i in range(self.window.routing_panel.polar.count())
                 ],
             )
-            self.controller.polars.set_enabled("custom.pol", True)
+            panel.local.item(panel.names.index("custom.pol"), 0).setCheckState(
+                Qt.CheckState.Checked
+            )
             self.wait_for_polars()
             with patch.object(Storage, "load_or_save_default", ORIGINAL_STORAGE_LOAD):
                 reloaded = PolarManager()

@@ -175,7 +175,8 @@ class PolarLibrary(QWidget):
         self.status = QLabel()
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
-        self.polars.changed.connect(self.refresh)
+        # Refresh after a checkbox event has finished using its table item.
+        self.polars.changed.connect(self.refresh, Qt.ConnectionType.QueuedConnection)
         self.polars.preview_changed.connect(self.show_preview)
         controller.routing.changed.connect(self.refresh_buttons)
         controller.data.changed.connect(self.refresh_buttons)
