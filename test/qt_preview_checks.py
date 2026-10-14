@@ -1020,6 +1020,8 @@ class QtPreviewChecks(unittest.TestCase):
             controller.core.routingManager.append(route)
         self.controller = controller
         self.window = PreviewWindow(controller, workspace_path=path)
+        for canvas in (self.window.map, self.window.log_map):
+            canvas.marine._renderer._land_mask.directory = self.path / "shoreline"
         self.window.show()
         self.addCleanup(self.window.close)
         self.drain()
