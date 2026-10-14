@@ -179,24 +179,54 @@ retained: there is no new in-app download Cancel control. Qt still requires
 installed GSHHS data for that coastline layer; the bundled fallback and NOAA
 chart imports work without opening GTK.
 
+## Workspace preferences
+
+Qt automatically saves its window’s normal size/position and maximized state,
+sidebar placement/sizes, detached panel bounds, hidden panels/toolbar, active
+sidebar and Charts/Logs view. It also remembers the map center/zoom, Routing
+Plan/Results page, polar/algorithm/coastline options, selected saved route and
+NMEA playback speed/live-stream preference. View → Reset layout restores the
+default grouped sidebar and toolbar; the View menu can reopen hidden panels
+and the Navigation toolbar individually.
+
+Preferences use `workspace-qt.json` in the application data directory and the
+existing versioned atomic workspace store. GTK keeps its own `workspace.json`.
+Changes save after 750 ms of idle time; held map drags/zoom animations postpone
+writes, and playback cursor updates do not schedule saves. Close and application
+quit flush pending preferences before session shutdown. Identical states are
+not rewritten. Failed writes preserve the previous file, report the error and
+can retry on the next change or close.
+
+Normal and detached window bounds are fitted to available monitor work areas
+on startup, including after disconnecting a display. Corrupt/unknown state falls
+back to defaults. Maximization follows the initial native window show so restoring
+to normal size keeps the saved dimensions. Qt dock layout bytes are bounded and
+validated; a rejected layout restores the default arrangement.
+
+Workspace preferences do not retain log filenames, samples, playback cursors,
+recording state or running calculations. A selected saved route is only a name;
+the route collection still owns its data. Route draft coordinates and departure
+are initialized normally rather than restoring an old departure time. No log,
+recording, playback or calculation starts because a workspace was restored.
+
 ## Still to migrate
 
-- Advanced routing controls, POI and track tools, polar panels, marine current/tide
-  overlays and workspace persistence.
+- Advanced routing controls, POI and track tools, polar panels and marine
+  current/tide overlays.
 - Base coastline installation/download UI and additional chart providers.
 - Smooth/inertial gestures, dateline behavior, large-file performance, live
   hardware validation and distributable macOS/Linux/Windows bundles.
 - A compact macOS toolbar with traffic lights in the same row. Standard native
   window buttons work; the current preview keeps the normal title bar.
 
-The next slice can bring current-aware routing, polar management or workspace
-persistence onto these shared models/renderers. GTK stays available until Qt's workflows
+The next slice can bring current-aware routing or polar management onto these
+shared models/renderers. GTK stays available until Qt's workflows
 and packaging reach parity.
 
 ## Validation
 
 The full repository suite passes 776 tests and 79 subtests locally.
-The optional Qt wrapper runs twenty-four integration checks in a separate
+The optional Qt wrapper runs twenty-nine integration checks in a separate
 process. Coverage includes transport/recording, queued Core notifications,
 stale-source rejection, overlay completion without GLib, callback cancellation
 on shutdown, real OGR ENC/raster fixtures, forecast/palette changes, projection,
@@ -209,7 +239,10 @@ retained map position, independent chart palette and reachable compact-window
 Calculate/Cancel controls. Settings/library checks add disk reloads, legacy N2K
 editing, offline saves, imports/toggles/removal, duplicate filenames, real vector/
 raster indexing, provider failure/staging, NOAA coverage, live connection worker
-responsiveness and shutdown guards.
+responsiveness and shutdown guards. Workspace checks cover on-disk restart,
+floating/hidden panels and toolbar, active views, normal/maximized bounds,
+disconnected monitors, debounce during drag/playback, atomic save failure/retry
+and excluding instrument history.
 
 ```sh
 .venv/bin/python -m pytest
