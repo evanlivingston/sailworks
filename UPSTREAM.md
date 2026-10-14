@@ -1118,7 +1118,8 @@ into `dev`; no upstream PR was created or updated.
 - Branch/base: `feature/qt-map-data-setup` from `dev` at `15a1c06`, including
   approved routing PR #18 and the other agent's merged isobars PR #19. No pending
   merge dependency or retargeting.
-- Review: regular fork PR pending creation; leave unmerged for user review.
+- Review: [fork PR #20](https://github.com/evanlivingston/gweatherrouting/pull/20),
+  open for user review; not merged.
 - Functional commits: `d4f2da0` adds staged, cancellable, validated map-data
   installation, shared source URLs and idempotent base-chart loading/reload;
   `b1ed730` adds Qt Settings → Map Data, progress/cancel/retry, online startup
