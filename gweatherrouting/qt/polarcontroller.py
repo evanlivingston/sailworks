@@ -37,6 +37,7 @@ class PolarController(QObject):
             or self.task.closed
             or self.owner.routing.busy
             or self.owner.data.task.busy
+            or self.owner.map_data.task.busy
         )
 
     def _model_changed(self, _):

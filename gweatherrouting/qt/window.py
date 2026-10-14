@@ -378,6 +378,18 @@ class PreviewWindow(QMainWindow):
         self.workspace = WorkspacePreferences(self, workspace_path)
         view_menu.addSeparator()
         view_menu.addAction("Reset layout", self.workspace.reset_layout)
+        QTimer.singleShot(0, self._offer_map_data)
+
+    def _offer_map_data(self):
+        if (
+            not self.controller.closed
+            and self.controller.load_charts
+            and not self.controller.offline
+            and any(self.controller.map_data.missing().values())
+        ):
+            self.show_settings()
+            assert self.settings_dialog is not None
+            self.settings_dialog.tabs.setCurrentWidget(self.settings_dialog.map_data)
 
     def _create_marine_panels(self, controller):
         self.marine_panels = {}

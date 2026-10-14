@@ -49,9 +49,10 @@ class RoutingController(QObject):
         if (
             self.session_controller.data.task.busy
             or self.session_controller.polars.task.busy
+            or self.session_controller.map_data.task.busy
         ):
             return self.fail(
-                "Wait for the Data Library operation to finish before calculating."
+                "Wait for map-data and Data Library operations to finish before calculating."
             )
         sources = freeze_wind_sources(self.core.grib_manager.gribs)
         if not sources and not (request.use_currents and request.auto_download):

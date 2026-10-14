@@ -3088,6 +3088,192 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(hasattr(self.window, "clear_button"))
         self.assertTrue(self.window.grab().width())
 
+    def test_map_data_settings_missing_selection_and_no_automatic_download(self):
+        self.assertIsNone(self.window.settings_dialog)
+        self.window.show_settings()
+        page = self.window.settings_dialog.map_data
+        self.window.settings_dialog.tabs.setCurrentWidget(page)
+        self.assertIn("missing", page.status.text())
+        self.assertTrue(page.choices["coastlines"].isChecked())
+        self.assertTrue(page.choices["seamarks"].isChecked())
+        self.assertFalse(self.controller.map_data.task.busy)
+        page.choices["coastlines"].setChecked(False)
+        page.choices["seamarks"].setChecked(False)
+        page.download.click()
+        self.assertIn("Select missing", page.status.text())
+        self.assertFalse(self.controller.map_data.task.busy)
+        self.window.settings_dialog.hide()
+        self.controller.offline = False
+        self.controller.load_charts = True
+        self.window._offer_map_data()
+        self.controller.offline = True
+        self.assertTrue(self.window.settings_dialog.isVisible())
+        self.assertIs(self.window.settings_dialog.tabs.currentWidget(), page)
+
+    def test_map_data_real_coastline_install_reloads_on_ui_thread_without_duplicates(
+        self,
+    ):
+        from test.test_mapdata import coastline_archive, Response
+        from gweatherrouting.rendering.chartlayer import ChartLayer
+        from gweatherrouting.common import resource_path
+
+        body = coastline_archive(self.path)
+        root = self.path / "base-map"
+        root.mkdir()
+        (root / "gshhs").mkdir()
+        (root / "gshhs" / "partial").write_text("interrupted old installation")
+        setup = self.controller.map_data
+        setup.directory = root
+        self.window.show_settings()
+        page = self.window.settings_dialog.map_data
+        other = ChartLayer("user-chart", "raster", self.controller.settings)
+        other.enabled = False
+        with patch("gweatherrouting.rendering.chartcollection.DATA_DIR", str(root)):
+            self.controller.charts.load_base_chart()
+            self.controller.charts.charts.append(other)
+            fallback = resource_path("gweatherrouting", "data/countries.geojson")
+            self.assertTrue(
+                any(c.path == fallback for c in self.controller.charts.charts)
+            )
+            callback_threads = []
+            real = self.controller.charts.reload_base_chart
+
+            def reload():
+                callback_threads.append(get_ident())
+                real()
+
+            with (
+                patch(
+                    "gweatherrouting.core.mapdata.requests.get",
+                    return_value=Response(body),
+                ),
+                patch.object(
+                    self.controller.charts, "reload_base_chart", side_effect=reload
+                ),
+            ):
+                self.assertTrue(setup.start(("coastlines",)))
+                self.wait_for_routing_stage(lambda: not setup.task.busy)
+            self.assertIn("installed and ready", page.status.text())
+            self.assertEqual(callback_threads, [get_ident()])
+            self.assertFalse(setup.missing()["coastlines"])
+            self.assertTrue(setup.missing()["seamarks"])
+            self.assertFalse(page.choices["coastlines"].isEnabled())
+            self.assertIn("installed", page.choices["coastlines"].text())
+            self.assertFalse((root / "gshhs" / "partial").exists())
+            self.assertIsNotNone(self.controller.charts.gshhsLayer.lpvFile)
+            self.assertIn(
+                self.controller.charts.gshhsLayer,
+                self.controller.charts.get_line_point_validity_providers(),
+            )
+            self.assertFalse(
+                any(c.path == fallback for c in self.controller.charts.charts)
+            )
+            self.assertIn(other, self.controller.charts.charts)
+            self.assertFalse(other.enabled)
+            count = len(self.controller.charts.charts)
+            self.controller.charts.reload_base_chart()
+            self.assertEqual(len(self.controller.charts.charts), count)
+            self.assertFalse(setup.start(("coastlines",)))
+            self.assertFalse(setup.task.busy)
+            self.assertEqual(
+                self.window.map.marine._renderer._land_mask.directory,
+                root / "gshhs/GSHHS_shp",
+            )
+            coast = self.controller.charts.gshhsLayer
+            coast.enabled = False
+            body = (
+                b'<osm version="0.6"><node id="1" lat="0" lon="0">'
+                b'<tag k="seamark:type" v="buoy_lateral"/></node></osm>'
+            )
+            with patch(
+                "gweatherrouting.core.mapdata.requests.get", return_value=Response(body)
+            ):
+                self.assertTrue(setup.start(("seamarks",)))
+                self.wait_for_routing_stage(lambda: not setup.task.busy)
+            self.assertFalse(any(setup.missing().values()))
+            self.assertIs(self.controller.charts.gshhsLayer, coast)
+            self.assertFalse(coast.enabled)
+            self.assertIsNotNone(self.controller.charts.osmLayer)
+            self.assertFalse(page.download.isEnabled())
+            self.assertTrue(all(not c.isChecked() for c in page.choices.values()))
+            self.window.settings_dialog.hide()
+            self.controller.offline = False
+            self.controller.load_charts = True
+            self.window._offer_map_data()
+            self.controller.offline = True
+            self.assertFalse(self.window.settings_dialog.isVisible())
+
+    def test_map_data_cancel_and_close_reject_late_chart_attachment(self):
+        from gweatherrouting.core.mapdata import MapDownloadCancelledError
+
+        setup = self.controller.map_data
+        started, release = Event(), Event()
+        self.addCleanup(release.set)
+
+        def install(kinds, directory, cancel, report):
+            started.set()
+            release.wait(5)
+            return (), MapDownloadCancelledError("Download cancelled")
+
+        with (
+            patch(
+                "gweatherrouting.qt.mapdatasetup.install_map_data", side_effect=install
+            ),
+            patch.object(self.controller.charts, "reload_base_chart") as reload,
+        ):
+            self.assertTrue(setup.start(("coastlines",)))
+            self.wait_for_routing_stage(started.is_set)
+            self.assertFalse(setup.start(("seamarks",)))
+            setup.cancel()
+            self.assertTrue(setup.cancel_event.is_set())
+            release.set()
+            self.wait_for_routing_stage(lambda: not setup.task.busy)
+            self.assertEqual(setup.message, "Download cancelled")
+            reload.assert_not_called()
+            started.clear()
+            release.clear()
+            self.assertTrue(setup.start(("coastlines",)))
+            self.wait_for_routing_stage(started.is_set)
+            worker = setup.task.worker_thread
+            self.window.close()
+            release.set()
+            worker.join(2)
+            self.drain()
+            self.assertFalse(worker.is_alive())
+            self.assertTrue(setup.task.closed)
+            self.assertTrue(setup.cancel_event.is_set())
+            reload.assert_not_called()
+
+    def test_map_data_serializes_with_routing_and_library_operations(self):
+        setup = self.controller.map_data
+        self.controller.routing.busy = True
+        self.assertFalse(setup.start(("coastlines",)))
+        self.assertIn("Wait", setup.message)
+        self.controller.routing.busy = False
+        setup.task.busy = True
+        self.addCleanup(setattr, setup.task, "busy", False)
+        self.assertFalse(self.controller.data.run("scan", "test", lambda p: None))
+        self.assertTrue(self.controller.polars.blocked)
+        self.assertFalse(
+            self.controller.routing.start(self.window.routing_panel._request()[0])
+        )
+        self.assertIn("Wait", self.controller.routing.error)
+
+    def test_map_data_partial_completion_is_reloaded_after_later_error(self):
+        setup = self.controller.map_data
+        with (
+            patch(
+                "gweatherrouting.qt.mapdatasetup.install_map_data",
+                return_value=(("coastlines",), ValueError("Sea marks unavailable")),
+            ),
+            patch.object(self.controller.charts, "reload_base_chart") as reload,
+        ):
+            self.assertTrue(setup.start(("coastlines", "seamarks")))
+            self.wait_for_routing_stage(lambda: not setup.task.busy)
+        reload.assert_called_once()
+        self.assertIn("Sea marks unavailable", setup.message)
+        self.assertIn("completed datasets are available", setup.message)
+
 
 if __name__ == "__main__":
     unittest.main()
