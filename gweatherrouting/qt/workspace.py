@@ -68,6 +68,7 @@ class WorkspacePreferences(QObject):
             self.window.performance_dock,
             self.window.polar_manager_dock,
             self.window.navigation_dock,
+            *self.window.marine_docks.values(),
         )
 
     def _watch(self):
@@ -101,6 +102,8 @@ class WorkspacePreferences(QObject):
         panel.pages.currentChanged.connect(self.changed)
         window.speed.currentIndexChanged.connect(self.changed)
         window.streaming.toggled.connect(self.changed)
+        for panel in window.marine_panels.values():
+            panel.toggle.toggled.connect(self.changed)
         window.timeline.step_changed.connect(self.changed)
         window.navigation_toolbar.visibilityChanged.connect(self.changed)
         window.workspace_toolbar.visibilityChanged.connect(self.changed)
@@ -163,6 +166,13 @@ class WorkspacePreferences(QObject):
             "view": window.views.tabText(window.views.currentIndex()),
             "polars_visited": window.polars_visited,
             "forecast": {"step": window.timeline.step_combo.currentText()},
+            "marine": {
+                "open": dict(window.marine_open),
+                **{
+                    kind: panel.toggle.isChecked()
+                    for kind, panel in window.marine_panels.items()
+                },
+            },
             "navigation": {
                 "visible": window.navigation_open,
                 "tab": window.navigation_panel.tabs.tabText(
@@ -254,6 +264,14 @@ class WorkspacePreferences(QObject):
             self.window.session.speed = speed
         if isinstance(nmea.get("streaming"), bool):
             self.window.session.set_streaming(nmea["streaming"])
+        marine = mapping(state.get("marine"))
+        for kind, panel in self.window.marine_panels.items():
+            if isinstance(marine.get(kind), bool):
+                panel.toggle.setChecked(marine[kind])
+            opened = mapping(marine.get("open")).get(kind)
+            if isinstance(opened, bool):
+                self.window.marine_open[kind] = opened
+        self.window._view_changed()
         self.window.refresh()
         step = mapping(state.get("forecast")).get("step")
         if (
@@ -287,6 +305,8 @@ class WorkspacePreferences(QObject):
             "nmea-performance",
             "polar-manager",
             "chart-navigation",
+            "currents",
+            "tides",
         ):
             self.active_dock = active
             for dock in self.docks:
@@ -389,6 +409,7 @@ class WorkspacePreferences(QObject):
             self.window.restoreState(self.default_layout, LAYOUT_VERSION)
             self.window.polars_visited = False
             self.window.navigation_open = True
+            self.window.marine_open = {"currents": False, "tides": False}
             self.window.views.setCurrentWidget(self.window.map)
             self.window._view_changed()
             self.active_dock = "nmea"

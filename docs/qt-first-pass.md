@@ -353,8 +353,7 @@ retains GTK's existing rounding to the hour.
 Forecast controls are independent of NMEA recording/playback and routing departure.
 Changing workspace pauses forecast playback. Workspace preferences retain only
 the step interval; opening the app never resumes forecast playback or restores an
-old selected time. Marine bounds are supported here; marine overlays and controls
-are still a separate migration slice.
+old selected time. Marine bounds and the overlays below use this same clock.
 
 Floating tool panels use compact dark headers with a left close button. Drag the
 header to move, double-click to dock, resize from the edges, or drag to a screen
@@ -363,9 +362,52 @@ them and restore the default layout. Panel scrolling uses thin bars that appear
 briefly during activity; scrolling over an unfocused dropdown/spinner scrolls its
 panel instead of changing its value. Native filesystem dialogs remain enabled.
 
+## Currents and tides
+
+On Charts, **Tides & currents** opens the separate Currents and Tides panels,
+matching GTK's organization. They also appear in the Window menu. They share the
+existing marine cache and source policies, and hide while viewing Logs or Polars.
+Their open state and independent display switches survive restart. Restoring a
+workspace never starts a download. Reset Panels closes both marine panels.
+
+Currents offers **Current arrows**, coverage at the chart center, **Coverage for**
+(current map area or a saved track/route), **Start (UTC)**, Hours and Download data.
+The start follows chart time until edited or Now is selected. Requests freeze the
+selected area and interval before the worker starts. Progress and Cancel stay
+outside the scrolling controls. Provider issues remain visible when another
+provider succeeds; cancellation or closing the application discards late results.
+
+Saved models are grouped by provider, model and resolution, with merged valid
+intervals. Expand a model to enable or remove individual downloads; a mixed group
+has a partial checkbox. Display switches do not disable downloaded sources for
+other uses. Model sampling keeps the existing finest-resolution/newest-run order,
+masked cells and missing-data behavior.
+
+Tides offers **Show station markers** and the same area/route and UTC download
+controls, plus saved station predictions and their height at chart time. Automatic
+station acquisition remains CHS Canadian Pacific coverage. Saved predictions are
+reused where usable samples cover the request; partial windows download only the
+missing spans. New automatic downloads are enabled, as in GTK.
+
+The gear button opens **Marine settings**. Currents provides the full model list
+and source metadata. Tides provides saved station sources, Use, priority up/down,
+explicit fallback, removal, UTC samples, units, QC/qualifiers and provenance.
+**Settings → Currents** saves or forgets a Copernicus account using the existing
+system credential store. Password drafts clear on save and hide; credentials are
+excluded from workspace and downloaded metadata. Provider behavior and account
+requirements are unchanged; see [Tides & currents](tides-currents-manager.md).
+
+Chart arrows and station labels reuse GTK's production Cairo renderer, including
+the fixed knots color/size scale, true flow-toward bearings, detailed shoreline
+clipping and source-datum tide labels. Current speed, bearing and model appear
+under the pointer. Rendering uses a worker and the existing bounded overlay cache;
+time/source changes invalidate stale frames. Logs retains its independent NMEA
+clock and does not gain a marine overlay. These display controls do not enable
+current-aware routing or use tides for depth/clearance calculations.
+
 ## Still to migrate
 
-- Advanced routing controls and marine current/tide overlays;
+- Advanced routing controls, including current-aware routing options;
   see the parity checklist.
 - Base coastline installation/download UI and additional chart providers.
 - Smooth/inertial gestures, dateline behavior, large-file performance, live
@@ -380,7 +422,7 @@ and packaging reach parity.
 ## Validation
 
 The full repository suite passes 794 tests and 101 subtests locally.
-The optional Qt wrapper runs fifty-seven integration checks in a separate
+The optional Qt wrapper runs sixty-five integration checks in a separate
 process. Coverage includes transport/recording, queued Core notifications,
 stale-source rejection, overlay completion without GLib, callback cancellation
 on shutdown, real OGR ENC/raster fixtures, forecast/palette changes, projection,
@@ -407,6 +449,15 @@ timeline tests retain GTK bounds, endpoints and DST stepping semantics. Panel
 checks cover repeated float/redock, reset, minimum size and child-relative resize
 coordinates. Native macOS checks compare GTK/Qt at 1280×820 and verify Qt at
 1000×650, manual dates, floating panels and clean shutdown.
+
+Marine checks cover grouped source toggles/removal, coverage and tide values,
+source priority/fallback/provenance, UI-thread download commits, frozen requests,
+cancellation/close guards, dateline routes, saved prediction reuse, independent
+display preferences, UTC start behavior, system account controls and worker/cursor
+integration. Native macOS GTK/Qt comparison checked both panels and marine portrayal
+at 1280×820, plus Qt at 1000×650, source details, floating panels and shutdown.
+Sixteen direct image comparisons against the pre-migration GTK renderer at two
+pixel scales and four times, with valid/masked fields, have zero changed pixels.
 
 ```sh
 .venv/bin/python -m pytest

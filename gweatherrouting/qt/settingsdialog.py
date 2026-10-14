@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from gweatherrouting.core.connectionconfig import connection_config, connection_key
 from gweatherrouting.core.nmea2000datasource import N2K_FORMATS
 from gweatherrouting.core.serialdatasource import SerialDataSource
+from .marinesettings import CurrentsAccount
 
 
 def combo(entries):
@@ -237,6 +238,8 @@ class SettingsDialog(QDialog):
         )
         form.addRow("Wind arrow opacity", self.opacity)
         self.tabs.addTab(display, "Display")
+        self.currents = CurrentsAccount(controller.core.marine_manager.coverage_planner)
+        self.tabs.addTab(self.currents, "Currents")
         self.status = QLabel()
         self.status.setWordWrap(True)
         layout.addWidget(self.status)

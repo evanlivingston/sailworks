@@ -9,27 +9,13 @@ from gi.repository import GLib, Gtk
 from gweatherrouting.core.marine.chs import CHSProvider
 from gweatherrouting.core.marine.models import Capability, sample_station
 from .maplayers.marinemaplayer import chart_instant
+from gweatherrouting.core.marine.presentation import stations_in_view, download_tides
 from .marinedownloadjobs import MarineDownloadJobs
 from .marinesettingswindow import MarineSettingsWindow
 from .widgets.toolpanel import settings_row, tool_content
 from .widgets.coveragetarget import CoverageTarget
 from .widgets.downloadstart import DownloadStartEntry
-from .widgets.mapwidget import MapPoint, MapViewport
-
-
-def stations_in_view(stations, view):
-    visible = []
-    for station in stations:
-        longitude = (
-            view._center_lon + (station.longitude - view._center_lon + 180) % 360 - 180
-        )
-        x, y = view.convert_geographic_to_screen(MapPoint(station.latitude, longitude))
-        if (
-            0 <= x <= view.get_allocated_width()
-            and 0 <= y <= view.get_allocated_height()
-        ):
-            visible.append(station)
-    return visible
+from .widgets.mapwidget import MapViewport
 
 
 class TideToolPanel(Gtk.Box, MarineDownloadJobs):
@@ -226,49 +212,17 @@ class TideToolPanel(Gtk.Box, MarineDownloadJobs):
         cached = tuple(self.manager.stations)
 
         def operation(cancel, progress):
-            stations = cached or tuple(self.provider.discover(cancel))
-            candidates = (
-                [
-                    s
-                    for s in stations
-                    if any(
-                        part.south <= s.latitude <= part.north
-                        and part.west <= s.longitude <= part.east
-                        for part in route_area.parts()
-                    )
-                ]
-                if route_area
-                else stations_in_view(stations, view)
+            return download_tides(
+                self.manager,
+                self.provider,
+                view,
+                route_area,
+                cached,
+                start,
+                end,
+                cancel,
+                progress,
             )
-            selected = [s for s in candidates if "wlp" in s.series_codes]
-            if not selected:
-                raise ValueError(
-                    "No CHS tide stations in the selected area. "
-                    "Coverage is currently Canadian Pacific stations."
-                )
-            if len(selected) > 50:
-                raise ValueError(
-                    "Choose an area or route containing 50 or fewer tide stations."
-                )
-            datasets, issues = [], []
-            reused = 0
-            for index, station in enumerate(selected, 1):
-                if cancel.is_set():
-                    break
-                saved_prediction = self.manager.cached_station(station, start, end)
-                progress(
-                    ("Using saved" if saved_prediction is not None else "Downloading")
-                    + " %s (%d/%d)…" % (station.name, index, len(selected))
-                )
-                try:
-                    value = self.manager.download_station(
-                        self.provider, station, start, end, cancel
-                    )
-                    datasets.append(value)
-                    reused += int(saved_prediction is not None)
-                except (OSError, ValueError) as error:
-                    issues.append(station.name + ": " + str(error))
-            return stations, datasets, issues, reused
 
         def complete(result):
             stations, datasets, issues, reused = result

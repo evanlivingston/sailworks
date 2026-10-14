@@ -13,6 +13,7 @@ from gweatherrouting.core.marine.models import utc_time
 from .widgets.coveragetarget import CoverageTarget
 from .widgets.downloadstart import DownloadStartEntry
 from .widgets.rowinfo import HoveredRowInfo
+from gweatherrouting.core.marine.presentation import source_intervals
 
 
 class SpatialMarinePanel(Gtk.Box):
@@ -189,20 +190,7 @@ class SpatialMarinePanel(Gtk.Box):
             [manifest["provider"], manifest["model"], manifest["resolution_m"]]
         )
 
-    @staticmethod
-    def _intervals(manifests):
-        merged: List[Tuple[datetime, datetime]] = []
-        for start, end in sorted(
-            (utc_time(m["valid_start"]), utc_time(m["valid_end"])) for m in manifests
-        ):
-            if merged and start <= merged[-1][1]:
-                merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
-            else:
-                merged.append((start, end))
-        return "\n".join(
-            start.strftime("%d %b %H:%M") + " → " + end.strftime("%d %b %H:%M UTC")
-            for start, end in merged
-        )
+    _intervals = staticmethod(source_intervals)
 
     def _reload(self):
         self.row_info.clear()

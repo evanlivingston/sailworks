@@ -17,6 +17,7 @@ from gweatherrouting.rendering.navigation import NavigationRenderer
 from gweatherrouting.rendering.ais import AISRenderer
 from gweatherrouting.rendering.dashboard import DashboardRenderer
 from .windcursor import WindCursorSampler
+from .marineoverlay import MarineOverlay
 
 
 class TrackMap(QWidget, MercatorProjection):
@@ -82,6 +83,12 @@ class TrackMap(QWidget, MercatorProjection):
         self._zoom_animating = False
         self.time_control = time_control or controller.time_control
         self.time_control.connect("time_change", self._time_changed)
+        self.marine = MarineOverlay(
+            controller.core.marine_manager,
+            self.time_control,
+            controller.scheduler.submit,
+        )
+        self.marine.visible = time_control is None
         self.dashboard = DashboardRenderer(controller.connections)
         self.dashboard_visible = True
         self.wind_visible = True
@@ -154,6 +161,7 @@ class TrackMap(QWidget, MercatorProjection):
         self.controller.boat_changed.disconnect(self._boat_changed)
         self.charts.forget_map(self)
         self.wind.forget(self)
+        self.marine.close()
         for token in list(self._ticks):
             self.remove_tick_callback(token)
         self.time_control.disconnect("time_change", self._time_changed)
@@ -163,6 +171,7 @@ class TrackMap(QWidget, MercatorProjection):
         self.cancel_move()
         self.charts._chs_renderer.forget(self)
         self.wind.forget(self)
+        self.marine.forget(self)
         super().hideEvent(event)
 
     def closeEvent(self, event):  # noqa: N802 - Qt virtual method name
@@ -800,6 +809,8 @@ class TrackMap(QWidget, MercatorProjection):
             self.width(),
             self.height(),
             self.wind_visible,
+            self.marine.sources,
+            self.marine.currents_visible,
         )
 
     def _cancel_cursor(self):
@@ -814,6 +825,14 @@ class TrackMap(QWidget, MercatorProjection):
         context = self._weather_context()
         self._cursor_context = context
         text = "Latitude: %f, Longitude: %f" % (lat, lon)
+        if (
+            self.drag is None
+            and not self._zoom_animating
+            and self.move_callback is None
+        ):
+            marine = self.marine.cursor_text(lat, lon)
+            if marine:
+                text = marine + " - " + text
         self.cursor_readout.emit(text)
         if (
             self.drag is not None
@@ -890,6 +909,7 @@ class TrackMap(QWidget, MercatorProjection):
         sources = tuple((grib,) for grib in self.controller.core.grib_manager.gribs)
         if self.wind_visible:
             self.wind.draw(self, cr, sources, style)
+        self.marine.do_draw(self, cr)
         surface.flush()
         # copy() transfers ownership; Cairo's buffer can then be released.
         image = QImage(
