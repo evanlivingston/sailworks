@@ -22,6 +22,7 @@ ORIGINAL_STORAGE_LOAD = Storage.load_or_save_default
 from gweatherrouting.core.mapviewport import MapPoint, MapViewport
 from gweatherrouting.qt.controller import SessionController
 from gweatherrouting.qt.window import PreviewWindow
+from gweatherrouting.qt.theme import apply_theme
 from test.test_nmeasession import rmc
 from test.test_polarperformance import water, wind
 
@@ -30,6 +31,7 @@ class QtPreviewChecks(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+        apply_theme(cls.app)
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -427,6 +429,10 @@ class QtPreviewChecks(unittest.TestCase):
             self.window.map.route, tuple((p[0], p[1]) for p in route.points)
         )
         self.assertIn("saved", panel.status.text())
+        self.assertIs(panel.pages.currentWidget(), panel.results_page)
+        self.assertEqual(
+            self.window.map.route_speeds, tuple(p[5] or 0 for p in route.points)
+        )
         panel.waypoints.setCurrentCell(0, 0)
         self.assertEqual(self.window.map.selected_route_point, 0)
         self.assertTrue(panel.calculate.isEnabled())
@@ -530,6 +536,55 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertIn("forecast", panel.status.text())
         self.assertTrue(panel.calculate.isEnabled())
         self.assertEqual(len(self.controller.core.routingManager), 0)
+
+    def test_workspace_views_and_grouped_panels_preserve_playback_and_map(self):
+        from PySide6.QtGui import QPalette
+
+        log = self.load()
+        self.assertIs(self.window.views.currentWidget(), self.window.plots)
+        self.assertLess(
+            self.app.palette().color(QPalette.ColorRole.Window).lightness(), 80
+        )
+        self.controller.session.set_playing(True)
+        self.controller.session.advance(5)
+        camera = (
+            self.window.map._center_lat,
+            self.window.map._center_lon,
+            self.window.map._zoom,
+        )
+        self.window._show_panel(self.window.routing_dock)
+        self.drain()
+        self.assertIs(self.window.views.currentWidget(), self.window.map)
+        self.assertEqual(
+            self.window.tabifiedDockWidgets(self.window.nmea_dock),
+            [self.window.routing_dock],
+        )
+        self.window._show_panel(self.window.nmea_dock)
+        self.window.views.setCurrentWidget(self.window.plots)
+        self.drain()
+        self.assertEqual(self.controller.session.position, 5)
+        self.assertTrue(self.controller.session.playing)
+        self.assertEqual(
+            len(self.window.plots.axes[0].lines[0].get_xdata()), len(log.points)
+        )
+        self.assertEqual(
+            camera,
+            (
+                self.window.map._center_lat,
+                self.window.map._center_lon,
+                self.window.map._zoom,
+            ),
+        )
+        self.assertLess(self.window.plots.figure.get_facecolor()[0], 0.2)
+        self.assertEqual(self.controller.settings.chartPalette, "cm93")
+        self.window.resize(1000, 650)
+        self.window._show_panel(self.window.routing_dock)
+        self.window.routing_panel.pages.setCurrentIndex(0)
+        self.drain()
+        self.assertFalse(self.window.routing_panel.calculate.visibleRegion().isEmpty())
+        self.assertFalse(
+            self.window.routing_panel.cancel_button.visibleRegion().isEmpty()
+        )
 
     def test_frontend_does_not_import_gtk(self):
         self.assertNotIn("gi.repository.Gtk", sys.modules)

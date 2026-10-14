@@ -3,11 +3,12 @@
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
+from .theme import SURFACE, TEXT, MUTED
 
 
 class LogPlots(FigureCanvasQTAgg):
     def __init__(self, parent=None):
-        figure = Figure(figsize=(8, 3), layout="tight")
+        figure = Figure(figsize=(8, 3), layout="tight", facecolor=SURFACE)
         super().__init__(figure)
         self.setParent(parent)
         self.axes = figure.subplots(3, sharex=True)
@@ -28,24 +29,27 @@ class LogPlots(FigureCanvasQTAgg):
             self.axes,
             ("speed", "tws", "hdg"),
             ("Speed (kn)", "Wind (kn)", "Heading (°)"),
-            ("#287ca2", "#14856d", "#8662a5"),
+            ("#8dd3c7", "#bfbbd9", "#81b1d2"),
         ):
             axis.clear()
+            axis.set_facecolor(SURFACE)
+            for spine in axis.spines.values():
+                spine.set_color("#454545")
             values = [getattr(point, field) or 0 for point in points]
             axis.plot(offsets, values, color=color, linewidth=0.9)
-            axis.set_ylabel(label, fontsize=8)
-            axis.tick_params(labelsize=8)
-            axis.grid(alpha=0.15)
+            axis.set_ylabel(label, fontsize=8, color=TEXT)
+            axis.tick_params(labelsize=8, colors=MUTED)
+            axis.grid(alpha=0.18, color=MUTED)
             self.cursors.append(
                 axis.axvline(
                     self.position,
-                    color="#d8851b",
+                    color="#ffbf40",
                     linewidth=1.4,
                     animated=True,
                     visible=playback and bool(points),
                 )
             )
-        self.axes[-1].set_xlabel("Elapsed time (s)", fontsize=8)
+        self.axes[-1].set_xlabel("Elapsed time (s)", fontsize=8, color=MUTED)
         if not points:
             self.axes[1].text(
                 0.5,
@@ -54,6 +58,7 @@ class LogPlots(FigureCanvasQTAgg):
                 ha="center",
                 va="center",
                 transform=self.axes[1].transAxes,
+                color=MUTED,
             )
         self.draw_idle()
 
