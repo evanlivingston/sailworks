@@ -91,31 +91,56 @@ class ChartCollection:
             m.map_redraw_idle()
 
     def _load_base_gshhs(self):
-        if os.path.exists(DATA_DIR + "/gshhs"):
-            self.gshhsLayer = GSHHSVectorChart(
-                DATA_DIR + "/gshhs", self.settings_manager
-            )
-            self.charts = [self.gshhsLayer] + self.charts
+        if self.gshhsLayer is not None or not os.path.exists(DATA_DIR + "/gshhs"):
+            return
+        try:
+            chart = GSHHSVectorChart(DATA_DIR + "/gshhs", self.settings_manager)
+            if chart.lpvFile is None or len(chart.vector_files) != 5:
+                raise ValueError("Installed coastline data is incomplete")
+            self.gshhsLayer = chart
+            self.charts.insert(0, chart)
+        except Exception as error:
+            logger.warning("Unable to load base coastlines: %s", error)
 
     def _load_base_osm(self):
-        if os.path.exists(DATA_DIR + "/seamarks.pbf"):
-            self.osmLayer = GDALVectorChart(
-                DATA_DIR + "/seamarks.pbf", self.settings_manager
-            )
-            self.charts = self.charts + [self.osmLayer]
+        if self.osmLayer is not None or not os.path.exists(DATA_DIR + "/seamarks.pbf"):
+            return
+        try:
+            chart = GDALVectorChart(DATA_DIR + "/seamarks.pbf", self.settings_manager)
+            self.osmLayer = chart
+            self.charts.append(chart)
+        except Exception as error:
+            logger.warning("Unable to load sea marks: %s", error)
 
     def load_base_chart(self, parent=None):
         """Load installed charts; downloading data belongs to the frontend."""
         self._load_base_gshhs()
         self._load_base_osm()
-        if self.gshhsLayer is None:
-            self.charts.insert(
-                0,
-                GDALVectorChart(
-                    resource_path("gweatherrouting", "data/countries.geojson"),
-                    self.settings_manager,
-                ),
-            )
+        fallback = resource_path("gweatherrouting", "data/countries.geojson")
+        if self.gshhsLayer is None and not any(c.path == fallback for c in self.charts):
+            self.charts.insert(0, GDALVectorChart(fallback, self.settings_manager))
+
+    def reload_base_chart(self):
+        """Attach newly installed base data without replacing existing chart objects."""
+        previous_coast, previous_osm = self.gshhsLayer, self.osmLayer
+        self.load_base_chart()
+        fallback = resource_path("gweatherrouting", "data/countries.geojson")
+        if self.gshhsLayer is not None:
+            self.charts = [c for c in self.charts if c.path != fallback]
+        detailed = any(
+            c.enabled
+            and isinstance(c, GDALVectorChart)
+            and c not in (self.gshhsLayer, self.osmLayer)
+            and c.path != fallback
+            and not c.path.lower().endswith(".000")
+            for c in self.charts
+        )
+        if detailed:
+            if self.gshhsLayer and previous_coast is None:
+                self.gshhsLayer.force_downscale = True
+            if self.osmLayer and previous_osm is None:
+                self.osmLayer.enabled = False
+        self._chart_surfaces.clear()
 
     def load_vector_layer(self, path, metadata=None, enabled=True):
         logger.info("Loading vector chart %s", path)

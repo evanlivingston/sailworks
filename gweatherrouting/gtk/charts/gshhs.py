@@ -27,6 +27,8 @@ from gi.repository import Gdk, GLib, Gtk
 
 from gweatherrouting.core.storage import DATA_DIR, TEMP_DIR
 
+from gweatherrouting.core.mapdata import COASTLINES_URL, SEAMARKS_URL
+
 logger = logging.getLogger("gweatherrouting")
 
 
@@ -138,7 +140,7 @@ class OSMDownloadDialog(Gtk.Dialog):
         Gdk.threads_leave()
 
     def download(self):
-        uri = "https://github.com/dakk/osm-seamarks/raw/master/seamarks.pbf"
+        uri = SEAMARKS_URL
         logger.info("Downloading openseamap")
 
         response = requests.get(uri, stream=True)
@@ -233,10 +235,7 @@ class GSHHSDownloadDialog(Gtk.Dialog):
 
         # uri = "https://www.ngdc.noaa.gov/mgg/shorelines/data/gshhg/oldversions/" +
         # "version2.3.6/gshhg-shp-2.3.6.zip"
-        uri = (
-            "https://github.com/dakk/gweatherrouting/releases/download/"
-            + "gshhs2.3.6/gshhg-shp-2.3.6.zip"
-        )
+        uri = COASTLINES_URL
         logger.info("Downloading gshhs base map")
 
         response = requests.get(uri, stream=True)
@@ -321,10 +320,7 @@ class CombinedDownloadDialog(Gtk.Dialog):
 
         try:
             if self.download_gshhs:
-                uri = (
-                    "https://github.com/dakk/gweatherrouting/releases/download/"
-                    + "gshhs2.3.6/gshhg-shp-2.3.6.zip"
-                )
+                uri = COASTLINES_URL
                 self._update_progress("Downloading base map...", 0)
                 self._download_file(uri, TEMP_DIR + "/gshhs2.3.6.zip", "Base map")
                 self._update_progress("Extracting base map...", 1.0)
@@ -333,7 +329,7 @@ class CombinedDownloadDialog(Gtk.Dialog):
                 logger.info("GSHHS base map download completed")
 
             if self.download_osm:
-                uri = "https://github.com/dakk/osm-seamarks/raw/master/seamarks.pbf"
+                uri = SEAMARKS_URL
                 self._update_progress("Downloading OpenSeaMap...", 0)
                 self._download_file(uri, DATA_DIR + "/seamarks.pbf", "OpenSeaMap")
                 self.success_osm = True
