@@ -485,7 +485,7 @@ GTK complexity/type failures unchanged. GTK remains the default frontend.
   Branch: `feature/qt-routing`, started from `dev` after approved merges of fork
   PRs #5 and #6. No pending branch dependency.
 - Review: [fork PR #7](https://github.com/evanlivingston/gweatherrouting/pull/7),
-  opened against `dev` and left unmerged for review.
+  merged into `dev` with user approval (merge `d24a092`).
 - Scope: add a Routing dock with polar/algorithm selection, local departure time,
   start/destination coordinates, boat-position and saved-POI shortcuts, map
   context actions, coastline checks, background calculation/progress/cancel,
@@ -528,10 +528,10 @@ GTK complexity/type failures unchanged. GTK remains the default frontend.
 
 - Status: Qt presentation is fork-only; the shared route-speed palette extraction
   is an upstream candidate. Branch: `feature/qt-visual-integration`, dependent on
-  `feature/qt-routing` and fork PR #7. Review against that branch to keep the diff
-  focused; merge #7 first, then retarget this PR to `dev` and verify it again.
+  `feature/qt-routing` and fork PR #7. After #7 merged, retargeted to `dev`
+  and verified the focused presentation diff before integration.
 - Review: [fork PR #8](https://github.com/evanlivingston/gweatherrouting/pull/8),
-  open against `feature/qt-routing` and left unmerged.
+  merged into `dev` with user approval (merge `c246cfc`).
 - Scope: align the optional Qt workspace with GTK's dark presentation using a
   dark Fusion palette, rounded controls, blue accents, consistent spacing,
   symbolic icons and dark Matplotlib plots. Replace the fixed map/plots split
@@ -566,3 +566,11 @@ GTK complexity/type failures unchanged. GTK remains the default frontend.
   unmigrated tools and compact traffic-light/toolbar layout remain pending.
   GTK remains the default launcher. No upstream publication is part of this task.
 - Assessment and launch instructions: `docs/qt-first-pass.md`.
+
+Integration verification for fork PRs #7 and #8: the final targeted run of
+`test_qt_preview.py`, `test_geomaplayer.py` and `test_routingjob.py` passes
+11 tests and 9 subtests, including the isolated Qt integration checks. The
+retargeted presentation diff passes `git diff --check`. GitHub builds pass;
+CI test collection still lacks `nmeatoolkit`, and lint/type jobs retain the
+previously documented GTK complexity and four type errors. Both PRs are merged
+into `dev`; no upstream PR was created or updated.
