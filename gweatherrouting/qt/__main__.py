@@ -29,6 +29,7 @@ def main(argv=None):
     apply_theme(app)
     controller = SessionController(offline=args.offline)
     window = PreviewWindow(controller)
+    app.aboutToQuit.connect(window.workspace.close)
     app.aboutToQuit.connect(controller.close)
     window.show()
     controller.start_connections()

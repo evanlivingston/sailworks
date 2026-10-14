@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QToolBar
 
 from gweatherrouting.core.datasource import NMEADataPacket
 from gweatherrouting.core.storage import Storage
@@ -56,7 +56,9 @@ class QtPreviewChecks(unittest.TestCase):
             Path(__file__).parents[1] / "gweatherrouting/data/polars" / name
         )
         self.controller.timer.stop()  # Deterministic playback steps in tests.
-        self.window = PreviewWindow(self.controller)
+        self.window = PreviewWindow(
+            self.controller, workspace_path=self.path / "workspace-qt.json"
+        )
         self.window.show()
         self.addCleanup(self.window.close)
         self.drain()
@@ -939,6 +941,237 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(
             self.window.routing_panel.cancel_button.visibleRegion().isEmpty()
         )
+
+    def restart_workspace(self, before_open=None, routes=()):
+        path = self.window.workspace.store.path
+        self.window.close()
+        self.drain()
+        if before_open is not None:
+            before_open(path)
+        controller = SessionController(
+            offline=True,
+            recording_directory=self.path / "recordings",
+            load_charts=False,
+        )
+        controller.timer.stop()
+        controller.core.polar_manager.polars_files = ["first317.pol"]
+        for route in routes:
+            controller.core.routingManager.append(route)
+        self.controller = controller
+        self.window = PreviewWindow(controller, workspace_path=path)
+        self.window.show()
+        self.addCleanup(self.window.close)
+        self.drain()
+        return self.window.workspace
+
+    def test_workspace_roundtrip_keeps_layout_view_and_options_without_instrument_history(
+        self,
+    ):
+        from gweatherrouting.core.geo.routing import Routing
+        from PySide6.QtCore import Qt
+
+        old_routes = [
+            Routing("first", [(48, -123, "10/01/2026, 12:00:00", 270, 14, 6, 90)]),
+            Routing("second", [(49, -124, "10/01/2026, 13:00:00", 260, 12, 5, 80)]),
+        ]
+        for route in old_routes:
+            self.controller.core.routingManager.append(route)
+        panel = self.window.routing_panel
+        panel.refresh_routes(old_routes[1])
+        panel.coastlines.setChecked(False)
+        panel.pages.setCurrentIndex(1)
+        self.window.resize(1000, 650)
+        self.window.addDockWidget(
+            Qt.DockWidgetArea.LeftDockWidgetArea, self.window.routing_dock
+        )
+        self.window.nmea_dock.hide()
+        self.window.findChild(QToolBar, "navigation").hide()
+        self.window._show_panel(self.window.routing_dock)
+        self.load()
+        self.controller.session.speed = 5
+        self.controller.session.set_streaming(False)
+        self.controller.session.set_playing(True)
+        self.controller.session.advance(1)
+        self.window.views.setCurrentWidget(self.window.plots)
+        (
+            self.window.map._center_lat,
+            self.window.map._center_lon,
+            self.window.map._zoom,
+        ) = (44.2, -127.1, 7.5)
+        self.window.map.view_changed.emit()
+        workspace = self.window.workspace
+        workspace.save()
+        payload = workspace.store.load()
+        self.assertEqual(payload["routing"]["selected_route"], "second")
+        self.assertNotIn("race.log", json.dumps(payload))
+        for key in (
+            "source",
+            "log",
+            "points",
+            "cursor",
+            "position",
+            "recording",
+            "playing",
+        ):
+            self.assertNotIn(key, payload["nmea"])
+        with patch(
+            "gweatherrouting.qt.workspace.workareas", return_value=[(0, 0, 1600, 1000)]
+        ):
+            self.restart_workspace(routes=old_routes)
+        self.assertEqual(self.window.size().width(), 1000)
+        self.assertEqual(self.window.size().height(), 650)
+        self.assertTrue(self.window.nmea_dock.isHidden())
+        toolbar = self.window.findChild(QToolBar, "navigation")
+        self.assertTrue(toolbar.isHidden())
+        toolbar.toggleViewAction().trigger()
+        self.assertFalse(toolbar.isHidden())
+        self.assertEqual(
+            self.window.dockWidgetArea(self.window.routing_dock),
+            Qt.DockWidgetArea.LeftDockWidgetArea,
+        )
+        self.assertIs(self.window.views.currentWidget(), self.window.plots)
+        self.assertEqual(self.window.routing_panel.pages.currentIndex(), 1)
+        self.assertEqual(self.window.routing_panel.routes.currentData().name, "second")
+        self.assertFalse(self.window.routing_panel.coastlines.isChecked())
+        self.assertAlmostEqual(self.window.map._center_lat, 44.2)
+        self.assertAlmostEqual(self.window.map._center_lon, -127.1)
+        self.assertAlmostEqual(self.window.map._zoom, 7.5)
+        self.assertEqual(self.controller.session.speed, 5)
+        self.assertFalse(self.controller.session.streaming)
+        self.assertEqual(self.controller.session.source, "live")
+        self.assertIsNone(self.controller.session.log)
+        self.assertFalse(self.controller.session.playing)
+        self.assertFalse(self.controller.session.recording)
+        self.assertEqual(self.controller.points, [])
+        self.assertEqual(self.controller.session.position, 0)
+
+    def test_workspace_debounce_waits_for_drag_and_ignores_playback_cursor_updates(
+        self,
+    ):
+        from PySide6.QtTest import QTest
+
+        self.load()
+        self.controller.session.set_playing(True)
+        workspace = self.window.workspace
+        workspace.timer.stop()
+        workspace.last_saved = workspace.save_state()
+        with patch.object(workspace.store, "save") as save:
+            for _ in range(20):
+                self.controller.session.advance(0.05)
+            self.drain()
+            QTest.qWait(850)
+            self.assertEqual(save.call_count, 0)
+            self.window.map.drag = QPointF(10, 10)
+            for index in range(20):
+                self.window.map._center_lon = -130 + index / 10
+                self.window.map.view_changed.emit()
+            QTest.qWait(850)
+            self.assertEqual(save.call_count, 0)
+            self.window.map.drag = None
+            self.window.map.view_changed.emit()
+            QTest.qWait(850)
+            self.assertEqual(save.call_count, 1)
+            workspace.changed()
+            QTest.qWait(850)
+            self.assertEqual(save.call_count, 1)
+
+    def test_workspace_invalid_layout_and_removed_monitor_are_recoverable(self):
+        from gweatherrouting.core.workspacestate import WorkspaceStateStore
+
+        state = {
+            "window": {"x": 9000, "y": -9000, "width": 5000, "height": 4000},
+            "layout": "invalid base64!",
+            "view": "unknown",
+            "active_dock": "unknown",
+            "map": {"latitude": True, "longitude": 900, "zoom": -20},
+            "nmea": {"speed": True, "streaming": "yes"},
+            "routing": {"polar": "missing", "algorithm": "missing", "page": 999},
+            "docks": {
+                "routing": {
+                    "floating": True,
+                    "visible": True,
+                    "geometry": {"x": 6000, "y": 6000, "width": 450, "height": 500},
+                }
+            },
+        }
+
+        def write(path):
+            WorkspaceStateStore(path).save(state)
+
+        with patch(
+            "gweatherrouting.qt.workspace.workareas", return_value=[(0, 0, 1280, 800)]
+        ):
+            self.restart_workspace(write)
+        self.assertEqual(self.window.width(), 1280)
+        self.assertEqual(self.window.height(), 800)
+        self.assertTrue(self.window.routing_dock.isFloating())
+        geometry = self.window.routing_dock.geometry()
+        self.assertGreaterEqual(geometry.x(), 0)
+        self.assertGreaterEqual(geometry.y(), 0)
+        self.assertLessEqual(geometry.right(), 1280)
+        self.assertLessEqual(geometry.bottom(), 800)
+        self.assertAlmostEqual(self.window.map._center_lat, 48.4)
+        self.assertEqual(self.window.map._center_lon, 180)
+        self.assertEqual(self.window.map._zoom, 1)
+        self.assertEqual(self.controller.session.speed, 1)
+        self.assertTrue(self.controller.session.streaming)
+        self.assertEqual(self.window.routing_panel.pages.currentIndex(), 0)
+        self.assertIs(self.window.views.currentWidget(), self.window.map)
+        self.window.workspace.reset_layout()
+        self.drain()
+        self.assertFalse(self.window.routing_dock.isFloating())
+        self.assertFalse(self.window.nmea_dock.isHidden())
+        self.assertFalse(self.window.routing_dock.isHidden())
+        self.assertIn(
+            self.window.routing_dock,
+            self.window.tabifiedDockWidgets(self.window.nmea_dock),
+        )
+
+    def test_workspace_floating_dock_and_maximized_window_preserve_normal_size(self):
+        self.window.resize(1000, 650)
+        self.drain()
+        self.window.routing_dock.setFloating(True)
+        self.window.routing_dock.setGeometry(100, 100, 430, 500)
+        self.window.showMaximized()
+        self.drain()
+        payload = self.window.workspace.save_state()
+        self.assertTrue(payload["window"]["maximized"])
+        self.assertEqual(payload["window"]["width"], 1000)
+        with patch(
+            "gweatherrouting.qt.workspace.workareas", return_value=[(0, 0, 1600, 1000)]
+        ):
+            self.restart_workspace()
+        self.assertTrue(self.window.isMaximized())
+        self.assertEqual(self.window.normalGeometry().width(), 1000)
+        self.assertTrue(self.window.routing_dock.isFloating())
+        self.assertEqual(self.window.routing_dock.width(), 430)
+        self.assertEqual(self.window.routing_dock.height(), 500)
+        self.window.showNormal()
+        self.drain()
+        self.assertEqual(self.window.width(), 1000)
+        self.assertEqual(self.window.height(), 650)
+
+    def test_workspace_failed_atomic_save_retains_good_file_and_retries(self):
+        workspace = self.window.workspace
+        workspace.save()
+        previous = workspace.store.path.read_bytes()
+        self.window.map._zoom += 1
+        with patch(
+            "gweatherrouting.core.workspacestate.os.replace",
+            side_effect=OSError("disk full"),
+        ):
+            workspace.save()
+        self.assertIn("disk full", workspace.error)
+        self.assertEqual(workspace.store.path.read_bytes(), previous)
+        workspace.save()
+        self.assertEqual(workspace.error, "")
+        self.assertNotEqual(workspace.store.path.read_bytes(), previous)
+        self.assertFalse(list(self.path.glob(".workspace-*.tmp")))
+        gtk = self.path / "workspace.json"
+        gtk.write_text('{"version":1,"state":{"active_tab":"Polars"}}')
+        self.window.close()
+        self.assertEqual(json.loads(gtk.read_text())["state"]["active_tab"], "Polars")
+        self.assertFalse(workspace.timer.isActive())
 
     def test_frontend_does_not_import_gtk(self):
         self.assertNotIn("gi.repository.Gtk", sys.modules)

@@ -16,6 +16,7 @@ from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
 
 class TrackMap(QWidget, MercatorProjection):
     route_location = Signal(str, object)
+    view_changed = Signal()
 
     def __init__(self, controller, parent=None):
         super().__init__(parent)
@@ -136,6 +137,7 @@ class TrackMap(QWidget, MercatorProjection):
         )
         self.background = None
         self.update()
+        self.view_changed.emit()
 
     def set_route_plan(self, coordinates):
         self.route_plan = tuple(coordinates)
@@ -319,10 +321,12 @@ class TrackMap(QWidget, MercatorProjection):
         self._center_lat = max(-85, min(85, self._center_lat))
         self.drag = event.position()
         self.update()
+        self.view_changed.emit()
 
     def mouseReleaseEvent(self, _):  # noqa: N802 - Qt virtual method name
         self.drag = None
         self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.view_changed.emit()
 
     def wheelEvent(self, event):  # noqa: N802 - Qt virtual method name
         pointer = event.position()
@@ -335,4 +339,5 @@ class TrackMap(QWidget, MercatorProjection):
         )
         self._center_lat, self._center_lon = center.get_degrees()
         self.update()
+        self.view_changed.emit()
         event.accept()
