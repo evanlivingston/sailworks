@@ -422,6 +422,8 @@ are also in unchanged baseline files. No new lint/type failures were introduced.
 - Status: shared Core scheduling/chart extraction are upstream candidates;
   the Qt adapter/UI is fork-only. Branch: `feature/qt-production-charts`,
   dependent on `feature/qt-first-pass` and fork PR #5.
+- Review: [fork PR #6](https://github.com/evanlivingston/gweatherrouting/pull/6),
+  opened against `feature/qt-first-pass` and left unmerged.
 - Scope: inject Core notification scheduling while preserving GTK defaults;
   extract production Cairo chart/wind rendering and settings from GTK; retain
   compatibility imports, palettes, coastline quality thresholds, ENC source/
