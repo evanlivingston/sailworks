@@ -4,23 +4,29 @@ import math
 
 import cairo
 import numpy as np
-from PySide6.QtCore import QPointF, Qt, QTimer
+from PySide6.QtCore import QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPolygonF
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QWidget, QMenu
 
-from gweatherrouting.core.mapviewport import MercatorProjection
+from gweatherrouting.core.mapviewport import MercatorProjection, MapPoint
 from gweatherrouting.rendering.style import Style
 from gweatherrouting.rendering.windpainter import WindPainter
 from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
 
 
 class TrackMap(QWidget, MercatorProjection):
+    route_location = Signal(str, object)
+
     def __init__(self, controller, parent=None):
         super().__init__(parent)
         self.setMinimumSize(240, 180)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self._center_lat, self._center_lon, self._zoom = 48.4, -123.4, 6.0
         self.points = ()
+        self.route = ()
+        self.selected_route_point = -1
+        self.route_plan = ()
+        self.route_preview = ()
         self.offsets = ()
         self.position = None
         self.drag = None
@@ -104,8 +110,12 @@ class TrackMap(QWidget, MercatorProjection):
     def fit_track(self):
         if not self.points:
             return
-        lats = [point.lat for point in self.points]
-        lons = [point.lon for point in self.points]
+        self.fit_coordinates([(point.lat, point.lon) for point in self.points])
+
+    def fit_coordinates(self, coordinates):
+        if not coordinates:
+            return
+        lats, lons = zip(*coordinates)
         self._center_lat = (min(lats) + max(lats)) / 2
         self._center_lon = (min(lons) + max(lons)) / 2
         self._zoom = 0
@@ -126,6 +136,48 @@ class TrackMap(QWidget, MercatorProjection):
         self.background = None
         self.update()
 
+    def set_route_plan(self, coordinates):
+        self.route_plan = tuple(coordinates)
+        self.update()
+
+    def set_route(self, coordinates):
+        self.route = tuple(coordinates)
+        self.selected_route_point = -1
+        self.update()
+
+    def select_route_point(self, row):
+        self.selected_route_point = row
+        self.update()
+
+    def set_route_preview(self, coordinates):
+        self.route_preview = tuple(coordinates)
+        self.update()
+
+    def fit_route(self):
+        self.fit_coordinates((*self.route, *self.route_plan))
+
+    def contextMenuEvent(self, event):  # noqa: N802 - Qt virtual method name
+        position = self.convert_screen_to_geographic(event.pos().x(), event.pos().y())
+        menu = QMenu(self)
+        start = menu.addAction("Set routing start here")
+        destination = menu.addAction("Set routing destination here")
+        selected = menu.exec(event.globalPos())
+        if selected is start or selected is destination:
+            self.route_location.emit(
+                "start" if selected is start else "destination", position.get_degrees()
+            )
+
+    def _draw_route(self, painter, coordinates, color, dashed=False):
+        if not coordinates:
+            return
+        lats, lons = zip(*coordinates)
+        xs, ys = self.convert_geographic_to_screen_batch(np.array(lats), np.array(lons))
+        pen = QPen(QColor(color), 2)
+        if dashed:
+            pen.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(pen)
+        painter.drawPolyline(QPolygonF([QPointF(x, y) for x, y in zip(xs, ys)]))
+
     def set_position(self, position):
         self.position = position
         self.update()
@@ -144,6 +196,25 @@ class TrackMap(QWidget, MercatorProjection):
         painter = QPainter(self)
         painter.drawImage(QPointF(0, 0), self.background[1])
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self._draw_route(painter, self.route_plan, "#5295d2", dashed=True)
+        self._draw_route(painter, self.route, "#26aa70")
+        self._draw_route(painter, self.route_preview, "#ef5a8c", dashed=True)
+        if self.route:
+            lats, lons = zip(*self.route)
+            rx, ry = self.convert_geographic_to_screen_batch(
+                np.array(lats), np.array(lons)
+            )
+            painter.setPen(QPen(QColor("#26aa70"), 1))
+            for index, (x, y) in enumerate(zip(rx, ry)):
+                selected = index == self.selected_route_point
+                painter.setBrush(QColor("#ffffff" if selected else "#26aa70"))
+                radius = 5 if selected else 2
+                painter.drawEllipse(QPointF(x, y), radius, radius)
+        if self.route_plan:
+            for label, coordinates in zip(("Start", "Destination"), self.route_plan):
+                x, y = self.convert_geographic_to_screen(MapPoint(*coordinates))
+                painter.setPen(QColor("#5295d2"))
+                painter.drawText(QPointF(x + 5, y - 5), label)
         if self.points:
             xs, ys = self.convert_geographic_to_screen_batch(
                 np.array([p.lat for p in self.points]),

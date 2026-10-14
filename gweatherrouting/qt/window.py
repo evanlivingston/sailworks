@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from gweatherrouting.rendering.style import Style
 from .mapcanvas import TrackMap
+from .routingpanel import RoutingPanel
 from .plots import LogPlots, elapsed_offsets
 
 
@@ -81,7 +82,24 @@ class PreviewWindow(QMainWindow):
         )
         self.nmea_dock.setWidget(self._nmea_panel())
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.nmea_dock)
-        self.menuBar().addMenu("View").addAction(self.nmea_dock.toggleViewAction())
+        self.routing_panel = RoutingPanel(controller)
+        self.routing_dock = QDockWidget("Routing", self)
+        self.routing_dock.setObjectName("routing")
+        self.routing_dock.setWidget(self.routing_panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.routing_dock)
+        view_menu = self.menuBar().addMenu("View")
+        view_menu.addAction(self.nmea_dock.toggleViewAction())
+        view_menu.addAction(self.routing_dock.toggleViewAction())
+        self.routing_panel.plan_changed.connect(self.map.set_route_plan)
+        self.routing_panel.route_selected.connect(self.map.set_route)
+        self.routing_panel.fit_requested.connect(self.map.fit_route)
+        self.routing_panel.waypoints.currentCellChanged.connect(
+            lambda row, *_: self.map.select_route_point(row)
+        )
+        self.map.route_location.connect(self.routing_panel.set_location)
+        controller.routing.preview_changed.connect(self.map.set_route_preview)
+        self.routing_panel._plan_changed()
+        self.routing_panel._select_route(0)
         self.instruments = QLabel("Waiting for position")
         self.statusBar().addPermanentWidget(self.instruments)
         controller.boat_changed.connect(self._boat_changed)

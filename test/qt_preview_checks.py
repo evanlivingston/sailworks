@@ -15,6 +15,10 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtWidgets import QApplication
 
 from gweatherrouting.core.datasource import NMEADataPacket
+from gweatherrouting.core.storage import Storage
+
+ORIGINAL_STORAGE_SAVE = Storage.save
+ORIGINAL_STORAGE_LOAD = Storage.load_or_save_default
 from gweatherrouting.core.mapviewport import MapPoint, MapViewport
 from gweatherrouting.qt.controller import SessionController
 from gweatherrouting.qt.window import PreviewWindow
@@ -44,6 +48,10 @@ class QtPreviewChecks(unittest.TestCase):
             offline=True,
             recording_directory=self.path / "recordings",
             load_charts=False,
+        )
+        self.controller.core.polar_manager.polars_files = ["first317.pol"]
+        self.controller.core.polar_manager.get_path = lambda name: str(
+            Path(__file__).parents[1] / "gweatherrouting/data/polars" / name
         )
         self.controller.timer.stop()  # Deterministic playback steps in tests.
         self.window = PreviewWindow(self.controller)
@@ -389,6 +397,139 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(self.controller.settings.chartPalette, "dark")
         self.drain()
         self.assertIsNotNone(self.window.map.background)
+
+    def wait_for_route(self):
+        deadline = time.monotonic() + 10
+        while self.controller.routing.busy and time.monotonic() < deadline:
+            self.drain()
+            time.sleep(0.005)
+        self.assertFalse(self.controller.routing.busy)
+        self.drain()
+
+    def test_routing_panel_calculates_saves_selects_and_fits_real_engine_result(self):
+        from test.test_routingjob import ConstantWind
+
+        self.controller.core.grib_manager.gribs = [ConstantWind()]
+        panel = self.window.routing_panel
+        panel.coastlines.setChecked(False)
+        panel.set_location("start", (0, 0))
+        panel.set_location("destination", (0, 0.15))
+        panel.calculate.click()
+        self.assertTrue(self.controller.routing.busy)
+        self.assertFalse(panel.calculate.isEnabled())
+        self.wait_for_route()
+        self.assertFalse(self.controller.routing.error)
+        self.assertEqual(len(self.controller.core.routingManager), 1)
+        route = self.controller.core.routingManager[0]
+        self.assertIs(self.controller.core.routingManager.get_active(), route)
+        self.assertEqual(panel.waypoints.rowCount(), len(route.points))
+        self.assertEqual(
+            self.window.map.route, tuple((p[0], p[1]) for p in route.points)
+        )
+        self.assertIn("saved", panel.status.text())
+        panel.waypoints.setCurrentCell(0, 0)
+        self.assertEqual(self.window.map.selected_route_point, 0)
+        self.assertTrue(panel.calculate.isEnabled())
+        self.assertNotEqual(self.window.map._zoom, 6)
+        panel.calculate.click()
+        self.wait_for_route()
+        self.assertEqual(len(self.controller.core.routingManager), 2)
+        self.assertNotEqual(route.name, self.controller.core.routingManager[1].name)
+
+    def test_calculated_route_persists_in_the_shared_gtk_compatible_collection(self):
+        from test.test_routingjob import ConstantWind
+        from gweatherrouting.core.geo.routingcollection import RoutingCollection
+
+        self.controller.core.grib_manager.gribs = [ConstantWind()]
+        panel = self.window.routing_panel
+        panel.coastlines.setChecked(False)
+        panel.set_location("start", (0, 0))
+        panel.set_location("destination", (0, 0.15))
+        with (
+            patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
+            patch.object(Storage, "load_or_save_default", ORIGINAL_STORAGE_LOAD),
+            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+        ):
+            self.controller.core.routingManager = RoutingCollection()
+            panel.calculate.click()
+            self.wait_for_route()
+            self.assertFalse(self.controller.routing.error)
+            payload = json.loads((self.path / "routing.json").read_text())["data"]
+            self.assertEqual(len(payload["elements"]), 1)
+            self.assertEqual(payload["activeElement"], payload["elements"][0]["name"])
+            restored = RoutingCollection()
+            self.assertEqual(
+                [tuple(point) for point in restored[0].points],
+                self.controller.core.routingManager[0].points,
+            )
+            self.assertEqual(restored[0].provenance["currents"], "disabled")
+
+    def test_routing_cancel_and_close_keep_completed_routes_and_drop_late_results(self):
+        from test.test_routingjob import ConstantWind
+        from gweatherrouting.core.routingjob import CalculatedRoute
+
+        self.controller.core.grib_manager.gribs = [ConstantWind()]
+        from gweatherrouting.core.geo.routing import Routing
+
+        existing = Routing("existing", [(0, 0, "2026-10-01", 0, 1, 1, 0)])
+        self.controller.core.routingManager.append(existing)
+        self.window.routing_panel.refresh_routes(existing)
+        started, release = Event(), Event()
+        self.addCleanup(release.set)
+
+        def slow(*args):
+            started.set()
+            release.wait(3)
+            return CalculatedRoute(((0, 0, "2026-10-01", 0, 1, 1, 0),), (), {})
+
+        with patch(
+            "gweatherrouting.qt.routingcontroller.calculate_route", side_effect=slow
+        ):
+            panel = self.window.routing_panel
+            panel.calculate.click()
+            self.assertTrue(started.wait(1))
+            panel.cancel_button.click()
+            self.assertTrue(self.controller.routing.cancel_event.is_set())
+            release.set()
+            self.wait_for_route()
+            self.assertEqual(len(self.controller.core.routingManager), 1)
+            self.assertIs(self.controller.core.routingManager[0], existing)
+            self.assertEqual(panel.status.text(), "Routing cancelled")
+            started.clear()
+            release.clear()
+            panel.calculate.click()
+            self.assertTrue(started.wait(1))
+            self.window.close()
+            release.set()
+            self.controller.routing.worker_thread.join(2)
+            self.drain()
+            self.assertEqual(len(self.controller.core.routingManager), 1)
+            self.assertIs(self.controller.core.routingManager[0], existing)
+
+    def test_routing_missing_wind_and_invalid_positions_leave_results_unchanged(self):
+        panel = self.window.routing_panel
+        panel.calculate.click()
+        self.assertIn("forecast", panel.status.text())
+        self.assertEqual(len(self.controller.core.routingManager), 0)
+        panel.set_location("start", (0, 0))
+        panel.set_location("destination", (0, 0))
+        panel.calculate.click()
+        self.assertIn("different", panel.status.text())
+        self.assertFalse(self.controller.routing.busy)
+        from test.test_routingjob import ConstantWind
+        from weatherrouting import RoutingNoWindError
+
+        self.controller.core.grib_manager.gribs = [ConstantWind()]
+        panel.set_location("destination", (0, 0.15))
+        with patch(
+            "gweatherrouting.qt.routingcontroller.calculate_route",
+            side_effect=RoutingNoWindError(),
+        ):
+            panel.calculate.click()
+            self.wait_for_route()
+        self.assertIn("forecast", panel.status.text())
+        self.assertTrue(panel.calculate.isEnabled())
+        self.assertEqual(len(self.controller.core.routingManager), 0)
 
     def test_frontend_does_not_import_gtk(self):
         self.assertNotIn("gi.repository.Gtk", sys.modules)
