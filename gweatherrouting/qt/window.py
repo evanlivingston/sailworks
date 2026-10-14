@@ -4,13 +4,12 @@ import os
 import sys
 from datetime import timedelta
 
-from PySide6.QtCore import Qt, QTimer, QDateTime, QSize
+from PySide6.QtCore import Qt, QTimer, QSize
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDockWidget,
-    QDateTimeEdit,
     QFileDialog,
     QLabel,
     QMainWindow,
@@ -35,6 +34,7 @@ from gweatherrouting.core.timecontrol import TimeControl, naive_wall_time
 from gweatherrouting.rendering.style import Style
 from gweatherrouting.common import resource_path
 from .theme import section_label, symbol_icon, transport_icon
+from .dockchrome import style_dock, style_scrollarea
 from .mapcanvas import TrackMap
 from .routingpanel import RoutingPanel
 from .settingsdialog import SettingsDialog
@@ -44,6 +44,7 @@ from .workspace import WorkspacePreferences
 from .polarworkspace import PolarWorkspace
 from .polarlibrary import PolarLibrary
 from .navigationpanel import NavigationPanel
+from .forecasttimeline import ForecastTimeline
 
 
 class NavigationScroll(QScrollArea):
@@ -104,15 +105,6 @@ class PreviewWindow(QMainWindow):
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         toolbar.setIconSize(QSize(18, 18))
         toolbar.addSeparator()
-        toolbar.addWidget(QLabel("Forecast "))
-        self.forecast = QDateTimeEdit(QDateTime(controller.time_control.time))
-        self.forecast.setCalendarPopup(True)
-        self.forecast.setDisplayFormat("yyyy-MM-dd HH:mm")
-        self.forecast.setToolTip("Time displayed by the wind forecast")
-        self.forecast.dateTimeChanged.connect(
-            lambda value: controller.time_control.set_time(value.toPython())
-        )
-        toolbar.addWidget(self.forecast)
         self.palette_combo = QComboBox()
         self.palette_combo.addItems(list(Style.chart_palettes))
         self.palette_combo.setCurrentText(controller.settings.chartPalette)
@@ -122,6 +114,12 @@ class PreviewWindow(QMainWindow):
         )
         self.palette_combo.currentTextChanged.connect(self._palette_changed)
         toolbar.addWidget(self.palette_combo)
+        self.forecast_toolbar = QToolBar("Forecast timeline", self)
+        self.forecast_toolbar.setObjectName("forecast-timeline")
+        self.forecast_toolbar.setMovable(False)
+        self.timeline = ForecastTimeline(controller, self)
+        self.forecast_toolbar.addWidget(self.timeline)
+        self.addToolBar(self.forecast_toolbar)
         self.plots = LogPlots(self)
         self.log_time = TimeControl()
         self.log_map = TrackMap(controller, self, time_control=self.log_time)
@@ -143,10 +141,12 @@ class PreviewWindow(QMainWindow):
         self.setCentralWidget(self.views)
         self.nmea_dock = QDockWidget("NMEA", self)
         self.nmea_dock.setObjectName("nmea")
+        style_dock(self.nmea_dock)
         self.nmea_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
         )
         nmea_scroll = QScrollArea()
+        style_scrollarea(nmea_scroll)
         nmea_scroll.setWidgetResizable(True)
         nmea_scroll.setFrameShape(QFrame.Shape.NoFrame)
         nmea_scroll.setWidget(self._nmea_panel())
@@ -158,11 +158,13 @@ class PreviewWindow(QMainWindow):
         self.routing_panel.manage_polars.clicked.connect(self.show_polars)
         self.routing_dock = QDockWidget("Routing", self)
         self.routing_dock.setObjectName("routing")
+        style_dock(self.routing_dock)
         self.routing_dock.setWidget(self.routing_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.routing_dock)
         self.tabifyDockWidget(self.nmea_dock, self.routing_dock)
         self.navigation_panel = NavigationPanel(controller, self.map, self)
         navigation_scroll = NavigationScroll()
+        style_scrollarea(navigation_scroll)
         navigation_scroll.setWidgetResizable(True)
         navigation_scroll.setFrameShape(QFrame.Shape.NoFrame)
         navigation_scroll.setWidget(self.navigation_panel)
@@ -233,6 +235,16 @@ class PreviewWindow(QMainWindow):
         view_menu.addAction(self.navigation_dock.toggleViewAction())
         view_menu.addAction(toolbar.toggleViewAction())
         view_menu.addAction(header.toggleViewAction())
+        window_menu = self.menuBar().addMenu("Window")
+        window_menu.addSection("Panels")
+        window_menu.addAction(self.navigation_dock.toggleViewAction())
+        window_menu.addAction(self.nmea_dock.toggleViewAction())
+        window_menu.addAction(self.routing_dock.toggleViewAction())
+        window_menu.addAction(self.polar_selector_dock.toggleViewAction())
+        window_menu.addAction(self.performance_dock.toggleViewAction())
+        window_menu.addAction(self.polar_manager_dock.toggleViewAction())
+        window_menu.addSeparator()
+        window_menu.addAction("Reset Panels", self.reset_panels)
         self.chart_toolbar_actions = list(toolbar.actions())
         for name, callback in (
             ("Import…", self.navigation_panel.import_gpx),
@@ -311,6 +323,8 @@ class PreviewWindow(QMainWindow):
             self.log_toggles[key] = action
             self.log_toolbar_actions.append(action)
         self.views.currentChanged.connect(self._view_changed)
+        self.navigation_toolbar.visibilityChanged.connect(self._sync_forecast_toolbar)
+        self._set_chart_toolbar_icons(toolbar)
         self._view_changed()
         self.routing_panel.plan_changed.connect(self.map.set_route_plan)
         self.routing_panel.route_selected.connect(self._route_selected)
@@ -348,9 +362,33 @@ class PreviewWindow(QMainWindow):
         view_menu.addSeparator()
         view_menu.addAction("Reset layout", self.workspace.reset_layout)
 
+    @staticmethod
+    def _set_chart_toolbar_icons(toolbar):
+        icons = {
+            "Import…": "document-open-symbolic",
+            "New": "document-new-symbolic",
+            "Export…": "document-save-symbolic",
+            "Tabs": "compass",
+            "AIS": "ais-ship-symbolic",
+            "Grib": "weather-windy-symbolic",
+            "Dashboard": "eye-open-negative-filled-symbolic",
+            "Data Library": "document-properties-symbolic",
+            "NMEA": "gnome-dev-wavelan",
+            "Routing": "routing-symbolic",
+            "Fit view": "view-fullscreen-symbolic",
+        }
+        for action in toolbar.actions():
+            if action.text() in icons:
+                action.setIcon(symbol_icon(icons[action.text()]))
+                if not action.toolTip():
+                    action.setToolTip(action.text())
+
     def _dock(self, title, name, content):
         dock = QDockWidget(title, self)
         dock.setObjectName(name)
+        style_dock(dock)
+        if isinstance(content, QScrollArea):
+            style_scrollarea(content)
         dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
         )
@@ -362,12 +400,27 @@ class PreviewWindow(QMainWindow):
         hidden = self.workspace_toolbar.isHidden()
         self.removeToolBarBreak(self.navigation_toolbar)
         self.removeToolBar(self.workspace_toolbar)
+        self.removeToolBar(self.forecast_toolbar)
         self.insertToolBar(self.navigation_toolbar, self.workspace_toolbar)
         self.insertToolBarBreak(self.navigation_toolbar)
+        self.addToolBar(self.forecast_toolbar)
         self.workspace_toolbar.setVisible(not hidden)
+        self._sync_forecast_toolbar()
+
+    def _sync_forecast_toolbar(self, *_):
+        self.forecast_toolbar.setVisible(
+            self.views.currentWidget() is self.map
+            and not self.navigation_toolbar.isHidden()
+        )
 
     def _view_changed(self, *_):
         current = self.views.currentWidget()
+        self.navigation_toolbar.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonIconOnly
+            if current is self.map
+            else Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self._sync_forecast_toolbar()
         self.navigation_syncing = True
         self.navigation_dock.setVisible(current is self.map and self.navigation_open)
         self.navigation_syncing = False
@@ -533,6 +586,19 @@ class PreviewWindow(QMainWindow):
             self.workspace._dock_activated(dock)
         if dock in (self.routing_dock, self.navigation_dock):
             self.views.setCurrentWidget(self.map)
+
+    def reset_panels(self):
+        """Redock every floating panel and restore default sizes/visibility."""
+        for dock in (
+            self.nmea_dock,
+            self.routing_dock,
+            self.polar_selector_dock,
+            self.performance_dock,
+            self.polar_manager_dock,
+            self.navigation_dock,
+        ):
+            dock.setFloating(False)
+        self.workspace.reset_layout()
 
     def _routing_changed(self):
         if self.controller.routing.busy:
@@ -869,7 +935,9 @@ class PreviewWindow(QMainWindow):
                 self.library_dialog.hide()
 
     def _forecast_loaded(self, grib):
-        self.forecast.setDateTime(QDateTime(grib.start_time))
+        self.timeline.pause()
+        self.controller.time_control.set_time(grib.start_time)
+        self.timeline.refresh()
         self.map.queue_draw()
         self.statusBar().showMessage("Forecast imported and enabled", 5000)
 
@@ -889,6 +957,7 @@ class PreviewWindow(QMainWindow):
 
     def closeEvent(self, event):  # noqa: N802 - Qt virtual method name
         self.workspace.close()
+        self.timeline.dispose()
         self.navigation_panel.dispose()
         self.polar_workspace.dispose()
         self.live_timer.stop()

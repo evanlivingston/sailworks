@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from gweatherrouting.core.routingjob import RouteRequest
+from .dockchrome import style_scrollarea
 from .theme import section_label
 
 
@@ -40,7 +41,7 @@ class RoutingPanel(QWidget):
         super().__init__()
         self.controller = controller
         self.routing = controller.routing
-        self.setMinimumWidth(330)
+        self.setMinimumWidth(280)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 12)
         layout.setSpacing(8)
@@ -55,6 +56,7 @@ class RoutingPanel(QWidget):
         results_layout.setContentsMargins(0, 4, 0, 4)
         results_layout.setSpacing(8)
         setup_scroll = QScrollArea()
+        style_scrollarea(setup_scroll)
         setup_scroll.setWidgetResizable(True)
         setup_scroll.setFrameShape(QFrame.Shape.NoFrame)
         setup_scroll.setWidget(setup_page)
@@ -129,7 +131,7 @@ class RoutingPanel(QWidget):
         results_layout.addWidget(self.fit)
         results_layout.addWidget(section_label("Waypoints"))
         self.waypoints = QTableWidget(0, 4)
-        self.waypoints.setMinimumHeight(120)
+        self.waypoints.setMinimumHeight(80)
         self.waypoints.setAlternatingRowColors(True)
         self.waypoints.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.waypoints.setHorizontalHeaderLabels(

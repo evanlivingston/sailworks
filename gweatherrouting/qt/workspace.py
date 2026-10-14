@@ -101,6 +101,9 @@ class WorkspacePreferences(QObject):
         panel.pages.currentChanged.connect(self.changed)
         window.speed.currentIndexChanged.connect(self.changed)
         window.streaming.toggled.connect(self.changed)
+        window.timeline.step_changed.connect(self.changed)
+        window.navigation_toolbar.visibilityChanged.connect(self.changed)
+        window.workspace_toolbar.visibilityChanged.connect(self.changed)
 
     def eventFilter(self, watched, event):  # noqa: N802 - Qt virtual method name
         if (
@@ -159,6 +162,7 @@ class WorkspacePreferences(QObject):
             "active_dock": self.active_dock,
             "view": window.views.tabText(window.views.currentIndex()),
             "polars_visited": window.polars_visited,
+            "forecast": {"step": window.timeline.step_combo.currentText()},
             "navigation": {
                 "visible": window.navigation_open,
                 "tab": window.navigation_panel.tabs.tabText(
@@ -251,6 +255,12 @@ class WorkspacePreferences(QObject):
         if isinstance(nmea.get("streaming"), bool):
             self.window.session.set_streaming(nmea["streaming"])
         self.window.refresh()
+        step = mapping(state.get("forecast")).get("step")
+        if (
+            isinstance(step, str)
+            and self.window.timeline.step_combo.findText(step) >= 0
+        ):
+            self.window.timeline.step_combo.setCurrentText(step)
 
     def _restore_window(self, saved):
         if saved:

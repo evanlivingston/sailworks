@@ -40,6 +40,16 @@ class QtPreviewChecks(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name)
+        from gweatherrouting.core.marine.manager import MarineManager
+
+        marine_factory = patch(
+            "gweatherrouting.core.core.MarineManager",
+            side_effect=lambda _path, **kwargs: MarineManager(
+                self.path / "marine", **kwargs
+            ),
+        )
+        marine_factory.start()
+        self.addCleanup(marine_factory.stop)
         for target in (
             "gweatherrouting.core.storage.Storage.load_or_save_default",
             "gweatherrouting.core.storage.Storage.save",
@@ -91,6 +101,48 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(self.controller.session.error)
         self.drain()
         return self.controller.session.log
+
+    def test_floating_panels_redock_and_reset_without_losing_content(self):
+        from gweatherrouting.qt.dockchrome import DockTitleBar, DOCK_MIN_WIDTH
+
+        dock = self.window.nmea_dock
+        content = dock.widget()
+        for _ in range(2):
+            dock.setFloating(True)
+            self.drain()
+            self.assertIsInstance(dock.titleBarWidget(), DockTitleBar)
+            self.assertTrue(dock.windowFlags() & Qt.WindowType.FramelessWindowHint)
+            dock.resize(100, 400)
+            self.assertGreaterEqual(dock.width(), DOCK_MIN_WIDTH)
+            dock.setFloating(False)
+            self.drain()
+            self.assertIsNone(dock.titleBarWidget())
+            self.assertIs(dock.widget(), content)
+        dock.setFloating(True)
+        self.window.reset_panels()
+        self.drain()
+        self.assertFalse(dock.isFloating())
+        self.assertIs(dock.widget(), content)
+        self.assertFalse(dock.isHidden())
+
+    def test_floating_panel_child_coordinates_do_not_trigger_edge_resize(self):
+        from PySide6.QtTest import QTest
+        from PySide6.QtCore import QPoint
+        from gweatherrouting.qt.dockchrome import _FloatingFrame
+
+        dock = self.window.nmea_dock
+        dock.setFloating(True)
+        self.drain()
+        frame = dock.findChild(_FloatingFrame)
+        child = self.window.record
+        # The button's local left edge is in the middle of the panel.
+        QTest.mousePress(child, Qt.MouseButton.LeftButton, pos=QPoint(2, 10))
+        self.assertIsNone(frame._resize)
+        QTest.mouseRelease(child, Qt.MouseButton.LeftButton, pos=QPoint(2, 10))
+        QTest.mousePress(dock, Qt.MouseButton.LeftButton, pos=QPoint(1, 100))
+        self.assertIsNotNone(frame._resize)
+        QTest.mouseRelease(dock, Qt.MouseButton.LeftButton, pos=QPoint(1, 100))
+        self.assertIsNone(frame._resize)
 
     def test_full_plot_play_pause_restart_eof_and_source_visibility(self):
         self.assertFalse(self.window.speed_group.isVisible())
@@ -397,7 +449,7 @@ class QtPreviewChecks(unittest.TestCase):
         from datetime import timedelta
 
         old_time = self.controller.time_control.time
-        self.window.forecast.setDateTime(old_time + timedelta(hours=3))
+        self.controller.time_control.set_time(old_time + timedelta(hours=3))
         self.assertEqual(
             self.controller.time_control.time, old_time + timedelta(hours=3)
         )
@@ -2076,6 +2128,222 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertTrue(canvas._wind_cursor._closed)
         self.assertIsNotNone(source.dataset)
         self.assertTrue(issubclass(type(private), CursorGrib))
+
+    def timeline_range(self):
+        from datetime import datetime
+
+        start = datetime(2026, 1, 1, 12)
+        self.controller.core.grib_manager.gribs = [
+            SimpleNamespace(start_time=start, last_forecast=1)
+        ]
+        self.window.timeline.refresh()
+        self.controller.time_control.set_time(start)
+        return start
+
+    def test_forecast_timeline_enabled_metadata_updates_and_post_2038_slider(self):
+        from datetime import datetime, timedelta
+        from gweatherrouting.core.marine.manager import MarineManager
+        from gweatherrouting.qt.forecasttimeline import ForecastTimeline
+        from test.test_marine_fields import field
+
+        marine = MarineManager(self.path / "timeline-marine")
+        gribs = SimpleNamespace(gribs=[])
+        proxy = SimpleNamespace(
+            time_control=self.controller.time_control,
+            scheduler=self.controller.scheduler,
+            core=SimpleNamespace(grib_manager=gribs, marine_manager=marine),
+        )
+        timeline = ForecastTimeline(proxy, self.window)
+        self.addCleanup(timeline.dispose)
+        self.assertFalse(timeline.slider.isEnabled())
+        self.assertIn("Load wind", timeline.caption.text())
+        current = field()
+        marine.fields.add(current)
+        self.drain()
+        self.assertEqual(
+            timeline.bounds, (float(current.times[0]), float(current.times[-1]))
+        )
+        marine.fields.enable(current.id, False)
+        self.drain()
+        self.assertIsNone(timeline.bounds)
+        start = datetime(2040, 1, 1)
+        gribs.gribs.append(SimpleNamespace(start_time=start, last_forecast=6))
+        timeline.refresh()
+        self.controller.time_control.set_time(start)
+        self.assertEqual(timeline.slider.maximum(), 21600)
+        timeline.slider.setValue(10800)
+        timeline.slider.sliderReleased.emit()
+        self.assertEqual(
+            self.controller.time_control.time,
+            start + timedelta(hours=3),
+        )
+        self.assertIn("2040", timeline.start_label.toolTip())
+        gribs.gribs.clear()
+        timeline.refresh()
+        self.assertFalse(timeline.slider.isEnabled())
+
+    def test_forecast_timeline_steps_playback_boundaries_and_now(self):
+        from datetime import timedelta, datetime
+
+        start = self.timeline_range()
+        timeline = self.window.timeline
+        self.assertEqual(timeline.seconds, 900)
+        timeline.forward_button.click()
+        self.assertEqual(
+            self.controller.time_control.time, start + timedelta(minutes=15)
+        )
+        timeline.backward_button.click()
+        self.assertEqual(self.controller.time_control.time, start)
+        self.controller.time_control.set_time(start + timedelta(minutes=55))
+        timeline.play_button.click()
+        timer = timeline.play_timer.timerId()
+        timeline.play_button.click()
+        self.assertEqual(timeline.play_timer.timerId(), timer)
+        timeline.tick()
+        self.assertEqual(self.controller.time_control.time, start + timedelta(hours=1))
+        self.assertFalse(timeline.playing)
+        self.assertFalse(timeline.play_button.isChecked())
+        timeline.step_combo.setCurrentText("30s")
+        timeline.backward_button.click()
+        self.assertEqual(
+            self.controller.time_control.time, start + timedelta(minutes=59, seconds=30)
+        )
+        with patch(
+            "gweatherrouting.core.timecontrol.datetime.datetime"
+        ) as clock_datetime:
+            clock_datetime.now.return_value = datetime(2026, 1, 5, 14, 32)
+            timeline.now_button.click()
+        self.assertEqual(self.controller.time_control.time, datetime(2026, 1, 5, 14))
+        self.assertIn("outside", timeline.caption.text())
+        self.assertEqual(timeline.slider.value(), timeline.slider.maximum())
+        timeline.pause_button.click()
+        self.assertFalse(timeline.playing)
+
+    def test_forecast_timeline_scrubbing_coalesces_pauses_and_cancels_pending_drag(
+        self,
+    ):
+        from datetime import timedelta
+
+        start = self.timeline_range()
+        timeline = self.window.timeline
+        changes = []
+        self.controller.time_control.connect("time_change", changes.append)
+        self.addCleanup(
+            lambda: self.controller.time_control.disconnect(
+                "time_change", changes.append
+            )
+        )
+        timeline.play_button.click()
+        for value in (600, 900, 1800):
+            timeline.slider.setValue(value)
+        self.assertFalse(timeline.playing)
+        self.assertFalse(changes)
+        timeline.slider.sliderReleased.emit()
+        self.assertEqual(changes, [start + timedelta(minutes=30)])
+        timeline.slider.setValue(3000)
+        self.controller.time_control.increase(minutes=10)
+        timeline.slider.sliderReleased.emit()
+        self.assertEqual(
+            self.controller.time_control.time, start + timedelta(minutes=40)
+        )
+        self.assertFalse(timeline.commit_timer.isActive())
+        timeline.slider.setValue(2700)
+        self.wait_for_cursor(
+            lambda: self.controller.time_control.time == start + timedelta(minutes=45)
+        )
+        self.assertFalse(timeline.commit_timer.isActive())
+
+    def test_forecast_timeline_manual_date_cancel_and_unbounded_accept(self):
+        from datetime import timedelta
+        from PySide6.QtWidgets import QDialog, QDateTimeEdit
+        from PySide6.QtCore import QDateTime
+
+        start = self.timeline_range()
+        timeline = self.window.timeline
+        target = start + timedelta(days=3)
+
+        def cancel(dialog):
+            dialog.findChild(QDateTimeEdit).setDateTime(QDateTime(target))
+            return QDialog.DialogCode.Rejected
+
+        timeline.play()
+        with patch.object(QDialog, "exec", cancel):
+            timeline.select_button.click()
+        self.assertFalse(timeline.playing)
+        self.assertEqual(self.controller.time_control.time, start)
+
+        def accept(dialog):
+            dialog.findChild(QDateTimeEdit).setDateTime(QDateTime(target))
+            return QDialog.DialogCode.Accepted
+
+        with patch.object(QDialog, "exec", accept):
+            timeline.select_button.click()
+        self.assertEqual(self.controller.time_control.time, target)
+        self.assertIn("outside", timeline.caption.text())
+        timeline.backward_button.click()
+        self.assertEqual(self.controller.time_control.time, start + timedelta(hours=1))
+
+    def test_forecast_timeline_is_independent_of_nmea_and_restores_only_step(self):
+        from datetime import timedelta
+
+        self.load()
+        self.controller.session.set_playing(True)
+        self.controller.session.advance(5)
+        self.window.views.setCurrentWidget(self.window.map)
+        start = self.timeline_range()
+        timeline = self.window.timeline
+        timeline.play_button.click()
+        timeline.tick()
+        self.assertEqual(self.controller.session.position, 5)
+        self.assertTrue(self.controller.session.playing)
+        self.window.views.setCurrentWidget(self.window.logs_view)
+        self.drain()
+        self.assertFalse(timeline.playing)
+        self.assertTrue(self.controller.session.playing)
+        self.assertTrue(self.window.forecast_toolbar.isHidden())
+        self.assertEqual(
+            self.controller.time_control.time, start + timedelta(minutes=15)
+        )
+        self.window.views.setCurrentWidget(self.window.map)
+        self.assertFalse(self.window.forecast_toolbar.isHidden())
+        timeline.step_combo.setCurrentText("3h")
+        timeline.play()
+        self.window.workspace.save()
+        payload = self.window.workspace.store.load()
+        self.assertEqual(payload["forecast"], {"step": "3h"})
+        self.restart_workspace()
+        self.assertEqual(self.window.timeline.step_combo.currentText(), "3h")
+        self.assertFalse(self.window.timeline.playing)
+        self.assertFalse(self.controller.session.playing)
+        self.window.navigation_toolbar.hide()
+        self.assertTrue(self.window.forecast_toolbar.isHidden())
+        self.window.navigation_toolbar.show()
+        self.assertFalse(self.window.forecast_toolbar.isHidden())
+
+    def test_forecast_timeline_close_cancels_drag_poll_and_clock_callbacks(self):
+        start = self.timeline_range()
+        timeline = self.window.timeline
+        clock, marine = timeline.clock, timeline.marine
+        timeline.slider.setValue(1200)
+        self.assertTrue(timeline.commit_timer.isActive())
+        self.window.close()
+        self.assertTrue(timeline.closed)
+        self.assertFalse(timeline.commit_timer.isActive())
+        self.assertFalse(timeline.play_timer.isActive())
+        self.assertFalse(timeline.poll_timer.isActive())
+        self.assertFalse(clock.handlers["time_change"])
+        self.assertNotIn(timeline._marine_changed, marine.handlers["changed"])
+        self.assertNotIn(timeline._marine_changed, marine.fields.handlers["changed"])
+        timeline.commit()
+        self.assertFalse(timeline.tick())
+        self.assertEqual(clock.time, start)
+        # QWidgetAction releases widgets during toolbar destruction, after their
+        # child controls may already be gone. A late hide must avoid those controls.
+        from PySide6.QtGui import QHideEvent
+        from shiboken6 import delete
+
+        delete(timeline.play_button)
+        timeline.hideEvent(QHideEvent())
 
     def test_frontend_does_not_import_gtk(self):
         self.assertNotIn("gi.repository.Gtk", sys.modules)
