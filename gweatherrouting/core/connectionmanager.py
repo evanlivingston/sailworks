@@ -22,6 +22,7 @@ from typing import Dict, List
 from gweatherrouting.core import DataSource, NetworkDataSource, SerialDataSource
 from gweatherrouting.core.utils import EventDispatcher, Storage
 
+from .connectionconfig import connection_config, connection_key
 from .actisensedatasource import ActisenseDataSource
 from .nmea2000datasource import N2K_PROTOCOLS, NMEA2000DataSource
 
@@ -86,6 +87,7 @@ class ConnectionManager(EventDispatcher):
         self._sources_lock = Lock()
         self._packets: Dict[str, int] = {}
         self._polling_active = False
+        self._last_status: List[dict] = []
         self.thread = None
 
     def __del__(self):
@@ -117,8 +119,14 @@ class ConnectionManager(EventDispatcher):
 
     def get_status(self) -> List[dict]:
         """Return a snapshot of each connection's status and stats."""
-        with self._sources_lock:
+        # Reconnection holds the source lock while opening transports. Status
+        # displays must remain responsive during a slow network connection.
+        if not self._sources_lock.acquire(blocking=False):
+            return list(self._last_status)
+        try:
             sources = dict(self.sources)
+        finally:
+            self._sources_lock.release()
         result = []
         for key, ds in sources.items():
             result.append(
@@ -128,6 +136,7 @@ class ConnectionManager(EventDispatcher):
                     "packets": self._packets.get(key, 0),
                 }
             )
+        self._last_status = result
         return result
 
     @property
@@ -155,6 +164,35 @@ class ConnectionManager(EventDispatcher):
                 self.sources[key] = source
                 if source.connect():
                     logger.info("Data source %s connected", key)
+
+    def replace_connections(self, configs):
+        """Save an edited set, reconnecting only when polling was already active.
+
+        Call from one lifecycle owner, outside the polling thread. Validation
+        happens before interrupting live instruments; failed saves retain the
+        previous in-memory configuration and restart its polling.
+        """
+        configs = [connection_config(config) for config in configs]
+        keys = [connection_key(config) for config in configs]
+        if len(set(keys)) != len(keys):
+            raise ValueError("A connection already uses this serial port or host/port")
+        previous = self.connections
+        active = self.polling_active
+        self.stop_polling()
+        try:
+            self.storage.connections = configs
+            self.storage.save()
+        except Exception:
+            # Bypass Storage's automatic save while restoring the previous value.
+            if isinstance(self.storage, dict):
+                dict.__setitem__(self.storage, "connections", previous)
+                self.storage.__dict__["connections"] = previous
+            else:
+                self.storage.connections = previous
+            raise
+        finally:
+            if active:
+                self.start_polling()
 
     def add_connection(self, d):
         if d["protocol"] in N2K_PROTOCOLS and d["direction"] != "in":

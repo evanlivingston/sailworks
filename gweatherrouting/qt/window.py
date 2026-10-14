@@ -30,6 +30,8 @@ from gweatherrouting.common import resource_path
 from .theme import section_label, symbol_icon, transport_icon
 from .mapcanvas import TrackMap
 from .routingpanel import RoutingPanel
+from .settingsdialog import SettingsDialog
+from .datalibrary import DataLibrary, FORECAST_FILTER
 from .plots import LogPlots, elapsed_offsets
 
 
@@ -41,6 +43,8 @@ class PreviewWindow(QMainWindow):
         self.session = controller.session
         self.syncing = False
         self.data_key = None
+        self.settings_dialog = None
+        self.library_dialog = None
         self.setWindowTitle("GWeatherRouting")
         self.setWindowIcon(QIcon(resource_path("gweatherrouting", "data/icon.png")))
         self.resize(1200, 800)
@@ -108,10 +112,15 @@ class PreviewWindow(QMainWindow):
         )
         open_log.setShortcut(QKeySequence.StandardKey.Open)
         file_menu.addAction(open_forecast)
+        file_menu.addAction("Data Library…", self.show_library)
         file_menu.addSeparator()
         file_menu.addAction("Close window", self.close).setShortcut(
             QKeySequence.StandardKey.Close
         )
+        settings_action = file_menu.addAction("Settings…", self.show_settings)
+        settings_action.setShortcut(QKeySequence.StandardKey.Preferences)
+        toolbar.addAction("Data Library", self.show_library)
+        controller.data.forecast_loaded.connect(self._forecast_loaded)
         view_menu = self.menuBar().addMenu("View")
         view_menu.addAction(self.nmea_dock.toggleViewAction())
         view_menu.addAction(self.routing_dock.toggleViewAction())
@@ -137,6 +146,7 @@ class PreviewWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.instruments)
         controller.boat_changed.connect(self._boat_changed)
         controller.changed.connect(self.refresh)
+        controller.connection_task.changed.connect(self.refresh)
         controller.model_changed.connect(self._refresh_data)
         self.live_timer = QTimer(self)
         self.live_timer.setInterval(500)
@@ -183,6 +193,9 @@ class PreviewWindow(QMainWindow):
         self.streaming = QCheckBox("Stream live NMEA")
         self.streaming.toggled.connect(self._stream_changed)
         layout.addWidget(self.streaming)
+        connections = QPushButton("Configure connections…")
+        connections.clicked.connect(self.show_settings)
+        layout.addWidget(connections)
         load = QPushButton("Load NMEA log…")
         load.clicked.connect(self.load_log)
         self.load_button = load
@@ -329,7 +342,10 @@ class PreviewWindow(QMainWindow):
         self.statusBar().showMessage(
             "NMEA connections closed"
             if self.controller.offline
-            else "Using saved NMEA connections"
+            else (
+                self.controller.connection_task.message
+                or "Using saved NMEA connections"
+            )
         )
         self.syncing = False
         self._refresh_data()
@@ -421,21 +437,51 @@ class PreviewWindow(QMainWindow):
         else:
             self.instruments.setText("Waiting for position")
 
+    def show_settings(self):
+        if self.settings_dialog is None:
+            self.settings_dialog = SettingsDialog(self.controller, self)
+        elif (
+            not self.settings_dialog.isVisible()
+            and not self.controller.connection_task.busy
+        ):
+            self.settings_dialog.draft = [
+                dict(c) for c in self.controller.connections.connections
+            ]
+            self.settings_dialog.reload()
+        self.settings_dialog.show()
+        self.settings_dialog.raise_()
+        self.settings_dialog.activateWindow()
+
+    def _ensure_library(self):
+        if self.library_dialog is None:
+            self.library_dialog = DataLibrary(self.controller, self)
+        self.library_dialog.show()
+        self.library_dialog.raise_()
+        self.library_dialog.activateWindow()
+
+    def show_library(self):
+        self._ensure_library()
+        if not self.controller.data.task.busy:
+            self.controller.data.scan_forecasts()
+
+    def _forecast_loaded(self, grib):
+        self.forecast.setDateTime(QDateTime(grib.start_time))
+        self.map.queue_draw()
+        self.statusBar().showMessage("Forecast imported and enabled", 5000)
+
     def load_grib(self):
+        if self.controller.data.task.busy or self.controller.routing.busy:
+            self._ensure_library()
+            self.statusBar().showMessage(
+                "Wait for the current operation before importing a forecast.", 5000
+            )
+            return
         path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Open wind forecast",
-            "",
-            "GRIB forecasts (*.grib *.grb *.grib2 *.grb2);;All files (*)",
+            self, "Import wind forecast", "", FORECAST_FILTER
         )
         if path:
-            try:
-                self.controller.core.grib_manager.load(path)
-                grib = self.controller.core.grib_manager.gribs[-1]
-                self.forecast.setDateTime(QDateTime(grib.start_time))
-                self.map.queue_draw()
-            except Exception as exc:
-                QMessageBox.warning(self, "Unable to open forecast", str(exc))
+            self._ensure_library()
+            self.controller.data.import_forecast(path)
 
     def closeEvent(self, event):  # noqa: N802 - Qt virtual method name
         self.live_timer.stop()

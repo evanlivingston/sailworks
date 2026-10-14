@@ -537,6 +537,358 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertTrue(panel.calculate.isEnabled())
         self.assertEqual(len(self.controller.core.routingManager), 0)
 
+    def wait_for_data(self):
+        deadline = time.monotonic() + 10
+        while self.controller.data.task.busy and time.monotonic() < deadline:
+            self.drain()
+            time.sleep(0.005)
+        self.drain()
+        self.assertFalse(self.controller.data.task.busy)
+        self.assertEqual(self.controller.data.error, "")
+
+    def wind_fixture(self, name="wind.grib2"):
+        import numpy as np
+        from osgeo import gdal
+
+        path = self.path / name
+        dataset = gdal.GetDriverByName("GTiff").Create(
+            str(path), 4, 3, 4, gdal.GDT_Float32
+        )
+        dataset.SetGeoTransform((-124, 1, 0, 50, 0, -1))
+        for index, (hour, element, value) in enumerate(
+            ((0, "UGRD", 2), (0, "VGRD", 4), (3, "UGRD", 8), (3, "VGRD", 10)), 1
+        ):
+            band = dataset.GetRasterBand(index)
+            band.SetMetadata(
+                {
+                    "GRIB_ELEMENT": element,
+                    "GRIB_FORECAST_SECONDS": str(hour * 3600),
+                    "GRIB_REF_TIME": "1790812800",
+                    "GRIB_CENTER": "test",
+                }
+            )
+            band.WriteArray(np.full((3, 4), value, dtype=np.float32))
+        band = dataset = None
+        return path
+
+    def test_qt_connection_edit_persists_legacy_n2k_offline_and_cancel_keeps_original(
+        self,
+    ):
+        from gweatherrouting.qt.settingsdialog import ConnectionDialog
+        from gweatherrouting.core.connectionmanager import ConnectionManagerStorage
+
+        legacy = {
+            "type": "serial",
+            "protocol": "n2k_ascii",
+            "direction": "in",
+            "data-port": "/dev/example",
+            "baudrate": 115200,
+        }
+        dialog = ConnectionDialog(self.window, legacy)
+        self.assertFalse(dialog.direction.isEnabled())
+        self.assertEqual(dialog.wire_format.currentData(), "n2k_ascii")
+        dialog.reject()
+        self.assertEqual(self.controller.connections.connections, [])
+        dialog.save()
+        self.assertEqual(dialog.result_config["format"], "n2k_ascii")
+        self.window.show_settings()
+        settings = self.window.settings_dialog
+        settings.draft = [dialog.result_config]
+        settings.reload()
+        with (
+            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+            patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
+            patch.object(self.controller.connections, "plug_all") as plug,
+        ):
+            ORIGINAL_STORAGE_LOAD(self.controller.connections.storage)
+            settings.apply_connections()
+            deadline = time.monotonic() + 5
+            while self.controller.connection_task.busy and time.monotonic() < deadline:
+                self.drain()
+                time.sleep(0.005)
+            self.drain()
+            self.assertFalse(self.controller.connection_task.busy)
+            payload = json.loads((self.path / "conn-manager.json").read_text())
+            self.assertEqual(payload["connections"][0]["protocol"], "nmea2000")
+            plug.assert_not_called()
+            with patch.object(Storage, "load_or_save_default", ORIGINAL_STORAGE_LOAD):
+                reloaded = ConnectionManagerStorage()
+            self.assertEqual(reloaded.connections, settings.draft)
+        self.assertFalse(self.controller.connections.polling_active)
+
+    def test_forecast_library_import_toggle_duplicate_and_shared_disk_reload(self):
+        from gweatherrouting.core.gribmanager import GribManagerStorage
+        from gweatherrouting.qt.datalibrary import DataLibrary
+
+        library_root = self.path / "library"
+        library_root.mkdir()
+        fixture = self.wind_fixture()
+        data = self.controller.data
+        with (
+            patch("gweatherrouting.qt.datacontroller.GRIB_DIR", str(library_root)),
+            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+            patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
+        ):
+            ORIGINAL_STORAGE_LOAD(data.manager.storage)
+            library = DataLibrary(self.controller, self.window)
+            library.show()
+            data.import_forecast(str(fixture))
+            self.wait_for_data()
+            first = data.local_forecasts[0]
+            self.assertNotEqual(first.path, str(fixture))
+            self.assertTrue(fixture.exists())
+            self.assertTrue(
+                library.forecasts.item(0, 0).checkState() == Qt.CheckState.Checked
+            )
+            enabled = list(data.manager.gribs)
+            self.assertEqual(len(enabled), 1)
+            data.set_forecast_enabled(first, False)
+            self.assertFalse(data.manager.gribs)
+            data.set_forecast_enabled(first, True)
+            self.wait_for_data()
+            self.assertEqual(len(data.manager.gribs), 1)
+            data.import_forecast(str(fixture))
+            self.wait_for_data()
+            self.assertEqual(len(list(library_root.glob("*.grib2"))), 2)
+            self.assertEqual(len(data.manager.gribs), 2)
+            self.assertEqual(Path(first.path).read_bytes(), fixture.read_bytes())
+            with patch.object(Storage, "load_or_save_default", ORIGINAL_STORAGE_LOAD):
+                reloaded = GribManagerStorage()
+            self.assertEqual(set(reloaded.opened), {g.name for g in data.manager.gribs})
+            data.remove_forecast(first)
+            self.assertFalse(Path(first.path).exists())
+            self.assertTrue(fixture.exists())
+            bad = self.path / "bad.grib2"
+            bad.write_text("invalid data")
+            data.import_forecast(str(bad))
+            deadline = time.monotonic() + 5
+            while data.task.busy and time.monotonic() < deadline:
+                self.drain()
+                time.sleep(0.005)
+            self.drain()
+            self.assertTrue(data.error)
+            self.assertEqual(len(data.manager.gribs), 1)
+            self.assertEqual(len(list(library_root.glob("*.grib2"))), 1)
+            library.close()
+
+    def test_chart_library_real_vector_and_raster_indexing_persistence_and_palette(
+        self,
+    ):
+        from gweatherrouting.core.settings import SettingsManager
+
+        data = self.controller.data
+        path = self.path / "coast.geojson"
+        path.write_text(
+            json.dumps(
+                {
+                    "type": "FeatureCollection",
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "properties": {},
+                            "geometry": {
+                                "type": "LineString",
+                                "coordinates": [[-123.5, 48.2], [-123.4, 48.3]],
+                            },
+                        }
+                    ],
+                }
+            )
+        )
+        with (
+            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+            patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
+        ):
+            ORIGINAL_STORAGE_LOAD(self.controller.settings)
+            data.import_chart(str(path), "vector")
+            self.wait_for_data()
+            chart = self.controller.charts.charts[0]
+            self.controller.settings.chartPalette = "dark"
+            self.assertEqual(chart.drawer.palette, "dark")
+            second_path = self.path / "second.geojson"
+            second_path.write_bytes(path.read_bytes())
+            data.import_chart(str(second_path), "vector")
+            self.wait_for_data()
+            second_chart = self.controller.charts.charts[1]
+            data.set_chart_enabled(chart, False)
+            self.assertEqual(
+                [e["path"] for e in self.controller.settings.vectorCharts],
+                [str(path), str(second_path)],
+            )
+            with patch.object(Storage, "load_or_save_default", ORIGINAL_STORAGE_LOAD):
+                reloaded = SettingsManager()
+            self.assertFalse(reloaded.vectorCharts[0]["enabled"])
+            self.assertEqual(reloaded.vectorCharts[0]["path"], str(path))
+            data.remove_chart(chart)
+            self.assertTrue(path.exists())
+            data.remove_chart(second_chart)
+            self.assertFalse(self.controller.settings.vectorCharts)
+            from osgeo import gdal, osr
+
+            directory = self.path / "raster"
+            directory.mkdir()
+            raster = gdal.GetDriverByName("GTiff").Create(
+                str(directory / "chart.tif"), 3, 3, 1
+            )
+            raster.SetGeoTransform((-124, 1, 0, 50, 0, -1))
+            spatial = osr.SpatialReference()
+            spatial.ImportFromEPSG(4326)
+            raster.SetProjection(spatial.ExportToWkt())
+            colors = gdal.ColorTable()
+            colors.SetColorEntry(0, (0, 0, 0, 0))
+            colors.SetColorEntry(1, (20, 100, 150, 255))
+            raster.GetRasterBand(1).SetRasterColorTable(colors)
+            raster.GetRasterBand(1).Fill(1)
+            raster = None
+            (directory / "readme.txt").write_text("Ignore sidecars")
+            data.import_chart(str(directory), "raster")
+            self.wait_for_data()
+            self.assertEqual(
+                len(self.controller.settings.rasterCharts[0]["metadata"]), 1
+            )
+            self.assertEqual(len(self.controller.charts.charts), 1)
+            data.import_chart(str(self.path / "missing.geojson"), "vector")
+            deadline = time.monotonic() + 5
+            while data.task.busy and time.monotonic() < deadline:
+                self.drain()
+                time.sleep(0.005)
+            self.drain()
+            self.assertTrue(data.error)
+            self.assertEqual(len(self.controller.charts.charts), 1)
+
+    def test_provider_download_is_staged_and_committed_on_ui_thread(self):
+        import shutil
+        from gweatherrouting.core.gribsources import NOAAGFSSource
+
+        data = self.controller.data
+        fixture = self.wind_fixture()
+        root = self.path / "forecasts"
+        root.mkdir()
+        threads = []
+        data.forecast_loaded.connect(lambda _: threads.append(get_ident()))
+
+        def download(source, identifier, directory, progress):
+            self.assertNotEqual(get_ident(), get_ident_main)
+            self.assertNotEqual(Path(directory), root)
+            destination = Path(directory) / "download.grib2"
+            shutil.copyfile(fixture, destination)
+            progress(50)
+            return str(destination)
+
+        get_ident_main = get_ident()
+        with (
+            patch("gweatherrouting.qt.datacontroller.GRIB_DIR", str(root)),
+            patch.object(NOAAGFSSource, "download", download),
+        ):
+            data.list_forecasts("NOAA GFS", (45, -125, 50, -120))
+            self.wait_for_data()
+            self.assertTrue(data.remote_forecasts)
+            source, row = data.remote_forecasts[0]
+            self.assertEqual(source.bounds, (45, -125, 50, -120))
+            data.download_forecast((source, row))
+            self.wait_for_data()
+            self.assertEqual(threads, [get_ident_main])
+            self.assertEqual(len(data.manager.gribs), 1)
+            self.assertEqual(len(list(root.glob("*.grib2"))), 1)
+            before = list(data.manager.gribs)
+            with patch.object(
+                NOAAGFSSource, "download", side_effect=OSError("network unavailable")
+            ):
+                data.download_forecast((source, row))
+                deadline = time.monotonic() + 5
+                while data.task.busy and time.monotonic() < deadline:
+                    self.drain()
+                    time.sleep(0.005)
+                self.drain()
+            self.assertIn("network unavailable", data.error)
+            self.assertEqual(data.manager.gribs, before)
+
+    def test_noaa_chart_discovery_and_download_share_the_chart_library(self):
+        from gweatherrouting.core.enccharts import ENCCell
+
+        data = self.controller.data
+        cell = ENCCell(
+            "US5TEST1",
+            "Test harbor",
+            20000,
+            1024,
+            [("E", [(48, -124), (49, -124), (49, -123), (48, -123)])],
+        )
+        outside = ENCCell(
+            "US5TEST2",
+            "Other harbor",
+            20000,
+            1024,
+            [("E", [(0, 0), (1, 0), (1, 1), (0, 1)])],
+        )
+        path = self.path / "downloaded.geojson"
+        path.write_text('{"type":"FeatureCollection","features":[]}')
+
+        def load():
+            data.catalog.cells = [cell, outside]
+
+        with (
+            patch.object(data.catalog, "load", side_effect=load),
+            patch.object(data.catalog, "download", return_value=str(path)) as download,
+        ):
+            data.list_charts(48.5, -123.5)
+            self.wait_for_data()
+            self.assertEqual(data.remote_charts, [cell])
+            data.download_chart(cell)
+            self.wait_for_data()
+            download.assert_called_once_with(cell)
+            self.assertTrue(self.controller.charts.charts[0].enabled)
+            self.assertEqual(
+                self.controller.settings.vectorCharts[0]["path"], str(path)
+            )
+
+    def test_connection_start_and_reconnect_worker_keep_playback_and_close_safely(self):
+        started, release = Event(), Event()
+        controller = self.controller
+        controller.offline = False
+
+        def connect():
+            started.set()
+            release.wait(3)
+
+        with (
+            patch.object(controller.connections, "start_polling", side_effect=connect),
+            patch.object(controller.connections, "stop_polling") as stop,
+        ):
+            controller.start_connections()
+            self.assertTrue(started.wait(1))
+            self.load()
+            self.window.play.click()
+            controller.session.advance(5)
+            self.drain()
+            self.assertTrue(controller.session.playing)
+            self.assertEqual(self.window.plots.position, 5)
+            release.set()
+            controller.close()
+            self.assertFalse(controller.connection_task.worker_thread.is_alive())
+            stop.assert_called_once()
+            self.drain()
+
+    def test_data_worker_shutdown_drops_late_result_and_leaves_ui_responsive(self):
+        data = self.controller.data
+        started, release = Event(), Event()
+
+        def slow(_):
+            started.set()
+            release.wait(3)
+            return []
+
+        data.run("forecast-list", "Loading…", slow)
+        self.assertTrue(started.wait(1))
+        self.window.views.setCurrentWidget(self.window.plots)
+        self.drain()
+        self.assertIs(self.window.views.currentWidget(), self.window.plots)
+        self.controller.data.close()
+        release.set()
+        data.task.worker_thread.join(2)
+        self.drain()
+        self.assertEqual(data.remote_forecasts, [])
+
     def test_workspace_views_and_grouped_panels_preserve_playback_and_map(self):
         from PySide6.QtGui import QPalette
 
