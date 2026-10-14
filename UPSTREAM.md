@@ -776,7 +776,8 @@ into `dev`; no upstream PR was created or updated.
   navigation/AIS renderers and routing summary are upstream candidates. Branch:
   `feature/qt-navigation`, based on `dev` at `6fa2aad` after the approved merge
   of fork PR #12. No pending dependency or upstream submission.
-- Review: pending fork PR creation.
+- Review: [fork PR #13](https://github.com/evanlivingston/gweatherrouting/pull/13),
+  open for human review; not merged.
 - Functional commits: `8ec23d3` (shared production Cairo route/track/POI/AIS
   portrayal and routing summary, preserving GTK adapters/import paths),
   `45110ee` (Qt Navigation panel, map actions, native GPX/PFEC workflows and
