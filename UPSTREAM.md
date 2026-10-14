@@ -1028,7 +1028,8 @@ into `dev`; no upstream PR was created or updated.
   route. Current UTC timestamps, wind-bearing units and source/coverage provenance
   match GTK. No interpolation, approximation or source priority changes. Engine
   concurrency serializes private GDAL reads to avoid simultaneous dataset access.
-- Validation: full suite passes 801 tests and 101 subtests; isolated Qt wrapper
+- Validation: full suite passes 801 tests and 101 subtests, repeated after
+  integrating map smoothness PR #17 (81.71s); isolated Qt wrapper
   passes all 73 integration checks. Seven pure checks cover exact engine parity,
   immutable parameters, scenarios/validation, serialized wind reads, blocked
   preflight and automatic preparation hooks. Eight Qt checks cover parameter
