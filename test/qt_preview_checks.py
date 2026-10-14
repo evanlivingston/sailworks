@@ -73,6 +73,8 @@ class QtPreviewChecks(unittest.TestCase):
         self.window = PreviewWindow(
             self.controller, workspace_path=self.path / "workspace-qt.json"
         )
+        for canvas in (self.window.map, self.window.log_map):
+            canvas.marine._renderer._land_mask.directory = self.path / "shoreline"
         self.window.show()
         self.addCleanup(self.window.close)
         self.drain()
@@ -131,7 +133,9 @@ class QtPreviewChecks(unittest.TestCase):
         from gweatherrouting.qt.dockchrome import _FloatingFrame
 
         dock = self.window.nmea_dock
+        self.window._show_panel(dock)
         dock.setFloating(True)
+        dock.resize(430, 600)
         self.drain()
         frame = dock.findChild(_FloatingFrame)
         child = self.window.record
@@ -2344,6 +2348,406 @@ class QtPreviewChecks(unittest.TestCase):
 
         delete(timeline.play_button)
         timeline.hideEvent(QHideEvent())
+
+    def marine_fixture(self):
+        from dataclasses import replace
+        from test.test_marine_fields import field
+        from test.test_marine import dataset, START
+        from gweatherrouting.core.marine.models import Sample, Series
+
+        current = field()
+        tide = dataset()
+        station = replace(
+            tide.station, latitude=49.5, longitude=-125.5, series_codes=("wlp",)
+        )
+        tide = replace(
+            tide,
+            station=station,
+            series=(
+                Series(
+                    "water_level",
+                    "m",
+                    (
+                        Sample(START, 2.5, "2"),
+                        Sample(tide.requested_end, 3.5, "2"),
+                    ),
+                ),
+            ),
+        )
+        self.controller.time_control.set_time(START.astimezone().replace(tzinfo=None))
+        (
+            self.window.map._center_lat,
+            self.window.map._center_lon,
+            self.window.map._zoom,
+        ) = (49.5, -125.5, 9)
+        self.window.map.queue_draw()
+        return current, tide
+
+    def wait_for_marine(self, predicate):
+        deadline = time.monotonic() + 8
+        while not predicate() and time.monotonic() < deadline:
+            self.drain()
+            time.sleep(0.005)
+        self.assertTrue(predicate())
+        self.drain()
+
+    def test_marine_current_sources_group_selection_removal_and_clock_coverage(self):
+        from dataclasses import replace
+
+        current, _ = self.marine_fixture()
+        manager = self.controller.core.marine_manager
+        other = replace(current, east=current.east * 2)
+        manager.fields.add(current)
+        manager.fields.add(other)
+        self.drain()
+        panel = self.window.marine_panels["currents"]
+        self.assertIn("Current data available", panel.coverage.text())
+        root = panel.sources.tree.topLevelItem(0)
+        self.assertEqual(root.childCount(), 2)
+        from shiboken6 import isValid
+
+        child = root.child(0)
+        child.setCheckState(0, Qt.CheckState.Unchecked)
+        self.assertTrue(
+            isValid(child)
+        )  # The checkbox's native signal is still returning.
+        self.drain()
+        root = panel.sources.tree.topLevelItem(0)
+        self.assertEqual(root.checkState(0), Qt.CheckState.PartiallyChecked)
+        self.assertEqual(len(manager.fields.snapshot().fields), 1)
+        root.setCheckState(0, Qt.CheckState.Unchecked)
+        self.drain()
+        self.assertFalse(manager.fields.snapshot().fields)
+        self.assertIsNone(self.window.timeline.bounds)
+        panel.sources.tree.topLevelItem(0).setCheckState(0, Qt.CheckState.Checked)
+        self.drain()
+        self.controller.time_control.increase(hours=2)
+        self.assertIn("Outside the loaded forecast times", panel.coverage.text())
+        root = panel.sources.tree.topLevelItem(0)
+        identifier = root.child(0).data(0, Qt.ItemDataRole.UserRole)
+        panel.sources.tree.setCurrentItem(root.child(0))
+        panel.sources.remove.click()
+        self.drain()
+        self.assertNotIn(identifier, manager.fields.fields)
+        self.assertEqual(len(manager.fields.fields), 1)
+
+    def test_marine_tides_heights_display_selection_and_provenance(self):
+        current, tide = self.marine_fixture()
+        manager = self.controller.core.marine_manager
+        manager.add(tide)
+        manager.enable(tide.id)
+        manager.fields.add(current)
+        self.drain()
+        panel = self.window.marine_panels["tides"]
+        self.assertEqual(panel.sources.item(0, 2).text(), "2.50 m")
+        self.assertIn("1 of 1", panel.coverage.text())
+        panel.toggle.setChecked(False)
+        self.assertFalse(self.window.map.marine.tides_visible)
+        self.assertTrue(self.window.map.marine.currents_visible)
+        self.assertTrue(manager.is_enabled(tide.id))
+        panel.toggle.setChecked(True)
+        panel.sources.item(0, 0).setCheckState(Qt.CheckState.Unchecked)
+        self.drain()
+        self.assertFalse(manager.is_enabled(tide.id))
+        self.window.show_marine_settings("tides")
+        dialog = self.window.marine_settings
+        dialog.sources.selectRow(0)
+        self.assertEqual(dialog.samples.rowCount(), 2)
+        self.assertEqual(dialog.samples.item(0, 4).text(), "2")
+        self.assertIn(tide.id, dialog.provenance.toPlainText())
+        self.assertIn(tide.attribution, dialog.provenance.toPlainText())
+        self.assertIn("datum", dialog.provenance.toPlainText())
+        dialog.fallback.setChecked(True)
+        self.assertTrue(manager.allow_fallback)
+        dialog.sources.item(0, 0).setCheckState(Qt.CheckState.Checked)
+        self.drain()
+        self.assertTrue(manager.is_enabled(tide.id))
+        from dataclasses import replace
+
+        second = replace(tide, attribution="Second saved source")
+        manager.add(second)
+        self.drain()
+        dialog.sources.selectRow(0)
+        dialog.down.click()
+        self.drain()
+        self.assertEqual(
+            [d.id for d in manager.ordered_datasets()], [second.id, tide.id]
+        )
+        self.assertEqual(dialog.selected_id(), tide.id)
+        dialog.up.click()
+        self.drain()
+        self.assertEqual(
+            [d.id for d in manager.ordered_datasets()], [tide.id, second.id]
+        )
+        dialog.remove.click()
+        self.drain()
+        self.assertNotIn(tide.id, manager.datasets)
+        dialog.sources.selectRow(0)
+        dialog.remove.click()
+        self.drain()
+        self.assertEqual(panel.sources.rowCount(), 0)
+
+    def test_marine_current_download_freezes_request_and_commits_on_ui_thread(self):
+        current, _ = self.marine_fixture()
+        manager = self.controller.core.marine_manager
+        panel = self.window.marine_panels["currents"]
+        panel.hours.setValue(3)
+        request = panel.target.area()
+        instant = panel.start.instant()
+        departure = self.window.routing_panel.departure.dateTime()
+        started, release = Event(), Event()
+        self.addCleanup(release.set)
+
+        def download(area, start, end, cancel, report):
+            self.assertEqual((area, start), (request, instant))
+            self.assertEqual((end - start).total_seconds(), 10800)
+            report("Fixture provider downloading…")
+            started.set()
+            release.wait(5)
+            return [current], ["Second provider unavailable"]
+
+        commits = []
+        original_add = manager.fields.add
+
+        def add(value):
+            commits.append(get_ident())
+            return original_add(value)
+
+        with (
+            patch.object(
+                manager.coverage_planner, "download", side_effect=download
+            ) as operation,
+            patch.object(manager.fields, "add", side_effect=add),
+        ):
+            panel.download.click()
+            self.wait_for_marine(started.is_set)
+            self.assertFalse(panel.download.isEnabled())
+            self.assertTrue(panel.jobs.busy)
+            (
+                self.window.map._center_lat,
+                self.window.map._center_lon,
+                self.window.map._zoom,
+            ) = (0, 0, 5)
+            self.window.map.queue_draw()
+            self.controller.time_control.increase(hours=4)
+            release.set()
+            self.wait_for_marine(lambda: not panel.jobs.busy)
+            operation.assert_called_once()
+        self.assertEqual(commits, [get_ident()])
+        self.assertIn(current.id, manager.fields.fields)
+        self.assertIn("Second provider unavailable", panel.status.text())
+        self.assertFalse(self.controller.session.recording)
+        self.assertEqual(departure, self.window.routing_panel.departure.dateTime())
+
+    def test_marine_cancel_and_close_discard_late_downloads_and_progress(self):
+        current, _ = self.marine_fixture()
+        panel = self.window.marine_panels["currents"]
+        manager = self.controller.core.marine_manager
+        for close in (False, True):
+            started, release, returned = Event(), Event(), Event()
+            self.addCleanup(release.set)
+
+            def download(area, start, end, cancel, report):
+                started.set()
+                release.wait(5)
+                report("Late progress")
+                returned.set()
+                return [current], []
+
+            with patch.object(
+                manager.coverage_planner, "download", side_effect=download
+            ):
+                panel.download.click()
+                self.wait_for_marine(started.is_set)
+                if close:
+                    self.window.close()
+                else:
+                    panel.cancel.click()
+                release.set()
+                self.wait_for_marine(returned.is_set)
+                if not close:
+                    self.wait_for_marine(lambda: not panel.jobs.busy)
+                    self.assertIn("Cancelled", panel.status.text())
+                self.assertNotIn(current.id, manager.fields.fields)
+        self.assertTrue(panel.closed)
+        self.assertTrue(panel.jobs.closed)
+        self.assertFalse(panel.timer.isActive())
+        self.assertFalse(self.window.map.marine._renderer._states)
+        self.assertNotIn(panel.sources_changed, manager.handlers["changed"])
+
+    def test_marine_tide_route_download_across_date_line_and_saved_reuse(self):
+        from dataclasses import replace
+        from unittest.mock import Mock
+
+        _, tide = self.marine_fixture()
+        panel = self.window.marine_panels["tides"]
+        station = replace(tide.station, latitude=10, longitude=179.9)
+        tide = replace(tide, station=station)
+        far = replace(station, id="example:far", longitude=0)
+        points = [(10, 179.8), (10, -179.8)]
+        route = SimpleNamespace(name="Date line route", to_list=lambda: list(points))
+        panel.target.core = SimpleNamespace(trackManager=[route], routingManager=[])
+        panel.target.refresh()
+        panel.target.setCurrentIndex(1)
+        panel.hours.setValue(1)
+        panel.provider = Mock()
+        started, release = Event(), Event()
+        self.addCleanup(release.set)
+
+        def discover(cancel):
+            started.set()
+            release.wait(5)
+            return station, far
+
+        panel.provider.discover.side_effect = discover
+        panel.provider.download.return_value = tide
+        panel.download.click()
+        self.wait_for_marine(started.is_set)
+        points[:] = [(0, 0)]
+        release.set()
+        self.wait_for_marine(lambda: not panel.jobs.busy)
+        panel.provider.download.assert_called_once()
+        self.assertEqual(panel.provider.download.call_args.args[0], station)
+        self.assertTrue(panel.manager.is_enabled(tide.id))
+        self.assertEqual(panel.target.currentIndex(), 1)
+        # Reuse a saved interval whose actual samples cover the request.
+        panel.hours.setValue(1)
+        panel.start.set_time(tide.requested_start)
+        points[:] = [(10, 179.8), (10, -179.8)]
+        # The fixture covers 15 minutes, so use an explicit coherent hour window.
+        from gweatherrouting.core.marine.models import Series, Sample
+        from datetime import timedelta
+
+        end = tide.requested_start + timedelta(hours=1)
+        tide = replace(
+            tide,
+            requested_end=end,
+            series=(
+                Series(
+                    "water_level",
+                    "m",
+                    tuple(
+                        Sample(
+                            tide.requested_start + timedelta(minutes=15 * i), 2.5, "2"
+                        )
+                        for i in range(5)
+                    ),
+                ),
+            ),
+        )
+        panel.manager.add(tide)
+        panel.manager.enable(tide.id, False)
+        panel.provider.download.reset_mock()
+        panel.download.click()
+        self.wait_for_marine(lambda: not panel.jobs.busy)
+        panel.provider.download.assert_not_called()
+        self.assertTrue(panel.manager.is_enabled(tide.id))
+        self.assertIn("reused 1", panel.status.text())
+
+    def test_marine_panel_preferences_and_download_start_survive_view_switch(self):
+        from datetime import timedelta
+
+        current, _ = self.marine_fixture()
+        self.controller.core.marine_manager.fields.add(current)
+        panel = self.window.marine_panels["currents"]
+        instant = panel.start.instant()
+        self.controller.time_control.increase(hours=1)
+        self.assertEqual(panel.start.instant(), instant + timedelta(hours=1))
+        panel.start.edited()
+        self.controller.time_control.increase(hours=1)
+        self.assertEqual(panel.start.instant(), instant + timedelta(hours=1))
+        self.window.marine_action.trigger()
+        self.drain()
+        self.assertFalse(
+            self.window.marine_panels["currents"].visibleRegion().isEmpty()
+        )
+        self.assertTrue(self.window.marine_open["currents"])
+        self.assertTrue(self.window.marine_open["tides"])
+        panel.toggle.setChecked(False)
+        self.window.views.setCurrentWidget(self.window.logs_view)
+        self.assertTrue(self.window.marine_docks["currents"].isHidden())
+        self.assertFalse(self.window.marine_action.isVisible())
+        self.window.workspace.save()
+        payload = self.window.workspace.store.load()
+        self.assertEqual(
+            payload["marine"],
+            {
+                "open": {"currents": True, "tides": True},
+                "currents": False,
+                "tides": True,
+            },
+        )
+        self.restart_workspace()
+        self.assertFalse(self.window.marine_panels["currents"].toggle.isChecked())
+        self.assertFalse(self.window.marine_panels["currents"].jobs.busy)
+        self.window.views.setCurrentWidget(self.window.map)
+        self.assertFalse(self.window.marine_docks["currents"].isHidden())
+        self.window.views.setCurrentWidget(self.window.logs_view)
+        self.window.reset_panels()
+        self.assertFalse(any(self.window.marine_open.values()))
+
+    def test_marine_overlay_uses_shared_worker_and_cursor_values(self):
+        import cairo
+
+        current, tide = self.marine_fixture()
+        manager = self.controller.core.marine_manager
+        manager.fields.add(current)
+        manager.add(tide)
+        manager.enable(tide.id)
+        canvas = self.window.map
+        renderer = canvas.marine._renderer
+        with patch.object(
+            renderer._land_mask,
+            "surface",
+            side_effect=lambda view: cairo.ImageSurface(
+                cairo.FORMAT_A8, view.width, view.height
+            ),
+        ):
+            canvas.queue_draw()
+            canvas.repaint()
+            self.wait_for_marine(
+                lambda: renderer._states.get(canvas) is not None
+                and renderer._states[canvas].frame is not None
+            )
+            job, surface = renderer._states[canvas].frame
+            self.assertTrue(any(bytes(surface.get_data())))
+            self.assertEqual(job.palette, tide.requested_start)
+            self.assertEqual(renderer.schedule, self.controller.scheduler.submit)
+            self.assertIn(
+                "Current 4.3 kn toward 27°T", canvas.marine.cursor_text(49.5, -125.5)
+            )
+            canvas._hover(QPointF(canvas.width() / 2, canvas.height() / 2))
+            self.assertIn("Test currents", self.window.cursor_status.text())
+            canvas.hide()
+            self.assertFalse(renderer._states)
+        self.assertFalse(self.window.log_map.marine.visible)
+
+    def test_marine_account_controls_use_system_store_without_saved_secrets(self):
+        from test.test_marine_credentials import MemoryKeyring
+        from gweatherrouting.core.marine.credentials import SystemCredentialStore
+        from gweatherrouting.core.marine.spatialproviders import CopernicusProvider
+
+        provider = CopernicusProvider(SystemCredentialStore(MemoryKeyring()))
+        self.controller.core.marine_manager.coverage_planner.worldwide = provider
+        self.window.show_settings()
+        account = self.window.settings_dialog.currents
+        account.username.setText("sailor")
+        account.password.setText("test-secret")
+        account.save.click()
+        self.assertEqual(account.password.text(), "")
+        self.wait_for_marine(lambda: not account.task.busy)
+        self.assertEqual(provider.credentials, ("sailor", "test-secret"))
+        self.assertTrue(provider.credentials_saved)
+        self.window.workspace.save()
+        self.assertNotIn("test-secret", self.window.workspace.store.path.read_text())
+        account.forget.click()
+        self.wait_for_marine(lambda: not account.task.busy)
+        self.assertIsNone(provider.credentials)
+        self.window.settings_dialog.tabs.setCurrentWidget(account)
+        self.drain()
+        account.password.setText("draft-secret")
+        self.window.settings_dialog.hide()
+        self.assertEqual(account.password.text(), "")
 
     def test_frontend_does_not_import_gtk(self):
         self.assertNotIn("gi.repository.Gtk", sys.modules)
