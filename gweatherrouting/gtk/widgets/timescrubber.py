@@ -2,6 +2,8 @@
 
 from datetime import datetime
 
+from gweatherrouting.core.forecasttimeline import forecast_intervals, forecast_bounds
+
 import gi
 
 gi.require_version("Gtk", "3.0")
@@ -55,34 +57,14 @@ class TimeScrubber(Gtk.Box):
         self.refresh()
 
     def _intervals(self):
-        intervals = []
-        if self.gribs:
-            for grib in self.gribs.gribs:
-                start = grib.start_time.timestamp()
-                intervals.append((start, start + grib.last_forecast * 3600))
-        if self.marine:
-            intervals.extend(
-                (float(f.times[0]), float(f.times[-1]))
-                for f in self.marine.fields.fields.values()
-                if f.id not in self.marine.fields.excluded
-            )
-            intervals.extend(
-                (d.requested_start.timestamp(), d.requested_end.timestamp())
-                for d in self.marine.ordered_datasets()
-                if self.marine.is_enabled(d.id)
-            )
-        return tuple(sorted(intervals))
+        return forecast_intervals(self.gribs, self.marine)
 
     def refresh(self, *args):
         intervals = self._intervals()
         if intervals == self._signature:
             return True
         self._signature = intervals
-        self.bounds = (
-            (min(a for a, b in intervals), max(b for a, b in intervals))
-            if intervals
-            else None
-        )
+        self.bounds = forecast_bounds(intervals)
         self._cancel_commit()
         self._syncing = True
         if self.bounds:

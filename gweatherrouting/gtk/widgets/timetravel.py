@@ -15,7 +15,6 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
 import os
-from datetime import datetime
 
 import gi
 
@@ -23,22 +22,9 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk
 
 from gweatherrouting.core import TimeControl
+from gweatherrouting.core.forecasttimeline import TIME_UNITS, step_forecast_time
 from gweatherrouting.gtk.timepickerdialog import TimePickerDialog
 from .timescrubber import TimeScrubber
-
-TIME_UNITS = {
-    "30s": 30,
-    "1m": 1 * 60,
-    "5m": 5 * 60,
-    "15m": 15 * 60,
-    "30m": 30 * 60,
-    "1h": 60 * 60,
-    "3h": 180 * 60,
-    "6h": 360 * 60,
-    "12h": 720 * 60,
-    "24h": 1440 * 60,
-    "1d": 1440 * 60,
-}
 
 
 class TimeTravelWidget(Gtk.Box):
@@ -136,12 +122,8 @@ class TimeTravelWidget(Gtk.Box):
         self.time_control.set_time(instant)
 
     def _step(self, seconds):
-        if self.scrubber and self.scrubber.bounds:
-            start, end = self.scrubber.bounds
-            stamp = max(start, min(end, self.time_control.time.timestamp() + seconds))
-            self.time_control.set_time(datetime.fromtimestamp(stamp))
-        else:
-            self.time_control.increase(seconds=seconds)
+        bounds = self.scrubber.bounds if self.scrubber else None
+        step_forecast_time(self.time_control, seconds, bounds)
 
     def on_foward_click(self, event):
         self._step(self.seconds)
