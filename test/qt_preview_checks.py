@@ -12,13 +12,16 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtWidgets import QApplication, QToolBar
+from PySide6.QtWidgets import QApplication, QToolBar, QMessageBox
 
 from gweatherrouting.core.datasource import NMEADataPacket
 from gweatherrouting.core.storage import Storage
 
 ORIGINAL_STORAGE_SAVE = Storage.save
 ORIGINAL_STORAGE_LOAD = Storage.load_or_save_default
+from gweatherrouting.core.polarmanager import PolarManager
+
+ORIGINAL_POLAR_REFRESH = PolarManager.refresh_local_polars
 from gweatherrouting.core.mapviewport import MapPoint, MapViewport
 from gweatherrouting.qt.controller import SessionController
 from gweatherrouting.qt.window import PreviewWindow
@@ -52,6 +55,7 @@ class QtPreviewChecks(unittest.TestCase):
             load_charts=False,
         )
         self.controller.core.polar_manager.polars_files = ["first317.pol"]
+        self.controller.core.polar_manager.polars = ["first317.pol"]
         self.controller.core.polar_manager.get_path = lambda name: str(
             Path(__file__).parents[1] / "gweatherrouting/data/polars" / name
         )
@@ -955,6 +959,7 @@ class QtPreviewChecks(unittest.TestCase):
         )
         controller.timer.stop()
         controller.core.polar_manager.polars_files = ["first317.pol"]
+        controller.core.polar_manager.polars = ["first317.pol"]
         for route in routes:
             controller.core.routingManager.append(route)
         self.controller = controller
@@ -1172,6 +1177,231 @@ class QtPreviewChecks(unittest.TestCase):
         self.window.close()
         self.assertEqual(json.loads(gtk.read_text())["state"]["active_tab"], "Polars")
         self.assertFalse(workspace.timer.isActive())
+
+    def polar_library(self):
+        from gweatherrouting.core.polarmanager import PolarManager
+
+        refresh_patch = patch(
+            "gweatherrouting.core.polarmanager.PolarManager.refresh_local_polars",
+            ORIGINAL_POLAR_REFRESH,
+        )
+        refresh_patch.start()
+        self.addCleanup(refresh_patch.stop)
+        root = self.path / "polars"
+        root.mkdir(exist_ok=True)
+        for target in (
+            "gweatherrouting.core.polarmanager.POLAR_DIR",
+            "gweatherrouting.qt.polarcontroller.POLAR_DIR",
+        ):
+            mock = patch(target, str(root))
+            mock.start()
+            self.addCleanup(mock.stop)
+        mock = patch("gweatherrouting.core.storage.DATA_DIR", str(self.path))
+        mock.start()
+        self.addCleanup(mock.stop)
+        self.controller.polars.close()
+        with (
+            patch.object(Storage, "load_or_save_default", ORIGINAL_STORAGE_LOAD),
+            patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
+        ):
+            manager = PolarManager()
+        self.controller.core.polar_manager = manager
+        from gweatherrouting.qt.polarcontroller import PolarController
+
+        self.controller.polars = PolarController(self.controller)
+        self.controller.polars.changed.connect(self.window.routing_panel.refresh_polars)
+        self.controller.polars.use_requested.connect(self.window._use_polar)
+        self.window.routing_panel.refresh_polars()
+        self.window.show_polars()
+        panel = self.window.library_dialog.polars_panel
+        return root, panel
+
+    def wait_for_polars(self, error=False):
+        deadline = time.monotonic() + 8
+        while self.controller.polars.task.busy and time.monotonic() < deadline:
+            self.drain()
+            time.sleep(0.005)
+        self.drain()
+        self.assertFalse(self.controller.polars.task.busy)
+        if not error:
+            self.assertFalse(self.controller.polars.error, self.controller.polars.error)
+
+    def test_polar_library_native_import_selection_preview_table_and_shared_disk_reload(
+        self,
+    ):
+        import shutil
+        from gweatherrouting.core.polarmanager import PolarManager
+
+        root, panel = self.polar_library()
+        source = self.path / "custom.pol"
+        shutil.copyfile(
+            Path(__file__).parents[1] / "gweatherrouting/data/polars/first317.pol",
+            source,
+        )
+        with (
+            patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
+            patch(
+                "gweatherrouting.qt.polarlibrary.QFileDialog.getOpenFileName",
+                return_value=(str(source), ""),
+            ) as picker,
+        ):
+            panel.import_button.click()
+            self.wait_for_polars()
+            picker.assert_called_once()
+            self.assertEqual(panel.selected_name(), "custom.pol")
+            self.assertIn(
+                "custom.pol",
+                [
+                    self.window.routing_panel.polar.itemText(i)
+                    for i in range(self.window.routing_panel.polar.count())
+                ],
+            )
+            panel.preview_button.click()
+            self.wait_for_polars()
+            preview = panel.preview_dialog
+            self.assertIsNotNone(preview)
+            self.assertTrue(preview.isVisible())
+            from gweatherrouting.core.polarfiles import read_polar
+
+            polar = read_polar(source)
+            self.assertEqual(preview.table.rowCount(), len(polar.twa))
+            self.assertEqual(preview.table.columnCount(), len(polar.tws) + 1)
+            self.assertEqual(
+                float(preview.table.item(10, 3).text()), polar.speed_table[10][2]
+            )
+            line = preview.axis.lines[0]
+            wind_index = next(i for i, wind in enumerate(polar.tws) if wind > 0)
+            self.assertEqual(list(line.get_xdata()), polar.twa)
+            self.assertEqual(
+                list(line.get_ydata()), [row[wind_index] for row in polar.speed_table]
+            )
+            preview.close()
+            panel.use_button.click()
+            self.assertEqual(
+                self.window.routing_panel.polar.currentText(), "custom.pol"
+            )
+            self.assertIs(self.window.views.currentWidget(), self.window.map)
+            self.assertFalse(self.window.library_dialog.isVisible())
+            panel.local.item(panel.names.index("custom.pol"), 0).setCheckState(
+                Qt.CheckState.Unchecked
+            )
+            self.drain()
+            self.assertNotIn(
+                "custom.pol",
+                [
+                    self.window.routing_panel.polar.itemText(i)
+                    for i in range(self.window.routing_panel.polar.count())
+                ],
+            )
+            panel.local.item(panel.names.index("custom.pol"), 0).setCheckState(
+                Qt.CheckState.Checked
+            )
+            self.wait_for_polars()
+            with patch.object(Storage, "load_or_save_default", ORIGINAL_STORAGE_LOAD):
+                reloaded = PolarManager()
+            self.assertIn("custom.pol", reloaded.polars)
+            self.assertTrue(source.exists())
+            self.assertEqual((root / "custom.pol").read_bytes(), source.read_bytes())
+
+    def test_polar_orc_filter_download_metadata_failure_and_installed_selection(self):
+        from test.test_polarmanager import ORC_DATA, response
+
+        root, panel = self.polar_library()
+        entries = [
+            ["USA/123", "Test yacht", "First 31.7"],
+            ["CAN/456", "Other yacht", "J/120"],
+        ]
+        with patch(
+            "gweatherrouting.core.polarfiles.requests.get",
+            return_value=response(entries),
+        ):
+            panel.fetch_button.click()
+            self.wait_for_polars()
+        self.assertEqual(panel.catalog_filter.rowCount(), 2)
+        panel.search.setText("first")
+        self.drain()
+        self.assertEqual(panel.catalog_filter.rowCount(), 1)
+        panel.remote.selectRow(0)
+        self.drain()
+        self.assertTrue(panel.download_button.isEnabled())
+        with (
+            patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
+            patch(
+                "gweatherrouting.core.polarfiles.requests.get",
+                return_value=response(ORC_DATA),
+            ),
+        ):
+            panel.download_button.click()
+            self.wait_for_polars()
+        self.assertTrue((root / "USA_123.pol").exists())
+        self.assertEqual(
+            self.controller.core.polar_manager.get_metadata("USA_123.pol")["name"],
+            "Test yacht",
+        )
+        self.assertFalse(panel.download_button.isEnabled())
+        panel.search.setText("other")
+        panel.remote.selectRow(0)
+        self.drain()
+        import requests
+
+        previous = list(self.controller.core.polar_manager.polars)
+        with patch(
+            "gweatherrouting.core.polarfiles.requests.get",
+            side_effect=requests.ConnectionError("offline"),
+        ):
+            panel.download_button.click()
+            self.wait_for_polars(error=True)
+        self.assertIn("offline", self.controller.polars.error)
+        self.assertEqual(self.controller.core.polar_manager.polars, previous)
+        self.assertFalse((root / "CAN_456.pol").exists())
+
+    def test_polar_changes_block_while_routing_and_remove_selected_polar_updates_selector(
+        self,
+    ):
+        root, panel = self.polar_library()
+        manager = self.controller.core.polar_manager
+        selected = self.window.routing_panel.polar.currentText()
+        self.controller.routing.busy = True
+        self.controller.routing.changed.emit()
+        self.assertFalse(panel.import_button.isEnabled())
+        self.assertFalse(self.controller.polars.import_file(root / selected))
+        self.controller.polars.remove(selected)
+        self.assertTrue((root / selected).exists())
+        self.controller.routing.busy = False
+        self.controller.routing.changed.emit()
+        with patch(
+            "gweatherrouting.qt.polarlibrary.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ):
+            panel.local.selectRow(panel.names.index(selected))
+            panel.remove_button.click()
+        self.assertNotIn(selected, manager.polars)
+        self.assertNotIn(selected, manager.polars_files)
+        self.assertFalse((root / selected).exists())
+        self.assertNotEqual(self.window.routing_panel.polar.currentText(), selected)
+        self.assertFalse(self.window.routing_panel.calculate.isEnabled())
+
+    def test_polar_worker_close_drops_late_install_without_enabling_it(self):
+        root, panel = self.polar_library()
+        started, release = Event(), Event()
+        polars = self.controller.polars
+
+        def slow(_):
+            started.set()
+            release.wait(3)
+            return ("late.pol", None)
+
+        self.assertTrue(polars.run("install", "Importing…", slow))
+        self.assertTrue(started.wait(1))
+        self.window.views.setCurrentWidget(self.window.plots)
+        self.drain()
+        self.assertIs(self.window.views.currentWidget(), self.window.plots)
+        polars.close()
+        release.set()
+        polars.task.worker_thread.join(2)
+        self.drain()
+        self.assertNotIn("late.pol", polars.manager.polars)
+        self.assertEqual(polars.error, "")
 
     def test_frontend_does_not_import_gtk(self):
         self.assertNotIn("gi.repository.Gtk", sys.modules)

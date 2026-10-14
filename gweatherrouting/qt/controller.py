@@ -15,6 +15,7 @@ from .scheduling import UiScheduler
 from .routingcontroller import RoutingController
 from .backgroundtask import BackgroundTask
 from .datacontroller import DataController
+from .polarcontroller import PolarController
 
 
 class SessionController(QObject):
@@ -63,6 +64,7 @@ class SessionController(QObject):
         self.routing = RoutingController(self)
         self.connection_task = BackgroundTask(self)
         self.data = DataController(self)
+        self.polars = PolarController(self)
         self.points = []
         self.point_revision = 0
         self.generation = 0
@@ -165,6 +167,7 @@ class SessionController(QObject):
         self.closed = True
         self.routing.close()
         self.timer.stop()
+        self.polars.close()
         self.data.close()
         self.connection_task.close(wait=True)
         self.connections.stop_polling()

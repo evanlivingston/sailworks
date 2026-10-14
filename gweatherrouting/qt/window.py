@@ -96,6 +96,9 @@ class PreviewWindow(QMainWindow):
         self.nmea_dock.setWidget(self._nmea_panel())
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.nmea_dock)
         self.routing_panel = RoutingPanel(controller)
+        controller.polars.changed.connect(self.routing_panel.refresh_polars)
+        controller.polars.use_requested.connect(self._use_polar)
+        self.routing_panel.manage_polars.clicked.connect(self.show_polars)
         self.routing_dock = QDockWidget("Routing", self)
         self.routing_dock.setObjectName("routing")
         self.routing_dock.setWidget(self.routing_panel)
@@ -115,6 +118,7 @@ class PreviewWindow(QMainWindow):
         open_log.setShortcut(QKeySequence.StandardKey.Open)
         file_menu.addAction(open_forecast)
         file_menu.addAction("Data Library…", self.show_library)
+        file_menu.addAction("Polars…", self.show_polars)
         file_menu.addSeparator()
         file_menu.addAction("Close window", self.close).setShortcut(
             QKeySequence.StandardKey.Close
@@ -471,6 +475,20 @@ class PreviewWindow(QMainWindow):
         self._ensure_library()
         if not self.controller.data.task.busy:
             self.controller.data.scan_forecasts()
+
+    def show_polars(self):
+        self._ensure_library()
+        assert self.library_dialog is not None
+        self.library_dialog.tabs.setCurrentWidget(self.library_dialog.polars_panel)
+
+    def _use_polar(self, name):
+        index = self.routing_panel.polar.findText(name)
+        if index >= 0:
+            self.routing_panel.polar.setCurrentIndex(index)
+            self.routing_panel.pages.setCurrentIndex(0)
+            self._show_panel(self.routing_dock)
+            if self.library_dialog is not None:
+                self.library_dialog.hide()
 
     def _forecast_loaded(self, grib):
         self.forecast.setDateTime(QDateTime(grib.start_time))

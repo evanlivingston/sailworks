@@ -40,7 +40,10 @@ class RoutingController(QObject):
     def start(self, request):
         if self.busy or self.closed:
             return False
-        if self.session_controller.data.task.busy:
+        if (
+            self.session_controller.data.task.busy
+            or self.session_controller.polars.task.busy
+        ):
             self.error = (
                 "Wait for the Data Library operation to finish before calculating."
             )

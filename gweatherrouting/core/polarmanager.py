@@ -1,9 +1,10 @@
 import logging
 import os
 import shutil
-from typing import List
+import tempfile
+from pathlib import Path
 
-import requests
+from .polarfiles import download_orc_file, install_polar
 
 from gweatherrouting.common import resource_path
 from gweatherrouting.core.storage import POLAR_DIR, Storage
@@ -30,88 +31,105 @@ class PolarManager(EventDispatcher):
 
         self.refresh_local_polars()
 
-        if self.storage.enabled:
-            logger.info("Loading enabled polars from storage: %s", self.storage.enabled)
-            for p in self.storage.enabled:
-                if p in self.polars_files:
-                    self.enable(p)
-        else:
-            self.storage.enabled = []
-            logger.info(
-                "No enabled polars found in storage, initializing with default polars."
-            )
-            self.enable(self.polars_files[0]) if self.polars_files else None
+        if self.storage.enabled is None:
+            self.storage.enabled = self.polars_files[:1]
+        self.polars = sorted(set(self.storage.enabled).intersection(self.polars_files))
+        self.store_enabled_polars()
 
     def refresh_local_polars(self):
         if not os.listdir(POLAR_DIR):
-            default_polar = os.listdir(resource_path("gweatherrouting", "data/polars/"))
-            for p in default_polar:
-                target_filepath = os.path.join(POLAR_DIR, p)
-                polar_file_path = resource_path("gweatherrouting", f"data/polars/{p}")
-                shutil.copyfile(polar_file_path, target_filepath)
+            for path in Path(resource_path("gweatherrouting", "data/polars/")).glob(
+                "*.pol"
+            ):
+                shutil.copyfile(path, Path(POLAR_DIR) / path.name)
+        self.polars_files = sorted(
+            p.name
+            for p in Path(POLAR_DIR).iterdir()
+            if p.is_file() and p.suffix.lower() == ".pol"
+        )
+        self.polars = sorted(set(self.polars).intersection(self.polars_files))
 
-        for p in os.listdir(POLAR_DIR):
-            self.polars_files.append(p)
-            self.polars.append(p)
-        self.polars_files.sort()
+    def _save_library(self, enabled, metadata):
+        previous = {"enabled": self.storage.enabled, "metadata": self.storage.metadata}
+        saved_enabled = sorted(set(enabled))
+        values = {"enabled": saved_enabled, "metadata": dict(metadata)}
+        for key, value in values.items():
+            dict.__setitem__(self.storage, key, value)
+            self.storage.__dict__[key] = value
+        try:
+            self.storage.save()
+        except Exception:
+            for key, value in previous.items():
+                dict.__setitem__(self.storage, key, value)
+                self.storage.__dict__[key] = value
+            raise
+        self.polars = saved_enabled
 
     def store_enabled_polars(self):
-        ss: List = []
-        for x in self.polars:
-            try:
-                ss.index(x)
-            except:
-                ss.append(x)
-        self.storage.enabled = ss
+        self._save_library(self.polars, self.storage.metadata)
 
     def load(self, path):
-        logger.info("Loading polar %s", path)
-        polar_name = path.split("/")[-1]
-        self.polars.append(polar_name)
+        self.add_polar_file(path)
 
     def enable(self, name):
-        if name not in self.polars:
-            self.polars.append(name)
-        if name not in self.storage.enabled:
-            self.storage.enabled.append(name)
-            self.storage.save()
-        self.polars.sort()
-        self.store_enabled_polars()
-        # self.dispatch("polars-list-updated", self.polars)
+        if name not in self.polars_files:
+            raise ValueError("Choose an installed polar")
+        self._save_library([*self.polars, name], self.storage.metadata)
+        self.dispatch("polars-list-updated", self.polars)
 
     def disable(self, name):
-        if name in self.storage.enabled:
-            self.polars.remove(name)
-            # TODO: Remove from storage
-            self.polars.sort()
-            self.storage.save()
-
-        self.polars.sort()
-        self.store_enabled_polars()
+        self._save_library([p for p in self.polars if p != name], self.storage.metadata)
         self.dispatch("polars-list-updated", self.polars)
 
     def is_enabled(self, name) -> bool:
         return name in self.polars
 
+    def get_local_path(self, name):
+        root = Path(POLAR_DIR).resolve()
+        path = root / name
+        if (
+            Path(name).name != name
+            or path.parent != root
+            or name not in self.polars_files
+        ):
+            raise ValueError("Choose an installed polar")
+        return str(path)
+
     def delete_polar(self, name):
-        file_path = os.path.join(POLAR_DIR, name)
-        if os.path.exists(file_path):
-            os.remove(file_path)
-            logger.info(f"Removed polar file: {file_path}")
-            self.polars_files.remove(name)
-            if name in self.polars:
-                self.polars.remove(name)
+        path = Path(self.get_local_path(name))
+        metadata = dict(self.storage.metadata)
+        metadata.pop(name, None)
+        with tempfile.TemporaryDirectory(dir=POLAR_DIR) as directory:
+            staged = Path(directory) / name
+            path.replace(staged)
+            try:
+                self._save_library([p for p in self.polars if p != name], metadata)
+            except Exception:
+                staged.replace(path)
+                raise
+        self.polars_files.remove(name)
+        self.dispatch("polars-list-updated", self.polars)
+
+    def register_polar_file(self, name, metadata=None, dispatch=True):
+        path = Path(POLAR_DIR) / name
+        if (
+            Path(name).name != name
+            or not path.is_file()
+            or path.suffix.lower() != ".pol"
+        ):
+            raise ValueError("Choose an installed .pol file")
+        saved = dict(self.storage.metadata)
+        if metadata is not None:
+            saved[name] = metadata
+        self._save_library([*self.polars, name], saved)
+        self.polars_files = sorted(set([*self.polars_files, name]))
+        if dispatch:
             self.dispatch("polars-list-updated", self.polars)
 
     def add_polar_file(self, polar_path):
-        file_name = os.path.basename(polar_path)
-        file_path = os.path.join(POLAR_DIR, file_name)
-        shutil.copyfile(polar_path, file_path)
-        logger.info(f"Copied {polar_path} to {file_path}")
-        self.polars_files.append(file_name)
-        self.polars_files.sort()
-        self.enable(file_name)
-        self.dispatch("polars-list-updated", self.polars)
+        name = install_polar(polar_path, POLAR_DIR)
+        self.register_polar_file(name)
+        return name
 
     def get_metadata(self, name):
         return self.storage.metadata.get(name, {})
@@ -123,45 +141,14 @@ class PolarManager(EventDispatcher):
         return os.path.join(POLAR_DIR, name)
 
     def download_orc_polar(self, orc_polar_name, dispatch=True):
-        country_code = orc_polar_name.split("/")[0]
-        sailboat_name = orc_polar_name.split("/")[1]
-        polar_url = f"https://raw.githubusercontent.com/jieter/orc-data/refs/heads/master/site/data/{country_code}/{sailboat_name}.json"  # noqa: E501
-        try:
-            r = requests.get(polar_url)
-            polar_json = r.json()
-        except:
-            logger.error(f"Failed to download orc polar from {polar_url}")
-            return
+        from .polarfiles import orc_filename
 
-        file_name = orc_polar_name.replace("/", "_")
-        file_name = f"{file_name}.pol"
-        if file_name in self.polars_files:
-            logger.info(f"Polar {file_name} already exists, skipping download")
-            return
-        destination_path = os.path.join(POLAR_DIR, file_name)
-        try:
-            vpp_data = polar_json["vpp"]
-            json_to_polars(vpp_data, destination_path)
-
-            self.storage.metadata[file_name] = {
-                "sail": polar_json.get("sailnumber", orc_polar_name),
-                "name": polar_json.get("name", sailboat_name),
-                "type": polar_json.get("boat", {}).get("type", ""),
-            }
-            self.storage.save()
-
-            logger.info(
-                f"Downloaded and converted orc polar {orc_polar_name} to {destination_path}"
-            )
-            self.polars_files.append(file_name)
-            self.polars.append(file_name)
-            self.polars_files.sort()
-            self.enable(file_name)
-            if dispatch:
-                self.dispatch("polars-list-updated", self.polars)
-        except Exception as e:
-            logger.error(f"Failed to process orc polar data from {polar_url}: {e}")
-            raise e
+        filename = orc_filename(orc_polar_name)
+        if filename in self.polars_files:
+            return filename
+        name, metadata = download_orc_file(orc_polar_name, POLAR_DIR)
+        self.register_polar_file(name, metadata, dispatch=dispatch)
+        return name
 
 
 def json_to_polars(json_data, destination_path):

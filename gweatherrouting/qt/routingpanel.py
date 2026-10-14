@@ -65,8 +65,10 @@ class RoutingPanel(QWidget):
         form = QFormLayout()
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
         self.polar = QComboBox()
-        self.polar.addItems(controller.core.polar_manager.polars_files)
+        self.polar.addItems(controller.core.polar_manager.polars)
         form.addRow("Polar", self.polar)
+        self.manage_polars = QPushButton("Manage polars…")
+        form.addRow(self.manage_polars)
         self.algorithm = QComboBox()
         for entry in weatherrouting.list_routing_algorithms():
             label = (
@@ -166,6 +168,20 @@ class RoutingPanel(QWidget):
         self.routing.completed.connect(self._completed)
         controller.boat_changed.connect(lambda _: self.refresh())
         self.refresh_routes()
+        self.refresh()
+
+    def refresh_polars(self):
+        names = list(self.controller.core.polar_manager.polars)
+        if names == [self.polar.itemText(i) for i in range(self.polar.count())]:
+            return
+        selected = self.polar.currentText()
+        self.polar.blockSignals(True)
+        self.polar.clear()
+        self.polar.addItems(names)
+        index = self.polar.findText(selected)
+        self.polar.setCurrentIndex(index if index >= 0 else (0 if names else -1))
+        self.polar.blockSignals(False)
+        self.polar.currentIndexChanged.emit(self.polar.currentIndex())
         self.refresh()
 
     @staticmethod
