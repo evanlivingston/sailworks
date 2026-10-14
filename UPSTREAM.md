@@ -631,7 +631,8 @@ into `dev`; no upstream PR was created or updated.
   an upstream candidate. Branch: `feature/qt-workspace-parity`, based on `dev`
   at `77a9e2b` after the approved merge of fork PR #11. No pending dependency
   or upstream submission.
-- Review: pending fork PR creation.
+- Review: [fork PR #12](https://github.com/evanlivingston/gweatherrouting/pull/12),
+  open for human review; not merged.
 - Functional commits: `7f34bb8` (shared production polar renderer and GTK
   adapter), `1bec52e` (Qt workspace, panels, plots and preference integration).
 - Scope: preserve GTK's Charts/Logs/Polars workspace organization and contextual
