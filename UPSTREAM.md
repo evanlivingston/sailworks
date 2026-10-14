@@ -996,3 +996,26 @@ into `dev`; no upstream PR was created or updated.
 - Intended upstream scope: extract shared marine portrayal and pure acquisition/
   presentation helpers independently from Qt UI and fork documentation if requested.
 - Usage and assessment: `docs/qt-first-pass.md`, `docs/qt-parity.md`.
+
+## Qt map pan and zoom smoothness
+
+- Status: Qt UI is fork-only. Branch: `feature/qt-map-smooth-pan`, based on
+  `dev` with no pending prerequisite. No upstream submission.
+- Review: [fork PR #17](https://github.com/evanlivingston/gweatherrouting/pull/17),
+  targeted at `dev`.
+- Scope: cache the Qt base, navigation and dashboard layer images with data
+  keys and shift them for pans within 128px; ease wheel input toward an
+  accumulated zoom target with the cursor anchor pinned, painting scaled
+  previews until convergence; defer overlay-driven invalidations arriving
+  mid-gesture to release/settle. Log-track polylines are capped at 1500
+  points. Shared renderers and the GTK frontend are untouched.
+- Fidelity: cached track projections remap affinely into moved views, verified
+  bit-exact against fresh projection; zoom lands exactly on the accumulated
+  target with zero anchor drift. Exposed pan edges show flat sea color until
+  the next sharp rebuild.
+- Validation: all 57 isolated Qt checks pass; flake8 clean on changed files.
+  Offscreen measurement with a 4,000-point track: zoom frame 4.1 ms down to
+  2.0 ms. Behavior checks confirm zero rebuilds on small pans, single
+  rebuilds on large jumps/settle/data changes, and deferred mid-drag worker
+  completions.
+- Intended upstream scope: none; Qt UI work stays out of parent-project PRs.

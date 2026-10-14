@@ -1,6 +1,7 @@
 """Qt canvas using the shared Mercator projection and a Cairo image bridge."""
 
 import math
+import time
 
 import cairo
 import numpy as np
@@ -25,26 +26,51 @@ class TrackMap(QWidget, MercatorProjection):
     navigation_request = Signal(str, object)
     cursor_readout = Signal(str)
 
+    # Pan distance (logical pixels) a cached layer image may be shifted
+    # instead of re-rendered. Mirrors the GTK renderers' reuse margins.
+    _REUSE_MARGIN = 128
+    # Wheel zoom events closer than this settle into one sharp re-render,
+    # with a scaled preview painted in between (no overlay job storm).
+    _ZOOM_SETTLE_MS = 250
+    # Per-tick zoom easing rate and snap distance for the smooth animation.
+    _ZOOM_EASE_RATE = 14.0
+    _ZOOM_SNAP = 0.004
+    # Cap for the log-track polyline; denser logs are subsampled uniformly,
+    # which only drops sub-pixel detail while keeping every paint cheap.
+    _MAX_TRACK_POLYLINE = 1500
+
     def __init__(self, controller, parent=None, time_control=None):
         super().__init__(parent)
         self.setMinimumSize(240, 180)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self._center_lat, self._center_lon, self._zoom = 48.4, -123.4, 6.0
-        self.points = ()
-        self.route = ()
-        self.route_speeds = ()
+        self.points: tuple = ()
+        self.route: tuple = ()
+        self.route_speeds: tuple = ()
         self.selected_route_point = -1
-        self.route_plan = ()
-        self.route_preview = ()
-        self.offsets = ()
+        self.route_plan: tuple = ()
+        self.route_preview: tuple = ()
+        self.offsets: tuple = ()
         self.position = None
         self.drag = None
         self.background = None
+        self._base_cache = None  # (key, lat, lon, zoom, QImage)
+        self._nav_cache = None  # (key, lat, lon, zoom, QImage)
+        self._dash_cache = None  # (key, QImage)
+        self._overlay_pending = False
+        self._zoom_anchor = None  # (lat, lon, x, y) for zoom previews
+        self._zoom_target = None
+        self._zoom_tick_token = None
+        self._zoom_last_tick = 0.0
+        self._track_proj = None  # (data id, w, h, zoom, lat, lon, xs, ys, poly)
+        self._ais_targets_state: tuple = ()
+        self._ais_visible_state = True
+        self._zoom_settle = QTimer(self)
+        self._zoom_settle.setSingleShot(True)
+        self._zoom_settle.timeout.connect(self._zoom_settle_timeout)
         self.controller = controller
         self.navigation = NavigationRenderer(controller.core)
         self.ais_renderer = AISRenderer()
-        self.ais_targets = ()
-        self.ais_visible = True
         self.move_callback = None
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
@@ -131,6 +157,7 @@ class TrackMap(QWidget, MercatorProjection):
         self.disposed = True
         self._wind_cursor.close()
         self.cursor_readout.emit("")
+        self._zoom_settle.stop()
         self.controller.boat_changed.disconnect(self._boat_changed)
         self.charts.forget_map(self)
         self.wind.forget(self)
@@ -145,6 +172,10 @@ class TrackMap(QWidget, MercatorProjection):
         self.charts._chs_renderer.forget(self)
         self.wind.forget(self)
         self.marine.forget(self)
+        # Forgotten overlay state means the cached pixels may reference
+        # frames that will never refresh; drop them while hidden.
+        self._invalidate_base()
+        self.invalidate_navigation()
         super().hideEvent(event)
 
     def closeEvent(self, event):  # noqa: N802 - Qt virtual method name
@@ -158,22 +189,310 @@ class TrackMap(QWidget, MercatorProjection):
         return self.height()
 
     def queue_draw(self):
-        if not self.disposed:
-            if (
-                self._cursor_context is not None
-                and self._cursor_context != self._weather_context()
-            ):
-                self._cancel_cursor()
-            self.background = None
+        if self.disposed:
+            return
+        if (
+            self._cursor_context is not None
+            and self._cursor_context != self._weather_context()
+        ):
+            self._cancel_cursor()
+        if self.drag is not None or self._zoom_animating:
+            # Mid-gesture: overlay workers may deliver frames while the view
+            # is still moving. Paint shifted previews now and do one sharp
+            # rebuild when the gesture settles instead of churning per event.
+            self._overlay_pending = True
             self.update()
+            return
+        self._invalidate_base()
+        self.invalidate_navigation()
+        self.update()
 
     map_redraw_idle = queue_draw
+
+    @property
+    def ais_targets(self):
+        return self._ais_targets_state
+
+    @ais_targets.setter
+    def ais_targets(self, targets):
+        self._ais_targets_state = tuple(targets)
+        self.invalidate_navigation()
+
+    @property
+    def ais_visible(self):
+        return self._ais_visible_state
+
+    @ais_visible.setter
+    def ais_visible(self, visible):
+        self._ais_visible_state = bool(visible)
+        self.invalidate_navigation()
+
+    def _invalidate_base(self):
+        self._base_cache = None
+        self.background = None
+
+    def invalidate_navigation(self):
+        """Drop the cached navigation overlay (data changed, view kept)."""
+        self._nav_cache = None
+
+    def _invalidate_dashboard(self):
+        self._dash_cache = None
+
+    def _view_pixel_size(self):
+        return (
+            self.width(),
+            self.height(),
+            round(float(self.devicePixelRatioF()), 3),
+        )
+
+    def _wind_style_key(self):
+        settings = self.controller.settings
+        return (
+            self.time_control.time,
+            settings.gribArrowOpacity,
+            settings.gribArrowOnGround,
+            tuple(
+                (id(grib), getattr(grib, "name", None))
+                for grib in self.controller.core.grib_manager.gribs
+            ),
+            self.wind_visible,
+        )
+
+    def _marine_key(self):
+        return (
+            self.marine.visible,
+            self.marine.currents_visible,
+            id(self.marine.sources),
+        )
+
+    def _base_key(self):
+        width, height, ratio = self._view_pixel_size()
+        return (
+            width,
+            height,
+            ratio,
+            self.controller.settings.chartPalette,
+            self._wind_style_key(),
+            self._marine_key(),
+        )
+
+    @staticmethod
+    def _collection_snapshot(manager):
+        snapshot = []
+        for element in manager:
+            position = getattr(element, "position", None)
+            try:
+                size = len(element)
+            except TypeError:
+                size = 0
+            snapshot.append(
+                (
+                    element.name,
+                    bool(getattr(element, "visible", True)),
+                    size,
+                    tuple(position) if position is not None else None,
+                )
+            )
+        return tuple(snapshot)
+
+    def _nav_key(self):
+        core = self.controller.core
+        width, height, ratio = self._view_pixel_size()
+        if self._ais_visible_state:
+            ais = tuple(
+                sorted(
+                    (round(target.latitude, 4), round(target.longitude, 4))
+                    for target in self._ais_targets_state
+                    if target.has_valid_position()
+                )
+            )
+        else:
+            ais = None
+        return (
+            width,
+            height,
+            ratio,
+            self.time_control.time.timestamp(),
+            ais,
+            self._collection_snapshot(core.routingManager),
+            self._collection_snapshot(core.trackManager),
+            self._collection_snapshot(core.poiManager),
+            self.route_plan,
+            self.route_preview,
+            self.route,
+            self.selected_route_point,
+            self.navigation.hl_routing,
+            self.navigation.hl_poi,
+            self.navigation.hl_track_item,
+            id(self.points),
+            len(self.points),
+            self.position,
+            id(self.offsets),
+        )
+
+    def _dash_key(self):
+        width, height, ratio = self._view_pixel_size()
+        boat = self.controller.core.boat_info
+        return (
+            width,
+            height,
+            ratio,
+            self.dashboard_visible,
+            (boat.sog, boat.cog, boat.aws, boat.awa, boat.tws, boat.twa, boat.depth),
+            self._instrument_status,
+        )
+
+    def _pan_offset(self, cached_lat, cached_lon):
+        """Screen offset that re-aligns a cached layer with the current view."""
+        return (
+            self._lon_to_x(cached_lon) - self._lon_to_x(self._center_lon),
+            self._lat_to_y(cached_lat) - self._lat_to_y(self._center_lat),
+        )
+
+    def _sea_color(self):
+        color = Style.chart_palettes[
+            self.controller.settings.chartPalette
+        ].sea.color or (0.83, 0.92, 0.93, 1.0)
+        return QColor.fromRgbF(*color)
+
+    def _zoom_preview_target(self, cached_lat, cached_lon, cached_zoom, size):
+        """Target rect that stretches a cached layer through the zoom anchor."""
+        if self._zoom_anchor is None:
+            return None
+        anchor_lat, anchor_lon, pointer_x, pointer_y = self._zoom_anchor
+        width, height = size
+        ratio = 2.0 ** (self._zoom - cached_zoom)
+        tile = 2.0**cached_zoom * self.TILE_SIZE
+        center_x = (cached_lon + 180.0) / 360.0 * tile
+        anchor_x = (anchor_lon + 180.0) / 360.0 * tile
+        old_x = anchor_x - center_x + width / 2.0
+        old_y = self._mercator_y(anchor_lat, tile) - self._mercator_y(
+            cached_lat, tile
+        ) + height / 2.0
+        target_width, target_height = width * ratio, height * ratio
+        return QRectF(
+            pointer_x - old_x * ratio,
+            pointer_y - old_y * ratio,
+            target_width,
+            target_height,
+        )
+
+    @staticmethod
+    def _mercator_y(lat, tile):
+        lat = max(-TrackMap.MAX_LAT, min(TrackMap.MAX_LAT, lat))
+        lat_rad = math.radians(lat)
+        return (
+            (1.0 - math.log(math.tan(lat_rad) + 1.0 / math.cos(lat_rad)) / math.pi)
+            / 2.0
+            * tile
+        )
+
+    def _draw_reusable_layer(self, painter, cache, key, build):
+        """Paint a cached full-view image, shifted while panning.
+
+        Returns the updated cache entry. Rebuilds when the data key, size
+        or zoom changed, or when the pan drift exceeds the reuse margin.
+        """
+        width, height, _ = self._view_pixel_size()
+        if cache is not None and cache[0] == key:
+            _, cached_lat, cached_lon, cached_zoom, image = cache
+            if cached_zoom == self._zoom:
+                offset_x, offset_y = self._pan_offset(cached_lat, cached_lon)
+                if max(abs(offset_x), abs(offset_y)) <= self._REUSE_MARGIN:
+                    painter.drawImage(QPointF(offset_x, offset_y), image)
+                    return cache
+            elif self._zoom_animating:
+                target = self._zoom_preview_target(
+                    cached_lat, cached_lon, cached_zoom, (width, height)
+                )
+                if target is not None:
+                    painter.drawImage(target, image)
+                    return cache
+        image = build()
+        return (key, self._center_lat, self._center_lon, self._zoom, image)
+
+    def _finish_zoom(self):
+        was_zooming = self._zoom_animating or self._zoom_target is not None
+        self._finish_zoom_silent()
+        if self.disposed or not was_zooming:
+            return
+        self._refresh_after_gesture()
+
+    def _zoom_settle_timeout(self):
+        if self.disposed:
+            return
+        if self._zoom_tick_token is not None:
+            # Glide still converging after the last input; give it room
+            # instead of freezing mid-animation.
+            self._zoom_settle.start(self._ZOOM_SETTLE_MS)
+            return
+        self._finish_zoom()
+
+    def _finish_zoom_silent(self):
+        self._zoom_settle.stop()
+        if self._zoom_tick_token is not None:
+            self.remove_tick_callback(self._zoom_tick_token)
+            self._zoom_tick_token = None
+        self._zoom_target = None
+        self._zoom_animating = False
+        self._zoom_anchor = None
+
+    def _refresh_after_gesture(self):
+        if self._overlay_pending:
+            self._overlay_pending = False
+            self._invalidate_base()
+            self.invalidate_navigation()
+        self.update()
+
+    def _ensure_zoom_tick(self):
+        if self._zoom_tick_token is None and not self.disposed:
+            self._zoom_last_tick = time.monotonic()
+            self._zoom_tick_token = self.add_tick_callback(self._zoom_tick)
+
+    def _zoom_tick(self, canvas, _):
+        now = time.monotonic()
+        elapsed = min(0.05, max(0.0, now - self._zoom_last_tick))
+        self._zoom_last_tick = now
+        target = self._zoom_target
+        if target is None:
+            self._zoom_tick_token = None
+            return False
+        step = target - self._zoom
+        self._zoom += step * min(1.0, elapsed * self._ZOOM_EASE_RATE)
+        if abs(target - self._zoom) <= self._ZOOM_SNAP:
+            self._zoom = target
+        self._recenter_on_anchor()
+        if self._zoom == target:
+            self._zoom_target = None
+            self._zoom_tick_token = None
+            self._finish_zoom()
+            return False
+        self.update()
+        return True
+
+    def _recenter_on_anchor(self):
+        """Keep the zoom anchor fixed under the cursor while zooming."""
+        if self._zoom_anchor is None:
+            return
+        anchor_lat, anchor_lon, pointer_x, pointer_y = self._zoom_anchor
+        x, y = self.convert_geographic_to_screen(MapPoint(anchor_lat, anchor_lon))
+        center = self.convert_screen_to_geographic(
+            self.width() / 2 + x - pointer_x, self.height() / 2 + y - pointer_y
+        )
+        self._center_lat, self._center_lon = center.get_degrees()
+        self._center_lat = max(-85, min(85, self._center_lat))
+
+    @staticmethod
+    def _world_at(lon, lat, zoom):
+        tile = 2.0**zoom * TrackMap.TILE_SIZE
+        return (lon + 180.0) / 360.0 * tile, TrackMap._mercator_y(lat, tile)
 
     def set_points(self, points, offsets, fit=False):
         self.points = tuple(points)
         self.offsets = tuple(offsets)
         if fit and points:
             self.fit_track()
+        self.invalidate_navigation()
         self.update()
 
     def fit_track(self):
@@ -204,25 +523,32 @@ class TrackMap(QWidget, MercatorProjection):
             ),
         )
         self.background = None
+        self._finish_zoom_silent()
+        self._invalidate_base()
+        self.invalidate_navigation()
         self.update()
         self.view_changed.emit()
 
     def set_route_plan(self, coordinates):
         self.route_plan = tuple(coordinates)
+        self.invalidate_navigation()
         self.update()
 
     def set_route(self, coordinates, speeds=()):
         self.route = tuple(coordinates)
         self.route_speeds = tuple(speeds)
         self.selected_route_point = -1
+        self.invalidate_navigation()
         self.update()
 
     def select_route_point(self, row):
         self.selected_route_point = row
+        self.invalidate_navigation()
         self.update()
 
     def set_route_preview(self, coordinates):
         self.route_preview = tuple(coordinates)
+        self.invalidate_navigation()
         self.update()
 
     def fit_route(self):
@@ -261,23 +587,43 @@ class TrackMap(QWidget, MercatorProjection):
 
     def set_position(self, position):
         self.position = position
+        self.invalidate_navigation()
         self.update()
 
     def paintEvent(self, _):  # noqa: N802 - Qt virtual method name
-        key = (
-            self.width(),
-            self.height(),
-            self._center_lat,
-            self._center_lon,
-            self._zoom,
-            self.devicePixelRatioF(),
-        )
-        if self.background is None or self.background[0] != key:
-            self.background = (key, self._base_image())
+        if self.width() <= 0 or self.height() <= 0:
+            return
         painter = QPainter(self)
-        painter.drawImage(QPointF(0, 0), self.background[1])
-        painter.drawImage(QPointF(0, 0), self._navigation_image())
+        # Flat sea first: shifted previews leave no painted pixels behind,
+        # so exposed edges show water until the next sharp rebuild.
+        painter.fillRect(0, 0, self.width(), self.height(), self._sea_color())
+        previous_base = self._base_cache
+        self._base_cache = self._draw_reusable_layer(
+            painter, self._base_cache, self._base_key(), self._base_image
+        )
+        if self._base_cache is not previous_base:
+            self.background = (
+                (
+                    self.width(),
+                    self.height(),
+                    self._center_lat,
+                    self._center_lon,
+                    self._zoom,
+                    float(self.devicePixelRatioF()),
+                ),
+                self._base_cache[4],
+            )
+        self._nav_cache = self._draw_reusable_layer(
+            painter, self._nav_cache, self._nav_key(), self._navigation_image
+        )
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self._paint_route_overlay(painter)
+        self._paint_track_overlay(painter)
+        self._paint_dashboard(painter)
+        self._paint_caption(painter)
+        painter.end()
+
+    def _paint_route_overlay(self, painter):
         active_route = self.controller.core.routingManager.get_by_name(
             self.navigation.hl_routing
         )
@@ -304,29 +650,105 @@ class TrackMap(QWidget, MercatorProjection):
                 painter.drawText(
                     QPointF(text_x, max(15, min(y - 5, self.height() - 5))), label
                 )
-        if self.points:
-            xs, ys = self.convert_geographic_to_screen_batch(
-                np.array([p.lat for p in self.points]),
-                np.array([p.lon for p in self.points]),
+
+    def _track_screen_points(self):
+        """Projected log-track pixels, remapped exactly when the view moved.
+
+        Screen projection is an affine map of Mercator world pixels, so a
+        cached projection can be shifted/scaled into a moved view without
+        re-running the per-point transcendental math on every gesture tick.
+        Returns (xs, ys, polyline-or-None); the polyline is only reused
+        when the view is unchanged.
+        """
+        width, height, _ = self._view_pixel_size()
+        data_id = (id(self.points), len(self.points))
+        cache = self._track_proj
+        if cache is not None and cache[:3] == (data_id, width, height):
+            _, _, _, cached_zoom, cached_lat, cached_lon, xs, ys, poly = cache
+            if (
+                cached_zoom == self._zoom
+                and cached_lat == self._center_lat
+                and cached_lon == self._center_lon
+            ):
+                return xs, ys, poly
+            ratio = 2.0 ** (self._zoom - cached_zoom)
+            old_x, old_y = self._world_at(cached_lon, cached_lat, cached_zoom)
+            new_x, new_y = self._world_at(
+                self._center_lon, self._center_lat, cached_zoom
             )
-            style = Style.Track.LogTrack
-            painter.setPen(QPen(QColor.fromRgbF(*style.color), style.line_width or 1))
-            painter.drawPolyline(QPolygonF([QPointF(x, y) for x, y in zip(xs, ys)]))
-            index = len(self.points) - 1
-            if self.position is not None and self.offsets:
-                index = max(
-                    0,
-                    min(
-                        index,
-                        int(np.searchsorted(self.offsets, self.position, side="right"))
-                        - 1,
-                    ),
-                )
-            painter.setBrush(QColor("#ffffff"))
-            painter.setPen(QPen(QColor("#d8851b"), 2))
-            painter.drawEllipse(QPointF(xs[index], ys[index]), 5, 5)
-        if self.dashboard_visible:
-            painter.drawImage(QPointF(0, 0), self._dashboard_image())
+            xs = ratio * (xs + old_x - width / 2.0 - new_x) + width / 2.0
+            ys = ratio * (ys + old_y - height / 2.0 - new_y) + height / 2.0
+            poly = self._track_polyline(xs, ys)
+            self._track_proj = (
+                data_id,
+                width,
+                height,
+                self._zoom,
+                self._center_lat,
+                self._center_lon,
+                xs,
+                ys,
+                poly,
+            )
+            return xs, ys, poly
+        xs, ys = self.convert_geographic_to_screen_batch(
+            np.array([p.lat for p in self.points]),
+            np.array([p.lon for p in self.points]),
+        )
+        poly = self._track_polyline(xs, ys)
+        self._track_proj = (
+            data_id,
+            width,
+            height,
+            self._zoom,
+            self._center_lat,
+            self._center_lon,
+            xs,
+            ys,
+            poly,
+        )
+        return xs, ys, poly
+
+    def _track_polyline(self, xs, ys):
+        count = len(xs)
+        if count > self._MAX_TRACK_POLYLINE:
+            stride = -(-count // self._MAX_TRACK_POLYLINE)
+            index = np.arange(0, count, stride)
+            if index[-1] != count - 1:
+                index = np.append(index, count - 1)
+            xs, ys = xs[index], ys[index]
+        return QPolygonF([QPointF(x, y) for x, y in zip(xs, ys)])
+
+    def _paint_track_overlay(self, painter):
+        if not self.points:
+            return
+        xs, ys, poly = self._track_screen_points()
+        style = Style.Track.LogTrack
+        painter.setPen(QPen(QColor.fromRgbF(*style.color), style.line_width or 1))
+        painter.drawPolyline(poly)
+        index = len(self.points) - 1
+        if self.position is not None and self.offsets:
+            index = max(
+                0,
+                min(
+                    index,
+                    int(np.searchsorted(self.offsets, self.position, side="right"))
+                    - 1,
+                ),
+            )
+        painter.setBrush(QColor("#ffffff"))
+        painter.setPen(QPen(QColor("#d8851b"), 2))
+        painter.drawEllipse(QPointF(xs[index], ys[index]), 5, 5)
+
+    def _paint_dashboard(self, painter):
+        if not self.dashboard_visible:
+            return
+        key = self._dash_key()
+        if self._dash_cache is None or self._dash_cache[0] != key:
+            self._dash_cache = (key, self._dashboard_image())
+        painter.drawImage(QPointF(0, 0), self._dash_cache[1])
+
+    def _paint_caption(self, painter):
         painter.setPen(QColor("#e4edf2"))
         caption = "Drag to pan · Scroll to zoom"
         if self.move_callback is not None:
@@ -343,7 +765,6 @@ class TrackMap(QWidget, MercatorProjection):
         painter.drawRoundedRect(QRectF(8, caption_y, caption_width + 16, 26), 4, 4)
         painter.setPen(QColor("#eeeeec"))
         painter.drawText(16, caption_y + 18, caption)
-        painter.end()
 
     def _navigation_image(self):
         factor = self.get_scale_factor()
@@ -525,6 +946,7 @@ class TrackMap(QWidget, MercatorProjection):
                 callback(position.get_degrees())
                 return
             self.drag = event.position()
+            self._finish_zoom_silent()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
     def mouseMoveEvent(self, event):  # noqa: N802 - Qt virtual method name
@@ -545,6 +967,8 @@ class TrackMap(QWidget, MercatorProjection):
     def mouseReleaseEvent(self, _):  # noqa: N802 - Qt virtual method name
         self.drag = None
         self.setCursor(Qt.CursorShape.OpenHandCursor)
+        # Settle: repaint shifted previews sharp and pick up deferred frames.
+        self._refresh_after_gesture()
         self.view_changed.emit()
 
     def wheelEvent(self, event):  # noqa: N802 - Qt virtual method name
@@ -552,12 +976,18 @@ class TrackMap(QWidget, MercatorProjection):
         pointer = event.position()
         anchor = self.convert_screen_to_geographic(pointer.x(), pointer.y())
         delta = event.angleDelta().y() / 120 or event.pixelDelta().y() / 60
-        self._zoom = max(1, min(20, self._zoom + delta * 0.25))
-        x, y = self.convert_geographic_to_screen(anchor)
-        center = self.convert_screen_to_geographic(
-            self.width() / 2 + x - pointer.x(), self.height() / 2 + y - pointer.y()
-        )
-        self._center_lat, self._center_lon = center.get_degrees()
+        if not delta:
+            event.accept()
+            return
+        # Accumulate into an animated target instead of jumping: trackpad
+        # streams keep extending the glide, discrete notches ease over to it.
+        # Painting stays on scaled previews until the animation converges.
+        base = self._zoom_target if self._zoom_target is not None else self._zoom
+        self._zoom_target = max(1, min(20, base + delta * 0.25))
+        self._zoom_anchor = (*anchor.get_degrees(), pointer.x(), pointer.y())
+        self._zoom_animating = True
+        self._ensure_zoom_tick()
+        self._zoom_settle.start(self._ZOOM_SETTLE_MS)
         self.update()
         self.view_changed.emit()
         event.accept()
