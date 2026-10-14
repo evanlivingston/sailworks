@@ -43,6 +43,12 @@ from .plots import LogPlots, elapsed_offsets
 from .workspace import WorkspacePreferences
 from .polarworkspace import PolarWorkspace
 from .polarlibrary import PolarLibrary
+from .navigationpanel import NavigationPanel
+
+
+class NavigationScroll(QScrollArea):
+    def minimumSizeHint(self):  # noqa: N802 - Qt virtual method name
+        return QSize(0, 0)
 
 
 class PreviewWindow(QMainWindow):
@@ -155,6 +161,29 @@ class PreviewWindow(QMainWindow):
         self.routing_dock.setWidget(self.routing_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.routing_dock)
         self.tabifyDockWidget(self.nmea_dock, self.routing_dock)
+        self.navigation_panel = NavigationPanel(controller, self.map, self)
+        navigation_scroll = NavigationScroll()
+        navigation_scroll.setWidgetResizable(True)
+        navigation_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        navigation_scroll.setWidget(self.navigation_panel)
+        self.navigation_dock = self._dock(
+            "Navigation", "chart-navigation", navigation_scroll
+        )
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.navigation_dock)
+        self.resizeDocks([self.navigation_dock], [373], Qt.Orientation.Horizontal)
+        self.navigation_open = True
+        self.navigation_syncing = False
+        self.navigation_dock.visibilityChanged.connect(self._navigation_visibility)
+        self.navigation_dock.toggleViewAction().triggered.connect(
+            self._toggle_navigation
+        )
+        self.navigation_panel.changed.connect(self._navigation_changed)
+        self.navigation_panel.route_selected.connect(self._navigation_route_selected)
+        self.navigation_panel.move_requested.connect(self._move_navigation_point)
+        self.navigation_panel.ais_updated.connect(self._ais_updated)
+        self._ais_updated(tuple(self.navigation_panel.ais_targets))
+        self.map.navigation_request.connect(self._navigation_request)
+        self.log_map.navigation_request.connect(self._navigation_request)
         self.setTabPosition(
             Qt.DockWidgetArea.AllDockWidgetAreas, QTabWidget.TabPosition.North
         )
@@ -201,9 +230,31 @@ class PreviewWindow(QMainWindow):
         view_menu.addAction(self.polar_selector_dock.toggleViewAction())
         view_menu.addAction(self.performance_dock.toggleViewAction())
         view_menu.addAction(self.polar_manager_dock.toggleViewAction())
+        view_menu.addAction(self.navigation_dock.toggleViewAction())
         view_menu.addAction(toolbar.toggleViewAction())
         view_menu.addAction(header.toggleViewAction())
         self.chart_toolbar_actions = list(toolbar.actions())
+        for name, callback in (
+            ("Import…", self.navigation_panel.import_gpx),
+            ("New", self._new_track),
+            ("Export…", self._export_navigation),
+        ):
+            self.chart_toolbar_actions.append(toolbar.addAction(name, callback))
+        self.navigation_action = toolbar.addAction("Tabs")
+        self.navigation_action.setCheckable(True)
+        self.navigation_action.setChecked(True)
+        self.navigation_action.setToolTip("Show / Hide Track / POI tabs")
+        self.navigation_action.triggered.connect(self._toggle_navigation)
+        self.chart_toolbar_actions.append(self.navigation_action)
+        self.ais_action = toolbar.addAction("AIS")
+        self.ais_action.setCheckable(True)
+        self.ais_action.setChecked(True)
+        self.ais_action.toggled.connect(self._toggle_ais)
+        self.chart_toolbar_actions.append(self.ais_action)
+        for action in self.chart_toolbar_actions[-5:]:
+            toolbar.insertAction(open_forecast, action)
+        file_menu.addAction("Import GPX…", self.navigation_panel.import_gpx)
+        file_menu.addAction("Export navigation…", self._export_navigation)
         toolbar.addSeparator()
         self.nmea_action = self.nmea_dock.toggleViewAction()
         toolbar.addAction(self.nmea_action)
@@ -293,6 +344,10 @@ class PreviewWindow(QMainWindow):
 
     def _view_changed(self, *_):
         current = self.views.currentWidget()
+        self.navigation_syncing = True
+        self.navigation_dock.setVisible(current is self.map and self.navigation_open)
+        self.navigation_syncing = False
+        self.navigation_action.setChecked(self.navigation_open)
         before = (
             self.polar_toolbar_actions[-1]
             if current is self.polar_workspace
@@ -347,13 +402,76 @@ class PreviewWindow(QMainWindow):
             tuple(point[5] or 0 for point in route.points) if route is not None else ()
         )
         self.map.set_route(coordinates, speeds)
+        self.map.navigation.hl_routing = route.name if route is not None else None
+        self.navigation_panel.select_route(route)
+
+    def _navigation_route_selected(self, route):
+        self.routing_panel.refresh_routes(route)
+
+    def _navigation_visibility(self, _):
+        if not self.navigation_syncing and self.views.currentWidget() is self.map:
+            self.navigation_open = not self.navigation_dock.isHidden()
+            if hasattr(self, "navigation_action"):
+                self.navigation_action.setChecked(self.navigation_open)
+
+    def _toggle_navigation(self, checked):
+        self.navigation_open = checked
+        if checked:
+            self.views.setCurrentWidget(self.map)
+        self.navigation_dock.setVisible(checked)
+        self.navigation_action.setChecked(checked)
+
+    def _navigation_changed(self):
+        self.routing_panel.refresh_destinations()
+        self.routing_panel.refresh_routes(self.navigation_panel.route)
+        self.map.update()
+        self.log_map.update()
+
+    def _navigation_request(self, kind, coordinates):
+        self._show_panel(self.navigation_dock)
+        if kind == "poi":
+            self.navigation_panel.add_poi(coordinates)
+        else:
+            self.navigation_panel.add_point(coordinates)
+
+    def _new_track(self):
+        self._show_panel(self.navigation_dock)
+        self.navigation_panel.new_track()
+
+    def _move_navigation_point(self, callback):
+        self.views.setCurrentWidget(self.map)
+        self.map.begin_move(callback)
+
+    def _toggle_ais(self, visible):
+        for canvas in (self.map, self.log_map):
+            canvas.ais_visible = visible
+            canvas.update()
+
+    def _ais_updated(self, targets):
+        self.log_map.ais_targets = targets
+        self.log_map.update()
+
+    def _export_navigation(self):
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+        menu.addAction("Export GPX…", self.navigation_panel.export_all)
+        menu.addAction("Export POIs as NMEA PFEC…", self.navigation_panel.export_pfec)
+        menu.exec(
+            self.navigation_toolbar.mapToGlobal(
+                self.navigation_toolbar.rect().bottomLeft()
+            )
+        )
 
     def _show_panel(self, dock):
+        if dock is self.navigation_dock:
+            self.navigation_open = True
+            self.views.setCurrentWidget(self.map)
         dock.show()
         dock.raise_()
         if hasattr(self, "workspace"):
             self.workspace._dock_activated(dock)
-        if dock is self.routing_dock:
+        if dock in (self.routing_dock, self.navigation_dock):
             self.views.setCurrentWidget(self.map)
 
     def _routing_changed(self):
@@ -704,6 +822,7 @@ class PreviewWindow(QMainWindow):
 
     def closeEvent(self, event):  # noqa: N802 - Qt virtual method name
         self.workspace.close()
+        self.navigation_panel.dispose()
         self.polar_workspace.dispose()
         self.live_timer.stop()
         self.controller.close()

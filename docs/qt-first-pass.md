@@ -100,6 +100,8 @@ Charts and Logs have separate full-size views. NMEA and Routing share a tabbed
 right sidebar; panels can still float, close and reopen through View or the
 toolbar. Opening a log selects Logs. Starting a routing calculation selects
 Charts. View/panel switching keeps playback, plots, map position and results.
+Charts also has GTK's Navigation tabs on the left. Tabs shows/hides this panel;
+it hides outside Charts and retains the user's visibility choice on return.
 The routing form scrolls inside its Plan page on small windows; progress and
 Calculate/Cancel remain outside the scrolling area. Completed routes open Results.
 
@@ -140,7 +142,47 @@ an exact arrival.
 
 This slice uses the available algorithms with their existing defaults. Algorithm
 parameter editing, current-aware routes, automatic forecast/current downloads,
-scenario comparisons, track destinations and route editing/export remain pending.
+scenario comparisons, track destinations and route waypoint editing remain pending.
+
+## Chart navigation
+
+The left Navigation panel preserves GTK's tab order: Tracks, Routings, POIs and
+AIS. It can dock, float or close; the Charts toolbar's Tabs button and View →
+Navigation reopen it. Tracks shows the named track list above its waypoint table.
+Rename tracks/POIs/routings in the Name cells and use Visible checkboxes to toggle
+map drawing. Selection highlights the corresponding map item.
+
+New creates an empty active track. Add Point and Add POI accept coordinates;
+right-click the map to add either at that position. Track point menus provide
+Move, Move Up, Move Down, Remove and Duplicate. POI menus provide Move and Remove.
+Move consumes the next left-click on the map; Escape, switching views or opening
+another map menu cancels it. Fit buttons and double-clicking a track/POI/routing
+fit the map to that object. Routings shows the shared saved routes, GTK's summary
+and waypoint columns, with remove/export controls. The existing Routing plan and
+results stay synchronized with the selected route. POI edits refresh destination
+choices without changing the route draft coordinates.
+
+Import reads GPX on a worker, validates coordinates before installation and adds
+tracks/waypoints to the existing Core collections on the UI thread. Repeated
+names receive unique names. As in GTK, GPX route elements are not imported.
+Export offers all navigation as GPX or POIs through the existing NMEA PFEC
+converter; track/routing menus also export the selected object as GPX. All file
+dialogs use the default native picker. Existing track/POI/routing JSON files and
+calculation models are shared with GTK.
+
+AIS refreshes every three seconds using Core's active-target timeout. The tab
+appears when targets exist; valid-position targets list MMSI/name/type/SOG/COG
+and distance, ordered by GTK's haversine distance from the boat. Double-click a
+target to center it. The AIS toolbar switch controls map symbols and is saved.
+The table and both map views use the same target set; no live hardware was used
+for validation.
+
+GTK and Qt share production Cairo track, POI, routing and AIS drawing, including
+selected styles, speed colors, route-time interpolation, current-exclusion marks,
+AIS orientation/vectors and label-spacing rules. Twelve comparisons against the
+pre-extraction GTK code at three sizes, two pixel scales and with/without
+selection produced zero changed pixels. Qt retains its selected-route-waypoint
+marker and route-plan/search overlays.
 
 ## Settings and data management
 
@@ -256,7 +298,7 @@ recording, playback or calculation starts because a workspace was restored.
 
 ## Still to migrate
 
-- Advanced routing controls, POI/track/AIS tools, marine current/tide overlays,
+- Advanced routing controls, marine current/tide overlays,
   map dashboard and wind-cursor details; see the parity checklist.
 - Base coastline installation/download UI and additional chart providers.
 - Smooth/inertial gestures, dateline behavior, large-file performance, live
@@ -271,7 +313,7 @@ and packaging reach parity.
 ## Validation
 
 The full repository suite passes 783 tests and 84 subtests locally.
-The optional Qt wrapper runs thirty-eight integration checks in a separate
+The optional Qt wrapper runs forty-three integration checks in a separate
 process. Coverage includes transport/recording, queued Core notifications,
 stale-source rejection, overlay completion without GLib, callback cancellation
 on shutdown, real OGR ENC/raster fixtures, forecast/palette changes, projection,
@@ -309,3 +351,10 @@ Polars/Logs preference restart and migrating the older Qt toolbar arrangement.
 Native macOS comparison used both current GTK and Qt at 1280×820; Qt was also
 checked at 1000×650. OS chrome and fonts differ, and unmigrated controls remain
 explicitly recorded in `qt-parity.md`.
+
+Navigation checks cover track/POI creation, rename/visibility, map placement and
+cancellation, point ordering, shared collection disk reloads, GPX/native-picker
+import/export, invalid coordinates, route selection/visibility/removal, AIS
+distance ordering/expiry, workspace restart and late import shutdown. Native
+GTK/Qt comparison also inspected Tracks, Routings, POIs and AIS; user-settings
+writes were disabled and navigation/workspace QA used temporary or in-memory data.

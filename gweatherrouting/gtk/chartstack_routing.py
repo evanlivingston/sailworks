@@ -45,6 +45,7 @@ from gweatherrouting.gtk.widgets.filechooser import file_chooser
 from weatherrouting import RoutingNoWindError
 
 from gweatherrouting.core import utils
+from gweatherrouting.rendering.navigation import routing_summary
 from gweatherrouting.core.geo.poi import POI
 from gweatherrouting.core.geo.routing import Routing
 
@@ -687,41 +688,7 @@ class ChartStackRouting(ChartStackBase):
         return value
 
     def _routing_summary(self, r):
-        """Build a short summary string for a routing."""
-        points = list(r)
-        if len(points) < 2:
-            return ""
-        total_dist = 0.0
-        total_speed = 0.0
-        for j in range(1, len(points)):
-            total_dist += utils.point_distance(
-                points[j - 1][0], points[j - 1][1], points[j][0], points[j][1]
-            )
-            total_speed += points[j][5] if points[j][5] else 0
-        avg_speed = total_speed / (len(points) - 1)
-        total_dist_nm = total_dist
-        provenance = r.provenance or {}
-        source_note = ""
-        if provenance.get("routing") == "isochrone-with-currents":
-            selected = provenance["currents"]["selected_sources"]
-            used = set(provenance["currents"]["actual_sources"])
-            models = sorted({s["model"] for s in selected if s["dataset_id"] in used})
-            source_note = " | currents: " + ", ".join(models) + " · coverage checked"
-        elif provenance.get("routing") == "wind-only":
-            source_note = " | wind only"
-        try:
-            t_start = dateutil.parser.parse(points[0][2])
-            t_end = dateutil.parser.parse(points[-1][2])
-            hours = (t_end - t_start).total_seconds() / 3600.0
-            days = int(hours // 24)
-            rem_hours = hours % 24
-            dur_str = f"{days}d {rem_hours:.0f}h" if days > 0 else f"{rem_hours:.1f}h"
-            return (
-                "%.0f nm | %s | avg %.1f kts" % (total_dist_nm, dur_str, avg_speed)
-                + source_note
-            )
-        except Exception:
-            return "%.0f nm | avg %.1f kts" % (total_dist_nm, avg_speed) + source_note
+        return routing_summary(r)
 
     def update_routings(self):
         self.routingListStore.clear()

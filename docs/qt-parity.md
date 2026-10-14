@@ -20,7 +20,9 @@ structure. Regatta is hidden in GTK and should remain absent in Qt.
 | View-specific toolbars | Charts, Logs and Polars controls follow the selected workspace |
 | Saved workspace geometry, views and dock layout | Qt-specific atomic workspace file, including Polars preferences and both map views |
 | Native filesystem dialogs | Retained |
-| Chart navigation tabs for POI/track/route/AIS tools | Routing migrated; other navigation tools remain pending |
+| Chart navigation tabs for tracks/routings/POIs/AIS | Left Navigation panel with GTK tab order, editable names/visibility, point editing and native import/export; AIS tab follows active targets |
+| Track, route, POI and AIS portrayal | Shared GTK Cairo drawing, including selection styles, route-time markers, AIS orientation/vectors and label spacing |
+| Navigation visibility and layout | Charts-only by default; Tabs reopens it, dock can move/float; preference and splits survive restart |
 | Marine currents/tides controls and overlays | Pending |
 | Map instrument dashboard and wind-cursor details | Pending |
 | Forecast navigation/timeline shortcuts and broader settings | Partially migrated; GTK control parity remains pending |
