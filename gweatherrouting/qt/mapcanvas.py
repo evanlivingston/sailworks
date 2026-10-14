@@ -1,6 +1,7 @@
 """Qt canvas using the shared Mercator projection and a Cairo image bridge."""
 
 import math
+import time
 
 import cairo
 import numpy as np
@@ -30,6 +31,12 @@ class TrackMap(QWidget, MercatorProjection):
     # Wheel zoom events closer than this settle into one sharp re-render,
     # with a scaled preview painted in between (no overlay job storm).
     _ZOOM_SETTLE_MS = 250
+    # Per-tick zoom easing rate and snap distance for the smooth animation.
+    _ZOOM_EASE_RATE = 14.0
+    _ZOOM_SNAP = 0.004
+    # Cap for the log-track polyline; denser logs are subsampled uniformly,
+    # which only drops sub-pixel detail while keeping every paint cheap.
+    _MAX_TRACK_POLYLINE = 1500
 
     def __init__(self, controller, parent=None, time_control=None):
         super().__init__(parent)
@@ -51,11 +58,15 @@ class TrackMap(QWidget, MercatorProjection):
         self._dash_cache = None  # (key, QImage)
         self._overlay_pending = False
         self._zoom_anchor = None  # (lat, lon, x, y) for zoom previews
+        self._zoom_target = None
+        self._zoom_tick_token = None
+        self._zoom_last_tick = 0.0
+        self._track_proj = None  # (data id, w, h, zoom, lat, lon, xs, ys, poly)
         self._ais_targets_state = ()
         self._ais_visible_state = True
         self._zoom_settle = QTimer(self)
         self._zoom_settle.setSingleShot(True)
-        self._zoom_settle.timeout.connect(self._finish_zoom)
+        self._zoom_settle.timeout.connect(self._zoom_settle_timeout)
         self.controller = controller
         self.navigation = NavigationRenderer(controller.core)
         self.ais_renderer = AISRenderer()
@@ -380,11 +391,30 @@ class TrackMap(QWidget, MercatorProjection):
         return (key, self._center_lat, self._center_lon, self._zoom, image)
 
     def _finish_zoom(self):
-        if self.disposed or not self._zoom_animating:
+        was_zooming = self._zoom_animating or self._zoom_target is not None
+        self._finish_zoom_silent()
+        if self.disposed or not was_zooming:
             return
+        self._refresh_after_gesture()
+
+    def _zoom_settle_timeout(self):
+        if self.disposed:
+            return
+        if self._zoom_tick_token is not None:
+            # Glide still converging after the last input; give it room
+            # instead of freezing mid-animation.
+            self._zoom_settle.start(self._ZOOM_SETTLE_MS)
+            return
+        self._finish_zoom()
+
+    def _finish_zoom_silent(self):
+        self._zoom_settle.stop()
+        if self._zoom_tick_token is not None:
+            self.remove_tick_callback(self._zoom_tick_token)
+            self._zoom_tick_token = None
+        self._zoom_target = None
         self._zoom_animating = False
         self._zoom_anchor = None
-        self._refresh_after_gesture()
 
     def _refresh_after_gesture(self):
         if self._overlay_pending:
@@ -392,6 +422,49 @@ class TrackMap(QWidget, MercatorProjection):
             self._invalidate_base()
             self.invalidate_navigation()
         self.update()
+
+    def _ensure_zoom_tick(self):
+        if self._zoom_tick_token is None and not self.disposed:
+            self._zoom_last_tick = time.monotonic()
+            self._zoom_tick_token = self.add_tick_callback(self._zoom_tick)
+
+    def _zoom_tick(self, canvas, _):
+        now = time.monotonic()
+        elapsed = min(0.05, max(0.0, now - self._zoom_last_tick))
+        self._zoom_last_tick = now
+        target = self._zoom_target
+        if target is None:
+            self._zoom_tick_token = None
+            return False
+        step = target - self._zoom
+        self._zoom += step * min(1.0, elapsed * self._ZOOM_EASE_RATE)
+        if abs(target - self._zoom) <= self._ZOOM_SNAP:
+            self._zoom = target
+        self._recenter_on_anchor()
+        if self._zoom == target:
+            self._zoom_target = None
+            self._zoom_tick_token = None
+            self._finish_zoom()
+            return False
+        self.update()
+        return True
+
+    def _recenter_on_anchor(self):
+        """Keep the zoom anchor fixed under the cursor while zooming."""
+        if self._zoom_anchor is None:
+            return
+        anchor_lat, anchor_lon, pointer_x, pointer_y = self._zoom_anchor
+        x, y = self.convert_geographic_to_screen(MapPoint(anchor_lat, anchor_lon))
+        center = self.convert_screen_to_geographic(
+            self.width() / 2 + x - pointer_x, self.height() / 2 + y - pointer_y
+        )
+        self._center_lat, self._center_lon = center.get_degrees()
+        self._center_lat = max(-85, min(85, self._center_lat))
+
+    @staticmethod
+    def _world_at(lon, lat, zoom):
+        tile = 2.0**zoom * TrackMap.TILE_SIZE
+        return (lon + 180.0) / 360.0 * tile, TrackMap._mercator_y(lat, tile)
 
     def set_points(self, points, offsets, fit=False):
         self.points = tuple(points)
@@ -434,11 +507,6 @@ class TrackMap(QWidget, MercatorProjection):
         self.invalidate_navigation()
         self.update()
         self.view_changed.emit()
-
-    def _finish_zoom_silent(self):
-        self._zoom_settle.stop()
-        self._zoom_animating = False
-        self._zoom_anchor = None
 
     def set_route_plan(self, coordinates):
         self.route_plan = tuple(coordinates)
@@ -562,16 +630,81 @@ class TrackMap(QWidget, MercatorProjection):
                     QPointF(text_x, max(15, min(y - 5, self.height() - 5))), label
                 )
 
-    def _paint_track_overlay(self, painter):
-        if not self.points:
-            return
+    def _track_screen_points(self):
+        """Projected log-track pixels, remapped exactly when the view moved.
+
+        Screen projection is an affine map of Mercator world pixels, so a
+        cached projection can be shifted/scaled into a moved view without
+        re-running the per-point transcendental math on every gesture tick.
+        Returns (xs, ys, polyline-or-None); the polyline is only reused
+        when the view is unchanged.
+        """
+        width, height, _ = self._view_pixel_size()
+        data_id = (id(self.points), len(self.points))
+        cache = self._track_proj
+        if cache is not None and cache[:3] == (data_id, width, height):
+            _, _, _, cached_zoom, cached_lat, cached_lon, xs, ys, poly = cache
+            if (
+                cached_zoom == self._zoom
+                and cached_lat == self._center_lat
+                and cached_lon == self._center_lon
+            ):
+                return xs, ys, poly
+            ratio = 2.0 ** (self._zoom - cached_zoom)
+            old_x, old_y = self._world_at(cached_lon, cached_lat, cached_zoom)
+            new_x, new_y = self._world_at(
+                self._center_lon, self._center_lat, cached_zoom
+            )
+            xs = ratio * (xs + old_x - width / 2.0 - new_x) + width / 2.0
+            ys = ratio * (ys + old_y - height / 2.0 - new_y) + height / 2.0
+            poly = self._track_polyline(xs, ys)
+            self._track_proj = (
+                data_id,
+                width,
+                height,
+                self._zoom,
+                self._center_lat,
+                self._center_lon,
+                xs,
+                ys,
+                poly,
+            )
+            return xs, ys, poly
         xs, ys = self.convert_geographic_to_screen_batch(
             np.array([p.lat for p in self.points]),
             np.array([p.lon for p in self.points]),
         )
+        poly = self._track_polyline(xs, ys)
+        self._track_proj = (
+            data_id,
+            width,
+            height,
+            self._zoom,
+            self._center_lat,
+            self._center_lon,
+            xs,
+            ys,
+            poly,
+        )
+        return xs, ys, poly
+
+    def _track_polyline(self, xs, ys):
+        count = len(xs)
+        if count > self._MAX_TRACK_POLYLINE:
+            stride = -(-count // self._MAX_TRACK_POLYLINE)
+            index = np.arange(0, count, stride)
+            if index[-1] != count - 1:
+                index = np.append(index, count - 1)
+            xs, ys = xs[index], ys[index]
+        return QPolygonF([QPointF(x, y) for x, y in zip(xs, ys)])
+
+    def _paint_track_overlay(self, painter):
+        if not self.points:
+            return
+        xs, ys, poly = self._track_screen_points()
         style = Style.Track.LogTrack
         painter.setPen(QPen(QColor.fromRgbF(*style.color), style.line_width or 1))
-        painter.drawPolyline(QPolygonF([QPointF(x, y) for x, y in zip(xs, ys)]))
+        painter.drawPolyline(poly)
         index = len(self.points) - 1
         if self.position is not None and self.offsets:
             index = max(
@@ -814,14 +947,14 @@ class TrackMap(QWidget, MercatorProjection):
         if not delta:
             event.accept()
             return
-        self._zoom = max(1, min(20, self._zoom + delta * 0.25))
-        x, y = self.convert_geographic_to_screen(anchor)
-        center = self.convert_screen_to_geographic(
-            self.width() / 2 + x - pointer.x(), self.height() / 2 + y - pointer.y()
-        )
-        self._center_lat, self._center_lon = center.get_degrees()
-        self._zoom_animating = True
+        # Accumulate into an animated target instead of jumping: trackpad
+        # streams keep extending the glide, discrete notches ease over to it.
+        # Painting stays on scaled previews until the animation converges.
+        base = self._zoom_target if self._zoom_target is not None else self._zoom
+        self._zoom_target = max(1, min(20, base + delta * 0.25))
         self._zoom_anchor = (*anchor.get_degrees(), pointer.x(), pointer.y())
+        self._zoom_animating = True
+        self._ensure_zoom_tick()
         self._zoom_settle.start(self._ZOOM_SETTLE_MS)
         self.update()
         self.view_changed.emit()
