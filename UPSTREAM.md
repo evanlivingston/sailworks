@@ -769,3 +769,55 @@ into `dev`; no upstream PR was created or updated.
   separately from Qt controls and fork documentation. No upstream publication
   is part of this migration slice.
 - Usage and assessment: `docs/qt-first-pass.md`.
+
+## Qt chart navigation
+
+- Status: Qt controls and migration documentation are fork-only. Shared GTK
+  navigation/AIS renderers and routing summary are upstream candidates. Branch:
+  `feature/qt-navigation`, based on `dev` at `6fa2aad` after the approved merge
+  of fork PR #12. No pending dependency or upstream submission.
+- Review: pending fork PR creation.
+- Functional commits: `8ec23d3` (shared production Cairo route/track/POI/AIS
+  portrayal and routing summary, preserving GTK adapters/import paths),
+  `45110ee` (Qt Navigation panel, map actions, native GPX/PFEC workflows and
+  workspace preferences).
+- Scope: GTK's Tracks/Routings/POIs/AIS tab order in a left Navigation panel;
+  Charts-only visibility with the Tabs toggle, draggable/floating docks and
+  restart preferences. Shared collections support editable names/visibility,
+  active tracks, waypoint addition/order/duplication/removal, map placement and
+  Escape/view-change cancellation, route selection/summary/waypoints/removal,
+  POI routing-destination refresh and fit actions. GPX parsing/validation runs
+  on a worker, installs tracks/waypoints on the UI thread and drops late close
+  completions. Native import/export pickers use shared converters/GPX objects.
+  AIS uses existing active-target expiry, GTK distance ordering and category
+  colors, with map visibility for both Charts and Logs.
+- Fidelity: no routing formulas, navigation coordinates, JSON schemas or AIS
+  decoding/source selection change. Track/POI/routing/AIS drawing reuses the
+  original GTK code, including styles, route-time interpolation, exclusion marks,
+  marker orientation/vectors and label spacing. Twelve direct comparisons to
+  pre-extraction GTK at three sizes and two pixel scales, with/without selection,
+  produced zero changed pixels. Track distances display two decimals with nm;
+  stored coordinates and underlying length calculations retain full precision.
+  Routing summaries and PFEC conversion retain the existing GTK behavior.
+- Validation: full suite passed 783 tests and 84 subtests; final Qt wrapper passed
+  all 43 isolated checks, followed by a passing targeted route-waypoint selection
+  check after the final signal connection. Five new checks cover track/POI/map
+  editing/cancel, shared disk reloads, native-picker GPX import/export, invalid
+  coordinates, route controls, AIS ordering/expiry, workspace restart and late
+  import shutdown. Scoped Black/Flake8 and mypy pass; full mypy retains 32 baseline
+  errors in eight files. Native macOS GTK and Qt comparison verified the left
+  navigation/tab organization and all four Qt tabs at 1280×820; Qt also fits
+  1000×650. A stacked Navigation/Routing layout regression was caught and fixed
+  with scrolling content before the final checks. QA disabled user-settings
+  writes and used temporary workspace/navigation storage or in-memory fixtures;
+  GTK was absent from the Qt process. Live hardware was not exercised.
+- Limits: GPX route elements are not imported, matching the existing GTK importer;
+  tracks and waypoints are supported. Download/provider controls, marine layers,
+  dashboard, forecast shortcuts and advanced routing remain separate slices.
+  The existing Routing plan/results dock remains available alongside the new
+  navigation results tab. GTK remains the default frontend; native Qt widgets
+  and table formatting differ while workspace structure/data remain aligned.
+- Intended upstream scope: extract the shared portrayal/summary separately from
+  Qt controls and fork documentation if authorized. No upstream publication is
+  part of this slice.
+- Usage and assessment: `docs/qt-first-pass.md`, `docs/qt-parity.md`.
