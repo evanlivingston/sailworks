@@ -178,30 +178,38 @@ class DashboardRenderer:
         width = float(gpsmap.get_allocated_width())
         height = float(gpsmap.get_allocated_height())
 
-        cols = len(self._gauges)
         gauge_w = NumericGauge.WIDTH
         gauge_h = NumericGauge.HEIGHT
         gauge_gap = 4
+        panel_padding = 6
+        cols = max(
+            1,
+            min(
+                len(self._gauges),
+                int((width - panel_padding * 2 + gauge_gap) // (gauge_w + gauge_gap)),
+            ),
+        )
+        rows = math.ceil(len(self._gauges) / cols)
 
         total_w = cols * gauge_w + (cols - 1) * gauge_gap
-        panel_padding = 6
+        total_h = rows * gauge_h + (rows - 1) * gauge_gap
 
         # Center horizontally at the bottom of the map
         panel_x = (width - total_w) / 2.0 - panel_padding
-        panel_y = height - gauge_h - panel_padding * 2 - 12
+        panel_y = height - total_h - panel_padding * 2 - 12
         panel_w = total_w + panel_padding * 2
 
         # Draw panel background with rounded corners
         from .numericgauge import _rounded_rect
 
         cr.set_source_rgba(0.03, 0.03, 0.03, 0.55)
-        _rounded_rect(cr, panel_x, panel_y, panel_w, gauge_h + panel_padding * 2, 8)
+        _rounded_rect(cr, panel_x, panel_y, panel_w, total_h + panel_padding * 2, 8)
         cr.fill()
 
         # Draw each gauge
         for i, gauge in enumerate(self._gauges):
-            gx = panel_x + panel_padding + i * (gauge_w + gauge_gap)
-            gy = panel_y + panel_padding
+            gx = panel_x + panel_padding + (i % cols) * (gauge_w + gauge_gap)
+            gy = panel_y + panel_padding + (i // cols) * (gauge_h + gauge_gap)
             gauge.draw(cr, gx, gy)
 
         # Draw connection status above the gauge panel
