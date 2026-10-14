@@ -416,3 +416,52 @@ are also in unchanged baseline files. No new lint/type failures were introduced.
 - Intended upstream scope: shared projection extraction only; keep the optional
   Qt experiment and fork documentation out of parent-project PRs unless invited.
 - Assessment and launch instructions: `docs/qt-first-pass.md`.
+
+## Qt production charts and Core integration
+
+- Status: shared Core scheduling/chart extraction are upstream candidates;
+  the Qt adapter/UI is fork-only. Branch: `feature/qt-production-charts`,
+  dependent on `feature/qt-first-pass` and fork PR #5.
+- Scope: inject Core notification scheduling while preserving GTK defaults;
+  extract production Cairo chart/wind rendering and settings from GTK; retain
+  compatibility imports, palettes, coastline quality thresholds, ENC source/
+  scale selection and wind interpolation. GTK retains its GObject chart adapter
+  and download dialogs. Qt uses these renderers and the full Core with queued
+  worker completions, callback cancellation, chart lifecycle/tick adapters,
+  installed chart preferences, wind forecast loading/time selection and boat
+  status. The GTK launcher remains the default.
+- Functional commits: `4a05215` (Core scheduler and connection-start control),
+  `3f99e48` (shared rendering/settings, Cairo S57 sprites and raster worker
+  portability), `7f077d9` (interior water in simple coastline polygons),
+  `be0b73a` (Qt Core/chart/wind integration and regression coverage).
+- Fidelity: all 2,030 S57 day/dark sprites at fractional coordinates match the
+  previous GdkPixbuf renderer pixel for pixel. Production projection, source
+  selection, half-pixel ENC tolerance and routing calculations are retained.
+  The simple coastline renderer now fills polygon rings together with even-odd
+  winding, preserving holes; fill/stroke ordering changes with that fix. Raster
+  conversion preserves existing palette values and replaces a nested local
+  multiprocessing worker with the existing loader thread, allowing macOS spawn.
+- Validation: twelve isolated Qt checks pass, including full Core worker delivery,
+  stale notifications, callback cancellation, production OGR ENC/raster fixtures,
+  palette/forecast changes, retained recordings/full plots and no GTK imports.
+  Two toolkit-independent Core scheduler tests and a polygon/multipolygon hole
+  regression with two subtests pass. Final full suite: 765 tests and 73
+  subtests pass. An earlier concurrent run hit Qt subprocess and existing GTK
+  dialog timeouts; both passed in isolation, and the final full run passed.
+  The expanded Qt wrapper allows 120 seconds for twelve full-Core checks;
+  fixtures isolate user settings and local forecast/polar scans.
+  Changed-source Black/Flake8 pass. Full local mypy retains the same 32 baseline
+  errors in eight files (symbol parser errors move with its implementation);
+  no additional errors. Wheel contents include rendering, settings and schedulers.
+  Native macOS QA loaded GSHHS, 31 saved vector layers and three wind sources:
+  cached chart image 6.2 ms, ten small pans averaging 7.44 ms; small-log full plot
+  86.4 ms and cursor 6.32 ms. Other checks ran concurrently, so these are local
+  sample measurements rather than controlled performance comparisons. Hardware,
+  current/tide UI and large-chart stress tests are pending.
+- Integration: review against `feature/qt-first-pass`; merge PR #5 first, then
+  retarget this PR to `dev` and verify the resulting diff/checks. Leave both
+  unmerged until approved. No upstream submission is authorized by fork review.
+- Intended upstream scope: extract scheduler injection and toolkit-neutral Cairo
+  rendering separately after their shared prerequisites land; keep Qt UI,
+  migration assessment and fork tracking out of parent-project contributions.
+- Assessment and launch instructions: `docs/qt-first-pass.md`.

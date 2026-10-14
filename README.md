@@ -101,9 +101,10 @@ Homebrew dependencies separately, run `brew bundle --file=tools/macos/Brewfile`.
 
 ### Experimental Qt frontend
 
-A small optional Qt frontend exercises shared NMEA recording/playback, plots,
-and a map canvas. GTK remains the default application. See
-[the first-pass migration assessment](docs/qt-first-pass.md) for installation,
+An optional Qt frontend uses the full application Core and shared production charts,
+wind rendering, NMEA recording/playback, and plots. GTK remains the default
+application. See
+[the migration assessment](docs/qt-first-pass.md) for installation,
 launch commands, validation, and current limitations.
 
 ## License
