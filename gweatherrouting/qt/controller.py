@@ -13,6 +13,8 @@ from gweatherrouting.rendering.chartcollection import ChartCollection
 from gweatherrouting.core.nmeasession import read_nmea_log
 from .scheduling import UiScheduler
 from .routingcontroller import RoutingController
+from .backgroundtask import BackgroundTask
+from .datacontroller import DataController
 
 
 class SessionController(QObject):
@@ -59,6 +61,8 @@ class SessionController(QObject):
         self.connections = self.core.connectionManager
         self.session = self.core.nmea_session
         self.routing = RoutingController(self)
+        self.connection_task = BackgroundTask(self)
+        self.data = DataController(self)
         self.points = []
         self.point_revision = 0
         self.generation = 0
@@ -78,8 +82,10 @@ class SessionController(QObject):
         self.timer.start()
 
     def start_connections(self):
-        if not self.offline:
-            self.connections.start_polling()
+        if not self.offline and not self.connections.polling_active:
+            self.connection_task.start(
+                "Connecting instruments…", lambda _: self.connections.start_polling()
+            )
 
     def _changed(self, _):
         self.changed.emit()
@@ -159,6 +165,8 @@ class SessionController(QObject):
         self.closed = True
         self.routing.close()
         self.timer.stop()
+        self.data.close()
+        self.connection_task.close(wait=True)
         self.connections.stop_polling()
         self.session.close()
         self.core.nmea_session.disconnect("data", self.core.data_handler)

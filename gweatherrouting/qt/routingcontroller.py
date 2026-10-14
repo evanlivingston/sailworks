@@ -40,6 +40,13 @@ class RoutingController(QObject):
     def start(self, request):
         if self.busy or self.closed:
             return False
+        if self.session_controller.data.task.busy:
+            self.error = (
+                "Wait for the Data Library operation to finish before calculating."
+            )
+            self.message = self.error
+            self.changed.emit()
+            return False
         sources = freeze_wind_sources(self.core.grib_manager.gribs)
         if not sources:
             self.error = "Open a wind forecast before calculating a route."
