@@ -63,6 +63,7 @@ class RoutingPanel(QWidget):
         layout.addWidget(self.pages, 1)
         setup_layout.addWidget(section_label("Route setup"))
         form = QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
         self.polar = QComboBox()
         self.polar.addItems(controller.core.polar_manager.polars_files)
         form.addRow("Polar", self.polar)
@@ -141,6 +142,11 @@ class RoutingPanel(QWidget):
         )
         results_layout.addWidget(self.waypoints, 1)
         layout.addLayout(actions)
+        for combo in (self.polar, self.algorithm, self.destination, self.routes):
+            combo.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+            )
+            combo.setMinimumContentsLength(14)
         self.inputs = (
             self.polar,
             self.algorithm,

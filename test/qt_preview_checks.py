@@ -581,6 +581,8 @@ class QtPreviewChecks(unittest.TestCase):
         self.window._show_panel(self.window.routing_dock)
         self.window.routing_panel.pages.setCurrentIndex(0)
         self.drain()
+        setup_scroll = self.window.routing_panel.pages.widget(0)
+        self.assertEqual(setup_scroll.horizontalScrollBar().maximum(), 0)
         self.assertFalse(self.window.routing_panel.calculate.visibleRegion().isEmpty())
         self.assertFalse(
             self.window.routing_panel.cancel_button.visibleRegion().isEmpty()
