@@ -44,13 +44,13 @@ class TrackMap(QWidget, MercatorProjection):
         self.setMinimumSize(240, 180)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self._center_lat, self._center_lon, self._zoom = 48.4, -123.4, 6.0
-        self.points = ()
-        self.route = ()
-        self.route_speeds = ()
+        self.points: tuple = ()
+        self.route: tuple = ()
+        self.route_speeds: tuple = ()
         self.selected_route_point = -1
-        self.route_plan = ()
-        self.route_preview = ()
-        self.offsets = ()
+        self.route_plan: tuple = ()
+        self.route_preview: tuple = ()
+        self.offsets: tuple = ()
         self.position = None
         self.drag = None
         self.background = None
@@ -63,7 +63,7 @@ class TrackMap(QWidget, MercatorProjection):
         self._zoom_tick_token = None
         self._zoom_last_tick = 0.0
         self._track_proj = None  # (data id, w, h, zoom, lat, lon, xs, ys, poly)
-        self._ais_targets_state = ()
+        self._ais_targets_state: tuple = ()
         self._ais_visible_state = True
         self._zoom_settle = QTimer(self)
         self._zoom_settle.setSingleShot(True)
@@ -172,6 +172,10 @@ class TrackMap(QWidget, MercatorProjection):
         self.charts._chs_renderer.forget(self)
         self.wind.forget(self)
         self.marine.forget(self)
+        # Forgotten overlay state means the cached pixels may reference
+        # frames that will never refresh; drop them while hidden.
+        self._invalidate_base()
+        self.invalidate_navigation()
         super().hideEvent(event)
 
     def closeEvent(self, event):  # noqa: N802 - Qt virtual method name
@@ -254,6 +258,13 @@ class TrackMap(QWidget, MercatorProjection):
             self.wind_visible,
         )
 
+    def _marine_key(self):
+        return (
+            self.marine.visible,
+            self.marine.currents_visible,
+            id(self.marine.sources),
+        )
+
     def _base_key(self):
         width, height, ratio = self._view_pixel_size()
         return (
@@ -262,6 +273,7 @@ class TrackMap(QWidget, MercatorProjection):
             ratio,
             self.controller.settings.chartPalette,
             self._wind_style_key(),
+            self._marine_key(),
         )
 
     @staticmethod
