@@ -1,18 +1,23 @@
-"""Run the existing wind-only routing engine without UI or persistence access."""
+"""Run existing routing engines with frozen inputs and injected UI/persistence hooks."""
 
 from dataclasses import dataclass
 from functools import lru_cache
 from copy import deepcopy
 import logging
 from datetime import datetime
-from threading import Event
+from threading import Event, RLock
+from typing import Optional
+import math
 
 from weatherrouting import RoutingNoWindError
 
 from gweatherrouting.core.geo.poi import POI
+from gweatherrouting.core.geo.track import Track
+from gweatherrouting.core.modifiedgrib import ModifiedGribManager
+from gweatherrouting.core.routingoptions import configured_algorithm
 from gweatherrouting.core.grib import Grib
 from gweatherrouting.core.gribmanager import GribManager
-from gweatherrouting.core.marine.routing import routing_completion
+from gweatherrouting.core.marine.routing import routing_completion, routing_utc
 
 
 class RoutingCancelledError(Exception):
@@ -79,6 +84,7 @@ class WorkerGrib(Grib):
 class RoutingWind:
     def __init__(self, sources, cancel):
         self.cancel = cancel
+        self._query_lock = RLock()
         self.manager = GribManager.__new__(GribManager)
         self.manager.gribs = []
         for source in sources:
@@ -95,7 +101,10 @@ class RoutingWind:
         # Check outside GribManager's missing-source exception handler so a
         # cancellation interrupts the search rather than becoming absent wind.
         self.check_cancelled()
-        result = self.manager.get_wind_at(instant, lat, lon)
+        # Engine concurrency may issue simultaneous queries on these private GDAL files.
+        with self._query_lock:
+            self.check_cancelled()
+            result = self.manager.get_wind_at(instant, lat, lon)
         self.check_cancelled()
         return result
 
@@ -113,12 +122,19 @@ class RoutingWind:
 @dataclass(frozen=True)
 class RouteRequest:
     name: str
-    start: tuple[float, float]
+    start: Optional[tuple[float, float]]
     destination: tuple[float, float]
     departure: datetime
     polar_file: str
     algorithm: object
     coastline_checks: bool = True
+    parameters: tuple = ()
+    waypoints: tuple = ()
+    polar_efficiency: float = 1.0
+    use_currents: bool = False
+    auto_download: bool = False
+    wind_speed_pct: float = 0
+    wind_dir_offset: float = 0
 
 
 @dataclass(frozen=True)
@@ -128,55 +144,189 @@ class CalculatedRoute:
     provenance: dict
 
 
-def calculate_route(core, request, sources, providers, cancel: Event, progress):
-    """Keep GTK's wind-only algorithm, sampling, parameters and result format."""
+def calculate_route(
+    core,
+    request,
+    sources,
+    providers,
+    cancel: Event,
+    progress,
+    *,
+    report=lambda message: None,
+    confirm=lambda report: False,
+    save_fields=None,
+    save_gribs=None,
+    current_selection=None,
+):
+    """Run the existing engines and current-coverage workflow with injected UI hooks."""
     wind = RoutingWind(sources, cancel)
+    routing = None
     try:
-        return _calculate_with_wind(core, request, providers, wind, progress)
+        routing = create_requested_routing(
+            core, request, providers, wind, current_selection
+        )
+        from gweatherrouting.core.routingcoverage import prepare_coverage
+
+        prepare_coverage(
+            routing,
+            core.marine_manager if request.use_currents else None,
+            request.auto_download,
+            cancel,
+            report,
+            confirm,
+            save_gribs,
+        )
+        return run_requested_routing(
+            core, routing, request, wind, progress, report, save_fields
+        )
     finally:
+        close_requested_routing(routing)
         wind.close()
 
 
-def _calculate_with_wind(core, request, providers, wind, progress):
+def create_requested_routing(core, request, providers, wind, current_selection):
     wind.check_cancelled()
-    routing = core.create_routing(
-        request.algorithm,
+    algorithm = (
+        configured_algorithm(request.algorithm, request.parameters)
+        if request.parameters
+        else request.algorithm
+    )
+    target = (
+        Track("destination", list(request.waypoints))
+        if request.waypoints
+        else POI("destination", request.destination)
+    )
+    override = wind
+    if request.wind_speed_pct or request.wind_dir_offset:
+        override = ModifiedGribManager(
+            wind, 1 + request.wind_speed_pct / 100, request.wind_dir_offset
+        )
+    options = dict(grib_override=override, polar_efficiency=request.polar_efficiency)
+    if request.use_currents:
+        options.update(
+            use_currents=True,
+            wind_sources=wind.manager,
+            current_selection=current_selection,
+        )
+        # FrozenRoutingWind applies scenario modifiers to its own newest-run selection.
+        options["grib_override"] = (
+            override if isinstance(override, ModifiedGribManager) else None
+        )
+    return core.create_routing(
+        algorithm,
         request.polar_file,
-        POI("destination", request.destination),
+        target,
         request.departure,
         request.start,
         providers,
         not request.coastline_checks,
-        grib_override=wind,
+        **options,
     )
-    if wind.get_wind_at(request.departure, *request.start) is None:
+
+
+def run_requested_routing(core, routing, request, wind, progress, report, save_fields):
+    from gweatherrouting.core.marine.routing import step_with_coverage
+
+    wind.check_cancelled()
+    if (
+        not request.use_currents
+        and routing.grib.get_wind_at(routing.time, *routing.position) is None
+    ):
         raise RoutingNoWindError(
             "Load a wind forecast covering the departure and start position."
+        )
+    if request.use_currents:
+        routing.current_environment.progress = (
+            lambda distance, checked, total: progress(
+                routing_completion(routing, distance), None
+            )
         )
     progress(0, ())
     result = None
     while not routing.end:
         wind.check_cancelled()
-        result = routing.step()
+        result = (
+            step_with_coverage(
+                routing, core.marine_manager, request.auto_download, report, save_fields
+            )
+            if request.use_currents
+            else routing.step()
+        )
         path = result.path or routing.get_current_best_path()
         progress(routing_completion(routing), tuple(tuple(p.pos) for p in path))
     wind.check_cancelled()
     if result is None or not result.path:
         raise ValueError("The routing engine returned no route.")
-    points = tuple(
+    provenance = routing_provenance(routing, result.path)
+    if (
+        request.parameters
+        or request.waypoints
+        or request.use_currents
+        or request.polar_efficiency != 1
+        or request.wind_speed_pct
+        or request.wind_dir_offset
+    ):
+        provenance["options"] = dict(
+            algorithm=request.algorithm.__name__,
+            parameters=dict(request.parameters),
+            polar_efficiency=request.polar_efficiency,
+            departure=request.departure.isoformat(),
+            wind_speed_pct=request.wind_speed_pct,
+            wind_dir_offset=request.wind_dir_offset,
+            coastline_checks=request.coastline_checks,
+            waypoints=request.waypoints,
+        )
+    return CalculatedRoute(
+        serialize_routing_points(routing, result.path),
+        tuple(tuple(group) for group in result.isochrones),
+        provenance,
+    )
+
+
+def serialize_routing_points(routing, path):
+    currents = routing.current_environment is not None
+    return tuple(
         (
             p.pos[0],
             p.pos[1],
-            p.time.strftime("%m/%d/%Y, %H:%M:%S"),
-            p.twd,
+            (
+                routing_utc(p.time).isoformat()
+                if currents
+                else p.time.strftime("%m/%d/%Y, %H:%M:%S")
+            ),
+            math.degrees(p.twd) % 360 if currents else p.twd,
             p.tws,
             p.speed,
             p.brg,
         )
-        for p in result.path
+        for p in path
     )
-    return CalculatedRoute(
-        points,
-        tuple(tuple(group) for group in result.isochrones),
-        dict(schema_version=1, routing="wind-only", currents="disabled"),
+
+
+def routing_provenance(routing, path):
+    environment = getattr(routing, "current_environment", None)
+    if environment is None:
+        return dict(schema_version=1, routing="wind-only", currents="disabled")
+    value = environment.provenance(path)
+    value["wind"] = environment.wind.provenance()
+    value["wind"]["actual_search_sources"] = value["wind"]["actual_sources"]
+    value["wind"]["actual_sources"] = sorted(
+        {s["wind_source"] for s in value["samples"] if s.get("wind_source")}
     )
+    return value
+
+
+def close_requested_routing(routing):
+    environment = getattr(routing, "current_environment", None)
+    if environment is None:
+        return
+    environment.progress = None
+    for job in (environment.prefetch, environment.wind_recovery):
+        if job is not None:
+            job.close()
+    for source in environment.wind.gribs:
+        if hasattr(source, "_bands"):
+            source._bands.cache_clear()
+            source._window.cache_clear()
+            source.grib.dataset = None
+    environment.wind.gribs = ()
