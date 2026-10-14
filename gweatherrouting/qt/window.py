@@ -353,7 +353,7 @@ class PreviewWindow(QMainWindow):
             except Exception as exc:
                 QMessageBox.warning(self, "Unable to open forecast", str(exc))
 
-    def closeEvent(self, event):
+    def closeEvent(self, event):  # noqa: N802 - Qt virtual method name
         self.live_timer.stop()
         self.controller.close()
         event.accept()

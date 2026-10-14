@@ -467,3 +467,8 @@ are also in unchanged baseline files. No new lint/type failures were introduced.
   rendering separately after their shared prerequisites land; keep Qt UI,
   migration assessment and fork tracking out of parent-project contributions.
 - Assessment and launch instructions: `docs/qt-first-pass.md`.
+
+Qt pre-merge CI review: targeted naming exceptions allow Qt virtual methods.
+CI test collection fails because the existing tox environment omits runtime
+`nmeatoolkit`; this predates Qt. Builds/docs pass; existing GTK complexity/type
+failures remain. Local full-suite results above remain valid.
