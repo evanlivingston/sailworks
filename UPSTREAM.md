@@ -581,7 +581,8 @@ into `dev`; no upstream PR was created or updated.
   lifecycle and nonblocking status snapshots are an upstream candidate.
   Branch: `feature/qt-settings-data`, started from `dev` after approved merges
   of fork PRs #7 and #8. No pending branch dependency.
-- Review: fork PR to be opened against `dev`; leave unmerged for human review.
+- Review: [fork PR #9](https://github.com/evanlivingston/gweatherrouting/pull/9),
+  open against `dev` and left unmerged for human review.
 - Scope: serial/TCP/UDP connection add/edit/remove with draft Apply, legacy N2K
   format loading, input-only N2K validation and offline-safe persistence; Qt
   display preferences; a Forecasts/Charts library with local imports, enable
@@ -590,12 +591,14 @@ into `dev`; no upstream PR was created or updated.
   chart/forecast model installation and Qt notifications run on the UI thread.
 - Functional commits: `28417f0` (shared connection configuration/lifecycle and
   unit tests), `f66165b` (Qt settings/library, background work and integration
-  checks). Follow-up `e86df9c` palette-raster validation prevents silent blank imports.
+  checks). Follow-ups `e86df9c` (palette-raster validation) and `26c072d`
+  (stable chart ordering) pass the final isolated Qt reruns.
 - Fidelity: preserves existing instrument data sources, GRIB source priority,
   wind sampling, chart rendering and routing calculations. Connection edits
   use the same storage as GTK. GRIB imports stage and validate before installing
   library copies, preserving original files and adding timestamp suffixes on
-  filename collisions. NOAA GFS/OpenSkiron use existing provider APIs; GFS bounds
+  filename collisions. Chart toggles/reimports preserve layer ordering.
+  NOAA GFS/OpenSkiron use existing provider APIs; GFS bounds
   are explicit. NOAA ENC uses the existing coverage catalog/cache and atomic
   exchange-set installer. Imported chart metadata and enable flags use GTK's
   settings schema. Chart removal retains files; forecast-copy removal asks
