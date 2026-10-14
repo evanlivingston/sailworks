@@ -679,7 +679,8 @@ into `dev`; no upstream PR was created or updated.
   started from `dev` after the approved merge of fork PR #10 and its tracking
   update. No pending branch dependency; no upstream submission is authorized.
 - Review: [fork PR #11](https://github.com/evanlivingston/gweatherrouting/pull/11),
-  open against `dev` and left unmerged for human review.
+  merged into `dev` with user approval (merge `f52fc91`).
+  Merge audit confirmed existing dependency/lint/type failures only; builds pass.
 - Scope: Data Library Polars page, File → Polars and Routing → Manage polars;
   native `.pol` imports, enable/remove controls, curve/full-table previews,
   enabled-polar routing selection and searchable ORC catalog/downloads. Provider
