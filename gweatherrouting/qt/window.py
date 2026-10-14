@@ -5,7 +5,7 @@ import sys
 from datetime import timedelta
 
 from PySide6.QtCore import Qt, QTimer, QSize
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QKeySequence
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QKeySequence, QAction
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -95,7 +95,6 @@ class PreviewWindow(QMainWindow):
         header.addAction(
             symbol_icon("weather-windy-symbolic"), "Forecasts", self.show_forecasts
         )
-        header.addAction("Settings", self.show_settings)
         self.addToolBarBreak()
         toolbar = QToolBar("Navigation", self)
         self.navigation_toolbar = toolbar
@@ -227,8 +226,9 @@ class PreviewWindow(QMainWindow):
         file_menu.addAction("Close window", self.close).setShortcut(
             QKeySequence.StandardKey.Close
         )
-        settings_action = file_menu.addAction("Settings…", self.show_settings)
-        settings_action.setShortcut(QKeySequence.StandardKey.Preferences)
+        self.settings_action = file_menu.addAction("Settings…", self.show_settings)
+        self.settings_action.setMenuRole(QAction.MenuRole.PreferencesRole)
+        self.settings_action.setShortcut(QKeySequence.StandardKey.Preferences)
         toolbar.addAction("Data Library", self.show_library)
         controller.data.forecast_loaded.connect(self._forecast_loaded)
         self._create_marine_panels(controller)

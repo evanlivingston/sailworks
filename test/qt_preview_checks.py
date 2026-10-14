@@ -3088,6 +3088,22 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(hasattr(self.window, "clear_button"))
         self.assertTrue(self.window.grab().width())
 
+    def test_settings_uses_native_preferences_menu_without_header_duplicate(self):
+        from PySide6.QtGui import QAction, QKeySequence
+
+        action = self.window.settings_action
+        self.assertEqual(action.menuRole(), QAction.MenuRole.PreferencesRole)
+        self.assertEqual(
+            action.shortcut(), QKeySequence(QKeySequence.StandardKey.Preferences)
+        )
+        self.assertFalse(
+            any(a.text() == "Settings" for a in self.window.workspace_toolbar.actions())
+        )
+        self.assertIsNone(self.window.settings_dialog)
+        action.trigger()
+        self.assertTrue(self.window.settings_dialog.isVisible())
+        self.assertIs(self.window.settings_dialog.controller, self.controller)
+
     def test_map_data_settings_missing_selection_and_no_automatic_download(self):
         self.assertIsNone(self.window.settings_dialog)
         self.window.show_settings()

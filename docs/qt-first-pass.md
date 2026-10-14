@@ -426,6 +426,11 @@ time/source changes invalidate stale frames. Logs retains its independent NMEA
 clock and does not gain a marine overlay. These display controls do not enable
 current-aware routing or use tides for depth/clearance calculations.
 
+Settings is in the macOS application menu (⌘,) and under File on other
+platforms. Direct Python launches retain the interpreter bundle's menu name;
+[Qt uses the application bundle metadata](https://doc.qt.io/qt-6/qaction.html#MenuRole-enum)
+for that name. A named macOS bundle remains packaging work.
+
 ## Base map setup
 
 Settings → Map Data shows installed/missing world coastlines and optional

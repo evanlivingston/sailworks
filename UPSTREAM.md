@@ -1164,6 +1164,11 @@ into `dev`; no upstream PR was created or updated.
   copy and empty status; show progress/cancel only during acquisition. Installed
   datasets have disabled Installed buttons. Updated Qt integration wrapper,
   scoped Flake8/mypy and native macOS widget review pass.
+- Settings menu follow-up: remove the workspace-header duplicate and assign
+  the menu action an explicit native Preferences role with the standard shortcut.
+  Qt app/display identity is GWeatherRouting; direct interpreter launches retain
+  Python's bundle menu name until macOS packaging. Focused action/shortcut test,
+  scoped Flake8/mypy and native menu inspection pass (Python → Settings…).
 - Intended upstream scope: shared acquisition/constants, resilient base-chart
   loading/reload and tests adapted against fresh parent master only if requested;
   exclude Qt frontend and fork policy/migration documentation.
