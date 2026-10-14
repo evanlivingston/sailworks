@@ -1019,3 +1019,35 @@ into `dev`; no upstream PR was created or updated.
   rebuilds on large jumps/settle/data changes, and deferred mid-drag worker
   completions.
 - Intended upstream scope: none; Qt UI work stays out of parent-project PRs.
+
+## GRIB isobars on the weather display
+
+- Status: candidate for upstream; branch `feature/isobars`, based on `dev`
+  with no pending prerequisite. No fork PR is open yet; nothing is merged or
+  submitted until the user approves.
+- Scope: GFS downloads request mean-sea-level pressure (PRMSL) alongside
+  10 m wind; `Grib` reads and time-interpolates pressure in hPa with the same
+  bracketing logic as wind, so routing and existing wind-only files are
+  unchanged (files without pressure bands simply show no isobars). The shared
+  wind overlay crops, merges (newest forecast wins) and draws 4 hPa isobars
+  with value labels above the wind fill in both the Qt and GTK frontends,
+  behind a `gribIsobarsVisible` display setting (default on).
+- Fidelity: contouring runs on the native model grid via contourpy with no
+  smoothing or resampling; pressure interpolation matches wind interpolation.
+  No routing calculations, units or source-selection behavior change.
+- Validation: 12 new `test/test_isobars.py` checks (pressure interpolation in
+  hPa, missing-band graceful skip, display crop/cache bounds, newest-wins
+  merge, legacy palette handling, line/label painting, hidden setting,
+  ragged-column and flat-field cases) plus updated GFS filter expectations.
+  Full suite passes 805 tests and 101 subtests; isolated Qt checks pass 65.
+  End-to-end overlay render on a synthetic GFS-style file shows isobars
+  contributing ~3k differing pixels when enabled and byte-identical output
+  when disabled. Changed files are Black/Flake8 clean with no new mypy
+  errors; one repo-wide Flake8 C901 and the full-mypy baseline errors are
+  pre-existing.
+- Limits: isobars appear only in GRIBs that carry MSL pressure bands, so
+  previously downloaded wind-only files need a re-download. Live GFS
+  download of the new filter mix has not been exercised.
+- Intended upstream scope: pressure download params, `Grib.get_pressure`,
+  and the shared isobar portrayal as one focused contribution, excluding
+  fork workflow files.

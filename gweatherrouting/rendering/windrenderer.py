@@ -57,6 +57,7 @@ class DisplayGrib(Grib):
             source.last_forecast,
         )
         self._arrays = OrderedDict()
+        self._pressure_arrays = OrderedDict()
         transform = self.dataset.GetGeoTransform()
         self._lons = transform[0] + np.arange(self.dataset.RasterXSize) * transform[1]
         self._lats = transform[3] + np.arange(self.dataset.RasterYSize) * transform[5]
@@ -84,6 +85,29 @@ class DisplayGrib(Grib):
         lons, lats = np.meshgrid(self._lons[columns], self._lats[rows])
         return list(zip(lats.ravel(), lons.ravel(), u.ravel(), v.ravel()))
 
+    def _get_pressure_data(self, hour, bounds):
+        rows = np.flatnonzero(
+            (self._lats >= bounds[0][0]) & (self._lats <= bounds[1][0])
+        )
+        columns = np.flatnonzero(
+            (self._lons >= bounds[0][1]) & (self._lons <= bounds[1][1])
+        )
+        if not len(rows) or not len(columns):
+            return []
+        array = self._pressure_arrays.get(hour)
+        if array is None:
+            band = self._find_pressure_band_for_time(hour)
+            if band is None:
+                return None
+            array = band.ReadAsArray()
+            self._pressure_arrays[hour] = array
+            if len(self._pressure_arrays) > 4:
+                self._pressure_arrays.popitem(last=False)
+        self._pressure_arrays.move_to_end(hour)
+        cropped = array[np.ix_(rows, columns)]
+        lons, lats = np.meshgrid(self._lons[columns], self._lats[rows])
+        return list(zip(lats.ravel(), lons.ravel(), cropped.ravel().astype(float)))
+
 
 class WindOverlayRenderer(OverlayRenderer):
     """Render wind using a bounded queue, cancellation and image reuse."""
@@ -110,12 +134,16 @@ class WindOverlayRenderer(OverlayRenderer):
         self._gribs.move_to_end(source)
         return grib
 
-    def _load_wind(self, job):
+    @staticmethod
+    def _viewport_bounds(job):
         p1, p2 = (p.get_degrees() for p in job.viewport.get_bbox())
-        bounds = (
+        return (
             (min(p1[0], p2[0]) - 1, min(p1[1], p2[1]) - 1),
             (max(p1[0], p2[0]) + 1, max(p1[1], p2[1]) + 1),
         )
+
+    def _load_wind(self, job):
+        bounds = self._viewport_bounds(job)
         columns: dict[float, list[tuple[float, float, tuple[float, float]]]] = {}
         # Merge overlapping forecasts by issue time, with one value per grid
         # coordinate. Duplicate vertices make ragged, overlapping gradient cells.
@@ -149,8 +177,54 @@ class WindOverlayRenderer(OverlayRenderer):
             for lon in sorted(columns)
         ]
 
+    def _load_pressure(self, job):
+        """Time-interpolated MSL pressure columns mirroring _load_wind.
+
+        Returns columns of (lat, lon, hPa) sorted by latitude, or [] when no
+        enabled source carries pressure bands (e.g. older wind-only GRIBs).
+        """
+        bounds = self._viewport_bounds(job)
+        columns: dict[float, list] = {}
+        # Newest forecast wins per grid coordinate, as with wind.
+        points: dict[tuple, tuple] = {}
+        sources = sorted(
+            job.charts,
+            key=lambda item: (
+                item[0].start_time.timestamp()
+                if hasattr(item[0], "start_time")
+                else float("-inf")
+            ),
+            reverse=True,
+        )
+        for (source,) in sources:
+            if job.cancel.is_set():
+                return []
+            try:
+                pressure = (
+                    self._worker_grib(source).get_pressure(job.palette[0], bounds) or []
+                )
+            except Exception as exc:
+                logger.debug("Pressure display source unavailable: %s", exc)
+                continue
+            for lat, lon, hpa in pressure:
+                if np.isfinite((lat, lon, hpa)).all():
+                    points.setdefault((lat, lon), (lat, lon, hpa))
+        for lat, lon, hpa in points.values():
+            columns.setdefault(lon, []).append((lat, lon, hpa))
+        return [
+            sorted(columns[lon], key=lambda point: point[0]) for lon in sorted(columns)
+        ]
+
+    @staticmethod
+    def _show_isobars(job):
+        # Palettes built before the isobar toggle carry no fourth element.
+        return job.palette[3] if len(job.palette) > 3 else True
+
     def _render(self, job):
         data = self._load_wind(job)
+        if job.cancel.is_set():
+            return None
+        pressure = self._load_pressure(job) if self._show_isobars(job) else []
         if job.cancel.is_set():
             return None
         viewport = job.viewport
@@ -161,10 +235,12 @@ class WindOverlayRenderer(OverlayRenderer):
         )
         surface.set_device_scale(job.factor, job.factor)
         settings = SimpleNamespace(
-            gribArrowOpacity=job.palette[1], gribArrowOnGround=job.palette[2]
+            gribArrowOpacity=job.palette[1],
+            gribArrowOnGround=job.palette[2],
+            gribIsobarsVisible=self._show_isobars(job),
         )
         self._painter(settings, self._land_mask.contains).draw(
-            viewport, cairo.Context(surface), data
+            viewport, cairo.Context(surface), data, pressure
         )
         surface.flush()
         return None if job.cancel.is_set() else surface

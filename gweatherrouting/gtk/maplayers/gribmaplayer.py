@@ -64,6 +64,7 @@ class GribMapLayer(GObject.GObject):
             self.time_control.time,
             self.settings_manager.gribArrowOpacity,
             self.settings_manager.gribArrowOnGround,
+            getattr(self.settings_manager, "gribIsobarsVisible", True),
         )
         sources = tuple((grib,) for grib in self.grib_manager.gribs)
         self._renderer.draw(gpsmap, cr, sources, style)

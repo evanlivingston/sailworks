@@ -26,6 +26,11 @@ from osgeo import gdal
 
 logger = logging.getLogger("gweatherrouting")
 
+# Mean-sea-level pressure elements (Pa) used for isobars. GFS downloads
+# request PRMSL; other models may already carry one of these bands.
+PRESSURE_ELEMENTS = ("PRMSL", "MSLMA")
+PA_TO_HPA = 1.0 / 100.0
+
 
 class MetaGrib:
     def __init__(self, path, name, centre, bounds, start_time, last_forecast):
@@ -83,6 +88,26 @@ class Grib(weatherrouting.Grib):
 
         return u_band, v_band
 
+    def _find_pressure_band_for_time(self, t):
+        """Find the mean-sea-level pressure band at a given forecast hour."""
+        for bidx in range(1, self.dataset.RasterCount + 1):
+            band = self.dataset.GetRasterBand(bidx)
+            metadata = band.GetMetadata()
+
+            if (
+                "GRIB_ELEMENT" not in metadata
+                or "GRIB_FORECAST_SECONDS" not in metadata
+            ):
+                continue
+
+            if (
+                metadata["GRIB_ELEMENT"] in PRESSURE_ELEMENTS
+                and int(metadata["GRIB_FORECAST_SECONDS"]) // 3600 == t
+            ):
+                return band
+
+        return None
+
     @lru_cache(maxsize=2048)
     def get_rindex_data(self, t):
         u_band, v_band = self._find_bands_for_time(t)
@@ -118,6 +143,82 @@ class Grib(weatherrouting.Grib):
             )
         )
 
+    @lru_cache(maxsize=512)
+    def get_pressure_rindex_data(self, t):
+        band = self._find_pressure_band_for_time(t)
+        if band is None:
+            raise ValueError(f"Pressure data not found for forecast hour {t}")
+
+        pressure = band.ReadAsArray()
+        gt = self.dataset.GetGeoTransform()
+        data = []
+
+        for y in range(pressure.shape[0]):
+            for x in range(pressure.shape[1]):
+                lon = gt[0] + x * gt[1]
+                lat = gt[3] + y * gt[5]
+                data.append((lat, lon, pressure[y, x]))
+
+        return data
+
+    def _get_pressure_data(self, t, bounds):
+        try:
+            pressure = self.get_pressure_rindex_data(t)
+        except Exception as e:
+            logger.debug(e)
+            return None
+
+        return list(
+            filter(
+                lambda x: bounds[0][0] <= x[0] <= bounds[1][0]
+                and bounds[0][1] <= x[1] <= bounds[1][1],
+                pressure,
+            )
+        )
+
+    def get_pressure(self, tt, bounds):
+        """Time-interpolated mean-sea-level pressure in hPa.
+
+        Returns a list of (lat, lon, hPa) or None when the file carries no
+        pressure bands (e.g. wind-only GRIBs downloaded before isobars).
+        """
+        t = self._transform_time(tt)
+        if t is None:
+            return None
+
+        available_hours = self._get_available_pressure_hours()
+        if not available_hours:
+            return None
+        t1, t2 = self._find_bracketing_hours(t, available_hours)
+
+        lon1 = min(bounds[0][1], bounds[1][1])
+        lon2 = max(bounds[0][1], bounds[1][1])
+
+        bounds = [(bounds[0][0], lon1), (bounds[1][0], lon2)]
+        ppp1 = self._get_pressure_data(t1, bounds)
+        ppp2 = self._get_pressure_data(t2, bounds)
+
+        if not ppp1 or not ppp2 or len(ppp1) != len(ppp2):
+            return None
+
+        data = []
+
+        for j in range(0, len(ppp1)):
+            lat, lon, pp1 = ppp1[j]
+            _, _, pp2 = ppp2[j]
+
+            if lon > 180.0:
+                lon -= 360.0
+
+            if t2 == t1:
+                pp = pp1
+            else:
+                pp = pp1 + (pp2 - pp1) * (t - t1) / (t2 - t1)
+
+            data.append((lat, lon, pp * PA_TO_HPA))
+
+        return data
+
     def get_wind(self, tt, bounds):
         t = self._transform_time(tt)
         if t is None:
@@ -152,6 +253,20 @@ class Grib(weatherrouting.Grib):
             data.append((twd, tws, (lat, lon)))
 
         return data
+
+    @lru_cache(maxsize=1)
+    def _get_available_pressure_hours(self):
+        """Scan GRIB bands to find all forecast hours with pressure data."""
+        hours = set()
+        for bidx in range(1, self.dataset.RasterCount + 1):
+            band = self.dataset.GetRasterBand(bidx)
+            metadata = band.GetMetadata()
+            if (
+                "GRIB_FORECAST_SECONDS" in metadata
+                and metadata.get("GRIB_ELEMENT") in PRESSURE_ELEMENTS
+            ):
+                hours.add(int(metadata["GRIB_FORECAST_SECONDS"]) // 3600)
+        return sorted(hours)
 
     @lru_cache(maxsize=1)
     def _get_available_forecast_hours(self):

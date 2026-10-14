@@ -50,8 +50,9 @@ FORECAST_PRESETS = {
 class NOAAGFSSource(GribSource):
     """GRIB source for NOAA GFS global weather forecasts (0.25 degree).
 
-    Downloads wind data (UGRD/VGRD at 10m above ground) from NOAA NOMADS
-    for user-specified geographic bounds.
+    Downloads wind data (UGRD/VGRD at 10m above ground) plus mean-sea-level
+    pressure (PRMSL, for isobars) from NOAA NOMADS for user-specified
+    geographic bounds.
     """
 
     def __init__(self):
@@ -139,16 +140,16 @@ class NOAAGFSSource(GribSource):
 
     def _estimate_size(self, hours):
         """Estimate download size based on forecast hours and bounds."""
-        # Rough estimate: ~0.5MB per forecast hour for wind-only, global
-        # Smaller with geographic subsetting
+        # Rough estimate: ~0.75MB per forecast hour for wind + MSL pressure,
+        # global. Smaller with geographic subsetting
         num_steps = len([h for h in GFS_FORECAST_HOURS if h <= hours])
         if self._bounds:
             lat_range = abs(self._bounds[2] - self._bounds[0])
             lon_range = abs(self._bounds[3] - self._bounds[1])
             area_fraction = (lat_range * lon_range) / (180 * 360)
-            size_mb = num_steps * 0.5 * area_fraction
+            size_mb = num_steps * 0.75 * area_fraction
         else:
-            size_mb = num_steps * 0.5
+            size_mb = num_steps * 0.75
 
         if size_mb < 1:
             return f"{size_mb * 1024:.0f} KB"
@@ -161,6 +162,8 @@ class NOAAGFSSource(GribSource):
             "lev_10_m_above_ground": "on",
             "var_UGRD": "on",
             "var_VGRD": "on",
+            "lev_mean_sea_level": "on",
+            "var_PRMSL": "on",
             "dir": f"/gfs.{date_str}/{cycle}/atmos",
         }
 
@@ -274,7 +277,7 @@ class NOAAGFSSource(GribSource):
                     bytes_written += len(chunk)
                     if bytes_written > 256 * 1024 * 1024:
                         raise ValueError(
-                            "Wind download exceeded 256 MiB; choose a smaller route area"
+                            "Forecast download exceeded 256 MiB; choose a smaller route area"
                         )
             finally:
                 response.close()

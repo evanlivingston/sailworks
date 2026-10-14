@@ -219,6 +219,7 @@ class SettingsDialog(QDialog):
             ("Smooth zoom", "smoothZoom"),
             ("Pan inertia", "panInertia"),
             ("Wind arrows on ground", "gribArrowOnGround"),
+            ("Pressure isobars", "gribIsobarsVisible"),
             ("Canadian online charts", "canadianCharts"),
         ):
             checkbox = QCheckBox(label)
