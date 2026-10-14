@@ -48,7 +48,7 @@ or require a running GLib main loop.
   and Canadian tile rendering; asynchronous wind portrayal from enabled GRIBs.
   Saved chart enable flags and palettes are retained. Missing saved chart
   files are logged and reported on the map while other layers remain usable.
-- Shared forecast-time model with a date/time control, wind-file loading, and
+- Shared forecast-time model with transport controls and a timeline, wind-file loading, and
   chart palette selection. Opening a forecast imports a persistent library copy,
   enables it and selects its initial time. File → Data Library manages imported
   files, enable flags and provider downloads.
@@ -333,6 +333,36 @@ the route collection still owns its data. Route draft coordinates and departure
 are initialized normally rather than restoring an old departure time. No log,
 recording, playback or calculation starts because a workspace was restored.
 
+## Forecast timeline and panels
+
+Charts places forecast transport and the range slider at the right of its context
+toolbar, alongside the chart controls. The controls follow GTK's order: step
+backward, pause, play, step forward, Now and Time Picker. Choose the step interval
+from 30 seconds through 24 hours (15 minutes by default). Playback takes one step
+per second and pauses at the last available time; repeated Play keeps one timer.
+
+The slider spans the earliest start through the latest end of enabled wind,
+marine field and station metadata. Gaps between sources can still have no data.
+Dragging pauses forecast playback and coalesces changes at 75 milliseconds;
+release commits the final selection. No data is sampled to find these bounds.
+Times use the local timezone. Manual dates outside the range remain selected with
+an explanatory caption; the next step clamps into the range. Without a loaded
+range, stepping and the time picker still work while scrubbing is disabled. Now
+retains GTK's existing rounding to the hour.
+
+Forecast controls are independent of NMEA recording/playback and routing departure.
+Changing workspace pauses forecast playback. Workspace preferences retain only
+the step interval; opening the app never resumes forecast playback or restores an
+old selected time. Marine bounds are supported here; marine overlays and controls
+are still a separate migration slice.
+
+Floating tool panels use compact dark headers with a left close button. Drag the
+header to move, double-click to dock, resize from the edges, or drag to a screen
+edge to preview a snap. Window lists the panels and offers Reset Panels to redock
+them and restore the default layout. Panel scrolling uses thin bars that appear
+briefly during activity; scrolling over an unfocused dropdown/spinner scrolls its
+panel instead of changing its value. Native filesystem dialogs remain enabled.
+
 ## Still to migrate
 
 - Advanced routing controls and marine current/tide overlays;
@@ -349,8 +379,8 @@ and packaging reach parity.
 
 ## Validation
 
-The full repository suite passes 791 tests and 101 subtests locally.
-The optional Qt wrapper runs forty-nine integration checks in a separate
+The full repository suite passes 794 tests and 101 subtests locally.
+The optional Qt wrapper runs fifty-seven integration checks in a separate
 process. Coverage includes transport/recording, queued Core notifications,
 stale-source rejection, overlay completion without GLib, callback cancellation
 on shutdown, real OGR ENC/raster fixtures, forecast/palette changes, projection,
@@ -370,7 +400,13 @@ and excluding instrument history. Polar checks cover native-picker import,
 shared disk reloads and enable flags, routing selection/removal, exact preview
 values, ORC filtering/download metadata, provider failures and late completion.
 Shared manager tests cover refresh/reload, collisions, interpolation parity,
-invalid data, failed-copy/delete recovery and retaining symlink targets.
+invalid data, failed-copy/delete recovery and retaining symlink targets. Forecast
+checks cover enabled-source bounds beyond 2038, step/play/Now/manual dates,
+coalesced dragging, NMEA independence, step preferences and shutdown. Shared
+timeline tests retain GTK bounds, endpoints and DST stepping semantics. Panel
+checks cover repeated float/redock, reset, minimum size and child-relative resize
+coordinates. Native macOS checks compare GTK/Qt at 1280×820 and verify Qt at
+1000×650, manual dates, floating panels and clean shutdown.
 
 ```sh
 .venv/bin/python -m pytest
