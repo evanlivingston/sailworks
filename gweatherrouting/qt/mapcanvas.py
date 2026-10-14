@@ -14,12 +14,15 @@ from gweatherrouting.rendering.windpainter import WindPainter
 from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
 from gweatherrouting.rendering.navigation import NavigationRenderer
 from gweatherrouting.rendering.ais import AISRenderer
+from gweatherrouting.rendering.dashboard import DashboardRenderer
+from .windcursor import WindCursorSampler
 
 
 class TrackMap(QWidget, MercatorProjection):
     route_location = Signal(str, object)
     view_changed = Signal()
     navigation_request = Signal(str, object)
+    cursor_readout = Signal(str)
 
     def __init__(self, controller, parent=None, time_control=None):
         super().__init__(parent)
@@ -43,6 +46,7 @@ class TrackMap(QWidget, MercatorProjection):
         self.ais_visible = True
         self.move_callback = None
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setMouseTracking(True)
         self.charts = controller.charts
         self.charts.add_map(self)
         self.wind = WindOverlayRenderer(WindPainter, controller.scheduler.submit)
@@ -52,8 +56,42 @@ class TrackMap(QWidget, MercatorProjection):
         self._zoom_animating = False
         self.time_control = time_control or controller.time_control
         self.time_control.connect("time_change", self._time_changed)
+        self.dashboard = DashboardRenderer(controller.connections)
+        self.dashboard_visible = True
+        self.wind_visible = True
+        self._instrument_status = None
+        self._cursor_context = None
+        self._wind_cursor = WindCursorSampler(self, controller.scheduler.submit)
+        controller.boat_changed.connect(self._boat_changed)
 
     def _time_changed(self, _):
+        self._cancel_cursor()
+        self.queue_draw()
+
+    def _boat_changed(self, _):
+        self.update()
+
+    def refresh_instruments(self):
+        status = (
+            self.controller.connections.polling_active,
+            tuple(
+                (s["name"], s["connected"], s["packets"])
+                for s in self.controller.connections.get_status()
+            ),
+        )
+        if status != self._instrument_status:
+            self._instrument_status = status
+            self.update()
+
+    def set_dashboard_visible(self, visible):
+        self.dashboard_visible = visible
+        self.update()
+
+    def set_wind_visible(self, visible):
+        self.wind_visible = visible
+        if not visible:
+            self.wind.forget(self)
+        self._cancel_cursor()
         self.queue_draw()
 
     def get_scale_factor(self):
@@ -84,6 +122,9 @@ class TrackMap(QWidget, MercatorProjection):
         if self.disposed:
             return
         self.disposed = True
+        self._wind_cursor.close()
+        self.cursor_readout.emit("")
+        self.controller.boat_changed.disconnect(self._boat_changed)
         self.charts.forget_map(self)
         self.wind.forget(self)
         for token in list(self._ticks):
@@ -91,6 +132,7 @@ class TrackMap(QWidget, MercatorProjection):
         self.time_control.disconnect("time_change", self._time_changed)
 
     def hideEvent(self, event):  # noqa: N802 - Qt virtual method name
+        self._cancel_cursor()
         self.cancel_move()
         self.charts._chs_renderer.forget(self)
         self.wind.forget(self)
@@ -108,6 +150,11 @@ class TrackMap(QWidget, MercatorProjection):
 
     def queue_draw(self):
         if not self.disposed:
+            if (
+                self._cursor_context is not None
+                and self._cursor_context != self._weather_context()
+            ):
+                self._cancel_cursor()
             self.background = None
             self.update()
 
@@ -128,6 +175,7 @@ class TrackMap(QWidget, MercatorProjection):
     def fit_coordinates(self, coordinates):
         if not coordinates:
             return
+        self._cancel_cursor()
         lats, lons = zip(*coordinates)
         self._center_lat = (min(lats) + max(lats)) / 2
         self._center_lon = (min(lons) + max(lons)) / 2
@@ -172,6 +220,7 @@ class TrackMap(QWidget, MercatorProjection):
         self.fit_coordinates((*self.route, *self.route_plan))
 
     def contextMenuEvent(self, event):  # noqa: N802 - Qt virtual method name
+        self._cancel_cursor()
         self.cancel_move()
         position = self.convert_screen_to_geographic(event.pos().x(), event.pos().y())
         menu = QMenu(self)
@@ -267,6 +316,8 @@ class TrackMap(QWidget, MercatorProjection):
             painter.setBrush(QColor("#ffffff"))
             painter.setPen(QPen(QColor("#d8851b"), 2))
             painter.drawEllipse(QPointF(xs[index], ys[index]), 5, 5)
+        if self.dashboard_visible:
+            painter.drawImage(QPointF(0, 0), self._dashboard_image())
         painter.setPen(QColor("#e4edf2"))
         caption = "Drag to pan · Scroll to zoom"
         if self.move_callback is not None:
@@ -279,11 +330,10 @@ class TrackMap(QWidget, MercatorProjection):
         caption_width = painter.fontMetrics().horizontalAdvance(caption)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(0, 0, 0, 155))
-        painter.drawRoundedRect(
-            QRectF(8, self.height() - 34, caption_width + 16, 26), 4, 4
-        )
+        caption_y = 8 if self.dashboard_visible else self.height() - 34
+        painter.drawRoundedRect(QRectF(8, caption_y, caption_width + 16, 26), 4, 4)
         painter.setPen(QColor("#eeeeec"))
-        painter.drawText(16, self.height() - 16, caption)
+        painter.drawText(16, caption_y + 18, caption)
         painter.end()
 
     def _navigation_image(self):
@@ -310,7 +360,88 @@ class TrackMap(QWidget, MercatorProjection):
         image.setDevicePixelRatio(factor)
         return image
 
+    def _dashboard_image(self):
+        factor = self.get_scale_factor()
+        surface = cairo.ImageSurface(
+            cairo.FORMAT_ARGB32,
+            math.ceil(self.width() * factor),
+            math.ceil(self.height() * factor),
+        )
+        surface.set_device_scale(factor, factor)
+        self.dashboard.boat_info = self.controller.core.boat_info
+        self.dashboard._draw_dashboard(self, cairo.Context(surface))
+        surface.flush()
+        image = QImage(
+            surface.get_data(),
+            surface.get_width(),
+            surface.get_height(),
+            surface.get_stride(),
+            QImage.Format.Format_ARGB32_Premultiplied,
+        ).copy()
+        image.setDevicePixelRatio(factor)
+        return image
+
+    def _weather_context(self):
+        return (
+            self.time_control.time,
+            tuple(self.controller.core.grib_manager.gribs),
+            self._center_lat,
+            self._center_lon,
+            self._zoom,
+            self.width(),
+            self.height(),
+            self.wind_visible,
+        )
+
+    def _cancel_cursor(self):
+        self._wind_cursor.cancel()
+        self._cursor_context = None
+        self.cursor_readout.emit("")
+
+    def _hover(self, position):
+        lat, lon = self.convert_screen_to_geographic(
+            position.x(), position.y()
+        ).get_degrees()
+        context = self._weather_context()
+        self._cursor_context = context
+        text = "Latitude: %f, Longitude: %f" % (lat, lon)
+        self.cursor_readout.emit(text)
+        if (
+            self.drag is not None
+            or self._zoom_animating
+            or self.move_callback is not None
+            or not self.wind_visible
+            or not self.isVisible()
+        ):
+            self._wind_cursor.cancel()
+            return
+
+        def show(wind):
+            if (
+                self.disposed
+                or not self.isVisible()
+                or self._cursor_context != context
+                or context != self._weather_context()
+            ):
+                return
+            self.cursor_readout.emit(
+                "Wind %.1f°, %.1f kts - " % (wind[0], wind[1] * 1.94384) + text
+                if wind is not None
+                else text
+            )
+
+        self._wind_cursor.request(context[1], context[0], lat, lon, show)
+
+    def leaveEvent(self, event):  # noqa: N802 - Qt virtual method name
+        self._cancel_cursor()
+        super().leaveEvent(event)
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt virtual method name
+        self._cancel_cursor()
+        super().resizeEvent(event)
+
     def begin_move(self, callback):
+        self._cancel_cursor()
         self.move_callback = callback
         self.drag = None
         self.setCursor(Qt.CursorShape.CrossCursor)
@@ -348,7 +479,8 @@ class TrackMap(QWidget, MercatorProjection):
             settings.gribArrowOnGround,
         )
         sources = tuple((grib,) for grib in self.controller.core.grib_manager.gribs)
-        self.wind.draw(self, cr, sources, style)
+        if self.wind_visible:
+            self.wind.draw(self, cr, sources, style)
         surface.flush()
         # copy() transfers ownership; Cairo's buffer can then be released.
         image = QImage(
@@ -362,6 +494,7 @@ class TrackMap(QWidget, MercatorProjection):
         return image
 
     def mousePressEvent(self, event):  # noqa: N802 - Qt virtual method name
+        self._cancel_cursor()
         if event.button() == Qt.MouseButton.LeftButton:
             if self.move_callback is not None:
                 position = self.convert_screen_to_geographic(
@@ -376,6 +509,7 @@ class TrackMap(QWidget, MercatorProjection):
 
     def mouseMoveEvent(self, event):  # noqa: N802 - Qt virtual method name
         if self.drag is None:
+            self._hover(event.position())
             return
         delta = event.position() - self.drag
         center = self.convert_screen_to_geographic(
@@ -386,6 +520,7 @@ class TrackMap(QWidget, MercatorProjection):
         self.drag = event.position()
         self.update()
         self.view_changed.emit()
+        self._hover(event.position())
 
     def mouseReleaseEvent(self, _):  # noqa: N802 - Qt virtual method name
         self.drag = None
@@ -393,6 +528,7 @@ class TrackMap(QWidget, MercatorProjection):
         self.view_changed.emit()
 
     def wheelEvent(self, event):  # noqa: N802 - Qt virtual method name
+        self._cancel_cursor()
         pointer = event.position()
         anchor = self.convert_screen_to_geographic(pointer.x(), pointer.y())
         delta = event.angleDelta().y() / 120 or event.pixelDelta().y() / 60
