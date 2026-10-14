@@ -45,6 +45,8 @@ from .polarworkspace import PolarWorkspace
 from .polarlibrary import PolarLibrary
 from .navigationpanel import NavigationPanel
 from .forecasttimeline import ForecastTimeline
+from .marinepanel import MarinePanel
+from .marinesettings import MarineSettings
 
 
 class NavigationScroll(QScrollArea):
@@ -65,6 +67,9 @@ class PreviewWindow(QMainWindow):
         self.data_key = None
         self.settings_dialog = None
         self.library_dialog = None
+        self.marine_settings = None
+        self.marine_open = {"currents": False, "tides": False}
+        self.marine_syncing = False
         self.setWindowTitle("GWeatherRouting")
         self.setWindowIcon(QIcon(resource_path("gweatherrouting", "data/icon.png")))
         self.resize(1200, 800)
@@ -226,6 +231,7 @@ class PreviewWindow(QMainWindow):
         settings_action.setShortcut(QKeySequence.StandardKey.Preferences)
         toolbar.addAction("Data Library", self.show_library)
         controller.data.forecast_loaded.connect(self._forecast_loaded)
+        self._create_marine_panels(controller)
         view_menu = self.menuBar().addMenu("View")
         view_menu.addAction(self.nmea_dock.toggleViewAction())
         view_menu.addAction(self.routing_dock.toggleViewAction())
@@ -243,6 +249,9 @@ class PreviewWindow(QMainWindow):
         window_menu.addAction(self.polar_selector_dock.toggleViewAction())
         window_menu.addAction(self.performance_dock.toggleViewAction())
         window_menu.addAction(self.polar_manager_dock.toggleViewAction())
+        for dock in self.marine_docks.values():
+            window_menu.addAction(dock.toggleViewAction())
+            view_menu.addAction(dock.toggleViewAction())
         window_menu.addSeparator()
         window_menu.addAction("Reset Panels", self.reset_panels)
         self.chart_toolbar_actions = list(toolbar.actions())
@@ -279,6 +288,14 @@ class PreviewWindow(QMainWindow):
             )
             toolbar.insertAction(open_forecast, action)
             self.map_toolbar_actions.append(action)
+        self.marine_action = toolbar.addAction(
+            symbol_icon("tides-currents-symbolic"), "Tides & currents"
+        )
+        self.marine_action.setToolTip("Show / Hide Currents and Tides panels")
+        self.marine_action.setCheckable(True)
+        self.marine_action.triggered.connect(self._toggle_marine)
+        toolbar.insertAction(open_forecast, self.marine_action)
+        self.chart_toolbar_actions.append(self.marine_action)
         file_menu.addAction("Import GPX…", self.navigation_panel.import_gpx)
         file_menu.addAction("Export navigation…", self._export_navigation)
         toolbar.addSeparator()
@@ -362,6 +379,23 @@ class PreviewWindow(QMainWindow):
         view_menu.addSeparator()
         view_menu.addAction("Reset layout", self.workspace.reset_layout)
 
+    def _create_marine_panels(self, controller):
+        self.marine_panels = {}
+        self.marine_docks = {}
+        for kind, title in (("currents", "Currents"), ("tides", "Tides")):
+            panel = MarinePanel(controller, self.map, kind, self.show_marine_settings)
+            dock = self._dock(title, kind, panel)
+            self.marine_panels[kind], self.marine_docks[kind] = panel, dock
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+            self.tabifyDockWidget(self.nmea_dock, dock)
+            dock.hide()
+            dock.visibilityChanged.connect(self._marine_visibility)
+            dock.toggleViewAction().triggered.connect(
+                lambda checked, dock=dock: self._show_panel(dock) if checked else None
+            )
+
+        self.nmea_dock.raise_()
+
     @staticmethod
     def _set_chart_toolbar_icons(toolbar):
         icons = {
@@ -424,6 +458,11 @@ class PreviewWindow(QMainWindow):
         self.navigation_syncing = True
         self.navigation_dock.setVisible(current is self.map and self.navigation_open)
         self.navigation_syncing = False
+        self.marine_syncing = True
+        for kind, dock in self.marine_docks.items():
+            dock.setVisible(current is self.map and self.marine_open[kind])
+        self.marine_syncing = False
+        self.marine_action.setChecked(any(self.marine_open.values()))
         self.navigation_action.setChecked(self.navigation_open)
         self._sync_map_actions()
         if hasattr(self, "cursor_status"):
@@ -580,12 +619,51 @@ class PreviewWindow(QMainWindow):
         if dock is self.navigation_dock:
             self.navigation_open = True
             self.views.setCurrentWidget(self.map)
+        for kind, marine_dock in self.marine_docks.items():
+            if dock is marine_dock:
+                self.marine_open[kind] = True
+                self.views.setCurrentWidget(self.map)
         dock.show()
+        if dock in self.marine_docks.values() and not dock.isFloating():
+            # A pre-show raise can leave this dock last in sibling order while
+            # another tab is active. Force a Z-order change so Qt selects it.
+            dock.lower()
         dock.raise_()
         if hasattr(self, "workspace"):
             self.workspace._dock_activated(dock)
-        if dock in (self.routing_dock, self.navigation_dock):
+        if dock in (
+            self.routing_dock,
+            self.navigation_dock,
+            *self.marine_docks.values(),
+        ):
             self.views.setCurrentWidget(self.map)
+
+    def _marine_visibility(self, *_):
+        if not self.marine_syncing and self.views.currentWidget() is self.map:
+            self.marine_open = {
+                kind: not dock.isHidden() for kind, dock in self.marine_docks.items()
+            }
+            self.marine_action.setChecked(any(self.marine_open.values()))
+
+    def _toggle_marine(self, enabled):
+        self.marine_open = {kind: enabled for kind in self.marine_docks}
+        self._view_changed()
+        if enabled:
+            self._show_panel(self.marine_docks["currents"])
+
+    def show_marine_settings(self, tab):
+        if self.marine_settings is None:
+            self.marine_settings = MarineSettings(self.controller, self)
+        self.marine_settings.select_tab(tab)
+
+    def dispose_marine(self):
+        self.marine_syncing = True
+        if self.settings_dialog is not None:
+            self.settings_dialog.currents.dispose()
+        for panel in self.marine_panels.values():
+            panel.dispose()
+        if self.marine_settings is not None:
+            self.marine_settings.dispose()
 
     def reset_panels(self):
         """Redock every floating panel and restore default sizes/visibility."""
@@ -596,6 +674,7 @@ class PreviewWindow(QMainWindow):
             self.performance_dock,
             self.polar_manager_dock,
             self.navigation_dock,
+            *self.marine_docks.values(),
         ):
             dock.setFloating(False)
         self.workspace.reset_layout()
@@ -958,6 +1037,7 @@ class PreviewWindow(QMainWindow):
     def closeEvent(self, event):  # noqa: N802 - Qt virtual method name
         self.workspace.close()
         self.timeline.dispose()
+        self.dispose_marine()
         self.navigation_panel.dispose()
         self.polar_workspace.dispose()
         self.live_timer.stop()

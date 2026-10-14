@@ -5,70 +5,23 @@ import gi
 gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk
 
-from gweatherrouting.core.marine.spatialproviders import CIOPS_DOMAINS
+from gweatherrouting.core.marine.presentation import (
+    has_current_provider,
+    no_current_provider,
+    current_coverage,
+)
 from .maplayers.marinemaplayer import chart_instant
 from .marinedownloadjobs import MarineDownloadJobs
 from .marinesettingswindow import MarineSettingsWindow
 from .widgets.toolpanel import settings_row, tool_content
 from .spatialmarinepanel import SpatialMarinePanel
 
-
-def has_current_provider(manager, latitude, longitude):
-    regional = any(
-        bounds.south <= latitude <= bounds.north
-        and bounds.west <= longitude <= bounds.east
-        for _, _, _, _, bounds in CIOPS_DOMAINS.values()
-    )
-    return regional or bool(manager.coverage_planner.worldwide.credentials)
-
-
-def no_current_provider():
-    return (
-        False,
-        "No provider for current area",
-        "Worldwide currents can be configured in Settings → Currents.",
-    )
-
-
-def current_coverage(manager, latitude, longitude, instant):
-    selection = manager.fields.snapshot()
-    result = selection.sample(latitude, longitude, instant)
-    if result.status == "available":
-        field = manager.fields.fields[result.dataset_id]
-        return (
-            True,
-            "Current data available",
-            field.manifest()["model"],
-        )
-    if not selection.fields:
-        if not has_current_provider(manager, latitude, longitude):
-            return no_current_provider()
-        return (
-            False,
-            "No enabled current models",
-            "Download data or enable a saved source.",
-        )
-    overlapping = [
-        f
-        for f in selection.fields
-        if f.latitudes[0] <= latitude <= f.latitudes[-1]
-        and f.longitudes[0] <= longitude <= f.longitudes[-1]
-    ]
-    if not overlapping:
-        if not has_current_provider(manager, latitude, longitude):
-            return no_current_provider()
-        return False, "No current coverage here", "Download data for this map area."
-    if all(not f.times[0] <= instant.timestamp() <= f.times[-1] for f in overlapping):
-        return (
-            False,
-            "Outside the loaded forecast times",
-            "Choose a loaded time or download this interval.",
-        )
-    return (
-        False,
-        "No valid model current here",
-        "The model masks this location or has missing data.",
-    )
+__all__ = [
+    "MarineToolPanel",
+    "has_current_provider",
+    "no_current_provider",
+    "current_coverage",
+]
 
 
 class MarineToolPanel(Gtk.Box, MarineDownloadJobs):

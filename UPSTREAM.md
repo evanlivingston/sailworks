@@ -935,3 +935,61 @@ into `dev`; no upstream PR was created or updated.
   from Qt UI and fork documentation if authorized; no upstream publication is
   part of this slice.
 - Usage and assessment: `docs/qt-first-pass.md`, `docs/qt-parity.md`.
+
+## Qt marine controls and overlays
+
+- Status: shared marine rendering, coverage helpers, interval summaries and tide
+  acquisition are upstream candidates; Qt controls/preferences and migration
+  documentation are fork-only. Branch: `feature/qt-marine-controls`, based on
+  `dev` at `2fddc69` after the approved merge of fork PR #15. No pending dependency
+  or upstream submission.
+- Review: [fork PR #16](https://github.com/evanlivingston/gweatherrouting/pull/16),
+  open and unmerged for human review; CI is running.
+- Functional commits: `1376489` extracts production marine rendering/shoreline
+  masking and pure coverage/tide-download/interval helpers while retaining GTK
+  compatibility modules and APIs; `4a54dc4` integrates separate Qt Currents/Tides
+  tools, source settings, account controls, overlay/cursor portrayal and preferences.
+- Scope: Charts-only Currents and Tides panels, independent display switches,
+  map-area or saved-track/route coverage, UTC start following chart time until
+  edited, 1–168 hours, worker acquisition, progress/cancel and UI-thread persistence.
+  Current model groups retain merged intervals, partial Use state, download removal
+  and metadata. Tides retain automatic CHS selection, usable-sample cache reuse,
+  missing-span acquisition, height values and enabled automatic downloads. Marine
+  settings include individual saved station sources, priority/fallback/removal,
+  UTC samples, units, QC/qualifiers and provenance. Settings → Currents uses the
+  existing system credential store with cleared password drafts. Workspace restore
+  retains panels/display only and starts no downloads; Reset Panels closes marine
+  tools even when invoked from Logs. Existing native filesystem pickers remain.
+- Fidelity: the production Cairo renderer is shared, retaining fixed knots
+  scale/flow-toward bearings, station source-datum labels, source ranking, masks,
+  missing-data rules, shoreline clipping and time-only preview behavior. Sixteen
+  direct byte comparisons against the pre-migration GTK renderer (two pixel
+  scales, four times, valid/masked fields, currents and station predictions) have
+  zero changed pixels. The Qt adapter injects UI scheduling and cancels/disconnects
+  on hide/close. Logs retains its independent NMEA clock with no marine overlay;
+  no routing calculations, interpolation, units or source policies change.
+- Validation: full suite passes 794 tests and 101 subtests; the final isolated Qt
+  wrapper passes all 65 checks after strengthened priority/reset/checkbox assertions.
+  Follow-up `8a87b14` isolates restarted windows from installed shoreline data; its
+  focused restart check also passes.
+  Existing marine/model/GTK checks pass 94 tests. Eight new Qt checks cover grouped
+  source selection/removal and coverage, tide values/display/provenance/priority,
+  frozen requests/UI-thread commits, provider partial failure, cancel/close late
+  results, dateline tide selection and saved-data reuse, workspace/start behavior,
+  worker/cursor integration and account controls. Native macOS GTK/Qt comparison
+  checked marine panels/portrayal at 1280×820; Qt also checked 1000×650, details,
+  floating/reset, correct active tab and clean shutdown without GTK imports.
+  QA used temporary model/workspace data and disabled user-settings writes.
+  Scoped Black/Flake8 and mypy (29 files) pass. Full mypy retains 32 baseline errors
+  in eight existing files. Sphinx is unavailable locally; docs CI is pending.
+- Integration fixes: defer source-table rebuilds until checkbox signals finish
+  to avoid deleting a live native item; force tab activation when a pre-show raise
+  left a marine dock last in sibling order behind another active tab. Tests use
+  private shoreline paths and preserve the compact floating-panel resize scenario.
+- Limits: no live provider/account/network or hardware validation in this slice;
+  existing provider limits/qualification remain. Advanced current-aware routing
+  options, remaining settings and packaging are separate slices. GTK stays the
+  default frontend; no upstream publication is authorized or included.
+- Intended upstream scope: extract shared marine portrayal and pure acquisition/
+  presentation helpers independently from Qt UI and fork documentation if requested.
+- Usage and assessment: `docs/qt-first-pass.md`, `docs/qt-parity.md`.
