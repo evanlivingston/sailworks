@@ -1,7 +1,9 @@
 # Qt frontend migration
 
 The optional PySide6/Qt Widgets frontend now uses the full application Core and
-shared production Cairo chart rendering. GTK remains the default application;
+shared production Cairo chart rendering. GTK is the reference for workspace
+organization and workflows; see [the parity checklist](qt-parity.md).
+GTK remains the default application;
 the frontends run in separate processes and never share GUI event loops.
 
 ## Try it
@@ -31,8 +33,9 @@ or require a running GLib main loop.
 
 ## Implemented
 
-- Native Qt main window and toolbar, full-size Charts/Logs views, and a grouped
-  NMEA/Routing sidebar whose panels can still float.
+- Charts, Logs and Polars in the workspace header, with view-specific toolbars
+  and a shared sidebar whose panels can tab, split, hide or float. Polars shows
+  its table beside the full-circle chart; Logs shows a map above the plots.
 - The full Core: shared instrument/boat state, connections, NMEA session, and
   existing track, route, POI, GRIB, marine, AIS, and polar models. Position and
   speed over ground appear in the status bar.
@@ -151,7 +154,8 @@ active instruments in a worker. Offline mode saves without opening transports.
 Window shutdown waits for connection lifecycle work before closing instruments.
 Status polling uses a cached snapshot while a transport is reconnecting.
 
-Data Library has Forecasts, Charts and Polars pages. Forecast imports validate wind
+Data Library manages Forecasts and Charts. Polar management lives in the
+shared dock, reached from the Polars workspace toolbar. Forecast imports validate wind
 metadata before installing a persistent copy; duplicate filenames receive a
 timestamp suffix. Enable flags use the same GRIB storage as GTK. Removal deletes
 only the library copy after confirmation; externally opened files are protected.
@@ -181,12 +185,14 @@ chart imports work without opening GTK.
 
 ## Polar management
 
-Open File → Polars, Data Library → Polars or Routing → Manage polars. Import `.pol`
-files through the native picker, enable/disable them and remove installed copies
-with confirmation. Imports validate axes/table shape and finite, nonnegative
+Open the top-level Polars tab or File → Polars to see the table and chart
+together. Polar selector changes the displayed enabled polar. Use the Polar
+manager toolbar button (also reachable from Routing → Manage polars) for imports,
+enable/remove controls and ORC downloads. It is a shared dock panel, matching GTK;
+`.pol` imports still use the native picker and removal asks confirmation. Imports validate axes/table shape and finite, nonnegative
 speeds before staging a copy. Duplicate filenames receive timestamp suffixes;
-source files and existing installed copies are retained. Preview shows all stored
-wind-angle/speed values in a table and the corresponding curves. Use for routing
+source files and existing installed copies are retained. The main table uses GTK’s row stride and colored wind headers. The optional
+manager Preview shows every stored wind-angle/speed value. Use for routing
 selects an enabled polar in the Routing plan without starting a calculation.
 
 Load catalog fetches the existing ORC data source on demand. Search filters sail
@@ -207,17 +213,22 @@ or deleting the selected polar falls back to another enabled entry, or disables
 Calculate when none remain. Polar/data mutations and route jobs are serialized.
 
 Imports keep their original bytes and use the existing routing engine parser and
-interpolation. Preview curves plot stored table points without resampling. ORC
+interpolation. The main full-circle chart uses GTK’s production Cairo renderer, including
+mirrored tack curves, speed rings, wind colors, hover details and performance
+points. Extracting this renderer produced zero changed pixels in six baseline
+comparisons across three sizes, with and without hover and measured samples. ORC
 conversion retains the shared converter’s rounding/endpoint behavior; malformed
 or degenerate converted tables are rejected. The enabled-file selection fix also
-applies to GTK through the shared manager. Live performance samples, efficiency
-controls and polar editing/export remain separate migration work.
+applies to GTK through the shared manager. The Performance dock follows GTK: show actual performance, STW/SOG basis,
+nearest-TWS wind filter, sample count and Clear samples. It reads the same active
+NMEA history and wind-band policy; clearing observations retains logs/plots.
+Efficiency controls and polar editing/export remain separate migration work.
 
 ## Workspace preferences
 
 Qt automatically saves its window’s normal size/position and maximized state,
 sidebar placement/sizes, detached panel bounds, hidden panels/toolbar, active
-sidebar and Charts/Logs view. It also remembers the map center/zoom, Routing
+sidebar and Charts/Logs/Polars view. It also remembers the map center/zoom, Routing
 Plan/Results page, polar/algorithm/coastline options, selected saved route and
 NMEA playback speed/live-stream preference. View → Reset layout restores the
 default grouped sidebar and toolbar; the View menu can reopen hidden panels
@@ -245,22 +256,22 @@ recording, playback or calculation starts because a workspace was restored.
 
 ## Still to migrate
 
-- Advanced routing controls, POI and track tools, live polar performance and marine
-  current/tide overlays.
+- Advanced routing controls, POI/track/AIS tools, marine current/tide overlays,
+  map dashboard and wind-cursor details; see the parity checklist.
 - Base coastline installation/download UI and additional chart providers.
 - Smooth/inertial gestures, dateline behavior, large-file performance, live
   hardware validation and distributable macOS/Linux/Windows bundles.
 - A compact macOS toolbar with traffic lights in the same row. Standard native
   window buttons work; the current preview keeps the normal title bar.
 
-The next slice can bring current-aware routing or live polar performance onto
-these shared models/renderers. GTK stays available until Qt's workflows
+Subsequent slices should follow GTK’s existing organization for the remaining
+controls instead of inventing a different Qt layout. GTK stays available until Qt's workflows
 and packaging reach parity.
 
 ## Validation
 
 The full repository suite passes 783 tests and 84 subtests locally.
-The optional Qt wrapper runs thirty-three integration checks in a separate
+The optional Qt wrapper runs thirty-eight integration checks in a separate
 process. Coverage includes transport/recording, queued Core notifications,
 stale-source rejection, overlay completion without GLib, callback cancellation
 on shutdown, real OGR ENC/raster fixtures, forecast/palette changes, projection,
@@ -290,3 +301,11 @@ QT_QPA_PLATFORM=offscreen QT_STYLE_OVERRIDE=Fusion \
 ```
 
 See `UPSTREAM.md` for full-suite results and known baseline lint/type failures.
+
+Workspace parity checks additionally cover the primary Polars table/full-circle
+chart, contextual toolbars, shared performance basis/bands, Logs map/plot layout
+and absolute/relative wind switches, local-time tick labels, playback retention,
+Polars/Logs preference restart and migrating the older Qt toolbar arrangement.
+Native macOS comparison used both current GTK and Qt at 1280×820; Qt was also
+checked at 1000×650. OS chrome and fonts differ, and unmigrated controls remain
+explicitly recorded in `qt-parity.md`.
