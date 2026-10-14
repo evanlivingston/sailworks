@@ -30,7 +30,10 @@ class TestCursorGrib(unittest.TestCase):
             band.SetMetadata(
                 dict(GRIB_ELEMENT=element, GRIB_FORECAST_SECONDS=str(hour * 3600))
             )
-            band.WriteArray(np.full((3, 4), value, dtype=np.float32))
+            band.WriteArray(
+                np.full((3, 4), value, dtype=np.float32)
+                + np.arange(12, dtype=np.float32).reshape(3, 4) * 0.25
+            )
         band = dataset = None
         self.start = datetime(2026, 1, 1)
         self.source = Grib(str(self.path), "wind", "test", [], self.start, 3)
