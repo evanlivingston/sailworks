@@ -834,7 +834,10 @@ into `dev`; no upstream PR was created or updated.
   at `c837717` after the approved merge of fork PR #13. No pending dependency
   or upstream submission.
 - Review: [fork PR #14](https://github.com/evanlivingston/gweatherrouting/pull/14),
-  open for human review; not merged.
+  merged into `dev` with user approval (merge `748e5c7`). Merge audit confirmed
+  the existing missing-`nmeatoolkit` test-environment failure, connection-dialog
+  complexity and four baseline CI type errors. Docs and completed builds passed;
+  macOS/Python 3.10 builds were still running at integration.
 - Functional commits: `e80d964` (shared production gauges/dashboard and injectable
   cursor scheduling, retaining GTK adapters), `85f3aa4` (wrap all gauges on narrow
   maps, shared by GTK/Qt), `55c53ff` (private cursor forecast metadata and explicit
