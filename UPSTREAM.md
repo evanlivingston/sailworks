@@ -892,7 +892,8 @@ into `dev`; no upstream PR was created or updated.
   panel chrome/theme and migration documentation are fork-only. Branch:
   `feature/qt-forecast-timeline`, based on `dev` at `e9555fe` after the approved
   merge of fork PR #14. No pending prerequisite or upstream submission.
-- Review: fork PR pending creation; leave unmerged for human review.
+- Review: [fork PR #15](https://github.com/evanlivingston/gweatherrouting/pull/15),
+  open and unmerged for human review. CI was still running at handoff.
 - Functional commits: `0a54892` extracts GTK's enabled-source intervals, union
   bounds, step choices and bounded/unbounded stepping without changing semantics;
   `949b7b7` adds the Qt timeline/preferences and integrates the other agent's
@@ -918,7 +919,8 @@ into `dev`; no upstream PR was created or updated.
   all 57 checks and exits normally after the destruction regression test was
   strengthened. Shared timeline/GTK/time-control checks pass 31 tests. Scoped
   Black/Flake8 and mypy (23 files) pass. Full mypy retains 32 baseline errors in
-  eight existing files. Native macOS Qt checked 1280×820 and 1000×650, metadata
+  eight existing files. Sphinx was unavailable locally; documentation CI is pending.
+  Native macOS Qt checked 1280×820 and 1000×650, metadata
   ranges, scrubbing, endpoint pause, unchanged routing departure, manual outside
   dates, hidden Logs controls, floating panel/reset and clean shutdown; GTK
   reference checked at 1280×820. QA used temporary workspace/raster data with
@@ -930,4 +932,3 @@ into `dev`; no upstream PR was created or updated.
   from Qt UI and fork documentation if authorized; no upstream publication is
   part of this slice.
 - Usage and assessment: `docs/qt-first-pass.md`, `docs/qt-parity.md`.
-
