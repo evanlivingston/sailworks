@@ -893,7 +893,10 @@ into `dev`; no upstream PR was created or updated.
   `feature/qt-forecast-timeline`, based on `dev` at `e9555fe` after the approved
   merge of fork PR #14. No pending prerequisite or upstream submission.
 - Review: [fork PR #15](https://github.com/evanlivingston/gweatherrouting/pull/15),
-  open and unmerged for human review. CI was still running at handoff.
+  merged into `dev` with user approval (merge `6962a63`). All Linux builds and
+  docs passed. CI failures match the existing connection-dialog complexity, four
+  type errors and missing `nmeatoolkit` test dependency; remaining test jobs were
+  cancelled by CI fail-fast. macOS build was still running at integration.
 - Functional commits: `0a54892` extracts GTK's enabled-source intervals, union
   bounds, step choices and bounded/unbounded stepping without changing semantics;
   `949b7b7` adds the Qt timeline/preferences and integrates the other agent's
