@@ -83,9 +83,40 @@ not a controlled performance comparison or a large-chart benchmark. Native
 window controls, chart detail, wind, full curves, playback cursors and boat
 state were visually checked; GTK was absent from the Qt process.
 
+## Routing workflow
+
+The Routing dock provides one complete wind-only workflow. Open a GRIB file,
+choose a local polar, set the departure time and start/destination coordinates,
+then calculate. Right-click the map to set either position, use the current
+boat position as the start, or choose a saved POI as the destination. Departure
+is independent of the toolbar's forecast viewing time.
+
+Calculation runs on a worker with cooperative cancellation and approximate
+progress. A temporary path appears while searching. Successful routes save
+through the same Core collection and JSON schema used by GTK. The result list
+includes existing saved routes; selecting one shows its distance, last-point
+time, map path and waypoint table. Selecting a table row highlights that point
+on the map. Fit route includes both the computed path and the requested start/
+destination. Cancellation, errors and closing the window preserve prior results
+and discard late worker completions.
+
+The shared job in `core/routingjob.py` uses Core's existing wind-only engine,
+parameters, source ordering, spatial/time sampling and point serialization.
+Each job snapshots the selected forecast files, opens private GDAL handles and
+keeps two forecast hours in a run-local cache; cleanup releases them on success,
+error or cancellation. A direct engine comparison produces identical route
+points, and a real raster fixture matches legacy wind samples at four times.
+Existing arrival tolerances are retained, so the last engine point can precede
+the requested destination. The UI reports that point's time rather than claiming
+an exact arrival.
+
+This slice uses the available algorithms with their existing defaults. Algorithm
+parameter editing, current-aware routes, automatic forecast/current downloads,
+scenario comparisons, track destinations and route editing/export remain pending.
+
 ## Still to migrate
 
-- Routing controls/results, POI and track tools, polar panels, marine current/tide
+- Advanced routing controls, POI and track tools, polar panels, marine current/tide
   overlays, settings/connection editors and workspace persistence.
 - Chart discovery/download/import UI and the full GRIB library/download UI.
   This slice loads charts already configured in GTK.
@@ -94,19 +125,21 @@ state were visually checked; GTK was absent from the Qt process.
 - A compact macOS toolbar with traffic lights in the same row. Standard native
   window buttons work; the current preview keeps the normal title bar.
 
-The next slice can move one complete user workflow, such as routing, onto these
-shared models/renderers. GTK stays available until Qt's workflows and packaging
-reach parity.
+The next slice can bring current-aware routing or settings/download workflows
+onto these shared models/renderers. GTK stays available until Qt's workflows
+and packaging reach parity.
 
 ## Validation
 
-The full repository suite passes 765 tests and 73 subtests locally.
-The optional Qt wrapper runs twelve integration checks in a separate
+The full repository suite passes 769 tests and 73 subtests locally.
+The optional Qt wrapper runs sixteen integration checks in a separate
 process. Coverage includes transport/recording, queued Core notifications,
 stale-source rejection, overlay completion without GLib, callback cancellation
 on shutdown, real OGR ENC/raster fixtures, forecast/palette changes, projection,
 polygon holes and absence of GTK imports. Tests skip Qt when it is not installed.
-Core scheduler tests also run without Qt.
+Core scheduler and routing-job tests also run without Qt. Routing checks cover
+engine parity, forecast sampling/private handles, completion, cancellation,
+shutdown, unique names, prior-result retention and on-disk save/reload.
 
 ```sh
 .venv/bin/python -m pytest
