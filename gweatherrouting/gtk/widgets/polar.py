@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # Copyright (C) 2017-2026 Davide Gessa
-"""
+"""GTK adapter for the shared production polar renderer.
+
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
@@ -14,57 +15,23 @@ GNU General Public License for more details.
 For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
-import logging
-import math
-from typing import List, Optional, Tuple
-
 import gi
-from weatherrouting import Polar
-
-from gweatherrouting.core.polarperformance import PerformanceSample, wind_band
 
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, Gtk
 
-logger = logging.getLogger("gweatherrouting")
+from gweatherrouting.rendering.polar import PolarRenderer, POLAR_COLORS  # noqa: F401
 
 
-POLAR_COLORS = [
-    (1.0, 0.2, 0.2),  # red
-    (0.2, 0.6, 1.0),  # blue
-    (0.2, 0.8, 0.2),  # green
-    (1.0, 0.6, 0.0),  # orange
-    (0.8, 0.2, 0.8),  # purple
-    (0.0, 0.8, 0.8),  # cyan
-    (1.0, 1.0, 0.2),  # yellow
-    (1.0, 0.4, 0.6),  # pink
-    (0.6, 0.4, 0.2),  # brown
-    (0.4, 1.0, 0.6),  # mint
-    (0.6, 0.6, 1.0),  # lavender
-    (1.0, 0.8, 0.4),  # gold
-]
-
-
-class PolarWidget(Gtk.DrawingArea):
+class PolarWidget(Gtk.DrawingArea, PolarRenderer):
     def __init__(self, parent, core, full_circle=False):
+        Gtk.DrawingArea.__init__(self)
         self.par = parent
-        super(PolarWidget, self).__init__()
-
-        self.polar_manager = core.polar_manager
+        self.init_polar_renderer(core.polar_manager, full_circle)
         self.set_size_request(60, 180)
         self.set_hexpand(True)
         self.set_vexpand(True)
         self.connect("draw", self.draw)
-        self.polar = None
-        self.full_circle = full_circle
-        self.samples: Tuple[PerformanceSample, ...] = ()
-        self.wind_filter = None
-        self.hover_wind: Optional[float] = None
-        self.hover_text: Optional[str] = None
-        self._point_positions: List[Tuple[float, float, PerformanceSample]] = []
-        self._curve_segments: List[Tuple[float, float, float, float, float]] = []
-        self._chart_center = (0.0, 0.0)
-
         self.connect("motion-notify-event", self.on_mouse_move)
         self.connect("leave-notify-event", self.on_mouse_leave)
         self.connect("unmap", self.on_mouse_leave)
@@ -72,227 +39,6 @@ class PolarWidget(Gtk.DrawingArea):
             Gdk.EventMask.POINTER_MOTION_MASK | Gdk.EventMask.LEAVE_NOTIFY_MASK
         )
 
-        self.mousePos = None
-
-    def on_mouse_move(self, widget, event):
-        self.mousePos = (event.x, event.y)
-        self.hover_text, self.hover_wind = self._hover_details(event.x, event.y)
-        self.queue_draw()
-
-    def on_mouse_leave(self, widget, event=None):
-        self.mousePos = None
-        self.hover_text = None
-        self.hover_wind = None
-        self.queue_draw()
-
-    def load_polar(self, polar_file):
-        polar = None
-        try:
-            polar = Polar(self.polar_manager.get_path(polar_file))
-        except:
-            logger.error("Error loading polar file %s", polar_file)
-
-        self.set_polar(polar)
-
-    def set_polar(self, polar):
-        self.polar = polar
-        self.on_mouse_leave(self, None)
-        self._curve_segments = []
-        self._point_positions = []
-        self.queue_draw()
-
-    def set_performance(self, samples, wind_filter=None):
-        self.samples = samples
-        if wind_filter != self.wind_filter:
-            self.on_mouse_leave(self, None)
-        self.wind_filter = wind_filter
-        self._curve_segments = []
-        self._point_positions = []
-        self.queue_draw()
-
-    def _hover_details(self, x, y):
-        curve = self._curve_hover(x, y)
-        if curve is not None:
-            tws, angle = curve
-            return f"TWS {tws:g} kt · TWA {angle:.1f}°", tws
-        if not self._point_positions:
-            return None, None
-        px, py, sample = min(
-            self._point_positions, key=lambda p: (p[0] - x) ** 2 + (p[1] - y) ** 2
-        )
-        if math.hypot(px - x, py - y) > 10:
-            return None, None
-        return (
-            f"TWA {sample.twa:.1f}° · TWS {sample.tws:.1f} kt\n"
-            f"{sample.basis.upper()} {sample.speed:.2f} kt",
-            None,
-        )
-
-    def _curve_hover(self, x, y):
-        closest = None
-        distance = 6.0
-        for ax, ay, bx, by, tws in self._curve_segments:
-            vx, vy = bx - ax, by - ay
-            length_squared = vx * vx + vy * vy
-            if length_squared == 0:
-                continue
-            fraction = max(0, min(1, ((x - ax) * vx + (y - ay) * vy) / length_squared))
-            px, py = ax + fraction * vx, ay + fraction * vy
-            separation = math.hypot(x - px, y - py)
-            if separation < distance:
-                distance = separation
-                cx, cy = self._chart_center
-                angle = math.degrees(math.atan2(px - cx, cy - py)) % 360
-                closest = (tws, angle)
-        return closest
-
     def draw(self, area, cr):
-        self._point_positions = []
-        self._curve_segments = []
-        cr.set_source_rgb(0.15, 0.17, 0.20)
-        cr.paint()
-        if not self.polar:
-            return
-        a = self.get_allocation()
-        max_r, margin = 80.0, 25.0
-        logical_w = (2 if self.full_circle else 1) * max_r + 2 * margin
-        logical_h = 2 * max_r + 2 * margin
-        s = min(a.width / logical_w, a.height / logical_h)
-        if s <= 0:
-            return
-        dx = (a.width - logical_w * s) / 2
-        dy = (a.height - logical_h * s) / 2
-        cr.save()
-        cr.translate(dx, dy)
-        cr.scale(s, s)
-        cx = margin + (max_r if self.full_circle else 0)
-        cy = max_r + margin
-        self._chart_center = (dx + cx * s, dy + cy * s)
-        max_speed = max(
-            (v for row in self.polar.speed_table for v in row if math.isfinite(v)),
-            default=1,
-        )
-        max_speed = max(max_speed, max((p.speed for p in self.samples), default=0), 1)
-        # Boat speed defines the radius for both the curves and observations.
-        ring_step = max(1, math.ceil(max_speed / 8))
-        max_speed = math.ceil(max_speed / ring_step) * ring_step
-        speed_scale = max_r / max_speed
-        self._draw_grid(cr, cx, cy, max_r, max_speed, ring_step, speed_scale)
-        self._draw_curves(cr, cx, cy, speed_scale, s, dx, dy)
-        self._draw_samples(cr, cx, cy, speed_scale, s, dx, dy)
-        cr.restore()
-        self._draw_hover(cr, a.width, a.height)
-
-    def _draw_hover(self, cr, width, height):
-        # Draw on pointer motion instead of waiting for GTK's tooltip timeout.
-        if self.hover_text is None or self.mousePos is None:
-            return
-        cr.save()
-        cr.set_font_size(12)
-        lines = self.hover_text.splitlines()
-        box_w = max(cr.text_extents(line)[2] for line in lines) + 16
-        box_h = 18 * len(lines) + 12
-        x = min(self.mousePos[0] + 14, width - box_w - 4)
-        y = min(self.mousePos[1] + 18, height - box_h - 4)
-        x, y = max(4, x), max(4, y)
-        cr.set_source_rgba(0.06, 0.07, 0.09, 0.97)
-        cr.rectangle(x, y, box_w, box_h)
-        cr.fill_preserve()
-        cr.set_source_rgba(1, 1, 1, 0.4)
-        cr.set_line_width(1)
-        cr.stroke()
-        cr.set_source_rgb(1, 1, 1)
-        for i, line in enumerate(lines):
-            cr.move_to(x + 8, y + 19 + i * 18)
-            cr.show_text(line)
-        cr.restore()
-
-    def _draw_grid(self, cr, cx, cy, max_r, max_speed, ring_step, speed_scale):
-        for speed in range(ring_step, int(max_speed) + 1, ring_step):
-            r = speed * speed_scale
-            cr.set_line_width(0.2)
-            cr.set_source_rgba(1, 1, 1, 0.15)
-            cr.set_dash([2, 2])
-            cr.arc(
-                cx,
-                cy,
-                r,
-                -math.pi / 2,
-                3 * math.pi / 2 if self.full_circle else math.pi / 2,
-            )
-            cr.stroke()
-            cr.set_dash([])
-            cr.set_source_rgba(1, 1, 1, 0.6)
-            cr.set_font_size(5)
-            cr.move_to(cx + 2, cy - r + 5)
-            cr.show_text(f"{speed} kt")
-        for angle in range(0, 360 if self.full_circle else 181, 30):
-            rad = math.radians(angle)
-            cr.set_line_width(0.2)
-            cr.set_source_rgba(1, 1, 1, 0.15)
-            cr.move_to(cx, cy)
-            cr.line_to(cx + math.sin(rad) * max_r, cy - math.cos(rad) * max_r)
-            cr.stroke()
-            cr.set_font_size(5)
-            cr.set_source_rgba(1, 1, 1, 0.65)
-            cr.move_to(
-                cx + math.sin(rad) * (max_r + 9) - 4,
-                cy - math.cos(rad) * (max_r + 9) + 2,
-            )
-            cr.show_text(f"{angle}°")
-
-    def _draw_curves(self, cr, cx, cy, speed_scale, scale, dx, dy):
-        assert self.polar is not None
-        polar = self.polar
-        indices = sorted(
-            range(len(polar.tws)),
-            key=lambda i: polar.tws[i] == self.hover_wind,
-        )
-        for i in indices:
-            if self.wind_filter is not None and i != self.wind_filter:
-                continue
-            color = POLAR_COLORS[i % len(POLAR_COLORS)]
-            focused = self.polar.tws[i] == self.hover_wind
-            dimmed = self.hover_wind is not None and not focused
-            cr.set_source_rgba(*color, 0.15 if dimmed else 0.9)
-            cr.set_line_width(1.0 if focused else 0.7)
-            for side in ((1, -1) if self.full_circle else (1,)):
-                previous = None
-                for angle, row in zip(self.polar.twa, self.polar.speed_table):
-                    if i >= len(row) or not math.isfinite(row[i]) or row[i] <= 0:
-                        previous = None
-                        continue
-                    px = cx + side * speed_scale * row[i] * math.sin(angle)
-                    py = cy - speed_scale * row[i] * math.cos(angle)
-                    if previous is None:
-                        cr.move_to(px, py)
-                    else:
-                        cr.line_to(px, py)
-                        self._curve_segments.append(
-                            (
-                                dx + previous[0] * scale,
-                                dy + previous[1] * scale,
-                                dx + px * scale,
-                                dy + py * scale,
-                                self.polar.tws[i],
-                            )
-                        )
-                    previous = (px, py)
-                cr.stroke()
-
-    def _draw_samples(self, cr, cx, cy, speed_scale, scale, dx, dy):
-        assert self.polar is not None
-        for sample in self.samples:
-            band = wind_band(sample.tws, self.polar.tws)
-            if band is None or (
-                self.wind_filter is not None and band != self.wind_filter
-            ):
-                continue
-            angle = math.radians(sample.twa)
-            px = cx + speed_scale * sample.speed * math.sin(angle)
-            py = cy - speed_scale * sample.speed * math.cos(angle)
-            color = POLAR_COLORS[band % len(POLAR_COLORS)]
-            cr.set_source_rgba(*color, 0.4)
-            cr.arc(px, py, 0.65, 0, 2 * math.pi)
-            cr.fill()
-            self._point_positions.append((dx + px * scale, dy + py * scale, sample))
+        allocation = self.get_allocation()
+        self.draw_polar(cr, allocation.width, allocation.height)
