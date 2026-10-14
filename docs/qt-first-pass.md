@@ -426,11 +426,33 @@ time/source changes invalidate stale frames. Logs retains its independent NMEA
 clock and does not gain a marine overlay. These display controls do not enable
 current-aware routing or use tides for depth/clearance calculations.
 
+## Base map setup
+
+Settings → Map Data shows installed/missing world coastlines and optional
+OpenSeaMap sea marks, using the same sources and data locations as GTK. An online
+startup with missing data opens this page; offline startup does not prompt.
+Downloads begin only when Download selected is clicked. Installed data remains
+available offline.
+
+Downloads run on a worker with progress, Cancel download and retry after failure.
+Files are staged and checked using the production shapefile/OSM readers before
+installation. Invalid or interrupted downloads preserve existing files. Completed
+datasets remain available if a later download fails or is cancelled. Closing
+Settings keeps the operation running; closing the application requests cancellation
+and ignores late chart attachment. Network reads have bounded timeouts.
+
+Installed coastlines replace the bundled fallback map, become available for
+routing land checks, and refresh marine shoreline masks without an application
+restart. User chart selections and existing base-layer objects are retained.
+Map-data installation is serialized with routing and Data Library/Polar Manager
+operations. Corrupt/incomplete base data falls back to the bundled map and can be
+retried from Map Data. The native filesystem pickers are unchanged.
+
 ## Still to migrate
 
 - Remaining general settings and computed-route waypoint editing;
   see the parity checklist.
-- Base coastline installation/download UI and additional chart providers.
+- Additional chart providers.
 - Smooth/inertial gestures, dateline behavior, large-file performance, live
   hardware validation and distributable macOS/Linux/Windows bundles.
 - A compact macOS toolbar with traffic lights in the same row. Standard native
@@ -442,12 +464,19 @@ and packaging reach parity.
 
 ## Validation
 
-The full repository suite passes 801 tests and 101 subtests locally.
-The optional Qt wrapper runs seventy-three integration checks in a separate
+The full repository suite passes 822 tests and 106 subtests locally.
+The optional Qt wrapper runs seventy-eight integration checks in a separate
 process. Coverage includes transport/recording, queued Core notifications,
 stale-source rejection, overlay completion without GLib, callback cancellation
 on shutdown, real OGR ENC/raster fixtures, forecast/palette changes, projection,
 polygon holes and absence of GTK imports. Tests skip Qt when it is not installed.
+Map setup adds ten core checks for streamed downloads, cancellation, HTTP errors,
+truncation, archive validation, atomic replacement/rollback and partial completion;
+five Qt checks exercise startup/selection, real shapefile and OSM-reader installs,
+fallback removal, routing attachment, mask refresh, repair/idempotence, preserved
+chart selections, serialization and cancel/close. Provider HEAD requests return
+HTTP 200 for both existing URLs; full live datasets were not downloaded. Native
+macOS Qt Settings was checked with temporary data and disabled settings writes.
 Core scheduler and routing-job tests also run without Qt. Routing checks cover
 engine parity, forecast sampling/private handles, completion, cancellation,
 shutdown, unique names, prior-result retention and on-disk save/reload. Advanced

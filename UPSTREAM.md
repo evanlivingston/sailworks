@@ -1109,3 +1109,56 @@ into `dev`; no upstream PR was created or updated.
 - Intended upstream scope: pressure download params, `Grib.get_pressure`,
   and the shared isobar portrayal as one focused contribution, excluding
   fork workflow files.
+
+## Qt base map setup and downloads
+
+- Status: candidate for shared map-data acquisition and base-chart reload helpers;
+  Qt UI and fork migration documentation remain fork-only pending an explicit
+  upstream request. No upstream submission.
+- Branch/base: `feature/qt-map-data-setup` from `dev` at `15a1c06`, including
+  approved routing PR #18 and the other agent's merged isobars PR #19. No pending
+  merge dependency or retargeting.
+- Review: regular fork PR pending creation; leave unmerged for user review.
+- Functional commits: `d4f2da0` adds staged, cancellable, validated map-data
+  installation, shared source URLs and idempotent base-chart loading/reload;
+  `b1ed730` adds Qt Settings → Map Data, progress/cancel/retry, online startup
+  offer, worker/UI handoffs and routing/library serialization.
+- Scope: world coastlines and optional OpenSeaMap sea marks use GTK's existing
+  URLs and data locations. Startup offers missing data only when online and
+  loading charts; downloads require an explicit click. HTTP failures, empty or
+  truncated responses, invalid archives/paths and unreadable shapefile/OSM data
+  are rejected before installation. Staging retains an existing installation
+  until validated replacement and restores it after a failed final rename.
+  Completed datasets remain available after later failure/cancellation. Settings
+  may close during download; main-window close cancels and ignores late UI work.
+  Installed coastlines replace the country fallback, enable routing land checks
+  and refresh marine masks without restart. Existing chart objects/selection are
+  retained, duplicate reloads avoided and incomplete base data can be repaired.
+  Native filesystem pickers and GTK's existing download interface remain.
+- Fidelity: no routing math, shoreline geometry/resolution, source ranking, units
+  or portrayal change. Production shapefile and OSM readers validate downloads;
+  the renderer receives the same installed paths. Only base-layer availability,
+  failure handling and frontend setup change.
+- Validation: full suite passes 822 tests and 106 subtests (86.26s), including the
+  isolated wrapper with 78 Qt checks. Ten new core checks cover streamed/unknown
+  length downloads, cancellation, HTTP errors, truncation, archive validation,
+  all five coastline resolutions, OSM validation, old-data preservation, atomic
+  rollback and partial completion. Five new Qt checks cover missing selection/
+  startup gating, actual fixture installs and UI-thread attachment, fallback
+  removal/routing providers, mask refresh, repair/idempotence, existing selection,
+  serialized operations, cancel/close and partial-success error reporting. The
+  strengthened repair/sea-mark-selection check also passes after the final
+  completeness check. Scoped Black/Flake8 and mypy (29 files) pass; full Flake8
+  retains the existing connection-dialog C901 and full mypy retains 32 baseline
+  errors in eight existing files (217 checked).
+- Native QA: macOS Qt Map Data checked at 620×450 in a 1000×650 workspace with
+  temporary model/workspace/map data and disabled settings writes. Missing and
+  installed states, successful coastline attachment and clean close without GTK
+  imports verified with widget captures. Both provider HEAD requests return
+  HTTP 200 (141854687 and 2231114 bytes). Full live downloads were not performed;
+  coastline tests use real small shapefiles and sea-mark tests use an OSM XML
+  fixture read by the production OSM driver. Sphinx unavailable locally.
+- Intended upstream scope: shared acquisition/constants, resilient base-chart
+  loading/reload and tests adapted against fresh parent master only if requested;
+  exclude Qt frontend and fork policy/migration documentation.
+- Usage/assessment: `docs/qt-first-pass.md`, `docs/qt-parity.md`.
