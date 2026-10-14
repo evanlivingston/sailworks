@@ -576,6 +576,8 @@ class PreviewWindow(QMainWindow):
     def _navigation_changed(self):
         self.routing_panel.refresh_destinations()
         self.routing_panel.refresh_routes(self.navigation_panel.route)
+        self.map.invalidate_navigation()
+        self.log_map.invalidate_navigation()
         self.map.update()
         self.log_map.update()
 
