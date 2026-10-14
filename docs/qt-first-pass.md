@@ -470,7 +470,7 @@ and packaging reach parity.
 ## Validation
 
 The full repository suite passes 822 tests and 106 subtests locally.
-The optional Qt wrapper runs seventy-eight integration checks in a separate
+The optional Qt wrapper runs integration checks in a separate
 process. Coverage includes transport/recording, queued Core notifications,
 stale-source rejection, overlay completion without GLib, callback cancellation
 on shutdown, real OGR ENC/raster fixtures, forecast/palette changes, projection,
