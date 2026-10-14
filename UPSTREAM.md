@@ -777,7 +777,10 @@ into `dev`; no upstream PR was created or updated.
   `feature/qt-navigation`, based on `dev` at `6fa2aad` after the approved merge
   of fork PR #12. No pending dependency or upstream submission.
 - Review: [fork PR #13](https://github.com/evanlivingston/gweatherrouting/pull/13),
-  open for human review; not merged.
+  merged into `dev` with user approval (merge `bebac38`). Build and docs jobs
+  passed. Merge audit confirmed the existing missing-`nmeatoolkit` test-environment
+  failure, connection-dialog complexity warning and four baseline CI type errors;
+  the other test-matrix jobs were cancelled. Local validation is recorded below.
 - Functional commits: `8ec23d3` (shared production Cairo route/track/POI/AIS
   portrayal and routing summary, preserving GTK adapters/import paths),
   `45110ee` (Qt Navigation panel, map actions, native GPX/PFEC workflows and
