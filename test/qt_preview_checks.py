@@ -7,8 +7,9 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from threading import Thread
+from threading import Thread, get_ident, Event
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtWidgets import QApplication
@@ -30,13 +31,22 @@ class QtPreviewChecks(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name)
+        for target in (
+            "gweatherrouting.core.storage.Storage.load_or_save_default",
+            "gweatherrouting.core.storage.Storage.save",
+            "gweatherrouting.core.gribmanager.GribManager.refresh_local_gribs",
+            "gweatherrouting.core.polarmanager.PolarManager.refresh_local_polars",
+        ):
+            mock = patch(target)
+            mock.start()
+            self.addCleanup(mock.stop)
         self.controller = SessionController(
-            offline=True, recording_directory=self.path / "recordings"
+            offline=True,
+            recording_directory=self.path / "recordings",
+            load_charts=False,
         )
         self.controller.timer.stop()  # Deterministic playback steps in tests.
-        self.window = PreviewWindow(
-            self.controller, coastline_path=self.path / "missing.shp"
-        )
+        self.window = PreviewWindow(self.controller)
         self.window.show()
         self.addCleanup(self.window.close)
         self.drain()
@@ -220,16 +230,165 @@ class QtPreviewChecks(unittest.TestCase):
         )
         from gweatherrouting.qt.mapcanvas import TrackMap
 
-        canvas = TrackMap(coastline_path=path)
+        self.controller.charts.load_vector_layer(str(path))
+        canvas = TrackMap(self.controller)
         canvas.resize(600, 400)
         image = canvas._base_image()
         center = image.pixelColor(image.width() // 2, image.height() // 2)
-        self.assertLess(center.red(), 50)  # Hole remains sea, not filled land.
+        self.assertGreater(center.blue(), center.red())  # Hole remains sea.
         x, y = canvas.convert_geographic_to_screen(MapPoint(48.4, -121.4))
         factor = canvas.devicePixelRatioF()
         land = image.pixelColor(round(x * factor), round(y * factor))
-        self.assertGreater(land.red(), 100)
+        self.assertGreater(land.red(), land.blue())
         canvas.close()
+
+    def test_full_core_delivers_worker_notifications_on_qt_thread(self):
+        core = self.controller.core
+        self.assertIs(self.controller.session, core.nmea_session)
+        events = []
+        core.connect(
+            "boat_position", lambda boat: events.append((get_ident(), boat.latitude))
+        )
+        worker = Thread(
+            target=lambda: self.controller.connections.dispatch(
+                "data", [NMEADataPacket.parse(str(rmc("120000")))]
+            )
+        )
+        worker.start()
+        worker.join()
+        self.assertFalse(events)
+        self.drain()
+        self.assertEqual(events, [(get_ident(), core.boat_info.latitude)])
+        self.assertIn("48.11730", self.window.instruments.text())
+        events.clear()
+        worker = Thread(
+            target=lambda: self.controller.connections.dispatch(
+                "data", [NMEADataPacket.parse(str(rmc("120010")))]
+            )
+        )
+        worker.start()
+        worker.join()
+        core._reset_nmea(None)
+        self.drain()
+        self.assertFalse(events)  # Queued position predates the source reset.
+
+    def test_qt_overlay_completes_without_glib_and_shutdown_discards_callbacks(self):
+        import cairo
+
+        from gweatherrouting.qt.mapcanvas import TrackMap
+
+        canvas = TrackMap(self.controller)
+        self.addCleanup(canvas.close)
+        renderer = self.controller.charts._enc_renderer
+        started, release = Event(), Event()
+        self.addCleanup(release.set)
+
+        def render(job):
+            started.set()
+            release.wait(2)
+            surface = cairo.ImageSurface(
+                cairo.FORMAT_ARGB32,
+                job.viewport.width * job.factor,
+                job.viewport.height * job.factor,
+            )
+            surface.set_device_scale(job.factor, job.factor)
+            cr = cairo.Context(surface)
+            cr.set_source_rgb(1, 0, 0)
+            cr.paint()
+            return surface
+
+        renderer._render = render
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 600, 400)
+        renderer.draw(
+            canvas,
+            cairo.Context(surface),
+            (("synthetic.000", 12000, ()),),
+            "cm93",
+        )
+        self.assertTrue(started.wait(1))
+        self.assertIsNone(renderer._states[canvas].frame)
+        release.set()
+        deadline = time.monotonic() + 3
+        while renderer._running and time.monotonic() < deadline:
+            self.drain()
+            time.sleep(0.005)
+        self.assertFalse(renderer._running)
+        self.assertIsNotNone(renderer._states[canvas].frame)
+        events = []
+        self.controller.scheduler.submit(events.append, "queued before close")
+        self.window.close()
+        self.controller.scheduler.submit(events.append, "submitted after close")
+        self.drain()
+        self.assertFalse(events)
+        self.assertFalse(renderer._states)
+        self.assertFalse(self.controller.charts.maps)
+
+    def test_production_enc_renders_ogr_dataset_with_owned_qt_pixels(self):
+        import cairo
+        from osgeo import ogr
+        from gweatherrouting.rendering.encrenderer import ENCOverlayRenderer
+        from gweatherrouting.rendering.overlayrenderer import RenderJob
+
+        path = str(self.path / "enc.gpkg")
+        dataset = ogr.GetDriverByName("GPKG").CreateDataSource(path)
+        layer = dataset.CreateLayer("LNDARE", geom_type=ogr.wkbPolygon)
+        feature = ogr.Feature(layer.GetLayerDefn())
+        feature.SetGeometry(
+            ogr.CreateGeometryFromWkt(
+                "POLYGON((-124 48,-123 48,-123 49,-124 49,-124 48))"
+            )
+        )
+        layer.CreateFeature(feature)
+        feature = layer = dataset = None
+        viewport = MapViewport(self.window.map)
+        job = RenderJob(("cm93", 1, (path,)), viewport, ((path, 0, ()),), 1, "cm93")
+        surface = ENCOverlayRenderer(self.controller.scheduler.submit)._render(job)
+        self.assertIsInstance(surface, cairo.ImageSurface)
+        surface.flush()
+        x, y = viewport.convert_geographic_to_screen(MapPoint(48.4, -123.4))
+        offset = round(y) * surface.get_stride() + round(x) * 4
+        self.assertEqual(
+            bytes(surface.get_data())[offset : offset + 4], bytes((122, 185, 201, 255))
+        )
+
+    def test_raster_decode_runs_in_loader_without_spawn_and_keeps_palette(self):
+        import numpy as np
+        from osgeo import gdal, osr
+        from gweatherrouting.rendering.gdalrasterchart import GDALSingleRasterChart
+
+        path = str(self.path / "raster.tif")
+        dataset = gdal.GetDriverByName("GTiff").Create(path, 2, 2, 1, gdal.GDT_Byte)
+        reference = osr.SpatialReference()
+        reference.ImportFromEPSG(4326)
+        dataset.SetProjection(reference.ExportToWkt())
+        dataset.SetGeoTransform((-124, 0.1, 0, 49, 0, -0.1))
+        band = dataset.GetRasterBand(1)
+        colors = gdal.ColorTable()
+        colors.SetColorEntry(1, (11, 22, 33, 255))
+        colors.SetColorEntry(2, (44, 55, 66, 255))
+        band.SetRasterColorTable(colors)
+        band.WriteArray(np.array([[1, 2], [2, 1]], dtype=np.uint8))
+        band = dataset = None
+        chart = GDALSingleRasterChart(path)
+        chart.surface.flush()
+        self.assertEqual(
+            bytes(chart.surface.get_data())[:8],
+            bytes((11, 22, 33, 255, 44, 55, 66, 255)),
+        )
+        self.assertEqual(chart.surface.get_width(), 2)
+
+    def test_forecast_and_palette_invalidate_chart_image(self):
+        from datetime import timedelta
+
+        old_time = self.controller.time_control.time
+        self.window.forecast.setDateTime(old_time + timedelta(hours=3))
+        self.assertEqual(
+            self.controller.time_control.time, old_time + timedelta(hours=3)
+        )
+        self.window.palette_combo.setCurrentText("dark")
+        self.assertEqual(self.controller.settings.chartPalette, "dark")
+        self.drain()
+        self.assertIsNotNone(self.window.map.background)
 
     def test_frontend_does_not_import_gtk(self):
         self.assertNotIn("gi.repository.Gtk", sys.modules)

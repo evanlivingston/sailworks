@@ -22,6 +22,6 @@ class TestQtPreview(unittest.TestCase):
             env=environment,
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=120,  # Full Core and twelve Qt checks in an isolated process.
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

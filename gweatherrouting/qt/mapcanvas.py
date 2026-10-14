@@ -1,22 +1,21 @@
 """Qt canvas using the shared Mercator projection and a Cairo image bridge."""
 
 import math
-from pathlib import Path
 
 import cairo
 import numpy as np
-from osgeo import ogr
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPointF, Qt, QTimer
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
 
-from gweatherrouting.core.geo.shoreline import ShorelineGeometryCache
-from gweatherrouting.core.mapviewport import MapViewport, MercatorProjection
-from gweatherrouting.core.storage import DATA_DIR
+from gweatherrouting.core.mapviewport import MercatorProjection
+from gweatherrouting.rendering.style import Style
+from gweatherrouting.rendering.windpainter import WindPainter
+from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
 
 
 class TrackMap(QWidget, MercatorProjection):
-    def __init__(self, parent=None, coastline_path=None):
+    def __init__(self, controller, parent=None):
         super().__init__(parent)
         self.setMinimumSize(240, 180)
         self.setCursor(Qt.CursorShape.OpenHandCursor)
@@ -26,13 +25,61 @@ class TrackMap(QWidget, MercatorProjection):
         self.position = None
         self.drag = None
         self.background = None
-        self.shorelines = ShorelineGeometryCache()
-        path = (
-            Path(coastline_path)
-            if coastline_path
-            else (Path(DATA_DIR) / "gshhs/GSHHS_shp/l/GSHHS_l_L1.shp")
-        )
-        self.coastline = ogr.Open(str(path)) if path.is_file() else None
+        self.controller = controller
+        self.charts = controller.charts
+        self.charts.add_map(self)
+        self.wind = WindOverlayRenderer(WindPainter, controller.scheduler.submit)
+        self._ticks = {}
+        self._next_tick = 0
+        self.disposed = False
+        self._zoom_animating = False
+        controller.time_control.connect("time_change", self._time_changed)
+
+    def _time_changed(self, _):
+        self.queue_draw()
+
+    def get_scale_factor(self):
+        return math.ceil(self.devicePixelRatioF())
+
+    def add_tick_callback(self, callback):
+        self._next_tick += 1
+        token = self._next_tick
+        timer = QTimer(self)
+        timer.setInterval(16)
+
+        def tick():
+            if not callback(self, None):
+                self.remove_tick_callback(token)
+
+        timer.timeout.connect(tick)
+        self._ticks[token] = timer
+        timer.start()
+        return token
+
+    def remove_tick_callback(self, token):
+        timer = self._ticks.pop(token, None)
+        if timer:
+            timer.stop()
+            timer.deleteLater()
+
+    def dispose(self):
+        if self.disposed:
+            return
+        self.disposed = True
+        self.charts.forget_map(self)
+        self.wind.forget(self)
+        for token in list(self._ticks):
+            self.remove_tick_callback(token)
+        self.controller.time_control.disconnect("time_change", self._time_changed)
+
+    def hideEvent(self, event):
+        self.charts._chs_renderer.forget(self)
+        self.wind.forget(self)
+        super().hideEvent(event)
+
+    def closeEvent(self, event):
+        self.dispose()
+        super().closeEvent(event)
 
     def get_allocated_width(self):
         return self.width()
@@ -41,7 +88,11 @@ class TrackMap(QWidget, MercatorProjection):
         return self.height()
 
     def queue_draw(self):
-        self.update()
+        if not self.disposed:
+            self.background = None
+            self.update()
+
+    map_redraw_idle = queue_draw
 
     def set_points(self, points, offsets, fit=False):
         self.points = tuple(points)
@@ -115,13 +166,13 @@ class TrackMap(QWidget, MercatorProjection):
             painter.drawEllipse(QPointF(xs[index], ys[index]), 5, 5)
         painter.setPen(QColor("#e4edf2"))
         caption = "Drag to pan · Scroll to zoom"
-        if self.coastline is None:
-            caption += " · No installed base map"
+        if self.controller.chart_errors:
+            caption += " · Some saved charts could not be opened"
         painter.drawText(12, self.height() - 12, caption)
         painter.end()
 
     def _base_image(self):
-        factor = self.devicePixelRatioF()
+        factor = self.get_scale_factor()
         surface = cairo.ImageSurface(
             cairo.FORMAT_ARGB32,
             math.ceil(self.width() * factor),
@@ -129,32 +180,17 @@ class TrackMap(QWidget, MercatorProjection):
         )
         surface.set_device_scale(factor, factor)
         cr = cairo.Context(surface)
-        cr.set_source_rgb(0.11, 0.21, 0.28)
+        Style.chart_palettes[self.controller.settings.chartPalette].sea.apply(cr)
         cr.paint()
-        viewport = MapViewport(self)
-        if self.coastline is not None:
-            top, bottom = viewport.get_bbox()
-            north, west = top.get_degrees()
-            south, east = bottom.get_degrees()
-            bounds = ogr.CreateGeometryFromWkt(
-                f"POLYGON(({west} {south},{east} {south},{east} {north},"
-                f"{west} {north},{west} {south}))"
-            )
-            layer = self.coastline.GetLayer(0)
-            layer.SetSpatialFilter(bounds)
-            layer.ResetReading()
-            for feature in layer:
-                geometry = self.shorelines.clip(
-                    feature.GetFID(), feature.GetGeometryRef(), bounds
-                )
-                cr.new_path()
-                self._geometry_path(cr, viewport, geometry)
-                cr.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
-                cr.set_source_rgb(0.62, 0.65, 0.56)
-                cr.fill_preserve()
-                cr.set_source_rgb(0.77, 0.79, 0.66)
-                cr.set_line_width(0.6)
-                cr.stroke()
+        self.charts.do_draw(self, cr)
+        settings = self.controller.settings
+        style = (
+            self.controller.time_control.time,
+            settings.gribArrowOpacity,
+            settings.gribArrowOnGround,
+        )
+        sources = tuple((grib,) for grib in self.controller.core.grib_manager.gribs)
+        self.wind.draw(self, cr, sources, style)
         surface.flush()
         # copy() transfers ownership; Cairo's buffer can then be released.
         image = QImage(
@@ -166,23 +202,6 @@ class TrackMap(QWidget, MercatorProjection):
         ).copy()
         image.setDevicePixelRatio(factor)
         return image
-
-    def _geometry_path(self, cr, viewport, geometry):
-        if geometry is None or geometry.IsEmpty():
-            return
-        if geometry.GetGeometryCount():
-            for index in range(geometry.GetGeometryCount()):
-                self._geometry_path(cr, viewport, geometry.GetGeometryRef(index))
-            return
-        points = geometry.GetPoints()
-        if not points:
-            return
-        lons, lats = np.array(points)[:, :2].T
-        xs, ys = viewport.convert_geographic_to_screen_batch(lats, lons)
-        cr.move_to(xs[0], ys[0])
-        for x, y in zip(xs[1:], ys[1:]):
-            cr.line_to(x, y)
-        cr.close_path()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:

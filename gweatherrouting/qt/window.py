@@ -3,12 +3,13 @@
 import os
 import sys
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QDateTime
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDockWidget,
+    QDateTimeEdit,
     QFileDialog,
     QLabel,
     QMainWindow,
@@ -24,12 +25,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gweatherrouting.rendering.style import Style
 from .mapcanvas import TrackMap
 from .plots import LogPlots, elapsed_offsets
 
 
 class PreviewWindow(QMainWindow):
-    def __init__(self, controller, coastline_path=None):
+    def __init__(self, controller):
         super().__init__()
         self.setAutoFillBackground(True)
         self.controller = controller
@@ -40,7 +42,7 @@ class PreviewWindow(QMainWindow):
         self.resize(1200, 800)
         if sys.platform == "darwin":
             self.setUnifiedTitleAndToolBarOnMac(True)
-        self.map = TrackMap(self, coastline_path)
+        self.map = TrackMap(controller, self)
         toolbar = QToolBar("Navigation", self)
         toolbar.setMovable(False)
         toolbar.setAutoFillBackground(True)
@@ -49,6 +51,23 @@ class PreviewWindow(QMainWindow):
         toolbar.addAction("Load NMEA log…", self.load_log)
         toolbar.addSeparator()
         toolbar.addAction("Fit track", lambda: self.map.fit_track())
+        toolbar.addSeparator()
+        toolbar.addAction("Open GRIB…", self.load_grib)
+        toolbar.addWidget(QLabel("Forecast "))
+        self.forecast = QDateTimeEdit(QDateTime(controller.time_control.time))
+        self.forecast.setCalendarPopup(True)
+        self.forecast.setDisplayFormat("yyyy-MM-dd HH:mm")
+        self.forecast.setToolTip("Time displayed by the wind forecast")
+        self.forecast.dateTimeChanged.connect(
+            lambda value: controller.time_control.set_time(value.toPython())
+        )
+        toolbar.addWidget(self.forecast)
+        self.palette_combo = QComboBox()
+        self.palette_combo.addItems(list(Style.chart_palettes))
+        self.palette_combo.setCurrentText(controller.settings.chartPalette)
+        self.palette_combo.setToolTip("Chart palette")
+        self.palette_combo.currentTextChanged.connect(self._palette_changed)
+        toolbar.addWidget(self.palette_combo)
         self.plots = LogPlots(self)
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.addWidget(self.map)
@@ -63,6 +82,9 @@ class PreviewWindow(QMainWindow):
         self.nmea_dock.setWidget(self._nmea_panel())
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.nmea_dock)
         self.menuBar().addMenu("View").addAction(self.nmea_dock.toggleViewAction())
+        self.instruments = QLabel("Waiting for position")
+        self.statusBar().addPermanentWidget(self.instruments)
+        controller.boat_changed.connect(self._boat_changed)
         controller.changed.connect(self.refresh)
         controller.model_changed.connect(self._refresh_data)
         self.live_timer = QTimer(self)
@@ -301,6 +323,35 @@ class PreviewWindow(QMainWindow):
         )
         if path:
             self.controller.load_path(path)
+
+    def _palette_changed(self, palette):
+        self.controller.settings.chartPalette = palette
+        self.map.queue_draw()
+
+    def _boat_changed(self, boat):
+        if boat.is_valid():
+            self.instruments.setText(
+                f"{boat.latitude:.5f}°, {boat.longitude:.5f}°"
+                + (f" · SOG {boat.sog:.1f} kn" if boat.sog is not None else "")
+            )
+        else:
+            self.instruments.setText("Waiting for position")
+
+    def load_grib(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open wind forecast",
+            "",
+            "GRIB forecasts (*.grib *.grb *.grib2 *.grb2);;All files (*)",
+        )
+        if path:
+            try:
+                self.controller.core.grib_manager.load(path)
+                grib = self.controller.core.grib_manager.gribs[-1]
+                self.forecast.setDateTime(QDateTime(grib.start_time))
+                self.map.queue_draw()
+            except Exception as exc:
+                QMessageBox.warning(self, "Unable to open forecast", str(exc))
 
     def closeEvent(self, event):
         self.live_timer.stop()
