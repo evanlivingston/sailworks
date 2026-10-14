@@ -523,3 +523,42 @@ GTK complexity/type failures unchanged. GTK remains the default frontend.
   useful upstream; keep Qt controls and fork migration documentation out of
   parent-project contributions. No upstream publication is authorized here.
 - Assessment and launch instructions: `docs/qt-first-pass.md`.
+
+## Qt visual integration
+
+- Status: Qt presentation is fork-only; the shared route-speed palette extraction
+  is an upstream candidate. Branch: `feature/qt-visual-integration`, dependent on
+  `feature/qt-routing` and fork PR #7. Review against that branch to keep the diff
+  focused; merge #7 first, then retarget this PR to `dev` and verify it again.
+- Scope: align the optional Qt workspace with GTK's dark presentation using a
+  dark Fusion palette, rounded controls, blue accents, consistent spacing,
+  symbolic icons and dark Matplotlib plots. Replace the fixed map/plots split
+  and two opposing sidebars with full-size Charts/Logs views and grouped NMEA/
+  Routing panels on the right. Keep native window controls and filesystem
+  dialogs. Routing separates Plan and Results, automatically shows completed
+  results and keeps progress/Calculate/Cancel outside the scrolling form.
+  Loading a log selects Logs; routing calculation selects Charts. Native File/
+  Navigate menus, shortcuts and toolbar panel access make the migrated views
+  easier to reach. Dock floating/hiding remains available.
+- Functional commits: `ba0abe1` (shared route speed colors; GTK compatibility),
+  `1acd87c` (Qt theme, plots, view/sidebar integration and regression coverage).
+- Fidelity: map route segments use GTK's existing speed thresholds/colors;
+  NMEA tracks use the shared GTK log-track style. Plot series use GTK's speed,
+  true-wind and heading colors with amber cursors. Chart palettes remain
+  independent of the UI theme. Production Cairo chart/wind rendering, source
+  selection, projection, routing calculations and playback data are unchanged.
+- Validation: 769 repository tests and 73 subtests pass. The optional Qt wrapper
+  executes seventeen isolated checks, including view/panel transitions while
+  retaining playback, full curves, map position and chart palette; results-page
+  selection, route-speed data and visible compact-window Calculate/Cancel.
+  Changed-file Black/Flake8 including naming checks and scoped Qt mypy pass.
+  Full local mypy retains 32 baseline errors in eight files, with no new errors.
+  Native macOS screenshots checked routing results, Charts, Logs, dark plots,
+  transport glyphs, native window buttons and the Plan form at 1280×820 and
+  1000×650. At 1000×650 both action buttons are visible without scrolling the
+  form. A real forecast route and 180-point playback ran without GTK imports;
+  user settings writes were disabled during QA.
+- Limits: platform fonts/decorations still differ; Qt workspace persistence,
+  unmigrated tools and compact traffic-light/toolbar layout remain pending.
+  GTK remains the default launcher. No upstream publication is part of this task.
+- Assessment and launch instructions: `docs/qt-first-pass.md`.
