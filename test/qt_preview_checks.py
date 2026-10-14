@@ -3093,15 +3093,16 @@ class QtPreviewChecks(unittest.TestCase):
         self.window.show_settings()
         page = self.window.settings_dialog.map_data
         self.window.settings_dialog.tabs.setCurrentWidget(page)
-        self.assertIn("missing", page.status.text())
-        self.assertTrue(page.choices["coastlines"].isChecked())
-        self.assertTrue(page.choices["seamarks"].isChecked())
+        self.assertTrue(page.downloads["coastlines"].isEnabled())
+        self.assertTrue(page.downloads["seamarks"].isEnabled())
+        self.assertFalse(page.status.isVisible())
         self.assertFalse(self.controller.map_data.task.busy)
-        page.choices["coastlines"].setChecked(False)
-        page.choices["seamarks"].setChecked(False)
-        page.download.click()
-        self.assertIn("Select missing", page.status.text())
-        self.assertFalse(self.controller.map_data.task.busy)
+        with patch.object(self.controller.map_data, "start") as start:
+            page.downloads["coastlines"].click()
+            start.assert_called_once_with(("coastlines",))
+            start.reset_mock()
+            page.downloads["seamarks"].click()
+            start.assert_called_once_with(("seamarks",))
         self.window.settings_dialog.hide()
         self.controller.offline = False
         self.controller.load_charts = True
@@ -3157,8 +3158,8 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertEqual(callback_threads, [get_ident()])
             self.assertFalse(setup.missing()["coastlines"])
             self.assertTrue(setup.missing()["seamarks"])
-            self.assertFalse(page.choices["coastlines"].isEnabled())
-            self.assertIn("installed", page.choices["coastlines"].text())
+            self.assertFalse(page.downloads["coastlines"].isEnabled())
+            self.assertIn("Installed", page.downloads["coastlines"].text())
             self.assertFalse((root / "gshhs" / "partial").exists())
             self.assertIsNotNone(self.controller.charts.gshhsLayer.lpvFile)
             self.assertIn(
@@ -3194,8 +3195,7 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertIs(self.controller.charts.gshhsLayer, coast)
             self.assertFalse(coast.enabled)
             self.assertIsNotNone(self.controller.charts.osmLayer)
-            self.assertFalse(page.download.isEnabled())
-            self.assertTrue(all(not c.isChecked() for c in page.choices.values()))
+            self.assertTrue(all(not b.isEnabled() for b in page.downloads.values()))
             self.window.settings_dialog.hide()
             self.controller.offline = False
             self.controller.load_charts = True

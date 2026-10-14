@@ -431,8 +431,8 @@ current-aware routing or use tides for depth/clearance calculations.
 Settings → Map Data shows installed/missing world coastlines and optional
 OpenSeaMap sea marks, using the same sources and data locations as GTK. An online
 startup with missing data opens this page; offline startup does not prompt.
-Downloads begin only when Download selected is clicked. Installed data remains
-available offline.
+Use Download World Coastlines or Download OpenSeaMap to start each download.
+Installed data remains available offline.
 
 Downloads run on a worker with progress, Cancel download and retry after failure.
 Files are staged and checked using the production shapefile/OSM readers before

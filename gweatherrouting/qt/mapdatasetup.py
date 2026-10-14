@@ -8,13 +8,12 @@ from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QLabel,
-    QCheckBox,
     QProgressBar,
     QPushButton,
     QHBoxLayout,
 )
 
-from gweatherrouting.core.mapdata import DATASETS, install_map_data
+from gweatherrouting.core.mapdata import install_map_data
 from gweatherrouting.core.storage import DATA_DIR
 from .backgroundtask import BackgroundTask
 
@@ -112,64 +111,41 @@ class MapDataSetup(QWidget):
         super().__init__()
         self.controller = controller
         layout = QVBoxLayout(self)
-        note = QLabel(
-            "Install world coastlines for the base map and routing land checks. "
-            "OpenSeaMap sea marks are optional. Installed data stays available offline."
-        )
-        note.setWordWrap(True)
-        layout.addWidget(note)
-        self.choices = {}
-        for kind, (label, _, _) in DATASETS.items():
-            checkbox = QCheckBox(label)
-            checkbox.setChecked(controller.missing()[kind])
-            layout.addWidget(checkbox)
-            self.choices[kind] = checkbox
+        self.downloads = {}
+        for kind, label in (
+            ("coastlines", "World Coastlines"),
+            ("seamarks", "OpenSeaMap"),
+        ):
+            button = QPushButton("Download " + label)
+            button.clicked.connect(lambda _, kind=kind: controller.start((kind,)))
+            layout.addWidget(button)
+            self.downloads[kind] = button
         self.status = QLabel()
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
         self.progress = QProgressBar()
         layout.addWidget(self.progress)
         row = QHBoxLayout()
-        self.download = QPushButton("Download selected")
         self.cancel = QPushButton("Cancel download")
-        self.download.clicked.connect(self.start)
         self.cancel.clicked.connect(controller.cancel)
-        row.addWidget(self.download)
         row.addWidget(self.cancel)
         layout.addLayout(row)
         layout.addStretch()
         controller.changed.connect(self.refresh)
         self.refresh()
 
-    def start(self):
-        self.controller.start(
-            tuple(k for k, c in self.choices.items() if c.isChecked())
-        )
-
     def refresh(self):
         controller = self.controller
         missing = controller.missing()
         busy = controller.task.busy
-        for kind, checkbox in self.choices.items():
-            label = DATASETS[kind][0]
-            checkbox.setText(
-                label + (" — installed" if not missing[kind] else " — missing")
-            )
-            checkbox.setEnabled(missing[kind] and not busy)
-            if not missing[kind]:
-                checkbox.setChecked(False)
-        self.download.setEnabled(
-            not busy and any(missing.values()) and not controller.task.closed
-        )
+        for kind, button in self.downloads.items():
+            label = "World Coastlines" if kind == "coastlines" else "OpenSeaMap"
+            button.setText(("Download " if missing[kind] else "Installed: ") + label)
+            button.setEnabled(missing[kind] and not busy and not controller.task.closed)
         self.cancel.setEnabled(busy and not controller.cancel_event.is_set())
         self.progress.setVisible(busy)
         self.progress.setRange(0, 0 if controller.task.percent < 0 else 100)
         self.progress.setValue(max(0, controller.task.percent))
-        self.status.setText(
-            controller.message
-            or (
-                "Some map data is missing. Select what to download."
-                if any(missing.values())
-                else "All map data is installed."
-            )
-        )
+        self.status.setText(controller.message)
+        self.status.setVisible(bool(controller.message))
+        self.cancel.setVisible(busy)

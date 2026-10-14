@@ -1159,6 +1159,11 @@ into `dev`; no upstream PR was created or updated.
   HTTP 200 (141854687 and 2231114 bytes). Full live downloads were not performed;
   coastline tests use real small shapefiles and sea-mark tests use an OSM XML
   fixture read by the production OSM driver. Sphinx unavailable locally.
+- Review follow-up: replace selection checkboxes and Download selected with
+  Download World Coastlines and Download OpenSeaMap buttons. Remove explanatory
+  copy and empty status; show progress/cancel only during acquisition. Installed
+  datasets have disabled Installed buttons. Updated Qt integration wrapper,
+  scoped Flake8/mypy and native macOS widget review pass.
 - Intended upstream scope: shared acquisition/constants, resilient base-chart
   loading/reload and tests adapted against fresh parent master only if requested;
   exclude Qt frontend and fork policy/migration documentation.
