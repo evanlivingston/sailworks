@@ -114,11 +114,12 @@ this is a visual integration pass, not complete application parity.
 
 ## Routing workflow
 
-The Routing dock has Plan and Results pages for one complete wind-only workflow.
+The Routing dock has Plan, Results, Compare and Currents pages.
 Open a GRIB file,
 choose a local polar, set the departure time and start/destination coordinates,
 then calculate. Right-click the map to set either position, use the current
-boat position as the start, or choose a saved POI as the destination. Departure
+boat position or a saved POI as the start, or choose a saved POI or track as
+the destination. First track point follows the complete saved track. Departure
 is independent of the toolbar's forecast viewing time.
 
 Calculation runs on a worker with cooperative cancellation and approximate
@@ -130,8 +131,8 @@ on the map. Fit route includes both the computed path and the requested start/
 destination. Cancellation, errors and closing the window preserve prior results
 and discard late worker completions.
 
-The shared job in `core/routingjob.py` uses Core's existing wind-only engine,
-parameters, source ordering, spatial/time sampling and point serialization.
+The shared job in `core/routingjob.py` uses Core's existing wind and current
+engines, source ordering, spatial/time sampling and point serialization.
 Each job snapshots the selected forecast files, opens private GDAL handles and
 keeps two forecast hours in a run-local cache; cleanup releases them on success,
 error or cancellation. A direct engine comparison produces identical route
@@ -140,9 +141,29 @@ Existing arrival tolerances are retained, so the last engine point can precede
 the requested destination. The UI reports that point's time rather than claiming
 an exact arrival.
 
-This slice uses the available algorithms with their existing defaults. Algorithm
-parameter editing, current-aware routes, automatic forecast/current downloads,
-scenario comparisons, track destinations and route waypoint editing remain pending.
+Plan exposes the selected algorithm's parameter names, ranges, steps and tooltips.
+Each run owns its parameters, forecast handles and track coordinates; editing
+controls does not mutate engine defaults. Concurrent wind queries serialize GDAL
+reads while retaining the engine's calculation behavior.
+
+Compare uses GTK's departure offset, wind intensity, wind direction and polar
+efficiency axes. Enable axes and enter comma-separated values. Calculate runs
+their Cartesian product sequentially, saving each completed scenario separately.
+Cancel preserves completed scenarios. Invalid values and batches above 256
+scenarios are rejected before starting.
+
+Currents enables the existing current-aware engine and defaults automatic data
+downloads on. It uses the same latest-wind checks, coverage warnings, bounded
+recovery and prefetch as GTK. Blocked coverage cannot be overridden; other
+warnings offer Run anyway or Cancel. Cancellation and window closure also dismiss
+pending coverage dialogs. Download persistence and route commits happen on the UI
+thread. Current results retain UTC timestamps, source provenance and coverage notes.
+Display overlays remain independent of routing options; tides do not add depth
+or clearance calculations.
+
+Workspace preferences retain algorithm parameters, comparison values and current
+options. Restoring them starts no calculations or downloads. Direct editing of
+computed route waypoints remains separate from this routing-control migration.
 
 ## Chart navigation
 
@@ -407,7 +428,7 @@ current-aware routing or use tides for depth/clearance calculations.
 
 ## Still to migrate
 
-- Advanced routing controls, including current-aware routing options;
+- Remaining general settings and computed-route waypoint editing;
   see the parity checklist.
 - Base coastline installation/download UI and additional chart providers.
 - Smooth/inertial gestures, dateline behavior, large-file performance, live
@@ -421,15 +442,20 @@ and packaging reach parity.
 
 ## Validation
 
-The full repository suite passes 794 tests and 101 subtests locally.
-The optional Qt wrapper runs sixty-five integration checks in a separate
+The full repository suite passes 801 tests and 101 subtests locally.
+The optional Qt wrapper runs seventy-three integration checks in a separate
 process. Coverage includes transport/recording, queued Core notifications,
 stale-source rejection, overlay completion without GLib, callback cancellation
 on shutdown, real OGR ENC/raster fixtures, forecast/palette changes, projection,
 polygon holes and absence of GTK imports. Tests skip Qt when it is not installed.
 Core scheduler and routing-job tests also run without Qt. Routing checks cover
 engine parity, forecast sampling/private handles, completion, cancellation,
-shutdown, unique names, prior-result retention and on-disk save/reload.
+shutdown, unique names, prior-result retention and on-disk save/reload. Advanced
+checks compare exact points with the original wind/current engines, validate
+scenario products and parameter isolation, exercise track/POI starts and frozen
+inputs, and cover preflight cancel/close, UI-thread download commits, partial
+batch cancellation and options restoration. Live routing-provider downloads have
+not been exercised in this slice.
 Workspace checks verify grouped panels, view transitions, full playback curves,
 retained map position, independent chart palette and reachable compact-window
 Calculate/Cancel controls. Settings/library checks add disk reloads, legacy N2K
