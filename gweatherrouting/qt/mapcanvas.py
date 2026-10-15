@@ -410,6 +410,7 @@ class TrackMap(QWidget, MercatorProjection):
                     painter.drawImage(target, image)
                     return cache
         image = build()
+        painter.drawImage(QPointF(0, 0), image)
         return (key, self._center_lat, self._center_lon, self._zoom, image)
 
     def _finish_zoom(self):
