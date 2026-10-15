@@ -5,7 +5,6 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QFileSystemWatcher, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -148,18 +147,7 @@ class DataLibrary(QDialog):
         self.forecasts.customContextMenuRequested.connect(self._forecast_context_menu)
         layout.addWidget(section_label("Download weather forecasts"))
         options = QHBoxLayout()
-        self.source = QComboBox()
         names = [source.name for source in self.data.manager.sources]
-        self.source.addItem("Custom area")
-        self.source.addItems(
-            [
-                name
-                for name in names
-                if name not in ("NOAA GFS", "NOAA HRRR", "CMC HRDPS")
-            ]
-        )
-        self.source.currentTextChanged.connect(self.source_changed)
-        options.addWidget(self.source)
         self.button(options, "Find forecasts", self.find_forecasts)
         self.forecast_download = self.button(
             options, "Download checked", self.download_forecast
@@ -169,12 +157,6 @@ class DataLibrary(QDialog):
         self.forecast_options.changed.connect(self._options_changed)
         layout.addWidget(self.forecast_options)
         self._remote_signature: tuple = ()
-        self.forecast_area = QLabel(
-            "GFS / HRRR use the current map view. HRDPS downloads its full domain. "
-            "Times are hours after each model run; spacing is limited by the provider."
-        )
-        self.forecast_area.setWordWrap(True)
-        layout.addWidget(self.forecast_area)
         self.downloads = table(
             ["Forecast / run", "Model", "Est. size", "Model run (UTC)"]
         )
@@ -287,7 +269,6 @@ class DataLibrary(QDialog):
         if self.data.task.percent >= 0:
             self.progress.setValue(self.data.task.percent)
         self.status.setText(self.data.task.message)
-        self.source.setEnabled(not busy)
         self.forecast_options.setEnabled(not busy)
         self.downloads.setEnabled(not busy)
         self.latitude.setEnabled(not busy)
@@ -303,7 +284,6 @@ class DataLibrary(QDialog):
         for button in self.mutations:
             button.setEnabled(not blocked)
         self.forecast_options.setEnabled(not blocked)
-        self.source.setEnabled(not blocked)
         self.downloads.setEnabled(not blocked)
         self.forecasts.setEnabled(not blocked)
         self.charts.setEnabled(not blocked)
@@ -378,21 +358,7 @@ class DataLibrary(QDialog):
             self.data.remote_forecasts = []
             self.refresh()
 
-    def source_changed(self):
-        custom = self.source.currentText() == "Custom area"
-        self.forecast_options.setVisible(custom)
-        self.forecast_area.setText(
-            "GFS / HRRR use the current map view. HRDPS downloads its full domain. "
-            "Times are hours after each model run; spacing is limited by the provider."
-            if custom
-            else "Choose an available regional forecast."
-        )
-        self._options_changed()
-
     def find_forecasts(self):
-        if self.source.currentText() != "Custom area":
-            self.data.list_forecasts(self.source.currentText(), None)
-            return
         try:
             options = self.forecast_options.options()
             names = self.forecast_options.names()

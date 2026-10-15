@@ -1125,8 +1125,7 @@ class QtPreviewChecks(unittest.TestCase):
             download.assert_called_once_with(checked)
         options.interval.setCurrentIndex(3)
         self.assertEqual(library.downloads.rowCount(), 0)
-        library.source.setCurrentText("OpenSkiron")
-        self.assertTrue(options.isHidden())
+        self.assertIsNone(self.controller.data.manager.get_source("OpenSkiron"))
 
     def test_multi_model_download_partial_failure_preserves_success(self):
         import shutil

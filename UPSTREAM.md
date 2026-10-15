@@ -1648,11 +1648,13 @@ into `dev`; no upstream PR was created or updated.
 - Status: candidate; fork review [PR #32](https://github.com/evanlivingston/gweatherrouting/pull/32),
   `feature/custom-forecast-downloads`, based on Forecast Library PR #31,
   which depends on PNW wind PR #28 and Weather PR #27.
-- Functional commit: `109f34b`.
+- Functional commits: `109f34b` and `6c1e47f`.
 - Scope: the reference application-style model/parameter/forecast-hour controls for GFS, HRRR
   and HRDPS. Select duration, native or fixed spacing, and explicit hours;
   list actual per-run coverage and approximate sizes; check and download multiple
-  runs. Preserve OpenSkiron's regional catalogue and automatic local discovery.
+  runs. Show model resolution and forecast length in columns, omit explanatory
+  paragraphs, and retain automatic local discovery. OpenSkiron is temporarily
+  disabled in the provider registry and its source dropdown is removed.
   Batch staging/validation retains successful downloads if another model fails,
   enables files on the UI thread, and retains the result through automatic scans.
 - Provider behavior: custom GFS allows hourly output through hour 120 then
@@ -1670,9 +1672,13 @@ into `dev`; no upstream PR was created or updated.
   exactly (32 errors in 8 unchanged files). The final combined build passes
   912 tests and 114 subtests, including the final follow-ups, with Weather,
   PNW wind, WCOFS, safety, local-library cleanup and live isochrones together.
+- Follow-up validation: all 109 Qt checks pass after provider disablement and
+  layout cleanup; the revised dialog was visually inspected. Black, changed-file
+  Flake8 and whitespace checks pass.
 - Merge order: PR #27, #28, #31, then retarget #32 to `dev` and recheck its diff
   and checks. WCOFS PR #29 and safety PR #30 are independent. The combined local
   validation branch includes this feature; none of these review PRs was merged.
 - Intended upstream scope: custom-selection helpers, provider support, Qt controls
   and regressions after applicable Qt/provider prerequisites. Exclude fork
-  tracking. No upstream submission is authorized.
+  tracking and the fork-specific temporary OpenSkiron disablement. No upstream
+  submission is authorized.
