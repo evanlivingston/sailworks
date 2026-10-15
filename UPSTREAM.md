@@ -1215,7 +1215,10 @@ into `dev`; no upstream PR was created or updated.
   motion PR #22 and the verified rebuild-frame fix. Independent of open Map Data
   PR #20; neither is a pending prerequisite for the other.
 - Review: [fork PR #23](https://github.com/evanlivingston/gweatherrouting/pull/23),
-  open and unmerged for user review.
+  merged into `dev` with user approval (merge `4b1a47d`). The user tested the
+  preview and approved integration. Docs CI passed; CI typecheck reports four
+  pre-existing errors in untouched NMEA2000/GTK connection settings files. Other
+  CI jobs were pending at merge time.
 - Functional commits: `2d2867d` adds bounded padded scene bakes and safe coverage
   reuse plus CHS attribution bounds; `71ef4e8` clips map paints; `765da0c` samples
   only visible pixels and adds an ancestor-surface pixel regression.
@@ -1251,7 +1254,7 @@ into `dev`; no upstream PR was created or updated.
   private copied settings/workspace JSON, installed charts and offline instrument
   connections. Native QWidget window captures have toolbar background corruption
   that also reproduces on the unchanged motion preview; no new spill regression
-  or screen-recording comparison is claimed. User visual confirmation is pending.
+  or screen-recording comparison is claimed. User approved the tested preview.
 - Limits: asynchronous providers still load unavailable chart/weather coverage;
   no lower-detail zoom backdrop, native gesture migration or packaging changes.
 - Intended upstream scope: none while Qt remains fork-only.
