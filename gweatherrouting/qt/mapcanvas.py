@@ -9,7 +9,7 @@ import cairo
 import numpy as np
 from PySide6.QtCore import QEvent, QPointF, Qt, QTimer, Signal, QRectF
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPolygonF
-from PySide6.QtWidgets import QWidget, QMenu
+from PySide6.QtWidgets import QWidget, QMenu, QLabel
 
 from gweatherrouting.core.mapviewport import MercatorProjection, MapPoint
 from gweatherrouting.core.mapmotion import DragVelocity, PanInertia
@@ -22,6 +22,7 @@ from gweatherrouting.rendering.dashboard import DashboardRenderer
 from gweatherrouting.rendering.isochrones import IsochroneFrame, IsochronesRenderer
 from .windcursor import WindCursorSampler
 from .marineoverlay import MarineOverlay
+from .weathercoverage import WeatherCoverage
 
 
 class TrackMap(QWidget, MercatorProjection):
@@ -117,6 +118,16 @@ class TrackMap(QWidget, MercatorProjection):
         self._instrument_status = None
         self._cursor_context = None
         self._wind_cursor = WindCursorSampler(self, controller.scheduler.submit)
+        self.coverage_notice = QLabel(self)
+        self.coverage_notice.setWordWrap(True)
+        self.coverage_notice.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+        self.coverage_notice.setStyleSheet(
+            "background: rgba(30, 33, 36, 220); color: #e5c17c; padding: 8px; border-radius: 4px;"
+        )
+        self.coverage_notice.hide()
+        self.weather_coverage = WeatherCoverage(self, self._show_coverage)
         controller.boat_changed.connect(self._boat_changed)
         controller.settings.register_on_change("smoothZoom", self._set_smooth_zoom)
         controller.settings.register_on_change("panInertia", self._set_pan_inertia)
@@ -180,6 +191,7 @@ class TrackMap(QWidget, MercatorProjection):
             return
         self.disposed = True
         self._wind_cursor.close()
+        self.weather_coverage.close()
         self.cursor_readout.emit("")
         self._cancel_inertia(settle=False)
         self._finish_zoom_silent()
@@ -900,6 +912,55 @@ class TrackMap(QWidget, MercatorProjection):
         self._paint_dashboard(painter)
         self._paint_caption(painter)
         painter.end()
+        self._check_weather_coverage()
+
+    def _show_coverage(self, text):
+        if self.disposed:
+            return
+        self.coverage_notice.setText(text)
+        self.coverage_notice.setFixedWidth(max(80, min(360, self.width() - 24)))
+        self.coverage_notice.adjustSize()
+        self.coverage_notice.move(
+            self.width() - self.coverage_notice.width() - 12,
+            self.height() - self.coverage_notice.height() - 12,
+        )
+        self.coverage_notice.setVisible(bool(text) and self.isVisible())
+        self.coverage_notice.raise_()
+
+    def _check_weather_coverage(self):
+        if self.disposed or self.is_moving():
+            self.coverage_notice.hide()
+            return
+        fields = tuple(
+            name
+            for name, enabled in (
+                ("wind", self.wind_visible),
+                ("pressure", self.controller.settings.gribIsobarsVisible),
+            )
+            if enabled
+        )
+        points = tuple(
+            self.convert_screen_to_geographic(
+                self.width() * x, self.height() * y
+            ).get_degrees()
+            for y in (0.02, 0.5, 0.98)
+            for x in (0.02, 0.5, 0.98)
+        )
+        points = tuple((lat, (lon + 180) % 360 - 180) for lat, lon in points)
+        self.weather_coverage.request(
+            self.controller.data.selection.models,
+            fields,
+            self.time_control.time,
+            points,
+            tuple(self.controller.core.grib_manager.gribs),
+        )
+        if (
+            not self.weather_coverage.running
+            and self.weather_coverage.pending is None
+            and self.coverage_notice.text()
+            and not self.coverage_notice.isVisible()
+        ):
+            self._show_coverage(self.coverage_notice.text())
 
     def _paint_route_overlay(self, painter):
         active_route = self.controller.core.routingManager.get_by_name(

@@ -59,6 +59,15 @@ class QtPreviewChecks(unittest.TestCase):
             mock = patch(target)
             mock.start()
             self.addCleanup(mock.stop)
+        grib_directory = self.path / "gribs"
+        grib_directory.mkdir()
+        for target in (
+            "gweatherrouting.qt.datacontroller.GRIB_DIR",
+            "gweatherrouting.core.routingjob.GRIB_DIR",
+        ):
+            mock = patch(target, str(grib_directory))
+            mock.start()
+            self.addCleanup(mock.stop)
         self.controller = SessionController(
             offline=True,
             recording_directory=self.path / "recordings",
@@ -783,7 +792,7 @@ class QtPreviewChecks(unittest.TestCase):
         started, release = Event(), Event()
         self.addCleanup(release.set)
 
-        def slow(*args):
+        def slow(*args, **callbacks):
             started.set()
             release.wait(3)
             return CalculatedRoute(((0, 0, "2026-10-01", 0, 1, 1, 0),), (), {})
@@ -816,7 +825,9 @@ class QtPreviewChecks(unittest.TestCase):
         self.plan_test_waypoints()
         panel = self.window.routing_panel
         panel.calculate.click()
-        self.assertIn("forecast", panel.status.text())
+        self.controller.routing.cancel()
+        self.wait_for_route()
+        self.assertEqual(panel.status.text(), "Routing cancelled")
         self.assertEqual(len(self.controller.core.routingManager), 0)
         panel.set_location("start", (0, 0))
         panel.set_location("destination", (0, 0))
@@ -839,23 +850,45 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(len(self.controller.core.routingManager), 0)
 
     def wait_for_data(self):
+        data = self.controller.data
         deadline = time.monotonic() + 10
-        while self.controller.data.task.busy and time.monotonic() < deadline:
+        quiet = None
+        while time.monotonic() < deadline:
             self.drain()
+            timers = [
+                data.selection_scan_timer,
+                *(
+                    widget.forecast_scan_timer
+                    for widget in self.app.topLevelWidgets()
+                    if getattr(widget, "data", None) is data
+                    and hasattr(widget, "forecast_scan_timer")
+                ),
+            ]
+            if data.task.busy or any(timer.isActive() for timer in timers):
+                quiet = None
+            elif quiet is None:
+                quiet = time.monotonic()
+            elif time.monotonic() - quiet >= 0.05:
+                break
             time.sleep(0.005)
-        self.drain()
-        self.assertFalse(self.controller.data.task.busy)
-        self.assertEqual(self.controller.data.error, "")
+        self.assertFalse(data.task.busy)
+        self.assertEqual(data.error, "")
 
-    def wind_fixture(self, name="wind.grib2"):
+    def wind_fixture(
+        self,
+        name="wind.grib2",
+        model=True,
+        size=(4, 3),
+        transform=(-124, 1, 0, 50, 0, -1),
+    ):
         import numpy as np
         from osgeo import gdal
 
         path = self.path / name
         dataset = gdal.GetDriverByName("GTiff").Create(
-            str(path), 4, 3, 4, gdal.GDT_Float32
+            str(path), size[0], size[1], 4, gdal.GDT_Float32
         )
-        dataset.SetGeoTransform((-124, 1, 0, 50, 0, -1))
+        dataset.SetGeoTransform(transform)
         for index, (hour, element, value) in enumerate(
             ((0, "UGRD", 2), (0, "VGRD", 4), (3, "UGRD", 8), (3, "VGRD", 10)), 1
         ):
@@ -868,7 +901,10 @@ class QtPreviewChecks(unittest.TestCase):
                     "GRIB_CENTER": "test",
                 }
             )
-            band.WriteArray(np.full((3, 4), value, dtype=np.float32))
+            if model:
+                band.SetMetadataItem("GRIB_IDS", "CENTER=7")
+                band.SetMetadataItem("GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES", "2 2 2 0 96")
+            band.WriteArray(np.full((size[1], size[0]), value, dtype=np.float32))
         band = dataset = None
         return path
 
@@ -945,6 +981,7 @@ class QtPreviewChecks(unittest.TestCase):
             enabled = list(data.manager.gribs)
             self.assertEqual(len(enabled), 1)
             data.set_forecast_enabled(first, False)
+            self.wait_for_data()
             self.assertFalse(data.manager.gribs)
             data.set_forecast_enabled(first, True)
             self.wait_for_data()
@@ -1066,31 +1103,21 @@ class QtPreviewChecks(unittest.TestCase):
         data = self.controller.data
         self.wait_for_data()
         expected_bounds = library._forecast_bounds()
-        for name, provider, subset in (
-            ("NOAA HRRR", NOAAHRRRSource, True),
-            ("CMC HRDPS", ECCHRDPSource, False),
-        ):
+        for name in ("NOAA HRRR", "CMC HRDPS"):
             for model, check in library.forecast_options.models.items():
                 check.setChecked(model == name)
-            self.assertEqual(library.forecast_options.names(), (name,))
-            self.assertFalse(hasattr(library, "bounds_panel"))
-            with patch.object(
-                provider,
-                "get_download_list",
-                return_value=[["fixture", name, "1 MB", "run", "{}"]],
-            ):
-                library.find_forecasts()
-                self.wait_for_data()
-            source, row = data.remote_forecasts[0]
-            self.assertIsInstance(source, provider)
-            if subset:
-                self.assertEqual(source.bounds, expected_bounds)
+            self.wait_for_data()
+            self.assertEqual(data.selection.models, (name,))
+            with patch.object(data, "download_selected") as download:
+                library.download_forecast()
+                download.assert_called_once_with(
+                    expected_bounds if name == "NOAA HRRR" else None
+                )
         with self.assertRaisesRegex(ValueError, "Unknown forecast source"):
             data.list_forecasts("unregistered", None)
 
     def test_custom_forecast_controls_and_checked_runs_survive_refresh(self):
         from gweatherrouting.qt.datalibrary import DataLibrary
-        from gweatherrouting.core.gribsources import NOAAGFSSource, NOAAHRRRSource
 
         library = DataLibrary(self.controller, self.window)
         self.addCleanup(library.close)
@@ -1107,25 +1134,181 @@ class QtPreviewChecks(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Select wind"):
             options.options()
         options.fields["pressure"].setChecked(True)
-        gfs, hrrr = NOAAGFSSource(), NOAAHRRRSource()
-        self.controller.data.remote_forecasts = [
-            (gfs, ["GFS", "GFS", "1 MB", "new", "gfs-new"]),
-            (gfs, ["GFS", "GFS", "1 MB", "old", "gfs-old"]),
-            (hrrr, ["HRRR", "HRRR", "1 MB", "new", "hrrr-new"]),
-        ]
-        library.refresh()
-        self.assertEqual(len(library._checked_downloads()), 2)
-        library.downloads.item(0, 0).setCheckState(Qt.CheckState.Unchecked)
-        library.downloads.item(1, 0).setCheckState(Qt.CheckState.Checked)
-        library.refresh()
-        checked = library._checked_downloads()
-        self.assertEqual([row[4] for _, row in checked], ["gfs-old", "hrrr-new"])
-        with patch.object(self.controller.data, "download_forecasts") as download:
+        self.assertEqual(
+            self.controller.data.selection.models, ("NOAA GFS", "NOAA HRRR")
+        )
+        self.assertFalse(hasattr(library, "downloads"))
+        self.assertFalse(library.files_dialog.isVisible())
+        with patch.object(self.controller.data, "download_selected") as download:
             library.download_forecast()
-            download.assert_called_once_with(checked)
-        options.interval.setCurrentIndex(3)
-        self.assertEqual(library.downloads.rowCount(), 0)
+            self.assertEqual(download.call_args.args, (library._forecast_bounds(),))
         self.assertIsNone(self.controller.data.manager.get_source("OpenSkiron"))
+
+    def test_model_checkboxes_are_persisted_and_control_cached_routing_sources(self):
+        import shutil
+        from osgeo import gdal
+        from gweatherrouting.core.gribmanager import GribManagerStorage
+        from gweatherrouting.core.routingjob import CalculatedRoute
+
+        data = self.controller.data
+        root = data.forecast_directory()
+        fixture = self.wind_fixture()
+        shutil.copyfile(fixture, root / "gfs.grib2")
+        hrrr = root / "hrrr.grib2"
+        shutil.copyfile(fixture, hrrr)
+        dataset = gdal.Open(str(hrrr), gdal.GA_Update)
+        for index in range(1, dataset.RasterCount + 1):
+            dataset.GetRasterBand(index).SetMetadataItem(
+                "GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES", "2 2 2 0 83"
+            )
+        dataset = None
+        self.window.show_library()
+        library = self.window.library_dialog
+        self.wait_for_data()
+        self.assertEqual([g.model_name for g in data.manager.gribs], ["GFS"])
+        self.assertFalse(library.forecasts.isVisible())
+        picker = library.forecast_options
+        with (
+            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+            patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
+        ):
+            ORIGINAL_STORAGE_LOAD(data.manager.storage)
+            picker.models["NOAA HRRR"].setChecked(True)
+            picker.models["NOAA GFS"].setChecked(False)
+            self.wait_for_data()
+            self.assertEqual(data.selection.models, ("NOAA HRRR",))
+            self.assertEqual([g.model_name for g in data.manager.gribs], ["HRRR"])
+            self.assertTrue((root / "gfs.grib2").exists())
+            with patch.object(Storage, "load_or_save_default", ORIGINAL_STORAGE_LOAD):
+                reloaded = GribManagerStorage()
+            self.assertEqual(reloaded.forecast_selection["models"], ["NOAA HRRR"])
+        captured = []
+
+        def calculate(core, request, sources, *args, **callbacks):
+            captured.append(
+                (
+                    request.forecast_selection.models,
+                    tuple(g.model_name for g in sources),
+                )
+            )
+            return CalculatedRoute(((49, -123, "2026-10-01", 0, 1, 1, 0),), (), {})
+
+        panel = self.window.routing_panel
+        panel.set_location("start", (49, -123))
+        panel.set_location("destination", (49, -122.9))
+        with patch(
+            "gweatherrouting.qt.routingcontroller.calculate_route",
+            side_effect=calculate,
+        ):
+            panel.calculate.click()
+            self.wait_for_route()
+        self.assertEqual(captured, [(("NOAA HRRR",), ("HRRR",))])
+
+    def test_wind_only_routing_automatically_loads_selected_model_without_existing_files(
+        self,
+    ):
+        from gweatherrouting.core.grib import Grib
+        from PySide6.QtCore import QDateTime
+
+        path = self.wind_fixture(size=(16, 16), transform=(-130, 1, 0, 55, 0, -1))
+        metadata = Grib.parse_metadata(str(path))
+        self.assertFalse(self.controller.data.manager.gribs)
+        panel = self.window.routing_panel
+        panel.coastlines.setChecked(False)
+        panel.set_location("start", (49, -123))
+        panel.set_location("destination", (49, -122.8))
+        panel.departure.setDateTime(QDateTime(metadata.start_time))
+        readers = []
+
+        def download(recovery, gribs, points, instant, area):
+            self.assertEqual(recovery.selection.models, ("NOAA GFS",))
+            self.assertNotEqual(get_ident(), main_thread)
+            result = Grib.parse(str(path))
+            readers.append(result)
+            return [result]
+
+        main_thread = get_ident()
+        with patch(
+            "gweatherrouting.core.modeldownloads.ModelForecastRecovery.download",
+            download,
+        ):
+            panel.calculate.click()
+            self.wait_for_route()
+        self.assertFalse(self.controller.routing.error)
+        self.assertEqual(len(readers), 1)
+        self.assertIsNone(readers[0].dataset)
+        active = self.controller.data.manager.gribs[0]
+        self.assertIsNotNone(active.dataset)
+        self.assertIsNotNone(active.get_wind_at(metadata.start_time, 49, -123))
+        route = self.controller.core.routingManager[0]
+        self.assertEqual(route.provenance["weather_models"], ["NOAA GFS"])
+
+    def test_one_download_button_uses_latest_checked_model_run(self):
+        import shutil
+        from gweatherrouting.core.gribsources import NOAAGFSSource
+
+        data = self.controller.data
+        fixture = self.wind_fixture()
+        self.window.show_library()
+        self.wait_for_data()
+        library = self.window.library_dialog
+        rows = [
+            ["new", "GFS", "1 MB", "new run", "new"],
+            ["old", "GFS", "1 MB", "old run", "old"],
+        ]
+        previous_time = self.controller.time_control.time
+        downloaded = []
+
+        def download(source, identifier, directory, progress, cancel=None):
+            downloaded.append(identifier)
+            destination = Path(directory) / "forecast.grib2"
+            shutil.copyfile(fixture, destination)
+            return str(destination)
+
+        with (
+            patch.object(NOAAGFSSource, "get_download_list", return_value=rows),
+            patch.object(NOAAGFSSource, "download", download),
+        ):
+            library.forecast_download.click()
+            self.wait_for_data()
+        self.assertEqual(downloaded, ["new"])
+        self.assertEqual(self.controller.time_control.time, previous_time)
+        self.assertEqual([g.model_name for g in data.manager.gribs], ["GFS"])
+        self.assertFalse(hasattr(library, "downloads"))
+
+    def test_weather_coverage_notice_tracks_pan_and_time_without_changing_models(self):
+        data = self.controller.data
+        data.import_forecast(str(self.wind_fixture()))
+        self.wait_for_data()
+        canvas = self.window.map
+        source = data.manager.gribs[0]
+        canvas._center_lat, canvas._center_lon, canvas._zoom = 48.5, -122, 12
+        self.controller.time_control.set_time(source.start_time)
+        canvas.queue_draw()
+        self.wait_for_cursor(
+            lambda: "pressure unavailable" in canvas.coverage_notice.text()
+        )
+        self.assertNotIn("wind", canvas.coverage_notice.text())
+        selected = data.selection.models
+        canvas._center_lat, canvas._center_lon = 0, 0
+        canvas.queue_draw()
+        self.wait_for_cursor(
+            lambda: "wind unavailable" in canvas.coverage_notice.text()
+        )
+        self.assertEqual(data.selection.models, selected)
+        canvas._center_lat, canvas._center_lon = 48.5, -122
+        from datetime import timedelta
+
+        self.controller.time_control.set_time(source.start_time + timedelta(hours=4))
+        canvas.queue_draw()
+        self.wait_for_cursor(
+            lambda: "wind unavailable" in canvas.coverage_notice.text()
+        )
+        self.assertEqual(data.selection.models, selected)
+        self.assertGreaterEqual(canvas.coverage_notice.x(), canvas.width() - 372)
+        self.assertLessEqual(
+            canvas.coverage_notice.geometry().bottom(), canvas.height()
+        )
 
     def test_multi_model_download_partial_failure_preserves_success(self):
         import shutil
@@ -1180,7 +1363,7 @@ class QtPreviewChecks(unittest.TestCase):
 
         root = self.path / "local-forecasts"
         root.mkdir()
-        fixture = self.wind_fixture()
+        fixture = self.wind_fixture(model=False)
         data = self.controller.data
         with patch("gweatherrouting.qt.datacontroller.GRIB_DIR", str(root)):
             library = DataLibrary(self.controller, self.window)
@@ -1192,7 +1375,12 @@ class QtPreviewChecks(unittest.TestCase):
             labels = [b.text() for b in library.forecast_page.findChildren(QPushButton)]
             self.assertNotIn("Refresh", labels)
             self.assertNotIn("Remove copy…", labels)
-            self.assertGreater(library.import_forecast_button.x(), library.width() / 2)
+            self.assertFalse(library.files_dialog.isVisible())
+            library.show_forecast_files()
+            self.drain()
+            self.assertGreater(
+                library.import_forecast_button.x(), library.files_dialog.width() / 2
+            )
             first = root / "b.grib2"
             shutil.copyfile(fixture, first)
             self.wait_for_cursor(lambda: library.forecasts.rowCount() == 1)
@@ -1202,7 +1390,9 @@ class QtPreviewChecks(unittest.TestCase):
             shutil.copyfile(fixture, root / "a.grib2")
             self.wait_for_cursor(lambda: library.forecasts.rowCount() == 2)
             current = library.forecasts.item(library.forecasts.currentRow(), 0)
-            self.assertEqual(current.data(Qt.ItemDataRole.UserRole), str(first))
+            self.assertEqual(
+                current.data(Qt.ItemDataRole.UserRole), str(first.resolve())
+            )
             # Existing files changing in place also refresh their metadata.
             from osgeo import gdal
 
@@ -1235,7 +1425,7 @@ class QtPreviewChecks(unittest.TestCase):
 
                 menu.return_value.exec.side_effect = choose_remove
                 library._forecast_context_menu(point)
-                self.assertEqual(remove.call_args.args[0].path, str(first))
+                self.assertEqual(remove.call_args.args[0].path, str(first.resolve()))
             first.unlink()
             self.wait_for_cursor(lambda: library.forecasts.rowCount() == 1)
             library.hide()
@@ -1258,13 +1448,11 @@ class QtPreviewChecks(unittest.TestCase):
             "get_bbox",
             return_value=(MapPoint(50, -126), MapPoint(46, -122)),
         ):
-            with patch.object(self.controller.data, "list_model_forecasts") as listing:
+            with patch.object(self.controller.data, "download_selected") as listing:
                 for name, check in library.forecast_options.models.items():
                     check.setChecked(name == "NOAA HRRR")
-                library.find_forecasts()
-                self.assertEqual(
-                    listing.call_args.args[:2], (("NOAA HRRR",), (46, -126, 50, -122))
-                )
+                library.download_forecast()
+                self.assertEqual(listing.call_args.args, ((46, -126, 50, -122),))
         self.window.views.setCurrentWidget(self.window.logs_view)
         with patch.object(
             self.window.log_map,
@@ -3380,7 +3568,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.addCleanup(release.set)
         captured = []
 
-        def calculate(core, request, *args):
+        def calculate(core, request, *args, **callbacks):
             captured.append(request)
             started.set()
             release.wait(5)
@@ -3594,7 +3782,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.addCleanup(release.set)
         calls = []
 
-        def calculate(core, request, *args):
+        def calculate(core, request, *args, **callbacks):
             calls.append(request)
             if len(calls) == 2:
                 started.set()

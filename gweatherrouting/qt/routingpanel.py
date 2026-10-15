@@ -233,7 +233,7 @@ class RoutingPanel(QWidget):
         self.use_currents.setToolTip("Include ocean and tidal currents in routing.")
         self.auto_currents = QCheckBox("Download data automatically")
         self.auto_currents.setToolTip(
-            "Use the latest GFS wind run and download missing wind and current coverage."
+            "Download missing current coverage. Wind uses the models selected in Forecasts."
         )
         self.auto_currents.setChecked(True)
         self.auto_currents.setEnabled(False)

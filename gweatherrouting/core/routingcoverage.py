@@ -9,14 +9,27 @@ from .marine.windcoverage import WindCoverageRecovery
 
 
 def prepare_coverage(
-    routing, manager, auto_download, cancel, report, confirm, save_gribs
+    routing,
+    manager,
+    auto_download,
+    cancel,
+    report,
+    confirm,
+    save_gribs,
+    forecast_selection=None,
 ):
     environment = routing.current_environment
     if environment is None:
         return
     environment.cancel = cancel
-    if auto_download:
-        recovery = WindCoverageRecovery(routing, save=save_gribs)
+    if auto_download or forecast_selection is not None:
+        recovery = (
+            WindCoverageRecovery(routing, save=save_gribs)
+            if forecast_selection is None
+            else WindCoverageRecovery(
+                routing, save=save_gribs, selection=forecast_selection
+            )
+        )
         environment.wind_recovery = recovery
         report("Checking latest wind forecast…")
         recovery.refresh()
@@ -40,4 +53,5 @@ def prepare_coverage(
         environment.prefetch = CoveragePrefetch(
             manager, environment, coverage.download_gaps
         )
+    if environment.wind_recovery is not None:
         environment.wind_recovery.prefetch()

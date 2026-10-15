@@ -39,6 +39,7 @@ class GribManagerStorage(Storage):
     def __init__(self):
         Storage.__init__(self, "grib-manager")
         self.opened = []
+        self.forecast_selection = None
         self.load_or_save_default()
 
 

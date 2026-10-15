@@ -1061,11 +1061,16 @@ class PreviewWindow(QMainWindow):
                 self.library_dialog.hide()
 
     def _forecast_loaded(self, grib):
-        self.timeline.pause()
-        self.controller.time_control.set_time(grib.start_time)
+        imported = self.controller.data.operation == "forecast"
+        if imported:
+            self.timeline.pause()
+            self.controller.time_control.set_time(grib.start_time)
         self.timeline.refresh()
         self.map.queue_draw()
-        self.statusBar().showMessage("Forecast imported and enabled", 5000)
+        self.statusBar().showMessage(
+            "Forecast imported and enabled" if imported else "Forecast models updated",
+            5000,
+        )
 
     def load_grib(self):
         if self.controller.data.task.busy or self.controller.routing.busy:
