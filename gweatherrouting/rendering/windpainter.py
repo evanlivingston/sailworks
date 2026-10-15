@@ -109,7 +109,7 @@ class WindPainter:
 
         cr.restore()
 
-    def draw(self, gpsmap, cr, data, pressure=None):
+    def draw(self, gpsmap, cr, data, pressure=None, fill_data=None):
         if (not data or len(data) == 0) and not pressure:
             return
 
@@ -118,8 +118,13 @@ class WindPainter:
             scale = 1
 
         if data:
-            # Draw color fill (smooth gradient between grid points)
-            self._draw_color_fill(gpsmap, cr, data, scale)
+            # Draw color fill (smooth gradient between grid points).
+            # A ragged multi-model union cannot form quads, so the caller
+            # may supply a resampled regular grid for the fill while barbs
+            # keep the dense native points.
+            self._draw_color_fill(
+                gpsmap, cr, fill_data if fill_data else data, scale
+            )
 
         # Isobars sit above the fill so thin lines stay readable.
         self.draw_isobars(gpsmap, cr, pressure)
@@ -140,7 +145,7 @@ class WindPainter:
                 self.draw_wind_barb(cr, xx, yy, p[0], p[1])
 
     def draw_isobars(self, gpsmap, cr, pressure):
-        """Draw mean-sea-level pressure contours every 4 hPa with labels."""
+        """Draw mean-sea-level pressure contours with configurable spacing and labels."""
         if not getattr(self.settings_manager, "gribIsobarsVisible", True):
             return
         if contour_generator is None or not pressure or len(pressure) < 2:
@@ -187,16 +192,18 @@ class WindPainter:
         return grids
 
     @staticmethod
-    def _isobar_levels(values):
-        """4 hPa levels spanning the block, snapped to multiples of 4."""
+    def _isobar_levels(values, interval=ISOBAR_INTERVAL_HPA):
+        """Levels spanning the block, snapped to multiples of the interval."""
+        if not math.isfinite(interval) or interval <= 0:
+            interval = ISOBAR_INTERVAL_HPA
         finite = values[np.isfinite(values)]
         if finite.size == 0:
             return None
-        low = math.floor(float(finite.min()) / ISOBAR_INTERVAL_HPA)
-        high = math.ceil(float(finite.max()) / ISOBAR_INTERVAL_HPA)
+        low = math.floor(float(finite.min()) / interval)
+        high = math.ceil(float(finite.max()) / interval)
         if high <= low:
             return None
-        return ISOBAR_INTERVAL_HPA * np.arange(low, high + 1, dtype=np.float64)
+        return interval * np.arange(low, high + 1, dtype=np.float64)
 
     @staticmethod
     def _project_pressure_block(gpsmap, lats, lons):
@@ -234,9 +241,12 @@ class WindPainter:
         return contours
 
     @staticmethod
-    def _stroke_contours(cr, gpsmap, contours):
+    def _stroke_contours(cr, gpsmap, contours, opacity=0.85):
         # A dark halo keeps thin lines readable over the wind gradient fill.
-        for width, color in ((3.0, (0, 0, 0, 0.45)), (1.1, (1, 1, 1, 0.85))):
+        for width, color in (
+            (3.0, (0, 0, 0, opacity * 0.45 / 0.85)),
+            (1.1, (1, 1, 1, opacity)),
+        ):
             cr.save()
             cr.set_line_width(width)
             cr.set_source_rgba(*color)
@@ -251,7 +261,9 @@ class WindPainter:
             cr.restore()
 
     def _draw_isobar_block(self, gpsmap, cr, lats, lons, values):
-        levels = self._isobar_levels(values)
+        levels = self._isobar_levels(
+            values, getattr(self.settings_manager, "gribIsobarInterval", 4.0)
+        )
         if levels is None:
             return
         projected = self._project_pressure_block(gpsmap, lats, lons)
@@ -261,9 +273,10 @@ class WindPainter:
         contours = self._contour_lines(gpsmap, xs, ys, values, levels)
         if not contours or gpsmap.render_cancelled():
             return
-        self._stroke_contours(cr, gpsmap, contours)
-        opacity = getattr(self.settings_manager, "gribArrowOpacity", 0.4)
-        self._draw_isobar_labels(cr, contours, opacity, gpsmap)
+        opacity = getattr(self.settings_manager, "gribIsobarOpacity", 0.85)
+        self._stroke_contours(cr, gpsmap, contours, opacity)
+        if getattr(self.settings_manager, "gribIsobarLabels", True):
+            self._draw_isobar_labels(cr, contours, opacity, gpsmap)
 
     @staticmethod
     def _draw_isobar_labels(cr, contours, opacity, gpsmap):
@@ -287,10 +300,10 @@ class WindPainter:
             text = "%d" % round(level)
             cr.move_to(mid[0] + 3, mid[1] - 3)
             cr.text_path(text)
-            cr.set_source_rgba(0, 0, 0, 0.85)
+            cr.set_source_rgba(0, 0, 0, opacity)
             cr.set_line_width(3)
             cr.stroke_preserve()
-            cr.set_source_rgba(1, 1, 1, min(1.0, 0.55 + opacity))
+            cr.set_source_rgba(1, 1, 1, opacity)
             cr.fill()
         cr.restore()
 

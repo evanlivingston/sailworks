@@ -70,12 +70,16 @@ class OverlayRenderer:
         self._states = {}
         self._pending = OrderedDict()
         self._running = False
+        self._active_canvas = None
+        self._active_job: RenderJob | None = None
 
     def forget(self, canvas):
         state = self._states.pop(canvas, None)
         self._pending.pop(canvas, None)
         if state and state.requested:
             state.requested.cancel.set()
+        if self._active_canvas is canvas and self._active_job is not None:
+            self._active_job.cancel.set()
 
     def draw(self, canvas, cr, charts, palette):
         if not charts:
@@ -101,7 +105,11 @@ class OverlayRenderer:
             and not getattr(canvas, "_zoom_animating", False)
             and time.monotonic() >= state.retry_after
         ):
-            if requested:
+            if requested is not None and not (
+                fits(requested.viewport, canvas)
+                and self._can_complete(requested, key)
+                and requested is self._active_job
+            ):
                 requested.cancel.set()
             viewport = MapViewport(canvas, MARGIN, lambda: None)
             job = RenderJob(key, viewport, charts, factor, palette)
@@ -111,6 +119,9 @@ class OverlayRenderer:
             self._start_next()
         if frame and self._can_preview(frame[0], key):
             self._paint(canvas, cr, *frame)
+
+    def _can_complete(self, job, key):
+        return job.key == key
 
     def _can_preview(self, job, key):
         return job.key == key
@@ -124,6 +135,7 @@ class OverlayRenderer:
             return
         canvas, job = self._pending.popitem(last=False)
         self._running = True
+        self._active_canvas, self._active_job = canvas, job
 
         def worker():
             surface, error = None, None
@@ -140,6 +152,7 @@ class OverlayRenderer:
 
     def _completed(self, canvas, job, surface, error):
         self._running = False
+        self._active_canvas = self._active_job = None
         state = self._states.get(canvas)
         if state:
             if state.requested is job:
@@ -147,7 +160,11 @@ class OverlayRenderer:
             if error:
                 state.retry_after = time.monotonic() + 1
                 logger.warning("Unable to render map overlay: %s", error)
-            if surface is not None and not job.cancel.is_set() and state.key == job.key:
+            if (
+                surface is not None
+                and not job.cancel.is_set()
+                and self._can_complete(job, state.key)
+            ):
                 state.frame = (job, surface)
                 canvas.queue_draw()
         self._start_next()
