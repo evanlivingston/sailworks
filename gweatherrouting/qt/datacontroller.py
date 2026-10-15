@@ -12,7 +12,6 @@ from osgeo import gdal
 
 from gweatherrouting.core.grib import Grib
 from gweatherrouting.core.enccharts import ENCCatalog
-from gweatherrouting.core.gribsources import NOAAGFSSource, OpenSkironSource
 from gweatherrouting.core.storage import DATA_DIR, GRIB_DIR
 from gweatherrouting.rendering.gdalvectorchart import GDALVectorChart
 from gweatherrouting.rendering.gdalrasterchart import (
@@ -161,8 +160,11 @@ class DataController(QObject):
         self.changed.emit()
 
     def list_forecasts(self, source_name, bounds):
-        source = NOAAGFSSource() if source_name == "NOAA GFS" else OpenSkironSource()
-        if isinstance(source, NOAAGFSSource):
+        registered = self.manager.get_source(source_name)
+        if registered is None:
+            raise ValueError("Unknown forecast source: " + source_name)
+        source = type(registered)()
+        if hasattr(source, "bounds"):
             source.bounds = bounds
 
         def listing(_):

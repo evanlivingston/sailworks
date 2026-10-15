@@ -1057,6 +1057,34 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertTrue(data.error)
             self.assertEqual(len(self.controller.charts.charts), 1)
 
+    def test_regional_forecast_sources_reach_download_ui_and_correct_provider(self):
+        from gweatherrouting.core.gribsources import NOAAHRRRSource, ECCHRDPSource
+
+        self.window.show_library()
+        library = self.window.library_dialog
+        data = self.controller.data
+        self.wait_for_data()
+        for name, provider, subset in (
+            ("NOAA HRRR", NOAAHRRRSource, True),
+            ("CMC HRDPS", ECCHRDPSource, False),
+        ):
+            library.source.setCurrentText(name)
+            self.assertEqual(library.source.currentText(), name)
+            self.assertEqual(not library.bounds_panel.isHidden(), subset)
+            with patch.object(
+                provider,
+                "get_download_list",
+                return_value=[["fixture", name, "1 MB", "run", "{}"]],
+            ):
+                library.find_forecasts()
+                self.wait_for_data()
+            source, row = data.remote_forecasts[0]
+            self.assertIsInstance(source, provider)
+            if subset:
+                self.assertEqual(source.bounds, (40, -130, 55, -115))
+        with self.assertRaisesRegex(ValueError, "Unknown forecast source"):
+            data.list_forecasts("unregistered", None)
+
     def test_provider_download_is_staged_and_committed_on_ui_thread(self):
         import shutil
         from gweatherrouting.core.gribsources import NOAAGFSSource

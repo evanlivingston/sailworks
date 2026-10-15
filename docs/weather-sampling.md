@@ -44,8 +44,15 @@ full-circle grids interpolate across their storage seam.
 GDAL's geotransform describes pixel corners. Samples are at pixel centers
 (offset 0.5 in each raster axis). The former corner interpretation shifted
 weather by half a cell; correcting it changes both display and routing values.
-Wind components are taken as east/north components supplied by the provider;
-this work does not add decoding/rotation for grid-relative vector products.
+GRIB2 section 3 vector-reference flags are read per field, including concatenated
+files and submessages. Earth-relative components remain unchanged. Grid-relative
+components are rotated into true east/north at native sample centers before
+bilinear sampling and temporal blending. Local basis directions use the native
+CRS and short geodesic offsets (0.1 m for projected coordinates, 1e-5 degree for
+rotated geographic coordinates). Rotated geographic CRSs are transformed even
+though their axes have angular units. Unsupported GRIB2 grid templates are
+unavailable for wind rather than silently assumed to be earth-relative. Legacy
+GRIB1 and non-GRIB imports retain the existing earth-relative assumption.
 
 For bracketing valid times t0 and t1, `f=(t-t0)/(t1-t0)` and
 `value=value0+(value1-value0)*f`. Timestamps retain fractional seconds. Wind U/V
@@ -99,3 +106,20 @@ References: [GDAL geotransforms](https://gdal.org/en/stable/tutorials/geotransfo
 [GDAL GRIB metadata](https://gdal.org/en/stable/drivers/raster/grib.html),
 [GRIB2 template 4.0](https://codes.ecmwf.int/grib/format/grib2/templates/4/0/),
 [NCEP process identifiers](https://www.nco.ncep.noaa.gov/sib/grib2/grib2_all_tables_module.pdf).
+
+## Regional wind sources
+
+Data Library lists NOAA HRRR and CMC HRDPS alongside GFS and OpenSkiron. HRRR
+downloads a geographic subset with hourly 10 m wind and MSLMA pressure. HRDPS
+downloads full-domain hourly wind and pressure every three hours; the existing
+256 MiB cap bounds the download. Automatic route wind-gap recovery continues to
+use GFS; loading regional files does not change that recovery policy.
+
+Live validation used the 2026-10-15 12Z HRRR subset (47–49 N, 125–123 W) and HRDPS
+10 m U/V analysis files. Both set the grid-relative bit. At 48 N, 124 W, scalar
+and batch sampling agreed after rotation, and visible native-node extraction
+returned regional samples. Synthetic Lambert tests independently check rotation
+against meridian convergence before bilinear interpolation.
+
+Vector interpretation follows [GRIB2 flag table 3.3](https://codes.ecmwf.int/grib/format/grib2/ctables/3/3/).
+HRDPS grid details are published by [ECCC](https://eccc-msc.github.io/open-data/msc-data/nwp_hrdps/readme_hrdps-datamart_en/).

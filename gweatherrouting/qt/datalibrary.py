@@ -132,7 +132,8 @@ class DataLibrary(QDialog):
         layout.addWidget(section_label("Download wind forecasts"))
         options = QHBoxLayout()
         self.source = QComboBox()
-        self.source.addItems(["NOAA GFS", "OpenSkiron"])
+        names = [source.name for source in self.data.manager.sources]
+        self.source.addItems(sorted(names, key=lambda name: name != "NOAA GFS"))
         self.source.currentTextChanged.connect(self.source_changed)
         options.addWidget(self.source)
         self.button(options, "Find forecasts", self.find_forecasts)
@@ -325,7 +326,9 @@ class DataLibrary(QDialog):
             self.attempt(lambda: self.data.remove_forecast(metadata))
 
     def source_changed(self):
-        self.bounds_panel.setVisible(self.source.currentText() == "NOAA GFS")
+        self.bounds_panel.setVisible(
+            self.source.currentText() in ("NOAA GFS", "NOAA HRRR")
+        )
         self.data.remote_forecasts = []
         self.refresh()
 
@@ -336,7 +339,7 @@ class DataLibrary(QDialog):
             self.north.value(),
             self.east.value(),
         )
-        if self.source.currentText() == "NOAA GFS" and (
+        if self.source.currentText() in ("NOAA GFS", "NOAA HRRR") and (
             bounds[0] >= bounds[2] or bounds[1] >= bounds[3]
         ):
             self.status.setText(

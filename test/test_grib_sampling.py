@@ -18,7 +18,7 @@ from gweatherrouting.rendering.windcursor import WindCursorSampler
 from gweatherrouting.rendering.windrenderer import DisplayGrib, WindOverlayRenderer
 from threading import Event
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 START = datetime(2026, 1, 1)
 
@@ -221,6 +221,62 @@ class TestGribSampling(unittest.TestCase):
             "EPSG:3857", "EPSG:4326", always_xy=True
         ).transform(500, 500)
         self.assert_uv(source.sampler(), START, lat, lon, 3, 0)
+
+    def test_grid_relative_lambert_wind_rotates_before_interpolation(self):
+        from pyproj import CRS
+
+        crs = CRS(
+            "+proj=lcc +lat_1=38.5 +lat_2=38.5 +lat_0=38.5 "
+            "+lon_0=-97.5 +R=6371229 +units=m"
+        )
+        to_grid = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+        to_world = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+        x, y = to_grid.transform(-124, 48)
+        source = self.file(
+            [("UGRD", 0, [[10, 10], [10, 10]]), ("VGRD", 0, [[0, 0], [0, 0]])],
+            transform=(x - 1500, 3000, 0, y - 1500, 0, 3000),
+            projection=crs.to_wkt(),
+        )
+        with patch(
+            "gweatherrouting.core.gribsampling.vector_flags", return_value=[True, True]
+        ):
+            sampler = source.sampler()
+        corners = [
+            to_world.transform(x + dx, y + dy)
+            for dx, dy in ((0, 0), (3000, 0), (0, 3000), (3000, 3000))
+        ]
+        angles = [
+            math.sin(math.radians(38.5)) * math.radians(lon + 97.5)
+            for lon, lat in corners
+        ]
+        expected = (
+            np.mean([10 * math.cos(a) for a in angles]),
+            np.mean([-10 * math.sin(a) for a in angles]),
+        )
+        lon, lat = to_world.transform(x + 1500, y + 1500)
+        batch = sampler.sample("wind", START, np.array([lat]), np.array([lon]))[0]
+        np.testing.assert_allclose(batch, expected, atol=1e-6)
+        direction, speed = sampler.wind_at(START, lat, lon)
+        self.assertAlmostEqual(speed, np.hypot(*expected), places=6)
+        self.assertAlmostEqual(
+            direction, math.degrees(math.atan2(-batch[0], -batch[1])) % 360
+        )
+
+    def test_rotated_geographic_crs_transforms_query_and_display_nodes(self):
+        from pyproj import CRS
+
+        crs = CRS(
+            "+proj=ob_tran +o_proj=longlat +o_lon_p=0 +o_lat_p=36.08852 "
+            "+lon_0=65.305142 +R=6371229"
+        )
+        source = self.file(self.field(0), projection=crs.to_wkt())
+        lon, lat = Transformer.from_crs(crs, "EPSG:4326", always_xy=True).transform(
+            0.5, 0.5
+        )
+        self.assert_uv(source.sampler(), START, lat, lon, 7, 1)
+        self.assertIsNotNone(source.sampling.backward)
+        nodes = source.sampling.nodes(((lat - 2, lon - 2), (lat + 2, lon + 2)))
+        self.assertEqual(len(nodes), 4)
 
     def test_all_consumers_use_same_cross_file_space_time_values(self):
         sources = [self.file(self.field(0)), self.file(self.field(3))]

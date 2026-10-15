@@ -14,7 +14,9 @@ import re
 
 import numpy as np
 from osgeo import gdal
-from pyproj import CRS, Transformer
+from pyproj import CRS, Transformer, Geod
+
+from .gribvectors import vector_flags
 
 logger = logging.getLogger("gweatherrouting")
 
@@ -64,6 +66,7 @@ class Record:
     valid: float
     identity: tuple
     scale: float = 1.0
+    grid_relative: bool = False
 
 
 class GridIndex:
@@ -79,7 +82,10 @@ class GridIndex:
         self.width, self.height = self.dataset.RasterXSize, self.dataset.RasterYSize
         projection = self.dataset.GetProjection()
         self.forward = self.backward = None
-        if projection and not CRS(projection).is_geographic:
+        crs = CRS(projection) if projection else CRS("EPSG:4326")
+        self.geod = crs.get_geod() or Geod(ellps="WGS84")
+        self.vector_step = 1e-5 if crs.is_geographic else 0.1
+        if projection and (not crs.is_geographic or crs.is_derived):
             self.forward = Transformer.from_crs("EPSG:4326", projection, always_xy=True)
             self.backward = Transformer.from_crs(
                 projection, "EPSG:4326", always_xy=True
@@ -91,6 +97,8 @@ class GridIndex:
         )
         self.arrays = OrderedDict()
         self._stencil = lru_cache(maxsize=4096)(self._stencil_for)
+        path = self.dataset.GetDescription()
+        self.vector_flags = vector_flags(path) if path else []
         self.records = self._records()
         self.references = {record.reference for record in self.records}
 
@@ -104,6 +112,10 @@ class GridIndex:
             level = metadata.get("GRIB_SHORT_NAME", "")
             expected = "10-HTGL" if element in FIELDS["wind"] else "0-MSL"
             if level and level != expected:
+                continue
+            relative = self.vector_flags[band_id - 1] if self.vector_flags else False
+            if element in FIELDS["wind"] and relative is None:
+                logger.warning("Unsupported GRIB vector grid: %s", self.source.path)
                 continue
             # Interval statistics and ensemble-derived fields aren't point forecasts.
             if metadata.get("GRIB_PDS_PDTN", "0") not in ("0", "1"):
@@ -128,7 +140,16 @@ class GridIndex:
                 else 1.0
             )
             records.append(
-                Record(self, band_id, element, reference, valid, identity, scale)
+                Record(
+                    self,
+                    band_id,
+                    element,
+                    reference,
+                    valid,
+                    identity,
+                    scale,
+                    bool(relative),
+                )
             )
         return records
 
@@ -166,7 +187,7 @@ class GridIndex:
             inv[3] + inv[4] * x + inv[5] * y - 0.5,
         )
 
-    def sample(self, record, lats, lons):
+    def sample(self, record, lats, lons, vector=False):
         x, y = self.pixel(lats, lons)
         if self.periodic:
             x = x % self.width
@@ -192,9 +213,9 @@ class GridIndex:
         y1 = np.minimum(y0 + 1, self.height - 1)
         dx, dy = x - x0, y - y0
         if not inside.any():
-            return np.full(lats.shape, np.nan)
+            return np.full(lats.shape + ((2,) if vector else ()), np.nan)
         array = self.array(record)
-        value = np.zeros(lats.shape)
+        value = np.zeros(lats.shape + ((2,) if vector else ()))
         for xx, yy, weight in (
             (x0, y0, (1 - dx) * (1 - dy)),
             (x1, y0, dx * (1 - dy)),
@@ -204,8 +225,31 @@ class GridIndex:
             corner = array[yy, xx]
             needed = weight > 1e-12
             inside &= ~needed | np.isfinite(corner)
-            value += np.where(needed, np.nan_to_num(corner) * weight, 0)
-        return np.where(inside, value, np.nan)
+            contribution = np.where(needed, np.nan_to_num(corner) * weight, 0)
+            if vector:
+                contribution = contribution[:, None] * self.basis(record, xx, yy)
+            value += contribution
+        return np.where(inside[:, None] if vector else inside, value, np.nan)
+
+    def basis(self, record, xx, yy):
+        """True east/north unit vector at each native sample center."""
+        axis = record.element == "UGRD"
+        if self.backward is None:
+            return np.tile((1, 0) if axis else (0, 1), (len(xx), 1))
+        gt = self.transform
+        x = gt[0] + (xx + 0.5) * gt[1] + (yy + 0.5) * gt[2]
+        y = gt[3] + (xx + 0.5) * gt[4] + (yy + 0.5) * gt[5]
+        step = self.vector_step
+        lon, lat = self.backward.transform(x, y)
+        lon2, lat2 = self.backward.transform(
+            x + step if axis else x, y if axis else y + step
+        )
+        azimuth, _, _ = self.geod.inv(lon, lat, lon2, lat2)
+        angle = np.radians(azimuth)
+        return np.column_stack((np.sin(angle), np.cos(angle)))
+
+    def vector_at(self, record, lat, lon):
+        return self.sample(record, np.array([lat]), np.array([lon]), vector=True)[0]
 
     def _stencil_for(self, lat, lon):
         if not math.isfinite(lat) or not math.isfinite(lon):
@@ -385,13 +429,20 @@ class WeatherSampler:
     @staticmethod
     def _wind_pairs(records):
         us, vs = records.get("UGRD", ()), records.get("VGRD", ())
-        paired = [(u, v) for u in us for v in vs if u.index is v.index]
+        paired = [
+            (u, v)
+            for u in us
+            for v in vs
+            if u.index is v.index and u.grid_relative == v.grid_relative
+        ]
         complete = {u.index for u, v in paired}
         return paired + [
             (u, v)
             for u in us
             for v in vs
-            if u.index not in complete and v.index not in complete
+            if u.index not in complete
+            and v.index not in complete
+            and u.grid_relative == v.grid_relative
         ]
 
     def _at_time(self, records, field, lats, lons):
@@ -409,6 +460,9 @@ class WeatherSampler:
                     self._sample_record(v, lats[use], lons[use]),
                 )
             )
+            if u.grid_relative:
+                candidate = u.index.sample(u, lats[use], lons[use], vector=True)
+                candidate += v.index.sample(v, lats[use], lons[use], vector=True)
             good = np.isfinite(candidate).all(axis=1)
             ids = np.flatnonzero(use)[good]
             result[ids] = candidate[good]
@@ -510,6 +564,10 @@ class WeatherSampler:
                     self._scalar_record(u, lat, lon),
                     self._scalar_record(v, lat, lon),
                 )
+                if u.grid_relative:
+                    uv = tuple(
+                        u.index.vector_at(u, lat, lon) + v.index.vector_at(v, lat, lon)
+                    )
                 if all(math.isfinite(value) for value in uv):
                     return valid, uv, self._origin(u, v)
         return None
