@@ -1162,7 +1162,9 @@ into `dev`; no upstream PR was created or updated.
 - Branch/base: `feature/qt-map-motion-settings` from `dev` at `fd5517f`, including
   the approved/visually confirmed map rebuild fix PR #21. Independent of open
   Settings/map-data PR #20; no pending prerequisite or retargeting.
-- Review: regular fork PR pending creation; leave unmerged for user review.
+- Review: [fork PR #22](https://github.com/evanlivingston/gweatherrouting/pull/22),
+  open for user review; not merged. The user tested the combined preview and
+  confirmed smooth interaction.
 - Functional commits: `fda2c25` moves existing pure motion helpers into Core and
   preserves GTK import compatibility; `7328711` binds live Qt preferences,
   drag inertia, gesture/lifecycle cancellation and motion-aware workspace save.
