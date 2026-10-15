@@ -3611,6 +3611,248 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertTrue(canvas._zoom_animating)
         canvas._finish_zoom_silent()
 
+    @staticmethod
+    def _native_pinch(kind, value=0.0, pointer=QPointF(83, 71)):
+        from PySide6.QtGui import QNativeGestureEvent, QPointingDevice
+
+        return QNativeGestureEvent(
+            kind,
+            QPointingDevice.primaryPointingDevice(),
+            2,
+            pointer,
+            pointer,
+            pointer,
+            value,
+            QPointF(),
+        )
+
+    @staticmethod
+    def _precise_scroll(
+        dx=0,
+        dy=0,
+        phase=Qt.ScrollPhase.ScrollUpdate,
+        modifiers=Qt.KeyboardModifier.NoModifier,
+        inverted=False,
+    ):
+        from PySide6.QtCore import QPoint
+        from PySide6.QtGui import QWheelEvent
+
+        return QWheelEvent(
+            QPointF(83, 71),
+            QPointF(83, 71),
+            QPoint(dx, dy),
+            QPoint(0, dy * 8),
+            Qt.MouseButton.NoButton,
+            modifiers,
+            phase,
+            inverted,
+        )
+
+    def test_native_pinch_is_direct_anchored_and_independent_of_wheel_smoothing(self):
+        for view, canvas in (
+            (self.window.map, self.window.map),
+            (self.window.logs_view, self.window.log_map),
+        ):
+            self.window.views.setCurrentWidget(view)
+            self.drain()
+            for smooth in (False, True):
+                with self.subTest(view=canvas is self.window.map, smooth=smooth):
+                    canvas._smooth_zoom = smooth
+                    before = canvas._zoom
+                    anchor = canvas.convert_screen_to_geographic(83, 71)
+                    self.app.sendEvent(
+                        canvas,
+                        self._native_pinch(Qt.NativeGestureType.BeginNativeGesture),
+                    )
+                    self.assertTrue(canvas.is_moving())
+                    for value in (0.25, -0.1):
+                        self.app.sendEvent(
+                            canvas,
+                            self._native_pinch(
+                                Qt.NativeGestureType.ZoomNativeGesture, value
+                            ),
+                        )
+                    self.assertAlmostEqual(canvas._zoom, before + math.log2(1.25 * 0.9))
+                    self.assertIsNone(canvas._zoom_tick_token)
+                    x, y = canvas.convert_geographic_to_screen(anchor)
+                    self.assertAlmostEqual(x, 83, places=7)
+                    self.assertAlmostEqual(y, 71, places=7)
+                    # Compatibility scroll/rotation must not apply a second zoom.
+                    zoom = canvas._zoom
+                    canvas.wheelEvent(self._motion_wheel())
+                    self.app.sendEvent(
+                        canvas,
+                        self._native_pinch(
+                            Qt.NativeGestureType.RotateNativeGesture, 12
+                        ),
+                    )
+                    self.assertEqual(canvas._zoom, zoom)
+                    self.app.sendEvent(
+                        canvas,
+                        self._native_pinch(Qt.NativeGestureType.EndNativeGesture),
+                    )
+                    self.assertFalse(canvas.is_moving())
+                    self.assertIsNone(canvas._zoom_anchor)
+
+    def test_native_pinch_rejects_invalid_scales_and_clamps_zoom(self):
+        canvas = self.window.map
+        for value in (-1.0, -2.0, float("nan"), float("inf")):
+            before = canvas._zoom
+            self.app.sendEvent(
+                canvas,
+                self._native_pinch(Qt.NativeGestureType.ZoomNativeGesture, value),
+            )
+            self.assertEqual(canvas._zoom, before)
+            self.assertFalse(canvas.is_moving())
+        for start, value, expected in ((19.9, 4, 20), (1.1, -0.9, 1)):
+            canvas._zoom = start
+            self.app.sendEvent(
+                canvas,
+                self._native_pinch(Qt.NativeGestureType.ZoomNativeGesture, value),
+            )
+            self.assertEqual(canvas._zoom, expected)
+            self.app.sendEvent(
+                canvas, self._native_pinch(Qt.NativeGestureType.EndNativeGesture)
+            )
+
+    def test_trackpad_pan_uses_both_pixel_axes_and_native_momentum_once(self):
+        canvas = self.window.map
+        canvas._trackpad_scroll_pans = True
+        before = canvas.convert_geographic_to_screen(MapPoint(48.4, -123.4))
+        zoom = canvas._zoom
+        for event in (
+            self._precise_scroll(phase=Qt.ScrollPhase.ScrollBegin),
+            self._precise_scroll(23, -17, inverted=True),
+            self._precise_scroll(11, 7, phase=Qt.ScrollPhase.ScrollMomentum),
+        ):
+            self.app.sendEvent(canvas, event)
+            self.assertTrue(event.isAccepted())
+        after = canvas.convert_geographic_to_screen(MapPoint(48.4, -123.4))
+        self.assertAlmostEqual(after[0] - before[0], 34, places=7)
+        self.assertAlmostEqual(after[1] - before[1], -10, places=7)
+        self.assertEqual(canvas._zoom, zoom)
+        self.assertTrue(canvas._trackpad_panning)
+        self.assertIsNone(canvas._inertia)
+        self.assertIsNone(canvas._zoom_tick_token)
+        self.app.sendEvent(canvas, self._precise_scroll(phase=Qt.ScrollPhase.ScrollEnd))
+        self.assertFalse(canvas.is_moving())
+        self.assertFalse(canvas._scroll_settle.isActive())
+
+    def test_trackpad_modifiers_mouse_wheel_and_non_macos_keep_zoom(self):
+        canvas = self.window.map
+        canvas._smooth_zoom = False
+        canvas._trackpad_scroll_pans = True
+        for modifier in (
+            Qt.KeyboardModifier.ControlModifier,
+            Qt.KeyboardModifier.MetaModifier,
+        ):
+            before = canvas._zoom
+            anchor = canvas.convert_screen_to_geographic(83, 71)
+            self.app.sendEvent(canvas, self._precise_scroll(0, 15, modifiers=modifier))
+            self.assertGreater(canvas._zoom, before)
+            self.assertFalse(canvas._trackpad_panning)
+            self.assertAlmostEqual(
+                canvas.convert_geographic_to_screen(anchor)[0], 83, places=7
+            )
+        before = canvas._zoom
+        canvas.wheelEvent(self._motion_wheel())
+        self.assertAlmostEqual(canvas._zoom, before + 0.25)
+        canvas._trackpad_scroll_pans = False
+        before = canvas._zoom
+        self.app.sendEvent(canvas, self._precise_scroll(0, 15))
+        self.assertGreater(canvas._zoom, before)
+        self.assertFalse(canvas._trackpad_panning)
+
+    def test_trackpad_motion_defers_overlays_and_workspace_then_settles(self):
+        canvas = self.window.map
+        canvas._trackpad_scroll_pans = True
+        for start, finish in (
+            (
+                lambda: self.app.sendEvent(
+                    canvas, self._native_pinch(Qt.NativeGestureType.BeginNativeGesture)
+                ),
+                lambda: self.app.sendEvent(
+                    canvas, self._native_pinch(Qt.NativeGestureType.EndNativeGesture)
+                ),
+            ),
+            (
+                lambda: self.app.sendEvent(canvas, self._precise_scroll(20, 10)),
+                lambda: self.app.sendEvent(
+                    canvas, self._precise_scroll(phase=Qt.ScrollPhase.ScrollEnd)
+                ),
+            ),
+        ):
+            start()
+            canvas._overlay_pending = False
+            canvas.queue_draw()
+            self.assertTrue(canvas._overlay_pending)
+            with patch.object(self.window.workspace, "save") as save:
+                self.window.workspace._autosave()
+                save.assert_not_called()
+                finish()
+                self.assertFalse(canvas._overlay_pending)
+                self.window.workspace._autosave()
+                save.assert_called_once()
+        self.app.sendEvent(
+            canvas, self._precise_scroll(10, 0, phase=Qt.ScrollPhase.NoScrollPhase)
+        )
+        self.assertTrue(canvas._scroll_settle.isActive())
+        canvas._scroll_settle.timeout.emit()
+        self.assertFalse(canvas.is_moving())
+
+    def test_native_and_scroll_motion_cancel_on_fit_placement_hide_resize_and_close(
+        self,
+    ):
+        from PySide6.QtGui import QResizeEvent
+        from PySide6.QtCore import QEvent
+
+        canvas = self.window.map
+        canvas._trackpad_scroll_pans = True
+        for native in (False, True):
+            for action in (
+                lambda: canvas.fit_coordinates(((48.4, -123.4), (48.5, -123.5))),
+                lambda: canvas.begin_move(lambda point: None),
+                canvas.hide,
+                lambda: self.app.sendEvent(
+                    canvas, QEvent(QEvent.Type.WindowDeactivate)
+                ),
+                lambda: canvas.resizeEvent(QResizeEvent(canvas.size(), canvas.size())),
+                lambda: canvas.mousePressEvent(
+                    SimpleNamespace(
+                        button=lambda: Qt.MouseButton.LeftButton,
+                        position=lambda: QPointF(100, 100),
+                    )
+                ),
+            ):
+                if native:
+                    self.app.sendEvent(
+                        canvas,
+                        self._native_pinch(Qt.NativeGestureType.BeginNativeGesture),
+                    )
+                    self.app.sendEvent(
+                        canvas,
+                        self._native_pinch(Qt.NativeGestureType.ZoomNativeGesture, 0.1),
+                    )
+                else:
+                    self.app.sendEvent(
+                        canvas,
+                        self._precise_scroll(10, 0, phase=Qt.ScrollPhase.NoScrollPhase),
+                    )
+                action()
+                self.assertFalse(canvas._native_gesture)
+                self.assertFalse(canvas._trackpad_panning)
+                self.assertFalse(canvas._scroll_settle.isActive())
+                self.assertFalse(canvas._zoom_animating)
+                canvas.drag = None
+                canvas.cancel_move()
+                canvas.show()
+        self.app.sendEvent(
+            canvas, self._precise_scroll(10, 0, phase=Qt.ScrollPhase.NoScrollPhase)
+        )
+        canvas.dispose()
+        self.assertFalse(canvas._scroll_settle.isActive())
+        self.assertFalse(canvas.is_moving())
+
     def _enable_motion_settings(self):
         # The common fixture skips disk loading; initialize notifications using
         # a private settings path before exercising real preference callbacks.
