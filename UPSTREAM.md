@@ -1642,3 +1642,37 @@ into `dev`; no upstream PR was created or updated.
 - Intended upstream scope: GRIB display metadata and Qt library layout/lifecycle
   with focused regressions, after applicable Qt/provider prerequisites. Exclude
   this fork tracking record. No upstream submission is authorized.
+
+## Custom GRIB download selections
+
+- Status: candidate; fork review [PR #32](https://github.com/evanlivingston/gweatherrouting/pull/32),
+  `feature/custom-forecast-downloads`, based on Forecast Library PR #31,
+  which depends on PNW wind PR #28 and Weather PR #27.
+- Functional commit: `109f34b`.
+- Scope: the reference application-style model/parameter/forecast-hour controls for GFS, HRRR
+  and HRDPS. Select duration, native or fixed spacing, and explicit hours;
+  list actual per-run coverage and approximate sizes; check and download multiple
+  runs. Preserve OpenSkiron's regional catalogue and automatic local discovery.
+  Batch staging/validation retains successful downloads if another model fails,
+  enables files on the UI thread, and retains the result through automatic scans.
+- Provider behavior: custom GFS allows hourly output through hour 120 then
+  three-hour output; legacy presets and routing-recovery schedules remain
+  unchanged. HRRR respects 18/48-hour run limits. HRDPS retains full-domain
+  requests, hourly wind and three-hour pressure. Only implemented wind/pressure
+  fields are exposed. Model/run interpolation and routing selection are unchanged;
+  no ensemble routing or cross-model blending is added.
+- Validation: feature suite passed 878 tests and 110 subtests before the final
+  hourly-GFS/scan-feedback follow-ups; final provider checks passed 32 tests and
+  4 subtests and focused Qt checks passed. A live NOAA pressure-only request
+  decoded exactly forecast hours 0 and 1. Visually inspected the dialog with
+  real HRRR/HRDPS files and multiple checked model runs. Black, changed production
+  Flake8 and whitespace checks pass. Full mypy matches the clean dev baseline
+  exactly (32 errors in 8 unchanged files). The final combined build passes
+  912 tests and 114 subtests, including the final follow-ups, with Weather,
+  PNW wind, WCOFS, safety, local-library cleanup and live isochrones together.
+- Merge order: PR #27, #28, #31, then retarget #32 to `dev` and recheck its diff
+  and checks. WCOFS PR #29 and safety PR #30 are independent. The combined local
+  validation branch includes this feature; none of these review PRs was merged.
+- Intended upstream scope: custom-selection helpers, provider support, Qt controls
+  and regressions after applicable Qt/provider prerequisites. Exclude fork
+  tracking. No upstream submission is authorized.
