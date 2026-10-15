@@ -3207,6 +3207,41 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(self.window.map.route_plan, ())
         self.assertFalse(self.controller.routing.busy)
 
+    def test_routing_safety_settings_snapshot_and_survive_restart(self):
+        self.plan_test_waypoints()
+        panel = self.window.routing_panel
+        self.assertIsNone(panel._request()[0].tws_max_kn)
+        self.assertIsNone(panel._request()[0].min_sailing_speed_kn)
+        self.assertFalse(panel.maximum_wind.isEnabled())
+        panel.limit_wind.setChecked(True)
+        panel.maximum_wind.setValue(28)
+        panel.motor_fallback.setChecked(True)
+        panel.minimum_sailing_speed.setValue(2.5)
+        panel.motor_speed.setValue(6)
+        panel.wave_proxy.setChecked(True)
+        request, _ = panel._request()
+        self.assertEqual(
+            (request.tws_max_kn, request.min_sailing_speed_kn, request.motor_speed_kn),
+            (28, 2.5, 6),
+        )
+        self.assertTrue(request.wave_correct)
+        panel.maximum_wind.setValue(30)
+        self.assertEqual(request.tws_max_kn, 28)
+        self.controller.routing.busy = True
+        panel.refresh()
+        self.assertFalse(panel.maximum_wind.isEnabled())
+        self.assertFalse(panel.motor_fallback.isEnabled())
+        self.controller.routing.busy = False
+        panel.refresh()
+        self.window.workspace.save()
+        self.restart_workspace()
+        panel = self.window.routing_panel
+        self.assertTrue(panel.limit_wind.isChecked())
+        self.assertTrue(panel.motor_fallback.isChecked())
+        self.assertTrue(panel.wave_proxy.isChecked())
+        self.assertEqual(panel.maximum_wind.value(), 30)
+        self.assertEqual(panel.motor_speed.value(), 6)
+
     def test_routing_tab_restore_migrates_removed_results_page(self):
         pages = self.window.routing_panel.pages
         for old_page, expected in (

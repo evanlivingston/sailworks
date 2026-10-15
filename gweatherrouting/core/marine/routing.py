@@ -126,6 +126,7 @@ class CurrentRoutingEnvironment:
         self.prefetch = None
         self.wind_recovery = None
         self._sample_cache: OrderedDict = OrderedDict()
+        self.policy_pruned = 0
 
     def record_exclusions(self, gaps):
         # Bound memory and saved JSON; merge repeated hits at the same 11 m cell.
@@ -229,6 +230,7 @@ class CurrentRoutingEnvironment:
             samples=legs,
             coverage="complete at integration sample positions/times",
             search_policy="reject masked-current candidates; recover absent coverage",
+            safety_pruned_candidates=self.policy_pruned,
             excluded_current_samples=list(self.excluded_samples.values()),
             excluded_current_samples_truncated=self.excluded_samples_truncated,
             optimality="best explored route within usable environmental coverage",
@@ -408,7 +410,12 @@ class CurrentIsoRouter(LinearBestIsoRouter):
         return not self.line_validity or self.line_validity(*start, *end)
 
     def velocity(self, position, instant, heading):
+        from gweatherrouting.core.safetypolicy import policy_of
+
         wd, ws, ce, cn, source = self.environment.sample(position, instant)
+        if policy_of(self.polar).is_nogo(ws / KNOT):
+            self.environment.policy_pruned += 1
+            raise InvalidMarineLegError()
         angle = abs((heading - wd + math.pi) % (2 * math.pi) - math.pi)
         speed = self.polar.get_speed(ws / KNOT, angle) * KNOT
         if not math.isfinite(speed) or speed < 0:
@@ -480,7 +487,12 @@ class CurrentIsoRouter(LinearBestIsoRouter):
         return result
 
     def headings(self, point, end):
+        from gweatherrouting.core.safetypolicy import policy_of
+
         wd, ws, ce, cn, _ = self.environment.sample(point.pos, point.time)
+        if policy_of(self.polar).is_nogo(ws / KNOT):
+            self.environment.policy_pruned += 1
+            return []
         headings = [wd + math.radians(angle) for angle in range(-180, 180, 5)]
         _, course = distance_bearing(point.pos, end)
         heading = course
@@ -599,6 +611,11 @@ class CurrentIsoRouter(LinearBestIsoRouter):
         self.environment.record_exclusions(masked)
         if not bins and masked:
             raise RoutingDataGapError(masked)
+        if not bins and self.environment.policy_pruned:
+            raise ValueError(
+                "No navigable route: forecast winds exceed the configured "
+                "TWS limit in the search area."
+            )
         if not bins:
             raise ValueError("No navigable route through the current search area")
         if winner is not None:

@@ -30,6 +30,9 @@ def distances(positions, end):
 
 
 def velocities(router, ids, positions, times, headings, gaps):
+    from gweatherrouting.core.safetypolicy import policy_of
+
+    policy = policy_of(router.polar)
     values = np.zeros((len(positions), 7))
     metadata = {}
     sampled = router.environment.sample_many(positions[ids], [times[i] for i in ids])
@@ -39,6 +42,9 @@ def velocities(router, ids, positions, times, headings, gaps):
             gaps.extend(sample.gaps)
             continue
         (wd, ws, ce, cn, _), meta = sample
+        if policy.is_nogo(ws / KNOT):
+            router.environment.policy_pruned += 1
+            continue
         angle = abs((headings[i] - wd + math.pi) % (2 * math.pi) - math.pi)
         speed = router.polar.get_speed(ws / KNOT, angle) * KNOT
         if not math.isfinite(speed) or speed < 0:

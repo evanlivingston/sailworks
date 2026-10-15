@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from datetime import datetime
+import math
 from typing import cast
 
 import weatherrouting
@@ -125,6 +126,7 @@ class RoutingPanel(QWidget):
             )
             combo.setMinimumContentsLength(14)
         self._build_advanced_pages()
+        self._build_safety_controls(form)
         self.inputs = (
             self.polar,
             self.algorithm,
@@ -138,6 +140,53 @@ class RoutingPanel(QWidget):
         controller.boat_changed.connect(self._boat_changed)
         self.refresh_destinations()
         self.refresh()
+
+    def _build_safety_controls(self, form):
+        form.addRow(section_label("Routing limits"))
+        self.limit_wind = QCheckBox("Maximum true wind")
+        self.maximum_wind = self._speed_control(30, 100)
+        form.addRow(self.limit_wind, self.maximum_wind)
+        self.motor_fallback = QCheckBox("Motor when sailing speed is below")
+        self.minimum_sailing_speed = self._speed_control(3, 30)
+        form.addRow(self.motor_fallback, self.minimum_sailing_speed)
+        self.motor_speed = self._speed_control(5, 30)
+        form.addRow("Motoring speed", self.motor_speed)
+        self.wave_proxy = QCheckBox("Wind-based speed reduction (wave proxy)")
+        self.wave_proxy.setToolTip(
+            "Reduces sailing speed above 20 kn wind, up to 25% at 40 kn. "
+            "Uses wind speed, not wave-height forecasts. Motoring speed is unchanged."
+        )
+        form.addRow(self.wave_proxy)
+        for control in (self.limit_wind, self.motor_fallback, self.wave_proxy):
+            control.toggled.connect(self._safety_changed)
+        for control in (
+            self.maximum_wind,
+            self.minimum_sailing_speed,
+            self.motor_speed,
+        ):
+            control.valueChanged.connect(lambda *_: self.options_changed.emit())
+        self._refresh_safety()
+
+    @staticmethod
+    def _speed_control(value, maximum):
+        widget = QDoubleSpinBox()
+        widget.setRange(0.1, maximum)
+        widget.setDecimals(1)
+        widget.setSuffix(" kn")
+        widget.setValue(value)
+        return widget
+
+    def _safety_changed(self, *_):
+        self._refresh_safety()
+        self.options_changed.emit()
+
+    def _refresh_safety(self):
+        enabled = not self.routing.busy
+        for control in (self.limit_wind, self.motor_fallback, self.wave_proxy):
+            control.setEnabled(enabled)
+        self.maximum_wind.setEnabled(enabled and self.limit_wind.isChecked())
+        for control in (self.minimum_sailing_speed, self.motor_speed):
+            control.setEnabled(enabled and self.motor_fallback.isChecked())
 
     def _build_parameter_controls(self, form):
         self.parameter_cache = {}
@@ -306,6 +355,21 @@ class RoutingPanel(QWidget):
             parameters=cache,
             use_currents=self.use_currents.isChecked(),
             auto_currents=self.auto_currents.isChecked(),
+            safety={
+                key: (
+                    getattr(self, key).isChecked()
+                    if isinstance(getattr(self, key), QCheckBox)
+                    else getattr(self, key).value()
+                )
+                for key in (
+                    "limit_wind",
+                    "maximum_wind",
+                    "motor_fallback",
+                    "minimum_sailing_speed",
+                    "motor_speed",
+                    "wave_proxy",
+                )
+            },
             comparison={
                 key: dict(enabled=enabled.isChecked(), values=values.text())
                 for key, (enabled, values) in self.comparison_axes.items()
@@ -332,6 +396,26 @@ class RoutingPanel(QWidget):
         if isinstance(saved.get("auto_currents"), bool):
             self.auto_currents.setChecked(saved["auto_currents"])
         self._algorithm_changed()
+        safety = mapping(saved.get("safety"))
+        for key in (
+            "limit_wind",
+            "maximum_wind",
+            "motor_fallback",
+            "minimum_sailing_speed",
+            "motor_speed",
+            "wave_proxy",
+        ):
+            widget = getattr(self, key)
+            value = safety.get(key)
+            if isinstance(widget, QCheckBox):
+                widget.setChecked(value is True)
+            elif (
+                type(value) in (float, int)
+                and math.isfinite(value)
+                and widget.minimum() <= value <= widget.maximum()
+            ):
+                widget.setValue(value)
+        self._refresh_safety()
         for key, (enabled, values) in self.comparison_axes.items():
             axis = mapping(mapping(saved.get("comparison")).get(key))
             text = axis.get("values")
@@ -473,6 +557,16 @@ class RoutingPanel(QWidget):
             use_currents=self.use_currents.isChecked(),
             auto_download=self.use_currents.isChecked()
             and self.auto_currents.isChecked(),
+            tws_max_kn=(
+                self.maximum_wind.value() if self.limit_wind.isChecked() else None
+            ),
+            min_sailing_speed_kn=(
+                self.minimum_sailing_speed.value()
+                if self.motor_fallback.isChecked()
+                else None
+            ),
+            motor_speed_kn=self.motor_speed.value(),
+            wave_correct=self.wave_proxy.isChecked(),
         )
         axes = {
             key: values.text()
@@ -487,6 +581,7 @@ class RoutingPanel(QWidget):
 
     def refresh(self):
         busy = self.routing.busy
+        self._refresh_safety()
         for control in (
             *self.inputs,
             *self.parameter_widgets.values(),

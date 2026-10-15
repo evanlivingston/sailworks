@@ -143,6 +143,19 @@ class TestRoutingJob(unittest.TestCase):
             self.assertIsNone(private.dataset)
             self.assertEqual(private._index_data.cache_info().currsize, 0)
 
+    def test_wind_only_limit_rejects_stationary_unsafe_candidates(self):
+        from dataclasses import replace
+
+        with self.assertRaisesRegex(ValueError, "exceed the configured TWS limit"):
+            calculate_route(
+                self.core,
+                replace(self.request, tws_max_kn=1),
+                self.core.grib_manager.gribs,
+                (),
+                Event(),
+                lambda *_: None,
+            )
+
     def test_no_forecast_is_a_clear_error_without_a_saved_partial_route(self):
         with self.assertRaisesRegex(weatherrouting.RoutingNoWindError, "forecast"):
             calculate_route(
