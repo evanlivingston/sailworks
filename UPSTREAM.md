@@ -1118,7 +1118,11 @@ into `dev`; no upstream PR was created or updated.
   map-data PR #20. The original checkout and its uncommitted diagnostic/other
   agent changes are preserved.
 - Review: [fork PR #21](https://github.com/evanlivingston/gweatherrouting/pull/21),
-  open for user review; not merged.
+  merged into `dev` with user approval (merge `76f2c61`). User confirmed that
+  panning/zooming in the isolated fixed app resolves the flashing. All builds,
+  including macOS, and docs passed; CI failures match existing connection-dialog
+  complexity, four type errors and missing `nmeatoolkit`; other test jobs were
+  cancelled by fail-fast.
 - Functional commit: `2cd04a9` adds the missing image blit and two pixel regression
   checks. The production fix is one line in `_draw_reusable_layer()`.
 - Problem/result: commit `29ec449` introduced a rebuild branch that creates and
@@ -1141,8 +1145,8 @@ into `dev`; no upstream PR was created or updated.
   “GWeatherRouting — map frame fix”, using installed chart data, offline instrument
   connections and a copied private workspace file. The user's original layout
   is not overwritten. Automated pixel tests establish the missing-draw defect;
-  user confirmation of the visible macOS navigation is still pending. No claim
-  of a new native screen-recording comparison.
+  user confirmed the visible macOS navigation fix before approving merge.
+  No new automated native screen-recording comparison is claimed.
 - Integration: after user-approved merge, synchronize the fix into active Qt
   feature branches, including PR #20. Keep independent diagnostic changes
   separate from this small verified correction.
