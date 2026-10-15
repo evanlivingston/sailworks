@@ -3290,6 +3290,160 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertIn("Sea marks unavailable", setup.message)
         self.assertIn("completed datasets are available", setup.message)
 
+    def test_rebuilt_cached_layers_are_drawn_before_returning(self):
+        from PySide6.QtGui import QColor, QImage, QPainter
+
+        canvas = self.window.map
+        for factor in (1, 2):
+            with self.subTest(dpr=factor):
+                size = (canvas.width(), canvas.height())
+                image = QImage(
+                    size[0] * factor,
+                    size[1] * factor,
+                    QImage.Format.Format_ARGB32_Premultiplied,
+                )
+                image.setDevicePixelRatio(factor)
+                image.fill(QColor("#39954c"))
+                target = QImage(image.size(), image.format())
+                target.setDevicePixelRatio(factor)
+                target.fill(QColor("black"))
+                painter = QPainter(target)
+                try:
+                    cache = canvas._draw_reusable_layer(
+                        painter, None, "new", lambda: image
+                    )
+                finally:
+                    painter.end()
+                self.assertIs(cache[4], image)
+                self.assertEqual(
+                    target.pixelColor(100 * factor, 100 * factor), QColor("#39954c")
+                )
+
+    def test_map_presents_rebuild_frames_with_direct_overlays_at_two_pixel_scales(self):
+        from contextlib import ExitStack
+        from PySide6.QtGui import QColor, QImage, QPainter
+
+        canvas = self.window.map
+        for factor in (1, 2):
+            for trigger in ("cold", "data", "pan", "zoom"):
+                with self.subTest(dpr=factor, trigger=trigger), ExitStack() as stack:
+                    stack.enter_context(
+                        patch.object(canvas, "get_scale_factor", return_value=factor)
+                    )
+                    stack.enter_context(
+                        patch.object(canvas, "devicePixelRatioF", return_value=factor)
+                    )
+                    epoch = [0]
+                    stack.enter_context(
+                        patch.object(
+                            canvas, "_base_key", side_effect=lambda: ("base", epoch[0])
+                        )
+                    )
+                    stack.enter_context(
+                        patch.object(
+                            canvas, "_nav_key", side_effect=lambda: ("nav", epoch[0])
+                        )
+                    )
+
+                    def layer(transparent=False):
+                        image = QImage(
+                            canvas.width() * factor,
+                            canvas.height() * factor,
+                            QImage.Format.Format_ARGB32_Premultiplied,
+                        )
+                        image.setDevicePixelRatio(factor)
+                        image.fill(
+                            Qt.GlobalColor.transparent
+                            if transparent
+                            else QColor("#39954c")
+                        )
+                        if transparent:
+                            painter = QPainter(image)
+                            painter.fillRect(
+                                canvas.width() // 2,
+                                canvas.height() // 2,
+                                30,
+                                30,
+                                QColor("#d43342"),
+                            )
+                            painter.end()
+                        return image
+
+                    base = stack.enter_context(
+                        patch.object(canvas, "_base_image", side_effect=layer)
+                    )
+                    nav = stack.enter_context(
+                        patch.object(
+                            canvas, "_navigation_image", side_effect=lambda: layer(True)
+                        )
+                    )
+                    for method in (
+                        "_paint_route_overlay",
+                        "_paint_track_overlay",
+                        "_paint_dashboard",
+                    ):
+                        stack.enter_context(patch.object(canvas, method))
+                    stack.enter_context(
+                        patch.object(
+                            canvas,
+                            "_paint_caption",
+                            side_effect=lambda p: p.fillRect(
+                                12, 12, 20, 20, QColor("white")
+                            ),
+                        )
+                    )
+                    canvas._base_cache = canvas._nav_cache = None
+                    canvas._zoom_animating = False
+                    if trigger != "cold":
+                        canvas._base_cache = (
+                            ("base", 0),
+                            canvas._center_lat,
+                            canvas._center_lon,
+                            canvas._zoom,
+                            layer(),
+                        )
+                        canvas._nav_cache = (
+                            ("nav", 0),
+                            canvas._center_lat,
+                            canvas._center_lon,
+                            canvas._zoom,
+                            layer(True),
+                        )
+                    if trigger == "data":
+                        epoch[0] = 1
+                    elif trigger == "pan":
+                        canvas._center_lon += 10
+                    elif trigger == "zoom":
+                        canvas._zoom += 1
+                    output = QImage(
+                        canvas.width() * factor,
+                        canvas.height() * factor,
+                        QImage.Format.Format_ARGB32_Premultiplied,
+                    )
+                    output.setDevicePixelRatio(factor)
+                    output.fill(QColor("black"))
+                    painter = QPainter(output)
+                    try:
+                        canvas.render(painter, QPointF(0, 0).toPoint())
+                    finally:
+                        painter.end()
+                    # A direct marker survives the original bug while both cached layers vanish.
+                    self.assertEqual(
+                        output.pixelColor(20 * factor, 20 * factor), QColor("white")
+                    )
+                    self.assertEqual(
+                        output.pixelColor(100 * factor, 100 * factor), QColor("#39954c")
+                    )
+                    self.assertEqual(
+                        output.pixelColor(
+                            (canvas.width() // 2 + 10) * factor,
+                            (canvas.height() // 2 + 10) * factor,
+                        ),
+                        QColor("#d43342"),
+                    )
+                    self.assertEqual(base.call_count, 1)
+                    self.assertEqual(nav.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
