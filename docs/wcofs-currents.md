@@ -2,6 +2,11 @@
 
 The marine coverage planner discovers NOAA WCOFS alongside CIOPS and worldwide
 current coverage. Downloads use OPeNDAP subsets, not full hourly forecast files.
+Normal installation and tox include the netCDF4 reader. Builds installed with
+`--no-deps` must provide it separately to enable WCOFS. The application still
+starts without the reader, and WCOFS reports the missing dependency instead of
+preventing other forecast providers from working. MSYS2 WCOFS downloads have not
+been validated; this dependency remains a platform validation item.
 The selected run must bracket the requested window. Missing forecast hours remain
 gaps; the existing current sampler refuses interpolation across gaps over one hour.
 

@@ -17,7 +17,6 @@ from datetime import datetime, timedelta, timezone
 from typing import cast
 
 import numpy as np
-from netCDF4 import Dataset, num2date
 
 from .chs import DownloadCancelledError
 from .fields import Area, CurrentField
@@ -42,6 +41,17 @@ NOSOFS_DOMAINS = {
 }
 
 _attribution = "U.S. NOAA Center for Operational Oceanographic Products"
+
+
+def Dataset(*args, **kwargs):  # noqa: N802
+    """Load the binary reader on demand so minimal installs can still start."""
+    try:
+        import netCDF4
+    except ImportError as exc:
+        raise RuntimeError(
+            "WCOFS downloads require the netCDF4 Python package"
+        ) from exc
+    return netCDF4.Dataset(*args, **kwargs)
 
 
 def values(variable, key):
@@ -236,6 +246,8 @@ class NOSOFSProvider:
         }
 
     def _read_hour(self, url, statics, client):
+        from netCDF4 import num2date
+
         e0, e1, x0, x1 = statics["window"]
         dataset = Dataset(url)
         try:

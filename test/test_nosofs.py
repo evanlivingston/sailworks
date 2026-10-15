@@ -89,6 +89,28 @@ class FakeDataset:
 
 
 class TestNOSOFSProvider(unittest.TestCase):
+    def test_missing_netcdf_reader_does_not_prevent_startup(self):
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.modules['netCDF4'] = None; "
+                "from gweatherrouting.core.marine.coverage import CoveragePlanner; "
+                "from gweatherrouting.core.marine.fields import Area; "
+                "assert CoveragePlanner().plan(Area(-125,47,-124,48))",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with patch.dict(sys.modules, {"netCDF4": None}):
+            with self.assertRaisesRegex(RuntimeError, "require.*netCDF4"):
+                nosofs.Dataset("unused")
+
     def test_download_builds_regular_field(self):
         with tempfile.TemporaryDirectory() as directory:
             FAKE_FILES.clear()
