@@ -117,6 +117,11 @@ def apply_theme(app: QApplication):
         QToolBar { spacing: 8px; padding: 5px 8px; border: none;
                    border-bottom: 1px solid #454545; }
         QToolBar QToolButton { padding: 5px 9px; border-radius: 6px; }
+        QToolBar QToolButton:hover { background: #3c3c3c; }
+        QToolBar QToolButton:pressed { background: #454545; }
+        QToolBar QToolButton:checked { background: #344966;
+                                       border: 1px solid #3584e4; }
+        QToolBar QToolButton:disabled { color: #777774; background: #292929; }
         QDockWidget { border: 1px solid #454545; background: #242424; }
         QDockWidget::title { background: #303030; padding: 7px 10px 7px 30px;
                              text-align: left; }
@@ -211,17 +216,22 @@ def section_label(text):
 
 @lru_cache(maxsize=32)
 def symbol_icon(name):
-    pixmap = QIcon(
-        resource_path("gweatherrouting", "data/icons/" + name + ".svg")
-    ).pixmap(48, 48)
-    pixmap.setDevicePixelRatio(2)
-    painter = QPainter(pixmap)
-    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
-    painter.fillRect(
-        pixmap.rect(), QApplication.palette().color(QPalette.ColorRole.Text)
-    )
-    painter.end()
-    return QIcon(pixmap)
+    source = QIcon(resource_path("gweatherrouting", "data/icons/" + name + ".svg"))
+
+    def tinted(color):
+        pixmap = source.pixmap(48, 48)
+        pixmap.setDevicePixelRatio(2)
+        painter = QPainter(pixmap)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+        painter.fillRect(pixmap.rect(), color)
+        painter.end()
+        return pixmap
+
+    palette = QApplication.palette()
+    icon = QIcon(tinted(palette.color(QPalette.ColorRole.Text)))
+    disabled = tinted(QColor("#777774"))
+    icon.addPixmap(disabled, QIcon.Mode.Disabled)
+    return icon
 
 
 @lru_cache(maxsize=4)
