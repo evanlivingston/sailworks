@@ -1337,7 +1337,11 @@ into `dev`; no upstream PR was created or updated.
   approved Map Data/Settings PR #20, motion PR #22 and padded coverage PR #23.
   All previously open fork PRs are merged; no pending dependency or merge order.
 - Review: [fork PR #24](https://github.com/evanlivingston/gweatherrouting/pull/24),
-  open and unmerged for human review.
+  merged into `dev` with user approval (merge `503abeb`). Build and docs CI
+  passed. CI tests failed during collection because `nmeatoolkit` is absent;
+  sibling test jobs were cancelled. Lint retains the untouched connection-dialog
+  C901 and typecheck retains four errors in untouched NMEA2000/GTK connection
+  settings files. Local full-suite results remain as recorded below.
 - Functional commit: `5106288` implements native gesture dispatch, direct anchored
   pinch scaling, macOS precise scroll/pan and native momentum, interruption and
   shared motion-state checks for overlay deferral/workspace autosave.

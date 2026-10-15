@@ -524,6 +524,8 @@ points are read-only; these are not additional working features awaiting migrati
   then a deliberate switch of the default launcher from GTK to Qt.
 - Final workflow/provider parity checks, dateline and large-file behavior, and
   validation with live instruments on supported platforms.
+- Repair CI dependency installation (`nmeatoolkit` is missing from the test job)
+  and existing lint/type errors so release checks run reliably.
 
 Map-data setup and Settings menu cleanup are integrated from fork PR #20.
 GTK stays available during verification and packaging.
