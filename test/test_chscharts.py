@@ -145,6 +145,27 @@ class TestCHSBackgroundRendering(unittest.TestCase):
             time.sleep(0.001)
         self.assertTrue(done())
 
+    def test_padded_view_keeps_attribution_in_visible_content_bounds(self):
+        self.canvas.get_attribution_bounds = lambda: (100, 80, 200, 140)
+        key = tile_key()
+        with (
+            patch.object(
+                self.renderer, "_visible_tiles", return_value=([(key, 0, 0)], 1, 0, 0)
+            ),
+            patch.object(self.renderer, "_draw_tile", return_value=(True, False)),
+            patch.object(self.renderer, "_queue_tile"),
+            patch.object(self.renderer, "_pump"),
+            patch.object(self.renderer, "_attribution") as attribution,
+        ):
+            matrix = []
+            attribution.side_effect = lambda cr, w, h: matrix.append(
+                (cr.get_matrix().x0, cr.get_matrix().y0, w, h)
+            )
+            self.draw()
+            self.assertEqual(matrix, [(100, 80, 200, 140)])
+            self.assertEqual(self.cr.get_matrix().x0, 0)
+            self.assertEqual(self.cr.get_matrix().y0, 0)
+
     def test_slow_worker_never_blocks_draw_and_concurrency_is_bounded(self):
         started, release = Event(), Event()
 

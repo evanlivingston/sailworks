@@ -115,9 +115,16 @@ class CHSRenderer:
         if fading and canvas not in self._ticks:
             self._ticks[canvas] = canvas.add_tick_callback(self._tick)
         if drawn:
-            self._attribution(
-                cr, canvas.get_allocated_width(), canvas.get_allocated_height()
+            bounds = getattr(canvas, "get_attribution_bounds", None)
+            x, y, width, height = (
+                bounds()
+                if bounds
+                else (0, 0, canvas.get_allocated_width(), canvas.get_allocated_height())
             )
+            cr.save()
+            cr.translate(x, y)
+            self._attribution(cr, width, height)
+            cr.restore()
 
     def _tile_zoom(self, canvas):
         # Keep a stable tile level while zooming; transform it at every frame.
