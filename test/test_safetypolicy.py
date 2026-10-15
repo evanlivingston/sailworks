@@ -51,6 +51,16 @@ def setup_router(wind_ms, polar_speed_kn=6, policy=None):
 
 
 class TestSafetyPolicy(unittest.TestCase):
+    def test_invalid_thresholds_are_rejected(self):
+        for options in (
+            {"tws_max_kn": -1},
+            {"motor_speed_kn": float("nan")},
+            {"wave_threshold_kn": 0},
+            {"wave_max_reduction": 1.1},
+        ):
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                SafetyPolicy(**options)
+
     def test_inert_by_default(self):
         policy = SafetyPolicy()
         self.assertFalse(policy.active)
@@ -113,6 +123,49 @@ class TestSafetyPolar(unittest.TestCase):
 
 
 class TestRoutingSafety(unittest.TestCase):
+    def test_scalar_and_whole_frontier_agree_with_motor_and_wave_proxy(self):
+        from test.test_current_routing import setup_router as current_router
+        from test.test_frontier_routing import table_polar
+        from gweatherrouting.core.polarwrapper import PolarWrapper
+        from types import SimpleNamespace
+
+        results = []
+        for arrays in (False, True):
+            router, _, _ = current_router(
+                wind=SimpleNamespace(get_wind_at=lambda *_: (0, 15), last_source="test")
+            )
+            router.use_numpy = arrays
+            router.polar = SafetyPolar(
+                PolarWrapper(table_polar(), 0.83),
+                SafetyPolicy(
+                    tws_max_kn=40,
+                    min_sailing_speed_kn=3,
+                    motor_speed_kn=5,
+                    wave_correct=True,
+                ),
+            )
+            result = router.route(None, START, 1, (0, 0), (0, 0.5))
+            results.append(result.isochrones[-1])
+        self.assertEqual(len(results[0]), len(results[1]))
+        for a, b in zip(*results):
+            np.testing.assert_allclose(
+                (*a.pos, a.speed), (*b.pos, b.speed), rtol=1e-8, atol=1e-10
+            )
+
+    def test_scalar_and_whole_frontier_both_reject_over_limit_wind(self):
+        from test.test_current_routing import setup_router as current_router
+        from test.test_frontier_routing import table_polar
+        from types import SimpleNamespace
+
+        for arrays in (False, True):
+            router, _, _ = current_router(
+                wind=SimpleNamespace(get_wind_at=lambda *_: (0, 20), last_source="test")
+            )
+            router.use_numpy = arrays
+            router.polar = SafetyPolar(table_polar(), SafetyPolicy(tws_max_kn=30))
+            with self.assertRaisesRegex(ValueError, "exceed the configured"):
+                router.route(None, START, 1, (0, 0), (0, 0.5))
+
     def test_over_limit_velocity_prunes(self):
         router, env = setup_router(20.0, policy=SafetyPolicy(tws_max_kn=30))
         with self.assertRaises(InvalidMarineLegError):

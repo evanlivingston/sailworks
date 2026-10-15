@@ -233,13 +233,7 @@ def propagate(self, frontier, seconds, end, gaps, numeric):  # noqa: C901
         if not len(kept):
             return kept, result, samples
         speed = polar_many(self.polar, ws_kn, angle) * KNOT
-        pruned = ~np.isfinite(speed)
-        if pruned.any():
-            self.environment.policy_pruned += int(pruned.sum())
-            kept = kept[~pruned]
-            data = data[~pruned]
-            speed = speed[~pruned]
-        if (speed < 0).any():
+        if (~np.isfinite(speed) | (speed < 0)).any():
             raise ValueError("Invalid polar speed")
         result[kept, 2:] = np.column_stack(
             (speed, data[:, 0], data[:, 1], data[:, 2], data[:, 3])

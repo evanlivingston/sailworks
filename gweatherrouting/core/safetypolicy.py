@@ -19,6 +19,7 @@ land; provenance records it as such.
 
 from dataclasses import dataclass
 from typing import Optional
+import math
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,22 @@ class SafetyPolicy:
     wave_correct: bool = False
     wave_threshold_kn: float = 20.0
     wave_max_reduction: float = 0.25
+
+    def __post_init__(self):
+        for name in (
+            "tws_max_kn",
+            "min_sailing_speed_kn",
+            "motor_speed_kn",
+            "wave_threshold_kn",
+        ):
+            value = getattr(self, name)
+            if value is not None and (not math.isfinite(value) or value <= 0):
+                raise ValueError(name + " must be a finite positive speed")
+        if (
+            not math.isfinite(self.wave_max_reduction)
+            or not 0 <= self.wave_max_reduction <= 1
+        ):
+            raise ValueError("Wave-proxy reduction must be between zero and one")
 
     @property
     def active(self) -> bool:
@@ -54,6 +71,26 @@ class SafetyPolicy:
         if self.min_sailing_speed_kn is not None and speed < self.min_sailing_speed_kn:
             speed = self.motor_speed_kn
         return speed
+
+
+def wind_limit_router(algorithm):
+    """Prune capped wind-only candidates instead of retaining stationary points."""
+
+    class LimitedRouter(algorithm):
+        def calculate_isochrones(self, *args, **kwargs):
+            frontiers = super().calculate_isochrones(*args, **kwargs)
+            policy = policy_of(self.polar)
+            accepted = [
+                point for point in frontiers[-1] if not policy.is_nogo(point.tws)
+            ]
+            if frontiers[-1] and not accepted:
+                raise ValueError(
+                    "No navigable route: forecast winds exceed the configured TWS limit in the search area."
+                )
+            return [*frontiers[:-1], accepted]
+
+    LimitedRouter.__name__ = algorithm.__name__
+    return LimitedRouter
 
 
 def policy_of(polar) -> SafetyPolicy:

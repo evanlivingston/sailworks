@@ -326,10 +326,10 @@ class Core(EventDispatcher):
         disable_coastline_checks=False,
         grib_override=None,
         polar_efficiency=None,
-        safety_policy=None,
         use_currents=False,
         wind_sources=None,
         current_selection=None,
+        safety_policy=None,
     ):
         polar = weatherrouting.Polar(polar_file)
 
@@ -337,9 +337,11 @@ class Core(EventDispatcher):
             polar = PolarWrapper(polar, polar_efficiency)
 
         if safety_policy is not None and safety_policy.active:
-            from gweatherrouting.core.safetypolicy import SafetyPolar
+            from gweatherrouting.core.safetypolicy import SafetyPolar, wind_limit_router
 
             polar = SafetyPolar(polar, safety_policy)
+            if not use_currents and safety_policy.tws_max_kn is not None:
+                algorithm = wind_limit_router(algorithm)
 
         pval: Optional[Callable] = utils.points_validity
         lval: Optional[Callable] = None
