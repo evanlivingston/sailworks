@@ -24,6 +24,7 @@ from typing import Callable, List
 import requests
 
 from gweatherrouting.core.gribsources.base import GribSource
+from .options import FIELDS, custom_rows, filtered_parameters, selection
 
 logger = logging.getLogger("gweatherrouting")
 
@@ -34,6 +35,10 @@ GFS_FILTER_URL = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl"
 GFS_FORECAST_HOURS_SHORT = list(range(0, 241, 3))
 GFS_FORECAST_HOURS_LONG = list(range(252, 385, 12))
 GFS_FORECAST_HOURS = GFS_FORECAST_HOURS_SHORT + GFS_FORECAST_HOURS_LONG
+
+# Native NOMADS output; custom downloads can request hourly data to day five.
+# Keep the recovery/legacy schedule above unchanged.
+GFS_CUSTOM_HOURS = list(range(121)) + list(range(123, 385, 3))
 
 # GFS runs at 00, 06, 12, 18 UTC
 GFS_CYCLES = ["00", "06", "12", "18"]
@@ -104,12 +109,29 @@ class NOAAGFSSource(GribSource):
             cycles.append(cycle)
         return cycles
 
-    def get_download_list(self) -> List:
+    def get_download_list(self, options=None) -> List:
         """Return list of available GFS download configurations.
 
         Each entry represents a GFS cycle with a specific forecast range.
         """
         cycles = self._get_available_cycles()
+        if options is not None:
+            runs = [
+                (
+                    c.strftime("%Y%m%d"),
+                    f"{c.hour:02d}",
+                    c.strftime("%Y-%m-%d %H:%M UTC"),
+                    384,
+                )
+                for c in cycles
+            ]
+            return custom_rows(
+                self,
+                options,
+                runs,
+                lambda cycle, fields, cap: GFS_CUSTOM_HOURS,
+                lambda steps, fields: self._estimate_custom_size(steps, fields),
+            )
         grib_files = []
 
         for cycle in cycles:
@@ -155,7 +177,16 @@ class NOAAGFSSource(GribSource):
             return f"{size_mb * 1024:.0f} KB"
         return f"{size_mb:.1f} MB"
 
-    def _build_filter_url(self, date_str, cycle, forecast_hour):
+    def _estimate_custom_size(self, steps, fields):
+        # Preserve provider estimates, adjusted for the selected steps/fields.
+        legacy = len([h for h in GFS_FORECAST_HOURS if h <= max(steps)])
+        estimate = self._estimate_size(max(steps)).split()
+        scale = (
+            len(steps) / legacy * (2 * ("wind" in fields) + ("pressure" in fields)) / 3
+        )
+        return f"~{float(estimate[0]) * scale:.1f} {estimate[1]}"
+
+    def _build_filter_url(self, date_str, cycle, forecast_hour, fields=FIELDS):
         """Build NOAA NOMADS filter URL for a specific forecast hour."""
         params = {
             "file": f"gfs.t{cycle}z.pgrb2.0p25.f{forecast_hour:03d}",
@@ -176,7 +207,7 @@ class NOAAGFSSource(GribSource):
             params["toplat"] = str(lat_north)
             params["bottomlat"] = str(lat_south)
 
-        return params
+        return filtered_parameters(params, fields, "PRMSL")
 
     def download(
         self,
@@ -197,6 +228,7 @@ class NOAAGFSSource(GribSource):
         ]
         if not forecast_steps:
             raise ValueError("No GFS forecast hours in the requested interval")
+        forecast_steps, fields = selection(config, GFS_CUSTOM_HOURS, forecast_steps)
         total_steps = len(forecast_steps)
 
         filename = f"gfs_{date_str}_{cycle}z_{max_hours}h.grib2"
@@ -235,6 +267,7 @@ class NOAAGFSSource(GribSource):
                     cycle,
                     percentage_callback,
                     check_cancel,
+                    fields,
                 )
                 bytes_written = outfile.tell()
             check_cancel()
@@ -257,12 +290,13 @@ class NOAAGFSSource(GribSource):
         cycle,
         percentage_callback,
         check_cancel,
+        fields=FIELDS,
     ):
         total_steps = len(forecast_steps)
         bytes_written = 0
         for i, fhour in enumerate(forecast_steps):
             check_cancel()
-            params = self._build_filter_url(date_str, cycle, fhour)
+            params = self._build_filter_url(date_str, cycle, fhour, fields)
             logger.debug("Downloading forecast hour %d", fhour)
 
             response = requests.get(

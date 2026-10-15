@@ -1070,8 +1070,9 @@ class QtPreviewChecks(unittest.TestCase):
             ("NOAA HRRR", NOAAHRRRSource, True),
             ("CMC HRDPS", ECCHRDPSource, False),
         ):
-            library.source.setCurrentText(name)
-            self.assertEqual(library.source.currentText(), name)
+            for model, check in library.forecast_options.models.items():
+                check.setChecked(model == name)
+            self.assertEqual(library.forecast_options.names(), (name,))
             self.assertFalse(hasattr(library, "bounds_panel"))
             with patch.object(
                 provider,
@@ -1086,6 +1087,92 @@ class QtPreviewChecks(unittest.TestCase):
                 self.assertEqual(source.bounds, expected_bounds)
         with self.assertRaisesRegex(ValueError, "Unknown forecast source"):
             data.list_forecasts("unregistered", None)
+
+    def test_custom_forecast_controls_and_checked_runs_survive_refresh(self):
+        from gweatherrouting.qt.datalibrary import DataLibrary
+        from gweatherrouting.core.gribsources import NOAAGFSSource, NOAAHRRRSource
+
+        library = DataLibrary(self.controller, self.window)
+        self.addCleanup(library.close)
+        options = library.forecast_options
+        options.models["NOAA HRRR"].setChecked(True)
+        self.assertEqual(options.names(), ("NOAA GFS", "NOAA HRRR"))
+        options.check_hours(False)
+        with self.assertRaisesRegex(ValueError, "forecast hour"):
+            options.options()
+        options.defaults()
+        self.assertEqual(options.options().steps, tuple(range(0, 121, 3)))
+        options.fields["wind"].setChecked(False)
+        options.fields["pressure"].setChecked(False)
+        with self.assertRaisesRegex(ValueError, "Select wind"):
+            options.options()
+        options.fields["pressure"].setChecked(True)
+        gfs, hrrr = NOAAGFSSource(), NOAAHRRRSource()
+        self.controller.data.remote_forecasts = [
+            (gfs, ["GFS", "GFS", "1 MB", "new", "gfs-new"]),
+            (gfs, ["GFS", "GFS", "1 MB", "old", "gfs-old"]),
+            (hrrr, ["HRRR", "HRRR", "1 MB", "new", "hrrr-new"]),
+        ]
+        library.refresh()
+        self.assertEqual(len(library._checked_downloads()), 2)
+        library.downloads.item(0, 0).setCheckState(Qt.CheckState.Unchecked)
+        library.downloads.item(1, 0).setCheckState(Qt.CheckState.Checked)
+        library.refresh()
+        checked = library._checked_downloads()
+        self.assertEqual([row[4] for _, row in checked], ["gfs-old", "hrrr-new"])
+        with patch.object(self.controller.data, "download_forecasts") as download:
+            library.download_forecast()
+            download.assert_called_once_with(checked)
+        options.interval.setCurrentIndex(3)
+        self.assertEqual(library.downloads.rowCount(), 0)
+        library.source.setCurrentText("OpenSkiron")
+        self.assertTrue(options.isHidden())
+
+    def test_multi_model_download_partial_failure_preserves_success(self):
+        import shutil
+        from gweatherrouting.core.gribsources import NOAAGFSSource, NOAAHRRRSource
+        from gweatherrouting.core.gribsources.options import DownloadOptions
+
+        data = self.controller.data
+        fixture = self.wind_fixture()
+        root = self.path / "batch-forecasts"
+        threads = []
+        data.forecast_loaded.connect(lambda _: threads.append(get_ident()))
+        main_thread = get_ident()
+
+        def download(source, identifier, directory, progress):
+            self.assertNotEqual(get_ident(), main_thread)
+            destination = Path(directory) / "batch.grib2"
+            shutil.copyfile(fixture, destination)
+            progress(50)
+            return str(destination)
+
+        with (
+            patch("gweatherrouting.qt.datacontroller.GRIB_DIR", str(root)),
+            patch.object(NOAAGFSSource, "download", download),
+            patch.object(NOAAHRRRSource, "download", side_effect=OSError("offline")),
+        ):
+            data.list_model_forecasts(
+                ("NOAA GFS", "NOAA HRRR"), (45, -125, 50, -120), DownloadOptions(12)
+            )
+            self.wait_for_data()
+            entries = [
+                data.remote_forecasts[0],
+                next(e for e in data.remote_forecasts if e[0].name == "NOAA HRRR"),
+            ]
+            data.download_forecasts(entries)
+            self.wait_for_data()
+            self.assertEqual(threads, [main_thread])
+            self.assertEqual(len(data.manager.gribs), 1)
+            self.assertEqual(len(list(root.glob("*.grib2"))), 1)
+            self.assertIn("1 forecasts enabled", data.task.message)
+            self.assertIn("offline", data.task.message)
+            self.assertFalse(list(root.glob("*.part")))
+            self.assertFalse(any(p.is_dir() for p in root.iterdir()))
+            # Automatic library scans must not erase partial-download failures.
+            data.scan_forecasts()
+            self.wait_for_data()
+            self.assertIn("offline", data.task.message)
 
     def test_forecast_library_updates_files_while_open_and_preserves_selection(self):
         import shutil
@@ -1172,10 +1259,13 @@ class QtPreviewChecks(unittest.TestCase):
             "get_bbox",
             return_value=(MapPoint(50, -126), MapPoint(46, -122)),
         ):
-            with patch.object(self.controller.data, "list_forecasts") as listing:
-                library.source.setCurrentText("NOAA HRRR")
+            with patch.object(self.controller.data, "list_model_forecasts") as listing:
+                for name, check in library.forecast_options.models.items():
+                    check.setChecked(name == "NOAA HRRR")
                 library.find_forecasts()
-                listing.assert_called_once_with("NOAA HRRR", (46, -126, 50, -122))
+                self.assertEqual(
+                    listing.call_args.args[:2], (("NOAA HRRR",), (46, -126, 50, -122))
+                )
         self.window.views.setCurrentWidget(self.window.logs_view)
         with patch.object(
             self.window.log_map,

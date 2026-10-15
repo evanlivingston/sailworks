@@ -95,6 +95,7 @@ class DataController(QObject):
         self.local_forecasts = []
         self.operation = ""
         self.error = ""
+        self.forecast_report = ""
 
     def run(self, kind, message, operation):
         if (
@@ -106,6 +107,8 @@ class DataController(QObject):
         ):
             return False
         self.operation, self.error = kind, ""
+        if kind != "scan":
+            self.forecast_report = ""
         return self.task.start(message, operation)
 
     def forecast_directory(self):
@@ -175,6 +178,60 @@ class DataController(QObject):
             return [(source, row) for row in source.get_download_list()]
 
         return self.run("forecast-list", "Fetching available forecasts…", listing)
+
+    def list_model_forecasts(self, names, bounds, options):
+        sources = []
+        for name in names:
+            registered = self.manager.get_source(name)
+            if registered is None:
+                raise ValueError("Unknown forecast source: " + name)
+            source = type(registered)()
+            if hasattr(source, "bounds"):
+                source.bounds = bounds
+            sources.append(source)
+
+        def listing(_):
+            entries: list = []
+            issues = []
+            for source in sources:
+                try:
+                    rows = source.get_download_list(options)
+                    entries.extend((source, row) for row in rows)
+                    if not rows:
+                        issues.append(
+                            source.name + ": no runs support these forecast hours"
+                        )
+                except Exception as exc:
+                    issues.append(f"{source.name}: {exc}")
+            return entries, issues
+
+        return self.run("forecast-model-list", "Finding model runs…", listing)
+
+    def download_forecasts(self, entries):
+        entries = tuple(entries)
+        if not entries:
+            return False
+
+        def download(progress):
+            forecasts, issues = [], []
+            Path(GRIB_DIR).mkdir(parents=True, exist_ok=True)
+            for index, (source, row) in enumerate(entries):
+                try:
+                    with tempfile.TemporaryDirectory(dir=GRIB_DIR) as directory:
+
+                        def report(percent):
+                            progress(int((index * 100 + percent) / len(entries)))
+
+                        path = source.download(row[4], directory, report)
+                        forecasts.append(import_forecast(path))
+                except Exception as exc:
+                    issues.append(f"{row[0]} ({row[3]}): {exc}")
+                progress(int((index + 1) * 100 / len(entries)))
+            return forecasts, issues
+
+        return self.run(
+            "forecasts", f"Downloading {len(entries)} model runs…", download
+        )
 
     def download_forecast(self, entry):
         source, row = entry
@@ -290,6 +347,8 @@ class DataController(QObject):
                 "scan": self._scanned,
                 "forecast": self._install_forecast,
                 "forecast-list": self._forecast_listed,
+                "forecast-model-list": self._models_listed,
+                "forecasts": self._install_forecasts,
                 "chart-list": self._chart_listed,
                 "chart": self._install_chart,
             }
@@ -305,6 +364,8 @@ class DataController(QObject):
         self.local_forecasts = list(files.values())
         if errors:
             self.task.message = "Skipped unreadable forecasts: " + "; ".join(errors)
+        elif self.forecast_report:
+            self.task.message = self.forecast_report
 
     def _install_forecast(self, result):
         old = list(self.manager.gribs)
@@ -323,6 +384,28 @@ class DataController(QObject):
         self.redraw()
         self.forecast_loaded.emit(result)
         self.task.message = "Forecast enabled and saved"
+
+    def _models_listed(self, result):
+        entries, issues = result
+        self._forecast_listed(entries)
+        if issues:
+            self.task.message += ". " + "; ".join(issues)
+
+    def _install_forecasts(self, result):
+        forecasts, issues = result
+        installed = 0
+        for forecast in forecasts:
+            try:
+                self._install_forecast(forecast)
+                installed += 1
+            except Exception as exc:
+                issues.append(f"{forecast.name}: {exc}")
+        self.task.message = f"{installed} forecasts enabled and saved"
+        if issues:
+            self.task.message += ". Failed: " + "; ".join(issues)
+        self.forecast_report = self.task.message
+        if not installed and issues:
+            self.error = "; ".join(issues)
 
     def _forecast_listed(self, result):
         self.remote_forecasts = result
