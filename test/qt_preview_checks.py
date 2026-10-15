@@ -3242,6 +3242,173 @@ class QtPreviewChecks(unittest.TestCase):
                     self.assertEqual(base.call_count, 1)
                     self.assertEqual(nav.call_count, 1)
 
+    def test_padded_scene_pixels_cover_pan_and_zoom_and_rebuild_before_edges(self):
+        from PySide6.QtGui import QColor, QImage, QPainter
+
+        canvas = self.window.map
+        canvas.resize(640, 480)
+        width, height = canvas.width(), canvas.height()
+        for factor in (1, 2):
+            with (
+                self.subTest(dpr=factor),
+                patch.object(canvas, "get_scale_factor", return_value=factor),
+                patch.object(canvas, "devicePixelRatioF", return_value=factor),
+            ):
+                canvas._zoom_animating = False
+                landmark = canvas.convert_screen_to_geographic(width + 40, height / 2)
+                calls = []
+
+                def charts(view, cr):
+                    calls.append(
+                        (view.get_allocated_width(), view.get_allocated_height())
+                    )
+                    cr.set_source_rgb(0.2, 0.6, 0.3)
+                    cr.paint()
+                    x, y = view.convert_geographic_to_screen(landmark)
+                    cr.set_source_rgb(0.8, 0.1, 0.6)
+                    cr.rectangle(x - 5, y - 5, 10, 10)
+                    cr.fill()
+
+                def paint(cache):
+                    output = QImage(
+                        width * factor,
+                        height * factor,
+                        QImage.Format.Format_ARGB32_Premultiplied,
+                    )
+                    output.setDevicePixelRatio(factor)
+                    output.fill(QColor("black"))
+                    painter = QPainter(output)
+                    try:
+                        cache = canvas._draw_reusable_layer(
+                            painter, cache, "scene", canvas._base_image
+                        )
+                    finally:
+                        painter.end()
+                    for x, y in (
+                        (1, 1),
+                        (width - 2, 1),
+                        (1, height - 2),
+                        (width - 2, height - 2),
+                    ):
+                        self.assertEqual(
+                            output.pixelColor(x * factor, y * factor),
+                            QColor(51, 153, 76),
+                        )
+                    self.assertEqual(canvas.get_allocated_width(), width)
+                    return cache, output
+
+                with (
+                    patch.object(canvas.charts, "do_draw", side_effect=charts),
+                    patch.object(canvas.wind, "draw"),
+                    patch.object(canvas.marine, "do_draw"),
+                ):
+                    cache, _ = paint(None)
+                    self.assertGreater(calls[0][0], width)
+                    canvas._pan_pixels(-70, 0)
+                    moved, output = paint(cache)
+                    self.assertIs(moved, cache)
+                    self.assertEqual(len(calls), 1)
+                    x, y = canvas.convert_geographic_to_screen(landmark)
+                    self.assertEqual(
+                        output.pixelColor(round(x * factor), round(y * factor)),
+                        QColor(204, 25, 153),
+                    )
+                    # New movement beyond the safe margin rebuilds in this paint.
+                    canvas._pan_pixels(-150, 0)
+                    cache, _ = paint(cache)
+                    self.assertEqual(len(calls), 2)
+                    anchor = canvas.convert_screen_to_geographic(0, height)
+                    canvas._zoom_anchor = (*anchor.get_degrees(), 0, height)
+                    canvas._zoom_animating = True
+                    canvas._zoom -= 0.25
+                    canvas._recenter_on_anchor()
+                    moved, _ = paint(cache)
+                    self.assertIs(moved, cache)
+                    self.assertEqual(len(calls), 2)
+                    # A large zoom-out exhausts the padding; never stretch an
+                    # undersized image and expose empty chart edges.
+                    canvas._zoom -= 2
+                    canvas._recenter_on_anchor()
+                    cache, _ = paint(cache)
+                    self.assertEqual(len(calls), 3)
+                    self.assertTrue(canvas._zoom_animating)
+                canvas._finish_zoom_silent()
+
+    def test_padded_map_paint_cannot_escape_into_ancestor_surface(self):
+        from PySide6.QtGui import QColor, QImage, QPainter
+
+        canvas = self.window.map
+        for factor in (1, 2):
+            with self.subTest(dpr=factor):
+                output = QImage(
+                    (canvas.width() + 400) * factor,
+                    (canvas.height() + 400) * factor,
+                    QImage.Format.Format_ARGB32_Premultiplied,
+                )
+                output.setDevicePixelRatio(factor)
+                output.fill(QColor("#151515"))
+                painter = QPainter(output)
+                painter.translate(200, 200)
+
+                def layer():
+                    image = QImage(
+                        (canvas.width() + 384) * factor,
+                        (canvas.height() + 384) * factor,
+                        QImage.Format.Format_ARGB32_Premultiplied,
+                    )
+                    image.setDevicePixelRatio(factor)
+                    image.fill(QColor("#39954c"))
+                    return image
+
+                canvas._base_cache = canvas._nav_cache = None
+                with (
+                    patch(
+                        "gweatherrouting.qt.mapcanvas.QPainter",
+                        return_value=painter,
+                        RenderHint=QPainter.RenderHint,
+                    ),
+                    patch.object(canvas, "_base_image", side_effect=layer),
+                    patch.object(canvas, "_navigation_image", side_effect=layer),
+                ):
+                    canvas.paintEvent(None)
+                self.assertEqual(
+                    output.pixelColor(100 * factor, 100 * factor), QColor("#151515")
+                )
+                self.assertEqual(
+                    output.pixelColor(300 * factor, 300 * factor), QColor("#39954c")
+                )
+                self.assertEqual(
+                    output.pixelColor((canvas.width() + 300) * factor, 300 * factor),
+                    QColor("#151515"),
+                )
+
+    def test_padding_budget_and_failed_bake_restore_interactive_projection(self):
+        canvas = self.window.map
+        for factor in (1, 2, 4):
+            with (
+                self.subTest(dpr=factor),
+                patch.object(canvas, "get_scale_factor", return_value=factor),
+            ):
+                padding = canvas._layer_padding()
+                extra = (
+                    (
+                        (canvas.width() + 2 * padding) * (canvas.height() + 2 * padding)
+                        - canvas.width() * canvas.height()
+                    )
+                    * factor**2
+                    * 4
+                )
+                self.assertLessEqual(extra, canvas._PADDING_BYTES)
+                self.assertLessEqual(padding, 192)
+        canvas._zoom_animating = True
+        with self.assertRaisesRegex(ValueError, "reader failed"):
+            canvas._build_padded_layer(
+                lambda: (_ for _ in ()).throw(ValueError("reader failed"))
+            )
+        self.assertEqual(canvas._render_padding, 0)
+        self.assertTrue(canvas._zoom_animating)
+        canvas._finish_zoom_silent()
+
     def _enable_motion_settings(self):
         # The common fixture skips disk loading; initialize notifications using
         # a private settings path before exercising real preference callbacks.
