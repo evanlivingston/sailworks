@@ -1609,3 +1609,36 @@ into `dev`; no upstream PR was created or updated.
   exactly the same 32 errors in 8 unchanged files as a clean archive of `dev`.
 - CI results are separate from local validation and may still be queued/running.
   Fork PRs remain unmerged pending user approval. No upstream PR was created.
+
+## Forecasts library layout and automatic discovery
+
+- Status: candidate; fork review [PR #31](https://github.com/evanlivingston/gweatherrouting/pull/31),
+  `feature/forecast-library`, based on `feature/pnw-wind-integration` (PR #28),
+  which depends on Weather PR #27. Functional commit: `d424580`.
+- Scope: show model identity separately from run time; put Import beside the
+  Local wind forecasts heading; remove coordinate inputs and Refresh/Remove copy
+  buttons. GFS/HRRR downloads use the active chart/log map view; HRDPS remains
+  full-domain. Date-line-crossing download views retain the prior unsupported-area
+  restriction and show a message rather than selecting a different area.
+- Automatic discovery: scan when Forecasts opens and watch directory/file
+  changes while visible. Defer scans during active operations, stop retrying when
+  hidden, and restore selection by file path after updates. Newly discovered files
+  are listed without automatically enabling them. Context removal preserves its
+  selected metadata target if the list changes and explains deletion of the
+  library copy while retaining the original import.
+- Model names: identify GFS/HRRR from GRIB metadata and HRDPS with an additional
+  grid check. Unknown models remain explicitly Unknown. Display labels use a
+  separate attribute and do not alter numerical sampler identity/selection.
+- Validation: 872 tests and 106 subtests pass on the feature branch. All 108 Qt
+  integration checks pass with Weather, PNW wind, WCOFS, safety, and live
+  isochrones combined. Focused tests cover file addition/edit/deletion, stable
+  selection, hide/reopen, context targets, active map bounds, and model metadata.
+  Real HRRR/HRDPS files show correct labels. Forecasts screenshot was visually
+  inspected; Black, changed production-file Flake8, and whitespace checks pass.
+  Scoped mypy retains only existing diagnostics in unchanged dependencies.
+- Merge order: after PR #27/#28 merge, retarget this PR to `dev` and recheck its
+  focused diff. WCOFS/safety PRs are independent. The local combined validation
+  branch includes this change for testing; no new feature was merged into dev.
+- Intended upstream scope: GRIB display metadata and Qt library layout/lifecycle
+  with focused regressions, after applicable Qt/provider prerequisites. Exclude
+  this fork tracking record. No upstream submission is authorized.
