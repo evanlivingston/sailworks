@@ -1117,7 +1117,8 @@ into `dev`; no upstream PR was created or updated.
   `/private/tmp/gwr-qt-map-frame-presentation`. Independent of pending Settings/
   map-data PR #20. The original checkout and its uncommitted diagnostic/other
   agent changes are preserved.
-- Review: regular fork PR pending creation; leave unmerged for user review.
+- Review: [fork PR #21](https://github.com/evanlivingston/gweatherrouting/pull/21),
+  open for user review; not merged.
 - Functional commit: `2cd04a9` adds the missing image blit and two pixel regression
   checks. The production fix is one line in `_draw_reusable_layer()`.
 - Problem/result: commit `29ec449` introduced a rebuild branch that creates and
