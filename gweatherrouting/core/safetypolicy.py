@@ -76,21 +76,20 @@ class SafetyPolicy:
 def wind_limit_router(algorithm):
     """Prune capped wind-only candidates instead of retaining stationary points."""
 
-    class LimitedRouter(algorithm):
-        def calculate_isochrones(self, *args, **kwargs):
-            frontiers = super().calculate_isochrones(*args, **kwargs)
-            policy = policy_of(self.polar)
-            accepted = [
-                point for point in frontiers[-1] if not policy.is_nogo(point.tws)
-            ]
-            if frontiers[-1] and not accepted:
-                raise ValueError(
-                    "No navigable route: forecast winds exceed the configured TWS limit in the search area."
-                )
-            return [*frontiers[:-1], accepted]
+    def calculate_isochrones(self, *args, **kwargs):
+        frontiers = algorithm.calculate_isochrones(self, *args, **kwargs)
+        policy = policy_of(self.polar)
+        accepted = [point for point in frontiers[-1] if not policy.is_nogo(point.tws)]
+        if frontiers[-1] and not accepted:
+            raise ValueError(
+                "No navigable route: forecast winds exceed the configured "
+                "TWS limit in the search area."
+            )
+        return [*frontiers[:-1], accepted]
 
-    LimitedRouter.__name__ = algorithm.__name__
-    return LimitedRouter
+    return type(
+        algorithm.__name__, (algorithm,), {"calculate_isochrones": calculate_isochrones}
+    )
 
 
 def policy_of(polar) -> SafetyPolicy:
