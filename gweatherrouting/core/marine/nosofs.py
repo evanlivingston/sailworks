@@ -71,6 +71,17 @@ def _ref_name(ref):
     return ref.replace("/catalog.xml", "").rstrip("/").split("/")[-1]
 
 
+def catalog_runs(paths):
+    runs: dict[tuple[str, str], list[int]] = {}
+    for path in paths:
+        match = re.search(r"\.t(\d\d)z\.(\d{8})\.2ds\.f(\d+)\.nc$", path)
+        if match:
+            runs.setdefault((match.group(2), match.group(1)), []).append(
+                int(match.group(3))
+            )
+    return runs
+
+
 class NOSOFSProvider:
     @staticmethod
     def _covers_window(run, hours, start, end):
@@ -119,15 +130,7 @@ class NOSOFSProvider:
                     paths, _ = catalog(
                         THREDDS + f"catalog/{model}/{year}/{month}/{day}/catalog.xml"
                     )
-                    runs: dict[tuple[str, str], list[int]] = {}
-                    for path in paths:
-                        match = re.search(
-                            r"\.t(\d\d)z\.(\d{8})\.2ds\.f(\d+)\.nc$", path
-                        )
-                        if match:
-                            runs.setdefault(
-                                (match.group(2), match.group(1)), []
-                            ).append(int(match.group(3)))
+                    runs = catalog_runs(paths)
                     for date, cycle in sorted(runs, reverse=True):
                         hours = sorted(runs[(date, cycle)])
                         if 1 not in hours:
