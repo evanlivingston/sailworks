@@ -1500,7 +1500,7 @@ into `dev`; no upstream PR was created or updated.
 
 ## Weather panel and continuous GRIB sampling
 
-- Status: candidate; fork review [PR #27](https://github.com/evanlivingston/gweatherrouting/pull/27),
+- Status: candidate; merged fork review [PR #27](https://github.com/evanlivingston/gweatherrouting/pull/27),
   `feature/weather-integration`, based on `dev` after routing PR #26.
 - Functional commits: `4de7ca5`, `f859ab0`, `fe17785`. Toolbar hover/pressed/checked
   styles and disabled-icon colors were restored after combined-app review; Black,
@@ -1550,7 +1550,7 @@ into `dev`; no upstream PR was created or updated.
 
 ## WCOFS coastal-current integration
 
-- Status: candidate; fork review [PR #29](https://github.com/evanlivingston/gweatherrouting/pull/29),
+- Status: candidate; merged fork review [PR #29](https://github.com/evanlivingston/gweatherrouting/pull/29),
   `feature/wcofs-integration`, based on PR #27's branch.
 - Functional commits: `19b5190` (adapted original `ea2fd90`), `4adf55a`,
   `ce864a7`, `e0864db`. The `feature/nos-currents` prototype remains preserved.
@@ -1576,7 +1576,7 @@ into `dev`; no upstream PR was created or updated.
 
 ## Routing safety controls and policy integration
 
-- Status: candidate; fork review [PR #30](https://github.com/evanlivingston/gweatherrouting/pull/30),
+- Status: candidate; merged fork review [PR #30](https://github.com/evanlivingston/gweatherrouting/pull/30),
   `feature/routing-safety-integration`, based on PR #27's branch.
 - Functional commits: `fc818fa` (adapted original `20b52b3`), `50d4486`,
   `30b2676`. The `feature/edge-safety` prototype remains preserved.
@@ -1612,7 +1612,7 @@ into `dev`; no upstream PR was created or updated.
 
 ## Forecasts library layout and automatic discovery
 
-- Status: candidate; fork review [PR #31](https://github.com/evanlivingston/gweatherrouting/pull/31),
+- Status: candidate; merged fork review [PR #31](https://github.com/evanlivingston/gweatherrouting/pull/31),
   `feature/forecast-library`, based on `feature/pnw-wind-integration` (PR #28),
   which depends on Weather PR #27. Functional commit: `d424580`.
 - Scope: show model identity separately from run time; put Import beside the
@@ -1645,7 +1645,7 @@ into `dev`; no upstream PR was created or updated.
 
 ## Custom GRIB download selections
 
-- Status: candidate; fork review [PR #32](https://github.com/evanlivingston/gweatherrouting/pull/32),
+- Status: candidate; merged fork review [PR #32](https://github.com/evanlivingston/gweatherrouting/pull/32),
   `feature/custom-forecast-downloads`, based on Forecast Library PR #31,
   which depends on PNW wind PR #28 and Weather PR #27.
 - Functional commits: `109f34b` and `6c1e47f`.
@@ -1685,7 +1685,7 @@ into `dev`; no upstream PR was created or updated.
 
 ## Model-based weather selection and routing downloads
 
-- Status: candidate; fork review [PR #33](https://github.com/evanlivingston/gweatherrouting/pull/33),
+- Status: candidate; merged fork review [PR #33](https://github.com/evanlivingston/gweatherrouting/pull/33),
   `feature/model-weather-selection`, based on custom forecast downloads PR #32,
   which depends on library PR #31, PNW wind PR #28 and Weather PR #27.
 - Functional commit: `15235ea`.
@@ -1729,3 +1729,24 @@ into `dev`; no upstream PR was created or updated.
   by the Qt workflow/coverage notice after applicable provider/frontend
   prerequisites. Extract focused contributions independently; exclude this fork
   tracking. No upstream submission is authorized.
+
+
+## Weather stack integrated into dev — 2026-10-15
+
+- User approved merging the complete fork review stack, PRs #27–#33: Weather
+  controls/shared sampling, PNW wind models, WCOFS currents, routing safety,
+  forecast-library cleanup, custom downloads, and model-based selection/routing.
+- Integrated the tested combined branch and both published WCOFS/safety
+  synchronization heads. All seven published PR heads are ancestors of `dev`;
+  the synchronization merges make no source changes. The RouteRequest keeps
+  both safety options and frozen forecast selection.
+- Fresh validation on `dev`: 922 tests and 114 subtests pass. Its source tree
+  matches the combined build, excluding this contribution-tracking update.
+- CI remains separate: the previous dev commit already fails Qt validation on
+  all three CI platforms. Its macOS logs show the same missing-polar fixture
+  and window-geometry failures as the model-selection branch. CI also retains
+  the existing connection-dialog complexity/type-check failures and test-job
+  dependency setup issues. Local validation is passing; CI is not claimed green.
+- Fork merge/retarget prerequisites in the preceding feature entries are now
+  fulfilled. Their upstream candidate/queued statuses remain unchanged; no
+  upstream publication or merge was performed or authorized by this integration.
