@@ -102,6 +102,7 @@ class DataController(QObject):
             or self.task.closed
             or self.owner.routing.busy
             or self.owner.polars.task.busy
+            or self.owner.map_data.task.busy
         ):
             return False
         self.operation, self.error = kind, ""

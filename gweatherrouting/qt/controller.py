@@ -16,6 +16,7 @@ from .routingcontroller import RoutingController
 from .backgroundtask import BackgroundTask
 from .datacontroller import DataController
 from .polarcontroller import PolarController
+from .mapdatasetup import MapDataController
 
 
 class SessionController(QObject):
@@ -30,6 +31,7 @@ class SessionController(QObject):
     ):
         super().__init__(parent)
         self.offline = offline
+        self.load_charts = load_charts
         self.scheduler = UiScheduler(self)
         self.core = Core(
             schedule=self.scheduler.submit,
@@ -65,6 +67,7 @@ class SessionController(QObject):
         self.connection_task = BackgroundTask(self)
         self.data = DataController(self)
         self.polars = PolarController(self)
+        self.map_data = MapDataController(self)
         self.points = []
         self.point_revision = 0
         self.generation = 0
@@ -166,6 +169,7 @@ class SessionController(QObject):
             return
         self.closed = True
         self.routing.close()
+        self.map_data.close()
         self.timer.stop()
         self.polars.close()
         self.data.close()

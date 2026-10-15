@@ -26,6 +26,7 @@ def main(argv=None):
 
     app = cast(QApplication, QApplication.instance()) or QApplication([sys.argv[0]])
     app.setApplicationName("GWeatherRouting")
+    app.setApplicationDisplayName("GWeatherRouting")
     apply_theme(app)
     controller = SessionController(offline=args.offline)
     window = PreviewWindow(controller)
