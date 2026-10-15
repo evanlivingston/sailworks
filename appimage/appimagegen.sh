@@ -62,7 +62,7 @@ pyinstaller --onefile --hidden-import=gi --collect-submodules=gi \
     --add-data "data/:gweatherrouting/data" --add-data "gtk/:gweatherrouting/gtk" \
     --runtime-hook="../appimage/pyinstaller_gi_hook.py" \
     $TYPELIB_FLAGS \
-    --name "$APP_NAME" __main__.py
+    --name "$APP_NAME" gtk/__main__.py
 cd ..
 
 # 2. Create AppImage Directory Structure

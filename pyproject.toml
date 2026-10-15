@@ -3,12 +3,13 @@ name = "gweatherrouting"
 dynamic = ["version"]
 description = "Sailing routing and navigation software"
 readme = "README.md"
-requires-python = ">= 3.9.0"
+requires-python = ">= 3.10"
 license = {text = "GPLv3"}
 authors = [
     {name = "Davide Gessa", email = "gessadavide@gmail.com"},
 ]
 dependencies = [
+    "PySide6-Essentials>=6.8,<7",
     "requests",
     "keyring>=25,<26",
     "copernicusmarine>=2.2,<3; python_version >= '3.10'",
@@ -31,7 +32,6 @@ dependencies = [
 ]
 classifiers = [
     "Programming Language :: Python",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -40,7 +40,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-qt = ["PySide6-Essentials>=6.8,<7; python_version >= '3.10'"]
+qt = [] # Compatibility extra: Qt is now installed by default.
 marine-global = ["copernicusmarine>=2.2,<3"]
 appimage = [
     "vext @ git+https://github.com/vext-python/vext@32ad4d1c5f45797e244df1d2816f76b60f28e20e",
@@ -54,7 +54,8 @@ Documentation = "https://github.com/dakk/gweatherrouting"
 Source = "https://github.com/dakk/gweatherrouting"
 
 [project.scripts]
-gweatherrouting = "gweatherrouting.__main__:start_ui_gtk"
+gweatherrouting = "gweatherrouting.__main__:main"
+gweatherrouting-gtk = "gweatherrouting.__main__:start_ui_gtk"
 gweatherrouting-qt = "gweatherrouting.qt.__main__:main"
 
 [tool.setuptools]
