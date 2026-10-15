@@ -1109,3 +1109,41 @@ into `dev`; no upstream PR was created or updated.
 - Intended upstream scope: pressure download params, `Grib.get_pressure`,
   and the shared isobar portrayal as one focused contribution, excluding
   fork workflow files.
+
+## Qt map rebuild-frame presentation fix
+
+- Status: fork-only Qt bug fix; no upstream submission.
+- Branch/base: `feature/qt-map-frame-presentation`, from `dev` at `15a1c06` in
+  `/private/tmp/gwr-qt-map-frame-presentation`. Independent of pending Settings/
+  map-data PR #20. The original checkout and its uncommitted diagnostic/other
+  agent changes are preserved.
+- Review: [fork PR #21](https://github.com/evanlivingston/gweatherrouting/pull/21),
+  open for user review; not merged.
+- Functional commit: `2cd04a9` adds the missing image blit and two pixel regression
+  checks. The production fix is one line in `_draw_reusable_layer()`.
+- Problem/result: commit `29ec449` introduced a rebuild branch that creates and
+  caches an image but never draws it. Cache-hit branches draw correctly, so
+  rebuilds present only sea plus direct-painted overlays; the following cache-hit
+  frame restores chart/navigation pixels. This explains valid baked images and
+  surviving caption/markers without a compositor or buffer-lifetime failure.
+  Rebuilt layers now draw immediately at the current view's origin, retaining
+  reuse, pan offsets and zoom previews. No repaint pacing, buffer pinning,
+  approximation, sampling, chart/source ordering or routing changes.
+- Validation: before the fix, two pixel tests fail in ten cases: helper DPR 1/2
+  plus actual QWidget render at DPR 1/2 for cold, data-key, large-pan and settled-
+  zoom rebuilds. The direct-painted marker is present while cached content is
+  absent. After the single-line fix all cases pass. Full suite passes 812 tests
+  and 101 subtests (82.86s), including 75 isolated Qt checks. Scoped Flake8 and
+  mypy pass. Black passes the regression test file; the map file's two unrelated
+  formatting differences reproduce unchanged on the base and were not mixed
+  into this fix.
+- Native verification: launched the fixed checkout under installed Qt 6.12.0 as
+  “GWeatherRouting — map frame fix”, using installed chart data, offline instrument
+  connections and a copied private workspace file. The user's original layout
+  is not overwritten. Automated pixel tests establish the missing-draw defect;
+  user confirmation of the visible macOS navigation is still pending. No claim
+  of a new native screen-recording comparison.
+- Integration: after user-approved merge, synchronize the fix into active Qt
+  feature branches, including PR #20. Keep independent diagnostic changes
+  separate from this small verified correction.
+- Intended upstream scope: none while Qt remains fork-only.
