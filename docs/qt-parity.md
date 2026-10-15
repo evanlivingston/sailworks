@@ -30,8 +30,9 @@ structure. Regatta is hidden in GTK and should remain absent in Qt.
 | Forecast transport, step interval, manual time and scrubber | Migrated on Charts, with shared enabled-source bounds and independent NMEA playback |
 | Base map setup/downloads | Settings → Map Data shows missing coastlines/optional sea marks, worker progress/cancel/retry, validated installation and map/routing reload; online startup offers setup |
 | Offscreen map coverage | Bounded padded chart/weather/current/navigation images; safe pan reuse, cursor-anchored zoom previews and rebuild before cache edges enter the viewport |
+| Native trackpad input | Direct cursor-anchored native pinch in Charts/Logs; macOS two-axis precise scrolling and system momentum; modified scroll and ordinary mouse-wheel zoom retained |
 | Smooth zoom and pan inertia | Live Display preferences apply to Charts and Logs; immediate/animated cursor-anchored wheel zoom and shared GTK drag inertia, with lifecycle cancellation and deferred workspace save |
-| Connection/display/current settings | Main working settings migrated; GTK General/AIS pages are hidden. Native pinch/two-finger pan, About/app identity, packaging and final parity validation remain |
+| Connection/display/current settings | Main working settings migrated; GTK General/AIS pages are hidden. About/app identity, packaging and final parity validation remain |
 | Routing parameters, comparisons and currents | Plan exposes engine parameters; Compare has the four GTK scenario axes; Currents uses shared coverage/download preparation, warnings and current-aware calculations |
 | GTK menu/header appearance | Qt native OS menus/decorations retained; exact fonts/chrome differ |
 
