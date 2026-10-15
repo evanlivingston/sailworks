@@ -92,6 +92,16 @@ class TestLocateAndSample(unittest.TestCase):
         got_east, _ = regular_field(lat, lon, east, north, water, [40.0], [-130.0])
         self.assertTrue(np.isnan(got_east[0]))
 
+    def test_mixed_land_water_cell_is_unavailable_without_renormalizing(self):
+        lat, lon = rectilinear()
+        water = np.ones(lat.shape)
+        water[0, 0] = 0
+        east, north = regular_field(
+            lat, lon, np.ones(lat.shape), np.zeros(lat.shape), water, [40.05], [-129.95]
+        )
+        self.assertTrue(np.isnan(east[0]))
+        self.assertTrue(np.isnan(north[0]))
+
     def test_prep_window_rejects_remote_areas(self):
         lat, lon = rectilinear()
         with self.assertRaises(ValueError):

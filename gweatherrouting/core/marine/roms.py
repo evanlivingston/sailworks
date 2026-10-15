@@ -182,14 +182,18 @@ def sample_rho(field, fe, fx):
     return out
 
 
-def regular_field(lat_rho, lon_rho, east_rho, north_rho, water, lats, lons):
+def regular_field(
+    lat_rho, lon_rho, east_rho, north_rho, water, lats, lons, locations=None
+):
     """Resample rotated rho fields onto regular nodes; masked → NaN."""
-    fe, fx = locate(lat_rho, lon_rho, lats, lons)
+    fe, fx = (
+        locations if locations is not None else locate(lat_rho, lon_rho, lats, lons)
+    )
     east = sample_rho(east_rho, fe, fx)
     north = sample_rho(north_rho, fe, fx)
     if water is not None:
         wet = sample_rho(np.asarray(water, dtype=float), fe, fx)
-        dry = ~np.isfinite(wet) | (wet < 0.5)
+        dry = ~np.isfinite(wet) | (wet < 1 - 1e-12)
         east[dry] = np.nan
         north[dry] = np.nan
     return east, north

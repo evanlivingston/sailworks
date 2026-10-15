@@ -14,6 +14,7 @@ import math
 import re
 import xml.etree.ElementTree as ElementTree
 from datetime import datetime, timedelta, timezone
+from typing import cast
 
 import numpy as np
 from netCDF4 import Dataset, num2date
@@ -23,6 +24,7 @@ from .fields import Area, CurrentField
 from .models import canonical_json, utc_time
 from .roms import (
     destagger_to_rho,
+    locate,
     output_grid,
     prep_window,
     regular_field,
@@ -40,6 +42,11 @@ NOSOFS_DOMAINS = {
 }
 
 _attribution = "U.S. NOAA Center for Operational Oceanographic Products"
+
+
+def values(variable, key):
+    """Preserve netCDF masks before converting to plain float arrays."""
+    return np.asarray(np.ma.filled(np.ma.asarray(variable[key], dtype=float), np.nan))
 
 
 def _catalog(url):
@@ -65,14 +72,26 @@ def _ref_name(ref):
 
 
 class NOSOFSProvider:
+    @staticmethod
+    def _covers_window(run, hours, start, end):
+        return (
+            (start is None or run <= utc_time(start))
+            and (start is None or run + timedelta(hours=min(hours)) <= utc_time(start))
+            and (end is None or run + timedelta(hours=max(hours)) >= utc_time(end))
+        )
+
     def _discover(self, domain, client, start=None, end=None):
-        del client  # discovery is a few small XML listings, never cached blobs
+        def catalog(url):
+            if client is not None and client.cancel.is_set():
+                raise DownloadCancelledError()
+            return _catalog(url)
+
         label = NOSOFS_DOMAINS[domain][0]
         model = "NOAA/" + label + "/MODELS"
         years = sorted(
             (
                 _ref_name(ref)
-                for ref in _catalog(THREDDS + f"catalog/{model}/catalog.xml")[1]
+                for ref in catalog(THREDDS + f"catalog/{model}/catalog.xml")[1]
             ),
             reverse=True,
         )[:2]
@@ -80,9 +99,9 @@ class NOSOFSProvider:
             months = sorted(
                 (
                     _ref_name(ref)
-                    for ref in _catalog(
-                        THREDDS + f"catalog/{model}/{year}/catalog.xml"
-                    )[1]
+                    for ref in catalog(THREDDS + f"catalog/{model}/{year}/catalog.xml")[
+                        1
+                    ]
                 ),
                 reverse=True,
             )[:2]
@@ -90,17 +109,17 @@ class NOSOFSProvider:
                 days = sorted(
                     (
                         _ref_name(ref)
-                        for ref in _catalog(
+                        for ref in catalog(
                             THREDDS + f"catalog/{model}/{year}/{month}/catalog.xml"
                         )[1]
                     ),
                     reverse=True,
                 )[:4]
                 for day in days:
-                    paths, _ = _catalog(
+                    paths, _ = catalog(
                         THREDDS + f"catalog/{model}/{year}/{month}/{day}/catalog.xml"
                     )
-                    runs = {}
+                    runs: dict[tuple[str, str], list[int]] = {}
                     for path in paths:
                         match = re.search(
                             r"\.t(\d\d)z\.(\d{8})\.2ds\.f(\d+)\.nc$", path
@@ -116,7 +135,7 @@ class NOSOFSProvider:
                         run = datetime.strptime(f"{date}T{cycle}", "%Y%m%dT%H").replace(
                             tzinfo=timezone.utc
                         )
-                        if start is not None and run > utc_time(start):
+                        if not self._covers_window(run, hours, start, end):
                             continue
                         prefix = f"{label.lower()}.t{cycle}z.{date}.2ds.f"
                         base = DODS + f"{model}/{year}/{month}/{day}/"
@@ -151,7 +170,7 @@ class NOSOFSProvider:
             url = base + f"{prefix}{hour:03d}.nc"
             values, valid_at = self._read_hour(url, statics, client)
             expect = (run + timedelta(hours=hour)).timestamp()
-            if abs(valid_at - expect) > 3600:
+            if abs(valid_at - expect) > 1:
                 raise ValueError(f"{label} file and forecast clock disagree")
             times.append(valid_at)
             east.append(values[0])
@@ -171,7 +190,7 @@ class NOSOFSProvider:
             vector_basis="ROMS staggered components averaged to rho, rotated by angle",
             routing_qualified=False,
             requested_area=area.to_json(),
-            sources=statics["sources"],
+            sources=list(client.sources[statics["source_start"] :]),
             attribution=_attribution,
         )
         return CurrentField(
@@ -187,15 +206,16 @@ class NOSOFSProvider:
         url = base + f"{prefix}{hour:03d}.nc"
         dataset = Dataset(url)
         try:
-            lat_full = np.asarray(dataset.variables["lat_rho"][:])
-            lon_full = np.asarray(dataset.variables["lon_rho"][:])
+            lat_full = values(dataset.variables["lat_rho"], slice(None))
+            lon_full = values(dataset.variables["lon_rho"], slice(None))
             e0, e1, x0, x1 = prep_window(lat_full, lon_full, area)
-            lat_rho = np.asarray(dataset.variables["lat_rho"][e0:e1, x0:x1])
-            lon_rho = np.asarray(dataset.variables["lon_rho"][e0:e1, x0:x1])
-            angle = np.asarray(dataset.variables["angle"][e0:e1, x0:x1])
-            mask = np.asarray(dataset.variables["mask_rho"][e0:e1, x0:x1])
+            lat_rho = lat_full[e0:e1, x0:x1]
+            lon_rho = lon_full[e0:e1, x0:x1]
+            angle = values(dataset.variables["angle"], (slice(e0, e1), slice(x0, x1)))
+            mask = values(dataset.variables["mask_rho"], (slice(e0, e1), slice(x0, x1)))
             lats, lons = output_grid(area)
-            self._record(client, url, lat_rho.nbytes + lon_rho.nbytes)
+            source_start = len(client.sources)
+            self._record(client, url, (lat_rho, lon_rho, angle, mask))
         finally:
             dataset.close()
         return {
@@ -206,7 +226,10 @@ class NOSOFSProvider:
             "mask": mask,
             "lats": lats,
             "lons": lons,
-            "sources": list(client.sources[-1:]),
+            "source_start": source_start,
+            "locations": locate(
+                lat_rho, lon_rho, np.repeat(lats, len(lons)), np.tile(lons, len(lats))
+            ),
         }
 
     def _read_hour(self, url, statics, client):
@@ -219,13 +242,25 @@ class NOSOFSProvider:
             xu0, xu1 = max(x0 - 1, 0), x1
             ev0, ev1 = max(e0 - 1, 0), e1
             xv0, xv1 = max(x0, 0), x1
-            u = np.asarray(dataset.variables["u_sur"][0, eu0:eu1, xu0:xu1])
-            v = np.asarray(dataset.variables["v_sur"][0, ev0:ev1, xv0:xv1])
+            u = values(
+                dataset.variables["u_sur"], (0, slice(eu0, eu1), slice(xu0, xu1))
+            )
+            v = values(
+                dataset.variables["v_sur"], (0, slice(ev0, ev1), slice(xv0, xv1))
+            )
+            for component, name, key in (
+                (u, "mask_u", (slice(eu0, eu1), slice(xu0, xu1))),
+                (v, "mask_v", (slice(ev0, ev1), slice(xv0, xv1))),
+            ):
+                if name in dataset.variables:
+                    component[values(dataset.variables[name], key) != 1] = np.nan
             time_var = dataset.variables["ocean_time"]
             valid_at = float(
-                calendar.timegm(num2date(time_var[0], time_var.units).timetuple())
+                calendar.timegm(
+                    cast(datetime, num2date(time_var[0], time_var.units)).timetuple()
+                )
             )
-            self._record(client, url, u.nbytes + v.nbytes)
+            self._record(client, url, (u, v, np.array([valid_at])))
         finally:
             dataset.close()
         u_rho, v_rho, _ = destagger_to_rho(u, v)
@@ -245,20 +280,26 @@ class NOSOFSProvider:
             statics["mask"],
             grid_lats,
             grid_lons,
+            locations=statics["locations"],
         )
         rows = len(statics["lats"])
         cols = len(statics["lons"])
         return (east.reshape(rows, cols), north.reshape(rows, cols)), valid_at
 
     @staticmethod
-    def _record(client, url, size):
+    def _record(client, url, arrays):
         import hashlib
 
+        digest = hashlib.sha256()
+        for array in arrays:
+            digest.update(str(array.shape).encode())
+            digest.update(np.asarray(array, dtype="<f8").tobytes())
         client.sources.append(
             dict(
                 url=url,
-                sha256=hashlib.sha256(url.encode()).hexdigest(),
-                bytes=size,
+                sha256=digest.hexdigest(),
+                hash_scope="decoded_subset_arrays",
+                bytes=sum(array.nbytes for array in arrays),
                 retrieved_at=datetime.now(timezone.utc).isoformat(),
             )
         )

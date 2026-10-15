@@ -514,7 +514,7 @@ class TestSpatialCurrents(unittest.TestCase):
         regional.download.side_effect = ValueError("No forecast")
         worldwide.download.return_value = field(9000)
         coastal.download.return_value = field(4000)
-        fields, issues = CoveragePlanner(regional, worldwide, coastal).download(
+        fields, issues = CoveragePlanner(regional, worldwide, coastal=coastal).download(
             Area(-126, 48, -123, 50), START, START + timedelta(hours=1)
         )
         self.assertEqual(len(fields), 2)

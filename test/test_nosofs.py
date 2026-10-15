@@ -5,6 +5,7 @@
 import tempfile
 import threading
 import unittest
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -116,6 +117,22 @@ class TestNOSOFSProvider(unittest.TestCase):
         # 1 m/s grid-east with zero rotation stays grid-east.
         self.assertAlmostEqual(float(np.nanmean(field.east)), 1.0, places=5)
         self.assertAlmostEqual(float(np.nanmean(field.north)), 0.5, places=5)
+        sources = json.loads(field.metadata_json)["sources"]
+        self.assertEqual(len(sources), 3)  # static grid and both forecast hours
+        self.assertTrue(
+            all(s["hash_scope"] == "decoded_subset_arrays" for s in sources)
+        )
+
+    def test_discovery_rejects_run_that_cannot_bracket_requested_window(self):
+        with patch.object(nosofs, "_catalog", side_effect=fake_catalog):
+            with self.assertRaisesRegex(ValueError, "No complete"):
+                NOSOFSProvider()._discover(
+                    "wcofs", None, START, START + timedelta(hours=8)
+                )
+
+    def test_netcdf_mask_is_not_lost_on_float_conversion(self):
+        masked = np.ma.array([1.0, 9999.0], mask=[False, True])
+        np.testing.assert_equal(nosofs.values(masked, slice(None)), [1.0, np.nan])
 
     def test_window_outside_grid_raises(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -27,7 +27,7 @@ class CoverageTask:
 
 class CoveragePlanner:
     def __init__(
-        self, regional=None, worldwide=None, coastal=None, cache_directory=None
+        self, regional=None, worldwide=None, cache_directory=None, coastal=None
     ):
         self.regional = regional or CIOPSProvider()
         self.worldwide = worldwide or CopernicusProvider()
