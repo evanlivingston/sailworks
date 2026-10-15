@@ -27,7 +27,6 @@ from gweatherrouting.core.gribsources import (
     ECCHRDPSource,
     NOAAGFSSource,
     NOAAHRRRSource,
-    OpenSkironSource,
 )
 from gweatherrouting.core.storage import GRIB_DIR, Storage
 
@@ -51,8 +50,8 @@ class GribManager(weatherrouting.Grib):
         self.gribs: List[Grib] = []
         self.timeframe = [0, 0]
 
+        # OpenSkiron is temporarily disabled; retain its implementation for later.
         self.sources = [
-            OpenSkironSource(),
             NOAAGFSSource(),
             NOAAHRRRSource(),
             ECCHRDPSource(),

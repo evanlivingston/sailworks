@@ -4,6 +4,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QWidget,
     QHBoxLayout,
+    QGridLayout,
     QVBoxLayout,
     QLabel,
     QCheckBox,
@@ -19,9 +20,9 @@ from gweatherrouting.core.gribsources.options import DownloadOptions
 from gweatherrouting.core.gribsources.noaagfs import GFS_CUSTOM_HOURS
 
 MODELS = (
-    ("NOAA GFS", "GFS", "0.25° · global · up to 10 days"),
-    ("NOAA HRRR", "HRRR", "3 km · CONUS · 18 or 48 hours"),
-    ("CMC HRDPS", "HRDPS", "2.5 km · Canada / northern US · 48 hours"),
+    ("NOAA GFS", "GFS", "0.25°", "10 days", "Global"),
+    ("NOAA HRRR", "HRRR", "3 km", "18 / 48 h", "CONUS"),
+    ("CMC HRDPS", "HRDPS", "2.5 km", "48 h", "Canada / northern US"),
 )
 
 
@@ -33,22 +34,26 @@ class ForecastDownloadOptions(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         model_box = QGroupBox("Models")
-        models = QVBoxLayout(model_box)
+        models = QGridLayout(model_box)
+        models.setHorizontalSpacing(18)
+        for column, heading in enumerate(("Model", "Resolution", "Forecast")):
+            models.addWidget(QLabel(heading), 0, column)
         self.models = {}
-        for name, label, detail in MODELS:
+        row = 1
+        for name, label, resolution, forecast, region in MODELS:
             if name not in sources:
                 continue
             check = QCheckBox(label)
             check.setChecked(name == "NOAA GFS")
-            check.setToolTip(detail)
+            check.setToolTip(region)
             self.models[name] = check
-            models.addWidget(check)
-            note = QLabel(detail)
-            note.setWordWrap(True)
-            models.addWidget(note)
+            models.addWidget(check, row, 0)
+            models.addWidget(QLabel(resolution), row, 1)
+            models.addWidget(QLabel(forecast), row, 2)
             check.toggled.connect(self.rebuild_hours)
-        models.addStretch()
-        layout.addWidget(model_box, 2)
+            row += 1
+        models.setRowStretch(row, 1)
+        layout.addWidget(model_box, 3)
         parameter_box = QGroupBox("Parameters")
         parameters = QVBoxLayout(parameter_box)
         self.fields = {}
@@ -61,13 +66,6 @@ class ForecastDownloadOptions(QWidget):
             check.toggled.connect(self.rebuild_hours)
             self.fields[name] = check
             parameters.addWidget(check)
-        note = QLabel(
-            "Wind powers routing and wind overlays. Pressure powers isobars.\n\n"
-            "HRDPS pressure is available every 3 hours; its downloads cover "
-            "the full regional domain."
-        )
-        note.setWordWrap(True)
-        parameters.addWidget(note)
         parameters.addStretch()
         layout.addWidget(parameter_box, 2)
         time_box = QGroupBox("Forecast hours")
