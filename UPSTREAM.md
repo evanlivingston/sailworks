@@ -1682,3 +1682,50 @@ into `dev`; no upstream PR was created or updated.
   and regressions after applicable Qt/provider prerequisites. Exclude fork
   tracking and the fork-specific temporary OpenSkiron disablement. No upstream
   submission is authorized.
+
+## Model-based weather selection and routing downloads
+
+- Status: candidate; fork review [PR #33](https://github.com/evanlivingston/gweatherrouting/pull/33),
+  `feature/model-weather-selection`, based on custom forecast downloads PR #32,
+  which depends on library PR #31, PNW wind PR #28 and Weather PR #27.
+- Functional commit: `15235ea`.
+- Scope: persistent model checkboxes replace separate local-file enablement and
+  remote-file selection in the main Forecasts view. One button downloads the
+  latest available run for each checked provider. Files/import/removal remain in
+  a secondary window with read-only usage indicators. Recognized imports select
+  their model; unrecognized models have an Imported checkbox without a download
+  provider. Checkbox changes preserve cached files and reload eligible readers.
+- Routing: freeze model/field/hour selections; reuse covering caches and fetch
+  checked models for route coverage in both wind-only and current-aware modes.
+  Exclude unchecked models even if their runs are newer; never substitute an
+  unchecked GFS model after a regional failure. Routing requests required 10 m
+  wind. Respect run horizons, stage/validate unique atomic files, and pass frozen
+  metadata to independent UI readers. Record selected models and download issues.
+- Sampling policy: continue shared spatial/time interpolation and newest-run
+  selection; preserve existing file precedence on scans. No ensemble routing
+  or cross-model blending is added. Cached wind-only route points/isochrones
+  match legacy calculation exactly. Routing checks actual query locations/times.
+- View feedback: panning does not download or alter selection. A debounced
+  bottom-right notice screens a 3-by-3 view sample for per-model wind/pressure
+  availability at the forecast time. This is a preview, not exhaustive coverage
+  proof; reads use private background handles. Batch model downloads preserve
+  scrubber time; explicit imports retain their prior time jump.
+- Validation: final combined suite passes 922 tests and 114 subtests with all
+  active Weather/PNW/WCOFS/safety/library/live-isochrone work. Feature suite
+  passed 888 tests/110 subtests before final follow-ups; focused core and Qt
+  follow-ups pass and are included in the final combined result. Coverage spans
+  persisted selection, cache reuse/retention, automatic wind-only bootstrap,
+  private UI/worker readers, exclusion of unchecked newer sources in both
+  engines, horizon selection, and view/time/field notices. Live NOAA download
+  decoded only selected GFS pressure hours 0 and 3. Visually inspected the dialog
+  and notice with real HRRR/HRDPS files. Changed production Black/Flake8 and
+  whitespace checks pass; combined mypy exactly matches clean dev's existing
+  32 errors in 8 unchanged files.
+- Integration: local `feature/weather-routing-validation` includes this feature;
+  its RouteRequest merge retained both safety fields and forecast selection.
+  Review PRs remain unmerged. Merge #27/#28/#31/#32 first, then retarget #33 to
+  `dev` and recheck its diff/checks. WCOFS #29 and safety #30 remain independent.
+- Intended upstream scope: reusable model selection/download recovery, followed
+  by the Qt workflow/coverage notice after applicable provider/frontend
+  prerequisites. Extract focused contributions independently; exclude this fork
+  tracking. No upstream submission is authorized.
