@@ -18,7 +18,7 @@ from gweatherrouting.rendering.windcursor import WindCursorSampler
 from gweatherrouting.rendering.windrenderer import DisplayGrib, WindOverlayRenderer
 from threading import Event
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 START = datetime(2026, 1, 1)
 
@@ -55,7 +55,9 @@ class TestGribSampling(unittest.TestCase):
                 GRIB_SHORT_NAME="10-HTGL" if element in ("UGRD", "VGRD") else "0-MSL",
                 GRIB_IDS="CENTER=7 SUBCENTER=0",
                 GRIB_PDS_PDTN="0",
-                GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES=f"2 2 2 0 {process} 0 0 1 {hour} 103 0 10 255 0 0",
+                GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES=(
+                    f"2 2 2 0 {process} 0 0 1 {hour} 103 0 10 255 0 0"
+                ),
             )
             if extra:
                 metadata.update(extra[0])
@@ -85,6 +87,37 @@ class TestGribSampling(unittest.TestCase):
         self.assertAlmostEqual(
             direction, math.degrees(math.atan2(-u, -v)) % 360, places=10
         )
+
+    def test_local_forecast_model_uses_metadata_and_does_not_change_sampling_identity(
+        self,
+    ):
+        from gweatherrouting.core.grib import forecast_model_name
+        from types import SimpleNamespace
+
+        source = self.file(self.field(0))
+        self.assertEqual(Grib.parse_metadata(source.path).model_name, "GFS")
+        reopened = Grib.parse(source.path)
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.model_name, "GFS")
+        before = source.sampling.records[0].identity
+        source.model_name = "Label only"
+        self.assertEqual(source.sampling.records[0].identity, before)
+        dataset = SimpleNamespace(
+            GetGeoTransform=lambda: (0, 0.0225, 0, 0, 0, -0.0225),
+            GetProjection=lambda: "Pole rotation (GRIB convention)",
+        )
+        metadata = {
+            "GRIB_IDS": "CENTER=54(Montreal)",
+            "GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES": "2 2 2 50 50",
+        }
+        self.assertEqual(forecast_model_name(dataset, metadata), "HRDPS")
+        dataset.GetGeoTransform = lambda: (0, 0.09, 0, 0, 0, -0.09)
+        self.assertEqual(forecast_model_name(dataset, metadata), "Unknown")
+        metadata["GRIB_IDS"] = "CENTER=7"
+        metadata["GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES"] = "2 2 2 0 83"
+        self.assertEqual(forecast_model_name(dataset, metadata), "HRRR")
+        metadata["GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES"] = "2 2 2 0 999"
+        self.assertEqual(forecast_model_name(dataset, metadata), "Unknown")
 
     def test_bilinear_and_fractional_time_have_analytical_answers(self):
         source = self.file(self.field(0) + self.field(3))
@@ -220,6 +253,62 @@ class TestGribSampling(unittest.TestCase):
         ).transform(500, 500)
         self.assert_uv(source.sampler(), START, lat, lon, 3, 0)
 
+    def test_grid_relative_lambert_wind_rotates_before_interpolation(self):
+        from pyproj import CRS
+
+        crs = CRS(
+            "+proj=lcc +lat_1=38.5 +lat_2=38.5 +lat_0=38.5 "
+            "+lon_0=-97.5 +R=6371229 +units=m"
+        )
+        to_grid = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+        to_world = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+        x, y = to_grid.transform(-124, 48)
+        source = self.file(
+            [("UGRD", 0, [[10, 10], [10, 10]]), ("VGRD", 0, [[0, 0], [0, 0]])],
+            transform=(x - 1500, 3000, 0, y - 1500, 0, 3000),
+            projection=crs.to_wkt(),
+        )
+        with patch(
+            "gweatherrouting.core.gribsampling.vector_flags", return_value=[True, True]
+        ):
+            sampler = source.sampler()
+        corners = [
+            to_world.transform(x + dx, y + dy)
+            for dx, dy in ((0, 0), (3000, 0), (0, 3000), (3000, 3000))
+        ]
+        angles = [
+            math.sin(math.radians(38.5)) * math.radians(lon + 97.5)
+            for lon, lat in corners
+        ]
+        expected = (
+            np.mean([10 * math.cos(a) for a in angles]),
+            np.mean([-10 * math.sin(a) for a in angles]),
+        )
+        lon, lat = to_world.transform(x + 1500, y + 1500)
+        batch = sampler.sample("wind", START, np.array([lat]), np.array([lon]))[0]
+        np.testing.assert_allclose(batch, expected, atol=1e-6)
+        direction, speed = sampler.wind_at(START, lat, lon)
+        self.assertAlmostEqual(speed, np.hypot(*expected), places=6)
+        self.assertAlmostEqual(
+            direction, math.degrees(math.atan2(-batch[0], -batch[1])) % 360
+        )
+
+    def test_rotated_geographic_crs_transforms_query_and_display_nodes(self):
+        from pyproj import CRS
+
+        crs = CRS(
+            "+proj=ob_tran +o_proj=longlat +o_lon_p=0 +o_lat_p=36.08852 "
+            "+lon_0=65.305142 +R=6371229"
+        )
+        source = self.file(self.field(0), projection=crs.to_wkt())
+        lon, lat = Transformer.from_crs(crs, "EPSG:4326", always_xy=True).transform(
+            0.5, 0.5
+        )
+        self.assert_uv(source.sampler(), START, lat, lon, 7, 1)
+        self.assertIsNotNone(source.sampling.backward)
+        nodes = source.sampling.nodes(((lat - 2, lon - 2), (lat + 2, lon + 2)))
+        self.assertEqual(len(nodes), 4)
+
     def test_all_consumers_use_same_cross_file_space_time_values(self):
         sources = [self.file(self.field(0)), self.file(self.field(3))]
         instant = START + timedelta(minutes=30)
@@ -277,7 +366,9 @@ class TestGribSampling(unittest.TestCase):
                     v,
                     {
                         "GRIB_PDS_PDTN": "1",
-                        "GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES": "2 2 2 0 96 0 0 1 0 103 0 10 255 0 0 1 1 10",
+                        "GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES": (
+                            "2 2 2 0 96 0 0 1 0 103 0 10 255 0 0 1 1 10"
+                        ),
                     },
                 )
                 for e, h, v in self.field(0)
@@ -291,7 +382,9 @@ class TestGribSampling(unittest.TestCase):
                     v,
                     {
                         "GRIB_PDS_PDTN": "1",
-                        "GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES": "2 2 2 0 96 0 0 1 3 103 0 10 255 0 0 1 2 10",
+                        "GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES": (
+                            "2 2 2 0 96 0 0 1 3 103 0 10 255 0 0 1 2 10"
+                        ),
                     },
                 )
                 for e, h, v in self.field(3)

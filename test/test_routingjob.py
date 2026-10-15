@@ -21,6 +21,8 @@ from gweatherrouting.core.routingjob import (
 
 
 class ConstantWind:
+    model_name = "GFS"
+    last_forecast = 384
     name = "constant"
     start_time = datetime(2026, 10, 1)
 
@@ -80,6 +82,15 @@ class TestRoutingJob(unittest.TestCase):
             ),
         )
         self.assertEqual(updates[-1][0], 100)
+        self.assertTrue(any(getattr(points, "isochrones", ()) for _, points in updates))
+        self.assertTrue(
+            all(
+                isinstance(p, tuple)
+                for _, update in updates
+                for front in getattr(update, "isochrones", ())
+                for p in front
+            )
+        )
         self.assertEqual(result.provenance["currents"], "disabled")
 
     def test_cancellation_interrupts_wind_query_and_does_not_become_missing_wind(self):
@@ -133,6 +144,19 @@ class TestRoutingJob(unittest.TestCase):
             self.assertFalse(worker.manager.gribs)
             self.assertIsNone(private.dataset)
             self.assertEqual(private._index_data.cache_info().currsize, 0)
+
+    def test_wind_only_limit_rejects_stationary_unsafe_candidates(self):
+        from dataclasses import replace
+
+        with self.assertRaisesRegex(ValueError, "exceed the configured TWS limit"):
+            calculate_route(
+                self.core,
+                replace(self.request, tws_max_kn=1),
+                self.core.grib_manager.gribs,
+                (),
+                Event(),
+                lambda *_: None,
+            )
 
     def test_no_forecast_is_a_clear_error_without_a_saved_partial_route(self):
         with self.assertRaisesRegex(weatherrouting.RoutingNoWindError, "forecast"):

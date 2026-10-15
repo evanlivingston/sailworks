@@ -1498,3 +1498,307 @@ into `dev`; no upstream PR was created or updated.
   resource tests. Black, Flake8, and `git diff --check` pass for this work.
   At fork merge, the full suite passed 863 tests and 106 subtests, including
   mixed-grid isobar/fill regression tests against real multi-model GRIBs.
+
+## Qt routing panel cleanup
+
+- Status: candidate; fork review [PR #26](https://github.com/evanlivingston/gweatherrouting/pull/26)
+  on `feature/routing-panel-cleanup`, based on `dev` at `75c08f2`.
+- Functional commit: `ae5d261` (Simplify Qt routing setup and remove duplicate
+  Results tab).
+- Scope: remove Manage polars, manual coordinate inputs, the duplicate boat
+  button, and Results. Plans use waypoint tracks, boat position, saved POIs,
+  or map-selected points; no hard-coded coordinates are silently selected.
+  Navigation Routes owns saved-route selection, summaries, and point tables.
+  Calculations still save/select/fit routes while retaining the planning tab.
+  Route selection persists by name; old Results/Compare/Currents tab indices
+  migrate correctly and new preferences save tab names.
+- Dependencies: existing Qt routing/navigation on `dev`; independent of pending
+  Weather panel and interpolation work. No prerequisite fork PR or retargeting.
+- Validation: panel cleanup passes 101 Qt checks. Final branch passes 826 pytest
+  tests and 106 subtests, including isolated Qt integration. Black, changed-file
+  Flake8, and whitespace checks pass. Repository-wide Flake8 has one existing
+  complexity diagnostic; mypy has 32 existing diagnostics in 8 unchanged files.
+  Both sets were reproduced on a clean archive of the same `dev` base.
+- Intended upstream scope: Qt panel/navigation wiring, workspace migration,
+  and focused UI regressions. Extract independently against parent `master`;
+  exclude this fork contribution record. Upstream submission is not authorized.
+
+## Live Qt routing isochrones
+
+- Status: candidate; fork review [PR #26](https://github.com/evanlivingston/gweatherrouting/pull/26).
+- Functional commit: `c04f62f` (Display live routing isochrones in the Qt map).
+- Problem/result: progress previously carried only the best path. It now carries
+  frozen frontier coordinates alongside its path-compatible tuple and reuses
+  completed snapshots. Qt renders actual bands through a shared background
+  Cairo layer and retains the selected saved route's bands after completion.
+  New scenarios/cancellation clear bands and stale progress cannot revive them.
+  Compatible in-flight renders finish while only the latest update is queued.
+  Sparse frontier points remain visible; joins retain the existing 3 km limit.
+  Routing algorithms and calculated results are unchanged.
+- Dependencies: follows panel cleanup `ae5d261` for Navigation route selection
+  wiring in this fork PR; upstream adaptation can use the parent's selection
+  wiring. Extracts the GTK renderer into the shared rendering package, preserving
+  GTK imports. Overlay lifecycle hooks also support pending weather work, which
+  is excluded from this PR.
+- Validation: final branch passes 826 pytest tests and 106 subtests. Regressions
+  verify engine-result equivalence, rendered live pixels before completion,
+  rendering off the UI thread, cancellation, and saved-route band selection.
+  Formatting/lint/type-check results and clean-base comparisons are recorded in
+  the panel cleanup entry above.
+- Intended upstream scope: progress snapshots, shared renderer/lifecycle, Qt
+  integration, and focused regressions. Extract and validate against freshly
+  fetched parent `master`; exclude this fork contribution record. Upstream
+  submission is a separate task.
+
+## Weather panel and continuous GRIB sampling
+
+- Status: candidate; merged fork review [PR #27](https://github.com/evanlivingston/gweatherrouting/pull/27),
+  `feature/weather-integration`, based on `dev` after routing PR #26.
+- Functional commits: `4de7ca5`, `f859ab0`, `fe17785`. Toolbar hover/pressed/checked
+  styles and disabled-icon colors were restored after combined-app review; Black,
+  Flake8, and visual rendering checks pass. The original uncommitted
+  `feature/weather-panel` working tree is preserved; this isolated integration
+  branch carries its weather changes reconciled with current routing.
+- Scope: dedicated Weather dock, independent wind/isobar controls, configurable
+  isobar spacing/opacity/labels, and live scrubber updates. Display/cursor and
+  scalar/batched routing share model/run-aware bilinear and temporal sampling.
+  Different model runs/members are not blended. Pixel-center correction and
+  continuous time sampling intentionally change numerical results.
+- Validation: 857 tests and 106 subtests pass on the weather branch. The combined
+  four-feature branch passes 903 tests and 110 subtests. Analytical missing-value,
+  source-selection, spatial/time interpolation, and consumer-agreement tests pass.
+  Weather/routing panel screenshots were rendered and visually inspected.
+- Performance: the recorded local warm-query benchmark measured 0.23 ms median
+  versus 0.43 ms on the previous sampler; cold indexing was 53 ms versus 15 ms.
+  No spatial downsampling or interpolation of direction angles was introduced.
+- Intended upstream scope: shared sampling, scrubber/overlay scheduling, and
+  Weather UI as focused contributions; exclude fork tracking. Regional vector
+  handling is a separate dependent contribution below. No upstream submission
+  has been authorized.
+
+## Regional HRRR and HRDPS wind integration
+
+- Status: queued on shared-sampling dependency; fork review
+  [PR #28](https://github.com/evanlivingston/gweatherrouting/pull/28),
+  `feature/pnw-wind-integration`, based on PR #27's branch.
+- Functional commits: `7c2c198` (adapted original `4716356`), `9ee31ee`.
+  The `feature/pnw-wind` prototype remains preserved.
+- Scope: registered HRRR/HRDPS sources reach the Qt downloader; HRRR bounds and
+  MSLMA pressure are supported. Read per-field GRIB2 vector-reference flags and
+  rotate grid-relative components at native sample centers before spatial/time
+  blending. Handle HRDPS rotated geographic CRS. Unsupported vector templates
+  are unavailable, not silently interpreted as east/north. Automatic gap recovery
+  remains GFS; legacy GRIB1 retains its prior vector-reference assumption.
+- Validation: 870 backend tests and 106 subtests pass; the complete 105-test Qt
+  suite passes after fixing the new test's initial-library-scan race. Combined
+  four-feature validation passes 903 tests and 110 subtests. Analytical Lambert
+  convergence, rotated coordinates, and GRIB2 concatenation/submessages are covered.
+  Actual 2026-10-15 12Z HRRR and HRDPS files declare grid-relative winds; scalar
+  and batch vectors agree after rotation and regional node extraction succeeds.
+- Merge order: merge PR #27 first, retarget this PR to `dev`, then verify its
+  focused diff/checks. Independent of WCOFS and safety integration after #27.
+- Intended upstream scope: provider/download UI integration and native vector
+  interpretation, extracted after shared sampling support. No upstream publication.
+
+## WCOFS coastal-current integration
+
+- Status: candidate; merged fork review [PR #29](https://github.com/evanlivingston/gweatherrouting/pull/29),
+  `feature/wcofs-integration`, based on PR #27's branch.
+- Functional commits: `19b5190` (adapted original `ea2fd90`), `4adf55a`,
+  `ce864a7`, `e0864db`. The `feature/nos-currents` prototype remains preserved.
+- Scope: NOAA OPeNDAP coverage discovery, ROMS destaggering/rotation, and regular
+  current-field integration. Preserve NetCDF/face/land masks, reject mixed wet/dry
+  cells, require a bracketing run, and retain missing-hour gaps. Cache spatial
+  cell locations per download. Record static and hourly decoded-array hashes.
+  The 0.04-degree output resampling is explicit; no extra coastal resolution is
+  claimed. Full model current includes tides and is selected, not added to other
+  models' tidal currents.
+- Validation: 873 tests and 106 subtests pass; final provider/coverage checks pass.
+  The combined four-feature branch passes 903 tests and 110 subtests. After the
+  binary-reader follow-up, all 43 focused launcher/provider/field checks pass.
+  A live NOAA 2026-10-15 04–05Z subset returned a 2×6×6 field with 72 finite
+  samples, maximum speed 0.412 m/s, and three source records.
+- Dependencies/platforms: netCDF4 is included in normal installation and tox.
+  Minimal `--no-deps` installs remain able to start without it and report WCOFS
+  unavailable. MSYS2 WCOFS downloads are not yet validated; no successful Windows
+  WCOFS run is claimed. Existing marine current-field interfaces are prerequisites.
+- Merge order: PR #27 first, then retarget to `dev`; independent of #28/#30.
+- Intended upstream scope: provider, ROMS transforms, coverage integration,
+  dependency handling, and tests, validated against the applicable marine base.
+
+## Routing safety controls and policy integration
+
+- Status: candidate; merged fork review [PR #30](https://github.com/evanlivingston/gweatherrouting/pull/30),
+  `feature/routing-safety-integration`, based on PR #27's branch.
+- Functional commits: `fc818fa` (adapted original `20b52b3`), `50d4486`,
+  `30b2676`. The `feature/edge-safety` prototype remains preserved.
+- Scope: optional persisted maximum wind, sailing-speed threshold/motor fallback,
+  and explicitly labeled wind-based wave proxy in Routing Plan. Requests/scenarios
+  freeze inputs and save policy provenance. Reject capped candidates in wind-only
+  and current scalar/batch/frontier paths. Avoid stationary wind-only candidates
+  waiting through capped wind. Defaults remain inert; invalid thresholds fail.
+- Numerical policy: polar efficiency precedes speed adjustments. The proxy
+  reduces sailing speed above 20 kn, up to 25% at 40 kn. Motoring replaces adjusted
+  speeds below the threshold and remains subject to caps. No actual wave/gust
+  forecasts or fuel/endurance model is implemented; existing integration sample
+  positions/times define where caps are checked.
+- Validation: initial full branch passes 872 tests and 110 subtests. Final focused
+  safety/routing checks pass 20 tests and 4 subtests. Scalar/whole-frontier parity,
+  wind-only rejection, immutable UI requests, and workspace persistence are covered.
+  Combined four-feature suite passes 903 tests and 110 subtests.
+- Merge order: PR #27 first, then retarget to `dev`; independent of #28/#29.
+- Intended upstream scope: reusable policy, engine integration, Qt controls and
+  persistence, and focused regressions; no upstream submission authorized.
+
+### Combined integration review checks
+
+- All four were assembled locally on `feature/weather-routing-validation` without
+  merging any new feature into `dev`. The full combined suite passed twice at
+  903 tests and 110 subtests; the subsequent WCOFS binary-reader follow-up passed
+  43 focused tests. Numerical code is shared with the focused review branches.
+- Changed production code passes Black/Flake8 and whitespace checks. Full Flake8
+  retains the pre-existing connection-dialog complexity failure. Full mypy retains
+  exactly the same 32 errors in 8 unchanged files as a clean archive of `dev`.
+- CI results are separate from local validation and may still be queued/running.
+  Fork PRs remain unmerged pending user approval. No upstream PR was created.
+
+## Forecasts library layout and automatic discovery
+
+- Status: candidate; merged fork review [PR #31](https://github.com/evanlivingston/gweatherrouting/pull/31),
+  `feature/forecast-library`, based on `feature/pnw-wind-integration` (PR #28),
+  which depends on Weather PR #27. Functional commit: `d424580`.
+- Scope: show model identity separately from run time; put Import beside the
+  Local wind forecasts heading; remove coordinate inputs and Refresh/Remove copy
+  buttons. GFS/HRRR downloads use the active chart/log map view; HRDPS remains
+  full-domain. Date-line-crossing download views retain the prior unsupported-area
+  restriction and show a message rather than selecting a different area.
+- Automatic discovery: scan when Forecasts opens and watch directory/file
+  changes while visible. Defer scans during active operations, stop retrying when
+  hidden, and restore selection by file path after updates. Newly discovered files
+  are listed without automatically enabling them. Context removal preserves its
+  selected metadata target if the list changes and explains deletion of the
+  library copy while retaining the original import.
+- Model names: identify GFS/HRRR from GRIB metadata and HRDPS with an additional
+  grid check. Unknown models remain explicitly Unknown. Display labels use a
+  separate attribute and do not alter numerical sampler identity/selection.
+- Validation: 872 tests and 106 subtests pass on the feature branch. All 108 Qt
+  integration checks pass with Weather, PNW wind, WCOFS, safety, and live
+  isochrones combined. Focused tests cover file addition/edit/deletion, stable
+  selection, hide/reopen, context targets, active map bounds, and model metadata.
+  Real HRRR/HRDPS files show correct labels. Forecasts screenshot was visually
+  inspected; Black, changed production-file Flake8, and whitespace checks pass.
+  Scoped mypy retains only existing diagnostics in unchanged dependencies.
+- Merge order: after PR #27/#28 merge, retarget this PR to `dev` and recheck its
+  focused diff. WCOFS/safety PRs are independent. The local combined validation
+  branch includes this change for testing; no new feature was merged into dev.
+- Intended upstream scope: GRIB display metadata and Qt library layout/lifecycle
+  with focused regressions, after applicable Qt/provider prerequisites. Exclude
+  this fork tracking record. No upstream submission is authorized.
+
+## Custom GRIB download selections
+
+- Status: candidate; merged fork review [PR #32](https://github.com/evanlivingston/gweatherrouting/pull/32),
+  `feature/custom-forecast-downloads`, based on Forecast Library PR #31,
+  which depends on PNW wind PR #28 and Weather PR #27.
+- Functional commits: `109f34b` and `6c1e47f`.
+- Scope: the reference application-style model/parameter/forecast-hour controls for GFS, HRRR
+  and HRDPS. Select duration, native or fixed spacing, and explicit hours;
+  list actual per-run coverage and approximate sizes; check and download multiple
+  runs. Show model resolution and forecast length in columns, omit explanatory
+  paragraphs, and retain automatic local discovery. OpenSkiron is temporarily
+  disabled in the provider registry and its source dropdown is removed.
+  Batch staging/validation retains successful downloads if another model fails,
+  enables files on the UI thread, and retains the result through automatic scans.
+- Provider behavior: custom GFS allows hourly output through hour 120 then
+  three-hour output; legacy presets and routing-recovery schedules remain
+  unchanged. HRRR respects 18/48-hour run limits. HRDPS retains full-domain
+  requests, hourly wind and three-hour pressure. Only implemented wind/pressure
+  fields are exposed. Model/run interpolation and routing selection are unchanged;
+  no ensemble routing or cross-model blending is added.
+- Validation: feature suite passed 878 tests and 110 subtests before the final
+  hourly-GFS/scan-feedback follow-ups; final provider checks passed 32 tests and
+  4 subtests and focused Qt checks passed. A live NOAA pressure-only request
+  decoded exactly forecast hours 0 and 1. Visually inspected the dialog with
+  real HRRR/HRDPS files and multiple checked model runs. Black, changed production
+  Flake8 and whitespace checks pass. Full mypy matches the clean dev baseline
+  exactly (32 errors in 8 unchanged files). The final combined build passes
+  912 tests and 114 subtests, including the final follow-ups, with Weather,
+  PNW wind, WCOFS, safety, local-library cleanup and live isochrones together.
+- Follow-up validation: all 109 Qt checks pass after provider disablement and
+  layout cleanup; the revised dialog was visually inspected. Black, changed-file
+  Flake8 and whitespace checks pass.
+- Merge order: PR #27, #28, #31, then retarget #32 to `dev` and recheck its diff
+  and checks. WCOFS PR #29 and safety PR #30 are independent. The combined local
+  validation branch includes this feature; none of these review PRs was merged.
+- Intended upstream scope: custom-selection helpers, provider support, Qt controls
+  and regressions after applicable Qt/provider prerequisites. Exclude fork
+  tracking and the fork-specific temporary OpenSkiron disablement. No upstream
+  submission is authorized.
+
+## Model-based weather selection and routing downloads
+
+- Status: candidate; merged fork review [PR #33](https://github.com/evanlivingston/gweatherrouting/pull/33),
+  `feature/model-weather-selection`, based on custom forecast downloads PR #32,
+  which depends on library PR #31, PNW wind PR #28 and Weather PR #27.
+- Functional commit: `15235ea`.
+- Scope: persistent model checkboxes replace separate local-file enablement and
+  remote-file selection in the main Forecasts view. One button downloads the
+  latest available run for each checked provider. Files/import/removal remain in
+  a secondary window with read-only usage indicators. Recognized imports select
+  their model; unrecognized models have an Imported checkbox without a download
+  provider. Checkbox changes preserve cached files and reload eligible readers.
+- Routing: freeze model/field/hour selections; reuse covering caches and fetch
+  checked models for route coverage in both wind-only and current-aware modes.
+  Exclude unchecked models even if their runs are newer; never substitute an
+  unchecked GFS model after a regional failure. Routing requests required 10 m
+  wind. Respect run horizons, stage/validate unique atomic files, and pass frozen
+  metadata to independent UI readers. Record selected models and download issues.
+- Sampling policy: continue shared spatial/time interpolation and newest-run
+  selection; preserve existing file precedence on scans. No ensemble routing
+  or cross-model blending is added. Cached wind-only route points/isochrones
+  match legacy calculation exactly. Routing checks actual query locations/times.
+- View feedback: panning does not download or alter selection. A debounced
+  bottom-right notice screens a 3-by-3 view sample for per-model wind/pressure
+  availability at the forecast time. This is a preview, not exhaustive coverage
+  proof; reads use private background handles. Batch model downloads preserve
+  scrubber time; explicit imports retain their prior time jump.
+- Validation: final combined suite passes 922 tests and 114 subtests with all
+  active Weather/PNW/WCOFS/safety/library/live-isochrone work. Feature suite
+  passed 888 tests/110 subtests before final follow-ups; focused core and Qt
+  follow-ups pass and are included in the final combined result. Coverage spans
+  persisted selection, cache reuse/retention, automatic wind-only bootstrap,
+  private UI/worker readers, exclusion of unchecked newer sources in both
+  engines, horizon selection, and view/time/field notices. Live NOAA download
+  decoded only selected GFS pressure hours 0 and 3. Visually inspected the dialog
+  and notice with real HRRR/HRDPS files. Changed production Black/Flake8 and
+  whitespace checks pass; combined mypy exactly matches clean dev's existing
+  32 errors in 8 unchanged files.
+- Integration: local `feature/weather-routing-validation` includes this feature;
+  its RouteRequest merge retained both safety fields and forecast selection.
+  Review PRs remain unmerged. Merge #27/#28/#31/#32 first, then retarget #33 to
+  `dev` and recheck its diff/checks. WCOFS #29 and safety #30 remain independent.
+- Intended upstream scope: reusable model selection/download recovery, followed
+  by the Qt workflow/coverage notice after applicable provider/frontend
+  prerequisites. Extract focused contributions independently; exclude this fork
+  tracking. No upstream submission is authorized.
+
+
+## Weather stack integrated into dev — 2026-10-15
+
+- User approved merging the complete fork review stack, PRs #27–#33: Weather
+  controls/shared sampling, PNW wind models, WCOFS currents, routing safety,
+  forecast-library cleanup, custom downloads, and model-based selection/routing.
+- Integrated the tested combined branch and both published WCOFS/safety
+  synchronization heads. All seven published PR heads are ancestors of `dev`;
+  the synchronization merges make no source changes. The RouteRequest keeps
+  both safety options and frozen forecast selection.
+- Fresh validation on `dev`: 922 tests and 114 subtests pass. Its source tree
+  matches the combined build, excluding this contribution-tracking update.
+- CI remains separate: the previous dev commit already fails Qt validation on
+  all three CI platforms. Its macOS logs show the same missing-polar fixture
+  and window-geometry failures as the model-selection branch. CI also retains
+  the existing connection-dialog complexity/type-check failures and test-job
+  dependency setup issues. Local validation is passing; CI is not claimed green.
+- Fork merge/retarget prerequisites in the preceding feature entries are now
+  fulfilled. Their upstream candidate/queued statuses remain unchanged; no
+  upstream publication or merge was performed or authorized by this integration.

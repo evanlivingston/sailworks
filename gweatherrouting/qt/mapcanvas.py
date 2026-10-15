@@ -9,7 +9,7 @@ import cairo
 import numpy as np
 from PySide6.QtCore import QEvent, QPointF, Qt, QTimer, Signal, QRectF
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPolygonF
-from PySide6.QtWidgets import QWidget, QMenu
+from PySide6.QtWidgets import QWidget, QMenu, QLabel
 
 from gweatherrouting.core.mapviewport import MercatorProjection, MapPoint
 from gweatherrouting.core.mapmotion import DragVelocity, PanInertia
@@ -19,8 +19,10 @@ from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
 from gweatherrouting.rendering.navigation import NavigationRenderer
 from gweatherrouting.rendering.ais import AISRenderer
 from gweatherrouting.rendering.dashboard import DashboardRenderer
+from gweatherrouting.rendering.isochrones import IsochroneFrame, IsochronesRenderer
 from .windcursor import WindCursorSampler
 from .marineoverlay import MarineOverlay
+from .weathercoverage import WeatherCoverage
 
 
 class TrackMap(QWidget, MercatorProjection):
@@ -96,6 +98,8 @@ class TrackMap(QWidget, MercatorProjection):
         self.charts = controller.charts
         self.charts.add_map(self)
         self.wind = WindOverlayRenderer(WindPainter, controller.scheduler.submit)
+        self.isochrones = IsochronesRenderer(controller.scheduler.submit)
+        self.isochrone_frame = IsochroneFrame((), (), ())
         self._ticks = {}
         self._next_tick = 0
         self.disposed = False
@@ -114,6 +118,16 @@ class TrackMap(QWidget, MercatorProjection):
         self._instrument_status = None
         self._cursor_context = None
         self._wind_cursor = WindCursorSampler(self, controller.scheduler.submit)
+        self.coverage_notice = QLabel(self)
+        self.coverage_notice.setWordWrap(True)
+        self.coverage_notice.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+        self.coverage_notice.setStyleSheet(
+            "background: rgba(30, 33, 36, 220); color: #e5c17c; padding: 8px; border-radius: 4px;"
+        )
+        self.coverage_notice.hide()
+        self.weather_coverage = WeatherCoverage(self, self._show_coverage)
         controller.boat_changed.connect(self._boat_changed)
         controller.settings.register_on_change("smoothZoom", self._set_smooth_zoom)
         controller.settings.register_on_change("panInertia", self._set_pan_inertia)
@@ -177,12 +191,14 @@ class TrackMap(QWidget, MercatorProjection):
             return
         self.disposed = True
         self._wind_cursor.close()
+        self.weather_coverage.close()
         self.cursor_readout.emit("")
         self._cancel_inertia(settle=False)
         self._finish_zoom_silent()
         self.controller.boat_changed.disconnect(self._boat_changed)
         self.charts.forget_map(self)
         self.wind.forget(self)
+        self.isochrones.forget(self)
         self.marine.close()
         for token in list(self._ticks):
             self.remove_tick_callback(token)
@@ -196,6 +212,7 @@ class TrackMap(QWidget, MercatorProjection):
         self.cancel_move()
         self.charts._chs_renderer.forget(self)
         self.wind.forget(self)
+        self.isochrones.forget(self)
         self.marine.forget(self)
         # Forgotten overlay state means the cached pixels may reference
         # frames that will never refresh; drop them while hidden.
@@ -351,6 +368,7 @@ class TrackMap(QWidget, MercatorProjection):
             self._collection_snapshot(core.poiManager),
             self.route_plan,
             self.route_preview,
+            self.isochrone_frame,
             self.route,
             self.selected_route_point,
             self.navigation.hl_routing,
@@ -809,6 +827,13 @@ class TrackMap(QWidget, MercatorProjection):
         self.invalidate_navigation()
         self.update()
 
+    def set_isochrones(self, frontiers):
+        self.isochrone_frame = IsochroneFrame(tuple(frontiers), (), ())
+        if not frontiers:
+            self.isochrones.forget(self)
+        self.invalidate_navigation()
+        self.update()
+
     def set_route_preview(self, coordinates):
         self.route_preview = tuple(coordinates)
         self.invalidate_navigation()
@@ -887,6 +912,55 @@ class TrackMap(QWidget, MercatorProjection):
         self._paint_dashboard(painter)
         self._paint_caption(painter)
         painter.end()
+        self._check_weather_coverage()
+
+    def _show_coverage(self, text):
+        if self.disposed:
+            return
+        self.coverage_notice.setText(text)
+        self.coverage_notice.setFixedWidth(max(80, min(360, self.width() - 24)))
+        self.coverage_notice.adjustSize()
+        self.coverage_notice.move(
+            self.width() - self.coverage_notice.width() - 12,
+            self.height() - self.coverage_notice.height() - 12,
+        )
+        self.coverage_notice.setVisible(bool(text) and self.isVisible())
+        self.coverage_notice.raise_()
+
+    def _check_weather_coverage(self):
+        if self.disposed or self.is_moving():
+            self.coverage_notice.hide()
+            return
+        fields = tuple(
+            name
+            for name, enabled in (
+                ("wind", self.wind_visible),
+                ("pressure", self.controller.settings.gribIsobarsVisible),
+            )
+            if enabled
+        )
+        points = tuple(
+            self.convert_screen_to_geographic(
+                self.width() * x, self.height() * y
+            ).get_degrees()
+            for y in (0.02, 0.5, 0.98)
+            for x in (0.02, 0.5, 0.98)
+        )
+        points = tuple((lat, (lon + 180) % 360 - 180) for lat, lon in points)
+        self.weather_coverage.request(
+            self.controller.data.selection.models,
+            fields,
+            self.time_control.time,
+            points,
+            tuple(self.controller.core.grib_manager.gribs),
+        )
+        if (
+            not self.weather_coverage.running
+            and self.weather_coverage.pending is None
+            and self.coverage_notice.text()
+            and not self.coverage_notice.isVisible()
+        ):
+            self._show_coverage(self.coverage_notice.text())
 
     def _paint_route_overlay(self, painter):
         active_route = self.controller.core.routingManager.get_by_name(
@@ -1039,6 +1113,8 @@ class TrackMap(QWidget, MercatorProjection):
         )
         surface.set_device_scale(factor, factor)
         cr = cairo.Context(surface)
+        frames = ((self.isochrone_frame,),) if self.isochrone_frame.isochrones else ()
+        self.isochrones.draw(self, cr, frames, "routing-live")
         self.navigation.draw_routes(self, cr, self.time_control.time.timestamp())
         self.navigation.draw_navigation(self, cr)
         if self.ais_visible:

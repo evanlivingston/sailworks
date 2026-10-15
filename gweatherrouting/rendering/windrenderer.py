@@ -378,7 +378,6 @@ class WindOverlayRenderer(OverlayRenderer):
             for _, provider in providers:
                 if isinstance(provider, Grib) and provider not in self._gribs.values():
                     provider.close()
-
     @staticmethod
     def _show_isobars(job):
         # Palettes built before the isobar toggle carry no fourth element.

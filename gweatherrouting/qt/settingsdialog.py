@@ -344,6 +344,6 @@ class SettingsDialog(QDialog):
         self.controller.data.redraw()
 
     def show_library(self):
-        window = self.parent()
-        if hasattr(window, "show_library"):
-            window.show_library()
+        callback = getattr(self.parent(), "show_library", None)
+        if callable(callback):
+            callback()

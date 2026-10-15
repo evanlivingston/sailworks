@@ -1,12 +1,15 @@
 """Qt lifecycle around the shared engines, scenarios and current-coverage workflow."""
 
 import time
+from dataclasses import replace
 from threading import Event, Thread
 
 from PySide6.QtCore import QObject, Signal, Slot
 from weatherrouting import RoutingNoWindError
 
 from gweatherrouting.core.geo.routing import Routing
+from gweatherrouting.core.grib import Grib
+from gweatherrouting.core.forecastselection import forecast_source
 from gweatherrouting.core.routingjob import (
     RoutingCancelledError,
     calculate_route,
@@ -18,9 +21,10 @@ from gweatherrouting.core.marine.chs import DownloadCancelledError
 class RoutingController(QObject):
     changed = Signal()
     preview_changed = Signal(object)
+    isochrones_changed = Signal(object)
     completed = Signal(object)
     dismiss_preflight = Signal()
-    _progress = Signal(int, float, object)
+    _progress = Signal(int, float, object, object)
     _message = Signal(int, str)
     _finished = Signal(int, object, object)
 
@@ -54,9 +58,20 @@ class RoutingController(QObject):
             return self.fail(
                 "Wait for map-data and Data Library operations to finish before calculating."
             )
-        sources = freeze_wind_sources(self.core.grib_manager.gribs)
-        if not sources and not (request.use_currents and request.auto_download):
-            return self.fail("Open a wind forecast before calculating a route.")
+        selection = self.session_controller.data.selection
+        try:
+            selection.options(routing=True)
+        except ValueError as exc:
+            return self.fail(str(exc))
+        request = replace(request, forecast_selection=selection)
+        scenarios = tuple(
+            replace(item, forecast_selection=selection) for item in scenarios
+        )
+        sources = freeze_wind_sources(
+            g
+            for g in self.core.grib_manager.gribs
+            if forecast_source(g) in selection.models
+        )
         self.generation += 1
         token = self.generation
         self.request = request
@@ -77,6 +92,7 @@ class RoutingController(QObject):
         )
         self.changed.emit()
         self.preview_changed.emit(())
+        self.isochrones_changed.emit(())
 
         def worker():
             self._run_requests(
@@ -108,10 +124,15 @@ class RoutingController(QObject):
                             token,
                             (index * 100 + percent) / self.scenario_count,
                             points,
+                            (
+                                getattr(points, "isochrones", ())
+                                if points is not None
+                                else None
+                            ),
                         )
 
                 options = {}
-                if item.use_currents:
+                if item.use_currents or item.forecast_selection is not None:
                     options = dict(
                         report=lambda message: self._message.emit(token, message),
                         confirm=lambda report: self._ui_call(
@@ -121,7 +142,7 @@ class RoutingController(QObject):
                             token, self._save_fields, fields
                         ),
                         save_gribs=lambda gribs: self._ui_call(
-                            token, self._save_gribs, gribs
+                            token, self._save_gribs, freeze_wind_sources(gribs)
                         ),
                         current_selection=selection,
                     )
@@ -172,6 +193,7 @@ class RoutingController(QObject):
             else f"Scenario {index+1}/{self.scenario_count}: calculating…"
         )
         self.preview_changed.emit(())
+        self.isochrones_changed.emit(())
         self.changed.emit()
 
     def _save_fields(self, fields):
@@ -179,13 +201,31 @@ class RoutingController(QObject):
             self.core.marine_manager.fields.add(field)
 
     def _save_gribs(self, gribs):
+        data = self.session_controller.data
         manager = self.core.grib_manager
         for grib in gribs:
-            if not manager.is_enabled(grib.name):
-                manager.load(grib.path)
+            if forecast_source(
+                grib
+            ) in data.selection.models and not manager.is_enabled(grib.name):
+                # The worker passes frozen metadata; the UI owns a fresh reader.
+                opened = Grib(
+                    grib.path,
+                    grib.name,
+                    grib.centre,
+                    grib.bounds,
+                    grib.start_time,
+                    grib.last_forecast,
+                    grib.model_name,
+                )
+                manager.gribs.append(opened)
+                data.local_forecasts = [
+                    g for g in data.local_forecasts if g.path != opened.path
+                ]
+                data.local_forecasts.append(opened)
         manager.store_opened_gribs()
-        manager.refresh_local_gribs()
-        self.session_controller.data.redraw()
+        manager.storage.save()
+        data.redraw()
+        data.changed.emit()
 
     def _save_result(self, request, result):
         collection = self.core.routingManager
@@ -210,6 +250,7 @@ class RoutingController(QObject):
         if self.busy:
             self.cancel_event.set()
             self.dismiss_preflight.emit()
+            self.isochrones_changed.emit(())
             self.message = "Cancelling…"
             self.changed.emit()
 
@@ -224,8 +265,8 @@ class RoutingController(QObject):
             self.message = message
             self.changed.emit()
 
-    @Slot(int, float, object)
-    def _apply_progress(self, token, percent, points):
+    @Slot(int, float, object, object)
+    def _apply_progress(self, token, percent, points, isochrones=None):
         if (
             self.closed
             or not self.busy
@@ -242,6 +283,8 @@ class RoutingController(QObject):
         self.message = prefix + f"Calculating: approximately {percent:.0f}%"
         if points is not None:
             self.preview_changed.emit(points)
+        if isochrones is not None:
+            self.isochrones_changed.emit(isochrones)
         self.changed.emit()
 
     @Slot(int, object, object)
@@ -250,6 +293,7 @@ class RoutingController(QObject):
             return
         self.busy = False
         self.preview_changed.emit(())
+        self.isochrones_changed.emit(())
         if self.cancel_event.is_set() or isinstance(
             error, (RoutingCancelledError, DownloadCancelledError)
         ):
@@ -277,6 +321,7 @@ class RoutingController(QObject):
         self.changed.emit()
 
     def close(self):
+        self.isochrones_changed.emit(())
         self.closed = True
         self.cancel_event.set()
         self.generation += 1
