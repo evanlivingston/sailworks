@@ -465,9 +465,31 @@ A pause before releasing suppresses a glide.
 New input, fit, point placement, hiding, resizing and closing stop inertial motion.
 Overlay updates wait until motion settles, and workspace autosave waits for both
 maps to stop moving. Preferences use the existing shared settings file and survive
-restart. The verified rebuilt-layer draw fix remains in place. Wheel/trackpad
-input interpretation, zoom step size and routing calculations are unchanged;
-native pinch and macOS two-finger scroll-to-pan parity remain separate work.
+restart. The verified rebuilt-layer draw fix remains in place. Mouse-wheel
+zoom step size and routing calculations are unchanged.
+
+## Native trackpad gestures
+
+Charts and Logs handle native two-finger pinch events directly, keeping the
+geographic point under the gesture's initial position fixed. Pinch scaling uses
+Qt's incremental scale factor, has the existing 1–20 zoom limits, and follows
+fingers without the separate mouse-wheel easing animation. Smooth zoom still
+controls mouse-wheel zoom. Interleaved rotation and compatibility wheel events
+do not apply another zoom during a pinch; the chart remains north-up.
+
+On macOS, unmodified precise scrolling pans horizontally and vertically using
+Qt's pixel deltas, including the system natural-scrolling direction and native
+momentum. No second drag-inertia animation is added. Control/Command-modified
+scroll remains cursor-anchored zoom, as does an ordinary mouse wheel. Other
+platforms retain their previous wheel interpretation; native pinch is accepted
+where Qt supplies native zoom events. This does not add touchscreen gestures.
+
+Begin/end phases keep overlays and workspace saves deferred until the gesture
+settles. Precise scroll events without phases have a 250ms idle fallback. Fit,
+point placement, drag, hide, resize, window deactivation and close cancel active
+trackpad state and timers. These semantics follow
+[Qt's native gesture events](https://doc.qt.io/qt-6.12/qnativegestureevent.html) and
+[wheel pixel deltas/phases](https://doc.qt.io/qt-6/qwheelevent.html).
 
 ## Padded map previews
 
@@ -498,8 +520,6 @@ NMEA and routing workflows are available in Qt. GTK's General and AIS settings
 pages are hidden, its project-properties button is hidden, and computed-route
 points are read-only; these are not additional working features awaiting migration.
 
-- Native pinch zoom and macOS two-finger scroll-to-pan, matching GTK's gesture
-  handling while preserving wheel zoom and the new live motion preferences.
 - Application About/version identity and named macOS/Linux/Windows bundles;
   then a deliberate switch of the default launcher from GTK to Qt.
 - Final workflow/provider parity checks, dateline and large-file behavior, and
@@ -512,8 +532,8 @@ performance polish, separate from the remaining migration work.
 
 ## Validation
 
-The full repository unittest discovery passes 750 tests locally before Map Data
-integration. The combined Qt wrapper passes 90 integration checks in a separate
+The full repository unittest discovery passes 760 tests locally. The optional
+Qt wrapper passes 96 integration checks in a separate
 process. Coverage includes transport/recording, queued Core notifications,
 stale-source rejection, overlay completion without GLib, callback cancellation
 on shutdown, real OGR ENC/raster fixtures, forecast/palette changes, projection,

@@ -1329,3 +1329,49 @@ into `dev`; no upstream PR was created or updated.
   no lower-detail zoom backdrop, native gesture migration or packaging changes.
 - Intended upstream scope: none while Qt remains fork-only.
 - Documentation: `docs/qt-first-pass.md`, `docs/qt-parity.md`.
+
+## Qt native trackpad gestures
+
+- Status: fork-only; no upstream submission.
+- Branch/base: `feature/qt-native-map-gestures` from `dev` at `39e391d`, after
+  approved Map Data/Settings PR #20, motion PR #22 and padded coverage PR #23.
+  All previously open fork PRs are merged; no pending dependency or merge order.
+- Review: [fork PR #24](https://github.com/evanlivingston/gweatherrouting/pull/24),
+  open and unmerged for human review.
+- Functional commit: `5106288` implements native gesture dispatch, direct anchored
+  pinch scaling, macOS precise scroll/pan and native momentum, interruption and
+  shared motion-state checks for overlay deferral/workspace autosave.
+- Scope/fidelity: Qt native pinch applies `log2(1 + event.value())` to Mercator
+  zoom, preserving the initial geographic anchor and existing 1–20 limits.
+  Mouse-wheel easing remains controlled by Smooth zoom; pinch follows fingers
+  directly. Rotation/compatibility scroll during a pinch does not double zoom.
+  macOS unmodified pixel scrolling moves both axes with Qt's natural-scroll
+  deltas and native momentum, without a second drag-inertia animation. Ordinary
+  wheels, Control/Command-modified scroll and non-macOS wheel behavior retain
+  zoom. Chart geometry, source selection and routing calculations are unchanged.
+- Lifecycle: native begin/end and scroll phases defer overlay refresh and saves;
+  unphased scrolling settles after 250ms idle. Fit, placement, new drag, hide,
+  resize, window deactivation and close clear gesture state and timers. Both
+  Charts and Logs use the same behavior. Prior rebuilt-frame/padded-coverage
+  regression checks remain in the passing suite.
+- Validation: full unittest discovery passes 760 tests in 92.8s, including 96
+  isolated Qt checks. Six added checks send real QNativeGestureEvent and
+  QWheelEvent objects through Qt, covering both maps, incremental scaling and
+  anchors, limits/invalid scale, compatibility/rotation suppression, two-axis
+  pan/momentum, natural deltas, modifiers, ordinary wheel and platform fallback,
+  deferred overlays/workspace saves, idle fallback and lifecycle interruption.
+  Scoped Black/Flake8 and mypy with silent imports pass (two production files).
+- Native verification: Qt 6.12 at DPR 2 dispatches native pinch/scroll events in
+  both views and verifies anchor preservation, unchanged zoom while panning,
+  native momentum, no added drag inertia and settled state. A native preview
+  used installed charts, offline connections and private copied settings/layout
+  JSON. Physical trackpad input/feel and other-platform delivery remain for human
+  review; event injection does not establish hardware/OS event delivery.
+- References: Qt native gesture documentation specifies incremental scale deltas;
+  wheel documentation specifies pixel displacement, natural inversion and
+  begin/end/momentum phases. Links are in `docs/qt-first-pass.md`.
+- Limits/next: no touchscreen gesture recognizer, rotation or smart/double-tap
+  zoom. About/app identity, bundles/default launcher and final platform/live
+  hardware parity checks remain separate migration work.
+- Intended upstream scope: none while Qt remains fork-only.
+- Documentation: `docs/qt-first-pass.md`, `docs/qt-parity.md`.

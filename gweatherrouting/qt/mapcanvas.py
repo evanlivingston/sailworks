@@ -1,12 +1,13 @@
 """Qt canvas using the shared Mercator projection and a Cairo image bridge."""
 
 import math
+import sys
 import time
 from typing import Optional
 
 import cairo
 import numpy as np
-from PySide6.QtCore import QPointF, Qt, QTimer, Signal, QRectF
+from PySide6.QtCore import QEvent, QPointF, Qt, QTimer, Signal, QRectF
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget, QMenu
 
@@ -66,6 +67,9 @@ class TrackMap(QWidget, MercatorProjection):
         self._overlay_pending = False
         self._zoom_anchor = None  # (lat, lon, x, y) for zoom previews
         self._zoom_target = None
+        self._native_gesture = False
+        self._trackpad_panning = False
+        self._trackpad_scroll_pans = sys.platform == "darwin"
         self._zoom_tick_token = None
         self._zoom_last_tick = 0.0
         self._smooth_zoom = True
@@ -80,6 +84,9 @@ class TrackMap(QWidget, MercatorProjection):
         self._zoom_settle = QTimer(self)
         self._zoom_settle.setSingleShot(True)
         self._zoom_settle.timeout.connect(self._zoom_settle_timeout)
+        self._scroll_settle = QTimer(self)
+        self._scroll_settle.setSingleShot(True)
+        self._scroll_settle.timeout.connect(self._finish_trackpad_pan)
         self.controller = controller
         self.navigation = NavigationRenderer(controller.core)
         self.ais_renderer = AISRenderer()
@@ -217,7 +224,7 @@ class TrackMap(QWidget, MercatorProjection):
             and self._cursor_context != self._weather_context()
         ):
             self._cancel_cursor()
-        if self.drag is not None or self._inertia is not None or self._zoom_animating:
+        if self.is_moving():
             # Mid-gesture: overlay workers may deliver frames while the view
             # is still moving. Paint shifted previews now and do one sharp
             # rebuild when the gesture settles instead of churning per event.
@@ -493,6 +500,108 @@ class TrackMap(QWidget, MercatorProjection):
         )
         return (key, self._center_lat, self._center_lon, self._zoom, image)
 
+    def is_moving(self):
+        return (
+            self.drag is not None
+            or self._inertia is not None
+            or self._zoom_animating
+            or self._native_gesture
+            or self._trackpad_panning
+        )
+
+    def event(self, event):
+        if event.type() == QEvent.Type.NativeGesture and not self.disposed:
+            return self._native_gesture_event(event)
+        if event.type() == QEvent.Type.WindowDeactivate and (
+            self._native_gesture or self._trackpad_panning
+        ):
+            self._finish_zoom_silent()
+            self._refresh_after_gesture()
+            self.view_changed.emit()
+        return super().event(event)
+
+    def _begin_native_gesture(self):
+        self._cancel_cursor()
+        self._cancel_inertia(settle=False)
+        self._finish_zoom_silent()
+        self.drag = None
+        self._native_gesture = True
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+    def _native_gesture_event(self, event):
+        kind = event.gestureType()
+        if kind == Qt.NativeGestureType.BeginNativeGesture:
+            self._begin_native_gesture()
+        elif kind == Qt.NativeGestureType.EndNativeGesture:
+            if self._native_gesture:
+                self._finish_zoom_silent()
+                self._refresh_after_gesture()
+                self.view_changed.emit()
+        elif kind == Qt.NativeGestureType.ZoomNativeGesture:
+            scale = 1.0 + event.value()
+            if math.isfinite(scale) and scale > 0:
+                if not self._native_gesture:
+                    self._begin_native_gesture()
+                if self._zoom_anchor is None:
+                    pointer = event.position()
+                    anchor = self.convert_screen_to_geographic(pointer.x(), pointer.y())
+                    self._zoom_anchor = (
+                        *anchor.get_degrees(),
+                        pointer.x(),
+                        pointer.y(),
+                    )
+                self._zoom_animating = True
+                self._zoom = max(1, min(20, self._zoom + math.log2(scale)))
+                self._recenter_on_anchor()
+                self.update()
+                self.view_changed.emit()
+        else:
+            # A pinch can include rotation events. The chart remains north-up.
+            return self._native_gesture
+        event.accept()
+        return True
+
+    def _finish_trackpad_pan(self):
+        if not self._trackpad_panning:
+            return
+        self._trackpad_panning = False
+        self._scroll_settle.stop()
+        if not self.disposed:
+            self._refresh_after_gesture()
+            self.view_changed.emit()
+
+    def _trackpad_pan(self, event):
+        phase = getattr(event, "phase", lambda: Qt.ScrollPhase.NoScrollPhase)()
+        pixels = event.pixelDelta()
+        modifiers = getattr(
+            event, "modifiers", lambda: Qt.KeyboardModifier.NoModifier
+        )()
+        if (
+            not self._trackpad_scroll_pans
+            or modifiers
+            & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier)
+            or (pixels.isNull() and phase == Qt.ScrollPhase.NoScrollPhase)
+        ):
+            return False
+        if not self._trackpad_panning or phase == Qt.ScrollPhase.ScrollBegin:
+            self._cancel_inertia(settle=False)
+            self._finish_zoom_silent()
+            self.drag = None
+            self._trackpad_panning = True
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        # Qt has already applied the system natural-scroll preference. Native
+        # momentum arrives as further pixel deltas; never add our drag inertia.
+        self._pan_pixels(pixels.x(), pixels.y())
+        if phase == Qt.ScrollPhase.ScrollEnd:
+            self._finish_trackpad_pan()
+        else:
+            if phase == Qt.ScrollPhase.NoScrollPhase:
+                self._scroll_settle.start(self._ZOOM_SETTLE_MS)
+            self.update()
+            self.view_changed.emit()
+        event.accept()
+        return True
+
     def _finish_zoom(self):
         was_zooming = self._zoom_animating or self._zoom_target is not None
         self._finish_zoom_silent()
@@ -511,6 +620,9 @@ class TrackMap(QWidget, MercatorProjection):
         self._finish_zoom()
 
     def _finish_zoom_silent(self):
+        self._native_gesture = False
+        self._trackpad_panning = False
+        self._scroll_settle.stop()
         self._zoom_settle.stop()
         if self._zoom_tick_token is not None:
             self.remove_tick_callback(self._zoom_tick_token)
@@ -986,19 +1098,13 @@ class TrackMap(QWidget, MercatorProjection):
         context = self._weather_context()
         self._cursor_context = context
         text = "Latitude: %f, Longitude: %f" % (lat, lon)
-        if (
-            self.drag is None
-            and not self._zoom_animating
-            and self.move_callback is None
-        ):
+        if not self.is_moving() and self.move_callback is None:
             marine = self.marine.cursor_text(lat, lon)
             if marine:
                 text = marine + " - " + text
         self.cursor_readout.emit(text)
         if (
-            self.drag is not None
-            or self._inertia is not None
-            or self._zoom_animating
+            self.is_moving()
             or self.move_callback is not None
             or not self.wind_visible
             or not self.isVisible()
@@ -1134,6 +1240,12 @@ class TrackMap(QWidget, MercatorProjection):
 
     def wheelEvent(self, event):  # noqa: N802 - Qt virtual method name
         self._cancel_cursor()
+        if self._native_gesture:
+            event.accept()
+            return
+        if self._trackpad_pan(event):
+            return
+        self._finish_trackpad_pan()
         pointer = event.position()
         anchor = self.convert_screen_to_geographic(pointer.x(), pointer.y())
         delta = event.angleDelta().y() / 120 or event.pixelDelta().y() / 60
