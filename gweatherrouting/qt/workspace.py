@@ -138,7 +138,12 @@ class WorkspacePreferences(QObject):
             self.timer.start()
 
     def _autosave(self):
-        if self.window.map.drag is not None or self.window.map._zoom_animating:
+        if any(
+            canvas.drag is not None
+            or canvas._inertia is not None
+            or canvas._zoom_animating
+            for canvas in (self.window.map, self.window.log_map)
+        ):
             self.timer.start()
             return
         self.save()
