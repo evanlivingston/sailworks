@@ -30,7 +30,7 @@ class TestDisplayGrib(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         path = str(Path(temporary.name) / "wind.tif")
         dataset = gdal.GetDriverByName("GTiff").Create(path, 4, 3, 4, gdal.GDT_Float32)
-        dataset.SetGeoTransform((-124, 1, 0, 50, 0, -1))
+        dataset.SetGeoTransform((-124.5, 1, 0, 50.5, 0, -1))
         for index, (hour, element, value) in enumerate(
             ((0, "UGRD", 2), (0, "VGRD", 4), (3, "UGRD", 8), (3, "VGRD", 10)), 1
         ):
@@ -53,7 +53,7 @@ class TestDisplayGrib(unittest.TestCase):
         self.assertEqual(actual, expected)
         self.assertIsNot(self.source.dataset, self.display.dataset)
         # No global list of GRIB tuples is built for the display.
-        self.assertEqual(len(self.display._arrays), 2)
+        self.assertEqual(len(self.display.sampling.arrays), 4)
 
     def test_outside_grid_does_not_read_band_arrays(self):
         self.assertEqual(self.display._get_wind_data(0, ((0, 0), (1, 1))), [])
@@ -227,6 +227,52 @@ class TestWindOverlay(unittest.TestCase):
         self.assertTrue(old.cancel.is_set())
         self.renderer._completed(self.canvas, old, self.surface, None)
         self.assertIsNone(self.renderer._states[self.canvas].frame)
+
+    def test_continuous_scrubbing_publishes_running_frame_and_queues_latest(self):
+        started, release = Event(), Event()
+        self.addCleanup(release.set)
+        data = self.renderer._load_wind.return_value
+
+        def slow(job):
+            started.set()
+            release.wait(2)
+            return data
+
+        self.renderer._load_wind.side_effect = slow
+        published = []
+        self.canvas.queue_draw.side_effect = lambda: published.append(
+            self.renderer._states[self.canvas].frame[0].palette[0]
+        )
+        self.draw()
+        self.assertTrue(started.wait(1))
+        running = self.renderer._active_job
+        for _ in range(10):
+            self.clock.time += timedelta(minutes=1)
+            self.draw()
+        latest = self.renderer._states[self.canvas].requested
+        self.assertFalse(running.cancel.is_set())
+        self.assertEqual(len(self.renderer._pending), 1)
+        self.assertIs(self.renderer._pending[self.canvas], latest)
+        release.set()
+        self.drain()
+        self.assertEqual(published, [running.palette[0], self.clock.time])
+        self.assertEqual(self.renderer._load_wind.call_count, 2)
+        self.assertIs(self.renderer._states[self.canvas].frame[0], latest)
+
+    def test_scrubbing_then_disabling_cancels_active_and_queued_frames(self):
+        self.renderer._start_next = Mock()
+        self.draw()
+        running = self.renderer._states[self.canvas].requested
+        self.renderer._active_canvas = self.canvas
+        self.renderer._active_job = running
+        self.clock.time += timedelta(minutes=1)
+        self.draw()
+        queued = self.renderer._states[self.canvas].requested
+        self.layer.set_visible(False)
+        self.assertTrue(running.cancel.is_set())
+        self.assertTrue(queued.cancel.is_set())
+        self.renderer._completed(self.canvas, running, self.surface, None)
+        self.assertNotIn(self.canvas, self.renderer._states)
 
     def clear_output(self):
         self.cr.save()

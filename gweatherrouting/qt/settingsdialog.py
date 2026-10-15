@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from gweatherrouting.core.connectionconfig import connection_config, connection_key
 from gweatherrouting.core.nmea2000datasource import N2K_FORMATS
 from gweatherrouting.core.serialdatasource import SerialDataSource
+from gweatherrouting.rendering.style import Style
 from .marinesettings import CurrentsAccount
 from .mapdatasetup import MapDataSetup
 
@@ -219,8 +220,6 @@ class SettingsDialog(QDialog):
         for label, key in (
             ("Smooth zoom", "smoothZoom"),
             ("Pan inertia", "panInertia"),
-            ("Wind arrows on ground", "gribArrowOnGround"),
-            ("Pressure isobars", "gribIsobarsVisible"),
             ("Canadian online charts", "canadianCharts"),
         ):
             checkbox = QCheckBox(label)
@@ -231,14 +230,21 @@ class SettingsDialog(QDialog):
             form.addRow(checkbox)
             if key == "canadianCharts":
                 checkbox.setEnabled(not controller.offline)
-        self.opacity = QSpinBox()
-        self.opacity.setRange(0, 100)
-        self.opacity.setSuffix(" %")
-        self.opacity.setValue(round(controller.settings.gribArrowOpacity * 100))
-        self.opacity.valueChanged.connect(
-            lambda value: self.set_preference("gribArrowOpacity", value / 100)
+        self.palette_combo = QComboBox()
+        self.palette_combo.addItems(list(Style.chart_palettes))
+        self.palette_combo.setCurrentText(controller.settings.chartPalette)
+        self.palette_combo.setAccessibleName("Chart palette")
+        self.palette_combo.setToolTip(
+            "Chart colors; independent of the workspace theme"
         )
-        form.addRow("Wind arrow opacity", self.opacity)
+        self.palette_combo.currentTextChanged.connect(
+            lambda palette: self.set_preference("chartPalette", palette)
+        )
+        form.addRow("Chart palette", self.palette_combo)
+        self.library_button = QPushButton("Data Library…")
+        self.library_button.setToolTip("Manage imported forecasts, charts and polars")
+        self.library_button.clicked.connect(self.show_library)
+        form.addRow(self.library_button)
         self.tabs.addTab(display, "Display")
         self.map_data = MapDataSetup(controller.map_data)
         self.tabs.addTab(self.map_data, "Map Data")
@@ -336,3 +342,8 @@ class SettingsDialog(QDialog):
             dict.__setitem__(self.controller.settings, key, previous)
             QMessageBox.warning(self, "Unable to save setting", str(exc))
         self.controller.data.redraw()
+
+    def show_library(self):
+        window = self.parent()
+        if hasattr(window, "show_library"):
+            window.show_library()

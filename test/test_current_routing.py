@@ -461,7 +461,7 @@ class TestCurrentRouting(unittest.TestCase):
         from gweatherrouting.core.grib import Grib
 
         data = gdal.GetDriverByName("MEM").Create("", 2, 2, 4, gdal.GDT_Float64)
-        data.SetGeoTransform((0, 0.25, 0, 0.25, 0, -0.25))
+        data.SetGeoTransform((-0.125, 0.25, 0, 0.375, 0, -0.25))
         for index, (element, hour, value) in enumerate(
             (("UGRD", 0, 0), ("VGRD", 0, -10), ("UGRD", 3, 6), ("VGRD", 3, -10)), 1
         ):
@@ -491,8 +491,8 @@ class TestCurrentRouting(unittest.TestCase):
         from gweatherrouting.core.grib import Grib
 
         for transform in (
-            (-0.5, 0.25, 0, 0.5, 0, -0.25),
-            (0.5, -0.25, 0, -0.5, 0, 0.25),
+            (-0.625, 0.25, 0, 0.625, 0, -0.25),
+            (0.625, -0.25, 0, -0.625, 0, 0.25),
         ):
             with self.subTest(transform=transform):
                 data = gdal.GetDriverByName("MEM").Create("", 5, 5, 4, gdal.GDT_Float64)
@@ -512,8 +512,7 @@ class TestCurrentRouting(unittest.TestCase):
                 source.start_time = START
                 source.end_time = START + timedelta(hours=3)
                 optimized = FractionalRoutingGrib(source)
-                # Reference: the original full-raster scan with fractional time.
-                source._transform_time = optimized._transform_time
+                # Routing wrapper uses the same shared interpolation as the display.
                 for latitude, longitude in (
                     (0.1, 0.1),
                     (-0.1, -0.1),
@@ -529,11 +528,17 @@ class TestCurrentRouting(unittest.TestCase):
                             side_effect=AssertionError("Full grid scan"),
                         ):
                             actual = optimized.get_wind_at(instant, latitude, longitude)
-                        np.testing.assert_allclose(actual, expected, rtol=1e-14)
-                before = optimized._window.cache_info().misses
+                        if expected is None:
+                            self.assertIsNone(actual)
+                        else:
+                            np.testing.assert_allclose(actual, expected, rtol=1e-14)
+                cached = dict(source.sampling.arrays)
                 optimized.get_wind_at(START + timedelta(minutes=15), 0.1, 0.1)
-                self.assertEqual(optimized._window.cache_info().misses, before)
-                self.assertEqual(optimized._get_wind_data(0, ((10, 10), (11, 11))), ())
+                self.assertEqual(set(source.sampling.arrays), set(cached))
+                self.assertTrue(
+                    all(source.sampling.arrays[k] is v for k, v in cached.items())
+                )
+                self.assertIsNone(optimized.get_wind_at(START, 10, 10))
 
     def test_wizard_currents_controls_switch_algorithm_and_parameters(self):
         from gweatherrouting.gtk.routingwizarddialog import RoutingWizardDialog

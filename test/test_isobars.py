@@ -27,7 +27,7 @@ def make_grib(path, with_pressure=True):
     dataset = gdal.GetDriverByName("GTiff").Create(
         path, 6, 5, len(bands), gdal.GDT_Float32
     )
-    dataset.SetGeoTransform((-124, 1, 0, 50, 0, -1))
+    dataset.SetGeoTransform((-124.5, 1, 0, 50.5, 0, -1))
     for index, (hour, element, value) in enumerate(bands, 1):
         band = dataset.GetRasterBand(index)
         band.SetMetadata(
@@ -76,7 +76,7 @@ class TestPressureData(unittest.TestCase):
         self.assertEqual(len(data), 30)
         # Hour 0 value plus one third of the 300 Pa hourly rise, in hPa.
         # Row zero is the northern edge (lat 50) of the test grid.
-        lat, lon, hpa = data[0]
+        lat, lon, hpa = next(point for point in data if point[:2] == (50, -124))
         self.assertEqual((lat, lon), (50, -124))
         self.assertAlmostEqual(hpa, (101300 + 100) / 100, places=4)
 
@@ -98,7 +98,7 @@ class TestPressureData(unittest.TestCase):
             display.get_pressure(forecast, bounds),
             self.source.get_pressure(forecast, bounds),
         )
-        self.assertEqual(len(display._pressure_arrays), 2)
+        self.assertEqual(len(display.sampling.arrays), 2)
 
     def test_display_pressure_cache_is_bounded(self):
         display = DisplayGrib(self.source)
@@ -137,6 +137,25 @@ class TestPressureLoading(unittest.TestCase):
             [[(0.0, 0.0, 1010.0), (1.0, 0.0, 1012.0)], [(0.0, 1.0, 1004.0)]],
         )
 
+    def test_isobars_render_without_loading_wind(self):
+        from unittest.mock import Mock
+
+        painter = Mock()
+        renderer = WindOverlayRenderer(lambda *_: painter)
+        renderer._load_wind = Mock(side_effect=AssertionError("Wind disabled"))
+        renderer._load_pressure = Mock(return_value=pressure_columns())
+        job = SimpleNamespace(
+            viewport=SimpleNamespace(width=300, height=200),
+            palette=(datetime(2026, 1, 1), 0.4, False, True, False, 8, 0.6, False),
+            cancel=Event(),
+            factor=1,
+        )
+        self.assertIsNotNone(renderer._render(job))
+        renderer._load_wind.assert_not_called()
+        renderer._load_pressure.assert_called_once_with(job)
+        self.assertEqual(painter.draw.call_args.args[2], [])
+        self.assertEqual(painter.draw.call_args.args[3], pressure_columns())
+
     def test_show_isobars_handles_legacy_palettes(self):
         self.assertTrue(
             WindOverlayRenderer._show_isobars(SimpleNamespace(palette=(1, 2, 3)))
@@ -168,6 +187,22 @@ class TestIsobarPainting(unittest.TestCase):
     def test_isobars_hidden_by_setting(self):
         self.settings.gribIsobarsVisible = False
         self.assertFalse(any(self.paint(pressure_columns())))
+
+    def test_custom_spacing_snaps_to_requested_interval(self):
+        levels = WindPainter._isobar_levels(np.array([1001, 1015]), 8)
+        np.testing.assert_array_equal(levels, [1000, 1008, 1016])
+
+    def test_zero_isobar_opacity_hides_lines_and_labels(self):
+        self.settings.gribIsobarOpacity = 0
+        self.assertFalse(any(self.paint(pressure_columns())))
+
+    def test_labels_can_be_hidden_without_hiding_contours(self):
+        from unittest.mock import patch
+
+        self.settings.gribIsobarLabels = False
+        with patch.object(WindPainter, "_draw_isobar_labels") as labels:
+            self.assertTrue(any(self.paint(pressure_columns())))
+        labels.assert_not_called()
 
     def test_missing_pressure_is_a_no_op(self):
         self.assertFalse(any(self.paint(None)))

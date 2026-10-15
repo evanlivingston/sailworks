@@ -31,7 +31,6 @@ from PySide6.QtWidgets import (
 )
 
 from gweatherrouting.core.timecontrol import TimeControl, naive_wall_time
-from gweatherrouting.rendering.style import Style
 from gweatherrouting.common import resource_path
 from .theme import section_label, symbol_icon, transport_icon
 from .dockchrome import style_dock, style_scrollarea
@@ -46,6 +45,7 @@ from .polarlibrary import PolarLibrary
 from .navigationpanel import NavigationPanel
 from .forecasttimeline import ForecastTimeline
 from .marinepanel import MarinePanel
+from .weatherpanel import WeatherPanel
 from .marinesettings import MarineSettings
 
 
@@ -92,9 +92,6 @@ class PreviewWindow(QMainWindow):
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         header.addWidget(spacer)
-        header.addAction(
-            symbol_icon("weather-windy-symbolic"), "Forecasts", self.show_forecasts
-        )
         self.addToolBarBreak()
         toolbar = QToolBar("Navigation", self)
         self.navigation_toolbar = toolbar
@@ -103,21 +100,9 @@ class PreviewWindow(QMainWindow):
         toolbar.setAutoFillBackground(True)
         toolbar.setMinimumHeight(32)
         self.addToolBar(toolbar)
-        open_forecast = toolbar.addAction(
-            symbol_icon("weather-windy-symbolic"), "Open forecast…", self.load_grib
-        )
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         toolbar.setIconSize(QSize(18, 18))
-        toolbar.addSeparator()
-        self.palette_combo = QComboBox()
-        self.palette_combo.addItems(list(Style.chart_palettes))
-        self.palette_combo.setCurrentText(controller.settings.chartPalette)
-        self.palette_combo.setAccessibleName("Chart palette")
-        self.palette_combo.setToolTip(
-            "Chart colors; independent of the workspace theme"
-        )
-        self.palette_combo.currentTextChanged.connect(self._palette_changed)
-        toolbar.addWidget(self.palette_combo)
+        toolbar_separator = toolbar.addSeparator()
         self.forecast_toolbar = QToolBar("Forecast timeline", self)
         self.forecast_toolbar.setObjectName("forecast-timeline")
         self.forecast_toolbar.setMovable(False)
@@ -218,7 +203,9 @@ class PreviewWindow(QMainWindow):
             symbol_icon("document-open-symbolic"), "Open NMEA log…", self.load_log
         )
         open_log.setShortcut(QKeySequence.StandardKey.Open)
-        file_menu.addAction(open_forecast.icon(), open_forecast.text(), self.load_grib)
+        file_menu.addAction(
+            symbol_icon("weather-windy-symbolic"), "Open forecast…", self.load_grib
+        )
         file_menu.addAction("Data Library…", self.show_library)
         file_menu.addAction("Polars", self.show_polar_workspace)
         file_menu.addSeparator()
@@ -228,9 +215,20 @@ class PreviewWindow(QMainWindow):
         self.settings_action = file_menu.addAction("Settings…", self.show_settings)
         self.settings_action.setMenuRole(QAction.MenuRole.PreferencesRole)
         self.settings_action.setShortcut(QKeySequence.StandardKey.Preferences)
-        toolbar.addAction("Data Library", self.show_library)
         controller.data.forecast_loaded.connect(self._forecast_loaded)
         self._create_marine_panels(controller)
+        self.weather_open = False
+        self.weather_syncing = False
+        self.weather_panel = WeatherPanel(
+            controller, self._active_map, self.load_grib, self.show_library
+        )
+        self.weather_dock = self._dock("Weather", "weather", self.weather_panel)
+        self.tabifyDockWidget(self.nmea_dock, self.weather_dock)
+        self.weather_dock.hide()
+        self.weather_dock.visibilityChanged.connect(self._weather_visibility)
+        self.weather_dock.toggleViewAction().triggered.connect(
+            lambda checked: self._show_panel(self.weather_dock) if checked else None
+        )
         view_menu = self.menuBar().addMenu("View")
         view_menu.addAction(self.nmea_dock.toggleViewAction())
         view_menu.addAction(self.routing_dock.toggleViewAction())
@@ -238,11 +236,13 @@ class PreviewWindow(QMainWindow):
         view_menu.addAction(self.performance_dock.toggleViewAction())
         view_menu.addAction(self.polar_manager_dock.toggleViewAction())
         view_menu.addAction(self.navigation_dock.toggleViewAction())
+        view_menu.addAction(self.weather_dock.toggleViewAction())
         view_menu.addAction(toolbar.toggleViewAction())
         view_menu.addAction(header.toggleViewAction())
         window_menu = self.menuBar().addMenu("Window")
         window_menu.addSection("Panels")
         window_menu.addAction(self.navigation_dock.toggleViewAction())
+        window_menu.addAction(self.weather_dock.toggleViewAction())
         window_menu.addAction(self.nmea_dock.toggleViewAction())
         window_menu.addAction(self.routing_dock.toggleViewAction())
         window_menu.addAction(self.polar_selector_dock.toggleViewAction())
@@ -254,38 +254,44 @@ class PreviewWindow(QMainWindow):
         window_menu.addSeparator()
         window_menu.addAction("Reset Panels", self.reset_panels)
         self.chart_toolbar_actions = list(toolbar.actions())
+        ordered_actions = []
         for name, callback in (
             ("Import…", self.navigation_panel.import_gpx),
-            ("New", self._new_track),
             ("Export…", self._export_navigation),
         ):
-            self.chart_toolbar_actions.append(toolbar.addAction(name, callback))
+            action = toolbar.addAction(name, callback)
+            self.chart_toolbar_actions.append(action)
+            ordered_actions.append(action)
         self.navigation_action = toolbar.addAction("Tabs")
         self.navigation_action.setCheckable(True)
         self.navigation_action.setChecked(True)
         self.navigation_action.setToolTip("Show / Hide Track / POI tabs")
         self.navigation_action.triggered.connect(self._toggle_navigation)
         self.chart_toolbar_actions.append(self.navigation_action)
+        ordered_actions.append(self.navigation_action)
         self.ais_action = toolbar.addAction("AIS")
         self.ais_action.setCheckable(True)
         self.ais_action.setChecked(True)
         self.ais_action.toggled.connect(self._toggle_ais)
         self.chart_toolbar_actions.append(self.ais_action)
-        for action in self.chart_toolbar_actions[-5:]:
-            toolbar.insertAction(open_forecast, action)
+        ordered_actions.append(self.ais_action)
+        for action in ordered_actions:
+            toolbar.insertAction(toolbar_separator, action)
         self.map_toolbar_actions = []
-        self.grib_action = toolbar.addAction("Grib")
+        self.weather_action = toolbar.addAction("Weather")
+        self.weather_action.setCheckable(True)
+        self.weather_action.setToolTip("Show / Hide Weather panel")
+        self.weather_action.triggered.connect(self._toggle_weather)
+        toolbar.insertAction(toolbar_separator, self.weather_action)
+        self.map_toolbar_actions.append(self.weather_action)
         self.dashboard_action = toolbar.addAction("Dashboard")
-        for action, label in (
-            (self.grib_action, "wind"),
-            (self.dashboard_action, "dashboard"),
-        ):
+        for action, label in ((self.dashboard_action, "dashboard"),):
             action.setCheckable(True)
             action.setChecked(True)
             action.toggled.connect(
                 lambda enabled, label=label: self._toggle_map_display(label, enabled)
             )
-            toolbar.insertAction(open_forecast, action)
+            toolbar.insertAction(toolbar_separator, action)
             self.map_toolbar_actions.append(action)
         self.marine_action = toolbar.addAction(
             symbol_icon("tides-currents-symbolic"), "Tides & currents"
@@ -293,7 +299,7 @@ class PreviewWindow(QMainWindow):
         self.marine_action.setToolTip("Show / Hide Currents and Tides panels")
         self.marine_action.setCheckable(True)
         self.marine_action.triggered.connect(self._toggle_marine)
-        toolbar.insertAction(open_forecast, self.marine_action)
+        toolbar.insertAction(toolbar_separator, self.marine_action)
         self.chart_toolbar_actions.append(self.marine_action)
         file_menu.addAction("Import GPX…", self.navigation_panel.import_gpx)
         file_menu.addAction("Export navigation…", self._export_navigation)
@@ -411,13 +417,11 @@ class PreviewWindow(QMainWindow):
     def _set_chart_toolbar_icons(toolbar):
         icons = {
             "Import…": "document-open-symbolic",
-            "New": "document-new-symbolic",
             "Export…": "document-save-symbolic",
             "Tabs": "compass",
             "AIS": "ais-ship-symbolic",
-            "Grib": "weather-windy-symbolic",
+            "Weather": "weather-windy-symbolic",
             "Dashboard": "eye-open-negative-filled-symbolic",
-            "Data Library": "document-properties-symbolic",
             "NMEA": "gnome-dev-wavelan",
             "Routing": "routing-symbolic",
             "Fit view": "view-fullscreen-symbolic",
@@ -466,6 +470,12 @@ class PreviewWindow(QMainWindow):
             else Qt.ToolButtonStyle.ToolButtonTextBesideIcon
         )
         self._sync_forecast_toolbar()
+        self.weather_syncing = True
+        self.weather_dock.setVisible(
+            current in (self.map, self.logs_view) and self.weather_open
+        )
+        self.weather_syncing = False
+        self.weather_action.setChecked(self.weather_open)
         self.navigation_syncing = True
         self.navigation_dock.setVisible(current is self.map and self.navigation_open)
         self.navigation_syncing = False
@@ -516,13 +526,27 @@ class PreviewWindow(QMainWindow):
 
     def _sync_map_actions(self):
         canvas = self._active_map()
-        for action, enabled in (
-            (self.grib_action, canvas.wind_visible),
-            (self.dashboard_action, canvas.dashboard_visible),
-        ):
+        for action, enabled in ((self.dashboard_action, canvas.dashboard_visible),):
             action.blockSignals(True)
             action.setChecked(enabled)
             action.blockSignals(False)
+
+        self.weather_panel.refresh()
+
+    def _weather_visibility(self, *_):
+        if not self.weather_syncing and self.views.currentWidget() in (
+            self.map,
+            self.logs_view,
+        ):
+            self.weather_open = not self.weather_dock.isHidden()
+            self.weather_action.setChecked(self.weather_open)
+
+    def _toggle_weather(self, enabled):
+        self.weather_open = enabled
+        if enabled:
+            self._show_panel(self.weather_dock)
+        else:
+            self.weather_dock.hide()
 
     def _toggle_map_display(self, layer, enabled):
         canvas = self._active_map()
@@ -549,11 +573,6 @@ class PreviewWindow(QMainWindow):
     def _fit_route(self):
         self.views.setCurrentWidget(self.map)
         self.map.fit_route()
-
-    def show_forecasts(self):
-        self.show_library()
-        assert self.library_dialog is not None
-        self.library_dialog.tabs.setCurrentIndex(0)
 
     def show_polar_workspace(self):
         self.views.setCurrentWidget(self.polar_workspace)
@@ -634,6 +653,10 @@ class PreviewWindow(QMainWindow):
         )
 
     def _show_panel(self, dock):
+        if dock is self.weather_dock:
+            self.weather_open = True
+            if self.views.currentWidget() not in (self.map, self.logs_view):
+                self.views.setCurrentWidget(self.map)
         if dock is self.navigation_dock:
             self.navigation_open = True
             self.views.setCurrentWidget(self.map)
@@ -642,7 +665,9 @@ class PreviewWindow(QMainWindow):
                 self.marine_open[kind] = True
                 self.views.setCurrentWidget(self.map)
         dock.show()
-        if dock in self.marine_docks.values() and not dock.isFloating():
+        if (
+            dock in self.marine_docks.values() or dock is self.weather_dock
+        ) and not dock.isFloating():
             # A pre-show raise can leave this dock last in sibling order while
             # another tab is active. Force a Z-order change so Qt selects it.
             dock.lower()
@@ -692,6 +717,7 @@ class PreviewWindow(QMainWindow):
             self.performance_dock,
             self.polar_manager_dock,
             self.navigation_dock,
+            self.weather_dock,
             *self.marine_docks.values(),
         ):
             dock.setFloating(False)
@@ -986,10 +1012,6 @@ class PreviewWindow(QMainWindow):
         )
         if path:
             self.controller.load_path(path)
-
-    def _palette_changed(self, palette):
-        self.controller.settings.chartPalette = palette
-        self.map.queue_draw()
 
     def _boat_changed(self, boat):
         if boat.is_valid():
