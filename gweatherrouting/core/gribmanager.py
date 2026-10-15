@@ -23,7 +23,12 @@ import weatherrouting
 
 from gweatherrouting.core.grib import Grib
 from gweatherrouting.core.gribsampling import WeatherSampler
-from gweatherrouting.core.gribsources import NOAAGFSSource, OpenSkironSource
+from gweatherrouting.core.gribsources import (
+    ECCHRDPSource,
+    NOAAGFSSource,
+    NOAAHRRRSource,
+    OpenSkironSource,
+)
 from gweatherrouting.core.storage import GRIB_DIR, Storage
 
 logger = logging.getLogger("gweatherrouting")
@@ -46,7 +51,12 @@ class GribManager(weatherrouting.Grib):
         self.gribs: List[Grib] = []
         self.timeframe = [0, 0]
 
-        self.sources = [OpenSkironSource(), NOAAGFSSource()]
+        self.sources = [
+            OpenSkironSource(),
+            NOAAGFSSource(),
+            NOAAHRRRSource(),
+            ECCHRDPSource(),
+        ]
 
         self.local_gribs = []
         self.refresh_local_gribs()
@@ -202,14 +212,20 @@ class GribManager(weatherrouting.Grib):
         """Download a GRIB file using the appropriate source.
 
         The identifier determines which source handles the download.
-        JSON identifiers are handled by NOAA GFS, URLs by OpenSkiron.
+        JSON identifiers carry a "source" name (older GFS ones default
+        to NOAA GFS); URLs are handled by OpenSkiron.
         """
         try:
             # Determine which source to use based on the identifier
             source = None
             if identifier.startswith("{"):
-                # JSON config = NOAA GFS
-                source = self.get_source("NOAA GFS")
+                try:
+                    import json
+
+                    name = json.loads(identifier).get("source", "NOAA GFS")
+                except ValueError:
+                    name = "NOAA GFS"
+                source = self.get_source(name)
             else:
                 # URL = OpenSkiron
                 source = self.get_source("OpenSkiron")
