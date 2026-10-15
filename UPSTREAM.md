@@ -1497,3 +1497,113 @@ into `dev`; no upstream PR was created or updated.
   integration, and focused regressions. Extract and validate against freshly
   fetched parent `master`; exclude this fork contribution record. Upstream
   submission is a separate task.
+
+## Weather panel and continuous GRIB sampling
+
+- Status: candidate; fork review [PR #27](https://github.com/evanlivingston/gweatherrouting/pull/27),
+  `feature/weather-integration`, based on `dev` after routing PR #26.
+- Functional commits: `4de7ca5`, `f859ab0`. The original uncommitted
+  `feature/weather-panel` working tree is preserved; this isolated integration
+  branch carries its weather changes reconciled with current routing.
+- Scope: dedicated Weather dock, independent wind/isobar controls, configurable
+  isobar spacing/opacity/labels, and live scrubber updates. Display/cursor and
+  scalar/batched routing share model/run-aware bilinear and temporal sampling.
+  Different model runs/members are not blended. Pixel-center correction and
+  continuous time sampling intentionally change numerical results.
+- Validation: 857 tests and 106 subtests pass on the weather branch. The combined
+  four-feature branch passes 903 tests and 110 subtests. Analytical missing-value,
+  source-selection, spatial/time interpolation, and consumer-agreement tests pass.
+  Weather/routing panel screenshots were rendered and visually inspected.
+- Performance: the recorded local warm-query benchmark measured 0.23 ms median
+  versus 0.43 ms on the previous sampler; cold indexing was 53 ms versus 15 ms.
+  No spatial downsampling or interpolation of direction angles was introduced.
+- Intended upstream scope: shared sampling, scrubber/overlay scheduling, and
+  Weather UI as focused contributions; exclude fork tracking. Regional vector
+  handling is a separate dependent contribution below. No upstream submission
+  has been authorized.
+
+## Regional HRRR and HRDPS wind integration
+
+- Status: queued on shared-sampling dependency; fork review
+  [PR #28](https://github.com/evanlivingston/gweatherrouting/pull/28),
+  `feature/pnw-wind-integration`, based on PR #27's branch.
+- Functional commits: `7c2c198` (adapted original `4716356`), `9ee31ee`.
+  The `feature/pnw-wind` prototype remains preserved.
+- Scope: registered HRRR/HRDPS sources reach the Qt downloader; HRRR bounds and
+  MSLMA pressure are supported. Read per-field GRIB2 vector-reference flags and
+  rotate grid-relative components at native sample centers before spatial/time
+  blending. Handle HRDPS rotated geographic CRS. Unsupported vector templates
+  are unavailable, not silently interpreted as east/north. Automatic gap recovery
+  remains GFS; legacy GRIB1 retains its prior vector-reference assumption.
+- Validation: 870 backend tests and 106 subtests pass; the complete 105-test Qt
+  suite passes after fixing the new test's initial-library-scan race. Combined
+  four-feature validation passes 903 tests and 110 subtests. Analytical Lambert
+  convergence, rotated coordinates, and GRIB2 concatenation/submessages are covered.
+  Actual 2026-10-15 12Z HRRR and HRDPS files declare grid-relative winds; scalar
+  and batch vectors agree after rotation and regional node extraction succeeds.
+- Merge order: merge PR #27 first, retarget this PR to `dev`, then verify its
+  focused diff/checks. Independent of WCOFS and safety integration after #27.
+- Intended upstream scope: provider/download UI integration and native vector
+  interpretation, extracted after shared sampling support. No upstream publication.
+
+## WCOFS coastal-current integration
+
+- Status: candidate; fork review [PR #29](https://github.com/evanlivingston/gweatherrouting/pull/29),
+  `feature/wcofs-integration`, based on PR #27's branch.
+- Functional commits: `19b5190` (adapted original `ea2fd90`), `4adf55a`,
+  `ce864a7`, `e0864db`. The `feature/nos-currents` prototype remains preserved.
+- Scope: NOAA OPeNDAP coverage discovery, ROMS destaggering/rotation, and regular
+  current-field integration. Preserve NetCDF/face/land masks, reject mixed wet/dry
+  cells, require a bracketing run, and retain missing-hour gaps. Cache spatial
+  cell locations per download. Record static and hourly decoded-array hashes.
+  The 0.04-degree output resampling is explicit; no extra coastal resolution is
+  claimed. Full model current includes tides and is selected, not added to other
+  models' tidal currents.
+- Validation: 873 tests and 106 subtests pass; final provider/coverage checks pass.
+  The combined four-feature branch passes 903 tests and 110 subtests. After the
+  binary-reader follow-up, all 43 focused launcher/provider/field checks pass.
+  A live NOAA 2026-10-15 04–05Z subset returned a 2×6×6 field with 72 finite
+  samples, maximum speed 0.412 m/s, and three source records.
+- Dependencies/platforms: netCDF4 is included in normal installation and tox.
+  Minimal `--no-deps` installs remain able to start without it and report WCOFS
+  unavailable. MSYS2 WCOFS downloads are not yet validated; no successful Windows
+  WCOFS run is claimed. Existing marine current-field interfaces are prerequisites.
+- Merge order: PR #27 first, then retarget to `dev`; independent of #28/#30.
+- Intended upstream scope: provider, ROMS transforms, coverage integration,
+  dependency handling, and tests, validated against the applicable marine base.
+
+## Routing safety controls and policy integration
+
+- Status: candidate; fork review [PR #30](https://github.com/evanlivingston/gweatherrouting/pull/30),
+  `feature/routing-safety-integration`, based on PR #27's branch.
+- Functional commits: `fc818fa` (adapted original `20b52b3`), `50d4486`,
+  `30b2676`. The `feature/edge-safety` prototype remains preserved.
+- Scope: optional persisted maximum wind, sailing-speed threshold/motor fallback,
+  and explicitly labeled wind-based wave proxy in Routing Plan. Requests/scenarios
+  freeze inputs and save policy provenance. Reject capped candidates in wind-only
+  and current scalar/batch/frontier paths. Avoid stationary wind-only candidates
+  waiting through capped wind. Defaults remain inert; invalid thresholds fail.
+- Numerical policy: polar efficiency precedes speed adjustments. The proxy
+  reduces sailing speed above 20 kn, up to 25% at 40 kn. Motoring replaces adjusted
+  speeds below the threshold and remains subject to caps. No actual wave/gust
+  forecasts or fuel/endurance model is implemented; existing integration sample
+  positions/times define where caps are checked.
+- Validation: initial full branch passes 872 tests and 110 subtests. Final focused
+  safety/routing checks pass 20 tests and 4 subtests. Scalar/whole-frontier parity,
+  wind-only rejection, immutable UI requests, and workspace persistence are covered.
+  Combined four-feature suite passes 903 tests and 110 subtests.
+- Merge order: PR #27 first, then retarget to `dev`; independent of #28/#29.
+- Intended upstream scope: reusable policy, engine integration, Qt controls and
+  persistence, and focused regressions; no upstream submission authorized.
+
+### Combined integration review checks
+
+- All four were assembled locally on `feature/weather-routing-validation` without
+  merging any new feature into `dev`. The full combined suite passed twice at
+  903 tests and 110 subtests; the subsequent WCOFS binary-reader follow-up passed
+  43 focused tests. Numerical code is shared with the focused review branches.
+- Changed production code passes Black/Flake8 and whitespace checks. Full Flake8
+  retains the pre-existing connection-dialog complexity failure. Full mypy retains
+  exactly the same 32 errors in 8 unchanged files as a clean archive of `dev`.
+- CI results are separate from local validation and may still be queued/running.
+  Fork PRs remain unmerged pending user approval. No upstream PR was created.
