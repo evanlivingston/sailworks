@@ -715,6 +715,9 @@ class TrackMap(QWidget, MercatorProjection):
         if self.width() <= 0 or self.height() <= 0:
             return
         painter = QPainter(self)
+        # Expanded images must also stay inside this widget during native
+        # QWidget render/grab redirection into an ancestor surface.
+        painter.setClipRect(self.rect())
         # Water is the fallback for unavailable chart/overlay source coverage.
         painter.fillRect(0, 0, self.width(), self.height(), self._sea_color())
         previous_base = self._base_cache
