@@ -19,6 +19,7 @@ from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
 from gweatherrouting.rendering.navigation import NavigationRenderer
 from gweatherrouting.rendering.ais import AISRenderer
 from gweatherrouting.rendering.dashboard import DashboardRenderer
+from gweatherrouting.rendering.isochrones import IsochroneFrame, IsochronesRenderer
 from .windcursor import WindCursorSampler
 from .marineoverlay import MarineOverlay
 
@@ -96,6 +97,8 @@ class TrackMap(QWidget, MercatorProjection):
         self.charts = controller.charts
         self.charts.add_map(self)
         self.wind = WindOverlayRenderer(WindPainter, controller.scheduler.submit)
+        self.isochrones = IsochronesRenderer(controller.scheduler.submit)
+        self.isochrone_frame = IsochroneFrame((), (), ())
         self._ticks = {}
         self._next_tick = 0
         self.disposed = False
@@ -183,6 +186,7 @@ class TrackMap(QWidget, MercatorProjection):
         self.controller.boat_changed.disconnect(self._boat_changed)
         self.charts.forget_map(self)
         self.wind.forget(self)
+        self.isochrones.forget(self)
         self.marine.close()
         for token in list(self._ticks):
             self.remove_tick_callback(token)
@@ -196,6 +200,7 @@ class TrackMap(QWidget, MercatorProjection):
         self.cancel_move()
         self.charts._chs_renderer.forget(self)
         self.wind.forget(self)
+        self.isochrones.forget(self)
         self.marine.forget(self)
         # Forgotten overlay state means the cached pixels may reference
         # frames that will never refresh; drop them while hidden.
@@ -348,6 +353,7 @@ class TrackMap(QWidget, MercatorProjection):
             self._collection_snapshot(core.poiManager),
             self.route_plan,
             self.route_preview,
+            self.isochrone_frame,
             self.route,
             self.selected_route_point,
             self.navigation.hl_routing,
@@ -806,6 +812,13 @@ class TrackMap(QWidget, MercatorProjection):
         self.invalidate_navigation()
         self.update()
 
+    def set_isochrones(self, frontiers):
+        self.isochrone_frame = IsochroneFrame(tuple(frontiers), (), ())
+        if not frontiers:
+            self.isochrones.forget(self)
+        self.invalidate_navigation()
+        self.update()
+
     def set_route_preview(self, coordinates):
         self.route_preview = tuple(coordinates)
         self.invalidate_navigation()
@@ -1036,6 +1049,8 @@ class TrackMap(QWidget, MercatorProjection):
         )
         surface.set_device_scale(factor, factor)
         cr = cairo.Context(surface)
+        frames = ((self.isochrone_frame,),) if self.isochrone_frame.isochrones else ()
+        self.isochrones.draw(self, cr, frames, "routing-live")
         self.navigation.draw_routes(self, cr, self.time_control.time.timestamp())
         self.navigation.draw_navigation(self, cr)
         if self.ais_visible:

@@ -96,8 +96,9 @@ class WorkspacePreferences(QObject):
         for action in window.log_toggles.values():
             action.toggled.connect(self.changed)
         panel = window.routing_panel
-        for combo in (panel.polar, panel.algorithm, panel.routes):
+        for combo in (panel.polar, panel.algorithm):
             combo.currentIndexChanged.connect(self.changed)
+        window.navigation_panel.route_selected.connect(self.changed)
         panel.coastlines.toggled.connect(self.changed)
         panel.pages.currentChanged.connect(self.changed)
         window.speed.currentIndexChanged.connect(self.changed)
@@ -149,7 +150,7 @@ class WorkspacePreferences(QObject):
         if not normal.isValid():
             normal = window.geometry()
         panel = window.routing_panel
-        route = panel.routes.currentData()
+        route = window.navigation_panel.route
         return {
             "window": {**geometry(normal), "maximized": window.isMaximized()},
             "layout": bytes(window.saveState(LAYOUT_VERSION).toBase64()).decode(
@@ -208,6 +209,7 @@ class WorkspacePreferences(QObject):
             },
             "routing": {
                 "page": panel.pages.currentIndex(),
+                "page_name": panel.pages.tabText(panel.pages.currentIndex()),
                 "polar": panel.polar.currentText(),
                 "algorithm": panel.algorithm.currentText(),
                 "coastlines": panel.coastlines.isChecked(),
@@ -392,7 +394,6 @@ class WorkspacePreferences(QObject):
         for combo, key in (
             (panel.polar, "polar"),
             (panel.algorithm, "algorithm"),
-            (panel.routes, "selected_route"),
         ):
             text = saved.get(key)
             if isinstance(text, str):
@@ -400,9 +401,24 @@ class WorkspacePreferences(QObject):
                 if index >= 0:
                     combo.setCurrentIndex(index)
         panel.restore_options(mapping(saved.get("options")))
-        page = saved.get("page")
-        if type(page) is int and 0 <= page < panel.pages.count():
-            panel.pages.setCurrentIndex(page)
+        route = self.window.controller.core.routingManager.get_by_name(
+            saved.get("selected_route")
+        )
+        if route is not None:
+            self.window._select_saved_route(route)
+        page = saved.get("page_name")
+        if not isinstance(page, str):
+            # Old layouts included Results between Plan and Compare.
+            old_page = saved.get("page")
+            page = (
+                {0: "Plan", 1: "Plan", 2: "Compare", 3: "Currents"}.get(old_page)
+                if type(old_page) is int
+                else None
+            )
+        for index in range(panel.pages.count()):
+            if panel.pages.tabText(index) == page:
+                panel.pages.setCurrentIndex(index)
+                break
         if isinstance(saved.get("coastlines"), bool):
             panel.coastlines.setChecked(saved["coastlines"])
 

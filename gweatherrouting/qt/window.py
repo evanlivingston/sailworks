@@ -159,7 +159,6 @@ class PreviewWindow(QMainWindow):
         self.routing_panel = RoutingPanel(controller)
         controller.polars.changed.connect(self.routing_panel.refresh_polars)
         controller.polars.use_requested.connect(self._use_polar)
-        self.routing_panel.manage_polars.clicked.connect(self.show_polars)
         self.routing_dock = QDockWidget("Routing", self)
         self.routing_dock.setObjectName("routing")
         style_dock(self.routing_dock)
@@ -344,16 +343,16 @@ class PreviewWindow(QMainWindow):
         self._set_chart_toolbar_icons(toolbar)
         self._view_changed()
         self.routing_panel.plan_changed.connect(self.map.set_route_plan)
-        self.routing_panel.route_selected.connect(self._route_selected)
-        self.routing_panel.fit_requested.connect(self.map.fit_route)
-        self.routing_panel.waypoints.currentCellChanged.connect(
-            lambda row, *_: self.map.select_route_point(row)
-        )
+        controller.routing.completed.connect(self._routing_completed)
         self.map.route_location.connect(self.routing_panel.set_location)
         controller.routing.preview_changed.connect(self.map.set_route_preview)
+        controller.routing.isochrones_changed.connect(self.map.set_isochrones)
         controller.routing.changed.connect(self._routing_changed)
         self.routing_panel._plan_changed()
-        self.routing_panel._select_route(0)
+        self._select_saved_route(
+            controller.core.routingManager.get_active()
+            or next(iter(controller.core.routingManager), None)
+        )
         self.instruments = QLabel("Waiting for position")
         self.cursor_status = QLabel()
         self.cursor_status.setMinimumWidth(0)
@@ -560,17 +559,22 @@ class PreviewWindow(QMainWindow):
         self.views.setCurrentWidget(self.polar_workspace)
         self._show_panel(self.polar_selector_dock)
 
-    def _route_selected(self, coordinates):
-        route = self.routing_panel.routes.currentData()
-        speeds = (
-            tuple(point[5] or 0 for point in route.points) if route is not None else ()
-        )
-        self.map.set_route(coordinates, speeds)
-        self.map.navigation.hl_routing = route.name if route is not None else None
+    def _select_saved_route(self, route):
         self.navigation_panel.select_route(route)
+        self._navigation_route_selected(route)
+
+    def _routing_completed(self, route):
+        self._select_saved_route(route)
+        self.map.fit_route()
 
     def _navigation_route_selected(self, route):
-        self.routing_panel.refresh_routes(route)
+        coordinates = (
+            tuple((p[0], p[1]) for p in route.points) if route is not None else ()
+        )
+        speeds = tuple(p[5] or 0 for p in route.points) if route is not None else ()
+        self.map.set_route(coordinates, speeds)
+        self.map.navigation.hl_routing = route.name if route is not None else None
+        self._sync_route_isochrones()
 
     def _navigation_visibility(self, _):
         if not self.navigation_syncing and self.views.currentWidget() is self.map:
@@ -587,7 +591,7 @@ class PreviewWindow(QMainWindow):
 
     def _navigation_changed(self):
         self.routing_panel.refresh_destinations()
-        self.routing_panel.refresh_routes(self.navigation_panel.route)
+        self._navigation_route_selected(self.navigation_panel.route)
         self.map.invalidate_navigation()
         self.log_map.invalidate_navigation()
         self.map.update()
@@ -696,6 +700,15 @@ class PreviewWindow(QMainWindow):
     def _routing_changed(self):
         if self.controller.routing.busy:
             self.views.setCurrentWidget(self.map)
+        else:
+            self._sync_route_isochrones()
+
+    def _sync_route_isochrones(self):
+        if not self.controller.routing.busy:
+            route = self.navigation_panel.route
+            self.map.set_isochrones(
+                route.isochrones if route is not None and route.visible else ()
+            )
 
     def _fit_view(self):
         self.views.setCurrentWidget(self.map)
