@@ -29,7 +29,7 @@ structure. Regatta is hidden in GTK and should remain absent in Qt.
 | Cursor wind details | Shared asynchronous sampler; position/wind status readout, private bounded GRIB handles and cancellation on time/source/view changes |
 | Forecast transport, step interval, manual time and scrubber | Migrated on Charts, with shared enabled-source bounds and independent NMEA playback |
 | Smooth zoom and pan inertia | Live Display preferences apply to Charts and Logs; immediate/animated cursor-anchored wheel zoom and shared GTK drag inertia, with lifecycle cancellation and deferred workspace save |
-| Broader settings | Additional GTK controls remain pending |
+| Connection/display/current settings | Main working settings migrated; GTK General/AIS pages are hidden. Native pinch/two-finger pan, About/app identity, packaging and final parity validation remain |
 | Routing parameters, comparisons and currents | Plan exposes engine parameters; Compare has the four GTK scenario axes; Currents uses shared coverage/download preparation, warnings and current-aware calculations |
 | GTK menu/header appearance | Qt native OS menus/decorations retained; exact fonts/chrome differ |
 

@@ -442,19 +442,24 @@ restart. The verified rebuilt-layer draw fix remains in place. Wheel/trackpad
 input interpretation, zoom step size and routing calculations are unchanged;
 native pinch and macOS two-finger scroll-to-pan parity remain separate work.
 
-## Still to migrate
+## Remaining migration and release work
 
-- Remaining general settings and computed-route waypoint editing;
-  see the parity checklist.
-- Base coastline installation/download UI and additional chart providers.
-- Native trackpad gestures, dateline behavior, large-file performance, live
-  hardware validation and distributable macOS/Linux/Windows bundles.
-- A compact macOS toolbar with traffic lights in the same row. Standard native
-  window buttons work; the current preview keeps the normal title bar.
+The main connection/display/current settings, chart library, navigation, polars,
+NMEA and routing workflows are available in Qt. GTK's General and AIS settings
+pages are hidden, its project-properties button is hidden, and computed-route
+points are read-only; these are not additional working features awaiting migration.
 
-Subsequent slices should follow GTK’s existing organization for the remaining
-controls instead of inventing a different Qt layout. GTK stays available until Qt's workflows
-and packaging reach parity.
+- Native pinch zoom and macOS two-finger scroll-to-pan, matching GTK's gesture
+  handling while preserving wheel zoom and the new live motion preferences.
+- Application About/version identity and named macOS/Linux/Windows bundles;
+  then a deliberate switch of the default launcher from GTK to Qt.
+- Final workflow/provider parity checks, dateline and large-file behavior, and
+  validation with live instruments on supported platforms.
+
+Map-data setup and Settings menu cleanup are implemented in open fork PR #20,
+pending integration. GTK stays available during verification and packaging.
+Offscreen chart margins, lower-detail zoom backdrops and a compact macOS toolbar
+are interaction/performance polish, separate from the remaining migration work.
 
 ## Validation
 

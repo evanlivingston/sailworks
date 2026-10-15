@@ -1163,8 +1163,10 @@ into `dev`; no upstream PR was created or updated.
   the approved/visually confirmed map rebuild fix PR #21. Independent of open
   Settings/map-data PR #20; no pending prerequisite or retargeting.
 - Review: [fork PR #22](https://github.com/evanlivingston/gweatherrouting/pull/22),
-  open for user review; not merged. The user tested the combined preview and
-  confirmed smooth interaction.
+  merged into `dev` with user approval (merge `f05feb3`). The user tested the
+  combined preview and confirmed smooth interaction. Docs CI passed; the linter
+  failure is the existing connection-dialog C901. Other CI jobs were pending
+  at merge time.
 - Functional commits: `fda2c25` moves existing pure motion helpers into Core and
   preserves GTK import compatibility; `7328711` binds live Qt preferences,
   drag inertia, gesture/lifecycle cancellation and motion-aware workspace save.
