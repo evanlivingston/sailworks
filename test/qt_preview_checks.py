@@ -3444,6 +3444,248 @@ class QtPreviewChecks(unittest.TestCase):
                     self.assertEqual(base.call_count, 1)
                     self.assertEqual(nav.call_count, 1)
 
+    def _enable_motion_settings(self):
+        # The common fixture skips disk loading; initialize notifications using
+        # a private settings path before exercising real preference callbacks.
+        with patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)):
+            ORIGINAL_STORAGE_LOAD(self.controller.settings)
+
+    @staticmethod
+    def _motion_wheel(pointer=QPointF(83, 71)):
+        from PySide6.QtCore import QPoint
+
+        return SimpleNamespace(
+            position=lambda: pointer,
+            angleDelta=lambda: QPoint(0, 120),
+            pixelDelta=lambda: QPoint(0, 0),
+            accept=lambda: None,
+        )
+
+    @staticmethod
+    def _fling_canvas(canvas, clock):
+        def event(x, y):
+            return SimpleNamespace(
+                button=lambda: Qt.MouseButton.LeftButton, position=lambda: QPointF(x, y)
+            )
+
+        canvas.mousePressEvent(event(100, 100))
+        clock[0] += 0.04
+        canvas.mouseMoveEvent(event(125, 110))
+        clock[0] += 0.02
+        canvas.mouseMoveEvent(event(145, 120))
+        clock[0] += 0.005
+        canvas.mouseReleaseEvent(event(145, 120))
+
+    def test_motion_smooth_zoom_off_is_immediate_and_cursor_anchored_in_both_views(
+        self,
+    ):
+        self._enable_motion_settings()
+        self.controller.settings.smoothZoom = False
+        for view, canvas in (
+            (self.window.map, self.window.map),
+            (self.window.logs_view, self.window.log_map),
+        ):
+            self.window.views.setCurrentWidget(view)
+            self.drain()
+            before = canvas._zoom
+            anchor = canvas.convert_screen_to_geographic(83, 71)
+            canvas.wheelEvent(self._motion_wheel())
+            self.assertAlmostEqual(canvas._zoom, before + 0.25)
+            self.assertIsNone(canvas._zoom_target)
+            self.assertIsNone(canvas._zoom_tick_token)
+            self.assertFalse(canvas._zoom_animating)
+            self.assertFalse(canvas._zoom_settle.isActive())
+            x, y = canvas.convert_geographic_to_screen(anchor)
+            self.assertAlmostEqual(x, 83, places=7)
+            self.assertAlmostEqual(y, 71, places=7)
+
+    def test_motion_disabling_smooth_zoom_finishes_current_target_without_drift(self):
+        self._enable_motion_settings()
+        canvas = self.window.map
+        self.controller.settings.smoothZoom = True
+        clock = [100.0]
+        with patch(
+            "gweatherrouting.qt.mapcanvas.time.monotonic", side_effect=lambda: clock[0]
+        ):
+            before = canvas._zoom
+            anchor = canvas.convert_screen_to_geographic(83, 71)
+            canvas.wheelEvent(self._motion_wheel())
+            token = canvas._zoom_tick_token
+            self.assertIsNotNone(token)
+            self.assertEqual(canvas._zoom, before)
+            clock[0] += 0.016
+            canvas._ticks[token].timeout.emit()
+            self.assertGreater(canvas._zoom, before)
+            self.assertLess(canvas._zoom, before + 0.25)
+            self.controller.settings.smoothZoom = False
+            self.assertAlmostEqual(canvas._zoom, before + 0.25)
+            self.assertIsNone(canvas._zoom_tick_token)
+            self.assertNotIn(token, canvas._ticks)
+            self.assertFalse(canvas._zoom_animating)
+            x, y = canvas.convert_geographic_to_screen(anchor)
+            self.assertAlmostEqual(x, 83, places=7)
+            self.assertAlmostEqual(y, 71, places=7)
+
+    def test_motion_drag_inertia_follows_release_and_live_setting_stops_it(self):
+        self._enable_motion_settings()
+        canvas = self.window.map
+        clock = [100.0]
+        with (
+            patch(
+                "gweatherrouting.qt.mapcanvas.time.monotonic",
+                side_effect=lambda: clock[0],
+            ),
+            patch.object(canvas, "_hover"),
+        ):
+            self.controller.settings.panInertia = False
+            self._fling_canvas(canvas, clock)
+            self.assertIsNone(canvas._inertia)
+            self.assertIsNone(canvas._inertia_tick_token)
+            self.controller.settings.panInertia = True
+            self._fling_canvas(canvas, clock)
+            motion = canvas._inertia
+            token = canvas._inertia_tick_token
+            self.assertIsNotNone(motion)
+            point = canvas.convert_screen_to_geographic(100, 100)
+            velocity = math.hypot(motion.vx, motion.vy)
+            clock[0] += 0.02
+            canvas._ticks[token].timeout.emit()
+            x, y = canvas.convert_geographic_to_screen(point)
+            self.assertGreater(x, 100)
+            self.assertGreater(y, 100)
+            self.assertLess(math.hypot(motion.vx, motion.vy), velocity)
+            canvas.queue_draw()
+            self.assertTrue(canvas._overlay_pending)
+            with patch.object(self.window.workspace, "save") as save:
+                self.window.workspace._autosave()
+                save.assert_not_called()
+                self.controller.settings.panInertia = False
+                self.window.workspace._autosave()
+                save.assert_called_once()
+            self.assertFalse(canvas._overlay_pending)
+            self.assertIsNone(canvas._inertia)
+            self.assertIsNone(canvas._inertia_tick_token)
+            self.assertNotIn(token, canvas._ticks)
+            before = canvas._center_lat, canvas._center_lon
+            clock[0] += 1
+            self.assertFalse(canvas._inertia_tick(canvas, None))
+            self.assertEqual((canvas._center_lat, canvas._center_lon), before)
+
+    def test_motion_pause_before_release_suppresses_glide_and_ticks_finish(self):
+        self._enable_motion_settings()
+        canvas = self.window.map
+        clock = [100.0]
+        self.controller.settings.panInertia = True
+        with (
+            patch(
+                "gweatherrouting.qt.mapcanvas.time.monotonic",
+                side_effect=lambda: clock[0],
+            ),
+            patch.object(canvas, "_hover"),
+        ):
+            canvas.mousePressEvent(
+                SimpleNamespace(
+                    button=lambda: Qt.MouseButton.LeftButton,
+                    position=lambda: QPointF(100, 100),
+                )
+            )
+            clock[0] += 0.04
+            canvas.mouseMoveEvent(SimpleNamespace(position=lambda: QPointF(145, 120)))
+            clock[0] += 0.2
+            canvas.mouseReleaseEvent(None)
+            self.assertIsNone(canvas._inertia)
+            self._fling_canvas(canvas, clock)
+            token = canvas._inertia_tick_token
+            for _ in range(180):
+                if token not in canvas._ticks:
+                    break
+                clock[0] += 1 / 60
+                canvas._ticks[token].timeout.emit()
+            self.assertIsNone(canvas._inertia)
+            self.assertIsNone(canvas._inertia_tick_token)
+            self.assertNotIn(token, canvas._ticks)
+
+    def test_motion_new_gestures_fit_move_hide_and_resize_cancel_inertia(self):
+        self._enable_motion_settings()
+        from PySide6.QtGui import QResizeEvent
+
+        canvas = self.window.map
+        clock = [100.0]
+        self.controller.settings.panInertia = True
+        with (
+            patch(
+                "gweatherrouting.qt.mapcanvas.time.monotonic",
+                side_effect=lambda: clock[0],
+            ),
+            patch.object(canvas, "_hover"),
+        ):
+            actions = (
+                lambda: canvas.mousePressEvent(
+                    SimpleNamespace(
+                        button=lambda: Qt.MouseButton.LeftButton,
+                        position=lambda: QPointF(100, 100),
+                    )
+                ),
+                lambda: canvas.wheelEvent(self._motion_wheel()),
+                lambda: canvas.fit_coordinates(((48.4, -123.4), (48.5, -123.5))),
+                lambda: canvas.begin_move(lambda point: None),
+                canvas.hide,
+                lambda: canvas.resizeEvent(QResizeEvent(canvas.size(), canvas.size())),
+            )
+            for action in actions:
+                self._fling_canvas(canvas, clock)
+                token = canvas._inertia_tick_token
+                self.assertIsNotNone(token)
+                action()
+                self.assertIsNone(canvas._inertia)
+                self.assertIsNone(canvas._inertia_tick_token)
+                self.assertNotIn(token, canvas._ticks)
+                canvas._finish_zoom_silent()
+                canvas.cancel_move()
+                canvas.drag = None
+                canvas.show()
+
+    def test_motion_display_preferences_persist_and_close_cancels_callbacks(self):
+        from PySide6.QtWidgets import QCheckBox
+
+        with (
+            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+            patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
+        ):
+            ORIGINAL_STORAGE_LOAD(self.controller.settings)
+            self.window.show_settings()
+            for checkbox in self.window.settings_dialog.findChildren(QCheckBox):
+                if checkbox.text() in ("Smooth zoom", "Pan inertia"):
+                    checkbox.setChecked(False)
+            for canvas in (self.window.map, self.window.log_map):
+                self.assertFalse(canvas._smooth_zoom)
+                self.assertFalse(canvas._pan_inertia_enabled)
+            with patch.object(Storage, "load_or_save_default", ORIGINAL_STORAGE_LOAD):
+                self.restart_workspace()
+            for canvas in (self.window.map, self.window.log_map):
+                self.assertFalse(canvas._smooth_zoom)
+                self.assertFalse(canvas._pan_inertia_enabled)
+            self.controller.settings.panInertia = True
+            canvas = self.window.map
+            clock = [100.0]
+            with (
+                patch(
+                    "gweatherrouting.qt.mapcanvas.time.monotonic",
+                    side_effect=lambda: clock[0],
+                ),
+                patch.object(canvas, "_hover"),
+            ):
+                self._fling_canvas(canvas, clock)
+                self.assertIsNotNone(canvas._inertia_tick_token)
+            settings = self.controller.settings
+            self.window.close()
+            self.assertIsNone(canvas._inertia_tick_token)
+            self.assertIsNone(canvas._inertia)
+            self.assertFalse(canvas._ticks)
+            settings.panInertia = False
+            settings.smoothZoom = True
+            self.assertFalse(canvas._smooth_zoom)
+
 
 if __name__ == "__main__":
     unittest.main()

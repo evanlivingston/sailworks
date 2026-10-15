@@ -2,6 +2,7 @@
 
 import math
 import time
+from typing import Optional
 
 import cairo
 import numpy as np
@@ -10,6 +11,7 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget, QMenu
 
 from gweatherrouting.core.mapviewport import MercatorProjection, MapPoint
+from gweatherrouting.core.mapmotion import DragVelocity, PanInertia
 from gweatherrouting.rendering.style import Style
 from gweatherrouting.rendering.windpainter import WindPainter
 from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
@@ -62,6 +64,12 @@ class TrackMap(QWidget, MercatorProjection):
         self._zoom_target = None
         self._zoom_tick_token = None
         self._zoom_last_tick = 0.0
+        self._smooth_zoom = True
+        self._pan_inertia_enabled = True
+        self._drag_velocity = DragVelocity()
+        self._inertia: Optional[PanInertia] = None
+        self._inertia_tick_token = None
+        self._inertia_last_tick = 0.0
         self._track_proj = None  # (data id, w, h, zoom, lat, lon, xs, ys, poly)
         self._ais_targets_state: tuple = ()
         self._ais_visible_state = True
@@ -96,6 +104,8 @@ class TrackMap(QWidget, MercatorProjection):
         self._cursor_context = None
         self._wind_cursor = WindCursorSampler(self, controller.scheduler.submit)
         controller.boat_changed.connect(self._boat_changed)
+        controller.settings.register_on_change("smoothZoom", self._set_smooth_zoom)
+        controller.settings.register_on_change("panInertia", self._set_pan_inertia)
 
     def _time_changed(self, _):
         self._cancel_cursor()
@@ -157,7 +167,8 @@ class TrackMap(QWidget, MercatorProjection):
         self.disposed = True
         self._wind_cursor.close()
         self.cursor_readout.emit("")
-        self._zoom_settle.stop()
+        self._cancel_inertia(settle=False)
+        self._finish_zoom_silent()
         self.controller.boat_changed.disconnect(self._boat_changed)
         self.charts.forget_map(self)
         self.wind.forget(self)
@@ -168,6 +179,9 @@ class TrackMap(QWidget, MercatorProjection):
 
     def hideEvent(self, event):  # noqa: N802 - Qt virtual method name
         self._cancel_cursor()
+        self._cancel_inertia(settle=False)
+        self._finish_zoom_silent()
+        self.drag = None
         self.cancel_move()
         self.charts._chs_renderer.forget(self)
         self.wind.forget(self)
@@ -196,7 +210,7 @@ class TrackMap(QWidget, MercatorProjection):
             and self._cursor_context != self._weather_context()
         ):
             self._cancel_cursor()
-        if self.drag is not None or self._zoom_animating:
+        if self.drag is not None or self._inertia is not None or self._zoom_animating:
             # Mid-gesture: overlay workers may deliver frames while the view
             # is still moving. Paint shifted previews now and do one sharp
             # rebuild when the gesture settles instead of churning per event.
@@ -367,9 +381,11 @@ class TrackMap(QWidget, MercatorProjection):
         center_x = (cached_lon + 180.0) / 360.0 * tile
         anchor_x = (anchor_lon + 180.0) / 360.0 * tile
         old_x = anchor_x - center_x + width / 2.0
-        old_y = self._mercator_y(anchor_lat, tile) - self._mercator_y(
-            cached_lat, tile
-        ) + height / 2.0
+        old_y = (
+            self._mercator_y(anchor_lat, tile)
+            - self._mercator_y(cached_lat, tile)
+            + height / 2.0
+        )
         target_width, target_height = width * ratio, height * ratio
         return QRectF(
             pointer_x - old_x * ratio,
@@ -446,6 +462,71 @@ class TrackMap(QWidget, MercatorProjection):
             self.invalidate_navigation()
         self.update()
 
+    def _set_smooth_zoom(self, enabled):
+        if self.disposed:
+            return
+        self._smooth_zoom = bool(enabled)
+        if not enabled and self._zoom_target is not None:
+            self._zoom = self._zoom_target
+            self._recenter_on_anchor()
+            self._finish_zoom()
+            self.view_changed.emit()
+
+    def _set_pan_inertia(self, enabled):
+        if self.disposed:
+            return
+        self._pan_inertia_enabled = bool(enabled)
+        if not enabled:
+            self._cancel_inertia()
+
+    def _cancel_inertia(self, settle=True):
+        moving = self._inertia is not None
+        if self._inertia_tick_token is not None:
+            self.remove_tick_callback(self._inertia_tick_token)
+        self._inertia_tick_token = None
+        self._inertia = None
+        if moving and settle and not self.disposed:
+            self._refresh_after_gesture()
+
+    def _pan_pixels(self, dx, dy):
+        center = self.convert_screen_to_geographic(
+            self.width() / 2 - dx, self.height() / 2 - dy
+        )
+        self._center_lat, self._center_lon = center.get_degrees()
+        self._center_lat = max(-85, min(85, self._center_lat))
+
+    def _start_inertia(self, pointer):
+        if not self._pan_inertia_enabled:
+            return False
+        vx, vy = self._drag_velocity.release(time.monotonic(), pointer.x(), pointer.y())
+        motion = PanInertia(vx, vy)
+        if not motion.active:
+            return False
+        self._inertia = motion
+        self._inertia_last_tick = time.monotonic()
+        self._inertia_tick_token = self.add_tick_callback(self._inertia_tick)
+        return True
+
+    def _inertia_tick(self, canvas, _):
+        motion = self._inertia
+        if motion is None:
+            self._inertia_tick_token = None
+            return False
+        now = time.monotonic()
+        elapsed = min(0.05, max(0.0, now - self._inertia_last_tick))
+        self._inertia_last_tick = now
+        self._pan_pixels(*motion.step(elapsed))
+        self.update()
+        self.view_changed.emit()
+        if self._inertia is not motion:
+            return False
+        if not motion.active:
+            self._inertia = None
+            self._inertia_tick_token = None
+            self._refresh_after_gesture()
+            return False
+        return True
+
     def _ensure_zoom_tick(self):
         if self._zoom_tick_token is None and not self.disposed:
             self._zoom_last_tick = time.monotonic()
@@ -506,6 +587,7 @@ class TrackMap(QWidget, MercatorProjection):
         if not coordinates:
             return
         self._cancel_cursor()
+        self._cancel_inertia(settle=False)
         lats, lons = zip(*coordinates)
         self._center_lat = (min(lats) + max(lats)) / 2
         self._center_lon = (min(lons) + max(lons)) / 2
@@ -734,8 +816,7 @@ class TrackMap(QWidget, MercatorProjection):
                 0,
                 min(
                     index,
-                    int(np.searchsorted(self.offsets, self.position, side="right"))
-                    - 1,
+                    int(np.searchsorted(self.offsets, self.position, side="right")) - 1,
                 ),
             )
         painter.setBrush(QColor("#ffffff"))
@@ -850,6 +931,7 @@ class TrackMap(QWidget, MercatorProjection):
         self.cursor_readout.emit(text)
         if (
             self.drag is not None
+            or self._inertia is not None
             or self._zoom_animating
             or self.move_callback is not None
             or not self.wind_visible
@@ -880,10 +962,15 @@ class TrackMap(QWidget, MercatorProjection):
 
     def resizeEvent(self, event):  # noqa: N802 - Qt virtual method name
         self._cancel_cursor()
+        self._cancel_inertia(settle=False)
+        self._finish_zoom_silent()
+        self.drag = None
         super().resizeEvent(event)
 
     def begin_move(self, callback):
         self._cancel_cursor()
+        self._cancel_inertia()
+        self._finish_zoom_silent()
         self.move_callback = callback
         self.drag = None
         self.setCursor(Qt.CursorShape.CrossCursor)
@@ -939,6 +1026,7 @@ class TrackMap(QWidget, MercatorProjection):
 
     def mousePressEvent(self, event):  # noqa: N802 - Qt virtual method name
         self._cancel_cursor()
+        self._cancel_inertia()
         if event.button() == Qt.MouseButton.LeftButton:
             if self.move_callback is not None:
                 position = self.convert_screen_to_geographic(
@@ -949,6 +1037,8 @@ class TrackMap(QWidget, MercatorProjection):
                 callback(position.get_degrees())
                 return
             self.drag = event.position()
+            self._drag_velocity = DragVelocity()
+            self._drag_velocity.add(time.monotonic(), self.drag.x(), self.drag.y())
             self._finish_zoom_silent()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
 
@@ -957,21 +1047,23 @@ class TrackMap(QWidget, MercatorProjection):
             self._hover(event.position())
             return
         delta = event.position() - self.drag
-        center = self.convert_screen_to_geographic(
-            self.width() / 2 - delta.x(), self.height() / 2 - delta.y()
-        )
-        self._center_lat, self._center_lon = center.get_degrees()
-        self._center_lat = max(-85, min(85, self._center_lat))
+        self._pan_pixels(delta.x(), delta.y())
         self.drag = event.position()
+        self._drag_velocity.add(time.monotonic(), self.drag.x(), self.drag.y())
         self.update()
         self.view_changed.emit()
         self._hover(event.position())
 
-    def mouseReleaseEvent(self, _):  # noqa: N802 - Qt virtual method name
+    def mouseReleaseEvent(self, event):  # noqa: N802 - Qt virtual method name
+        if event is not None and event.button() != Qt.MouseButton.LeftButton:
+            return
+        pointer = event.position() if event is not None else self.drag
+        dragging = self.drag is not None
         self.drag = None
         self.setCursor(Qt.CursorShape.OpenHandCursor)
-        # Settle: repaint shifted previews sharp and pick up deferred frames.
-        self._refresh_after_gesture()
+        if not (dragging and pointer is not None and self._start_inertia(pointer)):
+            # Settle once the drag or its inertial continuation ends.
+            self._refresh_after_gesture()
         self.view_changed.emit()
 
     def wheelEvent(self, event):  # noqa: N802 - Qt virtual method name
@@ -982,12 +1074,21 @@ class TrackMap(QWidget, MercatorProjection):
         if not delta:
             event.accept()
             return
+        self._cancel_inertia(settle=False)
         # Accumulate into an animated target instead of jumping: trackpad
         # streams keep extending the glide, discrete notches ease over to it.
         # Painting stays on scaled previews until the animation converges.
         base = self._zoom_target if self._zoom_target is not None else self._zoom
         self._zoom_target = max(1, min(20, base + delta * 0.25))
         self._zoom_anchor = (*anchor.get_degrees(), pointer.x(), pointer.y())
+        if not self._smooth_zoom:
+            self._zoom = self._zoom_target
+            self._recenter_on_anchor()
+            self._finish_zoom_silent()
+            self._refresh_after_gesture()
+            self.view_changed.emit()
+            event.accept()
+            return
         self._zoom_animating = True
         self._ensure_zoom_tick()
         self._zoom_settle.start(self._ZOOM_SETTLE_MS)
