@@ -352,7 +352,10 @@ class QtPreviewChecks(unittest.TestCase):
                                     )
                                 stop.wait(0.03)
                     except (OSError, TimeoutError) as exc:
-                        if not stop.is_set():
+                        if (
+                            not stop.is_set()
+                            and self.controller.connections.polling_active
+                        ):
                             failures.append(exc)
 
                 self.controller.connections.storage.connections = [

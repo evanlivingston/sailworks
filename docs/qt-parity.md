@@ -34,6 +34,7 @@ structure. Regatta is hidden in GTK and should remain absent in Qt.
 | Smooth zoom and pan inertia | Live Display preferences apply to Charts and Logs; immediate/animated cursor-anchored wheel zoom and shared GTK drag inertia, with lifecycle cancellation and deferred workspace save |
 | Connection/display/current settings | Main working settings migrated; GTK General/AIS pages are hidden. About/app identity, packaging and final parity validation remain |
 | Routing parameters, comparisons and currents | Plan exposes engine parameters; Compare has the four GTK scenario axes; Currents uses shared coverage/download preparation, warnings and current-aware calculations |
+| Default launch | Installed command and module now open Qt; explicit GTK launchers remain. See [validation results and limits](qt-default-validation.md). |
 | GTK menu/header appearance | Qt native OS menus/decorations retained; exact fonts/chrome differ |
 
 This pass corrects the main workspace structure rather than claiming full UI
