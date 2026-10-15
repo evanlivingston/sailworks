@@ -1387,7 +1387,8 @@ into `dev`; no upstream PR was created or updated.
 - Branch/base: `feature/qt-default-launcher` from `dev` at `b323e76`, following
   approved native gesture PR #24. No pending prerequisite.
 - Review: [fork PR #25](https://github.com/evanlivingston/gweatherrouting/pull/25),
-  open and unmerged. Requested scope: default launcher and migration validation;
+  merged into `dev` with user approval (merge `bf7c802`). Requested scope:
+  default launcher and migration validation;
   app identity/Qt bundles and unrelated legacy lint/type cleanup are excluded.
 - Functional commits: `2fc1842` switches source/installed launchers to Qt, declares
   PySide6 as a base dependency and Python 3.10+, retains Qt compatibility aliases
@@ -1419,6 +1420,13 @@ into `dev`; no upstream PR was created or updated.
   `docs/qt-default-validation.md`.
 - Intended upstream scope: exclude default Qt policy, fork docs/CI and legacy
   bundle selection changes; consider only the independently validated serial fix.
+
+- Merge verification: the main checkout is back on `dev`; the installed
+  `gweatherrouting --help` resolves the Qt CLI. Build/docs CI passed on the
+  previous head. Windows Qt validation reached import and found a missing QtSvg
+  DLL; follow-up `8e16abd` adds the MSYS2 Qt SVG runtime. Its revalidation and
+  Linux/macOS Qt jobs are not yet claimed as passing. Legacy tests still lack
+  nmeatoolkit and legacy lint/type failures remain separate.
 
 ## Serial sentence fragmentation correction
 
