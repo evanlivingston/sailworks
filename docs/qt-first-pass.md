@@ -426,12 +426,28 @@ time/source changes invalidate stale frames. Logs retains its independent NMEA
 clock and does not gain a marine overlay. These display controls do not enable
 current-aware routing or use tides for depth/clearance calculations.
 
+## Map motion preferences
+
+Settings → Display applies Smooth zoom and Pan inertia immediately to both
+Charts and Logs. Smooth zoom retains Qt's cursor-anchored wheel animation;
+switching it off makes wheel steps immediate and finishes an active zoom at its
+requested target. Pan inertia continues a released drag with GTK's existing
+velocity limits and exponential decay; switching it off stops motion immediately.
+A pause before releasing suppresses a glide.
+
+New input, fit, point placement, hiding, resizing and closing stop inertial motion.
+Overlay updates wait until motion settles, and workspace autosave waits for both
+maps to stop moving. Preferences use the existing shared settings file and survive
+restart. The verified rebuilt-layer draw fix remains in place. Wheel/trackpad
+input interpretation, zoom step size and routing calculations are unchanged;
+native pinch and macOS two-finger scroll-to-pan parity remain separate work.
+
 ## Still to migrate
 
 - Remaining general settings and computed-route waypoint editing;
   see the parity checklist.
 - Base coastline installation/download UI and additional chart providers.
-- Smooth/inertial gestures, dateline behavior, large-file performance, live
+- Native trackpad gestures, dateline behavior, large-file performance, live
   hardware validation and distributable macOS/Linux/Windows bundles.
 - A compact macOS toolbar with traffic lights in the same row. Standard native
   window buttons work; the current preview keeps the normal title bar.
@@ -442,8 +458,8 @@ and packaging reach parity.
 
 ## Validation
 
-The full repository suite passes 801 tests and 101 subtests locally.
-The optional Qt wrapper runs seventy-three integration checks in a separate
+The full repository suite passes 812 tests and 101 subtests locally.
+The optional Qt wrapper runs eighty-one integration checks in a separate
 process. Coverage includes transport/recording, queued Core notifications,
 stale-source rejection, overlay completion without GLib, callback cancellation
 on shutdown, real OGR ENC/raster fixtures, forecast/palette changes, projection,

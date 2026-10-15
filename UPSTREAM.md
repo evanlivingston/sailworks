@@ -1153,3 +1153,54 @@ into `dev`; no upstream PR was created or updated.
   action and map-data reload checks pass together (four focused checks).
   Independent diagnostic changes remain separate from this correction.
 - Intended upstream scope: none while Qt remains fork-only.
+
+## Qt live map motion preferences
+
+- Status: candidate for the toolkit-neutral helper move; Qt integration and fork
+  migration documentation remain fork-only pending an explicit upstream request.
+  No upstream submission.
+- Branch/base: `feature/qt-map-motion-settings` from `dev` at `fd5517f`, including
+  the approved/visually confirmed map rebuild fix PR #21. Independent of open
+  Settings/map-data PR #20; no pending prerequisite or retargeting.
+- Review: [fork PR #22](https://github.com/evanlivingston/gweatherrouting/pull/22),
+  open for user review; not merged. The user tested the combined preview and
+  confirmed smooth interaction.
+- Functional commits: `fda2c25` moves existing pure motion helpers into Core and
+  preserves GTK import compatibility; `7328711` binds live Qt preferences,
+  drag inertia, gesture/lifecycle cancellation and motion-aware workspace save.
+- Scope: Smooth zoom on retains the existing Qt wheel easing; off applies each
+  wheel step immediately. Toggling off during animation finishes at the requested
+  cursor-anchored target. Pan inertia on uses GTK's release velocity sampling,
+  speed cap, pause suppression and decay; off stops at drag release or immediately
+  cancels an active glide. Preferences apply to both Charts and Logs and persist
+  through the existing Settings model. New input, fit, placement, hide, resize and
+  close stop inertia. Deferred overlay updates settle once motion ends; workspace
+  autosave waits for either map's drag, zoom or inertia to stop. The confirmed
+  missing-blit correction remains intact; no diagnostic pacing/pinning is added.
+- Fidelity: helper math is unchanged and GTK callers retain their old imports.
+  Qt retains its prior wheel step, easing, pointer anchor and latitude/zoom limits.
+  No routing calculation, chart geometry, source selection or sampling changes.
+  A formatter also normalizes two pre-existing expressions in the touched canvas.
+- Validation: final full suite passes 812 tests and 101 subtests (85.81s), including
+  81 isolated Qt checks. Six new checks cover immediate/animated anchor behavior,
+  mid-zoom disable, inertia direction/decay/live stop, held-release suppression,
+  timer completion/new input/fit/placement/hide/resize/close cancellation,
+  preference callbacks in both views, private-file restart and deferred overlays/
+  workspace save. Existing GTK motion checks pass unchanged. Initial full run had
+  three GTK docking failures; all three reproduced on unchanged `dev` in the same
+  environment. They pass in the final full rerun. Scoped Black/Flake8/mypy pass
+  (four production files); full Flake8 retains the existing connection-dialog C901
+  and full mypy retains 32 baseline errors in eight files (216 checked).
+- Combined/native QA: a temporary detached checkout based on PR #20 with the two
+  functional commits applied passes its Qt wrapper (87 checks). Native macOS Qt
+  6.12.0 at DPR 2 verifies immediate/animated zoom, released-drag continuation and
+  live stop through Display checkboxes; native Settings widget capture inspected.
+  “GWeatherRouting — motion settings preview” is running from that combined
+  checkout with installed charts and private copied settings/workspace JSON plus
+  offline connections. Original settings/layout and the main checkout are intact.
+  No new live hardware/provider or screen-recording validation is claimed.
+- Limits: native pinch/trackpad scroll-to-pan parity, dateline/pole behavior and
+  packaging remain separate work. PR #20 stays open for review.
+- Intended upstream scope: pure helper module relocation and GTK compatibility
+  imports if requested; exclude Qt code, fork policy and migration documentation.
+- Usage/assessment: `docs/qt-first-pass.md`, `docs/qt-parity.md`.
