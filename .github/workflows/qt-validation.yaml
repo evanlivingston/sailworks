@@ -62,6 +62,7 @@ jobs:
             mingw-w64-ucrt-x86_64-python-pyproj
             mingw-w64-ucrt-x86_64-python-shapely
             mingw-w64-ucrt-x86_64-pyside6
+            mingw-w64-ucrt-x86_64-qt6-svg
       - name: Install shared Python dependencies and application
         shell: msys2 {0}
         run: |
