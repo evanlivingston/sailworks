@@ -668,6 +668,36 @@ class TestSerialDataSourceClose(unittest.TestCase):
         ds = SerialDataSource("nmea0183", "in", "/dev/ttyFAKE", 9600)
         ds.close()  # should not raise
 
+    def test_fragmented_serial_sentences_survive_read_boundaries(self):
+        sentence = "$GPRMC,120000,A,4807.038,N,01131.000,E,7,0,010126,,"
+        ds = SerialDataSource("nmea0183", "in", "/dev/ttyFAKE", 9600)
+        ds.serial_conn = MagicMock()
+        ds.serial_conn.inWaiting.return_value = 100
+        ds.serial_conn.read.side_effect = [
+            sentence[:18].encode(),
+            (sentence[18:] + "\r\n").encode(),
+        ]
+        ds.connected = True
+        self.assertEqual(ds.read(), [])
+        packets = ds.read()
+        self.assertEqual(len(packets), 1)
+        self.assertAlmostEqual(packets[0].data.latitude, 48.1173)
+
+    def test_serial_line_endings_bounds_and_close_discard_partial_data(self):
+        ds = SerialDataSource("nmea0183", "in", "/dev/ttyFAKE", 9600)
+        ds.serial_conn = MagicMock()
+        ds.serial_conn.inWaiting.return_value = 100
+        ds.serial_conn.read.side_effect = [
+            b"first\rsecond\r\nthird\npartial",
+            b"x" * 5000,
+        ]
+        self.assertEqual(ds._read(), ["first", "second", "third"])
+        self.assertEqual(ds._read(), [])
+        self.assertEqual(ds._partial_line, "")
+        ds._partial_line = "stale"
+        ds.close()
+        self.assertEqual(ds._partial_line, "")
+
     def test_read_serial_exception_sets_disconnected(self):
         import serial
 

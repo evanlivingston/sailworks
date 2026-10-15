@@ -30,8 +30,10 @@ class SerialDataSource(DataSource):
         self.port = port
         self.baudrate = baudrate
         self.serial_conn = None
+        self._partial_line = ""
 
     def connect(self):
+        self._partial_line = ""
         try:
             self.serial_conn = serial.Serial(self.port, baudrate=self.baudrate)
             self.connected = True
@@ -41,6 +43,7 @@ class SerialDataSource(DataSource):
             return False
 
     def close(self):
+        self._partial_line = ""
         if self.serial_conn:
             try:
                 self.serial_conn.close()
@@ -66,11 +69,15 @@ class SerialDataSource(DataSource):
     def _read(self):
         try:
             if self.serial_conn and self.serial_conn.inWaiting() > 0:
-                return (
-                    self.serial_conn.read(self.serial_conn.inWaiting())
-                    .decode("ascii")
-                    .split("\n")
-                )
+                text = self._partial_line + self.serial_conn.read(
+                    self.serial_conn.inWaiting()
+                ).decode("ascii", errors="replace")
+                lines = text.replace("\r", "\n").split("\n")
+                self._partial_line = lines.pop()
+                # Bound an unterminated/corrupt stream just like network input.
+                if len(self._partial_line) > 4096:
+                    self._partial_line = ""
+                return [line for line in lines if line and len(line) <= 4096]
         except (OSError, serial.SerialException) as e:
             logger.warning("Serial connection lost on %s: %s", self.port, e)
             self.connected = False
