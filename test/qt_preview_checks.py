@@ -314,6 +314,157 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertGreater(land.red(), land.blue())
         canvas.close()
 
+    def test_local_tcp_and_udp_feed_reaches_ui_and_timestamped_recording(self):
+        import socket
+
+        for transport in ("tcp", "udp"):
+            with self.subTest(transport=transport):
+                server = socket.socket(
+                    socket.AF_INET,
+                    socket.SOCK_STREAM if transport == "tcp" else socket.SOCK_DGRAM,
+                )
+                server.bind(("127.0.0.1", 0))
+                server.settimeout(5)
+                if transport == "tcp":
+                    server.listen(1)
+                stop = Event()
+                failures = []
+
+                def feed():
+                    try:
+                        if transport == "tcp":
+                            connection, _ = server.accept()
+                            with connection:
+                                while not stop.is_set():
+                                    payload = (rmc("120000") + "\r\n").encode("ascii")
+                                    connection.sendall(payload[:12])
+                                    connection.sendall(payload[12:])
+                                    stop.wait(0.03)
+                        else:
+                            while not stop.is_set():
+                                sources = tuple(
+                                    self.controller.connections.sources.values()
+                                )
+                                if sources:
+                                    server.sendto(
+                                        (rmc("120000") + "\n").encode("ascii"),
+                                        sources[0].s.getsockname(),
+                                    )
+                                stop.wait(0.03)
+                    except (OSError, TimeoutError) as exc:
+                        if not stop.is_set():
+                            failures.append(exc)
+
+                self.controller.connections.storage.connections = [
+                    {
+                        "type": "network",
+                        "protocol": "nmea0183",
+                        "direction": "in",
+                        "host": "127.0.0.1",
+                        "port": server.getsockname()[1],
+                        "network": transport,
+                    }
+                ]
+                self.controller.offline = False
+                worker = Thread(target=feed, daemon=True)
+                worker.start()
+                received = []
+                callback = lambda boat: received.append((get_ident(), boat.latitude))
+                self.controller.core.connect("boat_position", callback)
+                try:
+                    self.controller.session.select_source("live")
+                    self.controller.session.start_recording()
+                    recording = self.controller.session.recorder.path
+                    self.controller.start_connections()
+                    self.wait_for_routing_stage(lambda: bool(received))
+                    self.assertAlmostEqual(received[-1][1], 48.1173)
+                    self.assertEqual(received[-1][0], get_ident())
+                    self.assertIn("48.11730", self.window.instruments.text())
+                    self.assertIn("$GPRMC", recording.read_text())
+                    self.assertGreater(
+                        self.controller.connections.get_status()[0]["packets"], 0
+                    )
+                    self.controller.session.stop_recording()
+                    before = len(self.controller.points)
+                    self.controller.connections.stop_polling()
+                    self.assertIsNone(self.controller.connections.thread)
+                    self.assertGreaterEqual(len(self.controller.points), before)
+                    self.assertTrue(recording.exists())
+                finally:
+                    self.controller.session.stop_recording()
+                    self.controller.connections.stop_polling()
+                    self.controller.core.disconnect("boat_position", callback)
+                    stop.set()
+                    server.close()
+                    worker.join(2)
+                self.assertFalse(worker.is_alive())
+                self.assertFalse(failures)
+
+    @unittest.skipUnless(sys.platform != "win32", "POSIX pseudo-terminal validation")
+    def test_local_serial_feed_runs_through_production_reader_and_ui(self):
+        import os
+        import pty
+        import tty
+
+        master, slave = pty.openpty()
+        tty.setraw(slave)
+        stop = Event()
+
+        def feed():
+            while not stop.is_set():
+                os.write(master, (rmc("120000") + "\r\n").encode("ascii"))
+                stop.wait(0.03)
+
+        worker = Thread(target=feed, daemon=True)
+        self.controller.connections.storage.connections = [
+            {
+                "type": "serial",
+                "protocol": "nmea0183",
+                "direction": "in",
+                "data-port": os.ttyname(slave),
+                "baudrate": 4800,
+            }
+        ]
+        self.controller.offline = False
+        worker.start()
+        try:
+            self.controller.start_connections()
+            self.wait_for_routing_stage(
+                lambda: "48.11730" in self.window.instruments.text()
+            )
+            self.assertAlmostEqual(self.controller.core.boat_info.latitude, 48.1173)
+            self.assertIn("48.11730", self.window.instruments.text())
+            self.assertTrue(self.controller.connections.get_status()[0]["connected"])
+        finally:
+            self.controller.connections.stop_polling()
+            stop.set()
+            worker.join(2)
+            os.close(master)
+            os.close(slave)
+        self.assertFalse(worker.is_alive())
+        self.assertIsNone(self.controller.connections.thread)
+
+    def test_large_file_keeps_every_log_point_and_plot_value_during_playback(self):
+        count = 30000
+        path = self.path / "large.nmea"
+        with path.open("w") as stream:
+            for index in range(count):
+                hours, seconds = divmod(index, 3600)
+                minutes, seconds = divmod(seconds, 60)
+                stream.write(rmc(f"{hours:02}{minutes:02}{seconds:02}") + "\n")
+        self.controller.load_path(str(path))
+        self.wait_for_routing_stage(lambda: not self.controller.session.loading)
+        self.assertEqual(len(self.controller.session.log.entries), count)
+        self.assertEqual(len(self.window.log_map.points), count)
+        self.assertEqual(len(self.window.plots.points), count)
+        for axis in self.window.plots.axes:
+            self.assertEqual(len(axis.lines[0].get_xdata()), count)
+        self.controller.session.set_playing(True)
+        self.controller.session.advance(30)
+        self.drain()
+        self.assertEqual(len(self.window.plots.points), count)
+        self.assertEqual(self.window.plots.position, 30)
+
     def test_full_core_delivers_worker_notifications_on_qt_thread(self):
         core = self.controller.core
         self.assertIs(self.controller.session, core.nmea_session)
