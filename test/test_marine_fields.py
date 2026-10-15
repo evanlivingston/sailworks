@@ -505,18 +505,22 @@ class TestSpatialCurrents(unittest.TestCase):
         self.assertEqual(len(tasks), 2)
         self.assertTrue(all(t.provider == "copernicus-marine" for t in tasks))
         canada = CoveragePlanner().plan(Area(-126, 48, -123, 50))
-        self.assertEqual([t.domain for t in canada], ["salish-sea", "west", "global"])
+        self.assertEqual(
+            [t.domain for t in canada], ["salish-sea", "west", "wcofs", "global"]
+        )
 
     def test_regional_failure_does_not_hide_worldwide_data(self):
-        regional, worldwide = Mock(), Mock()
+        regional, worldwide, coastal = Mock(), Mock(), Mock()
         regional.download.side_effect = ValueError("No forecast")
         worldwide.download.return_value = field(9000)
-        fields, issues = CoveragePlanner(regional, worldwide).download(
+        coastal.download.return_value = field(4000)
+        fields, issues = CoveragePlanner(regional, worldwide, coastal).download(
             Area(-126, 48, -123, 50), START, START + timedelta(hours=1)
         )
-        self.assertEqual(len(fields), 1)
+        self.assertEqual(len(fields), 2)
         self.assertEqual(len(issues), 2)
         worldwide.download.assert_called_once()
+        coastal.download.assert_called_once()
 
     def test_netcdf_coordinate_reordering_and_worldwide_composition(self):
         gdal.UseExceptions()
