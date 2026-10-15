@@ -135,6 +135,10 @@ class RouteRequest:
     auto_download: bool = False
     wind_speed_pct: float = 0
     wind_dir_offset: float = 0
+    tws_max_kn: Optional[float] = None
+    min_sailing_speed_kn: Optional[float] = None
+    motor_speed_kn: float = 5.0
+    wave_correct: bool = False
 
 
 class RoutingPreview(tuple):
@@ -213,7 +217,15 @@ def calculate_route(
 
 
 def create_requested_routing(core, request, providers, wind, current_selection):
+    from gweatherrouting.core.safetypolicy import SafetyPolicy
+
     wind.check_cancelled()
+    safety_policy = SafetyPolicy(
+        tws_max_kn=request.tws_max_kn,
+        min_sailing_speed_kn=request.min_sailing_speed_kn,
+        motor_speed_kn=request.motor_speed_kn,
+        wave_correct=request.wave_correct,
+    )
     algorithm = (
         configured_algorithm(request.algorithm, request.parameters)
         if request.parameters
@@ -229,7 +241,11 @@ def create_requested_routing(core, request, providers, wind, current_selection):
         override = ModifiedGribManager(
             wind, 1 + request.wind_speed_pct / 100, request.wind_dir_offset
         )
-    options = dict(grib_override=override, polar_efficiency=request.polar_efficiency)
+    options = dict(
+        grib_override=override,
+        polar_efficiency=request.polar_efficiency,
+        safety_policy=safety_policy,
+    )
     if request.use_currents:
         options.update(
             use_currents=True,
@@ -299,6 +315,9 @@ def run_requested_routing(core, routing, request, wind, progress, report, save_f
         or request.polar_efficiency != 1
         or request.wind_speed_pct
         or request.wind_dir_offset
+        or request.tws_max_kn is not None
+        or request.min_sailing_speed_kn is not None
+        or request.wave_correct
     ):
         provenance["options"] = dict(
             algorithm=request.algorithm.__name__,
@@ -309,6 +328,15 @@ def run_requested_routing(core, routing, request, wind, progress, report, save_f
             wind_dir_offset=request.wind_dir_offset,
             coastline_checks=request.coastline_checks,
             waypoints=request.waypoints,
+            tws_max_kn=request.tws_max_kn,
+            min_sailing_speed_kn=request.min_sailing_speed_kn,
+            motor_speed_kn=request.motor_speed_kn,
+            wave_correct=request.wave_correct,
+            wave_note=(
+                "TWS-proxy reduction pending wave GRIBs"
+                if request.wave_correct
+                else None
+            ),
         )
     return CalculatedRoute(
         serialize_routing_points(routing, result.path),
