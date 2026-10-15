@@ -31,6 +31,9 @@ class TrackMap(QWidget, MercatorProjection):
     # Pan distance (logical pixels) a cached layer image may be shifted
     # instead of re-rendered. Mirrors the GTK renderers' reuse margins.
     _REUSE_MARGIN = 128
+    _RENDER_PADDING = 192
+    # Additional image storage per layer, excluding the visible viewport.
+    _PADDING_BYTES = 16 * 1024 * 1024
     # Wheel zoom events closer than this settle into one sharp re-render,
     # with a scaled preview painted in between (no overlay job storm).
     _ZOOM_SETTLE_MS = 250
@@ -56,6 +59,7 @@ class TrackMap(QWidget, MercatorProjection):
         self.position = None
         self.drag = None
         self.background = None
+        self._render_padding = 0
         self._base_cache = None  # (key, lat, lon, zoom, QImage)
         self._nav_cache = None  # (key, lat, lon, zoom, QImage)
         self._dash_cache = None  # (key, QImage)
@@ -197,10 +201,13 @@ class TrackMap(QWidget, MercatorProjection):
         super().closeEvent(event)
 
     def get_allocated_width(self):
-        return self.width()
+        return self.width() + 2 * self._render_padding
 
     def get_allocated_height(self):
-        return self.height()
+        return self.height() + 2 * self._render_padding
+
+    def get_attribution_bounds(self):
+        return self._render_padding, self._render_padding, self.width(), self.height()
 
     def queue_draw(self):
         if self.disposed:
@@ -404,29 +411,59 @@ class TrackMap(QWidget, MercatorProjection):
             * tile
         )
 
-    def _draw_reusable_layer(self, painter, cache, key, build):
-        """Paint a cached full-view image, shifted while panning.
+    def _layer_padding(self):
+        width, height = self.width(), self.height()
+        extra_pixels = self._PADDING_BYTES / (4 * self.get_scale_factor() ** 2)
+        # (w + 2p)(h + 2p) - wh <= extra_pixels.
+        budget = (
+            math.sqrt((width + height) ** 2 + 4 * extra_pixels) - width - height
+        ) / 4
+        return max(0, min(self._RENDER_PADDING, min(width, height) // 3, int(budget)))
 
-        Returns the updated cache entry. Rebuilds when the data key, size
-        or zoom changed, or when the pan drift exceeds the reuse margin.
-        """
+    def _build_padded_layer(self, build):
+        # Renderers keep this canvas identity for async jobs, but capture frozen
+        # MapViewports synchronously. Restore the interactive projection even
+        # if a reader fails. A replacement bake needs fresh chart coverage.
+        padding, zooming = self._render_padding, self._zoom_animating
+        self._render_padding = self._layer_padding()
+        self._zoom_animating = False
+        try:
+            return build()
+        finally:
+            self._render_padding, self._zoom_animating = padding, zooming
+
+    def _draw_reusable_layer(self, painter, cache, key, build):
+        """Reuse padded scene pixels, rebuilding before coverage is exhausted."""
         width, height, _ = self._view_pixel_size()
         if cache is not None and cache[0] == key:
             _, cached_lat, cached_lon, cached_zoom, image = cache
+            size = image.deviceIndependentSize()
+            pad_x, pad_y = (size.width() - width) / 2, (size.height() - height) / 2
             if cached_zoom == self._zoom:
                 offset_x, offset_y = self._pan_offset(cached_lat, cached_lon)
-                if max(abs(offset_x), abs(offset_y)) <= self._REUSE_MARGIN:
-                    painter.drawImage(QPointF(offset_x, offset_y), image)
+                margin = min(self._REUSE_MARGIN, max(0, min(pad_x, pad_y) * 2 / 3))
+                if max(abs(offset_x), abs(offset_y)) <= margin:
+                    painter.drawImage(
+                        QPointF(offset_x - pad_x, offset_y - pad_y), image
+                    )
                     return cache
             elif self._zoom_animating:
                 target = self._zoom_preview_target(
                     cached_lat, cached_lon, cached_zoom, (width, height)
                 )
                 if target is not None:
-                    painter.drawImage(target, image)
-                    return cache
-        image = build()
-        painter.drawImage(QPointF(0, 0), image)
+                    ratio = 2.0 ** (self._zoom - cached_zoom)
+                    target.adjust(
+                        -pad_x * ratio, -pad_y * ratio, pad_x * ratio, pad_y * ratio
+                    )
+                    if target.contains(QRectF(0, 0, width, height)):
+                        painter.drawImage(target, image)
+                        return cache
+        image = self._build_padded_layer(build)
+        size = image.deviceIndependentSize()
+        painter.drawImage(
+            QPointF((width - size.width()) / 2, (height - size.height()) / 2), image
+        )
         return (key, self._center_lat, self._center_lon, self._zoom, image)
 
     def _finish_zoom(self):
@@ -678,8 +715,7 @@ class TrackMap(QWidget, MercatorProjection):
         if self.width() <= 0 or self.height() <= 0:
             return
         painter = QPainter(self)
-        # Flat sea first: shifted previews leave no painted pixels behind,
-        # so exposed edges show water until the next sharp rebuild.
+        # Water is the fallback for unavailable chart/overlay source coverage.
         painter.fillRect(0, 0, self.width(), self.height(), self._sea_color())
         previous_base = self._base_cache
         self._base_cache = self._draw_reusable_layer(
@@ -853,8 +889,8 @@ class TrackMap(QWidget, MercatorProjection):
         factor = self.get_scale_factor()
         surface = cairo.ImageSurface(
             cairo.FORMAT_ARGB32,
-            math.ceil(self.width() * factor),
-            math.ceil(self.height() * factor),
+            math.ceil(self.get_allocated_width() * factor),
+            math.ceil(self.get_allocated_height() * factor),
         )
         surface.set_device_scale(factor, factor)
         cr = cairo.Context(surface)
@@ -993,8 +1029,8 @@ class TrackMap(QWidget, MercatorProjection):
         factor = self.get_scale_factor()
         surface = cairo.ImageSurface(
             cairo.FORMAT_ARGB32,
-            math.ceil(self.width() * factor),
-            math.ceil(self.height() * factor),
+            math.ceil(self.get_allocated_width() * factor),
+            math.ceil(self.get_allocated_height() * factor),
         )
         surface.set_device_scale(factor, factor)
         cr = cairo.Context(surface)
