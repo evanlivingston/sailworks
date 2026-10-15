@@ -5,7 +5,7 @@
 [![GitHub Release](https://img.shields.io/github/v/release/dakk/gweatherrouting?logo=github&color=orange)](https://github.com/dakk/gweatherrouting/releases/latest)
 [![Flathub](https://img.shields.io/flathub/v/org.gweatherrouting.gweatherrouting?logo=flathub&logoColor=white&color=royalblue)](https://flathub.org/apps/org.gweatherrouting.gweatherrouting)
 
-GWeatherRouting is an open-source sailing routing and navigation software written using Python and Gtk4.
+GWeatherRouting is an open-source sailing routing and navigation software written using Python and Qt. This fork retains an explicit legacy GTK launcher.
 
 ![GWeatherRouting](https://github.com/dakk/gweatherrouting/raw/master/docs/source/_static/images/gweatherrouting_levante.png)
 
@@ -42,7 +42,7 @@ GWeatherRouting is an open-source sailing routing and navigation software writte
       Download discovery currently covers NOAA's U.S. chart catalog. Downloaded
       charts are snapshots; automatic chart updates and depth-aware routing are
       not yet implemented.
-- Gtk4 interface
+- Qt Widgets interface with an explicit legacy GTK option
 - Display settings for smooth, cursor-centered zoom and gentle pan inertia;
   both can be switched off independently and apply immediately.
 - Wind overlays crop GRIB samples to the view and render in the background;
@@ -67,7 +67,7 @@ You can install gweatherrouting via flatpak, appimage, windows portable zip, or 
 
 ### From source
 
-1. Make sure to have Python >= 3.9 installed and the `pip` package manager.
+1. Make sure to have Python >= 3.10 installed and the `pip` package manager.
 2. Install the following dependencies using your OS package manager (e.g: archlinux=pacman, debian=apt, macos=homebrew). Be aware that some packages have different names with different package managers.
    - gobject-introspection
    - gdal
@@ -99,13 +99,31 @@ The script installs the native GTK, GDAL, and GObject Introspection dependencies
 creates a local `.venv`, and installs GWeatherRouting and its Python dependencies. To install the
 Homebrew dependencies separately, run `brew bundle --file=tools/macos/Brewfile`.
 
-### Experimental Qt frontend
+### Qt and legacy GTK launchers
 
-An optional Qt frontend uses the full application Core and shared production charts,
-wind rendering, NMEA recording/playback, and plots. GTK remains the default
-application. See
-[the migration assessment](docs/qt-first-pass.md) for installation,
-launch commands, validation, and current limitations.
+Qt is the default for both the installed command and module launch:
+
+```sh
+gweatherrouting --offline
+python -m gweatherrouting --offline
+```
+
+Omit `--offline` to open saved instrument connections. `--log FILE` opens an
+interpreted NMEA log. `gweatherrouting-qt` remains an alias; the old `[qt]` install
+extra is compatible but no longer needed because PySide6 is a base dependency.
+
+To use the legacy GTK frontend explicitly:
+
+```sh
+gweatherrouting-gtk
+python -m gweatherrouting.gtk
+```
+
+Run one frontend per live serial device. Existing AppImage, Flatpak and Windows
+portable build recipes still select GTK explicitly; Qt bundles and application
+identity are separate work. See [the migration assessment](docs/qt-first-pass.md)
+and [default-launcher validation](docs/qt-default-validation.md) for checks and
+remaining platform/hardware limitations.
 
 ## License
 

@@ -18,7 +18,6 @@ import logging
 import signal
 
 from gweatherrouting import log  # noqa: F401
-from gweatherrouting.core import Core
 
 logger = logging.getLogger("gweatherrouting")
 
@@ -30,6 +29,7 @@ def start_ui_gtk():
     gi.require_version("GLibUnix", "2.0")
     from gi.repository import GLib, Gtk, GLibUnix
 
+    from gweatherrouting.core import Core
     from gweatherrouting.gtk.mainwindow import MainWindow
 
     main_window = MainWindow(Core())
@@ -47,5 +47,12 @@ def start_ui_gtk():
     Gtk.main()
 
 
+def main(argv=None):
+    """Launch Qt by default; retain start_ui_gtk for the explicit legacy command."""
+    from gweatherrouting.qt.__main__ import main as start_ui_qt
+
+    return start_ui_qt(argv)
+
+
 if __name__ == "__main__":
-    start_ui_gtk()
+    raise SystemExit(main())

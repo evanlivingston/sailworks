@@ -1,0 +1,76 @@
+name: Qt validation
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+jobs:
+  qt-posix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    env:
+      QT_QPA_PLATFORM: offscreen
+      QT_STYLE_OVERRIDE: Fusion
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        if: runner.os == 'Linux'
+        with:
+          python-version: '3.11'
+      - name: Install Linux dependencies and Qt application
+        if: runner.os == 'Linux'
+        run: |
+          bash .github/workflows/script/ubuntu_dep.sh
+          bash .github/workflows/script/python_dep.sh
+          python -m pip install -e .
+      - name: Install macOS development environment
+        if: runner.os == 'macOS'
+        run: make setup-macos
+      - name: Check default launcher and Qt workflows
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then source .venv/bin/activate; fi
+          python -c 'from PySide6.QtCore import qVersion; print("Qt", qVersion())'
+          gweatherrouting --help
+          python -m unittest test.test_launcher test.test_qt_preview -v
+
+  qt-windows:
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+      QT_STYLE_OVERRIDE: Fusion
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-python
+            mingw-w64-ucrt-x86_64-python-pip
+            mingw-w64-ucrt-x86_64-python-setuptools
+            mingw-w64-ucrt-x86_64-python-gobject
+            mingw-w64-ucrt-x86_64-gtk3
+            mingw-w64-ucrt-x86_64-python-gdal
+            mingw-w64-ucrt-x86_64-python-numpy
+            mingw-w64-ucrt-x86_64-python-matplotlib
+            mingw-w64-ucrt-x86_64-python-pyproj
+            mingw-w64-ucrt-x86_64-python-shapely
+            mingw-w64-ucrt-x86_64-pyside6
+            mingw-w64-ucrt-x86_64-qt6-svg
+      - name: Install shared Python dependencies and application
+        shell: msys2 {0}
+        run: |
+          python -m pip install --break-system-packages requests keyring colorlog geojson_utils bs4 pyserial pynmea2 gpxpy nmeatoolkit weatherrouting appdirs
+          python -m pip install --break-system-packages --no-build-isolation --no-deps -e .
+      - name: Check default launcher and Qt workflows
+        shell: msys2 {0}
+        run: |
+          python -c 'from PySide6.QtCore import qVersion; print("Qt", qVersion())'
+          python -m gweatherrouting --help
+          python -m unittest test.test_launcher test.test_qt_preview -v

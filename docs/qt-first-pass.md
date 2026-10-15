@@ -1,9 +1,9 @@
 # Qt frontend migration
 
-The optional PySide6/Qt Widgets frontend now uses the full application Core and
+The default PySide6/Qt Widgets frontend uses the full application Core and
 shared production Cairo chart rendering. GTK is the reference for workspace
 organization and workflows; see [the parity checklist](qt-parity.md).
-GTK remains the default application;
+GTK is available through an explicit legacy launcher;
 the frontends run in separate processes and never share GUI event loops.
 
 ## Try it
@@ -11,14 +11,14 @@ the frontends run in separate processes and never share GUI event loops.
 Use Python 3.10 or newer in the development environment:
 
 ```sh
-.venv/bin/python -m pip install -e '.[qt]'
-.venv/bin/gweatherrouting-qt --offline --log tools/samples/data_12_12_2021.nmea
+.venv/bin/python -m pip install -e .
+.venv/bin/gweatherrouting --offline --log tools/samples/data_12_12_2021.nmea
 ```
 
 The equivalent module command is:
 
 ```sh
-.venv/bin/python -m gweatherrouting.qt --offline
+.venv/bin/python -m gweatherrouting --offline
 ```
 
 `--offline` leaves instrument connections closed and disables Canadian online
@@ -27,7 +27,9 @@ the Canadian charts preference. Close GTK's live connections before opening
 the same serial device or listening port in Qt. Use File → Settings or the
 NMEA panel’s Configure connections button to edit instruments directly in Qt.
 
-The extra installs PySide6 Essentials. Base package dependencies still include
+PySide6 Essentials is a base dependency and Python 3.10+ is required. The `[qt]`
+extra and `gweatherrouting-qt` command remain compatibility aliases. Use
+`gweatherrouting-gtk` or `python -m gweatherrouting.gtk` for GTK. Base dependencies include
 PyGObject because GTK remains supported. The Qt frontend does not import GTK
 or require a running GLib main loop.
 
@@ -520,10 +522,13 @@ NMEA and routing workflows are available in Qt. GTK's General and AIS settings
 pages are hidden, its project-properties button is hidden, and computed-route
 points are read-only; these are not additional working features awaiting migration.
 
-- Application About/version identity and named macOS/Linux/Windows bundles;
-  then a deliberate switch of the default launcher from GTK to Qt.
-- Final workflow/provider parity checks, dateline and large-file behavior, and
-  validation with live instruments on supported platforms.
+- Application About/version identity and named macOS/Linux/Windows Qt bundles.
+  Source/install launchers now default to Qt; existing GTK-only bundle recipes
+  remain explicitly GTK until their separate packaging migration.
+- Physical instrument and native Windows/Linux validation remain open. Local
+  TCP/UDP/serial feed checks and 100,000-sentence playback pass; dateline fitting
+  still has a pre-existing wide-framing limitation. See the
+  [validation report](qt-default-validation.md).
 - Repair CI dependency installation (`nmeatoolkit` is missing from the test job)
   and existing lint/type errors so release checks run reliably.
 
@@ -534,8 +539,8 @@ performance polish, separate from the remaining migration work.
 
 ## Validation
 
-The full repository unittest discovery passes 760 tests locally. The optional
-Qt wrapper passes 96 integration checks in a separate
+The full repository pytest suite passes 826 tests and 106 subtests locally.
+The Qt wrapper passes 99 integration checks in a separate
 process. Coverage includes transport/recording, queued Core notifications,
 stale-source rejection, overlay completion without GLib, callback cancellation
 on shutdown, real OGR ENC/raster fixtures, forecast/palette changes, projection,

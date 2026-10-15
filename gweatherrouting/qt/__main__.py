@@ -1,4 +1,4 @@
-"""Launch the optional Qt preview without changing the default GTK entrypoint."""
+"""Launch the Qt application; also retained as the gweatherrouting-qt alias."""
 
 import argparse
 import sys
@@ -6,7 +6,7 @@ from typing import cast
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="GWeatherRouting Qt frontend preview")
+    parser = argparse.ArgumentParser(description="GWeatherRouting")
     parser.add_argument("--log", help="Load an interpreted NMEA log")
     parser.add_argument(
         "--offline",
@@ -18,7 +18,7 @@ def main(argv=None):
         from PySide6.QtWidgets import QApplication
     except ImportError:
         parser.error(
-            "Qt preview needs Python 3.10+ and the qt extra: pip install '.[qt]'"
+            "Qt requires PySide6; reinstall GWeatherRouting with its dependencies"
         )
     from .controller import SessionController
     from .window import PreviewWindow

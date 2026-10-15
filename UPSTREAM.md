@@ -1379,3 +1379,62 @@ into `dev`; no upstream PR was created or updated.
   hardware parity checks remain separate migration work.
 - Intended upstream scope: none while Qt remains fork-only.
 - Documentation: `docs/qt-first-pass.md`, `docs/qt-parity.md`.
+
+## Qt default launcher and migration validation
+
+- Status: fork-only default/validation policy. The independent serial correction
+  is a candidate described below; no upstream submission.
+- Branch/base: `feature/qt-default-launcher` from `dev` at `b323e76`, following
+  approved native gesture PR #24. No pending prerequisite.
+- Review: [fork PR #25](https://github.com/evanlivingston/gweatherrouting/pull/25),
+  open and unmerged. Requested scope: default launcher and migration validation;
+  app identity/Qt bundles and unrelated legacy lint/type cleanup are excluded.
+- Functional commits: `2fc1842` switches source/installed launchers to Qt, declares
+  PySide6 as a base dependency and Python 3.10+, retains Qt compatibility aliases
+  and explicit GTK commands, and preserves existing GTK-only bundle entrypoints;
+  `3b975d1` adds real TCP/UDP/serial and large-file regressions plus dedicated
+  Linux/macOS/Windows Qt workflow jobs. The Python 3.9 CI matrix entries are
+  removed to match the default application's supported runtime.
+- Validation: editable install regenerated the commands and metadata; the actual
+  installed default command opened native Qt 6.12/DPR 2, honored offline mode and
+  imported no GTK, using private copied settings/layout. Full pytest passes 826
+  tests and 106 subtests in 99.36s, including 99 isolated Qt checks. A subsequent
+  test-only refinement tolerates expected socket-close errors after polling has
+  stopped; the focused TCP/UDP test passes again. Scoped production Black,
+  Flake8 and mypy with silent imports pass; changed YAML parses and the AppImage
+  shell recipe passes syntax checking. Remote cross-platform jobs are pending
+  and not claimed as successful native validation.
+- Fidelity/performance: routing math, source selection and projection are
+  unchanged. Complete map/plot data survives 30,000-point regression playback.
+  Separate 100,000-RMC/4.96 MiB run: 3.30s asynchronous load/presentation, 0.42ms
+  mean cursor update, 446 MiB peak process RSS and about 601ms maximum event-loop
+  gap. The one-million-sentence playback cap and polar history bound remain.
+- Findings/limits: dateline fitting at ±179.8° still frames almost the world
+  (zoom 1.58); no dateline correctness claim or projection change. Large-file
+  presentation can still pause the UI. No confirmed physical instrument hardware
+  was used; software transport paths use fresh local sockets/pseudo-terminals.
+  Native Windows/Linux gestures/dialogs, actual onboard streams and real provider
+  downloads remain explicit open checks. Existing GTK bundle recipes stay GTK
+  until their separate Qt packaging work. Detailed report:
+  `docs/qt-default-validation.md`.
+- Intended upstream scope: exclude default Qt policy, fork docs/CI and legacy
+  bundle selection changes; consider only the independently validated serial fix.
+
+## Serial sentence fragmentation correction
+
+- Status: candidate; no upstream submission or discussion.
+- Review: included as a separate functional commit in
+  [fork PR #25](https://github.com/evanlivingston/gweatherrouting/pull/25).
+- Functional commit: `20b8c5a`; no dependency on Qt launcher policy.
+- Trigger/result: serial drivers can return part of an NMEA sentence. Previously
+  the reader immediately split the chunk and exposed a partial sentence to the
+  parser, which could accept incomplete fields. The reader now retains partial
+  input until CR/LF, handles CR/LF/CRLF, bounds unterminated/corrupt lines at 4096
+  characters, and drops partial data on close/reconnect. Numeric interpretation
+  and complete-sentence contents are unchanged; both frontends share this fix.
+- Validation: the regression fails on the base, demonstrating premature packet
+  delivery, and passes after the fix. Line-ending/bounds/reset checks and all 55
+  connection tests pass, as does a real serial pseudo-terminal through Qt/Core.
+  The complete local pytest suite passes as recorded above.
+- Intended upstream scope: serialdatasource.py and its focused shared-reader
+  regressions, extracted from freshly fetched parent master and validated there.

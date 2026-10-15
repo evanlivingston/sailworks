@@ -76,7 +76,7 @@ jobs:
           set GTK_DATA_PREFIX=%APPDIR%
           set XDG_DATA_DIRS=%APPDIR%share
           set GDK_PIXBUF_MODULE_FILE=%APPDIR%lib\gdk-pixbuf-2.0\2.10.0\loaders.cache
-          "%APPDIR%bin\python.exe" -m gweatherrouting
+          "%APPDIR%bin\python.exe" -m gweatherrouting.gtk
           LAUNCHER
 
           # Also create a pythonw launcher (no console window)
@@ -89,7 +89,7 @@ jobs:
           WshShell.Environment("Process")("GTK_DATA_PREFIX") = appDir
           WshShell.Environment("Process")("XDG_DATA_DIRS") = appDir & "\share"
           WshShell.Environment("Process")("GDK_PIXBUF_MODULE_FILE") = appDir & "\lib\gdk-pixbuf-2.0\2.10.0\loaders.cache"
-          WshShell.Run """" & appDir & "\bin\pythonw.exe"" -m gweatherrouting", 0, False
+          WshShell.Run """" & appDir & "\bin\pythonw.exe"" -m gweatherrouting.gtk", 0, False
           VBSLAUNCHER
 
       - name: Trim distribution size
