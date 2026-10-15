@@ -1502,7 +1502,9 @@ into `dev`; no upstream PR was created or updated.
 
 - Status: candidate; fork review [PR #27](https://github.com/evanlivingston/gweatherrouting/pull/27),
   `feature/weather-integration`, based on `dev` after routing PR #26.
-- Functional commits: `4de7ca5`, `f859ab0`. The original uncommitted
+- Functional commits: `4de7ca5`, `f859ab0`, `fe17785`. Toolbar hover/pressed/checked
+  styles and disabled-icon colors were restored after combined-app review; Black,
+  Flake8, and visual rendering checks pass. The original uncommitted
   `feature/weather-panel` working tree is preserved; this isolated integration
   branch carries its weather changes reconciled with current routing.
 - Scope: dedicated Weather dock, independent wind/isobar controls, configurable
