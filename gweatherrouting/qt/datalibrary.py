@@ -1,6 +1,8 @@
 """Local forecasts/charts and provider downloads in a native Qt dialog."""
 
-from PySide6.QtCore import Qt
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QFileSystemWatcher, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -9,10 +11,10 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QHBoxLayout,
-    QGridLayout,
     QHeaderView,
     QLabel,
     QMessageBox,
+    QMenu,
     QProgressBar,
     QPushButton,
     QTabWidget,
@@ -103,6 +105,15 @@ class DataLibrary(QDialog):
         controller.routing.changed.connect(self.refresh)
         controller.polars.changed.connect(self.refresh_buttons)
         self.refresh()
+        self.forecast_watcher = QFileSystemWatcher(self)
+        self.forecast_watcher.directoryChanged.connect(self._queue_forecast_scan)
+        self.forecast_watcher.fileChanged.connect(self._queue_forecast_scan)
+        self.forecast_scan_timer = QTimer(self)
+        self.forecast_scan_timer.setSingleShot(True)
+        self.forecast_scan_timer.timeout.connect(self._scan_visible_forecasts)
+        self.data.changed.connect(self._sync_forecast_watches)
+        self.tabs.currentChanged.connect(self._forecast_tab_changed)
+        self._sync_forecast_watches()
 
     def button(self, row, label, callback):
         button = QPushButton(label)
@@ -113,22 +124,27 @@ class DataLibrary(QDialog):
 
     def _forecasts(self):
         page = QWidget()
+        self.forecast_page = page
         layout = QVBoxLayout(page)
-        layout.addWidget(section_label("Local wind forecasts"))
-        self.forecasts = table(["Enabled / file", "Model run", "Forecast hours"])
-        self.forecasts.setColumnWidth(0, 330)
-        self.forecasts.setColumnWidth(1, 190)
-        self.forecasts.setColumnWidth(2, 100)
+        heading = QHBoxLayout()
+        heading.addWidget(section_label("Local wind forecasts"))
+        heading.addStretch()
+        self.import_forecast_button = self.button(
+            heading, "Import…", self.import_forecast
+        )
+        layout.addLayout(heading)
+        self.forecasts = table(
+            ["Enabled / file", "Model", "Model run", "Forecast hours"]
+        )
+        self.forecasts.setColumnWidth(0, 300)
+        self.forecasts.setColumnWidth(1, 90)
+        self.forecasts.setColumnWidth(2, 190)
+        self.forecasts.setColumnWidth(3, 100)
         layout.addWidget(self.forecasts, 2)
         self.forecasts.itemChanged.connect(self.toggle_forecast)
         self.forecasts.itemSelectionChanged.connect(self.refresh_buttons)
-        row = QHBoxLayout()
-        self.button(row, "Import…", self.import_forecast)
-        self.button(row, "Refresh", self.data.scan_forecasts)
-        self.remove_forecast_button = self.button(
-            row, "Remove copy…", self.remove_forecast
-        )
-        layout.addLayout(row)
+        self.forecasts.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.forecasts.customContextMenuRequested.connect(self._forecast_context_menu)
         layout.addWidget(section_label("Download wind forecasts"))
         options = QHBoxLayout()
         self.source = QComboBox()
@@ -141,25 +157,9 @@ class DataLibrary(QDialog):
             options, "Download selected", self.download_forecast
         )
         layout.addLayout(options)
-        self.bounds_panel = QWidget()
-        bounds = QGridLayout(self.bounds_panel)
-        bounds.setContentsMargins(0, 0, 0, 0)
-        self.south = coordinate(40, True)
-        self.north = coordinate(55, True)
-        self.west = coordinate(-130, False)
-        self.east = coordinate(-115, False)
-        for index, (label, widget) in enumerate(
-            (
-                ("South", self.south),
-                ("West", self.west),
-                ("North", self.north),
-                ("East", self.east),
-            )
-        ):
-            row_index, column = divmod(index, 2)
-            bounds.addWidget(QLabel(label), row_index, column * 2)
-            bounds.addWidget(widget, row_index, column * 2 + 1)
-        layout.addWidget(self.bounds_panel)
+        self.forecast_area = QLabel("Downloads use the current map view.")
+        self.forecast_area.setWordWrap(True)
+        layout.addWidget(self.forecast_area)
         self.downloads = table(["Forecast", "Source", "Size", "Model run"])
         self.downloads.setColumnWidth(0, 230)
         self.downloads.setColumnWidth(1, 140)
@@ -224,11 +224,27 @@ class DataLibrary(QDialog):
     def refresh(self):
         entries = self.data.local_forecasts
         enabled = {g.path for g in self.data.manager.gribs}
+        selected = self.forecasts.item(self.forecasts.currentRow(), 0)
+        selected_path = selected.data(Qt.ItemDataRole.UserRole) if selected else None
         fill_table(
             self.forecasts,
-            [(g.name, g.start_time, g.last_forecast) for g in entries],
+            [
+                (
+                    g.name,
+                    getattr(g, "model_name", "Unknown"),
+                    g.start_time,
+                    g.last_forecast,
+                )
+                for g in entries
+            ],
             [g.path in enabled for g in entries],
         )
+        self.forecasts.blockSignals(True)
+        for row, forecast in enumerate(entries):
+            self.forecasts.item(row, 0).setData(Qt.ItemDataRole.UserRole, forecast.path)
+            if forecast.path == selected_path:
+                self.forecasts.selectRow(row)
+        self.forecasts.blockSignals(False)
         fill_table(self.downloads, [row[:4] for _, row in self.data.remote_forecasts])
         self.chart_entries = list(self.controller.charts.charts)
         fill_table(
@@ -254,7 +270,6 @@ class DataLibrary(QDialog):
             self.progress.setValue(self.data.task.percent)
         self.status.setText(self.data.task.message)
         self.source.setEnabled(not busy)
-        self.bounds_panel.setEnabled(not busy)
         self.latitude.setEnabled(not busy)
         self.longitude.setEnabled(not busy)
         self.refresh_buttons()
@@ -274,9 +289,6 @@ class DataLibrary(QDialog):
         )
         self.chart_download.setEnabled(
             not blocked and self.available_charts.currentRow() >= 0
-        )
-        self.remove_forecast_button.setEnabled(
-            not blocked and self.forecasts.currentRow() >= 0
         )
         chart = selected_row(self.charts, getattr(self, "chart_entries", []))
         # Base charts are managed by the installation, not the imported library.
@@ -312,41 +324,114 @@ class DataLibrary(QDialog):
                 )
             )
 
-    def remove_forecast(self):
-        metadata = selected_row(self.forecasts, self.data.local_forecasts)
+    def remove_forecast(self, metadata=None):
+        if metadata is None:
+            metadata = selected_row(self.forecasts, self.data.local_forecasts)
         if (
             metadata is not None
             and QMessageBox.question(
                 self,
-                "Remove forecast copy?",
-                f"Delete {metadata.name} from the forecast library? Original imports are retained.",
+                "Remove forecast from library?",
+                f"Delete the library copy of {metadata.name}? "
+                "Your original imported file is retained.",
             )
             == QMessageBox.StandardButton.Yes
         ):
             self.attempt(lambda: self.data.remove_forecast(metadata))
 
+    def _forecast_context_menu(self, position):
+        item = self.forecasts.itemAt(position)
+        if item is None or not self.forecasts.isEnabled():
+            return
+        self.forecasts.selectRow(item.row())
+        metadata = selected_row(self.forecasts, self.data.local_forecasts)
+        menu = QMenu(self.forecasts)
+        remove = menu.addAction("Remove from library…")
+        if menu.exec(self.forecasts.viewport().mapToGlobal(position)) is remove:
+            self.remove_forecast(metadata)
+
     def source_changed(self):
-        self.bounds_panel.setVisible(
-            self.source.currentText() in ("NOAA GFS", "NOAA HRRR")
+        self.forecast_area.setText(
+            "Downloads use the current map view."
+            if self.source.currentText() in ("NOAA GFS", "NOAA HRRR")
+            else (
+                "HRDPS downloads its full regional domain."
+                if self.source.currentText() == "CMC HRDPS"
+                else "Choose an available regional forecast."
+            )
         )
         self.data.remote_forecasts = []
         self.refresh()
 
     def find_forecasts(self):
-        bounds = (
-            self.south.value(),
-            self.west.value(),
-            self.north.value(),
-            self.east.value(),
-        )
-        if self.source.currentText() in ("NOAA GFS", "NOAA HRRR") and (
-            bounds[0] >= bounds[2] or bounds[1] >= bounds[3]
-        ):
-            self.status.setText(
-                "South must be below north; west must be below east. Split areas crossing 180°."
-            )
-            return
+        bounds = None
+        if self.source.currentText() in ("NOAA GFS", "NOAA HRRR"):
+            try:
+                bounds = self._forecast_bounds()
+            except ValueError as exc:
+                self.status.setText(str(exc))
+                return
         self.data.list_forecasts(self.source.currentText(), bounds)
+
+    def _forecast_bounds(self):
+        active = getattr(self.parent(), "_active_map", None)
+        canvas = (
+            active()
+            if callable(active)
+            else next(iter(self.controller.charts.maps), None)
+        )
+        if canvas is None:
+            raise ValueError("Open a map before finding forecasts for this area.")
+        top_left, bottom_right = canvas.get_bbox()
+        north, west = top_left.get_degrees()
+        south, east = bottom_right.get_degrees()
+        if east - west >= 360:
+            west, east = -180, 180
+        else:
+            west, east = (west + 180) % 360 - 180, (east + 180) % 360 - 180
+        if not (-90 <= south < north <= 90 and -180 <= west < east <= 180):
+            raise ValueError(
+                "Move or zoom the map to an area that does not cross the date line."
+            )
+        return south, west, north, east
+
+    def _forecasts_visible(self):
+        return self.isVisible() and self.tabs.currentWidget() is self.forecast_page
+
+    def _sync_forecast_watches(self):
+        directory = self.data.forecast_directory()
+        directory = directory if directory.is_dir() else directory.parent
+        wanted = {str(directory)} | {
+            str(g.path) for g in self.data.local_forecasts if Path(g.path).is_file()
+        }
+        current = set(self.forecast_watcher.directories()) | set(
+            self.forecast_watcher.files()
+        )
+        if current - wanted:
+            self.forecast_watcher.removePaths(list(current - wanted))
+        if wanted - current:
+            self.forecast_watcher.addPaths(list(wanted - current))
+
+    def _queue_forecast_scan(self, *_):
+        if self._forecasts_visible():
+            self.forecast_scan_timer.start(200)
+
+    def _scan_visible_forecasts(self):
+        if self._forecasts_visible() and not self.data.scan_forecasts():
+            if not self.data.task.closed:
+                self.forecast_scan_timer.start(500)
+
+    def _forecast_tab_changed(self, *_):
+        self.forecast_scan_timer.stop()
+        self._scan_visible_forecasts()
+
+    def showEvent(self, event):  # noqa: N802
+        super().showEvent(event)
+        self._scan_visible_forecasts()
+
+    def hideEvent(self, event):  # noqa: N802
+        self.forecast_scan_timer.stop()
+        super().hideEvent(event)
 
     def download_forecast(self):
         entry = selected_row(self.downloads, self.data.remote_forecasts)

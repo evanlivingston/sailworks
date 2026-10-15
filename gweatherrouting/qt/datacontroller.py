@@ -48,6 +48,7 @@ def read_forecast(path):
         metadata.bounds,
         metadata.start_time,
         metadata.last_forecast,
+        metadata.model_name,
     )
 
 
@@ -106,6 +107,9 @@ class DataController(QObject):
             return False
         self.operation, self.error = kind, ""
         return self.task.start(message, operation)
+
+    def forecast_directory(self):
+        return Path(GRIB_DIR).resolve()
 
     def scan_forecasts(self):
         def scan(progress):
@@ -296,7 +300,8 @@ class DataController(QObject):
 
     def _scanned(self, result):
         files, errors = result
-        files.update({g.path: g for g in self.manager.gribs})
+        for forecast in self.manager.gribs:
+            files.setdefault(forecast.path, forecast)
         self.local_forecasts = list(files.values())
         if errors:
             self.task.message = "Skipped unreadable forecasts: " + "; ".join(errors)

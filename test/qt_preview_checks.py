@@ -933,6 +933,7 @@ class QtPreviewChecks(unittest.TestCase):
             ORIGINAL_STORAGE_LOAD(data.manager.storage)
             library = DataLibrary(self.controller, self.window)
             library.show()
+            self.wait_for_data()
             data.import_forecast(str(fixture))
             self.wait_for_data()
             first = data.local_forecasts[0]
@@ -1064,13 +1065,14 @@ class QtPreviewChecks(unittest.TestCase):
         library = self.window.library_dialog
         data = self.controller.data
         self.wait_for_data()
+        expected_bounds = library._forecast_bounds()
         for name, provider, subset in (
             ("NOAA HRRR", NOAAHRRRSource, True),
             ("CMC HRDPS", ECCHRDPSource, False),
         ):
             library.source.setCurrentText(name)
             self.assertEqual(library.source.currentText(), name)
-            self.assertEqual(not library.bounds_panel.isHidden(), subset)
+            self.assertFalse(hasattr(library, "bounds_panel"))
             with patch.object(
                 provider,
                 "get_download_list",
@@ -1081,9 +1083,113 @@ class QtPreviewChecks(unittest.TestCase):
             source, row = data.remote_forecasts[0]
             self.assertIsInstance(source, provider)
             if subset:
-                self.assertEqual(source.bounds, (40, -130, 55, -115))
+                self.assertEqual(source.bounds, expected_bounds)
         with self.assertRaisesRegex(ValueError, "Unknown forecast source"):
             data.list_forecasts("unregistered", None)
+
+    def test_forecast_library_updates_files_while_open_and_preserves_selection(self):
+        import shutil
+        from PySide6.QtWidgets import QPushButton, QDoubleSpinBox
+        from gweatherrouting.qt.datalibrary import DataLibrary
+
+        root = self.path / "local-forecasts"
+        root.mkdir()
+        fixture = self.wind_fixture()
+        data = self.controller.data
+        with patch("gweatherrouting.qt.datacontroller.GRIB_DIR", str(root)):
+            library = DataLibrary(self.controller, self.window)
+            self.addCleanup(library.close)
+            library.show()
+            self.wait_for_data()
+            self.assertEqual(library.forecasts.rowCount(), 0)
+            self.assertFalse(library.forecast_page.findChildren(QDoubleSpinBox))
+            labels = [b.text() for b in library.forecast_page.findChildren(QPushButton)]
+            self.assertNotIn("Refresh", labels)
+            self.assertNotIn("Remove copy…", labels)
+            self.assertGreater(library.import_forecast_button.x(), library.width() / 2)
+            first = root / "b.grib2"
+            shutil.copyfile(fixture, first)
+            self.wait_for_cursor(lambda: library.forecasts.rowCount() == 1)
+            self.assertEqual(library.forecasts.horizontalHeaderItem(1).text(), "Model")
+            self.assertEqual(library.forecasts.item(0, 1).text(), "Unknown")
+            # A newly discovered file sorting before the selection must not select it.
+            shutil.copyfile(fixture, root / "a.grib2")
+            self.wait_for_cursor(lambda: library.forecasts.rowCount() == 2)
+            current = library.forecasts.item(library.forecasts.currentRow(), 0)
+            self.assertEqual(current.data(Qt.ItemDataRole.UserRole), str(first))
+            # Existing files changing in place also refresh their metadata.
+            from osgeo import gdal
+
+            dataset = gdal.Open(str(first), gdal.GA_Update)
+            for band in range(1, dataset.RasterCount + 1):
+                dataset.GetRasterBand(band).SetMetadataItem("GRIB_IDS", "CENTER=7")
+                dataset.GetRasterBand(band).SetMetadataItem(
+                    "GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES", "2 2 2 0 83"
+                )
+            dataset = None
+            self.wait_for_cursor(
+                lambda: library.forecasts.item(library.forecasts.currentRow(), 1).text()
+                == "HRRR"
+            )
+            with patch("gweatherrouting.qt.datalibrary.QMenu") as menu:
+                menu.return_value.exec.return_value = None
+                row = library.forecasts.currentRow()
+                point = library.forecasts.visualItemRect(
+                    library.forecasts.item(row, 0)
+                ).center()
+                library._forecast_context_menu(point)
+            with (
+                patch("gweatherrouting.qt.datalibrary.QMenu") as menu,
+                patch.object(library, "remove_forecast") as remove,
+            ):
+
+                def choose_remove(_position):
+                    library.forecasts.selectRow(0)
+                    return menu.return_value.addAction.return_value
+
+                menu.return_value.exec.side_effect = choose_remove
+                library._forecast_context_menu(point)
+                self.assertEqual(remove.call_args.args[0].path, str(first))
+            first.unlink()
+            self.wait_for_cursor(lambda: library.forecasts.rowCount() == 1)
+            library.hide()
+            self.assertFalse(library.forecast_scan_timer.isActive())
+            shutil.copyfile(fixture, root / "c.grib2")
+            self.drain()
+            self.assertFalse(data.task.busy)
+            library.show()
+            self.wait_for_data()
+            self.assertEqual(library.forecasts.rowCount(), 2)
+
+    def test_forecast_library_download_bounds_follow_the_active_map(self):
+        from gweatherrouting.qt.datalibrary import DataLibrary
+        from gweatherrouting.core.mapviewport import MapPoint
+
+        library = DataLibrary(self.controller, self.window)
+        self.addCleanup(library.close)
+        with patch.object(
+            self.window.map,
+            "get_bbox",
+            return_value=(MapPoint(50, -126), MapPoint(46, -122)),
+        ):
+            with patch.object(self.controller.data, "list_forecasts") as listing:
+                library.source.setCurrentText("NOAA HRRR")
+                library.find_forecasts()
+                listing.assert_called_once_with("NOAA HRRR", (46, -126, 50, -122))
+        self.window.views.setCurrentWidget(self.window.logs_view)
+        with patch.object(
+            self.window.log_map,
+            "get_bbox",
+            return_value=(MapPoint(48, -125), MapPoint(47, -123)),
+        ):
+            self.assertEqual(library._forecast_bounds(), (47, -125, 48, -123))
+        with patch.object(
+            self.window.log_map,
+            "get_bbox",
+            return_value=(MapPoint(48, 179), MapPoint(47, 181)),
+        ):
+            with self.assertRaisesRegex(ValueError, "date line"):
+                library._forecast_bounds()
 
     def test_provider_download_is_staged_and_committed_on_ui_thread(self):
         import shutil
