@@ -25,6 +25,7 @@ from typing import Callable, List
 import requests
 
 from gweatherrouting.core.gribsources.base import GribSource
+from .options import custom_rows, selection
 
 logger = logging.getLogger("gweatherrouting")
 
@@ -108,7 +109,7 @@ class ECCHRDPSource(GribSource):
                 session.close()
         raise ValueError("No complete HRDPS run advertised on the MSC Datamart")
 
-    def get_download_list(self) -> List:
+    def get_download_list(self, options=None) -> List:
         try:
             date, cycle = self._discover()
         except Exception as exc:
@@ -117,6 +118,16 @@ class ECCHRDPSource(GribSource):
         run = datetime.strptime(f"{date}T{cycle}", "%Y%m%dT%H").replace(
             tzinfo=timezone.utc
         )
+        if options is not None:
+            return custom_rows(
+                self,
+                options,
+                [(date, cycle, run.strftime("%Y-%m-%d %H:%M UTC"), 48)],
+                lambda cycle, fields, cap: range(
+                    0, cap + 1, 3 if "wind" not in fields else 1
+                ),
+                self._estimate_custom_size,
+            )
         grib_files = []
         for preset_name, hours in FORECAST_PRESETS.items():
             identifier = json.dumps(
@@ -140,6 +151,13 @@ class ECCHRDPSource(GribSource):
         size_mb = steps * (UGRD_MB + VGRD_MB) + pressure_steps * PRMSL_MB
         return f"{size_mb:.0f} MB"
 
+    @staticmethod
+    def _estimate_custom_size(steps, fields):
+        size = len(steps) * (UGRD_MB + VGRD_MB) if "wind" in fields else 0
+        if "pressure" in fields:
+            size += sum(h % 3 == 0 for h in steps) * PRMSL_MB
+        return f"~{size:.1f} MB"
+
     def _file_url(self, date, cycle, hour, variable):
         lead = f"{hour:03d}"
         hour_dir = f"{DATAMART_URL}{date}/{HRDPS_PATH}/{cycle}/{lead}/"
@@ -152,6 +170,21 @@ class ECCHRDPSource(GribSource):
             )
         return hour_dir + name
 
+    def _download_plan(self, config):
+        date, cycle = config["date"], config["cycle"]
+        steps, fields = selection(config, range(49), range(config["hours"] + 1))
+        plan: list[str] = []
+        for hour in steps:
+            if "wind" in fields:
+                plan.extend(
+                    self._file_url(date, cycle, hour, v) for v in ("UGRD", "VGRD")
+                )
+            if "pressure" in fields and hour % 3 == 0:
+                plan.append(self._file_url(date, cycle, hour, "PRMSL"))
+        if not plan:
+            raise ValueError("No supported HRDPS fields at the selected hours")
+        return plan
+
     def download(
         self,
         identifier: str,
@@ -161,12 +194,7 @@ class ECCHRDPSource(GribSource):
     ) -> str:
         config = json.loads(identifier)
         date, cycle, max_hours = config["date"], config["cycle"], config["hours"]
-        plan = []
-        for hour in range(0, max_hours + 1):
-            plan.append(self._file_url(date, cycle, hour, "UGRD"))
-            plan.append(self._file_url(date, cycle, hour, "VGRD"))
-            if hour % 3 == 0:
-                plan.append(self._file_url(date, cycle, hour, "PRMSL"))
+        plan = self._download_plan(config)
 
         filename = f"hrdps_{date}_{cycle}z_{max_hours}h.grib2"
         final_path = dest_dir + "/" + filename

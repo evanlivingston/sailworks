@@ -24,6 +24,7 @@ from typing import Callable, List
 import requests
 
 from gweatherrouting.core.gribsources.base import GribSource
+from .options import FIELDS, custom_rows, filtered_parameters, selection
 
 logger = logging.getLogger("gweatherrouting")
 
@@ -92,8 +93,27 @@ class NOAAHRRRSource(GribSource):
             else HRRR_SHORT_RANGE
         )
 
-    def get_download_list(self) -> List:
-        cycles = self._get_available_cycles()
+    def get_download_list(self, options=None) -> List:
+        cycles = (
+            self._get_available_cycles(7) if options else self._get_available_cycles()
+        )
+        if options is not None:
+            runs = [
+                (
+                    c.strftime("%Y%m%d"),
+                    f"{c.hour:02d}",
+                    c.strftime("%Y-%m-%d %H:%M UTC"),
+                    self._max_hours(c),
+                )
+                for c in cycles
+            ]
+            return custom_rows(
+                self,
+                options,
+                runs,
+                lambda cycle, fields, cap: range(cap + 1),
+                lambda steps, fields: self._estimate_custom_size(steps, fields),
+            )
         grib_files = []
         for cycle in cycles:
             date_str = cycle.strftime("%Y%m%d")
@@ -136,7 +156,16 @@ class NOAAHRRRSource(GribSource):
             return f"{size_mb * 1024:.0f} KB"
         return f"{size_mb:.1f} MB"
 
-    def _build_filter_url(self, date_str, cycle, forecast_hour):
+    def _estimate_custom_size(self, steps, fields):
+        # Preserve provider estimates, adjusted for the selected steps/fields.
+        legacy = max(steps) + 1
+        estimate = self._estimate_size(max(steps)).split()
+        scale = (
+            len(steps) / legacy * (2 * ("wind" in fields) + ("pressure" in fields)) / 3
+        )
+        return f"~{float(estimate[0]) * scale:.1f} {estimate[1]}"
+
+    def _build_filter_url(self, date_str, cycle, forecast_hour, fields=FIELDS):
         # HRRR mean-sea-level pressure is MSLMA, not PRMSL (verified in the
         # .idx inventory); both decode through the shared sampler.
         params = {
@@ -155,7 +184,7 @@ class NOAAHRRRSource(GribSource):
             params["rightlon"] = str(lon_east)
             params["toplat"] = str(lat_north)
             params["bottomlat"] = str(lat_south)
-        return params
+        return filtered_parameters(params, fields, "MSLMA")
 
     def download(
         self,
@@ -169,6 +198,8 @@ class NOAAHRRRSource(GribSource):
         cycle = config["cycle"]
         max_hours = config["hours"]
         forecast_steps = list(range(0, max_hours + 1))
+        cap = HRRR_LONG_RANGE if cycle in HRRR_LONG_CYCLES else HRRR_SHORT_RANGE
+        forecast_steps, fields = selection(config, range(cap + 1), forecast_steps)
         total_steps = len(forecast_steps)
 
         filename = f"hrrr_{date_str}_{cycle}z_{max_hours}h.grib2"
@@ -196,7 +227,7 @@ class NOAAHRRRSource(GribSource):
                 bytes_written = 0
                 for i, fhour in enumerate(forecast_steps):
                     check_cancel()
-                    params = self._build_filter_url(date_str, cycle, fhour)
+                    params = self._build_filter_url(date_str, cycle, fhour, fields)
                     response = requests.get(
                         HRRR_FILTER_URL, params=params, stream=True, timeout=(10, 60)
                     )

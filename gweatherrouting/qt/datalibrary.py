@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from .theme import section_label
+from .forecastdownload import ForecastDownloadOptions
 
 FORECAST_FILTER = "GRIB forecasts (*.grib *.grb *.grib2 *.grb2);;All files (*)"
 
@@ -82,8 +83,8 @@ class DataLibrary(QDialog):
         self.controller = controller
         self.data = controller.data
         self.setWindowTitle("Data Library")
-        self.resize(850, 700)
-        self.setMinimumSize(620, 520)
+        self.resize(1000, 880)
+        self.setMinimumSize(800, 720)
         layout = QVBoxLayout(self)
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
@@ -140,31 +141,48 @@ class DataLibrary(QDialog):
         self.forecasts.setColumnWidth(1, 90)
         self.forecasts.setColumnWidth(2, 190)
         self.forecasts.setColumnWidth(3, 100)
-        layout.addWidget(self.forecasts, 2)
+        layout.addWidget(self.forecasts, 1)
         self.forecasts.itemChanged.connect(self.toggle_forecast)
         self.forecasts.itemSelectionChanged.connect(self.refresh_buttons)
         self.forecasts.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.forecasts.customContextMenuRequested.connect(self._forecast_context_menu)
-        layout.addWidget(section_label("Download wind forecasts"))
+        layout.addWidget(section_label("Download weather forecasts"))
         options = QHBoxLayout()
         self.source = QComboBox()
         names = [source.name for source in self.data.manager.sources]
-        self.source.addItems(sorted(names, key=lambda name: name != "NOAA GFS"))
+        self.source.addItem("Custom area")
+        self.source.addItems(
+            [
+                name
+                for name in names
+                if name not in ("NOAA GFS", "NOAA HRRR", "CMC HRDPS")
+            ]
+        )
         self.source.currentTextChanged.connect(self.source_changed)
         options.addWidget(self.source)
         self.button(options, "Find forecasts", self.find_forecasts)
         self.forecast_download = self.button(
-            options, "Download selected", self.download_forecast
+            options, "Download checked", self.download_forecast
         )
         layout.addLayout(options)
-        self.forecast_area = QLabel("Downloads use the current map view.")
+        self.forecast_options = ForecastDownloadOptions(names)
+        self.forecast_options.changed.connect(self._options_changed)
+        layout.addWidget(self.forecast_options)
+        self._remote_signature: tuple = ()
+        self.forecast_area = QLabel(
+            "GFS / HRRR use the current map view. HRDPS downloads its full domain. "
+            "Times are hours after each model run; spacing is limited by the provider."
+        )
         self.forecast_area.setWordWrap(True)
         layout.addWidget(self.forecast_area)
-        self.downloads = table(["Forecast", "Source", "Size", "Model run"])
+        self.downloads = table(
+            ["Forecast / run", "Model", "Est. size", "Model run (UTC)"]
+        )
         self.downloads.setColumnWidth(0, 230)
         self.downloads.setColumnWidth(1, 140)
         self.downloads.setColumnWidth(2, 80)
         self.downloads.itemSelectionChanged.connect(self.refresh_buttons)
+        self.downloads.itemChanged.connect(self.refresh_buttons)
         layout.addWidget(self.downloads, 2)
         self.tabs.addTab(page, "Forecasts")
 
@@ -245,7 +263,7 @@ class DataLibrary(QDialog):
             if forecast.path == selected_path:
                 self.forecasts.selectRow(row)
         self.forecasts.blockSignals(False)
-        fill_table(self.downloads, [row[:4] for _, row in self.data.remote_forecasts])
+        self._refresh_downloads()
         self.chart_entries = list(self.controller.charts.charts)
         fill_table(
             self.charts,
@@ -270,6 +288,8 @@ class DataLibrary(QDialog):
             self.progress.setValue(self.data.task.percent)
         self.status.setText(self.data.task.message)
         self.source.setEnabled(not busy)
+        self.forecast_options.setEnabled(not busy)
+        self.downloads.setEnabled(not busy)
         self.latitude.setEnabled(not busy)
         self.longitude.setEnabled(not busy)
         self.refresh_buttons()
@@ -282,10 +302,13 @@ class DataLibrary(QDialog):
         )
         for button in self.mutations:
             button.setEnabled(not blocked)
+        self.forecast_options.setEnabled(not blocked)
+        self.source.setEnabled(not blocked)
+        self.downloads.setEnabled(not blocked)
         self.forecasts.setEnabled(not blocked)
         self.charts.setEnabled(not blocked)
         self.forecast_download.setEnabled(
-            not blocked and self.downloads.currentRow() >= 0
+            not blocked and bool(self._checked_downloads())
         )
         self.chart_download.setEnabled(
             not blocked and self.available_charts.currentRow() >= 0
@@ -350,28 +373,57 @@ class DataLibrary(QDialog):
         if menu.exec(self.forecasts.viewport().mapToGlobal(position)) is remove:
             self.remove_forecast(metadata)
 
+    def _options_changed(self):
+        if hasattr(self, "downloads") and not self.data.task.busy:
+            self.data.remote_forecasts = []
+            self.refresh()
+
     def source_changed(self):
+        custom = self.source.currentText() == "Custom area"
+        self.forecast_options.setVisible(custom)
         self.forecast_area.setText(
-            "Downloads use the current map view."
-            if self.source.currentText() in ("NOAA GFS", "NOAA HRRR")
-            else (
-                "HRDPS downloads its full regional domain."
-                if self.source.currentText() == "CMC HRDPS"
-                else "Choose an available regional forecast."
-            )
+            "GFS / HRRR use the current map view. HRDPS downloads its full domain. "
+            "Times are hours after each model run; spacing is limited by the provider."
+            if custom
+            else "Choose an available regional forecast."
         )
-        self.data.remote_forecasts = []
-        self.refresh()
+        self._options_changed()
 
     def find_forecasts(self):
-        bounds = None
-        if self.source.currentText() in ("NOAA GFS", "NOAA HRRR"):
-            try:
-                bounds = self._forecast_bounds()
-            except ValueError as exc:
-                self.status.setText(str(exc))
-                return
-        self.data.list_forecasts(self.source.currentText(), bounds)
+        if self.source.currentText() != "Custom area":
+            self.data.list_forecasts(self.source.currentText(), None)
+            return
+        try:
+            options = self.forecast_options.options()
+            names = self.forecast_options.names()
+            bounds = (
+                self._forecast_bounds()
+                if any(name in ("NOAA GFS", "NOAA HRRR") for name in names)
+                else None
+            )
+            self.data.list_model_forecasts(names, bounds, options)
+        except ValueError as exc:
+            self.status.setText(str(exc))
+
+    def _checked_downloads(self):
+        return [
+            entry
+            for row, entry in enumerate(self.data.remote_forecasts)
+            if self.downloads.item(row, 0) is not None
+            and self.downloads.item(row, 0).checkState() == Qt.CheckState.Checked
+        ]
+
+    def _refresh_downloads(self):
+        entries = self.data.remote_forecasts
+        signature = tuple((source.name, row[4]) for source, row in entries)
+        if signature == self._remote_signature:
+            return
+        seen, checked = set(), []
+        for source, _ in entries:
+            checked.append(source.name not in seen)
+            seen.add(source.name)
+        fill_table(self.downloads, [row[:4] for _, row in entries], checked)
+        self._remote_signature = signature
 
     def _forecast_bounds(self):
         active = getattr(self.parent(), "_active_map", None)
@@ -434,9 +486,7 @@ class DataLibrary(QDialog):
         super().hideEvent(event)
 
     def download_forecast(self):
-        entry = selected_row(self.downloads, self.data.remote_forecasts)
-        if entry is not None:
-            self.data.download_forecast(entry)
+        self.data.download_forecasts(self._checked_downloads())
 
     def import_vector(self):
         path, _ = QFileDialog.getOpenFileName(
