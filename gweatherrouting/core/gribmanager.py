@@ -22,6 +22,7 @@ from typing import Dict, List
 import weatherrouting
 
 from gweatherrouting.core.grib import Grib
+from gweatherrouting.core.gribsampling import WeatherSampler
 from gweatherrouting.core.gribsources import NOAAGFSSource, OpenSkironSource
 from gweatherrouting.core.storage import GRIB_DIR, Storage
 
@@ -106,12 +107,21 @@ class GribManager(weatherrouting.Grib):
     def has_grib(self) -> bool:
         return len(self.gribs) > 0
 
+    def weather_sampler(self):
+        signature = tuple(self.gribs)
+        if getattr(self, "_sampling_signature", None) != signature:
+            self._sampling_signature = signature
+            self._weather_sampler = WeatherSampler(self.gribs)
+        return self._weather_sampler
+
     def get_wind_at(self, t, lat: float, lon: float):
         """Use the newest enabled model run; older runs fill coverage gaps.
 
         Equal reference times retain enabled-file order. Download time does not
         affect priority, and sampling does not reorder the user's enabled list.
         """
+        if self.gribs and all(isinstance(g, Grib) for g in self.gribs):
+            return self.weather_sampler().wind_at(t, lat, lon)
         for x in sorted(
             self.gribs, key=lambda g: g.start_time.timestamp(), reverse=True
         ):
@@ -123,7 +133,8 @@ class GribManager(weatherrouting.Grib):
                 pass
 
     def get_wind(self, t, bounds) -> List:
-        # TODO: get the best matching grib for lat/lon at time t
+        if self.gribs and all(isinstance(g, Grib) for g in self.gribs):
+            return self.weather_sampler().grid("wind", t, bounds)
         g: List = []
 
         for x in self.gribs:

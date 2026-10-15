@@ -54,7 +54,7 @@ def freeze_wind_sources(gribs):
 
 
 class WorkerGrib(Grib):
-    """Keep legacy sampling with bounded, run-local caches and private handles."""
+    """Shared interpolation with bounded, run-local caches and private handles."""
 
     def __init__(self, source):
         super().__init__(
@@ -78,7 +78,7 @@ class WorkerGrib(Grib):
 
     def close(self):
         self._index_data.cache_clear()
-        self.dataset = None
+        super().close()
 
 
 class RoutingWind:
@@ -325,8 +325,7 @@ def close_requested_routing(routing):
         if job is not None:
             job.close()
     for source in environment.wind.gribs:
-        if hasattr(source, "_bands"):
-            source._bands.cache_clear()
-            source._window.cache_clear()
-            source.grib.dataset = None
+        if isinstance(source, Grib):
+            source.grib.close()
+    environment.wind.sampler = None
     environment.wind.gribs = ()

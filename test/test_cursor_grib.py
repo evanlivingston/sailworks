@@ -22,7 +22,7 @@ class TestCursorGrib(unittest.TestCase):
         dataset = gdal.GetDriverByName("GTiff").Create(
             str(self.path), 4, 3, 4, gdal.GDT_Float32
         )
-        dataset.SetGeoTransform((-124, 1, 0, 50, 0, -1))
+        dataset.SetGeoTransform((-124.5, 1, 0, 50.5, 0, -1))
         for index, (hour, element, value) in enumerate(
             ((0, "UGRD", 2), (0, "VGRD", 4), (3, "UGRD", 8), (3, "VGRD", 10)), 1
         ):
