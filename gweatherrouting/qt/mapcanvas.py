@@ -432,6 +432,19 @@ class TrackMap(QWidget, MercatorProjection):
         finally:
             self._render_padding, self._zoom_animating = padding, zooming
 
+    def _paint_layer(self, painter, image, target):
+        # Sample only visible pixels. Besides bounding raster work, avoiding a
+        # negative destination keeps native ancestor captures inside the map.
+        viewport = QRectF(0, 0, self.width(), self.height())
+        sx, sy = image.width() / target.width(), image.height() / target.height()
+        source = QRectF(
+            -target.x() * sx,
+            -target.y() * sy,
+            viewport.width() * sx,
+            viewport.height() * sy,
+        )
+        painter.drawImage(viewport, image, source)
+
     def _draw_reusable_layer(self, painter, cache, key, build):
         """Reuse padded scene pixels, rebuilding before coverage is exhausted."""
         width, height, _ = self._view_pixel_size()
@@ -443,8 +456,15 @@ class TrackMap(QWidget, MercatorProjection):
                 offset_x, offset_y = self._pan_offset(cached_lat, cached_lon)
                 margin = min(self._REUSE_MARGIN, max(0, min(pad_x, pad_y) * 2 / 3))
                 if max(abs(offset_x), abs(offset_y)) <= margin:
-                    painter.drawImage(
-                        QPointF(offset_x - pad_x, offset_y - pad_y), image
+                    self._paint_layer(
+                        painter,
+                        image,
+                        QRectF(
+                            offset_x - pad_x,
+                            offset_y - pad_y,
+                            size.width(),
+                            size.height(),
+                        ),
                     )
                     return cache
             elif self._zoom_animating:
@@ -457,12 +477,19 @@ class TrackMap(QWidget, MercatorProjection):
                         -pad_x * ratio, -pad_y * ratio, pad_x * ratio, pad_y * ratio
                     )
                     if target.contains(QRectF(0, 0, width, height)):
-                        painter.drawImage(target, image)
+                        self._paint_layer(painter, image, target)
                         return cache
         image = self._build_padded_layer(build)
         size = image.deviceIndependentSize()
-        painter.drawImage(
-            QPointF((width - size.width()) / 2, (height - size.height()) / 2), image
+        self._paint_layer(
+            painter,
+            image,
+            QRectF(
+                (width - size.width()) / 2,
+                (height - size.height()) / 2,
+                size.width(),
+                size.height(),
+            ),
         )
         return (key, self._center_lat, self._center_lon, self._zoom, image)
 

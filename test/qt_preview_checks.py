@@ -3334,6 +3334,54 @@ class QtPreviewChecks(unittest.TestCase):
                     self.assertTrue(canvas._zoom_animating)
                 canvas._finish_zoom_silent()
 
+    def test_padded_map_paint_cannot_escape_into_ancestor_surface(self):
+        from PySide6.QtGui import QColor, QImage, QPainter
+
+        canvas = self.window.map
+        for factor in (1, 2):
+            with self.subTest(dpr=factor):
+                output = QImage(
+                    (canvas.width() + 400) * factor,
+                    (canvas.height() + 400) * factor,
+                    QImage.Format.Format_ARGB32_Premultiplied,
+                )
+                output.setDevicePixelRatio(factor)
+                output.fill(QColor("#151515"))
+                painter = QPainter(output)
+                painter.translate(200, 200)
+
+                def layer():
+                    image = QImage(
+                        (canvas.width() + 384) * factor,
+                        (canvas.height() + 384) * factor,
+                        QImage.Format.Format_ARGB32_Premultiplied,
+                    )
+                    image.setDevicePixelRatio(factor)
+                    image.fill(QColor("#39954c"))
+                    return image
+
+                canvas._base_cache = canvas._nav_cache = None
+                with (
+                    patch(
+                        "gweatherrouting.qt.mapcanvas.QPainter",
+                        return_value=painter,
+                        RenderHint=QPainter.RenderHint,
+                    ),
+                    patch.object(canvas, "_base_image", side_effect=layer),
+                    patch.object(canvas, "_navigation_image", side_effect=layer),
+                ):
+                    canvas.paintEvent(None)
+                self.assertEqual(
+                    output.pixelColor(100 * factor, 100 * factor), QColor("#151515")
+                )
+                self.assertEqual(
+                    output.pixelColor(300 * factor, 300 * factor), QColor("#39954c")
+                )
+                self.assertEqual(
+                    output.pixelColor((canvas.width() + 300) * factor, 300 * factor),
+                    QColor("#151515"),
+                )
+
     def test_padding_budget_and_failed_bake_restore_interactive_projection(self):
         canvas = self.window.map
         for factor in (1, 2, 4):
