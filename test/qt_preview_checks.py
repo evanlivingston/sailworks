@@ -624,6 +624,16 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(self.controller.routing.busy)
         self.drain()
 
+    def plan_test_waypoints(self):
+        from gweatherrouting.core.geo.track import Track
+
+        track = Track("Test course", [(0, 0, None), (0, 0.15, None)])
+        self.controller.core.trackManager.append(track)
+        panel = self.window.routing_panel
+        panel.refresh_destinations()
+        panel.destination.setCurrentText("Track: Test course")
+        panel.start_mode.setCurrentText("First waypoint")
+
     def test_routing_panel_calculates_saves_selects_and_fits_real_engine_result(self):
         from test.test_routingjob import ConstantWind
 
@@ -640,16 +650,21 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(len(self.controller.core.routingManager), 1)
         route = self.controller.core.routingManager[0]
         self.assertIs(self.controller.core.routingManager.get_active(), route)
-        self.assertEqual(panel.waypoints.rowCount(), len(route.points))
+        self.assertEqual(
+            self.window.navigation_panel.route_points.rowCount(), len(route.points)
+        )
         self.assertEqual(
             self.window.map.route, tuple((p[0], p[1]) for p in route.points)
         )
         self.assertIn("saved", panel.status.text())
-        self.assertIs(panel.pages.currentWidget(), panel.results_page)
+        self.assertEqual(panel.pages.tabText(panel.pages.currentIndex()), "Plan")
+        self.assertNotIn(
+            "Results", [panel.pages.tabText(i) for i in range(panel.pages.count())]
+        )
         self.assertEqual(
             self.window.map.route_speeds, tuple(p[5] or 0 for p in route.points)
         )
-        panel.waypoints.setCurrentCell(0, 0)
+        self.window.navigation_panel.route_points.setCurrentCell(0, 0)
         self.assertEqual(self.window.map.selected_route_point, 0)
         self.assertTrue(panel.calculate.isEnabled())
         self.assertNotEqual(self.window.map._zoom, 6)
@@ -687,6 +702,7 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertEqual(restored[0].provenance["currents"], "disabled")
 
     def test_routing_cancel_and_close_keep_completed_routes_and_drop_late_results(self):
+        self.plan_test_waypoints()
         from test.test_routingjob import ConstantWind
         from gweatherrouting.core.routingjob import CalculatedRoute
 
@@ -695,7 +711,7 @@ class QtPreviewChecks(unittest.TestCase):
 
         existing = Routing("existing", [(0, 0, "2026-10-01", 0, 1, 1, 0)])
         self.controller.core.routingManager.append(existing)
-        self.window.routing_panel.refresh_routes(existing)
+        self.window._select_saved_route(existing)
         started, release = Event(), Event()
         self.addCleanup(release.set)
 
@@ -729,6 +745,7 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertIs(self.controller.core.routingManager[0], existing)
 
     def test_routing_missing_wind_and_invalid_positions_leave_results_unchanged(self):
+        self.plan_test_waypoints()
         panel = self.window.routing_panel
         panel.calculate.click()
         self.assertIn("forecast", panel.status.text())
@@ -1194,7 +1211,7 @@ class QtPreviewChecks(unittest.TestCase):
         for route in old_routes:
             self.controller.core.routingManager.append(route)
         panel = self.window.routing_panel
-        panel.refresh_routes(old_routes[1])
+        self.window._select_saved_route(old_routes[1])
         panel.coastlines.setChecked(False)
         panel.pages.setCurrentIndex(1)
         self.window.resize(1000, 650)
@@ -1248,7 +1265,7 @@ class QtPreviewChecks(unittest.TestCase):
         )
         self.assertIs(self.window.views.currentWidget(), self.window.logs_view)
         self.assertEqual(self.window.routing_panel.pages.currentIndex(), 1)
-        self.assertEqual(self.window.routing_panel.routes.currentData().name, "second")
+        self.assertEqual(self.window.navigation_panel.route.name, "second")
         self.assertFalse(self.window.routing_panel.coastlines.isChecked())
         self.assertAlmostEqual(self.window.map._center_lat, 44.2)
         self.assertAlmostEqual(self.window.map._center_lon, -127.1)
@@ -1894,7 +1911,7 @@ class QtPreviewChecks(unittest.TestCase):
         destinations = self.window.routing_panel.destination
         self.assertEqual(
             [destinations.itemText(i) for i in range(destinations.count())],
-            ["Custom coordinates", "Track: " + track.name],
+            ["Choose track or POI…", "Track: " + track.name],
         )
         panel.remove_track()
         self.assertIsNone(self.controller.core.trackManager.get_active())
@@ -2027,13 +2044,13 @@ class QtPreviewChecks(unittest.TestCase):
         manager.append(route)
         panel.refresh()
         panel.routes.setCurrentCell(0, 0)
-        self.assertIs(self.window.routing_panel.routes.currentData(), route)
+        self.assertIs(self.window.navigation_panel.route, route)
         self.assertEqual(self.window.map.navigation.hl_routing, "Course")
         self.assertEqual(panel.route_points.rowCount(), 2)
         panel.route_points.setCurrentCell(1, 0)
         self.assertEqual(self.window.map.selected_route_point, 1)
         panel.routes.item(0, 0).setText("Renamed")
-        self.assertEqual(self.window.routing_panel.routes.currentText(), "Renamed")
+        self.assertEqual(self.window.navigation_panel.route.name, "Renamed")
         panel.routes.item(0, 2).setCheckState(Qt.CheckState.Unchecked)
         self.assertFalse(route.visible)
         with (
@@ -2910,6 +2927,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(account.password.text(), "")
 
     def test_routing_parameter_controls_snapshot_metadata_without_global_mutation(self):
+        self.plan_test_waypoints()
         panel = self.window.routing_panel
         algorithm = panel.algorithm.currentData()
         original = {key: param.value for key, param in algorithm.PARAMS.items()}
@@ -3011,7 +3029,7 @@ class QtPreviewChecks(unittest.TestCase):
         panel.destination.setCurrentText("Track: Course")
         panel.start_mode.setCurrentText("POI: Start buoy")
         self.assertEqual(panel._request()[0].start, (1, 2))
-        panel.start_mode.setCurrentText("First track point")
+        panel.start_mode.setCurrentText("First waypoint")
         requested, _ = panel._request()
         self.assertIsNone(requested.start)
         self.assertEqual(requested.waypoints, ((0, 0), (0, 0.15), (0, 0.3)))
@@ -3038,8 +3056,54 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(captured[0].waypoints, requested.waypoints)
         panel.destination.setCurrentIndex(0)
         panel.calculate.click()
-        self.assertIn("requires a track", panel.status.text())
+        self.assertFalse(panel.calculate.isEnabled())
+        self.assertEqual(self.window.map.route_plan, ())
         self.assertFalse(self.controller.routing.busy)
+
+    def test_routing_tab_restore_migrates_removed_results_page(self):
+        pages = self.window.routing_panel.pages
+        for old_page, expected in (
+            (0, "Plan"),
+            (1, "Plan"),
+            (2, "Compare"),
+            (3, "Currents"),
+        ):
+            self.window.workspace._restore_routing({"page": old_page})
+            self.assertEqual(pages.tabText(pages.currentIndex()), expected)
+        self.window.workspace._restore_routing({"page": 1, "page_name": "Compare"})
+        self.assertEqual(pages.tabText(pages.currentIndex()), "Compare")
+
+    def test_routing_has_no_coordinate_entry_and_map_selection_survives_refresh(self):
+        from PySide6.QtWidgets import QDoubleSpinBox, QPushButton
+
+        panel = self.window.routing_panel
+        self.assertNotIn(
+            "Manage polars…", [w.text() for w in panel.findChildren(QPushButton)]
+        )
+        self.assertFalse(
+            any(
+                w.accessibleName() in ("Latitude", "Longitude")
+                for w in panel.findChildren(QDoubleSpinBox)
+            )
+        )
+        self.assertFalse(panel.calculate.isEnabled())
+        with self.assertRaisesRegex(ValueError, "Choose a waypoint track"):
+            panel._request()
+        panel.set_location("start", (1, 2))
+        panel.set_location("destination", (3, 4))
+        panel.refresh_destinations()
+        request, _ = panel._request()
+        self.assertEqual(request.start, (1, 2))
+        self.assertEqual(request.destination, (3, 4))
+        self.assertEqual(self.window.map.route_plan, ((1, 2), (3, 4)))
+        self.assertTrue(panel.calculate.isEnabled())
+        self.assertFalse(
+            any(
+                "Custom coordinates" in combo.itemText(i)
+                for combo in (panel.start_mode, panel.destination)
+                for i in range(combo.count())
+            )
+        )
 
     def test_routing_current_engine_preflight_and_provenance_use_shared_models(self):
         from test.test_routingoptions import CurrentWind
@@ -3072,7 +3136,8 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(route.provenance["routing"], "isochrone-with-currents")
         self.assertEqual(route.provenance["currents"]["actual_sources"], [current.id])
         self.assertTrue(route.provenance["samples"])
-        self.assertIn("coverage checked", panel.summary.text())
+        routes = self.window.navigation_panel.routes
+        self.assertIn("coverage checked", routes.item(routes.currentRow(), 1).text())
         self.assertTrue(route.points[-1][2].endswith("+00:00"))
         self.assertEqual(route.points[-1][3], 270)
         self.assertIn("currents included", panel.status.text())
@@ -3128,6 +3193,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(self.controller.core.routingManager.elements)
 
     def test_routing_automatic_download_callbacks_commit_on_ui_thread(self):
+        self.plan_test_waypoints()
         from test.test_current_routing import current_field
         from gweatherrouting.core.routingjob import CalculatedRoute
 
@@ -3173,6 +3239,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(len(self.controller.core.routingManager), 1)
 
     def test_routing_comparison_cancel_retains_only_completed_scenarios(self):
+        self.plan_test_waypoints()
         from test.test_routingjob import ConstantWind
         from gweatherrouting.core.routingjob import CalculatedRoute
 
@@ -3415,6 +3482,7 @@ class QtPreviewChecks(unittest.TestCase):
             reload.assert_not_called()
 
     def test_map_data_serializes_with_routing_and_library_operations(self):
+        self.plan_test_waypoints()
         setup = self.controller.map_data
         self.controller.routing.busy = True
         self.assertFalse(setup.start(("coastlines",)))
