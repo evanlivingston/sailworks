@@ -280,11 +280,14 @@ class TrackMap(QWidget, MercatorProjection):
             settings.gribArrowOpacity,
             settings.gribArrowOnGround,
             getattr(settings, "gribIsobarsVisible", True),
+            self.wind_visible,
+            getattr(settings, "gribIsobarInterval", 4.0),
+            getattr(settings, "gribIsobarOpacity", 0.85),
+            getattr(settings, "gribIsobarLabels", True),
             tuple(
                 (id(grib), getattr(grib, "name", None))
                 for grib in self.controller.core.grib_manager.gribs
             ),
-            self.wind_visible,
         )
 
     def _marine_key(self):
@@ -1179,9 +1182,13 @@ class TrackMap(QWidget, MercatorProjection):
             settings.gribArrowOpacity,
             settings.gribArrowOnGround,
             getattr(settings, "gribIsobarsVisible", True),
+            self.wind_visible,
+            getattr(settings, "gribIsobarInterval", 4.0),
+            getattr(settings, "gribIsobarOpacity", 0.85),
+            getattr(settings, "gribIsobarLabels", True),
         )
         sources = tuple((grib,) for grib in self.controller.core.grib_manager.gribs)
-        if self.wind_visible:
+        if self.wind_visible or getattr(settings, "gribIsobarsVisible", True):
             self.wind.draw(self, cr, sources, style)
         self.marine.do_draw(self, cr)
         surface.flush()

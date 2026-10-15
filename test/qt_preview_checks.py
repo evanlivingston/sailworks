@@ -611,8 +611,11 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(
             self.controller.time_control.time, old_time + timedelta(hours=3)
         )
-        self.window.palette_combo.setCurrentText("dark")
+        self.window.show_settings()
+        settings = self.window.settings_dialog
+        settings.palette_combo.setCurrentText("dark")
         self.assertEqual(self.controller.settings.chartPalette, "dark")
+        settings.hide()
         self.drain()
         self.assertIsNotNone(self.window.map.background)
 
@@ -2138,12 +2141,12 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertTrue(all(g.value is None for g in canvas.dashboard._gauges))
 
     def test_map_display_controls_are_independent_and_survive_restart(self):
-        self.window.grib_action.trigger()
+        self.window.weather_panel.wind.toggle()
         self.window.dashboard_action.trigger()
         self.assertFalse(self.window.map.wind_visible)
         self.assertFalse(self.window.map.dashboard_visible)
         self.window.views.setCurrentWidget(self.window.logs_view)
-        self.assertTrue(self.window.grib_action.isChecked())
+        self.assertTrue(self.window.weather_panel.wind.isChecked())
         self.assertTrue(self.window.dashboard_action.isChecked())
         self.assertTrue(self.window.dashboard_action.isVisible())
         self.window.workspace.save()
@@ -2154,13 +2157,45 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertTrue(self.window.log_map.dashboard_visible)
         self.assertTrue(self.window.dashboard_action.isChecked())
         self.window.views.setCurrentWidget(self.window.polar_workspace)
-        self.assertFalse(self.window.grib_action.isVisible())
+        self.assertFalse(self.window.weather_action.isVisible())
         self.assertFalse(self.window.dashboard_action.isVisible())
         self.window.views.setCurrentWidget(self.window.map)
         self.assertFalse(self.window.dashboard_action.isChecked())
-        self.window.grib_action.trigger()
+        self.window.weather_panel.wind.toggle()
         self.window.dashboard_action.trigger()
         self.assertTrue(self.window.map.dashboard_visible)
+
+    def test_weather_panel_controls_and_layout_survive_restart(self):
+        self.window.weather_action.trigger()
+        self.drain()
+        panel = self.window.weather_panel
+        self.assertTrue(self.window.weather_open)
+        self.assertFalse(self.window.weather_dock.isHidden())
+        panel.wind.setChecked(False)
+        self.assertTrue(self.controller.settings.gribIsobarsVisible)
+        panel.interval.setValue(8)
+        panel.isobar_opacity.setValue(60)
+        panel.labels.setChecked(False)
+        self.assertEqual(self.controller.settings.gribIsobarInterval, 8)
+        self.assertEqual(self.controller.settings.gribIsobarOpacity, 0.6)
+        self.assertFalse(self.controller.settings.gribIsobarLabels)
+        panel.isobars.setChecked(False)
+        self.assertFalse(panel.isobar_options.isEnabled())
+        panel.isobars.setChecked(True)
+        self.window.workspace.save()
+        self.restart_workspace()
+        self.assertTrue(self.window.weather_open)
+        self.assertFalse(self.window.weather_dock.isHidden())
+        self.assertFalse(self.window.weather_panel.wind.isChecked())
+        self.window.views.setCurrentWidget(self.window.polar_workspace)
+        self.assertTrue(self.window.weather_dock.isHidden())
+        self.window.views.setCurrentWidget(self.window.logs_view)
+        self.assertFalse(self.window.weather_dock.isHidden())
+        self.assertTrue(self.window.weather_panel.wind.isChecked())
+        self.window.weather_dock.setFloating(True)
+        self.window.reset_panels()
+        self.assertFalse(self.window.weather_dock.isFloating())
+        self.assertFalse(self.window.weather_open)
 
     def test_cursor_coordinates_and_hidden_or_moving_weather_never_sample(self):
         from unittest.mock import Mock
@@ -2250,9 +2285,7 @@ class QtPreviewChecks(unittest.TestCase):
         from gweatherrouting.core.grib import Grib
         from gweatherrouting.rendering.windcursor import CursorGrib
 
-        source = Grib(
-            str(self.wind_fixture()), "wind", "test", [], datetime(2026, 1, 1), 3
-        )
+        source = Grib.parse(str(self.wind_fixture()))
         self.controller.core.grib_manager.gribs = [source]
         self.controller.time_control.set_time(source.start_time)
         canvas = self.window.map
@@ -2278,7 +2311,11 @@ class QtPreviewChecks(unittest.TestCase):
             done.set()
             return expected
 
-        private.get_wind_at = slow
+        from gweatherrouting.core.gribsampling import WeatherSampler
+
+        blocked = patch.object(WeatherSampler, "wind_at", side_effect=slow)
+        blocked.start()
+        self.addCleanup(blocked.stop)
         canvas.mouseMoveEvent(
             SimpleNamespace(
                 position=lambda: QPointF(canvas.width() / 2 + 1, canvas.height() / 2)
@@ -2416,6 +2453,24 @@ class QtPreviewChecks(unittest.TestCase):
             lambda: self.controller.time_control.time == start + timedelta(minutes=45)
         )
         self.assertFalse(timeline.commit_timer.isActive())
+
+    def test_forecast_scrubbing_updates_time_while_handle_is_held(self):
+        from datetime import timedelta
+
+        start = self.timeline_range()
+        timeline = self.window.timeline
+        timeline.slider.setSliderDown(True)
+        for value in (600, 1200, 1800):
+            timeline.slider.setValue(value)
+            self.wait_for_cursor(
+                lambda: self.controller.time_control.time
+                == start + timedelta(seconds=value)
+            )
+            self.assertTrue(timeline.slider.isSliderDown())
+        timeline.slider.setSliderDown(False)
+        self.assertEqual(
+            self.controller.time_control.time, start + timedelta(minutes=30)
+        )
 
     def test_forecast_timeline_manual_date_cancel_and_unbounded_accept(self):
         from datetime import timedelta
