@@ -1147,7 +1147,9 @@ into `dev`; no upstream PR was created or updated.
   is not overwritten. Automated pixel tests establish the missing-draw defect;
   user confirmed the visible macOS navigation fix before approving merge.
   No new automated native screen-recording comparison is claimed.
-- Integration: after user-approved merge, synchronize the fix into active Qt
-  feature branches, including PR #20. Keep independent diagnostic changes
-  separate from this small verified correction.
+- Integration: synchronized into active map-data PR #20 (merge `2caf29a`).
+  All eight pre-existing modified files were restored and checked against a
+  backup; their changes remain uncommitted. The rebuild-frame, native Settings
+  action and map-data reload checks pass together (four focused checks).
+  Independent diagnostic changes remain separate from this correction.
 - Intended upstream scope: none while Qt remains fork-only.
