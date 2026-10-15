@@ -442,6 +442,28 @@ restart. The verified rebuilt-layer draw fix remains in place. Wheel/trackpad
 input interpretation, zoom step size and routing calculations are unchanged;
 native pinch and macOS two-finger scroll-to-pan parity remain separate work.
 
+## Padded map previews
+
+Charts and Logs bake chart/weather/current and navigation layers beyond the
+visible map, with up to 192 logical pixels per edge. Small pans reveal those
+existing pixels; a new bake starts before the safe pan margin runs out. Animated
+zoom previews retain the cursor anchor and reuse a scaled image only while it
+covers the entire viewport. Larger zoom-outs rebuild in the same paint rather
+than exposing empty cached-image edges. Async chart/weather sources still need
+time to load coverage that is not yet available.
+
+Padding adapts to window size and pixel density, with a 16 MiB additional-image
+budget per cached layer. This budget excludes existing renderer caches and
+transient Cairo buffers. Routing, source selection and chart geometry are
+unchanged. CHS attribution remains inside the visible content bounds during a
+padded bake. The rebuilt-image draw regression checks remain in place.
+
+A local offscreen Qt measurement at 1100×700 logical pixels and DPR 2 with the
+bundled world chart measured median sharp bakes of 12.1 ms without padding and
+17.4 ms with padding (ten samples after two warmups), and 1.6 ms for image reuse
+(100 samples). Base image storage grew from 11.75 to 24.55 MiB; this is a local
+fixture measurement, not a benchmark of every chart/provider or native display.
+
 ## Remaining migration and release work
 
 The main connection/display/current settings, chart library, navigation, polars,
@@ -458,13 +480,14 @@ points are read-only; these are not additional working features awaiting migrati
 
 Map-data setup and Settings menu cleanup are implemented in open fork PR #20,
 pending integration. GTK stays available during verification and packaging.
-Offscreen chart margins, lower-detail zoom backdrops and a compact macOS toolbar
-are interaction/performance polish, separate from the remaining migration work.
+Lower-detail zoom backdrops and a compact macOS toolbar remain interaction/
+performance polish, separate from the remaining migration work.
 
 ## Validation
 
-The full repository suite passes 812 tests and 101 subtests locally.
-The optional Qt wrapper runs eighty-one integration checks in a separate
+The full repository unittest discovery passes 750 tests locally. The final
+combined preview also passes 90 Qt checks, including the pending Map Data work.
+The optional Qt wrapper runs 84 integration checks in a separate
 process. Coverage includes transport/recording, queued Core notifications,
 stale-source rejection, overlay completion without GLib, callback cancellation
 on shutdown, real OGR ENC/raster fixtures, forecast/palette changes, projection,

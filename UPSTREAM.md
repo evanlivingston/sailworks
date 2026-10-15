@@ -1206,3 +1206,53 @@ into `dev`; no upstream PR was created or updated.
 - Intended upstream scope: pure helper module relocation and GTK compatibility
   imports if requested; exclude Qt code, fork policy and migration documentation.
 - Usage/assessment: `docs/qt-first-pass.md`, `docs/qt-parity.md`.
+
+
+## Qt offscreen map coverage
+
+- Status: fork-only; no upstream submission.
+- Branch/base: `feature/qt-map-overscan` from `dev` at `9e8401e`, following merged
+  motion PR #22 and the verified rebuild-frame fix. Independent of open Map Data
+  PR #20; neither is a pending prerequisite for the other.
+- Review: [fork PR #23](https://github.com/evanlivingston/gweatherrouting/pull/23),
+  open and unmerged for user review.
+- Functional commits: `2d2867d` adds bounded padded scene bakes and safe coverage
+  reuse plus CHS attribution bounds; `71ef4e8` clips map paints; `765da0c` samples
+  only visible pixels and adds an ancestor-surface pixel regression.
+- Behavior/fidelity: Charts and Logs bake up to 192 logical pixels beyond each
+  edge, bounded by 16 MiB extra image storage per cached layer. Projection
+  expansion is synchronous and restored in `finally`; async workers capture
+  frozen viewports while retaining canvas identity. Pan rebuilds leave a safety
+  margin. Animated zoom reuse requires full viewport coverage; exhaustion builds
+  and draws a replacement in the same paint and permits fresh chart/overlay jobs.
+  Routing calculations, source selection, chart geometry and zoom anchors are
+  unchanged. Existing backend worker queues/cancellation remain in use.
+- Validation: full unittest discovery passes 750 tests in 88.4s, including 83 Qt
+  checks before the presentation follow-ups. Final combined PR #20 preview passes
+  90 Qt checks in 42.8s (84 from this branch plus six Map Data/Settings checks).
+  New DPR 1/2 pixel checks cover an offscreen landmark entering view, pan/zoom
+  reuse, safe pan and large zoom-out rebuilds, and confinement to an ancestor
+  image's map rectangle. Budget and failed-reader restoration checks pass; the
+  shared CHS test verifies attribution translation and Cairo state restoration.
+  The previous missing-blit regressions pass. Scoped Black/Flake8 and mypy with
+  silent imports pass; normal scoped mypy's nine imported-module errors reproduce
+  unchanged on dev. An initial combined Qt/GTK test invocation failed the Qt
+  import-isolation assertion; proper full discovery uses the isolated wrapper
+  and passes.
+- Measurement: local offscreen bundled-world-chart fixture at 1100×700 logical
+  pixels/DPR 2: ten measured sharp bakes after two warmups have medians 12.1ms
+  without padding and 17.4ms padded; 100 image reuses have median 1.6ms. Base image
+  storage grows from 11.75 to 24.55 MiB. Earlier run measured 10.4/13.7ms;
+  these are local fixture results, not a provider/native-compositor guarantee.
+  Image budget excludes existing renderer caches and temporary Cairo/copy buffers.
+- Native QA: Qt 6.12/DPR 2 confirms padded base/navigation sizes, small pan and
+  zoom reuse, and large zoom-out replacement. The running “GWeatherRouting —
+  padded map preview” includes PR #20 in a detached temporary worktree with
+  private copied settings/workspace JSON, installed charts and offline instrument
+  connections. Native QWidget window captures have toolbar background corruption
+  that also reproduces on the unchanged motion preview; no new spill regression
+  or screen-recording comparison is claimed. User visual confirmation is pending.
+- Limits: asynchronous providers still load unavailable chart/weather coverage;
+  no lower-detail zoom backdrop, native gesture migration or packaging changes.
+- Intended upstream scope: none while Qt remains fork-only.
+- Documentation: `docs/qt-first-pass.md`, `docs/qt-parity.md`.

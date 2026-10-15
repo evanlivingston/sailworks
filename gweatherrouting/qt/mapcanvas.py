@@ -433,8 +433,8 @@ class TrackMap(QWidget, MercatorProjection):
             self._render_padding, self._zoom_animating = padding, zooming
 
     def _paint_layer(self, painter, image, target):
-        # Sample only visible pixels. Besides bounding raster work, avoiding a
-        # negative destination keeps native ancestor captures inside the map.
+        # Sample only visible pixels to bound raster work and destination
+        # geometry, including when rendering into an ancestor surface.
         viewport = QRectF(0, 0, self.width(), self.height())
         sx, sy = image.width() / target.width(), image.height() / target.height()
         source = QRectF(
