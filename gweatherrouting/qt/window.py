@@ -1046,8 +1046,6 @@ class PreviewWindow(QMainWindow):
 
     def show_library(self):
         self._ensure_library()
-        if not self.controller.data.task.busy:
-            self.controller.data.scan_forecasts()
 
     def show_polars(self):
         self.show_polar_workspace()

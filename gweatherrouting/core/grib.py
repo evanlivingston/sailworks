@@ -17,6 +17,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 
 import datetime
 import logging
+import re
 from functools import lru_cache
 from typing import Optional, Tuple
 
@@ -33,14 +34,44 @@ PRESSURE_ELEMENTS = ("PRMSL", "MSLMA")
 PA_TO_HPA = 1.0 / 100.0
 
 
+def forecast_model_name(dataset, metadata):
+    """Display identity only; never change the sampler's model-selection keys."""
+    center = re.search(r"(?:^|\s)CENTER=(\d+)", metadata.get("GRIB_IDS", ""))
+    values = metadata.get("GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES", "").split()
+    if center is None or len(values) < 5:
+        return "Unknown"
+    origin, process = center.group(1), values[4]
+    if origin == "7":
+        return {"81": "GFS", "96": "GFS", "83": "HRRR"}.get(process, "Unknown")
+    if origin == "54" and process == "50":
+        # CMC process 50 alone is insufficient: confirm the continental HRDPS grid.
+        transform = dataset.GetGeoTransform()
+        if (
+            abs(abs(transform[1]) - 0.0225) < 1e-6
+            and "Pole rotation" in dataset.GetProjection()
+        ):
+            return "HRDPS"
+    return "Unknown"
+
+
 class MetaGrib:
-    def __init__(self, path, name, centre, bounds, start_time, last_forecast):
+    def __init__(
+        self,
+        path,
+        name,
+        centre,
+        bounds,
+        start_time,
+        last_forecast,
+        model_name="Unknown",
+    ):
         self.name = name
         self.centre = centre.upper()
         self.bounds = bounds
         self.start_time = start_time
         self.last_forecast = last_forecast
         self.path = path
+        self.model_name = model_name
 
 
 class Grib(weatherrouting.Grib):
@@ -52,8 +83,10 @@ class Grib(weatherrouting.Grib):
         bounds,
         start_time: datetime.datetime,
         last_forecast,
+        model_name="Unknown",
     ):
         self.name = name
+        self.model_name = model_name
         self.centre = centre.upper()
         self.bounds = bounds
         self.start_time = start_time
@@ -257,12 +290,14 @@ class Grib(weatherrouting.Grib):
         bounds = [0, 0, 0, 0]
         start_time = None
         hours_forecasted = None
+        models = set()
 
         for bidx in range(1, dataset.RasterCount + 1):
             band = dataset.GetRasterBand(bidx)
             metadata = band.GetMetadata()
 
             if metadata.get("GRIB_ELEMENT") in ("UGRD", "VGRD", *PRESSURE_ELEMENTS):
+                models.add(forecast_model_name(dataset, metadata))
                 centre = metadata.get("GRIB_CENTER", "")
                 forecast_hours = number(metadata.get("GRIB_FORECAST_SECONDS", 0)) / 3600
                 time = datetime.datetime.fromtimestamp(
@@ -280,7 +315,13 @@ class Grib(weatherrouting.Grib):
                 "Forecast contains no supported wind or pressure records: " + path
             )
         return MetaGrib(
-            path, path.split("/")[-1], centre, bounds, start_time, hours_forecasted
+            path,
+            path.split("/")[-1],
+            centre,
+            bounds,
+            start_time,
+            hours_forecasted,
+            " / ".join(sorted(models)),
         )
 
     @staticmethod
@@ -293,4 +334,5 @@ class Grib(weatherrouting.Grib):
             meta.bounds,
             meta.start_time,
             meta.last_forecast,
+            meta.model_name,
         )

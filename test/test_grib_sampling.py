@@ -88,6 +88,37 @@ class TestGribSampling(unittest.TestCase):
             direction, math.degrees(math.atan2(-u, -v)) % 360, places=10
         )
 
+    def test_local_forecast_model_uses_metadata_and_does_not_change_sampling_identity(
+        self,
+    ):
+        from gweatherrouting.core.grib import forecast_model_name
+        from types import SimpleNamespace
+
+        source = self.file(self.field(0))
+        self.assertEqual(Grib.parse_metadata(source.path).model_name, "GFS")
+        reopened = Grib.parse(source.path)
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.model_name, "GFS")
+        before = source.sampling.records[0].identity
+        source.model_name = "Label only"
+        self.assertEqual(source.sampling.records[0].identity, before)
+        dataset = SimpleNamespace(
+            GetGeoTransform=lambda: (0, 0.0225, 0, 0, 0, -0.0225),
+            GetProjection=lambda: "Pole rotation (GRIB convention)",
+        )
+        metadata = {
+            "GRIB_IDS": "CENTER=54(Montreal)",
+            "GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES": "2 2 2 50 50",
+        }
+        self.assertEqual(forecast_model_name(dataset, metadata), "HRDPS")
+        dataset.GetGeoTransform = lambda: (0, 0.09, 0, 0, 0, -0.09)
+        self.assertEqual(forecast_model_name(dataset, metadata), "Unknown")
+        metadata["GRIB_IDS"] = "CENTER=7"
+        metadata["GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES"] = "2 2 2 0 83"
+        self.assertEqual(forecast_model_name(dataset, metadata), "HRRR")
+        metadata["GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES"] = "2 2 2 0 999"
+        self.assertEqual(forecast_model_name(dataset, metadata), "Unknown")
+
     def test_bilinear_and_fractional_time_have_analytical_answers(self):
         source = self.file(self.field(0) + self.field(3))
         sampler = source.sampler()
