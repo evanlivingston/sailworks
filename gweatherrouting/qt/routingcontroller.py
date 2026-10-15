@@ -18,9 +18,10 @@ from gweatherrouting.core.marine.chs import DownloadCancelledError
 class RoutingController(QObject):
     changed = Signal()
     preview_changed = Signal(object)
+    isochrones_changed = Signal(object)
     completed = Signal(object)
     dismiss_preflight = Signal()
-    _progress = Signal(int, float, object)
+    _progress = Signal(int, float, object, object)
     _message = Signal(int, str)
     _finished = Signal(int, object, object)
 
@@ -77,6 +78,7 @@ class RoutingController(QObject):
         )
         self.changed.emit()
         self.preview_changed.emit(())
+        self.isochrones_changed.emit(())
 
         def worker():
             self._run_requests(
@@ -108,6 +110,11 @@ class RoutingController(QObject):
                             token,
                             (index * 100 + percent) / self.scenario_count,
                             points,
+                            (
+                                getattr(points, "isochrones", ())
+                                if points is not None
+                                else None
+                            ),
                         )
 
                 options = {}
@@ -172,6 +179,7 @@ class RoutingController(QObject):
             else f"Scenario {index+1}/{self.scenario_count}: calculating…"
         )
         self.preview_changed.emit(())
+        self.isochrones_changed.emit(())
         self.changed.emit()
 
     def _save_fields(self, fields):
@@ -210,6 +218,7 @@ class RoutingController(QObject):
         if self.busy:
             self.cancel_event.set()
             self.dismiss_preflight.emit()
+            self.isochrones_changed.emit(())
             self.message = "Cancelling…"
             self.changed.emit()
 
@@ -224,8 +233,8 @@ class RoutingController(QObject):
             self.message = message
             self.changed.emit()
 
-    @Slot(int, float, object)
-    def _apply_progress(self, token, percent, points):
+    @Slot(int, float, object, object)
+    def _apply_progress(self, token, percent, points, isochrones=None):
         if (
             self.closed
             or not self.busy
@@ -242,6 +251,8 @@ class RoutingController(QObject):
         self.message = prefix + f"Calculating: approximately {percent:.0f}%"
         if points is not None:
             self.preview_changed.emit(points)
+        if isochrones is not None:
+            self.isochrones_changed.emit(isochrones)
         self.changed.emit()
 
     @Slot(int, object, object)
@@ -250,6 +261,7 @@ class RoutingController(QObject):
             return
         self.busy = False
         self.preview_changed.emit(())
+        self.isochrones_changed.emit(())
         if self.cancel_event.is_set() or isinstance(
             error, (RoutingCancelledError, DownloadCancelledError)
         ):
@@ -277,6 +289,7 @@ class RoutingController(QObject):
         self.changed.emit()
 
     def close(self):
+        self.isochrones_changed.emit(())
         self.closed = True
         self.cancel_event.set()
         self.generation += 1

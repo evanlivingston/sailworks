@@ -80,6 +80,15 @@ class TestRoutingJob(unittest.TestCase):
             ),
         )
         self.assertEqual(updates[-1][0], 100)
+        self.assertTrue(any(getattr(points, "isochrones", ()) for _, points in updates))
+        self.assertTrue(
+            all(
+                isinstance(p, tuple)
+                for _, update in updates
+                for front in getattr(update, "isochrones", ())
+                for p in front
+            )
+        )
         self.assertEqual(result.provenance["currents"], "disabled")
 
     def test_cancellation_interrupts_wind_query_and_does_not_become_missing_wind(self):

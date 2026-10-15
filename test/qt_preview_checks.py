@@ -654,6 +654,9 @@ class QtPreviewChecks(unittest.TestCase):
             self.window.navigation_panel.route_points.rowCount(), len(route.points)
         )
         self.assertEqual(
+            self.window.map.isochrone_frame.isochrones, tuple(route.isochrones)
+        )
+        self.assertEqual(
             self.window.map.route, tuple((p[0], p[1]) for p in route.points)
         )
         self.assertIn("saved", panel.status.text())
@@ -700,6 +703,68 @@ class QtPreviewChecks(unittest.TestCase):
                 self.controller.core.routingManager[0].points,
             )
             self.assertEqual(restored[0].provenance["currents"], "disabled")
+
+    def test_live_isochrones_reach_map_before_routing_finishes_and_render_off_thread(
+        self,
+    ):
+        from gweatherrouting.core.routingjob import CalculatedRoute, RoutingPreview
+        from test.test_routingjob import ConstantWind
+
+        self.plan_test_waypoints()
+        self.controller.core.grib_manager.gribs = [ConstantWind()]
+        started, release = Event(), Event()
+        self.addCleanup(release.set)
+        frontiers = (((0, 0.02), (0.01, 0.02), (0.02, 0.02)),)
+
+        def calculate(core, request, sources, providers, cancel, progress, **options):
+            progress(25, RoutingPreview(((0, 0), (0.01, 0.01)), frontiers))
+            started.set()
+            release.wait(15)
+            return CalculatedRoute(((0, 0, "2026-10-01", 0, 1, 1, 0),), (), {})
+
+        with patch(
+            "gweatherrouting.qt.routingcontroller.calculate_route",
+            side_effect=calculate,
+        ):
+            self.window.routing_panel.calculate.click()
+            self.assertTrue(started.wait(1))
+            self.wait_for_routing_stage(
+                lambda: self.window.map.isochrone_frame.isochrones == frontiers
+            )
+            self.assertTrue(self.controller.routing.busy)
+            canvas = self.window.map
+            canvas.fit_coordinates([(0, 0), (0.03, 0.03)])
+            threads = []
+            render = canvas.isochrones._render
+
+            def tracked(job):
+                threads.append(get_ident())
+                return render(job)
+
+            canvas.isochrones._render = tracked
+            canvas._navigation_image()
+            self.wait_for_routing_stage(
+                lambda: canvas in canvas.isochrones._states
+                and canvas.isochrones._states[canvas].frame is not None
+                and canvas.isochrones._states[canvas].frame[0].viewport._center_lat
+                == canvas._center_lat
+                and canvas.isochrones._states[canvas].frame[0].viewport._center_lon
+                == canvas._center_lon
+                and canvas.isochrones._states[canvas].frame[0].viewport._zoom
+                == canvas._zoom
+            )
+            self.assertTrue(threads)
+            self.assertTrue(all(t != get_ident() for t in threads))
+            frame = canvas.isochrones._states[canvas].frame[1]
+            self.assertTrue(any(bytes(frame.get_data())))
+            self.controller.routing.cancel()
+            self.assertFalse(canvas.isochrone_frame.isochrones)
+            self.controller.routing._apply_progress(
+                self.controller.routing.generation, 50, (), frontiers
+            )
+            self.assertFalse(canvas.isochrone_frame.isochrones)
+            release.set()
+            self.wait_for_route()
 
     def test_routing_cancel_and_close_keep_completed_routes_and_drop_late_results(self):
         self.plan_test_waypoints()

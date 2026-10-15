@@ -137,6 +137,34 @@ class RouteRequest:
     wind_dir_offset: float = 0
 
 
+class RoutingPreview(tuple):
+    """Path-compatible progress payload with frozen isochrone coordinates."""
+
+    isochrones: tuple
+
+    def __new__(cls, path=(), isochrones=()):
+        result = super().__new__(cls, path)
+        result.isochrones = isochrones
+        return result
+
+
+class IsochroneSnapshot:
+    """Reuse frozen completed frontiers; never queue live engine objects to Qt."""
+
+    def __init__(self):
+        self.frontiers: dict[int, tuple] = {}
+
+    def capture(self, frontiers):
+        current = {}
+        for frontier in frontiers:
+            cached = self.frontiers.get(id(frontier))
+            if cached is None or len(cached[1]) != len(frontier):
+                cached = (frontier, tuple(tuple(point.pos) for point in frontier))
+            current[id(frontier)] = cached
+        self.frontiers = current
+        return tuple(current[id(frontier)][1] for frontier in frontiers)
+
+
 @dataclass(frozen=True)
 class CalculatedRoute:
     points: tuple
@@ -241,7 +269,8 @@ def run_requested_routing(core, routing, request, wind, progress, report, save_f
                 routing_completion(routing, distance), None
             )
         )
-    progress(0, ())
+    progress(0, RoutingPreview())
+    snapshot = IsochroneSnapshot()
     result = None
     while not routing.end:
         wind.check_cancelled()
@@ -253,7 +282,12 @@ def run_requested_routing(core, routing, request, wind, progress, report, save_f
             else routing.step()
         )
         path = result.path or routing.get_current_best_path()
-        progress(routing_completion(routing), tuple(tuple(p.pos) for p in path))
+        progress(
+            routing_completion(routing),
+            RoutingPreview(
+                tuple(tuple(p.pos) for p in path), snapshot.capture(result.isochrones)
+            ),
+        )
     wind.check_cancelled()
     if result is None or not result.path:
         raise ValueError("The routing engine returned no route.")

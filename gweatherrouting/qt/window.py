@@ -346,6 +346,7 @@ class PreviewWindow(QMainWindow):
         controller.routing.completed.connect(self._routing_completed)
         self.map.route_location.connect(self.routing_panel.set_location)
         controller.routing.preview_changed.connect(self.map.set_route_preview)
+        controller.routing.isochrones_changed.connect(self.map.set_isochrones)
         controller.routing.changed.connect(self._routing_changed)
         self.routing_panel._plan_changed()
         self._select_saved_route(
@@ -573,6 +574,7 @@ class PreviewWindow(QMainWindow):
         speeds = tuple(p[5] or 0 for p in route.points) if route is not None else ()
         self.map.set_route(coordinates, speeds)
         self.map.navigation.hl_routing = route.name if route is not None else None
+        self._sync_route_isochrones()
 
     def _navigation_visibility(self, _):
         if not self.navigation_syncing and self.views.currentWidget() is self.map:
@@ -698,6 +700,15 @@ class PreviewWindow(QMainWindow):
     def _routing_changed(self):
         if self.controller.routing.busy:
             self.views.setCurrentWidget(self.map)
+        else:
+            self._sync_route_isochrones()
+
+    def _sync_route_isochrones(self):
+        if not self.controller.routing.busy:
+            route = self.navigation_panel.route
+            self.map.set_isochrones(
+                route.isochrones if route is not None and route.visible else ()
+            )
 
     def _fit_view(self):
         self.views.setCurrentWidget(self.map)
