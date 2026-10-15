@@ -21,6 +21,8 @@ from gweatherrouting.core.routingjob import (
 
 
 class ConstantWind:
+    model_name = "GFS"
+    last_forecast = 384
     name = "constant"
     start_time = datetime(2026, 10, 1)
 
@@ -117,7 +119,7 @@ class TestRoutingJob(unittest.TestCase):
             dataset = gdal.GetDriverByName("GTiff").Create(
                 path, 4, 3, 4, gdal.GDT_Float32
             )
-            dataset.SetGeoTransform((-124, 1, 0, 50, 0, -1))
+            dataset.SetGeoTransform((-124.5, 1, 0, 50.5, 0, -1))
             for index, (hour, element, value) in enumerate(
                 ((0, "UGRD", 2), (0, "VGRD", 4), (3, "UGRD", 8), (3, "VGRD", 10)), 1
             ):
@@ -142,6 +144,19 @@ class TestRoutingJob(unittest.TestCase):
             self.assertFalse(worker.manager.gribs)
             self.assertIsNone(private.dataset)
             self.assertEqual(private._index_data.cache_info().currsize, 0)
+
+    def test_wind_only_limit_rejects_stationary_unsafe_candidates(self):
+        from dataclasses import replace
+
+        with self.assertRaisesRegex(ValueError, "exceed the configured TWS limit"):
+            calculate_route(
+                self.core,
+                replace(self.request, tws_max_kn=1),
+                self.core.grib_manager.gribs,
+                (),
+                Event(),
+                lambda *_: None,
+            )
 
     def test_no_forecast_is_a_clear_error_without_a_saved_partial_route(self):
         with self.assertRaisesRegex(weatherrouting.RoutingNoWindError, "forecast"):

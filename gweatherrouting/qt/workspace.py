@@ -68,6 +68,7 @@ class WorkspacePreferences(QObject):
             self.window.performance_dock,
             self.window.polar_manager_dock,
             self.window.navigation_dock,
+            self.window.weather_dock,
             *self.window.marine_docks.values(),
         )
 
@@ -91,6 +92,7 @@ class WorkspacePreferences(QObject):
         window.navigation_panel.track_split.splitterMoved.connect(self.changed)
         window.navigation_panel.route_split.splitterMoved.connect(self.changed)
         window.ais_action.toggled.connect(self.changed)
+        window.weather_panel.wind.toggled.connect(self.changed)
         for action in window.map_toolbar_actions:
             action.toggled.connect(self.changed)
         for action in window.log_toggles.values():
@@ -168,6 +170,7 @@ class WorkspacePreferences(QObject):
             "view": window.views.tabText(window.views.currentIndex()),
             "polars_visited": window.polars_visited,
             "forecast": {"step": window.timeline.step_combo.currentText()},
+            "weather": {"open": window.weather_open},
             "marine": {
                 "open": dict(window.marine_open),
                 **{
@@ -275,6 +278,12 @@ class WorkspacePreferences(QObject):
             opened = mapping(marine.get("open")).get(kind)
             if isinstance(opened, bool):
                 self.window.marine_open[kind] = opened
+        opened = mapping(state.get("weather")).get("open")
+        self.window.weather_open = (
+            opened
+            if isinstance(opened, bool)
+            else not self.window.weather_dock.isHidden()
+        )
         self.window._view_changed()
         self.window.refresh()
         step = mapping(state.get("forecast")).get("step")
@@ -311,6 +320,7 @@ class WorkspacePreferences(QObject):
             "chart-navigation",
             "currents",
             "tides",
+            "weather",
         ):
             self.active_dock = active
             for dock in self.docks:
@@ -427,6 +437,7 @@ class WorkspacePreferences(QObject):
         try:
             self.window.restoreState(self.default_layout, LAYOUT_VERSION)
             self.window.polars_visited = False
+            self.window.weather_open = False
             self.window.navigation_open = True
             self.window.marine_open = {"currents": False, "tides": False}
             self.window.views.setCurrentWidget(self.window.map)

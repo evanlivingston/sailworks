@@ -21,7 +21,12 @@ from .routing import DataGap, FrozenRoutingWind, routing_utc, wind_run_timestamp
 
 class WindCoverageRecovery:
     def __init__(
-        self, routing, save=None, directory=GRIB_DIR, source_factory=NOAAGFSSource
+        self,
+        routing,
+        save=None,
+        directory=GRIB_DIR,
+        source_factory=NOAAGFSSource,
+        selection=None,
     ):
         self.routing = routing
         self.environment = routing.current_environment
@@ -33,6 +38,11 @@ class WindCoverageRecovery:
         self._pending = None
         self._attempted: set = set()
         self._errors: dict = {}
+        self.model_recovery = None
+        if selection is not None:
+            from ..modeldownloads import ModelForecastRecovery
+
+            self.model_recovery = ModelForecastRecovery(selection, directory, self)
 
     def is_set(self):
         return self._stop.is_set() or self.environment.cancel.is_set()
@@ -124,6 +134,8 @@ class WindCoverageRecovery:
     def refresh(self):
         """Use the latest eligible GFS cycle before starting the search."""
         self._check()
+        if self.model_recovery is not None:
+            return
         if self.wind.gribs and not all(
             g.name.startswith("gfs_") for g in self.wind.gribs
         ):
@@ -178,6 +190,16 @@ class WindCoverageRecovery:
 
     def download(self, gaps, minimum_cycle=None):
         self._check()
+        if self.model_recovery is not None:
+            points = [
+                self.routing.position,
+                *self.routing.track[self.routing.wp :],
+                *(g.position for g in gaps),
+            ]
+            area = Area.from_points(points, padding=1)
+            instant = max(g.time for g in gaps)
+            gribs = [getattr(g, "grib", g) for g in self.wind.gribs]
+            return self.model_recovery.download(gribs, points, instant, area)
         if self.wind.gribs and not all(
             g.name.startswith("gfs_") for g in self.wind.gribs
         ):

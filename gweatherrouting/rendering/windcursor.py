@@ -5,6 +5,7 @@ from threading import Thread
 
 from .windrenderer import DisplayGrib
 from gweatherrouting.core.grib import Grib
+from gweatherrouting.core.gribsampling import WeatherSampler
 
 
 class CursorGrib(DisplayGrib):
@@ -19,7 +20,7 @@ class CursorGrib(DisplayGrib):
 
     def close(self):
         self._arrays.clear()
-        self.dataset = None
+        super().close()
 
 
 class WindCursorSampler:
@@ -86,21 +87,35 @@ class WindCursorSampler:
         return False
 
     def _sample(self, sources, forecast, lat, lon):
-        for source in sources:
+        private = []
+        try:
+            for source in sources:
+                try:
+                    grib = self._gribs.get(source)
+                    if grib is None:
+                        grib = self._display_grib(source)
+                        self._gribs[source] = grib
+                    self._gribs.move_to_end(source)
+                    private.append(grib)
+                except Exception:
+                    continue
+            if private and all(isinstance(grib, Grib) for grib in private):
+                return WeatherSampler(private).wind_at(forecast, lat, lon)
+            return self._sample_providers(private, forecast, lat, lon)
+        finally:
+            # Keep every enabled file alive until cross-file sampling completes.
+            while len(self._gribs) > 2:
+                _, evicted = self._gribs.popitem(last=False)
+                self._release_grib(evicted)
+
+    @staticmethod
+    def _sample_providers(private, forecast, lat, lon):
+        for grib in private:
             try:
-                grib = self._gribs.get(source)
-                if grib is None:
-                    grib = self._display_grib(source)
-                    self._gribs[source] = grib
-                    if len(self._gribs) > 2:
-                        _, evicted = self._gribs.popitem(last=False)
-                        self._release_grib(evicted)
-                self._gribs.move_to_end(source)
                 wind = grib.get_wind_at(forecast, lat, lon)
                 if wind is not None:
                     return wind
             except Exception:
-                # Match the manager: try other enabled sources for this point.
                 continue
         return None
 

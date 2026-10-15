@@ -24,6 +24,9 @@ class SettingsManager(Storage):
         self.gribArrowOpacity = 0.4
         self.gribArrowOnGround = False
         self.gribIsobarsVisible = True
+        self.gribIsobarInterval = 4.0
+        self.gribIsobarOpacity = 0.85
+        self.gribIsobarLabels = True
         self.vectorCharts = []
         self.rasterCharts = []
         self.chartPalette = "cm93"

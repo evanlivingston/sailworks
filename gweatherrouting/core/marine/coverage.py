@@ -7,6 +7,7 @@ from datetime import timedelta
 
 from .chs import DownloadCancelledError
 from .models import utc_time
+from .nosofs import NOSOFS_DOMAINS, NOSOFSProvider
 from .spatialproviders import (
     CIOPS_DOMAINS,
     CIOPSProvider,
@@ -25,9 +26,12 @@ class CoverageTask:
 
 
 class CoveragePlanner:
-    def __init__(self, regional=None, worldwide=None, cache_directory=None):
+    def __init__(
+        self, regional=None, worldwide=None, cache_directory=None, coastal=None
+    ):
         self.regional = regional or CIOPSProvider()
         self.worldwide = worldwide or CopernicusProvider()
+        self.coastal = coastal or NOSOFSProvider()
         self.cache_directory = cache_directory
 
     def plan(self, area):
@@ -40,6 +44,11 @@ class CoveragePlanner:
                             "eccc-ciops", domain, part, resolution, "CIOPS-" + label
                         )
                     )
+            for domain, (label, resolution, bounds) in NOSOFS_DOMAINS.items():
+                if part.intersects(bounds):
+                    tasks.append(
+                        CoverageTask("noaa-nosofs", domain, part, resolution, label)
+                    )
             tasks.append(
                 CoverageTask(
                     "copernicus-marine",
@@ -51,7 +60,7 @@ class CoveragePlanner:
             )
         return tuple(tasks)
 
-    def download(self, area, start, end, cancel=None, progress=None):
+    def download(self, area, start, end, cancel=None, progress=None):  # noqa: C901
         start, end = utc_time(start), utc_time(end)
         if not timedelta(0) < end - start <= timedelta(days=7):
             raise ValueError("Choose a coverage window up to seven days")
@@ -69,6 +78,10 @@ class CoveragePlanner:
                 try:
                     if task.provider == "eccc-ciops":
                         field = self.regional.download(
+                            task.domain, task.area, start, end, client, progress
+                        )
+                    elif task.provider == "noaa-nosofs":
+                        field = self.coastal.download(
                             task.domain, task.area, start, end, client, progress
                         )
                     else:

@@ -17,9 +17,11 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 
 import datetime
 import logging
-import math
+import re
 from functools import lru_cache
 from typing import Optional, Tuple
+
+from .gribsampling import GridIndex, WeatherSampler, number
 
 import weatherrouting
 from osgeo import gdal
@@ -32,14 +34,44 @@ PRESSURE_ELEMENTS = ("PRMSL", "MSLMA")
 PA_TO_HPA = 1.0 / 100.0
 
 
+def forecast_model_name(dataset, metadata):
+    """Display identity only; never change the sampler's model-selection keys."""
+    center = re.search(r"(?:^|\s)CENTER=(\d+)", metadata.get("GRIB_IDS", ""))
+    values = metadata.get("GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES", "").split()
+    if center is None or len(values) < 5:
+        return "Unknown"
+    origin, process = center.group(1), values[4]
+    if origin == "7":
+        return {"81": "GFS", "96": "GFS", "83": "HRRR"}.get(process, "Unknown")
+    if origin == "54" and process == "50":
+        # CMC process 50 alone is insufficient: confirm the continental HRDPS grid.
+        transform = dataset.GetGeoTransform()
+        if (
+            abs(abs(transform[1]) - 0.0225) < 1e-6
+            and "Pole rotation" in dataset.GetProjection()
+        ):
+            return "HRDPS"
+    return "Unknown"
+
+
 class MetaGrib:
-    def __init__(self, path, name, centre, bounds, start_time, last_forecast):
+    def __init__(
+        self,
+        path,
+        name,
+        centre,
+        bounds,
+        start_time,
+        last_forecast,
+        model_name="Unknown",
+    ):
         self.name = name
         self.centre = centre.upper()
         self.bounds = bounds
         self.start_time = start_time
         self.last_forecast = last_forecast
         self.path = path
+        self.model_name = model_name
 
 
 class Grib(weatherrouting.Grib):
@@ -51,8 +83,10 @@ class Grib(weatherrouting.Grib):
         bounds,
         start_time: datetime.datetime,
         last_forecast,
+        model_name="Unknown",
     ):
         self.name = name
+        self.model_name = model_name
         self.centre = centre.upper()
         self.bounds = bounds
         self.start_time = start_time
@@ -77,8 +111,8 @@ class Grib(weatherrouting.Grib):
                 continue
 
             element = metadata["GRIB_ELEMENT"]
-            forecast_seconds = int(metadata["GRIB_FORECAST_SECONDS"])
-            forecast_hours = forecast_seconds // 3600
+            forecast_seconds = number(metadata["GRIB_FORECAST_SECONDS"])
+            forecast_hours = forecast_seconds / 3600
 
             if forecast_hours == t:
                 if element == "UGRD":
@@ -102,7 +136,7 @@ class Grib(weatherrouting.Grib):
 
             if (
                 metadata["GRIB_ELEMENT"] in PRESSURE_ELEMENTS
-                and int(metadata["GRIB_FORECAST_SECONDS"]) // 3600 == t
+                and number(metadata["GRIB_FORECAST_SECONDS"]) / 3600 == t
             ):
                 return band
 
@@ -122,8 +156,8 @@ class Grib(weatherrouting.Grib):
 
         for y in range(u.shape[0]):
             for x in range(u.shape[1]):
-                lon = gt[0] + x * gt[1]
-                lat = gt[3] + y * gt[5]
+                lon = gt[0] + (x + 0.5) * gt[1] + (y + 0.5) * gt[2]
+                lat = gt[3] + (x + 0.5) * gt[4] + (y + 0.5) * gt[5]
                 uv_data.append((lat, lon, u[y, x], v[y, x]))
 
         return uv_data
@@ -155,8 +189,8 @@ class Grib(weatherrouting.Grib):
 
         for y in range(pressure.shape[0]):
             for x in range(pressure.shape[1]):
-                lon = gt[0] + x * gt[1]
-                lat = gt[3] + y * gt[5]
+                lon = gt[0] + (x + 0.5) * gt[1] + (y + 0.5) * gt[2]
+                lat = gt[3] + (x + 0.5) * gt[4] + (y + 0.5) * gt[5]
                 data.append((lat, lon, pressure[y, x]))
 
         return data
@@ -176,83 +210,28 @@ class Grib(weatherrouting.Grib):
             )
         )
 
+    @property
+    def sampling(self):
+        if "_sampling" not in self.__dict__:
+            self._sampling = GridIndex(self)
+        return self._sampling
+
+    def sampler(self):
+        if "_sampler" not in self.__dict__:
+            self._sampler = WeatherSampler((self,))
+        return self._sampler
+
     def get_pressure(self, tt, bounds):
-        """Time-interpolated mean-sea-level pressure in hPa.
-
-        Returns a list of (lat, lon, hPa) or None when the file carries no
-        pressure bands (e.g. wind-only GRIBs downloaded before isobars).
-        """
-        t = self._transform_time(tt)
-        if t is None:
-            return None
-
-        available_hours = self._get_available_pressure_hours()
-        if not available_hours:
-            return None
-        t1, t2 = self._find_bracketing_hours(t, available_hours)
-
-        lon1 = min(bounds[0][1], bounds[1][1])
-        lon2 = max(bounds[0][1], bounds[1][1])
-
-        bounds = [(bounds[0][0], lon1), (bounds[1][0], lon2)]
-        ppp1 = self._get_pressure_data(t1, bounds)
-        ppp2 = self._get_pressure_data(t2, bounds)
-
-        if not ppp1 or not ppp2 or len(ppp1) != len(ppp2):
-            return None
-
-        data = []
-
-        for j in range(0, len(ppp1)):
-            lat, lon, pp1 = ppp1[j]
-            _, _, pp2 = ppp2[j]
-
-            if lon > 180.0:
-                lon -= 360.0
-
-            if t2 == t1:
-                pp = pp1
-            else:
-                pp = pp1 + (pp2 - pp1) * (t - t1) / (t2 - t1)
-
-            data.append((lat, lon, pp * PA_TO_HPA))
-
-        return data
+        return self.sampler().grid("pressure", tt, bounds) or None
 
     def get_wind(self, tt, bounds):
-        t = self._transform_time(tt)
-        if t is None:
-            return
+        return self.sampler().grid("wind", tt, bounds)
 
-        # Find the two surrounding forecast hours for interpolation
-        available_hours = self._get_available_forecast_hours()
-        t1, t2 = self._find_bracketing_hours(t, available_hours)
-
-        lon1 = min(bounds[0][1], bounds[1][1])
-        lon2 = max(bounds[0][1], bounds[1][1])
-
-        bounds = [(bounds[0][0], lon1), (bounds[1][0], lon2)]
-        uuvv1 = self._get_wind_data(t1, bounds)
-        uuvv2 = self._get_wind_data(t2, bounds)
-
-        data = []
-
-        for j in range(0, len(uuvv1)):
-            lat, lon, uu1, vv1 = uuvv1[j]
-            _, _, uu2, vv2 = uuvv2[j]
-
-            if lon > 180.0:
-                lon -= 360.0
-
-            uu = uu1 + (uu2 - uu1) * (t - t1) / (t2 - t1)
-            vv = vv1 + (vv2 - vv1) * (t - t1) / (t2 - t1)
-
-            tws = math.sqrt(uu**2 + vv**2)
-            twd = (math.degrees(math.atan2(-uu, -vv)) + 360) % 360
-
-            data.append((twd, tws, (lat, lon)))
-
-        return data
+    def close(self):
+        if "_sampling" in self.__dict__:
+            self._sampling.close()
+        self.__dict__.pop("_sampler", None)
+        self.dataset = None
 
     @lru_cache(maxsize=1)
     def _get_available_pressure_hours(self):
@@ -265,7 +244,7 @@ class Grib(weatherrouting.Grib):
                 "GRIB_FORECAST_SECONDS" in metadata
                 and metadata.get("GRIB_ELEMENT") in PRESSURE_ELEMENTS
             ):
-                hours.add(int(metadata["GRIB_FORECAST_SECONDS"]) // 3600)
+                hours.add(number(metadata["GRIB_FORECAST_SECONDS"]) / 3600)
         return sorted(hours)
 
     @lru_cache(maxsize=1)
@@ -279,62 +258,50 @@ class Grib(weatherrouting.Grib):
                 "UGRD",
                 "VGRD",
             ):
-                hours.add(int(metadata["GRIB_FORECAST_SECONDS"]) // 3600)
+                hours.add(number(metadata["GRIB_FORECAST_SECONDS"]) / 3600)
         return sorted(hours)
 
     def _find_bracketing_hours(self, t, available_hours):
-        """Find the two forecast hours that bracket time t for interpolation."""
         if not available_hours:
-            # Fallback to old behavior
-            t1 = int(round(t / 3.0)) * 3
-            return t1, t1 + 3
-
-        t1 = available_hours[0]
-        t2 = available_hours[-1] if len(available_hours) > 1 else t1 + 3
-
-        for i in range(len(available_hours) - 1):
-            if available_hours[i] <= t <= available_hours[i + 1]:
-                t1 = available_hours[i]
-                t2 = available_hours[i + 1]
-                break
-
-        if t2 == t1:
-            t2 = t1 + 3
-
-        return t1, t2
+            return None, None
+        before = [hour for hour in available_hours if hour <= t]
+        after = [hour for hour in available_hours if hour >= t]
+        return (
+            max(before) if before else min(after),
+            min(after) if after else max(before),
+        )
 
     def _transform_time(self, t) -> Optional[float]:
-        if self.end_time < t:
+        elapsed = (t.timestamp() - self.start_time.timestamp()) / 3600
+        if elapsed < 0 or t.timestamp() > self.end_time.timestamp():
             return None
+        return elapsed
 
-        return math.floor((t - self.start_time).total_seconds() / 3600)
-
-    def get_wind_at(self, t, lat: float, lon: float) -> Tuple[float, float]:
-        bounds = [
-            (math.floor(lat * 2) / 2.0, math.floor(lon * 2) / 2.0),
-            (math.ceil(lat * 2) / 2.0, math.ceil(lon * 2) / 2.0),
-        ]
-        data = self.get_wind(t, bounds)
-        return (data[0][0], data[0][1])
+    def get_wind_at(self, t, lat: float, lon: float) -> Optional[Tuple[float, float]]:
+        return self.sampler().wind_at(t, lat, lon)
 
     @staticmethod
     def parse_metadata(path):
         dataset = gdal.Open(path)
+        if dataset is None:
+            raise ValueError("Unable to open forecast: " + path)
         centre = ""
         # TODO: get bounds and timeframe
         bounds = [0, 0, 0, 0]
         start_time = None
         hours_forecasted = None
+        models = set()
 
         for bidx in range(1, dataset.RasterCount + 1):
             band = dataset.GetRasterBand(bidx)
             metadata = band.GetMetadata()
 
-            if metadata.get("GRIB_ELEMENT") in ("UGRD", "VGRD"):
+            if metadata.get("GRIB_ELEMENT") in ("UGRD", "VGRD", *PRESSURE_ELEMENTS):
+                models.add(forecast_model_name(dataset, metadata))
                 centre = metadata.get("GRIB_CENTER", "")
-                forecast_hours = int(metadata.get("GRIB_FORECAST_SECONDS", 0)) // 3600
+                forecast_hours = number(metadata.get("GRIB_FORECAST_SECONDS", 0)) / 3600
                 time = datetime.datetime.fromtimestamp(
-                    int(metadata.get("GRIB_REF_TIME", 0))
+                    number(metadata.get("GRIB_REF_TIME", 0))
                 )
 
                 if start_time is None or time < start_time:
@@ -343,8 +310,18 @@ class Grib(weatherrouting.Grib):
                 if hours_forecasted is None or forecast_hours > hours_forecasted:
                     hours_forecasted = forecast_hours
 
+        if start_time is None or hours_forecasted is None:
+            raise ValueError(
+                "Forecast contains no supported wind or pressure records: " + path
+            )
         return MetaGrib(
-            path, path.split("/")[-1], centre, bounds, start_time, hours_forecasted
+            path,
+            path.split("/")[-1],
+            centre,
+            bounds,
+            start_time,
+            hours_forecasted,
+            " / ".join(sorted(models)),
         )
 
     @staticmethod
@@ -357,4 +334,5 @@ class Grib(weatherrouting.Grib):
             meta.bounds,
             meta.start_time,
             meta.last_forecast,
+            meta.model_name,
         )

@@ -20,6 +20,7 @@ dependencies = [
     "pynmea2",
     "gpxpy",
     "numpy",
+    "netCDF4>=1.6",
     "shapely>=2,<3",
     "pyproj>=3.6,<4",
     "nmeatoolkit>=0.2",

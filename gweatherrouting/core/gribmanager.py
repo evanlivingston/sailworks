@@ -22,7 +22,12 @@ from typing import Dict, List
 import weatherrouting
 
 from gweatherrouting.core.grib import Grib
-from gweatherrouting.core.gribsources import NOAAGFSSource, OpenSkironSource
+from gweatherrouting.core.gribsampling import WeatherSampler
+from gweatherrouting.core.gribsources import (
+    ECCHRDPSource,
+    NOAAGFSSource,
+    NOAAHRRRSource,
+)
 from gweatherrouting.core.storage import GRIB_DIR, Storage
 
 logger = logging.getLogger("gweatherrouting")
@@ -34,6 +39,7 @@ class GribManagerStorage(Storage):
     def __init__(self):
         Storage.__init__(self, "grib-manager")
         self.opened = []
+        self.forecast_selection = None
         self.load_or_save_default()
 
 
@@ -45,7 +51,12 @@ class GribManager(weatherrouting.Grib):
         self.gribs: List[Grib] = []
         self.timeframe = [0, 0]
 
-        self.sources = [OpenSkironSource(), NOAAGFSSource()]
+        # OpenSkiron is temporarily disabled; retain its implementation for later.
+        self.sources = [
+            NOAAGFSSource(),
+            NOAAHRRRSource(),
+            ECCHRDPSource(),
+        ]
 
         self.local_gribs = []
         self.refresh_local_gribs()
@@ -106,12 +117,21 @@ class GribManager(weatherrouting.Grib):
     def has_grib(self) -> bool:
         return len(self.gribs) > 0
 
+    def weather_sampler(self):
+        signature = tuple(self.gribs)
+        if getattr(self, "_sampling_signature", None) != signature:
+            self._sampling_signature = signature
+            self._weather_sampler = WeatherSampler(self.gribs)
+        return self._weather_sampler
+
     def get_wind_at(self, t, lat: float, lon: float):
         """Use the newest enabled model run; older runs fill coverage gaps.
 
         Equal reference times retain enabled-file order. Download time does not
         affect priority, and sampling does not reorder the user's enabled list.
         """
+        if self.gribs and all(isinstance(g, Grib) for g in self.gribs):
+            return self.weather_sampler().wind_at(t, lat, lon)
         for x in sorted(
             self.gribs, key=lambda g: g.start_time.timestamp(), reverse=True
         ):
@@ -123,7 +143,8 @@ class GribManager(weatherrouting.Grib):
                 pass
 
     def get_wind(self, t, bounds) -> List:
-        # TODO: get the best matching grib for lat/lon at time t
+        if self.gribs and all(isinstance(g, Grib) for g in self.gribs):
+            return self.weather_sampler().grid("wind", t, bounds)
         g: List = []
 
         for x in self.gribs:
@@ -191,14 +212,20 @@ class GribManager(weatherrouting.Grib):
         """Download a GRIB file using the appropriate source.
 
         The identifier determines which source handles the download.
-        JSON identifiers are handled by NOAA GFS, URLs by OpenSkiron.
+        JSON identifiers carry a "source" name (older GFS ones default
+        to NOAA GFS); URLs are handled by OpenSkiron.
         """
         try:
             # Determine which source to use based on the identifier
             source = None
             if identifier.startswith("{"):
-                # JSON config = NOAA GFS
-                source = self.get_source("NOAA GFS")
+                try:
+                    import json
+
+                    name = json.loads(identifier).get("source", "NOAA GFS")
+                except ValueError:
+                    name = "NOAA GFS"
+                source = self.get_source(name)
             else:
                 # URL = OpenSkiron
                 source = self.get_source("OpenSkiron")

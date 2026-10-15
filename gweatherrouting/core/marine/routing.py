@@ -10,7 +10,6 @@ from collections import OrderedDict
 from copy import copy
 from dataclasses import dataclass
 from datetime import timedelta, timezone
-from functools import lru_cache
 
 import numpy as np
 from pyproj import Geod
@@ -19,6 +18,7 @@ from weatherrouting.routers.linearbestisorouter import LinearBestIsoRouter
 from weatherrouting.routers.router import RoutingResult
 
 from gweatherrouting.core.grib import Grib
+from gweatherrouting.core.gribsampling import WeatherSampler
 
 from .chs import DownloadCancelledError
 from .fields import Area, FieldSelection
@@ -126,6 +126,7 @@ class CurrentRoutingEnvironment:
         self.prefetch = None
         self.wind_recovery = None
         self._sample_cache: OrderedDict = OrderedDict()
+        self.policy_pruned = 0
 
     def record_exclusions(self, gaps):
         # Bound memory and saved JSON; merge repeated hits at the same 11 m cell.
@@ -229,6 +230,7 @@ class CurrentRoutingEnvironment:
             samples=legs,
             coverage="complete at integration sample positions/times",
             search_policy="reject masked-current candidates; recover absent coverage",
+            safety_pruned_candidates=self.policy_pruned,
             excluded_current_samples=list(self.excluded_samples.values()),
             excluded_current_samples_truncated=self.excluded_samples_truncated,
             optimality="best explored route within usable environmental coverage",
@@ -239,76 +241,20 @@ class CurrentRoutingEnvironment:
 
 
 class FractionalRoutingGrib(Grib):
-    """Keep legacy spatial sampling, but preserve fractional hours and forbid extrapolation."""
+    """Compatibility wrapper using the shared space/time sampler."""
 
     def __init__(self, grib):
         self.grib = grib
-        self._start_timestamp = grib.start_time.timestamp()
-        self._forecast_hours = tuple(grib._get_available_forecast_hours())
-        # Run-local, bounded caches: never scan a whole global raster for each
-        # integration point, or retain forecast datasets after a run is released.
-        self._bands = lru_cache(maxsize=64)(grib._find_bands_for_time)
-        self._window = lru_cache(maxsize=4096)(self._read_window)
-        gt = self.dataset.GetGeoTransform()
-        self._longitude_axis = gt[0] + np.arange(self.dataset.RasterXSize) * gt[1]
-        self._latitude_axis = gt[3] + np.arange(self.dataset.RasterYSize) * gt[5]
 
     def __getattr__(self, name):
         return getattr(self.grib, name)
 
-    def _transform_time(self, instant):
-        hours = (instant.timestamp() - self._start_timestamp) / 3600
-        available = self._forecast_hours
-        return hours if available and available[0] <= hours <= available[-1] else None
-
-    def _get_available_forecast_hours(self):  # type: ignore[override]
-        # The base method's lru_cache wrapper has a different static type.
-        return self._forecast_hours
-
-    def _get_wind_data(self, hour, bounds):
-        return self._window(hour, tuple(tuple(p) for p in bounds))
+    @property
+    def sampling(self):
+        return self.grib.sampling
 
     def get_wind_at(self, instant, latitude, longitude):
-        """Interpolate the first matching cell, as the legacy point query does."""
-        hour = self._transform_time(instant)
-        if hour is None:
-            return None
-        first, second = self._find_bracketing_hours(hour, self._forecast_hours)
-        bounds = (
-            (math.floor(latitude * 2) / 2, math.floor(longitude * 2) / 2),
-            (math.ceil(latitude * 2) / 2, math.ceil(longitude * 2) / 2),
-        )
-        a, b = self._get_wind_data(first, bounds), self._get_wind_data(second, bounds)
-        if not a or not b:
-            return None
-        u = a[0][2] + (b[0][2] - a[0][2]) * (hour - first) / (second - first)
-        v = a[0][3] + (b[0][3] - a[0][3]) * (hour - first) / (second - first)
-        return (math.degrees(math.atan2(-u, -v)) + 360) % 360, math.sqrt(u**2 + v**2)
-
-    def _read_window(self, hour, bounds):
-        """Read only the requested cells, keeping legacy raster order/coordinates."""
-        xs = np.flatnonzero(
-            (self._longitude_axis >= bounds[0][1])
-            & (self._longitude_axis <= bounds[1][1])
-        )
-        ys = np.flatnonzero(
-            (self._latitude_axis >= bounds[0][0])
-            & (self._latitude_axis <= bounds[1][0])
-        )
-        if not len(xs) or not len(ys):
-            return ()
-        u_band, v_band = self._bands(hour)
-        if u_band is None or v_band is None:
-            raise ValueError(f"Wind data not found for forecast hour {hour}")
-        x, y = int(xs[0]), int(ys[0])
-        width, height = len(xs), len(ys)
-        u = u_band.ReadAsArray(x, y, width, height)
-        v = v_band.ReadAsArray(x, y, width, height)
-        return tuple(
-            (self._latitude_axis[yy], self._longitude_axis[xx], u[j, i], v[j, i])
-            for j, yy in enumerate(ys)
-            for i, xx in enumerate(xs)
-        )
+        return self.grib.get_wind_at(instant, latitude, longitude)
 
 
 def wind_run_timestamp(grib):
@@ -331,6 +277,11 @@ class FrozenRoutingWind:
                 reverse=True,
             )
         )
+        self.sampler = (
+            WeatherSampler(self.gribs)
+            if self.gribs and all(isinstance(g, Grib) for g in self.gribs)
+            else None
+        )
         self.used = set()
         self.last_source = None
         self.override = None
@@ -339,6 +290,18 @@ class FrozenRoutingWind:
             self.override._grib = self
 
     def get_wind_at(self, instant, latitude, longitude):
+        if self.sampler is not None:
+            result = self.sampler.wind_at(instant, latitude, longitude)
+            if result is not None:
+                self.used.update(self.sampler.last_sources)
+                self.last_source = ", ".join(sorted(self.sampler.last_sources))
+                if self.override is not None:
+                    wd, ws = result
+                    return (
+                        (wd + self.override._dir_offset) % 360,
+                        ws * self.override._speed_factor,
+                    )
+            return result
         for grib in self.gribs:
             try:
                 result = grib.get_wind_at(instant, latitude, longitude)
@@ -366,6 +329,11 @@ class FrozenRoutingWind:
         ]
         self.gribs = tuple(
             sorted((*self.gribs, *added), key=wind_run_timestamp, reverse=True)
+        )
+        self.sampler = (
+            WeatherSampler(self.gribs)
+            if self.gribs and all(isinstance(g, Grib) for g in self.gribs)
+            else None
         )
         return bool(added)
 
@@ -442,7 +410,12 @@ class CurrentIsoRouter(LinearBestIsoRouter):
         return not self.line_validity or self.line_validity(*start, *end)
 
     def velocity(self, position, instant, heading):
+        from gweatherrouting.core.safetypolicy import policy_of
+
         wd, ws, ce, cn, source = self.environment.sample(position, instant)
+        if policy_of(self.polar).is_nogo(ws / KNOT):
+            self.environment.policy_pruned += 1
+            raise InvalidMarineLegError()
         angle = abs((heading - wd + math.pi) % (2 * math.pi) - math.pi)
         speed = self.polar.get_speed(ws / KNOT, angle) * KNOT
         if not math.isfinite(speed) or speed < 0:
@@ -514,7 +487,12 @@ class CurrentIsoRouter(LinearBestIsoRouter):
         return result
 
     def headings(self, point, end):
+        from gweatherrouting.core.safetypolicy import policy_of
+
         wd, ws, ce, cn, _ = self.environment.sample(point.pos, point.time)
+        if policy_of(self.polar).is_nogo(ws / KNOT):
+            self.environment.policy_pruned += 1
+            return []
         headings = [wd + math.radians(angle) for angle in range(-180, 180, 5)]
         _, course = distance_bearing(point.pos, end)
         heading = course
@@ -633,6 +611,11 @@ class CurrentIsoRouter(LinearBestIsoRouter):
         self.environment.record_exclusions(masked)
         if not bins and masked:
             raise RoutingDataGapError(masked)
+        if not bins and self.environment.policy_pruned:
+            raise ValueError(
+                "No navigable route: forecast winds exceed the configured "
+                "TWS limit in the search area."
+            )
         if not bins:
             raise ValueError("No navigable route through the current search area")
         if winner is not None:
@@ -743,7 +726,14 @@ def step_with_coverage(  # noqa: C901
         except RoutingDataGapError as error:
             report(str(error))
             if (
-                not auto_download
+                (
+                    not auto_download
+                    and (
+                        any(g.kind != "wind" for g in error.gaps)
+                        or getattr(environment.wind_recovery, "model_recovery", None)
+                        is None
+                    )
+                )
                 or attempt == 2
                 or (
                     any(g.kind == "wind" for g in error.gaps)

@@ -57,6 +57,12 @@ def polar_many(polar, ws, angles):
     """Match the scalar table's interpolation order, including extrapolation."""
     if type(polar) is PolarWrapper:
         return polar_many(polar._polar, ws, angles) * polar._efficiency
+    from gweatherrouting.core.safetypolicy import SafetyPolar
+
+    if type(polar) is SafetyPolar:
+        base = polar_many(polar._polar, ws, angles)
+        adjusted, _ = polar.apply_array(ws, angles, base)
+        return adjusted
     if type(polar) is not Polar:
         return np.array(
             [polar.get_speed(w, a) for w, a in zip(ws, angles)], dtype=float
@@ -205,6 +211,8 @@ def propagate(self, frontier, seconds, end, gaps, numeric):  # noqa: C901
     logs = []
 
     def velocities(ids, positions, times):
+        from gweatherrouting.core.safetypolicy import policy_of
+
         samples = numeric.sample(ids, positions[ids], times[ids], gaps)
         kept = ids[samples.valid]
         data = samples.values[samples.valid]
@@ -212,8 +220,20 @@ def propagate(self, frontier, seconds, end, gaps, numeric):  # noqa: C901
         angle = np.abs(
             (headings[kept] - data[:, 0] + math.pi) % (2 * math.pi) - math.pi
         )
-        speed = polar_many(self.polar, data[:, 1] / KNOT, angle) * KNOT
-        if not np.isfinite(speed).all() or (speed < 0).any():
+        ws_kn = data[:, 1] / KNOT
+        policy = policy_of(self.polar)
+        nogo = np.asarray([policy.is_nogo(w) for w in ws_kn], dtype=bool)
+        if nogo.any():
+            self.environment.policy_pruned += int(nogo.sum())
+            keep = ~nogo
+            kept = kept[keep]
+            data = data[keep]
+            angle = angle[keep]
+            ws_kn = ws_kn[keep]
+        if not len(kept):
+            return kept, result, samples
+        speed = polar_many(self.polar, ws_kn, angle) * KNOT
+        if (~np.isfinite(speed) | (speed < 0)).any():
             raise ValueError("Invalid polar speed")
         result[kept, 2:] = np.column_stack(
             (speed, data[:, 0], data[:, 1], data[:, 2], data[:, 3])
@@ -379,6 +399,11 @@ def route_frontier(self, lastlog, t, hours, start, end):  # noqa: C901
     self.environment.record_exclusions(masked)
     if not bins and masked:
         raise RoutingDataGapError(masked)
+    if not bins and self.environment.policy_pruned:
+        raise ValueError(
+            "No navigable route: forecast winds exceed the configured "
+            "TWS limit in the search area."
+        )
     if not bins:
         raise ValueError("No navigable route through the current search area")
 

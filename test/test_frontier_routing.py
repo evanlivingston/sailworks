@@ -20,7 +20,7 @@ from gweatherrouting.core.marine.frontierrouting import (
     array_clock_compatible,
     polar_many,
 )
-from gweatherrouting.core.marine.routing import FrozenRoutingWind, FractionalRoutingGrib
+from gweatherrouting.core.marine.routing import FrozenRoutingWind
 from gweatherrouting.core.polarwrapper import PolarWrapper
 from test.test_current_routing import START, current_field, setup_router
 
@@ -246,20 +246,33 @@ class TestFrontierRouting(unittest.TestCase):
         self.assertEqual(wind.used, {"regional", "global"})
 
     def test_fractional_wind_grouping_matches_cell_edges_and_forecast_hours(self):
-        grib = FractionalRoutingGrib.__new__(FractionalRoutingGrib)
-        grib.grib = SimpleNamespace(name="test")
-        grib._start_timestamp = START.timestamp()
-        grib._forecast_hours = (0, 3, 6)
-        grib._get_wind_data = lambda h, bounds: [
-            (0, 0, h + bounds[0][1], 2 + bounds[1][0])
-        ]
-        wind = FrozenRoutingWind(SimpleNamespace(gribs=[]))
-        wind.gribs = (grib,)
+        from osgeo import gdal
+        from gweatherrouting.core.grib import Grib
+
+        data = gdal.GetDriverByName("MEM").Create("", 4, 4, 6, gdal.GDT_Float64)
+        data.SetGeoTransform((-1.125, 0.25, 0, 1.125, 0, -0.25))
+        for i, (element, hour) in enumerate(
+            [(e, h) for h in (0, 3, 6) for e in ("UGRD", "VGRD")], 1
+        ):
+            band = data.GetRasterBand(i)
+            band.SetMetadata(
+                dict(GRIB_ELEMENT=element, GRIB_FORECAST_SECONDS=str(hour * 3600))
+            )
+            band.WriteArray(np.arange(16).reshape(4, 4) + hour + i)
+        band = None
+        grib = Grib.__new__(Grib)
+        grib.dataset, grib.start_time, grib.end_time = (
+            data,
+            START,
+            START + timedelta(hours=6),
+        )
+        grib.name = "test"
+        wind = FrozenRoutingWind(SimpleNamespace(gribs=[grib]))
         points = np.array(
             [
-                [0, 0],
-                [0.25, 0.25],
                 [0.5, -0.5],
+                [0.75, -0.75],
+                [0.6, -0.6],
                 [0, 180],
                 [0.5, -180],
                 [-90, 0],
