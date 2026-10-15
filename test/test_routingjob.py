@@ -21,6 +21,8 @@ from gweatherrouting.core.routingjob import (
 
 
 class ConstantWind:
+    model_name = "GFS"
+    last_forecast = 384
     name = "constant"
     start_time = datetime(2026, 10, 1)
 

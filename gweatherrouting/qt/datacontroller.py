@@ -4,13 +4,19 @@ import os
 import shutil
 import tempfile
 from datetime import datetime
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Signal, QTimer
 from osgeo import gdal
 
 from gweatherrouting.core.grib import Grib
+from gweatherrouting.core.forecastselection import (
+    ForecastSelection,
+    forecast_source,
+)
+from gweatherrouting.core.modeldownloads import newest_entries, install_download
 from gweatherrouting.core.enccharts import ENCCatalog
 from gweatherrouting.core.storage import DATA_DIR, GRIB_DIR
 from gweatherrouting.rendering.gdalvectorchart import GDALVectorChart
@@ -38,6 +44,7 @@ class ChartSettings(SimpleNamespace):
 
 
 def read_forecast(path):
+    path = Path(path).resolve()
     metadata = Grib.parse_metadata(str(path))
     if metadata.start_time is None or metadata.last_forecast is None:
         raise ValueError("This file contains no supported wind forecast")
@@ -86,6 +93,9 @@ class DataController(QObject):
         self.manager = session_controller.core.grib_manager
         for forecast in self.manager.gribs:
             forecast.path = str(Path(forecast.path).resolve())
+        self.selection_scan_timer = QTimer(self)
+        self.selection_scan_timer.setSingleShot(True)
+        self.selection_scan_timer.timeout.connect(self._scan_selection)
         self.task = BackgroundTask(self)
         self.task.finished.connect(self._finish)
         self.task.changed.connect(self.changed.emit)
@@ -96,6 +106,21 @@ class DataController(QObject):
         self.operation = ""
         self.error = ""
         self.forecast_report = ""
+        config = self.manager.storage.forecast_selection
+        try:
+            self.selection = (
+                ForecastSelection.from_json(config)
+                if config
+                else ForecastSelection(
+                    tuple(dict.fromkeys(forecast_source(g) for g in self.manager.gribs))
+                    or ("NOAA GFS",)
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            self.selection = ForecastSelection()
+        self.manager.gribs[:] = [
+            g for g in self.manager.gribs if forecast_source(g) in self.selection.models
+        ]
 
     def run(self, kind, message, operation):
         if (
@@ -115,19 +140,26 @@ class DataController(QObject):
         return Path(GRIB_DIR).resolve()
 
     def scan_forecasts(self):
+        selection = self.selection
+
         def scan(progress):
-            files, errors = {}, []
+            files, errors, opened = {}, [], []
             for path in sorted(Path(GRIB_DIR).glob("*")):
+                path = path.resolve()
                 if path.suffix.lower() not in (".grib", ".grb", ".grib2", ".grb2"):
                     continue
                 try:
+                    if str(path) in files:
+                        continue
                     metadata = Grib.parse_metadata(str(path))
                     if metadata.start_time is None:
                         raise ValueError("No wind forecast")
                     files[str(path)] = metadata
+                    if forecast_source(metadata) in selection.models:
+                        opened.append(read_forecast(path))
                 except Exception as exc:
                     errors.append(f"{path.name}: {exc}")
-            return files, errors
+            return files, errors, opened
 
         return self.run("scan", "Reading local forecasts…", scan)
 
@@ -136,24 +168,74 @@ class DataController(QObject):
             "forecast", "Importing forecast…", lambda _: import_forecast(path)
         )
 
-    def set_forecast_enabled(self, metadata, enabled):
+    def set_selection(self, selection):
         if self.task.busy or self.owner.routing.busy or self.owner.polars.task.busy:
-            return
-        if enabled:
-            self.run(
-                "forecast", "Opening forecast…", lambda _: read_forecast(metadata.path)
+            return False
+        previous = self.selection
+        self._persist_selection(selection)
+        self.manager.gribs[:] = [
+            g for g in self.manager.gribs if forecast_source(g) in selection.models
+        ]
+        self.manager.store_opened_gribs()
+        self.manager.storage.save()
+        self.redraw()
+        self.changed.emit()
+        if previous.models != selection.models:
+            self.selection_scan_timer.start(150)
+        return True
+
+    def _persist_selection(self, selection):
+        previous = self.selection
+        try:
+            self.manager.storage.forecast_selection = selection.to_json()
+        except Exception:
+            dict.__setitem__(
+                self.manager.storage, "forecast_selection", previous.to_json()
             )
-        else:
-            old = list(self.manager.gribs)
-            self.manager.gribs[:] = [g for g in old if g.path != metadata.path]
-            try:
-                self.manager.store_opened_gribs()
-                self.manager.storage.save()
-            except Exception:
-                self.manager.gribs[:] = old
-                raise
-            self.redraw()
-            self.changed.emit()
+            self.manager.storage.__dict__["forecast_selection"] = previous.to_json()
+            raise
+        self.selection = selection
+
+    def _scan_selection(self):
+        if not self.scan_forecasts() and not self.task.closed:
+            self.selection_scan_timer.start(500)
+
+    def set_forecast_enabled(self, metadata, enabled):
+        # Legacy callers now select the model, never an individual file.
+        name = forecast_source(metadata)
+        models = tuple(m for m in self.selection.models if m != name)
+        if enabled:
+            models += (name,)
+        return self.set_selection(replace(self.selection, models=models))
+
+    def download_selected(self, bounds):
+        selection = self.selection
+        selection.options()
+
+        def download(progress):
+            entries, issues = newest_entries(selection, bounds)
+            forecasts = []
+            if not entries and not issues:
+                issues.append(
+                    "The selected imported forecasts have no download provider"
+                )
+            for index, (source, row) in enumerate(entries):
+                try:
+                    forecasts.append(
+                        install_download(
+                            source,
+                            row,
+                            GRIB_DIR,
+                            lambda percent: progress(
+                                int((index * 100 + percent) / len(entries))
+                            ),
+                        )
+                    )
+                except Exception as exc:
+                    issues.append(f"{source.name}: {exc}")
+            return forecasts, issues
+
+        return self.run("forecasts", "Downloading selected weather models…", download)
 
     def remove_forecast(self, metadata):
         if self.task.busy or self.owner.routing.busy or self.owner.polars.task.busy:
@@ -161,8 +243,11 @@ class DataController(QObject):
         path = Path(metadata.path).resolve()
         if path.parent != Path(GRIB_DIR).resolve():
             raise ValueError("Only imported library copies can be removed")
-        self.set_forecast_enabled(metadata, False)
         path.unlink()
+        self.manager.gribs[:] = [g for g in self.manager.gribs if g.path != str(path)]
+        self.manager.store_opened_gribs()
+        self.manager.storage.save()
+        self.redraw()
         self.local_forecasts = [g for g in self.local_forecasts if g.path != str(path)]
         self.changed.emit()
 
@@ -358,16 +443,35 @@ class DataController(QObject):
             self.task.message = self.error
 
     def _scanned(self, result):
-        files, errors = result
+        files, errors, opened = result
         for forecast in self.manager.gribs:
             files.setdefault(forecast.path, forecast)
         self.local_forecasts = list(files.values())
+        external = [
+            g
+            for g in self.manager.gribs
+            if Path(g.path).parent != Path(GRIB_DIR).resolve() and g.path not in files
+        ]
+        order = {g.path: index for index, g in enumerate(self.manager.gribs)}
+        opened.sort(key=lambda g: order.get(g.path, len(order)))
+        self.manager.gribs[:] = [*external, *opened]
+        self.manager.store_opened_gribs()
+        self.manager.storage.save()
         if errors:
             self.task.message = "Skipped unreadable forecasts: " + "; ".join(errors)
         elif self.forecast_report:
             self.task.message = self.forecast_report
 
     def _install_forecast(self, result):
+        name = forecast_source(result)
+        if self.operation == "forecast" and name not in self.selection.models:
+            self._persist_selection(
+                replace(self.selection, models=(*self.selection.models, name))
+            )
+        if name not in self.selection.models:
+            self.local_forecasts.append(result)
+            self.task.message = "Forecast cached; its model is not selected"
+            return
         old = list(self.manager.gribs)
         if not any(g.path == result.path for g in old):
             self.manager.gribs.append(result)
@@ -430,4 +534,5 @@ class DataController(QObject):
         self.task.message = "Chart enabled and saved"
 
     def close(self):
+        self.selection_scan_timer.stop()
         self.task.close()

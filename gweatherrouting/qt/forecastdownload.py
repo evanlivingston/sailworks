@@ -17,12 +17,20 @@ from PySide6.QtWidgets import (
 )
 
 from gweatherrouting.core.gribsources.options import DownloadOptions
+from gweatherrouting.core.forecastselection import ForecastSelection, IMPORTED
 from gweatherrouting.core.gribsources.noaagfs import GFS_CUSTOM_HOURS
 
 MODELS = (
     ("NOAA GFS", "GFS", "0.25°", "10 days", "Global"),
     ("NOAA HRRR", "HRRR", "3 km", "18 / 48 h", "CONUS"),
     ("CMC HRDPS", "HRDPS", "2.5 km", "48 h", "Canada / northern US"),
+    (
+        IMPORTED,
+        "Imported",
+        "—",
+        "From file",
+        "Imported forecasts without a recognized download model",
+    ),
 )
 
 
@@ -39,7 +47,8 @@ class ForecastDownloadOptions(QWidget):
         for column, heading in enumerate(("Model", "Resolution", "Forecast")):
             models.addWidget(QLabel(heading), 0, column)
         self.models = {}
-        row = 1
+        self.model_rows = {}
+        model_row = 1
         for name, label, resolution, forecast, region in MODELS:
             if name not in sources:
                 continue
@@ -47,12 +56,14 @@ class ForecastDownloadOptions(QWidget):
             check.setChecked(name == "NOAA GFS")
             check.setToolTip(region)
             self.models[name] = check
-            models.addWidget(check, row, 0)
-            models.addWidget(QLabel(resolution), row, 1)
-            models.addWidget(QLabel(forecast), row, 2)
+            models.addWidget(check, model_row, 0)
+            resolution_label, forecast_label = QLabel(resolution), QLabel(forecast)
+            models.addWidget(resolution_label, model_row, 1)
+            models.addWidget(forecast_label, model_row, 2)
+            self.model_rows[name] = (check, resolution_label, forecast_label)
             check.toggled.connect(self.rebuild_hours)
-            row += 1
-        models.setRowStretch(row, 1)
+            model_row += 1
+        models.setRowStretch(model_row, 1)
         layout.addWidget(model_box, 3)
         parameter_box = QGroupBox("Parameters")
         parameters = QVBoxLayout(parameter_box)
@@ -127,6 +138,52 @@ class ForecastDownloadOptions(QWidget):
         self.duration.currentIndexChanged.connect(self.rebuild_hours)
         self.hours.itemChanged.connect(self.changed.emit)
         self.rebuild_hours()
+
+    def set_selection(self, selection):
+        self.blockSignals(True)
+        for name, check in self.models.items():
+            check.blockSignals(True)
+            check.setChecked(name in selection.models)
+            check.blockSignals(False)
+        for name, check in self.fields.items():
+            check.blockSignals(True)
+            check.setChecked(name in selection.fields)
+            check.blockSignals(False)
+        for combo, value in (
+            (self.duration, selection.hours),
+            (self.interval, selection.interval),
+        ):
+            combo.blockSignals(True)
+            combo.setCurrentIndex(combo.findData(value))
+            combo.blockSignals(False)
+        self.rebuild_hours()
+        if selection.steps:
+            for row in range(self.hours.rowCount()):
+                for column in range(3):
+                    item = self.hours.item(row, column)
+                    if item is not None:
+                        item.setCheckState(
+                            Qt.CheckState.Checked
+                            if item.data(Qt.ItemDataRole.UserRole) in selection.steps
+                            else Qt.CheckState.Unchecked
+                        )
+        self.blockSignals(False)
+
+    def selection(self):
+        steps = tuple(
+            item.data(Qt.ItemDataRole.UserRole)
+            for row in range(self.hours.rowCount())
+            for column in range(3)
+            if (item := self.hours.item(row, column)) is not None
+            and item.checkState() == Qt.CheckState.Checked
+        )
+        return ForecastSelection(
+            self.names(),
+            self.duration.currentData(),
+            self.interval.currentData(),
+            tuple(name for name, check in self.fields.items() if check.isChecked()),
+            steps,
+        )
 
     def names(self):
         return tuple(name for name, check in self.models.items() if check.isChecked())

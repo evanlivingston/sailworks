@@ -726,7 +726,14 @@ def step_with_coverage(  # noqa: C901
         except RoutingDataGapError as error:
             report(str(error))
             if (
-                not auto_download
+                (
+                    not auto_download
+                    and (
+                        any(g.kind != "wind" for g in error.gaps)
+                        or getattr(environment.wind_recovery, "model_recovery", None)
+                        is None
+                    )
+                )
                 or attempt == 2
                 or (
                     any(g.kind == "wind" for g in error.gaps)

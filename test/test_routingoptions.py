@@ -37,6 +37,8 @@ from test.test_current_routing import START, current_field
 
 
 class CurrentWind:
+    model_name = "GFS"
+    last_forecast = 48
     name = "constant"
     path = "constant"
     centre = "fixture"
