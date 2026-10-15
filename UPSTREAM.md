@@ -1446,3 +1446,54 @@ into `dev`; no upstream PR was created or updated.
   The complete local pytest suite passes as recorded above.
 - Intended upstream scope: serialdatasource.py and its focused shared-reader
   regressions, extracted from freshly fetched parent master and validated there.
+
+## Qt routing panel cleanup
+
+- Status: candidate; fork review [PR #26](https://github.com/evanlivingston/gweatherrouting/pull/26)
+  on `feature/routing-panel-cleanup`, based on `dev` at `75c08f2`.
+- Functional commit: `ae5d261` (Simplify Qt routing setup and remove duplicate
+  Results tab).
+- Scope: remove Manage polars, manual coordinate inputs, the duplicate boat
+  button, and Results. Plans use waypoint tracks, boat position, saved POIs,
+  or map-selected points; no hard-coded coordinates are silently selected.
+  Navigation Routes owns saved-route selection, summaries, and point tables.
+  Calculations still save/select/fit routes while retaining the planning tab.
+  Route selection persists by name; old Results/Compare/Currents tab indices
+  migrate correctly and new preferences save tab names.
+- Dependencies: existing Qt routing/navigation on `dev`; independent of pending
+  Weather panel and interpolation work. No prerequisite fork PR or retargeting.
+- Validation: panel cleanup passes 101 Qt checks. Final branch passes 826 pytest
+  tests and 106 subtests, including isolated Qt integration. Black, changed-file
+  Flake8, and whitespace checks pass. Repository-wide Flake8 has one existing
+  complexity diagnostic; mypy has 32 existing diagnostics in 8 unchanged files.
+  Both sets were reproduced on a clean archive of the same `dev` base.
+- Intended upstream scope: Qt panel/navigation wiring, workspace migration,
+  and focused UI regressions. Extract independently against parent `master`;
+  exclude this fork contribution record. Upstream submission is not authorized.
+
+## Live Qt routing isochrones
+
+- Status: candidate; fork review [PR #26](https://github.com/evanlivingston/gweatherrouting/pull/26).
+- Functional commit: `c04f62f` (Display live routing isochrones in the Qt map).
+- Problem/result: progress previously carried only the best path. It now carries
+  frozen frontier coordinates alongside its path-compatible tuple and reuses
+  completed snapshots. Qt renders actual bands through a shared background
+  Cairo layer and retains the selected saved route's bands after completion.
+  New scenarios/cancellation clear bands and stale progress cannot revive them.
+  Compatible in-flight renders finish while only the latest update is queued.
+  Sparse frontier points remain visible; joins retain the existing 3 km limit.
+  Routing algorithms and calculated results are unchanged.
+- Dependencies: follows panel cleanup `ae5d261` for Navigation route selection
+  wiring in this fork PR; upstream adaptation can use the parent's selection
+  wiring. Extracts the GTK renderer into the shared rendering package, preserving
+  GTK imports. Overlay lifecycle hooks also support pending weather work, which
+  is excluded from this PR.
+- Validation: final branch passes 826 pytest tests and 106 subtests. Regressions
+  verify engine-result equivalence, rendered live pixels before completion,
+  rendering off the UI thread, cancellation, and saved-route band selection.
+  Formatting/lint/type-check results and clean-base comparisons are recorded in
+  the panel cleanup entry above.
+- Intended upstream scope: progress snapshots, shared renderer/lifecycle, Qt
+  integration, and focused regressions. Extract and validate against freshly
+  fetched parent `master`; exclude this fork contribution record. Upstream
+  submission is a separate task.
