@@ -505,8 +505,8 @@ points are read-only; these are not additional working features awaiting migrati
 - Final workflow/provider parity checks, dateline and large-file behavior, and
   validation with live instruments on supported platforms.
 
-Map-data setup and Settings menu cleanup are implemented in open fork PR #20,
-pending integration. GTK stays available during verification and packaging.
+Map-data setup and Settings menu cleanup are integrated from fork PR #20.
+GTK stays available during verification and packaging.
 Lower-detail zoom backdrops and a compact macOS toolbar remain interaction/
 performance polish, separate from the remaining migration work.
 

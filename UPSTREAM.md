@@ -1119,7 +1119,9 @@ into `dev`; no upstream PR was created or updated.
   approved routing PR #18 and the other agent's merged isobars PR #19. No pending
   merge dependency or retargeting.
 - Review: [fork PR #20](https://github.com/evanlivingston/gweatherrouting/pull/20),
-  open for user review; not merged.
+  merged into `dev` with user approval (merge `3b8fae7`). Before merging,
+  synchronized with PR #23; all production/test Python ASTs match the validated
+  combined preview (90 Qt checks).
 - Functional commits: `d4f2da0` adds staged, cancellable, validated map-data
   installation, shared source URLs and idempotent base-chart loading/reload;
   `b1ed730` adds Qt Settings → Map Data, progress/cancel/retry, online startup
