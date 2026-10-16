@@ -81,6 +81,29 @@ def netcdf(path):
 
 
 class TestSpatialCurrents(unittest.TestCase):
+    def test_snapshot_priority_orders_finest_or_newest_first(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = FieldStore(directory)
+            fine_old = field(resolution=500, start=START)
+            coarse_new = field(resolution=9000, start=START + timedelta(hours=6))
+            store.add(fine_old)
+            store.add(coarse_new)
+            default = store.snapshot()
+            self.assertEqual(
+                [f.id for f in default.fields], [fine_old.id, coarse_new.id]
+            )
+            self.assertEqual(default.priority, "finest")
+            newest = store.snapshot("newest")
+            self.assertEqual(
+                [f.id for f in newest.fields], [coarse_new.id, fine_old.id]
+            )
+            self.assertEqual(newest.priority, "newest")
+            self.assertIn(
+                "newest run, finest resolution",
+                newest.to_json()["selection_policy"],
+            )
+            self.assertEqual(store.snapshot("bogus").priority, "finest")
+
     def test_repeat_retrieval_keeps_original_provenance_and_disabled_selection(self):
         with tempfile.TemporaryDirectory() as directory:
             store = FieldStore(directory)

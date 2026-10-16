@@ -3870,6 +3870,42 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(observed, [True])
         self.assertFalse(self.controller.core.routingManager.elements)
 
+    def test_routing_current_priority_defaults_finest_persists_and_reaches_request(
+        self,
+    ):
+        from gweatherrouting.core.routingjob import CalculatedRoute
+
+        self.plan_test_waypoints()
+        panel = self.window.routing_panel
+        self.assertEqual(panel.current_priority.currentData(), "finest")
+        self.window.workspace.save()
+        payload = self.window.workspace.store.load()["routing"]["options"]
+        self.assertEqual(payload["current_priority"], "finest")
+        panel.use_currents.setChecked(True)
+        panel.current_priority.setCurrentIndex(
+            panel.current_priority.findData("newest")
+        )
+        seen = []
+
+        def calculate(core, request, sources, providers, cancel, progress, **callbacks):
+            seen.append(request.current_priority)
+            return CalculatedRoute(((0, 0, "2026-10-01", 0, 1, 1, 0),), (), {})
+
+        with patch(
+            "gweatherrouting.qt.routingcontroller.calculate_route",
+            side_effect=calculate,
+        ):
+            panel.calculate.click()
+            self.wait_for_route()
+        self.assertEqual(seen, ["newest"])
+        self.window.workspace.save()
+        payload = self.window.workspace.store.load()["routing"]["options"]
+        self.assertEqual(payload["current_priority"], "newest")
+        self.restart_workspace()
+        self.assertEqual(
+            self.window.routing_panel.current_priority.currentData(), "newest"
+        )
+
     def test_routing_automatic_download_callbacks_commit_on_ui_thread(self):
         self.plan_test_waypoints()
         from test.test_current_routing import current_field

@@ -21,7 +21,7 @@ from gweatherrouting.core.grib import Grib
 from gweatherrouting.core.gribsampling import WeatherSampler
 
 from .chs import DownloadCancelledError
-from .fields import Area, FieldSelection
+from .fields import Area, FieldSelection, field_sort_key, normalize_priority
 from .models import utc_time
 
 GEOD = Geod(ellps="WGS84")
@@ -683,18 +683,15 @@ def install_downloaded_fields(routing, manager, fields, save_fields=None):
         if field.id not in manager.fields.excluded:
             selected[field.id] = field
     previous = environment.selection
+    priority = normalize_priority(getattr(previous, "priority", "finest"))
     environment.selection = FieldSelection(
         sorted(
             selected.values(),
-            key=lambda f: (
-                f.manifest()["resolution_m"],
-                -utc_time(
-                    f.manifest()["run"] or f.manifest()["retrieved_at"]
-                ).timestamp(),
-            ),
+            key=field_sort_key(priority),
         ),
         neighbor_valid=previous.neighbor_valid,
         neighbor_valid_many=previous.neighbor_valid_many,
+        priority=priority,
     )
     environment.selection.used.update(previous.used)
     environment.selection.missing.update(previous.missing)

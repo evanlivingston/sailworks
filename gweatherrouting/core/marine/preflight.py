@@ -112,7 +112,9 @@ def check_current_coverage(routing, auto_download=False):
     if environment.cancel.is_set():
         raise DownloadCancelledError()
     selection = FieldSelection(
-        environment.selection.fields, environment.selection.neighbor_valid
+        environment.selection.fields,
+        environment.selection.neighbor_valid,
+        priority=getattr(environment.selection, "priority", "finest"),
     )
     start = routing_utc(routing.time)
     end = start + timedelta(hours=24)
