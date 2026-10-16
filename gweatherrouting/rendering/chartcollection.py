@@ -262,7 +262,11 @@ class ChartCollection:
                     )
             else:
                 base.append(chart)
-        self._draw_base(gpsmap, cr, base)
+        worker = getattr(gpsmap, "_base_chart_renderer", None)
+        if worker is None or not worker.draw_base(
+            gpsmap, cr, base, self._palette, fallback=self._draw_base
+        ):
+            self._draw_base(gpsmap, cr, base)
         self._chs_renderer.draw(gpsmap, cr)
         self._enc_renderer.draw(gpsmap, cr, tuple(enc), self._palette)
 

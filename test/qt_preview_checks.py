@@ -373,7 +373,15 @@ class QtPreviewChecks(unittest.TestCase):
 
         self.controller.charts.load_vector_layer(str(path))
         canvas = TrackMap(self.controller)
+        self.addCleanup(canvas.close)
         canvas.resize(600, 400)
+        canvas._base_image()  # Submit background coastline portrayal.
+        renderer = canvas._base_chart_renderer
+        deadline = time.monotonic() + 5
+        while renderer._states[canvas].frame is None and time.monotonic() < deadline:
+            self.drain()
+            time.sleep(0.002)
+        self.assertIsNotNone(renderer._states[canvas].frame)
         image = canvas._base_image()
         center = image.pixelColor(image.width() // 2, image.height() // 2)
         self.assertGreater(center.blue(), center.red())  # Hole remains sea.

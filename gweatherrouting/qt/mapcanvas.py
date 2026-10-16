@@ -24,6 +24,7 @@ from gweatherrouting.rendering.isochrones import IsochroneFrame, IsochronesRende
 from .windcursor import WindCursorSampler
 from .marineoverlay import MarineOverlay
 from .weathercoverage import WeatherCoverage
+from .basecharts import BaseChartRenderer
 
 
 class TrackMap(QWidget, MercatorProjection):
@@ -113,6 +114,7 @@ class TrackMap(QWidget, MercatorProjection):
         self.setMouseTracking(True)
         self.charts = controller.charts
         self.charts.add_map(self)
+        self._base_chart_renderer = BaseChartRenderer(controller.scheduler.submit)
         self.wind = WindOverlayRenderer(WindPainter, controller.scheduler.submit)
         self.isochrones = IsochronesRenderer(controller.scheduler.submit)
         self.isochrone_frame = IsochroneFrame((), (), ())
@@ -274,6 +276,7 @@ class TrackMap(QWidget, MercatorProjection):
         self._finish_zoom_silent()
         self.controller.boat_changed.disconnect(self._boat_changed)
         self.charts.forget_map(self)
+        self._base_chart_renderer.forget(self)
         self.wind.forget(self)
         self.isochrones.forget(self)
         self.marine.close()
@@ -294,6 +297,7 @@ class TrackMap(QWidget, MercatorProjection):
         self.drag = None
         self.cancel_move()
         self.charts._chs_renderer.forget(self)
+        self._base_chart_renderer.forget(self)
         self.wind.forget(self)
         self.isochrones.forget(self)
         self.marine.forget(self)
