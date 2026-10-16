@@ -208,8 +208,10 @@ class DataController(QObject):
             models += (name,)
         return self.set_selection(replace(self.selection, models=models))
 
-    def download_selected(self, bounds):
+    def download_selected(self, bounds, models=None):
         selection = self.selection
+        if models is not None:
+            selection = replace(selection, models=tuple(models))
         selection.options()
 
         def download(progress):

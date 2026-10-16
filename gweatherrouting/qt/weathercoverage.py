@@ -13,14 +13,12 @@ from gweatherrouting.core.routingjob import freeze_wind_sources
 from gweatherrouting.rendering.windrenderer import DisplayGrib
 
 
-def coverage_text(models, fields, instant, points, readers):
-    """Screen a 3×3 view sample; report missing or partial per-model fields."""
-    if not fields:
-        return ""
-    if not models:
-        return "No weather models selected"
+def coverage_gaps(models, fields, instant, points, readers):
+    """Per-model missing fields; full model names map to sorted field lists."""
+    gaps = {}
+    if not fields or not models:
+        return gaps
     lats, lons = np.asarray(points).T
-    messages = []
     for model in models:
         sources = readers.get(model, ())
         sampler = WeatherSampler(sources) if sources else None
@@ -35,13 +33,26 @@ def coverage_text(models, fields, instant, points, readers):
             if not valid.all():
                 missing.append(field + (" partial" if valid.any() else " unavailable"))
         if missing:
-            name = model.removeprefix("NOAA ").removeprefix("CMC ")
-            messages.append(name + ": " + ", ".join(missing))
+            gaps[model] = sorted(missing)
+    return gaps
+
+
+def coverage_text(models, fields, instant, points, readers):
+    """Screen a 3×3 view sample; report missing or partial per-model fields."""
+    if not fields:
+        return ""
+    if not models:
+        return "No weather models selected"
+    gaps = coverage_gaps(models, fields, instant, points, readers)
+    messages = []
+    for model, missing in gaps.items():
+        name = model.removeprefix("NOAA ").removeprefix("CMC ")
+        messages.append(name + ": " + ", ".join(missing))
     return "\n".join(messages)
 
 
 class WeatherCoverage(QObject):
-    ready = Signal(object, str)
+    ready = Signal(object, str, object)
 
     def __init__(self, parent, callback):
         super().__init__(parent)
@@ -62,7 +73,9 @@ class WeatherCoverage(QObject):
             return
         self.key = key
         self.pending = (key, freeze_wind_sources(sources))
-        self.callback("")
+        # Keep the last notice (and its Fetch button) on screen until the
+        # fresh result arrives. Clearing here hid the button on every repaint
+        # with a new key, flickering it away mid-click.
         self.timer.start(250)
 
     def _start(self):
@@ -75,14 +88,15 @@ class WeatherCoverage(QObject):
             grouped = self._readers_for(sources)
             try:
                 text = coverage_text(key[0], key[1], key[2], key[3], grouped)
+                gaps = coverage_gaps(key[0], key[1], key[2], key[3], grouped)
             except Exception:
-                text = "Weather coverage unavailable"
+                text, gaps = "Weather coverage unavailable", None
             while len(self.readers) > 12:
                 self.readers.popitem(last=False)[1].close()
             if self.closed:
                 self._clear()
             else:
-                self.ready.emit(key, text)
+                self.ready.emit(key, text, gaps)
 
         Thread(target=worker, name="weather-coverage", daemon=True).start()
 
@@ -104,10 +118,10 @@ class WeatherCoverage(QObject):
                 continue
         return grouped
 
-    def _ready(self, key, text):
+    def _ready(self, key, text, gaps=None):
         self.running = False
         if not self.closed and key == self.key:
-            self.callback(text)
+            self.callback(text, gaps)
         if self.closed:
             self._clear()
         elif self.pending is not None:
