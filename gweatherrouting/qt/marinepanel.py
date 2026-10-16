@@ -1,25 +1,23 @@
-"""GTK-aligned Currents and Tides tools over the shared marine models."""
+"""Display-only Currents and Tides tools over the shared marine models.
+
+Downloads and saved-source management live in the Data Library
+(see marinelibrary); these docks show visibility toggles and coverage.
+"""
 
 import json
-from typing import Any
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from PySide6.QtCore import QDateTime, Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDateTimeEdit,
-    QFormLayout,
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QProgressBar,
     QPushButton,
     QScrollArea,
-    QSpinBox,
-    QTableWidget,
-    QTableWidgetItem,
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -27,20 +25,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gweatherrouting.core.mapviewport import MapViewport
-from gweatherrouting.core.marine.chs import CHSProvider
 from gweatherrouting.core.marine.fields import Area
-from gweatherrouting.core.marine.models import Capability, sample_station, utc_time
+from gweatherrouting.core.marine.models import Capability, utc_time
 from gweatherrouting.core.marine.presentation import (
     current_coverage,
-    download_tides,
     stations_in_view,
     source_intervals,
 )
 from gweatherrouting.rendering.marinemaplayer import chart_instant
 from .dockchrome import style_scrollarea
-from .marinejobs import MarineJobs
-from .theme import section_label, symbol_icon
+from .theme import symbol_icon
 
 
 def text_label(text=""):
@@ -309,16 +303,17 @@ class CurrentSources(QWidget):
 
 
 class MarinePanel(QWidget):
-    def __init__(self, controller, canvas, kind, settings_callback):
+    def __init__(
+        self, controller, canvas, kind, settings_callback, library_callback=None
+    ):
         super().__init__()
         self.controller, self.canvas, self.kind = controller, canvas, kind
         self.manager = controller.core.marine_manager
         self.clock = controller.time_control
-        self.provider = CHSProvider()
         self.closed = False
         self.signature = None
-        self.jobs = MarineJobs(self)
-        self.jobs.changed.connect(self.job_changed)
+        self.settings_callback = settings_callback
+        self.library_callback = library_callback
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         scroll = style_scrollarea(QScrollArea())
@@ -351,84 +346,39 @@ class MarinePanel(QWidget):
             controls.addWidget(
                 text_label("Water level at stations · metres above source datum")
             )
-        controls.addWidget(section_label("Download"))
-        form = QFormLayout()
-        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        self.target = CoverageTarget(controller.core, canvas)
-        form.addRow("Coverage for", self.target)
-        self.start = DownloadStart(self.clock)
-        form.addRow("Start (UTC)", self.start)
-        self.hours = QSpinBox()
-        self.hours.setRange(1, 168)
-        self.hours.setValue(24)
-        form.addRow("Hours", self.hours)
-        controls.addLayout(form)
-        self.download = QPushButton("Download data")
-        self.download.clicked.connect(self.download_data)
-        controls.addWidget(self.download)
-        self.sources: Any
-        if kind == "currents":
-            self.sources = CurrentSources(self.manager.fields)
-        else:
-            controls.addWidget(section_label("Saved station predictions"))
-            self.sources = QTableWidget(0, 3)
-            self.sources.setHorizontalHeaderLabels(["Use", "Station", "Height"])
-            self.sources.horizontalHeader().setSectionResizeMode(
-                1, QHeaderView.ResizeMode.Stretch
-            )
-            self.sources.setMinimumHeight(130)
-            self.sources.itemChanged.connect(self.toggle_tide)
-        controls.addWidget(self.sources)
+        self.manage = QPushButton("Manage downloads…")
+        self.manage.setToolTip("Download data and manage saved sources")
+        self.manage.clicked.connect(self.open_library)
+        controls.addWidget(self.manage)
         controls.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll, 1)
-        self.status = text_label(
-            "\n".join(self.manager.fields.errors + self.manager.errors)
-        )
-        layout.addWidget(self.status)
-        self.activity = QWidget()
-        activity = QHBoxLayout(self.activity)
-        activity.setContentsMargins(8, 0, 8, 8)
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 0)
-        self.cancel = QPushButton("Cancel")
-        self.cancel.clicked.connect(self.jobs.cancel_download)
-        activity.addWidget(self.progress, 1)
-        activity.addWidget(self.cancel)
-        layout.addWidget(self.activity)
-        self.activity.hide()
         self.clock.connect("time_change", self.invalidate)
-        self.manager.connect("changed", self.sources_changed)
-        self.manager.fields.connect("changed", self.sources_changed)
+        self.manager.connect("changed", self.invalidate)
+        self.manager.fields.connect("changed", self.invalidate)
         self.timer = QTimer(self)
         self.timer.setInterval(250)
         self.timer.timeout.connect(self.refresh)
         self.timer.start()
         self.refresh()
 
+    def open_library(self):
+        if self.library_callback is not None:
+            self.library_callback(self.kind)
+        else:
+            self.settings_callback(self.kind)
+
     def set_display(self, enabled):
         self.canvas.marine.set_display(**{self.kind: enabled})
-
-    def sources_changed(self, *_):
-        self.controller.scheduler.submit(self._sources_changed)
-
-    def _sources_changed(self):
-        if self.closed:
-            return
-        if self.kind == "currents":
-            self.sources.reload()
-        self.invalidate()
 
     def invalidate(self, *_):
         if not self.closed:
             self.signature = None
-            self.start.refresh()
             self.refresh()
 
     def refresh(self):
         if self.closed:
             return
-        self.target.refresh()
         instant = chart_instant(self.clock.time)
         signature = (
             self.canvas._center_lat,
@@ -459,153 +409,14 @@ class MarinePanel(QWidget):
                 if visible
                 else "No downloaded tide predictions in view"
             )
-            self.reload_tides(instant)
         self.coverage.setText("● " + title)
         self.coverage.setStyleSheet("color: " + ("#36965c" if available else "#bd862e"))
-
-    def reload_tides(self, instant):
-        self.sources.blockSignals(True)
-        datasets = [
-            d
-            for d in self.manager.ordered_datasets()
-            if Capability.WATER_LEVEL in d.capabilities
-        ]
-        self.sources.setRowCount(len(datasets))
-        for row, dataset in enumerate(datasets):
-            use = QTableWidgetItem()
-            use.setFlags(
-                Qt.ItemFlag.ItemIsEnabled
-                | Qt.ItemFlag.ItemIsUserCheckable
-                | Qt.ItemFlag.ItemIsSelectable
-            )
-            use.setData(Qt.ItemDataRole.UserRole, dataset.id)
-            use.setCheckState(
-                Qt.CheckState.Checked
-                if self.manager.is_enabled(dataset.id)
-                else Qt.CheckState.Unchecked
-            )
-            self.sources.setItem(row, 0, use)
-            result = sample_station(dataset, Capability.WATER_LEVEL, instant)
-            for column, text in enumerate(
-                (
-                    dataset.station.name,
-                    (
-                        "%.2f m" % result.values[0]
-                        if result.status == "available"
-                        else "—"
-                    ),
-                ),
-                1,
-            ):
-                item = QTableWidgetItem(text)
-                item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-                item.setToolTip(
-                    dataset.provider
-                    + " · "
-                    + dataset.requested_start.isoformat()
-                    + " → "
-                    + dataset.requested_end.isoformat()
-                )
-                self.sources.setItem(row, column, item)
-        self.sources.resizeColumnToContents(0)
-        self.sources.resizeColumnToContents(2)
-        self.sources.blockSignals(False)
-
-    def toggle_tide(self, item):
-        if item.column() != 0:
-            return
-        try:
-            self.manager.enable(
-                item.data(Qt.ItemDataRole.UserRole),
-                item.checkState() == Qt.CheckState.Checked,
-            )
-        except (OSError, ValueError) as exc:
-            self.status.setText(str(exc))
-            self.controller.scheduler.submit(self.invalidate)
-
-    def download_data(self):
-        if self.jobs.busy or self.closed:
-            return
-        try:
-            area = self.target.area()
-            start = self.start.instant()
-            end = start + timedelta(hours=self.hours.value())
-            view = MapViewport(self.canvas)
-        except ValueError as exc:
-            self.status.setText(str(exc))
-            return
-        if self.kind == "currents":
-            planner = self.manager.coverage_planner
-
-            def operation(cancel, report):
-                return planner.download(area, start, end, cancel, report)
-
-            complete = self.complete_currents
-        else:
-            cached = tuple(self.manager.stations)
-            route_area = area if self.target.currentIndex() > 0 else None
-
-            def operation(cancel, report):
-                return download_tides(
-                    self.manager,
-                    self.provider,
-                    view,
-                    route_area,
-                    cached,
-                    start,
-                    end,
-                    cancel,
-                    report,
-                )
-
-            complete = self.complete_tides
-        self.jobs.start(
-            (
-                "Downloading current coverage…"
-                if self.kind == "currents"
-                else "Finding tide stations in the selected area…"
-            ),
-            operation,
-            complete,
-        )
-
-    def complete_currents(self, result):
-        fields, issues = result
-        for field in fields:
-            self.manager.fields.add(field)
-        self._sources_changed()
-        return "Saved %d spatial datasets for offline use.\n%s" % (
-            len(fields),
-            "\n".join(issues),
-        )
-
-    def complete_tides(self, result):
-        stations, datasets, issues, reused = result
-        self.manager.store_stations(stations)
-        for dataset in datasets:
-            if dataset.id not in self.manager.datasets:
-                self.manager.add(dataset)
-            self.manager.enable(dataset.id)
-        self._sources_changed()
-        return (
-            "Saved %d tide station predictions; reused %d already downloaded.\n%s"
-            % (len(datasets) - reused, reused, "\n".join(issues))
-        )
-
-    def job_changed(self):
-        if self.closed:
-            return
-        self.download.setEnabled(not self.jobs.busy)
-        self.activity.setVisible(self.jobs.busy)
-        self.cancel.setEnabled(self.jobs.busy and not self.jobs.cancel.is_set())
-        self.status.setText(self.jobs.message)
 
     def dispose(self):
         if self.closed:
             return
         self.closed = True
         self.timer.stop()
-        self.jobs.close()
         self.clock.disconnect("time_change", self.invalidate)
-        self.manager.disconnect("changed", self.sources_changed)
-        self.manager.fields.disconnect("changed", self.sources_changed)
+        self.manager.disconnect("changed", self.invalidate)
+        self.manager.fields.disconnect("changed", self.invalidate)
