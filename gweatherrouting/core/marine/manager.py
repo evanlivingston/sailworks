@@ -41,7 +41,7 @@ def atomic_json(path, value):
 class Selection:
     datasets: Tuple[Dataset, ...]
     capability: Capability
-    allow_fallback: bool = False
+    allow_fallback: bool = True
 
     def sample(self, station_id, instant):
         candidates = [d for d in self.datasets if d.station.id == station_id]
@@ -59,6 +59,7 @@ class Selection:
                     result.values,
                     result.qc_flags,
                     "; ".join(failures),
+                    fell_back=bool(failures),
                 )
             failures.append(dataset.id + ": " + result.status)
             if not self.allow_fallback:
@@ -82,7 +83,7 @@ class MarineManager(EventDispatcher):
         self.errors = []
         self._order = []
         self._enabled = set()
-        self._fallback = False
+        self._fallback = True
         self.stations = ()
         self._station_download_lock = threading.Lock()
         self._pending_station_downloads: dict = {}
@@ -118,7 +119,8 @@ class MarineManager(EventDispatcher):
             )
             self._order.extend(i for i in self.datasets if i not in self._order)
             self._enabled = set(state.get("enabled", [])) & set(self.datasets)
-            self._fallback = bool(state.get("allow_fallback", False))
+            # Stored False stays False; only fresh installs take the True default.
+            self._fallback = bool(state.get("allow_fallback", self._fallback))
             path = self.directory / "stations.json"
             if path.exists():
                 self.stations = tuple(

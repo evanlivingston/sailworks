@@ -163,6 +163,17 @@ class TestMarineManager(unittest.TestCase):
                 selection.sample("other:station", START).status, "no_selected_source"
             )
 
+    def test_fresh_installs_fall_back_but_stored_opt_out_survives_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manager = MarineManager(directory)
+            self.assertTrue(manager.allow_fallback)
+            manager.set_fallback(False)
+            restarted = MarineManager(directory)
+            self.assertFalse(restarted.allow_fallback)
+            self.assertFalse(
+                restarted.snapshot(Capability.STATION_CURRENT).allow_fallback
+            )
+
     def test_snapshot_survives_changes_and_cache_removal(self):
         with tempfile.TemporaryDirectory() as directory:
             manager = MarineManager(directory)
@@ -184,10 +195,18 @@ class TestMarineManager(unittest.TestCase):
             second = manager.add(dataset(speed=4))
             manager.enable(first)
             manager.enable(second)
+            self.assertTrue(manager.allow_fallback)
+            selection = manager.snapshot(Capability.STATION_CURRENT)
+            result = selection.sample(STATION.id, START)
+            self.assertEqual(result.dataset_id, second)
+            self.assertTrue(result.fell_back)
+            self.assertIn(first, result.detail)
+            manager.set_fallback(False)
             selection = manager.snapshot(Capability.STATION_CURRENT)
             self.assertEqual(
                 selection.sample(STATION.id, START).status, "missing_samples"
             )
+            self.assertFalse(selection.sample(STATION.id, START).fell_back)
             manager.set_fallback(True)
             selection = manager.snapshot(Capability.STATION_CURRENT)
             result = selection.sample(STATION.id, START)

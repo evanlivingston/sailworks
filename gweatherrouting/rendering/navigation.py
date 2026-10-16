@@ -77,10 +77,20 @@ def routing_summary(r):
     provenance = r.provenance or {}
     source_note = ""
     if provenance.get("routing") == "isochrone-with-currents":
-        selected = provenance["currents"]["selected_sources"]
-        used = set(provenance["currents"]["actual_sources"])
+        currents = provenance["currents"]
+        selected = currents["selected_sources"]
+        used = set(currents["actual_sources"])
         models = sorted({s["model"] for s in selected if s["dataset_id"] in used})
         source_note = " | currents: " + ", ".join(models) + " · coverage checked"
+        resolutions = {s["dataset_id"]: s.get("resolution_m") for s in selected}
+        finest = min(
+            (r for r in (s.get("resolution_m") for s in selected) if r is not None),
+            default=None,
+        )
+        if finest is not None and any(
+            resolutions.get(i, finest) > finest for i in used
+        ):
+            source_note += " · incl. fallback"
     elif provenance.get("routing") == "wind-only":
         source_note = " | wind only"
     try:

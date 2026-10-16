@@ -190,6 +190,7 @@ class QueryResult:
     values: Tuple[float, ...] = ()
     qc_flags: Tuple[str, ...] = ()
     detail: str = ""
+    fell_back: bool = False
 
 
 def bracket(series, instant, max_gap_seconds):

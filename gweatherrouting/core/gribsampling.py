@@ -102,6 +102,14 @@ class GridIndex:
         self.records = self._records()
         self.references = {record.reference for record in self.records}
 
+    @property
+    def nominal_step_degrees(self):
+        """Coarsest grid axis in degrees, for newest-first tiebreaks only."""
+        step = max(abs(self.transform[1]), abs(self.transform[5]))
+        if self.forward is None:
+            return step
+        return step / 111319.0
+
     def _records(self):
         records = []
         for band_id in range(1, self.dataset.RasterCount + 1):
@@ -352,7 +360,8 @@ class GridIndex:
 
 
 class WeatherSampler:
-    """Newest compatible model run wins; enabled-file order breaks ties."""
+    """Newest compatible model run wins; file order, finest grid, then largest
+    coverage break ties between models from the same issue time."""
 
     def __init__(self, sources):
         self.indices = []
@@ -380,7 +389,27 @@ class WeatherSampler:
                     ),
                 )
         # Stable sort preserves the first enabled file for equal issue times.
-        self.order = sorted(self.groups, key=lambda key: key[0], reverse=True)
+        resolutions: dict = {}
+        spans: dict = {}
+        for index in self.indices:
+            cells = index.width * index.height
+            for identity in {record.identity for record in index.records}:
+                if identity not in resolutions:
+                    resolutions[identity] = index.nominal_step_degrees
+                    spans[identity] = cells
+                else:
+                    resolutions[identity] = min(
+                        resolutions[identity], index.nominal_step_degrees
+                    )
+                    spans[identity] += cells
+        self.order = sorted(
+            self.groups,
+            key=lambda key: (
+                -key[0],
+                resolutions.get(key, math.inf),
+                -spans.get(key, 0),
+            ),
+        )
         self._times = {
             (identity, field): tuple(
                 sorted(

@@ -21,9 +21,10 @@ separate. When process identity is absent (as with some GDAL GRIB1 exports),
 files remain separate unless their source supplies an explicit `model` identity.
 This avoids guessing that unrelated models from one center are compatible.
 
-The newest enabled reference time wins at each location. Enabled-file order
-breaks ties between models from the same issue time and between duplicate
-records. Older runs fill unavailable coverage. Separate files from the same
+The newest enabled reference time wins at each location. Between models from
+the same issue time, enabled-file order wins first, then the finest grid step,
+then the largest grid coverage; duplicate records keep file order. Older runs
+fill unavailable coverage. Separate files from the same
 identified model/run can provide either time bracket or separate U/V components.
 Complete-file U/V pairs are preferred, so a masked component does not splice a
 partial vector from one complete file into another complete file's vector.

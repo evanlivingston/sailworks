@@ -213,6 +213,36 @@ class TestGribSampling(unittest.TestCase):
         self.assert_uv(WeatherSampler([a, b]), START + timedelta(hours=1), 0, 0, 2, 1)
         self.assert_uv(WeatherSampler([b, a]), START + timedelta(hours=1), 0, 0, 8, 4)
 
+    def test_equal_issue_times_prefer_finest_grid_then_largest_coverage(self):
+        coarse = self.file(
+            [("UGRD", 0, [[100, 100], [100, 100]]), ("VGRD", 0, [[0, 0], [0, 0]])],
+            end=1,
+            process=10,
+        )
+        fine = self.file(
+            [
+                ("UGRD", 0, [[1] * 4] * 4),
+                ("VGRD", 0, [[2] * 4] * 4),
+            ],
+            transform=(-0.5, 0.5, 0, -0.5, 0, 0.5),
+            end=1,
+            process=20,
+        )
+        for files in ([coarse, fine], [fine, coarse]):
+            self.assert_uv(WeatherSampler(files), START, 0.5, 0.5, 1, 2)
+        small = self.file(
+            [("UGRD", 0, [[10, 10], [10, 10]]), ("VGRD", 0, [[0, 0], [0, 0]])],
+            end=1,
+            process=30,
+        )
+        large = self.file(
+            [("UGRD", 0, [[20] * 3] * 3), ("VGRD", 0, [[0] * 3] * 3)],
+            end=1,
+            process=40,
+        )
+        for files in ([small, large], [large, small]):
+            self.assert_uv(WeatherSampler(files), START, 0.5, 0.5, 20, 0)
+
     def test_missing_corners_do_not_contaminate_exact_nodes_or_bridge_holes(self):
         source = self.file(
             [("UGRD", 0, [[2, -9999], [2, 2]]), ("VGRD", 0, [[4, 4], [4, 4]])]

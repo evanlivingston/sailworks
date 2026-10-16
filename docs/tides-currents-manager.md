@@ -162,7 +162,9 @@ station metadata or units require a fresh coherent window. Concurrent panel requ
 share pending results. Null samples and interpolation gaps still count as missing.
 
 Station downloads start disabled and have their own priority and explicit
-fallback controls. Station sampling never supplies an arbitrary spatial current
+fallback controls. Fresh installs fall back to lower-priority sources by
+default; stored opt-outs are respected. Substitution is loud: station results
+carry a fallback flag and route summaries badge coarser serving models. Station sampling never supplies an arbitrary spatial current
 field. Water-level datum and station current depth remain unverified. Station
 current directions are bearings toward true north; QC 2 predictions retain their
 unevaluated status.
