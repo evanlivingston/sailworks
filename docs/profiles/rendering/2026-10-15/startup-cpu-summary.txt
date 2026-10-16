@@ -1,0 +1,18 @@
+Thu Oct 15 22:08:14 2026    /private/var/folders/w7/hb5wv1x1715821rqd1_3xf4r0000gn/T/opencode/startup-stationary.prof
+
+         151929402 function calls (74327154 primitive calls) in 47.506 seconds
+
+   Ordered by: cumulative time
+   List reduced from 7704 to 10 due to restriction <'paint_wind_barbs|drawPath|lineTo|moveTo|live_geometry_for_view|build_barb_geometry|path.addEllipse|_paint_layer'>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+       84    0.039    0.000    1.512    0.018 /Users/elivingston/gweatherrouting/gweatherrouting/qt/mapcanvas.py:958(_paint_wind_barbs)
+      355    1.438    0.004    1.438    0.004 {method 'drawPath' of 'PySide6.QtGui.QPainter' objects}
+      168    0.001    0.000    0.131    0.001 /Users/elivingston/gweatherrouting/gweatherrouting/qt/mapcanvas.py:502(_paint_layer)
+   106642    0.013    0.000    0.013    0.000 {method 'moveTo' of 'PySide6.QtGui.QPainterPath' objects}
+   106642    0.012    0.000    0.012    0.000 {method 'lineTo' of 'PySide6.QtGui.QPainterPath' objects}
+       84    0.000    0.000    0.004    0.000 /Users/elivingston/gweatherrouting/gweatherrouting/rendering/windrenderer.py:468(live_geometry_for_view)
+        1    0.000    0.000    0.003    0.003 /Users/elivingston/gweatherrouting/gweatherrouting/rendering/windpainter.py:371(live_geometry_for_view)
+        1    0.002    0.002    0.003    0.003 /Users/elivingston/gweatherrouting/gweatherrouting/rendering/windpainter.py:291(build_barb_geometry)
+        2    0.000    0.000    0.000    0.000 {method 'removeToolBar' of 'PySide6.QtWidgets.QMainWindow' objects}
+        1    0.000    0.000    0.000    0.000 {method 'removeToolBarBreak' of 'PySide6.QtWidgets.QMainWindow' objects}
