@@ -75,6 +75,13 @@ class TrackMap(QWidget, MercatorProjection):
         self._base_cache = None  # (key, lat, lon, zoom, QImage)
         self._nav_cache = None  # (key, lat, lon, zoom, QImage)
         self._dash_cache = None  # (key, QImage)
+        self._gpu = None
+        self._gpu_sequence = 0
+        self._gpu_geometry = None
+        self._gpu_batches = ()
+        self._gpu_wind_raster = None
+        self._gpu_raster_key = None
+        self._gpu_wind_mode = None
         self._overlay_pending = False
         self._zoom_anchor = None  # (lat, lon, x, y) for zoom previews
         self._zoom_target = None
@@ -156,6 +163,33 @@ class TrackMap(QWidget, MercatorProjection):
         controller.boat_changed.connect(self._boat_changed)
         controller.settings.register_on_change("smoothZoom", self._set_smooth_zoom)
         controller.settings.register_on_change("panInertia", self._set_pan_inertia)
+        if getattr(controller, "map_renderer", "cpu") == "gpu":
+            try:
+                from .gpupresenter import GpuPresenter
+
+                self._gpu = GpuPresenter(self)
+                if self._gpu.active:
+                    controller.set_renderer_status(self, "pending")
+            except (ImportError, RuntimeError, OSError) as exc:
+                import logging
+
+                logging.getLogger("gweatherrouting").warning(
+                    "GPU map unavailable; using CPU: %s", exc
+                )
+                controller.set_renderer_status(self, "cpu", reason=str(exc))
+        elif hasattr(controller, "set_renderer_status"):
+            controller.set_renderer_status(self, "cpu")
+
+    def update(self, *args):
+        super().update(*args)
+        gpu = getattr(self, "_gpu", None)
+        if gpu is not None and gpu.active:
+            gpu.request()
+
+    def showEvent(self, event):  # noqa: N802
+        super().showEvent(event)
+        if self._gpu is not None and self._gpu.active:
+            self._gpu.request()
 
     def _time_changed(self, _):
         self._cancel_cursor()
@@ -215,6 +249,10 @@ class TrackMap(QWidget, MercatorProjection):
         if self.disposed:
             return
         self.disposed = True
+        if self._gpu is not None:
+            self._gpu.close()
+        if hasattr(self.controller, "forget_renderer"):
+            self.controller.forget_renderer(self)
         self._wind_cursor.close()
         self.weather_coverage.close()
         try:
@@ -244,6 +282,12 @@ class TrackMap(QWidget, MercatorProjection):
         self.time_control.disconnect("time_change", self._time_changed)
 
     def hideEvent(self, event):  # noqa: N802 - Qt virtual method name
+        if self._gpu is not None:
+            self._gpu.suspend()
+        self._gpu_geometry = None
+        self._gpu_batches = ()
+        self._gpu_wind_raster = None
+        self._gpu_raster_key = None
         self._cancel_cursor()
         self._cancel_inertia(settle=False)
         self._finish_zoom_silent()
@@ -514,6 +558,12 @@ class TrackMap(QWidget, MercatorProjection):
 
     def _draw_reusable_layer(self, painter, cache, key, build):
         """Reuse padded scene pixels, rebuilding before coverage is exhausted."""
+        cache, target = self._resolve_reusable_layer(cache, key, build)
+        self._paint_layer(painter, cache[4], target)
+        return cache
+
+    def _resolve_reusable_layer(self, cache, key, build):
+        """Resolve a cache and its transform independently of its presenter."""
         width, height, _ = self._view_pixel_size()
         if cache is not None and cache[0] == key:
             _, cached_lat, cached_lon, cached_zoom, image = cache
@@ -523,17 +573,12 @@ class TrackMap(QWidget, MercatorProjection):
                 offset_x, offset_y = self._pan_offset(cached_lat, cached_lon)
                 margin = min(self._REUSE_MARGIN, max(0, min(pad_x, pad_y) * 2 / 3))
                 if max(abs(offset_x), abs(offset_y)) <= margin:
-                    self._paint_layer(
-                        painter,
-                        image,
-                        QRectF(
-                            offset_x - pad_x,
-                            offset_y - pad_y,
-                            size.width(),
-                            size.height(),
-                        ),
+                    return cache, QRectF(
+                        offset_x - pad_x,
+                        offset_y - pad_y,
+                        size.width(),
+                        size.height(),
                     )
-                    return cache
             elif self._zoom_animating:
                 target = self._zoom_preview_target(
                     cached_lat, cached_lon, cached_zoom, (width, height)
@@ -544,21 +589,95 @@ class TrackMap(QWidget, MercatorProjection):
                         -pad_x * ratio, -pad_y * ratio, pad_x * ratio, pad_y * ratio
                     )
                     if target.contains(QRectF(0, 0, width, height)):
-                        self._paint_layer(painter, image, target)
-                        return cache
+                        return cache, target
         image = self._build_padded_layer(build)
         size = image.deviceIndependentSize()
-        self._paint_layer(
-            painter,
-            image,
-            QRectF(
-                (width - size.width()) / 2,
-                (height - size.height()) / 2,
-                size.width(),
-                size.height(),
-            ),
+        target = QRectF(
+            (width - size.width()) / 2,
+            (height - size.height()) / 2,
+            size.width(),
+            size.height(),
         )
-        return (key, self._center_lat, self._center_lon, self._zoom, image)
+        return (key, self._center_lat, self._center_lon, self._zoom, image), target
+
+    def _gpu_frame(self):
+        from .mapframe import ImageFrame, MapFrame, prepare_wind
+
+        previous_base = self._base_cache
+        self._base_cache, base_target = self._resolve_reusable_layer(
+            self._base_cache, self._base_key(), self._base_image
+        )
+        if self._base_cache is not previous_base:
+            self.background = (
+                (
+                    self.width(),
+                    self.height(),
+                    self._center_lat,
+                    self._center_lon,
+                    self._zoom,
+                    float(self.devicePixelRatioF()),
+                ),
+                self._base_cache[4],
+            )
+        self._nav_cache, nav_target = self._resolve_reusable_layer(
+            self._nav_cache, self._nav_key(), self._navigation_image
+        )
+        geometry, opacity = ({}, 0.0)
+        if self.wind_visible:
+            geometry, opacity = self.wind.live_geometry_for_view(
+                self,
+                self.width(),
+                self.height(),
+                self._center_lat,
+                self._center_lon,
+                self._zoom,
+                density=getattr(
+                    self.controller.settings, "gribBarbDensity", "standard"
+                ),
+            )
+        ratio = float(self.devicePixelRatioF())
+        raster_wind = None
+        if ratio < 2:
+            key = (id(geometry), opacity, self.width(), self.height(), ratio)
+            if geometry and key != self._gpu_raster_key:
+                self._gpu_wind_raster = self._wind_raster(geometry, opacity, ratio)
+                self._gpu_raster_key = key
+            if geometry:
+                image = self._gpu_wind_raster
+                raster_wind = ImageFrame(
+                    image, (0, 0, image.width() / ratio, image.height() / ratio)
+                )
+            self._gpu_batches = ()
+            self._gpu_wind_mode = "cpu"
+        else:
+            if geometry is not self._gpu_geometry or self._gpu_wind_mode != "gpu":
+                self._gpu_batches = prepare_wind(geometry)
+            self._gpu_wind_raster = None
+            self._gpu_raster_key = None
+            self._gpu_wind_mode = "gpu"
+        self._gpu_geometry = geometry
+        self._gpu_sequence += 1
+
+        def image_frame(cache, target):
+            return ImageFrame(
+                cache[4],
+                (target.x(), target.y(), target.width(), target.height()),
+            )
+
+        frame = MapFrame(
+            self._gpu_sequence,
+            self.width(),
+            self.height(),
+            ratio,
+            self._sea_color().getRgbF(),
+            image_frame(self._base_cache, base_target),
+            image_frame(self._nav_cache, nav_target),
+            self._gpu_batches,
+            opacity,
+            raster_wind,
+        )
+        self._check_weather_coverage()
+        return frame
 
     def is_moving(self):
         return (
@@ -570,6 +689,10 @@ class TrackMap(QWidget, MercatorProjection):
         )
 
     def event(self, event):
+        if event.type() == QEvent.Type.DevicePixelRatioChange:
+            gpu = getattr(self, "_gpu", None)
+            if gpu is not None and gpu.active:
+                gpu.request()
         if event.type() == QEvent.Type.NativeGesture and not self.disposed:
             return self._native_gesture_event(event)
         if event.type() == QEvent.Type.WindowDeactivate and (
@@ -920,6 +1043,8 @@ class TrackMap(QWidget, MercatorProjection):
     def paintEvent(self, _):  # noqa: N802 - Qt virtual method name
         if self.width() <= 0 or self.height() <= 0:
             return
+        if self._gpu is not None and self._gpu.active:
+            return
         painter = QPainter(self)
         # Expanded images must also stay inside this widget during native
         # QWidget render/grab redirection into an ancestor surface.
@@ -970,6 +1095,27 @@ class TrackMap(QWidget, MercatorProjection):
         )
         if not geometry:
             return
+        TrackMap._paint_wind_geometry(painter, geometry, opacity)
+
+    def _wind_raster(self, geometry, opacity, ratio):
+        image = QImage(
+            math.ceil(self.width() * ratio),
+            math.ceil(self.height() * ratio),
+            QImage.Format.Format_ARGB32_Premultiplied,
+        )
+        image.setDevicePixelRatio(ratio)
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        painter.setClipRect(self.rect())
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        try:
+            TrackMap._paint_wind_geometry(painter, geometry, opacity)
+        finally:
+            painter.end()
+        return image
+
+    @staticmethod
+    def _paint_wind_geometry(painter, geometry, opacity):
         colors = barb_bucket_colors()
         painter.save()
         for bucket in sorted(geometry):
@@ -1645,6 +1791,8 @@ class TrackMap(QWidget, MercatorProjection):
             self.coverage_notice.adjustSize()
             self._layout_coverage()
         super().resizeEvent(event)
+        if self._gpu is not None and self._gpu.active:
+            self._gpu.request()
 
     def begin_move(self, callback):
         self._cancel_cursor()
