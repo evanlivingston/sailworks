@@ -83,6 +83,87 @@ def routing_entry(rows, selection, instant):
     raise ValueError("No available run covers the required route time")
 
 
+def _parse_estimate_size(text):
+    """Parse an estimate like '~12.3 MB' or '800 KB' into megabytes."""
+    parts = text.replace("~", "").strip().split()
+    if len(parts) != 2:
+        raise ValueError("Unrecognized size estimate: " + text)
+    value, unit = float(parts[0]), parts[1].upper()
+    if unit == "KB":
+        return value / 1024
+    if unit == "MB":
+        return value
+    if unit == "GB":
+        return value * 1024
+    raise ValueError("Unrecognized size estimate: " + text)
+
+
+def estimate_missing_download(models_gaps, bounds, selection):
+    """Local, network-free size estimate for the missing models/fields.
+
+    Sums per-model estimates for the current download settings over the
+    visible bounds. Returns a display string like '~12.3 MB', or None
+    when nothing downloadable can be estimated.
+    """
+    if not models_gaps or bounds is None:
+        return None
+    total_mb = 0.0
+    estimated = False
+    for name, missing in models_gaps.items():
+        if name == IMPORTED or name not in PROVIDERS or not missing:
+            continue
+        fields = tuple(
+            f for f in ("wind", "pressure") if any(m.startswith(f) for m in missing)
+        )
+        if not fields:
+            continue
+        try:
+            options = DownloadOptions(
+                selection.hours, selection.interval, fields, selection.steps
+            )
+            if name == "NOAA GFS":
+                from .gribsources.noaagfs import GFS_CUSTOM_HOURS
+
+                source = PROVIDERS[name]()
+                source.bounds = bounds
+                steps = options.select(GFS_CUSTOM_HOURS)
+                if not steps:
+                    continue
+                total_mb += _parse_estimate_size(
+                    source._estimate_custom_size(steps, fields)
+                )
+            elif name == "NOAA HRRR":
+                source = PROVIDERS[name]()
+                source.bounds = bounds
+                cap = source._max_hours(source._get_available_cycles(1)[0])
+                steps = options.select(range(cap + 1))
+                if not steps:
+                    continue
+                total_mb += _parse_estimate_size(
+                    source._estimate_custom_size(steps, fields)
+                )
+            elif name == "CMC HRDPS":
+                from .gribsources.eccchrdps import ECCHRDPSource
+
+                available = range(0, 49, 3 if "wind" not in fields else 1)
+                steps = options.select(available)
+                if not steps:
+                    continue
+                total_mb += _parse_estimate_size(
+                    ECCHRDPSource._estimate_custom_size(steps, fields)
+                )
+            else:
+                continue
+            estimated = True
+        except Exception:
+            continue
+    if not estimated:
+        return None
+    if total_mb < 1:
+        return f"~{total_mb * 1024:.0f} KB"
+    return f"~{total_mb:.1f} MB"
+
+
 def install_download(source, row, directory, progress, cancel=None):
     """Stage and validate before atomically adding a unique library copy."""
     directory = Path(directory).resolve()

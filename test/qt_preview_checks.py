@@ -1370,6 +1370,331 @@ class QtPreviewChecks(unittest.TestCase):
             canvas.coverage_notice.geometry().bottom(), canvas.height()
         )
 
+    def test_weather_coverage_notice_offers_sized_fetch_for_missing_model(self):
+        from dataclasses import replace
+
+        from gweatherrouting.core.modeldownloads import estimate_missing_download
+
+        data = self.controller.data
+        data._persist_selection(replace(data.selection, models=("NOAA HRRR",)))
+        canvas = self.window.map
+        canvas._center_lat, canvas._center_lon, canvas._zoom = 48.5, -122, 8
+        gaps = {"NOAA HRRR": ["pressure unavailable", "wind unavailable"]}
+        with patch.object(canvas.weather_coverage, "request"):
+            canvas._show_coverage("HRRR: wind unavailable, pressure unavailable", gaps)
+            self.assertEqual(
+                canvas.coverage_notice.text(),
+                "HRRR: wind unavailable, pressure unavailable",
+            )
+            expected = estimate_missing_download(
+                gaps, canvas._view_download_bounds(), data.selection
+            )
+            self.assertIsNotNone(expected)
+            self.assertTrue(canvas.coverage_fetch.isVisible())
+            self.assertIn(expected, canvas.coverage_fetch.text())
+            with patch.object(data, "download_selected") as download:
+                canvas.coverage_fetch.click()
+            self.assertEqual(download.call_count, 1)
+            bounds, models = download.call_args.args
+            self.assertEqual(models, ("NOAA HRRR",))
+            self.assertEqual(bounds, canvas._view_download_bounds())
+
+    def test_weather_coverage_notice_survives_repaint_until_refresh(self):
+        from dataclasses import replace
+
+        data = self.controller.data
+        data._persist_selection(replace(data.selection, models=("NOAA HRRR",)))
+        canvas = self.window.map
+        canvas._center_lat, canvas._center_lon, canvas._zoom = 48.5, -122, 8
+        gaps = {"NOAA HRRR": ["pressure unavailable", "wind unavailable"]}
+        canvas._show_coverage("HRRR: wind unavailable, pressure unavailable", gaps)
+        # A repaint with a new coverage key must not synchronously wipe the
+        # notice: the Fetch button would flicker away mid-click.
+        canvas._center_lat = 48.6
+        canvas.repaint()
+        self.assertEqual(
+            canvas.coverage_notice.text(),
+            "HRRR: wind unavailable, pressure unavailable",
+        )
+        self.assertTrue(canvas.coverage_fetch.isVisible())
+        self.assertTrue(canvas.coverage_fetch.isEnabled())
+        # The debounced refresh still arrives and keeps the button usable.
+        self.wait_for_cursor(
+            lambda: canvas.coverage_fetch.isVisible()
+            and "HRRR" in canvas.coverage_notice.text()
+            and not canvas.weather_coverage.timer.isActive()
+            and not canvas.weather_coverage.running
+            and canvas.weather_coverage.pending is None
+        )
+
+    def test_coverage_fetch_stays_enabled_when_download_refused(self):
+        from dataclasses import replace
+
+        data = self.controller.data
+        data._persist_selection(replace(data.selection, models=("NOAA HRRR",)))
+        canvas = self.window.map
+        canvas._center_lat, canvas._center_lon, canvas._zoom = 48.5, -122, 8
+        gaps = {"NOAA HRRR": ["pressure unavailable", "wind unavailable"]}
+        with patch.object(canvas.weather_coverage, "request"):
+            canvas._show_coverage("HRRR: wind unavailable, pressure unavailable", gaps)
+            self.assertTrue(canvas.coverage_fetch.isEnabled())
+            with patch.object(data, "download_selected", return_value=False):
+                canvas.coverage_fetch.click()
+            self.assertTrue(canvas.coverage_fetch.isVisible())
+            self.assertTrue(canvas.coverage_fetch.isEnabled())
+
+    def test_coverage_fetch_shows_download_progress(self):
+        from dataclasses import replace
+
+        data = self.controller.data
+        data._persist_selection(replace(data.selection, models=("NOAA HRRR",)))
+        canvas = self.window.map
+        canvas._center_lat, canvas._center_lon, canvas._zoom = 48.5, -122, 8
+        gaps = {"NOAA HRRR": ["pressure unavailable", "wind unavailable"]}
+        with patch.object(canvas.weather_coverage, "request"):
+            canvas._show_coverage("HRRR: wind unavailable, pressure unavailable", gaps)
+            self.assertTrue(canvas.coverage_fetch.isEnabled())
+            data.operation = "forecasts"
+            data.task.busy = True
+            try:
+                data.task.percent = 42
+                data.task.changed.emit()
+                self.assertTrue(canvas.coverage_fetch.isVisible())
+                self.assertFalse(canvas.coverage_fetch.isEnabled())
+                self.assertEqual(canvas.coverage_fetch.text(), "Fetching… 42%")
+                data.task.busy = False
+                data.task.changed.emit()
+            finally:
+                data.task.busy = False
+            self.assertTrue(canvas.coverage_fetch.isVisible())
+            self.assertTrue(canvas.coverage_fetch.isEnabled())
+            self.assertNotIn("Fetching", canvas.coverage_fetch.text())
+
+    def test_single_model_fetch_shows_one_attributed_progress_button(self):
+        from dataclasses import replace
+
+        data = self.controller.data
+        data._persist_selection(
+            replace(data.selection, models=("NOAA GFS", "NOAA HRRR"))
+        )
+        canvas = self.window.map
+        canvas._center_lat, canvas._center_lon, canvas._zoom = 48.5, -122, 8
+        gaps = {
+            "NOAA GFS": ["wind unavailable"],
+            "NOAA HRRR": ["wind unavailable"],
+        }
+        sizes = {"NOAA GFS": "~10.0 MB", "NOAA HRRR": "~614 KB"}
+        with patch.object(canvas.weather_coverage, "request"):
+            with patch.object(canvas, "_estimate_models_coverage", return_value=sizes):
+                canvas._show_coverage(
+                    "GFS: wind unavailable\nHRRR: wind unavailable", gaps
+                )
+            with patch.object(data, "download_selected", return_value=True):
+                canvas.coverage_fetch_buttons["NOAA HRRR"].click()
+            data.operation = "forecasts"
+            data.task.busy = True
+            try:
+                data.task.percent = 29
+                data.task.changed.emit()
+                hrrr_button = canvas.coverage_fetch_buttons["NOAA HRRR"]
+                self.assertTrue(hrrr_button.isVisible())
+                self.assertFalse(hrrr_button.isEnabled())
+                self.assertIn("HRRR", hrrr_button.text())
+                self.assertIn("29%", hrrr_button.text())
+                self.assertFalse(canvas.coverage_fetch.isVisible())
+                self.assertFalse(canvas.coverage_fetch_buttons["NOAA GFS"].isVisible())
+                data.task.busy = False
+                data.task.changed.emit()
+            finally:
+                data.task.busy = False
+            self.assertTrue(canvas.coverage_fetch.isVisible())
+            self.assertNotIn("Fetching", canvas.coverage_fetch.text())
+
+    def test_weather_coverage_notice_clears_once_downloaded_data_covers_view(self):
+        from dataclasses import replace
+
+        from gweatherrouting.core.forecastselection import forecast_source
+
+        data = self.controller.data
+        data.import_forecast(str(self.wind_fixture()))
+        self.wait_for_data()
+        source = data.manager.gribs[0]
+        model = forecast_source(source)
+        data._persist_selection(replace(data.selection, models=(model,)))
+        self.controller.settings.gribIsobarsVisible = False
+        canvas = self.window.map
+        canvas._center_lat, canvas._center_lon, canvas._zoom = 48.5, -122, 12
+        self.controller.time_control.set_time(source.start_time)
+        name = model.removeprefix("NOAA ").removeprefix("CMC ")
+        gaps = {model: ["wind unavailable"]}
+        with patch.object(canvas.weather_coverage, "request"):
+            canvas._show_coverage(f"{name}: wind unavailable", gaps)
+        self.assertTrue(canvas.coverage_fetch.isVisible())
+        # A fresh sample with the installed forecast covering the view clears
+        # the notice and the Fetch button, as after a real download's redraw.
+        canvas.weather_coverage.key = None
+        canvas.queue_draw()
+        self.wait_for_cursor(
+            lambda: not canvas.coverage_notice.isVisible()
+            and not canvas.coverage_fetch.isVisible()
+            and not canvas.weather_coverage.timer.isActive()
+            and not canvas.weather_coverage.running
+            and canvas.weather_coverage.pending is None
+        )
+
+    def test_coverage_fetch_suppressed_after_fruitless_download(self):
+        from dataclasses import replace
+        from datetime import datetime, timedelta
+
+        data = self.controller.data
+        data._persist_selection(replace(data.selection, models=("NOAA HRRR",)))
+        canvas = self.window.map
+        run_start = datetime(2026, 10, 16, 1)
+        fake = SimpleNamespace(model_name="HRRR", start_time=run_start)
+        data.manager.gribs.append(fake)
+        self.addCleanup(data.manager.gribs.remove, fake)
+        canvas._coverage_gaps = {"NOAA HRRR": ["wind partial"]}
+        key = (
+            ("NOAA HRRR",),
+            ("wind",),
+            datetime(2026, 10, 16, 1),
+            ((48.0, -122.0),),
+            (fake,),
+        )
+        canvas.weather_coverage.key = key
+        canvas._fetch_done = {"NOAA HRRR": (key[:4], run_start, time.monotonic())}
+        # Already fetched for this exact view/time/selection with no newer
+        # run since: re-downloading the same run cannot fill the rest.
+        self.assertEqual(canvas._fetch_models(), ())
+        # Panning to a new view re-offers the fetch.
+        moved = (
+            ("NOAA HRRR",),
+            ("wind",),
+            datetime(2026, 10, 16, 1),
+            ((49.0, -123.0),),
+            (fake,),
+        )
+        canvas.weather_coverage.key = moved
+        self.assertEqual(canvas._fetch_models(), ("NOAA HRRR",))
+        # So does a newer installed run.
+        canvas.weather_coverage.key = key
+        newer = SimpleNamespace(
+            model_name="HRRR", start_time=run_start + timedelta(hours=1)
+        )
+        data.manager.gribs.append(newer)
+        self.addCleanup(data.manager.gribs.remove, newer)
+        self.assertEqual(canvas._fetch_models(), ("NOAA HRRR",))
+
+    def test_suppressed_models_marked_up_to_date(self):
+        from dataclasses import replace
+        from datetime import datetime
+
+        data = self.controller.data
+        data._persist_selection(replace(data.selection, models=("NOAA HRRR",)))
+        canvas = self.window.map
+        run_start = datetime(2026, 10, 16, 1)
+        fake = SimpleNamespace(model_name="HRRR", start_time=run_start)
+        data.manager.gribs.append(fake)
+        self.addCleanup(data.manager.gribs.remove, fake)
+        key = (
+            ("NOAA HRRR",),
+            ("wind",),
+            datetime(2026, 10, 16, 1),
+            ((48.0, -122.0),),
+            (fake,),
+        )
+        canvas.weather_coverage.key = key
+        gaps = {"NOAA HRRR": ["wind partial"]}
+        canvas._fetch_done = {"NOAA HRRR": (key[:4], run_start, time.monotonic())}
+        with patch.object(canvas, "_estimate_models_coverage", return_value={}):
+            canvas._show_coverage("HRRR: wind partial", gaps)
+        self.assertIn("downloaded; gaps remain", canvas.coverage_notice.text())
+        self.assertNotIn("up to date", canvas.coverage_notice.text())
+        self.assertFalse(canvas.coverage_fetch.isVisible())
+
+    def test_map_download_bounds_include_interpolation_halo(self):
+        canvas = self.window.map
+        canvas._center_lat, canvas._center_lon, canvas._zoom = 36.857, -121.994, 10.236
+        top_left, bottom_right = canvas.get_bbox()
+        north, west = top_left.get_degrees()
+        south, east = bottom_right.get_degrees()
+        padded = canvas._view_download_bounds()
+        self.assertAlmostEqual(padded[0], south - 0.5)
+        self.assertAlmostEqual(padded[1], west - 0.5)
+        self.assertAlmostEqual(padded[2], north + 0.5)
+        self.assertAlmostEqual(padded[3], east + 0.5)
+
+    def test_fetch_install_records_suppression_context(self):
+        from dataclasses import replace
+        from datetime import datetime
+
+        data = self.controller.data
+        data._persist_selection(replace(data.selection, models=("NOAA HRRR",)))
+        canvas = self.window.map
+        canvas._center_lat, canvas._center_lon, canvas._zoom = 48.5, -122, 8
+        key = (
+            ("NOAA HRRR",),
+            ("wind",),
+            datetime(2026, 10, 16, 1),
+            ((48.0, -122.0),),
+            (),
+        )
+        canvas.weather_coverage.key = key
+        gaps = {"NOAA HRRR": ["wind unavailable"]}
+        with patch.object(canvas.weather_coverage, "request"):
+            canvas._show_coverage("HRRR: wind unavailable", gaps)
+            with patch.object(data, "download_selected", return_value=True):
+                canvas.coverage_fetch.click()
+            self.assertIn("NOAA HRRR", canvas._fetch_awaiting)
+            run_start = datetime(2026, 10, 16, 1)
+            fake = SimpleNamespace(
+                model_name="HRRR", start_time=run_start, last_forecast=18
+            )
+            data.manager.gribs.append(fake)
+            self.addCleanup(data.manager.gribs.remove, fake)
+            data.forecast_loaded.emit(fake)
+            self.assertNotIn("NOAA HRRR", canvas._fetch_awaiting)
+            self.assertEqual(canvas._fetch_models(), ())
+
+    def test_per_model_fetch_buttons_download_one_or_all(self):
+        from dataclasses import replace
+
+        data = self.controller.data
+        data._persist_selection(
+            replace(data.selection, models=("NOAA GFS", "NOAA HRRR"))
+        )
+        canvas = self.window.map
+        canvas._center_lat, canvas._center_lon, canvas._zoom = 48.5, -122, 8
+        gaps = {
+            "NOAA GFS": ["wind unavailable"],
+            "NOAA HRRR": ["wind unavailable"],
+        }
+        sizes = {"NOAA GFS": "~10.0 MB", "NOAA HRRR": "~614 KB"}
+        with patch.object(canvas.weather_coverage, "request"):
+            with patch.object(canvas, "_estimate_models_coverage", return_value=sizes):
+                canvas._show_coverage(
+                    "GFS: wind unavailable\nHRRR: wind unavailable", gaps
+                )
+            hrrr_button = canvas.coverage_fetch_buttons["NOAA HRRR"]
+            self.assertTrue(hrrr_button.isVisible())
+            self.assertIn("~614 KB", hrrr_button.text())
+            self.assertIn("HRRR", hrrr_button.text())
+            self.assertIn("Fetch all", canvas.coverage_fetch.text())
+            with patch.object(data, "download_selected") as download:
+                hrrr_button.click()
+            self.assertEqual(download.call_count, 1)
+            self.assertEqual(download.call_args.args[1], ("NOAA HRRR",))
+            # A started download disables the buttons; the next refresh
+            # re-enables them, as here before fetching all.
+            with patch.object(canvas, "_estimate_models_coverage", return_value=sizes):
+                canvas._show_coverage(
+                    "GFS: wind unavailable\nHRRR: wind unavailable", gaps
+                )
+            with patch.object(data, "download_selected") as download:
+                canvas.coverage_fetch.click()
+            self.assertEqual(download.call_count, 1)
+            self.assertEqual(download.call_args.args[1], ("NOAA GFS", "NOAA HRRR"))
+
     def test_multi_model_download_partial_failure_preserves_success(self):
         import shutil
         from gweatherrouting.core.gribsources import NOAAGFSSource, NOAAHRRRSource
