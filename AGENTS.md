@@ -6,15 +6,14 @@ PRs, or maintain upstream branches.
 
 ## Repository and branch roles
 
-- `origin` is the parent: `https://github.com/dakk/gweatherrouting.git`.
-  History only.
-- `fork` is our fork: `https://github.com/evanlivingston/gweatherrouting.git`.
+- `origin` is our fork: `https://github.com/evanlivingston/gweatherrouting.git`.
 - `dev` is our integration branch and the version we use.
 - `feature/<topic>` branches start from `dev` for new development and merge
   back into `dev` after appropriate validation.
+- The parent repo has no configured remote; its history is reachable through
+  our fork.
 
-Verify actual remotes and branches before using them; do not assume `origin`
-means our fork.
+Verify actual remotes and branches before using them.
 
 ## Default workflow for every task
 
