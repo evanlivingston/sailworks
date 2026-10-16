@@ -2,6 +2,7 @@
 
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from .dockchrome import style_scrollarea
 from .theme import section_label
+from gweatherrouting.rendering.windpainter import BARB_DENSITIES
 
 
 class WeatherPanel(QWidget):
@@ -44,6 +46,20 @@ class WeatherPanel(QWidget):
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.wind_opacity = self.percent("gribArrowOpacity")
         form.addRow("Wind opacity", self.wind_opacity)
+        self.barb_density = QComboBox()
+        for key, label, _spacing in BARB_DENSITIES:
+            self.barb_density.addItem(label, key)
+        self.barb_density.setCurrentIndex(self.density_index())
+        self.barb_density.setToolTip(
+            "Choose how many wind barbs to display. All forecast points shows "
+            "every visible sample without a symbol-count cap."
+        )
+        self.barb_density.currentIndexChanged.connect(
+            lambda _index: self.set_preference(
+                "gribBarbDensity", self.barb_density.currentData()
+            )
+        )
+        form.addRow("Barb density", self.barb_density)
         controls.addLayout(form)
         controls.addWidget(section_label("Isobars"))
         self.isobars = self.checkbox("Show isobars", "gribIsobarsVisible")
@@ -109,7 +125,14 @@ class WeatherPanel(QWidget):
         self.refresh()
         self.controller.data.redraw()
 
+    def density_index(self):
+        index = self.barb_density.findData(self.controller.settings.gribBarbDensity)
+        return index if index >= 0 else self.barb_density.findData("standard")
+
     def refresh(self):
+        self.barb_density.blockSignals(True)
+        self.barb_density.setCurrentIndex(self.density_index())
+        self.barb_density.blockSignals(False)
         for widget, value in (
             (self.wind, self.active_map().wind_visible),
             (self.on_ground, self.controller.settings.gribArrowOnGround),

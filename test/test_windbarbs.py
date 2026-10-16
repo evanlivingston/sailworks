@@ -1,0 +1,145 @@
+"""Fixed-size foreground weather symbols and dense native-grid selection."""
+
+import math
+import unittest
+from types import SimpleNamespace
+
+import cairo
+import numpy as np
+
+from gweatherrouting.core.mapviewport import MapViewport
+from gweatherrouting.rendering.windpainter import (
+    BARB_MAX_COUNT,
+    BARB_DENSITIES,
+    WindPainter,
+    barb_density_parameters,
+    flatten_wind_columns,
+)
+
+
+class TestLiveWindBarbs(unittest.TestCase):
+    def test_density_presets_add_detail_and_all_points_has_no_count_cap(self):
+        side = 100
+        lons, lats = np.meshgrid(np.linspace(-1, 1, side), np.linspace(-1, 1, side))
+        flat = (
+            np.zeros(side * side),
+            np.full(side * side, 8.0),
+            lats.ravel(),
+            lons.ravel(),
+        )
+        counts = []
+        for key, _label, _spacing in BARB_DENSITIES:
+            step, maximum = barb_density_parameters(key)
+            _geometry, count = WindPainter.live_geometry_for_view(
+                flat,
+                0,
+                0,
+                9,
+                1000,
+                1000,
+                step=step,
+                max_count=maximum,
+            )
+            counts.append(count)
+        self.assertTrue(all(a < b for a, b in zip(counts, counts[1:])), counts)
+        self.assertEqual(counts[-1], side * side)
+        self.assertGreater(counts[-1], BARB_MAX_COUNT)
+        self.assertEqual(
+            barb_density_parameters("old-or-invalid"),
+            barb_density_parameters("standard"),
+        )
+
+    def test_calm_symbol_retains_shaft_and_hollow_circle(self):
+        geometry = WindPainter.build_barb_geometry([100], [100], [0], [0])
+        lines, triangles, dots = geometry[0]
+        self.assertEqual(lines, [(100, 100, 100, 80)])
+        self.assertEqual(triangles, [])
+        self.assertEqual(dots, [(100, 100)])
+
+    def test_direction_speed_and_pennants_preserve_meteorological_notation(self):
+        for direction in (0, 90, 180, 270):
+            # 65 kt = one pennant, one full feather, one half feather.
+            geometry = WindPainter.build_barb_geometry(
+                [100], [100], [direction], [65 / 1.94384]
+            )
+            lines, triangles, dots = next(iter(geometry.values()))
+            self.assertEqual(len(lines), 3)
+            self.assertEqual(len(triangles), 1)
+            self.assertEqual(dots, [])
+            x1, y1, x2, y2 = lines[0]
+            self.assertAlmostEqual(math.hypot(x2 - x1, y2 - y1), 20)
+            angle = math.radians(direction)
+            self.assertAlmostEqual(x2, 100 + 20 * math.sin(angle))
+            self.assertAlmostEqual(y2, 100 - 20 * math.cos(angle))
+
+    def test_dense_grid_is_bounded_without_losing_whole_view_coverage(self):
+        side = 400
+        lons, lats = np.meshgrid(np.linspace(-6, 6, side), np.linspace(-6, 6, side))
+        flat = (
+            np.zeros(side * side),
+            np.full(side * side, 8.0),
+            lats.ravel(),
+            lons.ravel(),
+        )
+        geometry, count = WindPainter.live_geometry_for_view(flat, 0, 0, 9, 4000, 3000)
+        self.assertGreater(count, 100)
+        self.assertLessEqual(count, BARB_MAX_COUNT)
+        lines = next(iter(geometry.values()))[0]
+        origins = np.asarray(lines[::3])[:, :2]  # 8 m/s = shaft + 2 feathers
+        self.assertLess(origins[:, 0].min(), 100)
+        self.assertGreater(origins[:, 0].max(), 3900)
+        self.assertLess(origins[:, 1].min(), 100)
+        self.assertGreater(origins[:, 1].max(), 2900)
+
+    def test_projection_matches_existing_map_coordinates(self):
+        view = SimpleNamespace(
+            _center_lat=48.0,
+            _center_lon=-123.0,
+            _zoom=9.3,
+            get_allocated_width=lambda: 800,
+            get_allocated_height=lambda: 600,
+            queue_draw=lambda: None,
+        )
+        viewport = MapViewport(view)
+        data = [[(90, 5, (48.01, -123.02))]]
+        flat = flatten_wind_columns(data)
+        expected = viewport.convert_geographic_to_screen_batch(flat[2], flat[3])
+        geometry, count = WindPainter.live_geometry_for_view(
+            flat, 48, -123, 9.3, 800, 600
+        )
+        self.assertEqual(count, 1)
+        shaft = next(iter(geometry.values()))[0][0]
+        np.testing.assert_allclose(shaft[:2], [expected[0][0], expected[1][0]])
+
+    def test_cairo_retina_keeps_logical_size(self):
+        painter = WindPainter(
+            SimpleNamespace(
+                gribArrowOpacity=0.8,
+                gribArrowOnGround=True,
+            )
+        )
+        view = SimpleNamespace(
+            _center_lat=0,
+            _center_lon=0,
+            _zoom=8,
+            get_allocated_width=lambda: 100,
+            get_allocated_height=lambda: 100,
+        )
+        flat = flatten_wind_columns([[(0, 10, (0, 0))]])
+        for factor in (1, 2):
+            surface = cairo.ImageSurface(
+                cairo.FORMAT_ARGB32, 100 * factor, 100 * factor
+            )
+            surface.set_device_scale(factor, factor)
+            self.assertEqual(
+                painter.draw_barbs_live(view, cairo.Context(surface), flat), 1
+            )
+            surface.flush()
+            alpha = np.ndarray(
+                (100 * factor, 100 * factor, 4),
+                dtype=np.uint8,
+                buffer=surface.get_data(),
+                strides=(surface.get_stride(), 4, 1),
+            )[:, :, 3]
+            ys, _ = np.nonzero(alpha)
+            self.assertAlmostEqual((ys.max() - ys.min() + 1) / factor, 20, delta=1)

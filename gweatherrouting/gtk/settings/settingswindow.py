@@ -22,6 +22,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk
 
 from gweatherrouting.core import Core
+from gweatherrouting.rendering.windpainter import BARB_DENSITIES
 
 from .settingsmanager import SettingsManager
 from .settingswindow_charts import SettingsWindowCharts
@@ -63,6 +64,13 @@ class SettingsWindow(
         self.builder.get_object("grib-arrow-opacity-adjustment").set_value(
             self.settings_manager.gribArrowOpacity
         )
+        self.barb_density = self.builder.get_object("grib-barb-density")
+        for key, label, _spacing in BARB_DENSITIES:
+            self.barb_density.append(key, label)
+        density = getattr(self.settings_manager, "gribBarbDensity", "standard")
+        if not self.barb_density.set_active_id(density or "standard"):
+            self.barb_density.set_active_id("standard")
+        self.barb_density.connect("changed", self.on_grib_barb_density_change)
 
         SettingsWindowConnections.__init__(self)
         SettingsWindowCharts.__init__(self)
@@ -90,3 +98,6 @@ class SettingsWindow(
 
     def on_grib_arrow_opacity_change(self, v):
         self.settings_manager.gribArrowOpacity = v.get_value()
+
+    def on_grib_barb_density_change(self, widget):
+        self.settings_manager.gribBarbDensity = widget.get_active_id()

@@ -8,13 +8,14 @@ from typing import Optional
 import cairo
 import numpy as np
 from PySide6.QtCore import QEvent, QPointF, Qt, QTimer, Signal, QRectF
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPolygonF
+from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget, QMenu, QLabel
 
 from gweatherrouting.core.mapviewport import MercatorProjection, MapPoint
 from gweatherrouting.core.mapmotion import DragVelocity, PanInertia
 from gweatherrouting.rendering.style import Style
 from gweatherrouting.rendering.windpainter import WindPainter
+from gweatherrouting.rendering.windpainter import barb_bucket_colors
 from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
 from gweatherrouting.rendering.navigation import NavigationRenderer
 from gweatherrouting.rendering.ais import AISRenderer
@@ -903,6 +904,8 @@ class TrackMap(QWidget, MercatorProjection):
                 ),
                 self._base_cache[4],
             )
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self._paint_wind_barbs(painter)
         self._nav_cache = self._draw_reusable_layer(
             painter, self._nav_cache, self._nav_key(), self._navigation_image
         )
@@ -913,6 +916,52 @@ class TrackMap(QWidget, MercatorProjection):
         self._paint_caption(painter)
         painter.end()
         self._check_weather_coverage()
+
+    def _paint_wind_barbs(self, painter):
+        """Crisp fixed-size foreground barbs over the scaled base image."""
+        if not self.wind_visible:
+            return
+        geometry, opacity = self.wind.live_geometry_for_view(
+            self,
+            self.width(),
+            self.height(),
+            self._center_lat,
+            self._center_lon,
+            self._zoom,
+            density=getattr(self.controller.settings, "gribBarbDensity", "standard"),
+        )
+        if not geometry:
+            return
+        colors = barb_bucket_colors()
+        painter.save()
+        for bucket in sorted(geometry):
+            lines, tris, dots = geometry[bucket]
+            r, g, b = colors[bucket]
+            color = QColor.fromRgbF(r, g, b, opacity)
+            if lines or dots:
+                pen = QPen(color, 1)
+                pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                path = QPainterPath()
+                for x1, y1, x2, y2 in lines:
+                    path.moveTo(x1, y1)
+                    path.lineTo(x2, y2)
+                for x, y in dots:
+                    path.addEllipse(QPointF(x, y), 2.0, 2.0)
+                painter.drawPath(path)
+            if tris:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(color)
+                path = QPainterPath()
+                path.setFillRule(Qt.FillRule.WindingFill)
+                for ax, ay, bx, by, cx, cy in tris:
+                    path.moveTo(ax, ay)
+                    path.lineTo(bx, by)
+                    path.lineTo(cx, cy)
+                    path.closeSubpath()
+                painter.drawPath(path)
+        painter.restore()
 
     def _show_coverage(self, text):
         if self.disposed:
@@ -1265,7 +1314,9 @@ class TrackMap(QWidget, MercatorProjection):
         )
         sources = tuple((grib,) for grib in self.controller.core.grib_manager.gribs)
         if self.wind_visible or getattr(settings, "gribIsobarsVisible", True):
-            self.wind.draw(self, cr, sources, style)
+            # Fill/isobars stay in the cached base image (smooth when scaled);
+            # barbs paint crisp in paintEvent via _paint_wind_barbs().
+            self.wind.draw(self, cr, sources, style, live_barbs=False)
         self.marine.do_draw(self, cr)
         surface.flush()
         # copy() transfers ownership; Cairo's buffer can then be released.

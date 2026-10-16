@@ -16,6 +16,10 @@ from gweatherrouting.core.gribsampling import WeatherSampler
 from gweatherrouting.core.utils import COUNTRY_SHAPES, point_in_bbox
 from gweatherrouting.rendering.overlayrenderer import OverlayRenderer
 from gweatherrouting.rendering.windpainter import WindPainter
+from gweatherrouting.rendering.windpainter import (
+    flatten_wind_columns,
+    barb_density_parameters,
+)
 
 logger = logging.getLogger("gweatherrouting")
 
@@ -291,9 +295,7 @@ class WindOverlayRenderer(OverlayRenderer):
                 except Exception as exc:
                     logger.debug("Weather source unavailable: %s", exc)
             sources = [provider for _, provider in providers]
-            if not sources or not all(
-                isinstance(source, Grib) for source in sources
-            ):
+            if not sources or not all(isinstance(source, Grib) for source in sources):
                 return []
             sampler = WeatherSampler(sources)
             bounds = self._viewport_bounds(job)
@@ -378,6 +380,7 @@ class WindOverlayRenderer(OverlayRenderer):
             for _, provider in providers:
                 if isinstance(provider, Grib) and provider not in self._gribs.values():
                     provider.close()
+
     @staticmethod
     def _show_isobars(job):
         # Palettes built before the isobar toggle carry no fourth element.
@@ -404,6 +407,22 @@ class WindOverlayRenderer(OverlayRenderer):
             fill_data = self._resample_field(job, "wind") or None
             if job.cancel.is_set():
                 return None
+        # Keep land-mask work on the worker, alongside weather sampling.
+        # Only completed jobs publish these vectors to the foreground.
+        barb_data = data
+        if data and not job.palette[2]:
+            barb_data = []
+            for column in data:
+                if job.cancel.is_set():
+                    return None
+                barb_data.append(
+                    [
+                        point
+                        for point in column
+                        if not self._land_mask.contains(*point[2])
+                    ]
+                )
+        job.barb_flat = flatten_wind_columns(barb_data)
         viewport = job.viewport
         surface = cairo.ImageSurface(
             cairo.FORMAT_ARGB32,
@@ -411,16 +430,84 @@ class WindOverlayRenderer(OverlayRenderer):
             viewport.height * job.factor,
         )
         surface.set_device_scale(job.factor, job.factor)
-        settings = SimpleNamespace(
-            gribArrowOpacity=job.palette[1],
-            gribArrowOnGround=job.palette[2],
-            gribIsobarsVisible=self._show_isobars(job),
-            gribIsobarInterval=job.palette[5] if len(job.palette) > 5 else 4.0,
-            gribIsobarOpacity=job.palette[6] if len(job.palette) > 6 else 0.85,
-            gribIsobarLabels=job.palette[7] if len(job.palette) > 7 else True,
-        )
+        settings = self._settings_for(job.palette)
+        # Barbs stay out of the cached raster so zoom previews only stretch
+        # the smooth fill; the foreground repaints barbs live at fixed size.
         self._painter(settings, self._land_mask.contains).draw(
-            viewport, cairo.Context(surface), data, pressure, fill_data=fill_data
+            viewport,
+            cairo.Context(surface),
+            data,
+            pressure,
+            fill_data=fill_data,
+            draw_barbs=False,
         )
         surface.flush()
         return None if job.cancel.is_set() else surface
+
+    def draw(
+        self, canvas, cr, charts, palette, live_barbs=True, barb_density="standard"
+    ):
+        """Paint cached fill, then crisp live barbs for the current view."""
+        super().draw(canvas, cr, charts, palette)
+        if live_barbs:
+            self.draw_live_barbs(canvas, cr, barb_density)
+
+    def draw_live_barbs(self, canvas, cr, density="standard"):
+        """Reproject cached wind vectors at fixed screen size (no scaling)."""
+        geometry, opacity = self.live_geometry_for_view(
+            canvas,
+            canvas.get_allocated_width(),
+            canvas.get_allocated_height(),
+            canvas._center_lat,
+            canvas._center_lon,
+            canvas._zoom,
+            density=density,
+        )
+        WindPainter.paint_barb_geometry(cr, geometry, opacity)
+
+    def live_geometry_for_view(
+        self, canvas, width, height, center_lat, center_lon, zoom, density="standard"
+    ):
+        """Foreground geometry for toolkits that cache the base image (Qt).
+
+        Returns ``(geometry, opacity)`` in unpadded widget pixels so the
+        caller can paint crisp vectors after the scaled base image.
+        """
+        state = self._states.get(canvas)
+        if state is None or state.frame is None:
+            return {}, 0.0
+        job, _surface = state.frame
+        if not self._can_preview(job, state.key):
+            return {}, 0.0
+        flat = getattr(job, "barb_flat", None)
+        if flat is None:
+            return {}, 0.0
+        step, max_count = barb_density_parameters(density)
+        view = (center_lat, center_lon, zoom, width, height, step, max_count)
+        # Repaints of a stationary view reuse geometry; gestures only update
+        # positions/selection, never reload weather or scale symbol strokes.
+        if getattr(job, "barb_geometry_view", None) != view:
+            job.barb_geometry, _count = WindPainter.live_geometry_for_view(
+                flat,
+                center_lat,
+                center_lon,
+                zoom,
+                width,
+                height,
+                step=step,
+                max_count=max_count,
+            )
+            job.barb_geometry_view = view
+        geometry = job.barb_geometry
+        return geometry, float(job.palette[1])
+
+    @staticmethod
+    def _settings_for(palette):
+        return SimpleNamespace(
+            gribArrowOpacity=palette[1],
+            gribArrowOnGround=palette[2],
+            gribIsobarsVisible=palette[3] if len(palette) > 3 else True,
+            gribIsobarInterval=palette[5] if len(palette) > 5 else 4.0,
+            gribIsobarOpacity=palette[6] if len(palette) > 6 else 0.85,
+            gribIsobarLabels=palette[7] if len(palette) > 7 else True,
+        )

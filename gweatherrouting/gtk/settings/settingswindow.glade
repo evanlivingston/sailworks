@@ -638,6 +638,31 @@
                                     <property name="position">2</property>
                                   </packing>
                                 </child>
+                                <child>
+                                  <object class="GtkBox">
+                                    <property name="visible">True</property>
+                                    <property name="spacing">12</property>
+                                    <property name="margin-start">12</property>
+                                    <property name="margin-end">8</property>
+                                    <child>
+                                      <object class="GtkLabel">
+                                        <property name="visible">True</property>
+                                        <property name="label" translatable="yes">Barb density</property>
+                                      </object>
+                                    </child>
+                                    <child>
+                                      <object class="GtkComboBoxText" id="grib-barb-density">
+                                        <property name="visible">True</property>
+                                        <property name="tooltip-text" translatable="yes">Choose how many wind barbs to display. All forecast points shows every visible sample without a symbol-count cap.</property>
+                                      </object>
+                                    </child>
+                                  </object>
+                                  <packing>
+                                    <property name="expand">False</property>
+                                    <property name="fill">True</property>
+                                    <property name="position">3</property>
+                                  </packing>
+                                </child>
                               </object>
                             </child>
                           </object>

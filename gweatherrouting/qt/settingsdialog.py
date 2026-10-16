@@ -339,7 +339,7 @@ class SettingsDialog(QDialog):
             self.controller.settings[key] = value
         except OSError as exc:
             self.controller.settings.__dict__[key] = previous
-            dict.__setitem__(settings, key, previous)
+            dict.__setitem__(self.controller.settings, key, previous)
             QMessageBox.warning(self, "Unable to save setting", str(exc))
         self.controller.data.redraw()
 
