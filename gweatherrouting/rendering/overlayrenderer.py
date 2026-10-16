@@ -23,6 +23,13 @@ class RenderJob:
     factor: int
     palette: str
     cancel: Event = field(default_factory=Event)
+    created_at: float = field(default_factory=time.monotonic)
+    started_at: float | None = None
+    finished_at: float | None = None
+    published_at: float | None = None
+    cancelled_at: float | None = None
+    cancel_reason: str = ""
+    request_id: int = 0
 
 
 @dataclass
@@ -31,6 +38,7 @@ class RenderState:
     frame: object = None
     requested: object = None
     retry_after: float = 0.0
+    demand: object = None
 
 
 def fits(viewport, canvas):
@@ -47,6 +55,26 @@ def fits(viewport, canvas):
         canvas._center_lat
     )
     return max(abs(dx), abs(dy)) <= MARGIN / 2
+
+
+def covers(viewport, canvas):
+    """Whether prepared pixels enclose this view at native zoom (not data coverage).
+
+    Unlike the refresh threshold in fits(), this uses the actual image extent
+    and permits a resize only when the new view is still entirely enclosed.
+    """
+    if viewport._zoom != canvas._zoom:
+        return False
+    dx = viewport._lon_to_x(viewport._center_lon) - viewport._lon_to_x(
+        canvas._center_lon
+    )
+    dy = viewport._lat_to_y(viewport._center_lat) - viewport._lat_to_y(
+        canvas._center_lat
+    )
+    return (
+        abs(dx) + canvas.get_allocated_width() / 2 <= viewport.width / 2
+        and abs(dy) + canvas.get_allocated_height() / 2 <= viewport.height / 2
+    )
 
 
 def paint_viewport(canvas, cr, viewport, surface):
@@ -72,14 +100,27 @@ class OverlayRenderer:
         self._running = False
         self._active_canvas = None
         self._active_job: RenderJob | None = None
+        self._coalesce_active = True
+        self._next_request_id = 0
 
     def forget(self, canvas):
         state = self._states.pop(canvas, None)
         self._pending.pop(canvas, None)
         if state and state.requested:
-            state.requested.cancel.set()
+            self._cancel(state.requested, "forgotten")
         if self._active_canvas is canvas and self._active_job is not None:
-            self._active_job.cancel.set()
+            self._cancel(self._active_job, "forgotten")
+
+    def _cancel(self, job, reason):
+        if not job.cancel.is_set():
+            job.cancelled_at = time.monotonic()
+            job.cancel_reason = reason
+            job.cancel.set()
+            self._schedule_event("cancel", job)
+
+    def _schedule_event(self, event, job):
+        """Optional observer; no production event history or GUI access in workers."""
+        pass
 
     def draw(self, canvas, cr, charts, palette):
         if not charts:
@@ -89,14 +130,52 @@ class OverlayRenderer:
         key = (palette, factor, tuple(c[0] for c in charts))
         state = self._states.setdefault(canvas, RenderState())
         state.key = key
+        state.demand = MapViewport(canvas, on_redraw=lambda: None)
+        active = self._active_job if self._active_canvas is canvas else None
+        if (
+            self._coalesce_active
+            and active is not None
+            and (
+                not self._can_complete(active, key)
+                or (
+                    not getattr(canvas, "_zoom_animating", False)
+                    and not self._keep_active(active, canvas, key)
+                )
+            )
+        ):
+            self._cancel(active, "obsolete active demand")
+        queued = self._pending.get(canvas)
+        if (
+            self._coalesce_active
+            and queued is not None
+            and not self._can_complete(queued, key)
+        ):
+            self._pending.pop(canvas)
+            self._cancel(queued, "obsolete queued demand")
+            if state.requested is queued:
+                state.requested = None
         frame = state.frame
         fresh = frame and frame[0].key == key and fits(frame[0].viewport, canvas)
+        if (
+            self._coalesce_active
+            and active is not None
+            and not active.cancel.is_set()
+            and active.key == key
+            and fits(active.viewport, canvas)
+        ):
+            queued = self._pending.pop(canvas, None)
+            if queued is not None:
+                self._cancel(queued, "covered by active request")
+            state.requested = active
         requested = state.requested
         pending = (
-            requested and requested.key == key and fits(requested.viewport, canvas)
+            requested
+            and not requested.cancel.is_set()
+            and requested.key == key
+            and fits(requested.viewport, canvas)
         )
         if fresh and requested and not pending:
-            requested.cancel.set()
+            self._cancel(requested, "already fresh")
             self._pending.pop(canvas, None)
             state.requested = None
         if (
@@ -106,22 +185,31 @@ class OverlayRenderer:
             and time.monotonic() >= state.retry_after
         ):
             if requested is not None and not (
-                fits(requested.viewport, canvas)
-                and self._can_complete(requested, key)
+                self._keep_active(requested, canvas, key)
                 and requested is self._active_job
             ):
-                requested.cancel.set()
+                self._cancel(requested, "superseded request")
             viewport = MapViewport(canvas, MARGIN, lambda: None)
             job = RenderJob(key, viewport, charts, factor, palette)
+            self._next_request_id += 1
+            job.request_id = self._next_request_id
             viewport.render_cancelled = job.cancel.is_set
             state.requested = job
             self._pending[canvas] = job
+            self._schedule_event("request", job)
             self._start_next()
         if frame and self._can_preview(frame[0], key):
             self._paint(canvas, cr, *frame)
 
     def _can_complete(self, job, key):
         return job.key == key
+
+    def _keep_active(self, job, canvas, key):
+        return (
+            not job.cancel.is_set()
+            and fits(job.viewport, canvas)
+            and self._can_complete(job, key)
+        )
 
     def _can_preview(self, job, key):
         return job.key == key
@@ -136,6 +224,8 @@ class OverlayRenderer:
         canvas, job = self._pending.popitem(last=False)
         self._running = True
         self._active_canvas, self._active_job = canvas, job
+        job.started_at = time.monotonic()
+        self._schedule_event("start", job)
 
         def worker():
             surface, error = None, None
@@ -143,6 +233,8 @@ class OverlayRenderer:
                 surface = self._render(job)
             except Exception as exc:
                 error = str(exc)
+            job.finished_at = time.monotonic()
+            self._schedule_event("finish", job)
             self.schedule(self._completed, canvas, job, surface, error)
 
         Thread(target=worker, name="overlay-render", daemon=True).start()
@@ -166,6 +258,8 @@ class OverlayRenderer:
                 and self._can_complete(job, state.key)
             ):
                 state.frame = (job, surface)
+                job.published_at = time.monotonic()
+                self._schedule_event("publish", job)
                 canvas.queue_draw()
         self._start_next()
         return False

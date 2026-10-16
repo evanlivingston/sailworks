@@ -1,10 +1,12 @@
 """Background wind portrayal with private GDAL handles and cached viewports."""
 
 from collections import OrderedDict
+from contextlib import contextmanager
 from gweatherrouting.core.scheduling import schedule_idle
 from functools import lru_cache
 import json
 import logging
+import os
 from types import SimpleNamespace
 
 import cairo
@@ -14,7 +16,7 @@ from osgeo import ogr
 from gweatherrouting.core.grib import Grib
 from gweatherrouting.core.gribsampling import WeatherSampler
 from gweatherrouting.core.utils import COUNTRY_SHAPES, point_in_bbox
-from gweatherrouting.rendering.overlayrenderer import OverlayRenderer
+from gweatherrouting.rendering.overlayrenderer import OverlayRenderer, covers
 from gweatherrouting.rendering.windpainter import WindPainter
 from gweatherrouting.rendering.windpainter import (
     flatten_wind_columns,
@@ -131,13 +133,34 @@ class WindOverlayRenderer(OverlayRenderer):
         super().__init__(schedule)
         self._painter = painter
         self._gribs = OrderedDict()
+        self._leased_providers = {}
         self._land_mask = WindLandMask()
+        self._reuse_job_sources = True
+        self._source_retention_limit = 64
+        # Wider survival reduced cancellation counts but delayed coverage in
+        # the startup replay. Keep it an explicitly opted-in benchmark trial.
+        self._preserve_covered_jobs = False
+        # Retention between display passes, not a bound on GDAL/transient decode
+        # allocations inside the unchanged shared sampler.
+        self._decoded_retention_limit = 128 * 1024 * 1024
+        self.cache_metrics = dict(lookups=0, hits=0, opens=0, samplers=0)
+        self.cache_state = {}
+        # View-independent field working set: previously sampled geographic
+        # bounds are reused when they contain a new request (exact data, no
+        # overfetch); resampled grids reuse on exact matches only.
+        self._field_cache = OrderedDict()
+        self._field_cache_bytes = 0
+        self._field_cache_entry_limit = 64
+        self._field_cache_byte_limit = 32 * 1024 * 1024
+        self._field_cache_enabled = True
+        self.field_cache_metrics = dict(hits=0, misses=0, evictions=0)
 
     def _release_if_idle(self):
         if not self._states and not self._running:
             for grib in self._gribs.values():
                 grib.close()
             self._gribs.clear()
+            self.cache_state = self._cache_snapshot()
 
     def forget(self, canvas):
         super().forget(canvas)
@@ -160,15 +183,215 @@ class WindOverlayRenderer(OverlayRenderer):
         # waits in the bounded queue; style/source changes still discard them.
         return self._can_preview(job, key)
 
+    def _keep_active(self, job, canvas, key):
+        if self._preserve_covered_jobs:
+            return (
+                not job.cancel.is_set()
+                and covers(job.viewport, canvas)
+                and self._can_complete(job, key)
+            )
+        return super()._keep_active(job, canvas, key)
+
+    def prepared_view_status(self, canvas):
+        """Geometric preparation status, NOT proof of available forecast data."""
+        state = self._states.get(canvas)
+        if state is None or state.frame is None:
+            return dict(preview=False, current=False)
+        job, _surface = state.frame
+        return dict(
+            preview=self._can_preview(job, state.key),
+            current=job.key == state.key and covers(job.viewport, canvas),
+        )
+
     def _worker_grib(self, source):
+        self.cache_metrics["lookups"] += 1
         grib = self._gribs.get(source)
         if grib is None:
             grib = DisplayGrib(source)
-            self._gribs[source] = grib
-            if len(self._gribs) > 2:
-                self._gribs.popitem(last=False)
-        self._gribs.move_to_end(source)
+            grib._display_version = self._source_version(source)
+            self.cache_metrics["opens"] += 1
+        else:
+            self.cache_metrics["hits"] += 1
+        self._retain_grib(source, grib)
         return grib
+
+    def _retain_grib(self, source, grib):
+        self._gribs[source] = grib
+        self._gribs.move_to_end(source)
+        while len(self._gribs) > self._source_retention_limit:
+            _, evicted = self._gribs.popitem(last=False)
+            if id(evicted) not in self._leased_providers:
+                evicted.close()
+
+    @staticmethod
+    def _source_version(source):
+        try:
+            stat = os.stat(source.path)
+            file_version = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+        except OSError:
+            # GDAL virtual paths need not be native filesystem paths. Their
+            # selected source instance/metadata still participates in identity.
+            file_version = None
+        return (
+            source.path,
+            source.name,
+            source.centre,
+            source.start_time,
+            source.last_forecast,
+            repr(source.bounds),
+            file_version,
+        )
+
+    def _prune_sources(self, job):
+        selected = {id(source) for (source,) in job.charts}
+        for source, provider in list(self._gribs.items()):
+            if id(provider) in self._leased_providers:
+                continue
+            if id(source) not in selected or getattr(
+                provider, "_display_version", None
+            ) != self._source_version(source):
+                self._gribs.pop(source)
+                provider.close()
+
+    def _cache_snapshot(self):
+        decoded = {}
+        coordinates = {}
+        for provider in self._gribs.values():
+            index = provider.__dict__.get("_sampling")
+            if index is not None:
+                decoded.update(
+                    {id(array): array.nbytes for array in index.arrays.values()}
+                )
+            legacy = provider.__dict__.get("_arrays")
+            if legacy:
+                for arrays in legacy.values():
+                    for array in arrays:
+                        decoded[id(array)] = array.nbytes
+            legacy_pressure = provider.__dict__.get("_pressure_arrays")
+            if legacy_pressure:
+                for array in legacy_pressure.values():
+                    decoded[id(array)] = array.nbytes
+            for name in ("_lats", "_lons"):
+                array = provider.__dict__.get(name)
+                if array is not None:
+                    coordinates[id(array)] = array.nbytes
+        return dict(
+            retained_sources=len(self._gribs),
+            source_limit=self._source_retention_limit,
+            decoded_bytes=sum(decoded.values()),
+            decoded_limit=self._decoded_retention_limit,
+            coordinate_bytes=sum(coordinates.values()),
+        )
+
+    def _release_providers(self, resources, retained):
+        for _, provider in resources.get("opened", {}).values():
+            self._leased_providers.pop(id(provider), None)
+            if isinstance(provider, Grib) and provider not in retained:
+                provider.close()
+
+    @contextmanager
+    def _source_scope(self, job):
+        resources = getattr(job, "_weather_resources", None)
+        owns_scope = resources is None
+        if owns_scope:
+            resources = {}
+        try:
+            if "opened" not in resources:
+                self._prune_sources(job)
+                # Pin cross-job cache entries before opening anything:
+                # otherwise a first new source evicts an index cycle before
+                # this pass reaches it, leaving cleanup to the GC.
+                resources["opened"] = {
+                    id(source): (source, provider)
+                    for source, provider in self._gribs.items()
+                }
+            opened = resources["opened"]
+            self._leased_providers.update(
+                {
+                    id(provider): provider
+                    for _, provider in opened.values()
+                    if isinstance(provider, Grib)
+                }
+            )
+            providers = []
+            for (source,) in job.charts:
+                if job.cancel.is_set():
+                    break
+                pair = opened.get(id(source))
+                if pair is None:
+                    try:
+                        pair = source, self._worker_grib(source)
+                        opened[id(source)] = pair
+                        if isinstance(pair[1], Grib):
+                            self._leased_providers[id(pair[1])] = pair[1]
+                    except Exception as exc:
+                        # Retain successful opens, but retry unavailable sources
+                        # on the next pass just as the uncached path does.
+                        logger.debug("Weather source unavailable: %s", exc)
+                        continue
+                else:
+                    metrics = getattr(job, "weather_metrics", None)
+                    if metrics is not None:
+                        metrics["provider_reuses"] = (
+                            metrics.get("provider_reuses", 0) + 1
+                        )
+                    if isinstance(pair[1], Grib):
+                        self._retain_grib(source, pair[1])
+                providers.append(pair)
+            if providers != resources.get("providers"):
+                resources.pop("sampler", None)
+            resources["providers"] = providers
+            yield resources
+        finally:
+            if owns_scope:
+                self._release_providers(resources, self._gribs.values())
+
+    def _sampler_for(self, resources):
+        sampler = resources.get("sampler")
+        if sampler is not None and len(sampler.indices) != len(resources["providers"]):
+            # GridIndex construction can fail independently of opening GDAL.
+            # Preserve the old next-pass retry instead of caching an omission.
+            del resources["sampler"]
+        if "sampler" not in resources:
+            sources = [provider for _, provider in resources["providers"]]
+            resources["sampler"] = (
+                WeatherSampler(sources)
+                if sources and all(isinstance(source, Grib) for source in sources)
+                else None
+            )
+            if resources["sampler"] is not None:
+                self.cache_metrics["samplers"] += 1
+        return resources["sampler"]
+
+    def _trim_decoded(self, resources, job):
+        # GridIndex arrays are a cache only. Dropping an entry never changes
+        # record choice, masks, interpolation, or provider order. Do not open an
+        # index just to account it, and do not touch GDAL's own driver cache.
+        entries = []
+        for _, provider in resources.get("opened", {}).values():
+            index = getattr(provider, "__dict__", {}).get("_sampling")
+            if index is not None:
+                for array in index.arrays.values():
+                    array.setflags(write=False)
+                entries.extend(
+                    (index.arrays, band, array.nbytes)
+                    for band, array in index.arrays.items()
+                )
+        total = sum(size for _, _, size in entries)
+        metrics = getattr(job, "weather_metrics", None)
+        if metrics is not None:
+            metrics["decoded_pass_peak_bytes"] = max(
+                metrics.get("decoded_pass_peak_bytes", 0), total
+            )
+        for arrays, band, size in entries:
+            if total <= self._decoded_retention_limit:
+                break
+            del arrays[band]
+            total -= size
+            if metrics is not None:
+                metrics["decoded_evictions"] = metrics.get("decoded_evictions", 0) + 1
+        if metrics is not None:
+            metrics["decoded_retained_bytes"] = total
 
     @staticmethod
     def _viewport_bounds(job):
@@ -178,32 +401,202 @@ class WindOverlayRenderer(OverlayRenderer):
             (max(p1[0], p2[0]) + 1, max(p1[1], p2[1]) + 1),
         )
 
+    def _field_key(self, job, kind, field, bounds):
+        instant = job.palette[0]
+        stamp = instant.timestamp() if hasattr(instant, "timestamp") else float(instant)
+        versions = tuple(self._source_version(source) for (source,) in job.charts)
+        # Keep exact float bounds: rounding would shrink stored extents below
+        # the sampled area and break containment checks by ~1e-7 degrees.
+        exact = (
+            (float(bounds[0][0]), float(bounds[0][1])),
+            (float(bounds[1][0]), float(bounds[1][1])),
+        )
+        return (kind, field, round(float(stamp), 3), versions, exact)
+
+    @staticmethod
+    def _bounds_contain(outer, inner):
+        (osouth, owest), (onorth, oeast) = outer
+        (isouth, iwest), (inorth, ieast) = inner
+        return (
+            osouth <= isouth + 1e-9
+            and onorth >= inorth - 1e-9
+            and owest <= iwest + 1e-9
+            and oeast >= ieast - 1e-9
+        )
+
+    @staticmethod
+    def _filter_columns(columns, field, bounds):
+        (south, west), (north, east) = bounds
+        south, north = sorted((south, north))
+        kept = []
+        for column in columns:
+            matches = []
+            for point in column:
+                lat, lon = point[2] if field == "wind" else point[:2]
+                wrapped = lon
+                if wrapped < west - 1e-7 and wrapped + 360 <= east + 1e-7:
+                    wrapped += 360
+                if (
+                    south - 1e-7 <= lat <= north + 1e-7
+                    and west - 1e-7 <= wrapped <= east + 1e-7
+                ):
+                    matches.append(point)
+            if matches:
+                kept.append(matches)
+        return kept
+
+    def _contained_columns(self, job, kind, field, bounds):
+        prefix = self._field_key(job, kind, field, bounds)[:4]
+        for key in reversed(list(self._field_cache)):
+            if key[:4] != prefix:
+                continue
+            columns = self._field_cache.get(key)
+            if columns is None:
+                continue
+            if kind != "native":
+                # Resampled grids depend on their exact bounds (regular
+                # linspace); containment would serve the wrong grid.
+                if key[4] != bounds:
+                    continue
+                self._field_cache.move_to_end(key)
+                self.field_cache_metrics["hits"] += 1
+                return columns
+            if not self._bounds_contain(key[4], bounds):
+                continue
+            self._field_cache.move_to_end(key)
+            self.field_cache_metrics["hits"] += 1
+            return self._filter_columns(columns, field, bounds)
+        return None
+
+    @staticmethod
+    def _columns_bytes(columns):
+        points = sum(len(column) for column in columns)
+        return points * 96 + len(columns) * 64
+
+    def _store_columns(self, key, columns):
+        size = self._columns_bytes(columns)
+        if size > self._field_cache_byte_limit:
+            return
+        previous = self._field_cache.pop(key, None)
+        if previous is not None:
+            self._field_cache_bytes -= self._columns_bytes(previous)
+        self._field_cache[key] = columns
+        self._field_cache_bytes += size
+        while (
+            len(self._field_cache) > self._field_cache_entry_limit
+            or self._field_cache_bytes > self._field_cache_byte_limit
+        ):
+            _, evicted = self._field_cache.popitem(last=False)
+            self._field_cache_bytes -= self._columns_bytes(evicted)
+            self.field_cache_metrics["evictions"] += 1
+
+    @staticmethod
+    def _rect_overlap(rect, cover):
+        (rs, rw), (rn, re) = rect
+        (cs, cw), (cn, ce) = cover
+        return rw < ce and re > cw and rs < cn and rn > cs
+
+    @classmethod
+    def _subtract_rect(cls, rect, cover):
+        (rs, rw), (rn, re) = rect
+        (cs, cw), (cn, ce) = cover
+        west = max(rw, cw)
+        east = min(re, ce)
+        south = max(rs, cs)
+        north = min(rn, cn)
+        if west >= east or south >= north:
+            return [rect]
+        pieces = []
+        if rw < west:
+            pieces.append(((rs, rw), (rn, west)))
+        if east < re:
+            pieces.append(((rs, east), (rn, re)))
+        if rs < south:
+            pieces.append(((rs, west), (south, east)))
+        if north < rn:
+            pieces.append(((north, west), (rn, east)))
+        return pieces
+
+    def _uncovered_rects(self, bounds, covers):
+        remaining = [bounds]
+        for cover in covers:
+            stripped = []
+            for rect in remaining:
+                if self._rect_overlap(rect, cover):
+                    stripped.extend(self._subtract_rect(rect, cover))
+                else:
+                    stripped.append(rect)
+            remaining = stripped
+            if not remaining:
+                break
+        return [
+            rect
+            for rect in remaining
+            if rect[1][0] > rect[0][0] and rect[1][1] > rect[0][1]
+        ]
+
     def _load_field(self, job, field):
-        providers = []
-        try:
-            for (source,) in job.charts:
-                if job.cancel.is_set():
-                    return []
-                try:
-                    providers.append((source, self._worker_grib(source)))
-                except Exception as exc:
-                    logger.debug("Weather source unavailable: %s", exc)
-            sources = [provider for _, provider in providers]
-            if sources and all(isinstance(source, Grib) for source in sources):
-                sampler = WeatherSampler(sources)
+        with self._source_scope(job) as resources:
+            if job.cancel.is_set():
+                return []
+            sampler = self._sampler_for(resources)
+            if sampler is None:
+                data = self._provider_field(job, field, resources["providers"])
+                self._trim_decoded(resources, job)
+                return self._columns(data, field)
+            if not self._field_cache_enabled:
                 data = sampler.grid(
                     field, job.palette[0], self._viewport_bounds(job), job.cancel.is_set
                 )
-            else:
-                data = self._provider_field(job, field, providers)
-            return self._columns(data, field)
-        finally:
-            # Split-file sampling needs every selected handle until completion.
-            # Release evictions afterwards, rather than leaving dataset cycles
-            # and decoded grids waiting for Python's garbage collector.
-            for _, provider in providers:
-                if isinstance(provider, Grib) and provider not in self._gribs.values():
-                    provider.close()
+                self._trim_decoded(resources, job)
+                return self._columns(data, field)
+            bounds = self._viewport_bounds(job)
+            cached = self._contained_columns(job, "native", field, bounds)
+            if cached is not None:
+                metrics = getattr(job, "weather_metrics", None)
+                if metrics is not None:
+                    metrics["field_cache_hits"] = metrics.get("field_cache_hits", 0) + 1
+                return cached
+            self.field_cache_metrics["misses"] += 1
+            prefix = self._field_key(job, "native", field, bounds)[:4]
+            overlaps = [
+                (key[4], columns)
+                for key, columns in self._field_cache.items()
+                if key[:4] == prefix and self._rect_overlap(key[4], bounds)
+            ]
+            data = []
+            (south, west), (north, east) = bounds
+            for _cover, columns in overlaps:
+                for column in columns:
+                    for point in column:
+                        lat, lon = point[2] if field == "wind" else point[:2]
+                        if (
+                            south - 1e-7 <= lat <= north + 1e-7
+                            and west - 1e-7 <= lon <= east + 1e-7
+                        ):
+                            data.append(point)
+            strips = self._uncovered_rects(bounds, [cover for cover, _ in overlaps])
+            for rect in strips:
+                if job.cancel.is_set():
+                    return []
+                chunk = sampler.grid(field, job.palette[0], rect, job.cancel.is_set)
+                if chunk:
+                    data.extend(chunk)
+            self._trim_decoded(resources, job)
+            columns = self._columns(data, field)
+            metrics = getattr(job, "weather_metrics", None)
+            if metrics is not None:
+                metrics["field_cache_misses"] = metrics.get("field_cache_misses", 0) + 1
+                metrics["field_strips_sampled"] = metrics.get(
+                    "field_strips_sampled", 0
+                ) + len(strips)
+                metrics["field_strips_reused"] = metrics.get(
+                    "field_strips_reused", 0
+                ) + len(overlaps)
+            if not job.cancel.is_set():
+                key = self._field_key(job, "native", field, bounds)
+                self._store_columns(key, columns)
+            return columns
 
     def _provider_field(self, job, field, providers):
         data: list[tuple] = []
@@ -285,20 +678,25 @@ class WindOverlayRenderer(OverlayRenderer):
 
     def _resample_field(self, job, field):
         """Sample a blended field on a regular grid covering the viewport."""
-        providers = []
-        try:
-            for (source,) in job.charts:
-                if job.cancel.is_set():
-                    return []
-                try:
-                    providers.append((source, self._worker_grib(source)))
-                except Exception as exc:
-                    logger.debug("Weather source unavailable: %s", exc)
-            sources = [provider for _, provider in providers]
-            if not sources or not all(isinstance(source, Grib) for source in sources):
+        with self._source_scope(job) as resources:
+            if job.cancel.is_set():
                 return []
-            sampler = WeatherSampler(sources)
+            sampler = self._sampler_for(resources)
+            if sampler is None:
+                return []
             bounds = self._viewport_bounds(job)
+            cached = (
+                self._contained_columns(job, "resampled", field, bounds)
+                if self._field_cache_enabled
+                else None
+            )
+            if cached is not None:
+                metrics = getattr(job, "weather_metrics", None)
+                if metrics is not None:
+                    metrics["field_cache_hits"] = metrics.get("field_cache_hits", 0) + 1
+                return cached
+            if self._field_cache_enabled:
+                self.field_cache_metrics["misses"] += 1
             south, north = sorted((bounds[0][0], bounds[1][0]))
             west, east = bounds[0][1], bounds[1][1]
             if east < west:
@@ -326,6 +724,7 @@ class WindOverlayRenderer(OverlayRenderer):
                     job.cancel.is_set,
                 )
             ).reshape(nrows, ncols, -1)
+            self._trim_decoded(resources, job)
             if job.cancel.is_set() or not np.isfinite(values).any():
                 return []
             # Model footprints rarely fill the padded viewport. Shrink to
@@ -375,11 +774,20 @@ class WindOverlayRenderer(OverlayRenderer):
                             for row in range(values.shape[0])
                         ]
                     )
+            if (
+                len(columns) >= 2
+                and not job.cancel.is_set()
+                and self._field_cache_enabled
+            ):
+                self._store_columns(
+                    self._field_key(job, "resampled", field, bounds), columns
+                )
+                metrics = getattr(job, "weather_metrics", None)
+                if metrics is not None:
+                    metrics["field_cache_misses"] = (
+                        metrics.get("field_cache_misses", 0) + 1
+                    )
             return columns if len(columns) >= 2 else []
-        finally:
-            for _, provider in providers:
-                if isinstance(provider, Grib) and provider not in self._gribs.values():
-                    provider.close()
 
     @staticmethod
     def _show_isobars(job):
@@ -387,6 +795,35 @@ class WindOverlayRenderer(OverlayRenderer):
         return job.palette[3] if len(job.palette) > 3 else True
 
     def _render(self, job):
+        before = dict(self.cache_metrics)
+        before_fields = dict(self.field_cache_metrics)
+        job.weather_metrics = {}
+        resources = {}
+        if self._reuse_job_sources:
+            job._weather_resources = resources
+        try:
+            return self._render_fields(job)
+        finally:
+            if self._reuse_job_sources:
+                del job._weather_resources
+                try:
+                    if "providers" in resources:
+                        self._trim_decoded(resources, job)
+                finally:
+                    self._release_providers(resources, self._gribs.values())
+            job.weather_metrics.update(
+                {key: value - before[key] for key, value in self.cache_metrics.items()}
+            )
+            job.weather_metrics["field_cache"] = {
+                key: value - before_fields[key]
+                for key, value in self.field_cache_metrics.items()
+            }
+            job.weather_metrics["field_cache_entries"] = len(self._field_cache)
+            job.weather_metrics["field_cache_bytes"] = self._field_cache_bytes
+            self.cache_state = self._cache_snapshot()
+            job.weather_metrics["retained_cache"] = dict(self.cache_state)
+
+    def _render_fields(self, job):
         show_wind = job.palette[4] if len(job.palette) > 4 else True
         data = self._load_wind(job) if show_wind else []
         if job.cancel.is_set():
