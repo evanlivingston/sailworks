@@ -280,16 +280,11 @@ class RoutingPanel(QWidget):
         currents = QVBoxLayout(currents_page)
         self.use_currents = QCheckBox("Include currents")
         self.use_currents.setToolTip("Include ocean and tidal currents in routing.")
-        self.auto_currents = QCheckBox("Download data automatically")
-        self.auto_currents.setToolTip(
-            "Download missing current coverage. Wind uses the models selected in Forecasts."
-        )
-        self.auto_currents.setChecked(True)
-        self.auto_currents.setEnabled(False)
         self.use_currents.toggled.connect(self._currents_toggled)
-        self.auto_currents.toggled.connect(lambda *_: self.options_changed.emit())
         currents.addWidget(self.use_currents)
-        currents.addWidget(self.auto_currents)
+        note = QLabel("Missing wind and current coverage downloads automatically.")
+        note.setWordWrap(True)
+        currents.addWidget(note)
         currents.addStretch()
         self.pages.addTab(self._scroll_page(currents_page), "Currents")
         self.wind_algorithm_name = self.algorithm.currentText()
@@ -317,7 +312,6 @@ class RoutingPanel(QWidget):
                 max(0, self.algorithm.findText(self.wind_algorithm_name))
             )
         self.algorithm.blockSignals(False)
-        self.auto_currents.setEnabled(enabled and not self.routing.busy)
         self._algorithm_changed()
         self.options_changed.emit()
 
@@ -325,7 +319,7 @@ class RoutingPanel(QWidget):
         dialog = QMessageBox(
             QMessageBox.Icon.Warning,
             "Current data needed" if report.blocked else "Check current coverage",
-            report.describe(self.auto_currents.isChecked()),
+            report.describe(True),
             QMessageBox.StandardButton.NoButton,
             self,
         )
@@ -354,7 +348,6 @@ class RoutingPanel(QWidget):
         return dict(
             parameters=cache,
             use_currents=self.use_currents.isChecked(),
-            auto_currents=self.auto_currents.isChecked(),
             safety={
                 key: (
                     getattr(self, key).isChecked()
@@ -393,8 +386,6 @@ class RoutingPanel(QWidget):
         # Preserve the validated cache while replacing the initially displayed defaults.
         self.parameter_name = ""
         self.use_currents.setChecked(saved.get("use_currents") is True)
-        if isinstance(saved.get("auto_currents"), bool):
-            self.auto_currents.setChecked(saved["auto_currents"])
         self._algorithm_changed()
         safety = mapping(saved.get("safety"))
         for key in (
@@ -555,8 +546,7 @@ class RoutingPanel(QWidget):
             parameters=tuple(self._read_parameters().items()),
             waypoints=waypoints,
             use_currents=self.use_currents.isChecked(),
-            auto_download=self.use_currents.isChecked()
-            and self.auto_currents.isChecked(),
+            auto_download=self.use_currents.isChecked(),
             tws_max_kn=(
                 self.maximum_wind.value() if self.limit_wind.isChecked() else None
             ),
@@ -588,7 +578,6 @@ class RoutingPanel(QWidget):
             self.use_currents,
         ):
             control.setEnabled(not busy)
-        self.auto_currents.setEnabled(not busy and self.use_currents.isChecked())
         for enabled, values in self.comparison_axes.values():
             enabled.setEnabled(not busy)
             values.setEnabled(not busy and enabled.isChecked())

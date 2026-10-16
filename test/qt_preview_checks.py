@@ -3768,7 +3768,6 @@ class QtPreviewChecks(unittest.TestCase):
         self.controller.core.grib_manager.gribs = [CurrentWind()]
         panel = self.window.routing_panel
         panel.use_currents.setChecked(True)
-        panel.auto_currents.setChecked(False)
         panel.coastlines.setChecked(False)
         panel.departure.setDateTime(QDateTime(START.astimezone().replace(tzinfo=None)))
         panel.set_location("start", (0, 0))
@@ -3795,14 +3794,15 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(route.points[-1][3], 270)
         self.assertIn("currents included", panel.status.text())
 
-    def test_routing_blocked_preflight_has_cancel_only_and_close_dismisses_dialog(self):
+    def test_routing_missing_coverage_offers_run_anyway_and_close_dismisses_dialog(
+        self,
+    ):
         from test.test_routingoptions import CurrentWind
         from PySide6.QtCore import QTimer
 
         self.controller.core.grib_manager.gribs = [CurrentWind()]
         panel = self.window.routing_panel
         panel.use_currents.setChecked(True)
-        panel.auto_currents.setChecked(False)
         panel.coastlines.setChecked(False)
         panel.set_location("start", (0, 0))
         panel.set_location("destination", (0, 0.005))
@@ -3821,7 +3821,7 @@ class QtPreviewChecks(unittest.TestCase):
         QTimer.singleShot(5, close_dialog)
         panel.calculate.click()
         self.wait_for_route()
-        self.assertEqual(observed, [["Cancel routing"]])
+        self.assertEqual(observed, [["Run anyway", "Cancel routing"]])
         self.assertFalse(self.controller.core.routingManager.elements)
         self.assertIsNone(panel.preflight_dialog)
         self.assertEqual(panel.status.text(), "Routing cancelled")
@@ -3853,7 +3853,7 @@ class QtPreviewChecks(unittest.TestCase):
         current = current_field()
         panel = self.window.routing_panel
         panel.use_currents.setChecked(True)
-        self.assertTrue(panel.auto_currents.isChecked())
+        self.assertTrue(panel.use_currents.isChecked())
         self.assertFalse(self.controller.core.grib_manager.gribs)
         commits = []
         old_add = self.controller.core.marine_manager.fields.add
@@ -3934,15 +3934,13 @@ class QtPreviewChecks(unittest.TestCase):
         enabled.setChecked(True)
         values.setText("90, 100")
         panel.use_currents.setChecked(True)
-        panel.auto_currents.setChecked(False)
         self.window.workspace.save()
         payload = self.window.workspace.store.load()["routing"]["options"]
         self.assertTrue(payload["use_currents"])
-        self.assertFalse(payload["auto_currents"])
+        self.assertNotIn("auto_currents", payload)
         self.restart_workspace()
         panel = self.window.routing_panel
         self.assertTrue(panel.use_currents.isChecked())
-        self.assertFalse(panel.auto_currents.isChecked())
         self.assertFalse(self.controller.routing.busy)
         self.assertFalse(self.controller.core.routingManager.elements)
         self.assertEqual(

@@ -107,15 +107,10 @@ class RoutingWizardDialog:
             "Include ocean and tidal currents in routing."
         )
         self.use_currents.set_active(False)
-        marine.pack_start(self.use_currents, False, False, 0)
-        self.auto_currents = Gtk.CheckButton(label="Download data automatically")
-        self.auto_currents.set_tooltip_text(
-            "Use the latest GFS wind run and download missing wind and current coverage."
-        )
-        self.auto_currents.set_active(True)
-        self.auto_currents.set_sensitive(False)
         self.use_currents.connect("toggled", self._on_currents_toggled)
-        marine.pack_start(self.auto_currents, False, False, 0)
+        marine.pack_start(self.use_currents, False, False, 0)
+        # Downloads are automatic when currents are enabled; missing wind and
+        # current coverage is fetched during routing.
         notebook.append_page(marine, icon_label("Currents", TIDES_CURRENTS_ICON))
 
         self.dialog.show_all()
@@ -246,7 +241,7 @@ class RoutingWizardDialog:
         return self.use_currents.get_active()
 
     def get_auto_currents(self):
-        return self.use_currents.get_active() and self.auto_currents.get_active()
+        return self.use_currents.get_active()
 
     def get_start_datetime(self):
         return datetime.datetime.strptime(
@@ -269,7 +264,6 @@ class RoutingWizardDialog:
         ]["class"]
 
     def _on_currents_toggled(self, button):
-        self.auto_currents.set_sensitive(button.get_active())
         store = self.builder.get_object("routing-store")
         store.clear()
         if button.get_active():
