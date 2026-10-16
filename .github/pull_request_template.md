@@ -15,12 +15,8 @@ results and fidelity/parity checks.
 
 - Base branch and prerequisites:
 - Merge order or retargeting needed:
-- Intended upstream scope or reason this is fork-only:
-- Contribution tracking: update the relevant entry in `UPSTREAM.md`.
 
-This PR is for review in our fork. Merging requires user approval; opening or
-merging it does not authorize an upstream submission. Continue local development
-while upstream contributions are prepared or reviewed separately.
+This PR is for review in our fork. Merging requires user approval.
 
 ## AI assistance
 

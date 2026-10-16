@@ -596,8 +596,6 @@ QT_QPA_PLATFORM=offscreen QT_STYLE_OVERRIDE=Fusion \
   .venv/bin/python -m unittest test.qt_preview_checks -v
 ```
 
-See `UPSTREAM.md` for full-suite results and known baseline lint/type failures.
-
 Workspace parity checks additionally cover the primary Polars table/full-circle
 chart, contextual toolbars, shared performance basis/bands, Logs map/plot layout
 and absolute/relative wind switches, local-time tick labels, playback retention,
