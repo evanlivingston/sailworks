@@ -91,6 +91,7 @@ class DataLibrary(QDialog):
         self.mutations = []
         self._forecasts()
         self._charts()
+        self._marine()
         self.progress = QProgressBar()
         layout.addWidget(self.progress)
         self.status = QLabel()
@@ -214,6 +215,33 @@ class DataLibrary(QDialog):
         layout.addWidget(self.available_charts, 2)
         self.tabs.addTab(page, "Charts")
 
+    def _marine(self):
+        from .marinelibrary import MarineLibraryTab
+
+        canvas = getattr(self.parent(), "map", None)
+        if canvas is None:
+            canvas = next(iter(self.controller.charts.maps), None)
+        self.marine = MarineLibraryTab(
+            self.controller, canvas, self._show_marine_settings, self
+        )
+        self.marine.jobs.changed.connect(self.refresh_buttons)
+        self.tabs.addTab(self.marine, "Tides & Currents")
+
+    def _show_marine_settings(self, kind):
+        callback = getattr(self.parent(), "show_marine_settings", None)
+        if callable(callback):
+            callback(kind)
+
+    def show_marine(self, kind):
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self.tabs.setCurrentWidget(self.marine)
+        self.marine.set_kind(kind)
+
+    def dispose_marine(self):
+        self.marine.dispose()
+
     def use_map_center(self):
         if self.controller.charts.maps:
             canvas = self.controller.charts.maps[0]
@@ -285,6 +313,7 @@ class DataLibrary(QDialog):
             self.data.task.busy
             or self.controller.routing.busy
             or self.controller.polars.task.busy
+            or self.marine.jobs.busy
         )
         for button in self.mutations:
             button.setEnabled(not blocked)
@@ -301,6 +330,7 @@ class DataLibrary(QDialog):
         # Base charts are managed by the installation, not the imported library.
         imported = chart is not None and self.imported_chart(chart)
         self.remove_chart_button.setEnabled(not blocked and imported)
+        self.marine.refresh_buttons(blocked)
 
     def imported_chart(self, chart):
         return any(

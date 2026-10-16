@@ -400,7 +400,13 @@ class PreviewWindow(QMainWindow):
         self.marine_panels = {}
         self.marine_docks = {}
         for kind, title in (("currents", "Currents"), ("tides", "Tides")):
-            panel = MarinePanel(controller, self.map, kind, self.show_marine_settings)
+            panel = MarinePanel(
+                controller,
+                self.map,
+                kind,
+                self.show_marine_settings,
+                self.show_marine_library,
+            )
             dock = self._dock(title, kind, panel)
             self.marine_panels[kind], self.marine_docks[kind] = panel, dock
             self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
@@ -699,12 +705,19 @@ class PreviewWindow(QMainWindow):
             self.marine_settings = MarineSettings(self.controller, self)
         self.marine_settings.select_tab(tab)
 
+    def show_marine_library(self, kind):
+        self._ensure_library()
+        assert self.library_dialog is not None
+        self.library_dialog.show_marine(kind)
+
     def dispose_marine(self):
         self.marine_syncing = True
         if self.settings_dialog is not None:
             self.settings_dialog.currents.dispose()
         for panel in self.marine_panels.values():
             panel.dispose()
+        if self.library_dialog is not None:
+            self.library_dialog.dispose_marine()
         if self.marine_settings is not None:
             self.marine_settings.dispose()
 

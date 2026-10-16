@@ -144,6 +144,7 @@ class RouteRequest:
     polar_efficiency: float = 1.0
     use_currents: bool = False
     auto_download: bool = False
+    current_priority: str = "finest"
     wind_speed_pct: float = 0
     wind_dir_offset: float = 0
     tws_max_kn: Optional[float] = None
@@ -283,8 +284,10 @@ def prepare_selected_wind(request, routing, wind, cancel, report, save_gribs):
 
 def create_requested_routing(core, request, providers, wind, current_selection):
     from gweatherrouting.core.safetypolicy import SafetyPolicy
+    from gweatherrouting.core.marine.fields import normalize_priority
 
     wind.check_cancelled()
+    priority = normalize_priority(getattr(request, "current_priority", "finest"))
     safety_policy = SafetyPolicy(
         tws_max_kn=request.tws_max_kn,
         min_sailing_speed_kn=request.min_sailing_speed_kn,
@@ -316,6 +319,7 @@ def create_requested_routing(core, request, providers, wind, current_selection):
             use_currents=True,
             wind_sources=wind.manager,
             current_selection=current_selection,
+            current_priority=priority,
         )
         # FrozenRoutingWind applies scenario modifiers to its own newest-run selection.
         options["grib_override"] = (

@@ -3196,8 +3196,11 @@ class QtPreviewChecks(unittest.TestCase):
         manager.fields.add(other)
         self.drain()
         panel = self.window.marine_panels["currents"]
+        self.window._ensure_library()
+        self.drain()
+        sources = self.window.library_dialog.marine.currents
         self.assertIn("Current data available", panel.coverage.text())
-        root = panel.sources.tree.topLevelItem(0)
+        root = sources.tree.topLevelItem(0)
         self.assertEqual(root.childCount(), 2)
         from shiboken6 import isValid
 
@@ -3207,21 +3210,21 @@ class QtPreviewChecks(unittest.TestCase):
             isValid(child)
         )  # The checkbox's native signal is still returning.
         self.drain()
-        root = panel.sources.tree.topLevelItem(0)
+        root = sources.tree.topLevelItem(0)
         self.assertEqual(root.checkState(0), Qt.CheckState.PartiallyChecked)
         self.assertEqual(len(manager.fields.snapshot().fields), 1)
         root.setCheckState(0, Qt.CheckState.Unchecked)
         self.drain()
         self.assertFalse(manager.fields.snapshot().fields)
         self.assertIsNone(self.window.timeline.bounds)
-        panel.sources.tree.topLevelItem(0).setCheckState(0, Qt.CheckState.Checked)
+        sources.tree.topLevelItem(0).setCheckState(0, Qt.CheckState.Checked)
         self.drain()
         self.controller.time_control.increase(hours=2)
         self.assertIn("Outside the loaded forecast times", panel.coverage.text())
-        root = panel.sources.tree.topLevelItem(0)
+        root = sources.tree.topLevelItem(0)
         identifier = root.child(0).data(0, Qt.ItemDataRole.UserRole)
-        panel.sources.tree.setCurrentItem(root.child(0))
-        panel.sources.remove.click()
+        sources.tree.setCurrentItem(root.child(0))
+        sources.remove.click()
         self.drain()
         self.assertNotIn(identifier, manager.fields.fields)
         self.assertEqual(len(manager.fields.fields), 1)
@@ -3234,14 +3237,17 @@ class QtPreviewChecks(unittest.TestCase):
         manager.fields.add(current)
         self.drain()
         panel = self.window.marine_panels["tides"]
-        self.assertEqual(panel.sources.item(0, 2).text(), "2.50 m")
+        self.window._ensure_library()
+        self.drain()
+        tides = self.window.library_dialog.marine.tides
+        self.assertEqual(tides.item(0, 2).text(), "2.50 m")
         self.assertIn("1 of 1", panel.coverage.text())
         panel.toggle.setChecked(False)
         self.assertFalse(self.window.map.marine.tides_visible)
         self.assertTrue(self.window.map.marine.currents_visible)
         self.assertTrue(manager.is_enabled(tide.id))
         panel.toggle.setChecked(True)
-        panel.sources.item(0, 0).setCheckState(Qt.CheckState.Unchecked)
+        tides.item(0, 0).setCheckState(Qt.CheckState.Unchecked)
         self.drain()
         self.assertFalse(manager.is_enabled(tide.id))
         self.window.show_marine_settings("tides")
@@ -3280,15 +3286,17 @@ class QtPreviewChecks(unittest.TestCase):
         dialog.sources.selectRow(0)
         dialog.remove.click()
         self.drain()
-        self.assertEqual(panel.sources.rowCount(), 0)
+        self.assertEqual(tides.rowCount(), 0)
 
     def test_marine_current_download_freezes_request_and_commits_on_ui_thread(self):
         current, _ = self.marine_fixture()
         manager = self.controller.core.marine_manager
-        panel = self.window.marine_panels["currents"]
-        panel.hours.setValue(3)
-        request = panel.target.area()
-        instant = panel.start.instant()
+        self.window._ensure_library()
+        self.drain()
+        marine = self.window.library_dialog.marine
+        marine.hours["currents"].setValue(3)
+        request = marine.targets["currents"].area()
+        instant = marine.starts["currents"].instant()
         departure = self.window.routing_panel.departure.dateTime()
         started, release = Event(), Event()
         self.addCleanup(release.set)
@@ -3314,10 +3322,10 @@ class QtPreviewChecks(unittest.TestCase):
             ) as operation,
             patch.object(manager.fields, "add", side_effect=add),
         ):
-            panel.download.click()
+            marine.downloads["currents"].click()
             self.wait_for_marine(started.is_set)
-            self.assertFalse(panel.download.isEnabled())
-            self.assertTrue(panel.jobs.busy)
+            self.assertFalse(marine.downloads["currents"].isEnabled())
+            self.assertTrue(marine.jobs.busy)
             (
                 self.window.map._center_lat,
                 self.window.map._center_lon,
@@ -3326,11 +3334,11 @@ class QtPreviewChecks(unittest.TestCase):
             self.window.map.queue_draw()
             self.controller.time_control.increase(hours=4)
             release.set()
-            self.wait_for_marine(lambda: not panel.jobs.busy)
+            self.wait_for_marine(lambda: not marine.jobs.busy)
             operation.assert_called_once()
         self.assertEqual(commits, [get_ident()])
         self.assertIn(current.id, manager.fields.fields)
-        self.assertIn("Second provider unavailable", panel.status.text())
+        self.assertIn("Second provider unavailable", marine.status.text())
         self.assertFalse(self.controller.session.recording)
         self.assertEqual(departure, self.window.routing_panel.departure.dateTime())
 
@@ -3338,6 +3346,9 @@ class QtPreviewChecks(unittest.TestCase):
         current, _ = self.marine_fixture()
         panel = self.window.marine_panels["currents"]
         manager = self.controller.core.marine_manager
+        self.window._ensure_library()
+        self.drain()
+        marine = self.window.library_dialog.marine
         for close in (False, True):
             started, release, returned = Event(), Event(), Event()
             self.addCleanup(release.set)
@@ -3352,40 +3363,48 @@ class QtPreviewChecks(unittest.TestCase):
             with patch.object(
                 manager.coverage_planner, "download", side_effect=download
             ):
-                panel.download.click()
+                marine.downloads["currents"].click()
                 self.wait_for_marine(started.is_set)
                 if close:
                     self.window.close()
                 else:
-                    panel.cancel.click()
+                    marine.cancel.click()
                 release.set()
                 self.wait_for_marine(returned.is_set)
                 if not close:
-                    self.wait_for_marine(lambda: not panel.jobs.busy)
-                    self.assertIn("Cancelled", panel.status.text())
+                    self.wait_for_marine(lambda: not marine.jobs.busy)
+                    self.assertIn("Cancelled", marine.status.text())
                 self.assertNotIn(current.id, manager.fields.fields)
-        self.assertTrue(panel.closed)
-        self.assertTrue(panel.jobs.closed)
-        self.assertFalse(panel.timer.isActive())
+        self.assertTrue(marine.closed)
+        self.assertTrue(marine.jobs.closed)
+        self.assertFalse(marine.timer.isActive())
         self.assertFalse(self.window.map.marine._renderer._states)
-        self.assertNotIn(panel.sources_changed, manager.handlers["changed"])
+        self.assertNotIn(marine.sources_changed, manager.handlers["changed"])
+        self.assertNotIn(marine.sources_changed, manager.fields.handlers["changed"])
 
     def test_marine_tide_route_download_across_date_line_and_saved_reuse(self):
         from dataclasses import replace
         from unittest.mock import Mock
 
         _, tide = self.marine_fixture()
-        panel = self.window.marine_panels["tides"]
+        self.window._ensure_library()
+        self.drain()
+        marine = self.window.library_dialog.marine
+        target, hours, start = (
+            marine.targets["tides"],
+            marine.hours["tides"],
+            marine.starts["tides"],
+        )
         station = replace(tide.station, latitude=10, longitude=179.9)
         tide = replace(tide, station=station)
         far = replace(station, id="example:far", longitude=0)
         points = [(10, 179.8), (10, -179.8)]
         route = SimpleNamespace(name="Date line route", to_list=lambda: list(points))
-        panel.target.core = SimpleNamespace(trackManager=[route], routingManager=[])
-        panel.target.refresh()
-        panel.target.setCurrentIndex(1)
-        panel.hours.setValue(1)
-        panel.provider = Mock()
+        target.core = SimpleNamespace(trackManager=[route], routingManager=[])
+        target.refresh()
+        target.setCurrentIndex(1)
+        hours.setValue(1)
+        marine.provider = Mock()
         started, release = Event(), Event()
         self.addCleanup(release.set)
 
@@ -3394,20 +3413,20 @@ class QtPreviewChecks(unittest.TestCase):
             release.wait(5)
             return station, far
 
-        panel.provider.discover.side_effect = discover
-        panel.provider.download.return_value = tide
-        panel.download.click()
+        marine.provider.discover.side_effect = discover
+        marine.provider.download.return_value = tide
+        marine.downloads["tides"].click()
         self.wait_for_marine(started.is_set)
         points[:] = [(0, 0)]
         release.set()
-        self.wait_for_marine(lambda: not panel.jobs.busy)
-        panel.provider.download.assert_called_once()
-        self.assertEqual(panel.provider.download.call_args.args[0], station)
-        self.assertTrue(panel.manager.is_enabled(tide.id))
-        self.assertEqual(panel.target.currentIndex(), 1)
+        self.wait_for_marine(lambda: not marine.jobs.busy)
+        marine.provider.download.assert_called_once()
+        self.assertEqual(marine.provider.download.call_args.args[0], station)
+        self.assertTrue(marine.manager.is_enabled(tide.id))
+        self.assertEqual(target.currentIndex(), 1)
         # Reuse a saved interval whose actual samples cover the request.
-        panel.hours.setValue(1)
-        panel.start.set_time(tide.requested_start)
+        hours.setValue(1)
+        start.set_time(tide.requested_start)
         points[:] = [(10, 179.8), (10, -179.8)]
         # The fixture covers 15 minutes, so use an explicit coherent hour window.
         from gweatherrouting.core.marine.models import Series, Sample
@@ -3430,14 +3449,14 @@ class QtPreviewChecks(unittest.TestCase):
                 ),
             ),
         )
-        panel.manager.add(tide)
-        panel.manager.enable(tide.id, False)
-        panel.provider.download.reset_mock()
-        panel.download.click()
-        self.wait_for_marine(lambda: not panel.jobs.busy)
-        panel.provider.download.assert_not_called()
-        self.assertTrue(panel.manager.is_enabled(tide.id))
-        self.assertIn("reused 1", panel.status.text())
+        marine.manager.add(tide)
+        marine.manager.enable(tide.id, False)
+        marine.provider.download.reset_mock()
+        marine.downloads["tides"].click()
+        self.wait_for_marine(lambda: not marine.jobs.busy)
+        marine.provider.download.assert_not_called()
+        self.assertTrue(marine.manager.is_enabled(tide.id))
+        self.assertIn("reused 1", marine.status.text())
 
     def test_marine_panel_preferences_and_download_start_survive_view_switch(self):
         from datetime import timedelta
@@ -3445,17 +3464,9 @@ class QtPreviewChecks(unittest.TestCase):
         current, _ = self.marine_fixture()
         self.controller.core.marine_manager.fields.add(current)
         panel = self.window.marine_panels["currents"]
-        instant = panel.start.instant()
-        self.controller.time_control.increase(hours=1)
-        self.assertEqual(panel.start.instant(), instant + timedelta(hours=1))
-        panel.start.edited()
-        self.controller.time_control.increase(hours=1)
-        self.assertEqual(panel.start.instant(), instant + timedelta(hours=1))
         self.window.marine_action.trigger()
         self.drain()
-        self.assertFalse(
-            self.window.marine_panels["currents"].visibleRegion().isEmpty()
-        )
+        self.assertFalse(self.window.marine_docks["currents"].isHidden())
         self.assertTrue(self.window.marine_open["currents"])
         self.assertTrue(self.window.marine_open["tides"])
         panel.toggle.setChecked(False)
@@ -3474,12 +3485,26 @@ class QtPreviewChecks(unittest.TestCase):
         )
         self.restart_workspace()
         self.assertFalse(self.window.marine_panels["currents"].toggle.isChecked())
-        self.assertFalse(self.window.marine_panels["currents"].jobs.busy)
         self.window.views.setCurrentWidget(self.window.map)
         self.assertFalse(self.window.marine_docks["currents"].isHidden())
         self.window.views.setCurrentWidget(self.window.logs_view)
         self.window.reset_panels()
         self.assertFalse(any(self.window.marine_open.values()))
+        self.window.views.setCurrentWidget(self.window.map)
+        self.window._ensure_library()
+        self.drain()
+        marine = self.window.library_dialog.marine
+        self.assertFalse(marine.jobs.busy)
+        instant = marine.starts["currents"].instant()
+        self.controller.time_control.increase(hours=1)
+        self.assertEqual(
+            marine.starts["currents"].instant(), instant + timedelta(hours=1)
+        )
+        marine.starts["currents"].edited()
+        self.controller.time_control.increase(hours=1)
+        self.assertEqual(
+            marine.starts["currents"].instant(), instant + timedelta(hours=1)
+        )
 
     def test_marine_overlay_uses_shared_worker_and_cursor_values(self):
         import cairo
@@ -3768,7 +3793,6 @@ class QtPreviewChecks(unittest.TestCase):
         self.controller.core.grib_manager.gribs = [CurrentWind()]
         panel = self.window.routing_panel
         panel.use_currents.setChecked(True)
-        panel.auto_currents.setChecked(False)
         panel.coastlines.setChecked(False)
         panel.departure.setDateTime(QDateTime(START.astimezone().replace(tzinfo=None)))
         panel.set_location("start", (0, 0))
@@ -3795,14 +3819,15 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(route.points[-1][3], 270)
         self.assertIn("currents included", panel.status.text())
 
-    def test_routing_blocked_preflight_has_cancel_only_and_close_dismisses_dialog(self):
+    def test_routing_missing_coverage_offers_run_anyway_and_close_dismisses_dialog(
+        self,
+    ):
         from test.test_routingoptions import CurrentWind
         from PySide6.QtCore import QTimer
 
         self.controller.core.grib_manager.gribs = [CurrentWind()]
         panel = self.window.routing_panel
         panel.use_currents.setChecked(True)
-        panel.auto_currents.setChecked(False)
         panel.coastlines.setChecked(False)
         panel.set_location("start", (0, 0))
         panel.set_location("destination", (0, 0.005))
@@ -3821,7 +3846,7 @@ class QtPreviewChecks(unittest.TestCase):
         QTimer.singleShot(5, close_dialog)
         panel.calculate.click()
         self.wait_for_route()
-        self.assertEqual(observed, [["Cancel routing"]])
+        self.assertEqual(observed, [["Run anyway", "Cancel routing"]])
         self.assertFalse(self.controller.core.routingManager.elements)
         self.assertIsNone(panel.preflight_dialog)
         self.assertEqual(panel.status.text(), "Routing cancelled")
@@ -3845,6 +3870,42 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(observed, [True])
         self.assertFalse(self.controller.core.routingManager.elements)
 
+    def test_routing_current_priority_defaults_finest_persists_and_reaches_request(
+        self,
+    ):
+        from gweatherrouting.core.routingjob import CalculatedRoute
+
+        self.plan_test_waypoints()
+        panel = self.window.routing_panel
+        self.assertEqual(panel.current_priority.currentData(), "finest")
+        self.window.workspace.save()
+        payload = self.window.workspace.store.load()["routing"]["options"]
+        self.assertEqual(payload["current_priority"], "finest")
+        panel.use_currents.setChecked(True)
+        panel.current_priority.setCurrentIndex(
+            panel.current_priority.findData("newest")
+        )
+        seen = []
+
+        def calculate(core, request, sources, providers, cancel, progress, **callbacks):
+            seen.append(request.current_priority)
+            return CalculatedRoute(((0, 0, "2026-10-01", 0, 1, 1, 0),), (), {})
+
+        with patch(
+            "gweatherrouting.qt.routingcontroller.calculate_route",
+            side_effect=calculate,
+        ):
+            panel.calculate.click()
+            self.wait_for_route()
+        self.assertEqual(seen, ["newest"])
+        self.window.workspace.save()
+        payload = self.window.workspace.store.load()["routing"]["options"]
+        self.assertEqual(payload["current_priority"], "newest")
+        self.restart_workspace()
+        self.assertEqual(
+            self.window.routing_panel.current_priority.currentData(), "newest"
+        )
+
     def test_routing_automatic_download_callbacks_commit_on_ui_thread(self):
         self.plan_test_waypoints()
         from test.test_current_routing import current_field
@@ -3853,7 +3914,7 @@ class QtPreviewChecks(unittest.TestCase):
         current = current_field()
         panel = self.window.routing_panel
         panel.use_currents.setChecked(True)
-        self.assertTrue(panel.auto_currents.isChecked())
+        self.assertTrue(panel.use_currents.isChecked())
         self.assertFalse(self.controller.core.grib_manager.gribs)
         commits = []
         old_add = self.controller.core.marine_manager.fields.add
@@ -3934,15 +3995,13 @@ class QtPreviewChecks(unittest.TestCase):
         enabled.setChecked(True)
         values.setText("90, 100")
         panel.use_currents.setChecked(True)
-        panel.auto_currents.setChecked(False)
         self.window.workspace.save()
         payload = self.window.workspace.store.load()["routing"]["options"]
         self.assertTrue(payload["use_currents"])
-        self.assertFalse(payload["auto_currents"])
+        self.assertNotIn("auto_currents", payload)
         self.restart_workspace()
         panel = self.window.routing_panel
         self.assertTrue(panel.use_currents.isChecked())
-        self.assertFalse(panel.auto_currents.isChecked())
         self.assertFalse(self.controller.routing.busy)
         self.assertFalse(self.controller.core.routingManager.elements)
         self.assertEqual(

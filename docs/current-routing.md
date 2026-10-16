@@ -105,9 +105,9 @@ is course over ground; sampled heading and speed through water are in provenance
 
 The wind adapter retains the application's existing spatial GRIB sampling, but
 uses fractional forecast hours and rejects queries outside the available forecast
-hours. Its source list is frozen for the run. Current source ordering is finest
-resolution, then newest run, with fallback to the next valid selected field and
-without blending. Existing current selections stay
+hours. Its source list is frozen for the run. Current source ordering defaults to finest resolution, then newest run, with
+fallback to the next valid selected field and without blending; the routing
+panel's Advanced tab offers newest-run-first instead for offshore work. Existing current selections stay
 frozen; recovery downloads may extend them. The legacy router's numerical
 parameters are hidden while current-aware mode is selected.
 Wind lookups read bounded, cached raster windows instead of filtering an entire

@@ -88,7 +88,9 @@ class RoutingController(QObject):
             self.session_controller.charts.get_line_point_validity_providers()
         )
         selection = (
-            self.core.marine_manager.fields.snapshot() if request.use_currents else None
+            self.core.marine_manager.fields.snapshot(request.current_priority)
+            if request.use_currents
+            else None
         )
         self.changed.emit()
         self.preview_changed.emit(())

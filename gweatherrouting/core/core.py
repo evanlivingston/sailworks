@@ -329,6 +329,7 @@ class Core(EventDispatcher):
         use_currents=False,
         wind_sources=None,
         current_selection=None,
+        current_priority="finest",
         safety_policy=None,
     ):
         polar = weatherrouting.Polar(polar_file)
@@ -378,7 +379,7 @@ class Core(EventDispatcher):
                 (
                     current_selection
                     if current_selection is not None
-                    else self.marine_manager.fields.snapshot()
+                    else self.marine_manager.fields.snapshot(current_priority)
                 ),
             )
             algorithm = partial(CurrentIsoRouter, environment=environment)

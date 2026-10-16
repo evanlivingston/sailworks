@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QScrollArea,
     QFrame,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -280,20 +281,54 @@ class RoutingPanel(QWidget):
         currents = QVBoxLayout(currents_page)
         self.use_currents = QCheckBox("Include currents")
         self.use_currents.setToolTip("Include ocean and tidal currents in routing.")
-        self.auto_currents = QCheckBox("Download data automatically")
-        self.auto_currents.setToolTip(
-            "Download missing current coverage. Wind uses the models selected in Forecasts."
-        )
-        self.auto_currents.setChecked(True)
-        self.auto_currents.setEnabled(False)
         self.use_currents.toggled.connect(self._currents_toggled)
-        self.auto_currents.toggled.connect(lambda *_: self.options_changed.emit())
         currents.addWidget(self.use_currents)
-        currents.addWidget(self.auto_currents)
+        note = QLabel("Missing wind and current coverage downloads automatically.")
+        note.setWordWrap(True)
+        currents.addWidget(note)
         currents.addStretch()
         self.pages.addTab(self._scroll_page(currents_page), "Currents")
+        advanced_page = QWidget()
+        advanced = QVBoxLayout(advanced_page)
+        advanced.addWidget(section_label("Currents"))
+        priority_row = QHBoxLayout()
+        priority_row.addWidget(QLabel("Overlapping models"))
+        self.current_priority = QComboBox()
+        self.current_priority.addItem("Finest detail", "finest")
+        self.current_priority.addItem("Newest run", "newest")
+        self.current_priority.setToolTip(
+            "Which current model serves overlapping coverage."
+        )
+        self.current_priority.currentIndexChanged.connect(
+            lambda *_: self.options_changed.emit()
+        )
+        priority_row.addWidget(self.current_priority, 1)
+        self.priority_info = QToolButton()
+        self.priority_info.setText("ⓘ")
+        self.priority_info.setToolTip("Why this matters")
+        self.priority_info.clicked.connect(self._explain_priority)
+        priority_row.addWidget(self.priority_info)
+        advanced.addLayout(priority_row)
+        advanced.addStretch()
+        self.pages.addTab(self._scroll_page(advanced_page), "Advanced")
         self.wind_algorithm_name = self.algorithm.currentText()
         self.preflight_dialog = None
+
+    @staticmethod
+    def _explain_priority():
+        QMessageBox.information(
+            None,
+            "Overlapping current models",
+            "Finest detail (default): where models overlap, the finest grid "
+            "serves — a 500 m regional forecast beats a 9 km global one. "
+            "Coastal currents follow shoreline and depth, so finer usually "
+            "matters more than fresher inshore.\n\n"
+            "Newest run: the latest model run serves everywhere, even where "
+            "a finer older run has valid data. Better offshore, where flow "
+            "is broad and freshness wins.\n\n"
+            "Downloads always fetch the newest run of each model; this only "
+            "decides ties between data already on disk.",
+        )
 
     def _currents_toggled(self, enabled):
         if enabled:
@@ -317,7 +352,6 @@ class RoutingPanel(QWidget):
                 max(0, self.algorithm.findText(self.wind_algorithm_name))
             )
         self.algorithm.blockSignals(False)
-        self.auto_currents.setEnabled(enabled and not self.routing.busy)
         self._algorithm_changed()
         self.options_changed.emit()
 
@@ -325,7 +359,7 @@ class RoutingPanel(QWidget):
         dialog = QMessageBox(
             QMessageBox.Icon.Warning,
             "Current data needed" if report.blocked else "Check current coverage",
-            report.describe(self.auto_currents.isChecked()),
+            report.describe(True),
             QMessageBox.StandardButton.NoButton,
             self,
         )
@@ -354,7 +388,7 @@ class RoutingPanel(QWidget):
         return dict(
             parameters=cache,
             use_currents=self.use_currents.isChecked(),
-            auto_currents=self.auto_currents.isChecked(),
+            current_priority=self.current_priority.currentData(),
             safety={
                 key: (
                     getattr(self, key).isChecked()
@@ -393,8 +427,10 @@ class RoutingPanel(QWidget):
         # Preserve the validated cache while replacing the initially displayed defaults.
         self.parameter_name = ""
         self.use_currents.setChecked(saved.get("use_currents") is True)
-        if isinstance(saved.get("auto_currents"), bool):
-            self.auto_currents.setChecked(saved["auto_currents"])
+        priority = saved.get("current_priority")
+        self.current_priority.setCurrentIndex(
+            max(0, self.current_priority.findData(priority))
+        )
         self._algorithm_changed()
         safety = mapping(saved.get("safety"))
         for key in (
@@ -555,8 +591,8 @@ class RoutingPanel(QWidget):
             parameters=tuple(self._read_parameters().items()),
             waypoints=waypoints,
             use_currents=self.use_currents.isChecked(),
-            auto_download=self.use_currents.isChecked()
-            and self.auto_currents.isChecked(),
+            auto_download=self.use_currents.isChecked(),
+            current_priority=self.current_priority.currentData(),
             tws_max_kn=(
                 self.maximum_wind.value() if self.limit_wind.isChecked() else None
             ),
@@ -586,9 +622,9 @@ class RoutingPanel(QWidget):
             *self.inputs,
             *self.parameter_widgets.values(),
             self.use_currents,
+            self.current_priority,
         ):
             control.setEnabled(not busy)
-        self.auto_currents.setEnabled(not busy and self.use_currents.isChecked())
         for enabled, values in self.comparison_axes.values():
             enabled.setEnabled(not busy)
             values.setEnabled(not busy and enabled.isChecked())

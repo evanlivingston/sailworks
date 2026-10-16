@@ -17,6 +17,26 @@ from gweatherrouting.core.utils import EventDispatcher
 from .manager import atomic_json
 from .models import QueryResult, canonical_json, utc_time
 
+PRIORITIES = ("finest", "newest")
+
+
+def normalize_priority(value):
+    """Unknown values fall back to finest-detail-first sampling."""
+    return value if value in PRIORITIES else "finest"
+
+
+def field_sort_key(priority):
+    """Order overlapping fields: finest grid first, or newest run first."""
+    if normalize_priority(priority) == "newest":
+        return lambda f: (
+            -utc_time(f.manifest()["run"] or f.manifest()["retrieved_at"]).timestamp(),
+            f.manifest()["resolution_m"],
+        )
+    return lambda f: (
+        f.manifest()["resolution_m"],
+        -utc_time(f.manifest()["run"] or f.manifest()["retrieved_at"]).timestamp(),
+    )
+
 
 @dataclass(frozen=True)
 class Area:
@@ -401,10 +421,13 @@ class CurrentSamples:
 
 
 class FieldSelection:
-    def __init__(self, fields, neighbor_valid=None, neighbor_valid_many=None):
+    def __init__(
+        self, fields, neighbor_valid=None, neighbor_valid_many=None, priority="finest"
+    ):
         self.fields = tuple(fields)
         self.neighbor_valid = neighbor_valid
         self.neighbor_valid_many = neighbor_valid_many
+        self.priority = normalize_priority(priority)
         self.used = set()
         self.missing = {}
 
@@ -536,8 +559,12 @@ class FieldSelection:
         return dict(
             schema_version=1,
             selection_policy=(
-                "finest resolution, newest run; "
-                "fallback to valid selected fields; no blending"
+                (
+                    "newest run, finest resolution; "
+                    if self.priority == "newest"
+                    else "finest resolution, newest run; "
+                )
+                + "fallback to valid selected fields; no blending"
                 + (
                     "; bounded nearest wet corner with shoreline checks"
                     if self.neighbor_valid is not None
@@ -632,15 +659,12 @@ class FieldStore(EventDispatcher):
         )
         self.dispatch("changed", None)
 
-    def snapshot(self):
+    def snapshot(self, priority="finest"):
+        priority = normalize_priority(priority)
         return FieldSelection(
             sorted(
                 (f for f in self.fields.values() if f.id not in self.excluded),
-                key=lambda f: (
-                    f.manifest()["resolution_m"],
-                    -utc_time(
-                        f.manifest()["run"] or f.manifest()["retrieved_at"]
-                    ).timestamp(),
-                ),
-            )
+                key=field_sort_key(priority),
+            ),
+            priority=priority,
         )
