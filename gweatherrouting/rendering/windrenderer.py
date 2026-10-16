@@ -131,6 +131,7 @@ class WindOverlayRenderer(OverlayRenderer):
 
     def __init__(self, painter, schedule=schedule_idle):
         super().__init__(schedule)
+        self._last_content = {}
         self._painter = painter
         self._gribs = OrderedDict()
         self._leased_providers = {}
@@ -163,6 +164,7 @@ class WindOverlayRenderer(OverlayRenderer):
             self.cache_state = self._cache_snapshot()
 
     def forget(self, canvas):
+        self._last_content.pop(canvas, None)
         super().forget(canvas)
         self._release_if_idle()
 
@@ -191,6 +193,36 @@ class WindOverlayRenderer(OverlayRenderer):
                 and self._can_complete(job, key)
             )
         return super()._keep_active(job, canvas, key)
+
+    def prefetch_at(self, canvas, latitude, longitude):
+        """Queue one speculative frame at an explicit center.
+
+        The caller owns pixel geometry: pass the same center a pan would
+        produce so arrival matches exactly regardless of padding conventions.
+        """
+        content = self._last_content.get(canvas)
+        if content is None:
+            return False
+        charts, palette, factor = content
+        from gweatherrouting.core.mapviewport import MapViewport
+        from gweatherrouting.rendering.overlayrenderer import MARGIN
+
+        # Capture through the same padded-build path as visible draws: the
+        # transient render padding changes viewport dimensions, and promotion
+        # requires an exact size match on arrival.
+        holder = {}
+
+        def capture():
+            viewport = MapViewport(canvas, MARGIN, lambda: None)
+            holder["viewport"] = viewport
+            return None
+
+        canvas._build_padded_layer(capture)
+        viewport = holder["viewport"]
+        viewport._center_lat = max(-85, min(85, latitude))
+        viewport._center_lon = longitude
+        key = (palette, factor, tuple(c[0] for c in charts))
+        return self.prefetch(canvas, key, viewport, charts, factor, palette)
 
     def prepared_view_status(self, canvas):
         """Geometric preparation status, NOT proof of available forecast data."""
@@ -885,6 +917,12 @@ class WindOverlayRenderer(OverlayRenderer):
         self, canvas, cr, charts, palette, live_barbs=True, barb_density="standard"
     ):
         """Paint cached fill, then crisp live barbs for the current view."""
+        if charts:
+            self._last_content[canvas] = (
+                charts,
+                palette,
+                canvas.get_scale_factor(),
+            )
         super().draw(canvas, cr, charts, palette)
         if live_barbs:
             self.draw_live_barbs(canvas, cr, barb_density)

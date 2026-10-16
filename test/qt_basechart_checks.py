@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import cairo
 from osgeo import ogr
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 
 from gweatherrouting.core.mapviewport import MapViewport
 from gweatherrouting.qt.basecharts import BaseChartRenderer, describe_sources
@@ -15,6 +15,18 @@ from gweatherrouting.rendering.gshhs import GSHHSVectorChart
 from gweatherrouting.rendering.overlayrenderer import MARGIN, RenderJob
 from gweatherrouting.rendering.vectordrawer.simplechartdrawer import SimpleChartDrawer
 from test.qt_gpu_checks import Fixture
+
+
+class _DummySource:
+    """Hashable stand-in with the attributes renderer identity needs."""
+
+    def __init__(self, time):
+        self.path = "test"
+        self.name = "test"
+        self.centre = "test"
+        self.start_time = time
+        self.last_forecast = time
+        self.bounds = ((0, 0), (1, 1))
 
 
 class BaseChartChecks(Fixture):
@@ -165,6 +177,78 @@ class BaseChartChecks(Fixture):
             self.assertEqual(
                 bytes(actual.get_data()), bytes(expected.get_data()), delta
             )
+
+    def test_release_velocity_triggers_bounded_directional_prefetch(self):
+        from types import SimpleNamespace
+
+        from gweatherrouting.rendering.overlayrenderer import RenderState
+
+        canvas = self.window.map
+        renderer = canvas.wind
+        source = _DummySource(canvas.time_control.time)
+        palette = (canvas.time_control.time, 0.8, True, True, True)
+        renderer._states.setdefault(canvas, RenderState())
+        renderer._last_content[canvas] = (((source,),), palette, 1)
+        # Jitter inside the reuse margin never speculates.
+        canvas._release_velocity = (100.0, 0.0)
+        canvas._refresh_after_gesture()
+        self.assertIsNone(canvas._release_velocity)
+        self.assertFalse(renderer._speculative)
+        # A real flick queues one bounded lookahead and consumes the vector.
+        canvas._release_velocity = (900.0, 0.0)
+        canvas._refresh_after_gesture()
+        self.assertIsNone(canvas._release_velocity)
+        job = renderer._speculative.get(canvas)
+        if job is None and renderer._speculative_active is not None:
+            self.assertIs(renderer._speculative_active[0], canvas)
+            job = renderer._speculative_active[1]
+        self.assertIsNotNone(job)
+        limit = 0.75 * max(canvas.width(), canvas.height())
+        expected = canvas.convert_screen_to_geographic(
+            canvas.width() / 2 - 900.0 * min(1.0, limit / 900.0),
+            canvas.height() / 2,
+        ).get_degrees()
+        self.assertAlmostEqual(job.viewport._center_lat, expected[0])
+        self.assertAlmostEqual(job.viewport._center_lon, expected[1])
+        renderer.cancel_speculation()
+
+    def test_trackpad_stream_queues_mid_gesture_speculation_ahead(self):
+        import time
+        from types import SimpleNamespace
+
+        from gweatherrouting.rendering.overlayrenderer import RenderState
+        from test.qt_preview_checks import QtPreviewChecks
+
+        canvas = self.window.map
+        canvas._trackpad_scroll_pans = True
+        renderer = canvas.wind
+        source = _DummySource(canvas.time_control.time)
+        palette = (canvas.time_control.time, 0.8, True, True, True)
+        renderer._states.setdefault(canvas, RenderState())
+        renderer._last_content[canvas] = (((source,),), palette, 1)
+        lon_before = canvas._center_lon
+        canvas._trackpad_pan(
+            QtPreviewChecks._precise_scroll(phase=Qt.ScrollPhase.ScrollBegin)
+        )
+        for _ in range(6):
+            canvas._trackpad_pan(QtPreviewChecks._precise_scroll(-40, 0))
+            time.sleep(0.02)
+            self.drain()
+        self.assertGreater(canvas._center_lon, lon_before)
+        # Arm content after the stream: interim paints with empty charts
+        # forget renderer demand, so only the final trigger is asserted.
+        renderer._states.setdefault(canvas, RenderState())
+        renderer._last_content[canvas] = (((source,),), palette, 1)
+        canvas._trackpad_last_speculation = 0.0
+        canvas._trackpad_pan(QtPreviewChecks._precise_scroll(-40, 0))
+        job = renderer._speculative.get(canvas)
+        if job is None and renderer._speculative_active is not None:
+            self.assertIs(renderer._speculative_active[0], canvas)
+            job = renderer._speculative_active[1]
+        self.assertIsNotNone(job)
+        # Ahead means further along the direction the view already traveled.
+        self.assertGreater(job.viewport._center_lon, canvas._center_lon)
+        renderer.cancel_speculation()
 
     def test_stale_palette_and_forgotten_work_cannot_publish(self):
         canvas = self.window.map

@@ -9,7 +9,7 @@ from unittest.mock import patch
 import cairo
 
 from gweatherrouting.core.mapviewport import MercatorProjection, MapViewport
-from gweatherrouting.rendering.overlayrenderer import covers
+from gweatherrouting.rendering.overlayrenderer import MARGIN, covers
 from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
 
 
@@ -50,17 +50,29 @@ class Renderer(WindOverlayRenderer):
         self.events.append((event, job.request_id, time.monotonic()))
 
     def _start_next(self):
-        if self._running or not self._pending:
+        # Manual worker: visible first, speculation only while globally idle.
+        if self._running:
             return
-        canvas, job = self._pending.popitem(last=False)
-        self._running = True
-        self._active_canvas, self._active_job = canvas, job
+        if self._pending:
+            canvas, job = self._pending.popitem(last=False)
+            self._running = True
+            self._active_canvas, self._active_job = canvas, job
+        elif self._speculative:
+            canvas, job = next(iter(self._speculative.items()))
+            del self._speculative[canvas]
+            self._speculative_active = (canvas, job)
+            self._running = True
+        else:
+            return
         job.started_at = time.monotonic()
         self.started.append(job)
         self._schedule_event("start", job)
 
     def finish(self):
-        canvas, job = self._active_canvas, self._active_job
+        if self._active_job is not None:
+            canvas, job = self._active_canvas, self._active_job
+        else:
+            canvas, job = self._speculative_active
         job.finished_at = time.monotonic()
         self._schedule_event("finish", job)
         image = cairo.ImageSurface(
@@ -85,6 +97,15 @@ class TestOverlayScheduling(unittest.TestCase):
         (renderer or self.renderer).draw(
             canvas or self.canvas, self.cr, self.sources, self.style, live_barbs=False
         )
+
+    def prefetch_view(self, latitude, longitude, renderer=None, canvas=None):
+        renderer = renderer or self.renderer
+        canvas = canvas or self.canvas
+        viewport = MapViewport(canvas, MARGIN)
+        viewport._center_lat, viewport._center_lon = latitude, longitude
+        state = renderer._states.get(canvas)
+        key = state.key if state else (self.style, 1, tuple(c[0] for c in self.sources))
+        return renderer.prefetch(canvas, key, viewport, self.sources, 1, self.style)
 
     def test_covers_uses_actual_extent_and_requires_native_zoom(self):
         view = MapViewport(self.canvas, 256)
@@ -211,6 +232,72 @@ class TestOverlayScheduling(unittest.TestCase):
         self.assertEqual(list(self.renderer._pending), [other])
         self.renderer.finish()
         self.assertIs(self.renderer._active_canvas, other)
+
+    def test_prefetch_promotes_on_arrival_without_visible_work(self):
+        self.draw()
+        self.renderer.finish()
+        self.assertTrue(self.prefetch_view(0, 1.0))
+        self.assertEqual(len(self.renderer.started), 2)
+        self.renderer.finish()
+        state = self.renderer._states[self.canvas]
+        self.assertEqual(len(state.prefetched), 1)
+        predicted = state.prefetched[0][0]
+        # Arrival at the predicted view promotes with no new worker job.
+        self.canvas.pan(1.0 * 256 * 2**self.canvas._zoom / 360)
+        self.draw()
+        self.assertEqual(len(self.renderer.started), 2)
+        self.assertIs(self.renderer._states[self.canvas].frame[0], predicted)
+        self.assertEqual(self.renderer.prefetch_metrics["hits"], 1)
+
+    def test_visible_demand_cancels_stale_speculation_without_starvation(self):
+        self.draw()
+        running = self.renderer._active_job
+        self.assertTrue(self.prefetch_view(0, 5.0))
+        # Queued speculation waits while visible work runs.
+        self.assertIs(self.renderer._active_job, running)
+        self.assertFalse(running.speculative)
+        self.assertEqual(list(self.renderer._speculative), [self.canvas])
+        self.renderer.finish()
+        # Visible published; speculation starts only now that work is idle.
+        spec = self.renderer._speculative_active[1]
+        self.assertTrue(spec.speculative)
+        # A content change kills running speculation immediately.
+        self.style = (self.style[0] + timedelta(hours=1), *self.style[1:])
+        self.draw()
+        self.assertTrue(spec.cancel.is_set())
+        self.renderer.finish()
+        self.renderer.finish()
+        self.assertTrue(self.renderer.prepared_view_status(self.canvas)["current"])
+
+    def test_new_visible_work_preempts_drifted_speculation(self):
+        self.draw()
+        self.renderer.finish()
+        self.assertTrue(self.prefetch_view(0, 5.0))
+        spec = self.renderer._speculative_active[1]
+        # Drifted same-content view with a stale frame: visible work wins.
+        self.canvas.pan(300)
+        self.draw()
+        self.assertTrue(spec.cancel.is_set())
+        self.assertEqual(spec.cancel_reason, "visible demand")
+        self.renderer.finish()
+        self.renderer.finish()
+        self.assertTrue(self.renderer.prepared_view_status(self.canvas)["current"])
+
+    def test_prefetch_store_is_bounded_and_forget_drops_it(self):
+        self.draw()
+        self.renderer.finish()
+        self.renderer._prefetch_store_limit = 1
+        self.assertTrue(self.prefetch_view(0, 1.0))
+        self.renderer.finish()
+        self.assertTrue(self.prefetch_view(0, 2.0))
+        self.renderer.finish()
+        state = self.renderer._states[self.canvas]
+        self.assertLessEqual(len(state.prefetched), 1)
+        self.assertGreaterEqual(self.renderer.prefetch_metrics["evictions"], 1)
+        self.renderer.forget(self.canvas)
+        self.assertNotIn(self.canvas, self.renderer._states)
+        self.assertFalse(self.renderer._speculative)
+        self.assertIsNone(self.renderer._speculative_active)
 
     def test_opt_in_trial_controlled_reversal_halves_first_prepared_view_latency(
         self,

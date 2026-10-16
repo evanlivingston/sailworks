@@ -94,6 +94,10 @@ class TrackMap(QWidget, MercatorProjection):
         self._smooth_zoom = True
         self._pan_inertia_enabled = True
         self._drag_velocity = DragVelocity()
+        self._release_velocity: tuple | None = None
+        self._trackpad_velocity: tuple = (0.0, 0.0)
+        self._trackpad_last_event: float | None = None
+        self._trackpad_last_speculation: float = 0.0
         self._inertia: Optional[PanInertia] = None
         self._inertia_tick_token = None
         self._inertia_last_tick = 0.0
@@ -775,10 +779,28 @@ class TrackMap(QWidget, MercatorProjection):
             self._finish_zoom_silent()
             self.drag = None
             self._trackpad_panning = True
+            self._trackpad_velocity = (0.0, 0.0)
+            self._trackpad_last_event = None
             self.setCursor(Qt.CursorShape.OpenHandCursor)
         # Qt has already applied the system natural-scroll preference. Native
         # momentum arrives as further pixel deltas; never add our drag inertia.
+        now = time.monotonic()
+        if self._trackpad_last_event is not None and now > self._trackpad_last_event:
+            elapsed = now - self._trackpad_last_event
+            instant = (pixels.x() / elapsed, pixels.y() / elapsed)
+            previous = self._trackpad_velocity
+            self._trackpad_velocity = (
+                0.7 * previous[0] + 0.3 * instant[0],
+                0.7 * previous[1] + 0.3 * instant[1],
+            )
+        self._trackpad_last_event = now
         self._pan_pixels(pixels.x(), pixels.y())
+        travel = (
+            self._trackpad_velocity[0] ** 2 + self._trackpad_velocity[1] ** 2
+        ) ** 0.5
+        if travel >= 192 and now - self._trackpad_last_speculation >= 0.5:
+            self._trackpad_last_speculation = now
+            self._prefetch_along(*self._trackpad_velocity)
         if phase == Qt.ScrollPhase.ScrollEnd:
             self._finish_trackpad_pan()
         else:
@@ -823,7 +845,30 @@ class TrackMap(QWidget, MercatorProjection):
             self._overlay_pending = False
             self._invalidate_base()
             self.invalidate_navigation()
+        self._prefetch_weather_ahead()
         self.update()
+
+    def _prefetch_weather_ahead(self):
+        """Queue one speculative weather frame in the release direction."""
+        vector = self._release_velocity
+        self._release_velocity = None
+        if vector is None or self.disposed:
+            return
+        self._prefetch_along(vector[0], vector[1])
+
+    def _prefetch_along(self, vx, vy):
+        """Queue one speculative frame along a pixel velocity vector."""
+        travel = (vx**2 + vy**2) ** 0.5
+        # One second of continued travel; ignore jitters inside the reuse
+        # margin and clamp runaway flings to a bounded lookahead.
+        if travel < 192 or self.disposed:
+            return False
+        limit = 0.75 * max(self.width(), self.height())
+        scale = min(1.0, limit / travel)
+        center = self.convert_screen_to_geographic(
+            self.width() / 2 - vx * scale, self.height() / 2 - vy * scale
+        )
+        return self.wind.prefetch_at(self, *center.get_degrees())
 
     def _set_smooth_zoom(self, enabled):
         if self.disposed:
@@ -859,9 +904,10 @@ class TrackMap(QWidget, MercatorProjection):
         self._center_lat = max(-85, min(85, self._center_lat))
 
     def _start_inertia(self, pointer):
+        vx, vy = self._drag_velocity.release(time.monotonic(), pointer.x(), pointer.y())
+        self._release_velocity = (vx, vy)
         if not self._pan_inertia_enabled:
             return False
-        vx, vy = self._drag_velocity.release(time.monotonic(), pointer.x(), pointer.y())
         motion = PanInertia(vx, vy)
         if not motion.active:
             return False
@@ -1875,6 +1921,7 @@ class TrackMap(QWidget, MercatorProjection):
                 return
             self.drag = event.position()
             self._drag_velocity = DragVelocity()
+            self._release_velocity = None
             self._drag_velocity.add(time.monotonic(), self.drag.x(), self.drag.y())
             self._finish_zoom_silent()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
