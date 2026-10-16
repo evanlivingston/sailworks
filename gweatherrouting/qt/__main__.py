@@ -9,6 +9,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="GWeatherRouting")
     parser.add_argument("--log", help="Load an interpreted NMEA log")
     parser.add_argument(
+        "--map-renderer",
+        choices=("cpu", "gpu"),
+        help="Override the saved map renderer for this session (GPU is experimental)",
+    )
+    parser.add_argument(
         "--offline",
         action="store_true",
         help="Do not open saved instrument connections",
@@ -28,7 +33,7 @@ def main(argv=None):
     app.setApplicationName("GWeatherRouting")
     app.setApplicationDisplayName("GWeatherRouting")
     apply_theme(app)
-    controller = SessionController(offline=args.offline)
+    controller = SessionController(offline=args.offline, map_renderer=args.map_renderer)
     window = PreviewWindow(controller)
     app.aboutToQuit.connect(window.workspace.close)
     app.aboutToQuit.connect(window.timeline.dispose)

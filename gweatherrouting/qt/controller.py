@@ -3,6 +3,7 @@
 import logging
 import time
 from threading import Thread
+from weakref import WeakKeyDictionary
 
 import nmeatoolkit as nt
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
@@ -25,11 +26,19 @@ class SessionController(QObject):
     model_changed = Signal()
     load_finished = Signal(int, object, object)
     packets = Signal(object, int)
+    renderer_changed = Signal()
 
     def __init__(
-        self, offline=False, recording_directory=None, parent=None, load_charts=True
+        self,
+        offline=False,
+        recording_directory=None,
+        parent=None,
+        load_charts=True,
+        map_renderer=None,
     ):
         super().__init__(parent)
+        if map_renderer not in (None, "cpu", "gpu"):
+            raise ValueError("Map renderer must be cpu or gpu")
         self.offline = offline
         self.load_charts = load_charts
         self.scheduler = UiScheduler(self)
@@ -40,6 +49,12 @@ class SessionController(QObject):
         )
         self.time_control = TimeControl()
         self.settings = SettingsManager()
+        selected_renderer = map_renderer or self.settings.get("mapRenderer", "cpu")
+        self.map_renderer = (
+            selected_renderer if selected_renderer in ("cpu", "gpu") else "cpu"
+        )
+        self.renderer_override = map_renderer is not None
+        self._renderer_states = WeakKeyDictionary()
         self.charts = ChartCollection(self.settings, self.scheduler.submit)
         if offline:
             self.charts._chs_renderer.set_enabled(False)
@@ -85,6 +100,29 @@ class SessionController(QObject):
         self.timer.timeout.connect(self._tick)
         self.last_tick = time.monotonic()
         self.timer.start()
+
+    def set_renderer_status(self, canvas, actual, reason="", api=""):
+        state = dict(actual=actual, reason=reason, api=api)
+        if self._renderer_states.get(canvas) == state:
+            return
+        self._renderer_states[canvas] = state
+        self.renderer_changed.emit()
+
+    def forget_renderer(self, canvas):
+        self._renderer_states.pop(canvas, None)
+        self.renderer_changed.emit()
+
+    def renderer_status(self):
+        states = list(self._renderer_states.values())
+        failures = [s["reason"] for s in states if s["reason"]]
+        if failures:
+            return "CPU fallback: " + "; ".join(dict.fromkeys(failures))
+        apis = sorted({s["api"] for s in states if s["actual"] == "gpu" and s["api"]})
+        if apis:
+            return "GPU: " + ", ".join(apis)
+        if self.map_renderer == "gpu":
+            return "GPU requested; waiting for a visible map"
+        return "CPU" + (" (command-line override)" if self.renderer_override else "")
 
     def start_connections(self):
         if not self.offline and not self.connections.polling_active:

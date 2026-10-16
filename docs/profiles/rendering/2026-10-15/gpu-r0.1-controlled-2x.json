@@ -1,0 +1,2259 @@
+{
+  "experiment_version": 1,
+  "fixture": {
+    "fixture_version": 1,
+    "source": "controlled-glyphs",
+    "width": 360,
+    "height": 260,
+    "dpr": 2,
+    "latitude": 48.4,
+    "longitude": -123.4,
+    "zoom": 10.0,
+    "density": "dense",
+    "opacity": 0.85,
+    "sea_color": [
+      0.12,
+      0.18,
+      0.23,
+      1.0
+    ],
+    "base": {
+      "latitude": 48.4,
+      "longitude": -123.4,
+      "zoom": 10.0
+    },
+    "navigation": {
+      "latitude": 48.4,
+      "longitude": -123.4,
+      "zoom": 10.0
+    },
+    "retained_wind_samples": 48,
+    "files": [
+      {
+        "path": "base.png",
+        "bytes": 10252,
+        "sha256": "b0bede7567171bf8c458b53fb9b9134f56ef14fd00413ac9d1d6cd2ae9f4126b"
+      },
+      {
+        "path": "navigation.png",
+        "bytes": 7543,
+        "sha256": "29c0685a3702b6320dba89ee995462db2630d6b77a8b38008e553156dd679aff"
+      },
+      {
+        "path": "wind.npz",
+        "bytes": 979,
+        "sha256": "00edaa63faa7711793cf708a6c4ec4afac0546048314f61d446b7545d96a0ecd"
+      }
+    ],
+    "fixture_sha256": "5252e73b81425f487e06fe42b2204e09eb414f9154997dace273c662f2065667"
+  },
+  "revision": {
+    "commit": "4c4a73fd9ae9b0b35c2304ccc19aca272ad8f15f",
+    "dirty": true,
+    "tracked_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "harness_sha256": "1b5aeae0730c7e28292f8779b99ef117404b1682c0ecfedb64b8cc1a102abd07"
+  },
+  "harness_sha256": "ecc077081385cf53e3ee822f5acf54da699f029b170e747ece317b1a7fe13dfb",
+  "frames": 8,
+  "repeats": 1,
+  "runs": [
+    {
+      "mode": "cpu_current",
+      "scenario": "stationary",
+      "image_sampling_policy": "reference-unit-scale-nearest-scaled-linear-v1",
+      "environment": {
+        "platform": "macOS-26.6.2-arm64-arm-64bit",
+        "host": "Evans-MacBook-Pro-4434.local",
+        "python": "3.11.17",
+        "qt": "6.12.0",
+        "qpa": "cocoa",
+        "graphics_api": "Metal",
+        "render_loop": "basic",
+        "dpr": 2.0,
+        "samples": 4
+      },
+      "first_request_to_swap_ms": 267.12179195601493,
+      "samples": {
+        "payload_ms": [
+          0.06641610525548458,
+          0.06325007416307926,
+          0.061583006754517555,
+          0.04229205660521984,
+          0.04624994471669197,
+          0.04245794843882322,
+          0.040334067307412624,
+          0.04241697024554014
+        ],
+        "prepare_ms": [
+          1.6140419756993651,
+          1.814165967516601,
+          1.6785829793661833,
+          1.9158330978825688,
+          2.2970420541241765,
+          1.7317080637440085,
+          1.726167043671012,
+          1.71933404635638
+        ],
+        "request_to_swap_ms": [
+          32.902791048400104,
+          7.961458060890436,
+          11.556624085642397,
+          6.983834085986018,
+          3.2262919703498483,
+          7.323583005927503,
+          6.381834042258561,
+          8.626291994005442
+        ],
+        "swap_interval_ms": [
+          8.29329201951623,
+          11.855458025820553,
+          7.239833939820528,
+          3.500582999549806,
+          7.585542043671012,
+          6.623207940720022,
+          8.877833024598658
+        ]
+      },
+      "summary": {
+        "payload_ms": {
+          "count": 8,
+          "p50_ms": 0.0443539465777576,
+          "p95_ms": 0.06530799437314272,
+          "p99_ms": 0.06619448307901621,
+          "max_ms": 0.06641610525548458,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "prepare_ms": {
+          "count": 8,
+          "p50_ms": 1.7289375537075102,
+          "p95_ms": 2.163618919439614,
+          "p99_ms": 2.270357427187264,
+          "max_ms": 2.2970420541241765,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "request_to_swap_ms": {
+          "count": 8,
+          "p50_ms": 7.64252053340897,
+          "p95_ms": 25.431632611434896,
+          "p99_ms": 31.408559361007057,
+          "max_ms": 32.902791048400104,
+          "over_16_7_ms": 1,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "swap_interval_ms": {
+          "count": 7,
+          "p50_ms": 7.585542043671012,
+          "p95_ms": 10.962170525453983,
+          "p99_ms": 11.676800525747238,
+          "max_ms": 11.855458025820553,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        }
+      },
+      "selected_samples_per_frame": [
+        48,
+        48,
+        48,
+        48,
+        48,
+        48,
+        48,
+        48
+      ],
+      "primitives_per_frame": [
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ]
+      ],
+      "geometry_sha256_per_frame": [
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d"
+      ],
+      "measured_uploads": {
+        "texture_uploads": 8,
+        "texture_upload_bytes": 11980800,
+        "vertex_upload_bytes": 0,
+        "node_update_ms": 0.4239162662997842
+      },
+      "initial_uploads": {
+        "texture_uploads": 8,
+        "texture_upload_bytes": 24317952,
+        "vertex_upload_bytes": 0,
+        "node_update_ms": 0.4419991746544838
+      },
+      "known_base_navigation_texture_bytes": 15332352,
+      "gpu_stroke_fill_layers": 0,
+      "process_peak_rss_bytes": 288931840,
+      "quality": [
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8215,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0,
+          "foreground_premultiplied_rgba_mae": 0.0,
+          "within_experimental_tolerance": true,
+          "frame": 0,
+          "blocking_readback_ms": 2.25274998228997,
+          "composite_rgba_mae": 0.0,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8215,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0,
+          "foreground_premultiplied_rgba_mae": 0.0,
+          "within_experimental_tolerance": true,
+          "frame": 2,
+          "blocking_readback_ms": 1.057333080098033,
+          "composite_rgba_mae": 0.0,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8215,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0,
+          "foreground_premultiplied_rgba_mae": 0.0,
+          "within_experimental_tolerance": true,
+          "frame": 4,
+          "blocking_readback_ms": 2.273750025779009,
+          "composite_rgba_mae": 0.0,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8215,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0,
+          "foreground_premultiplied_rgba_mae": 0.0,
+          "within_experimental_tolerance": true,
+          "frame": 7,
+          "blocking_readback_ms": 1.0280419373884797,
+          "composite_rgba_mae": 0.0,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        }
+      ],
+      "quality_gate_passed": true,
+      "calm_ring_max_chord_error_logical_px": 0.0030113594870689875,
+      "gpu_memory_usage": "not measured; texture/vertex bytes are explicit resource sizes, not total VRAM",
+      "backend_diagnostics": [
+        "qt.scenegraph.general: basic render loop",
+        "qt.rhi.general: Metal device: Apple M1 Pro",
+        "qt.scenegraph.general: MSAA sample count for the swapchain is 4. Alpha channel requested = yes"
+      ],
+      "repeat": 0
+    },
+    {
+      "mode": "cpu_batched",
+      "scenario": "stationary",
+      "image_sampling_policy": "reference-unit-scale-nearest-scaled-linear-v1",
+      "environment": {
+        "platform": "macOS-26.6.2-arm64-arm-64bit",
+        "host": "Evans-MacBook-Pro-4434.local",
+        "python": "3.11.17",
+        "qt": "6.12.0",
+        "qpa": "cocoa",
+        "graphics_api": "Metal",
+        "render_loop": "basic",
+        "dpr": 2.0,
+        "samples": 4
+      },
+      "first_request_to_swap_ms": 268.67495791520923,
+      "samples": {
+        "payload_ms": [
+          0.06700004450976849,
+          0.04270800855010748,
+          0.05591695662587881,
+          0.043708947487175465,
+          0.04254200030118227,
+          0.04129204899072647,
+          0.04175002686679363,
+          0.036499928683042526
+        ],
+        "prepare_ms": [
+          1.6171250026673079,
+          1.8727919086813927,
+          2.4386249715462327,
+          1.8117500003427267,
+          1.762916101142764,
+          1.8522499594837427,
+          1.6356658888980746,
+          1.7484169220551848
+        ],
+        "request_to_swap_ms": [
+          2.9313330305740237,
+          10.81145799253136,
+          9.915000991895795,
+          8.636499987915158,
+          7.282917038537562,
+          8.94241698551923,
+          7.2478329529985785,
+          7.908791885711253
+        ],
+        "swap_interval_ms": [
+          11.377000017091632,
+          10.271542007103562,
+          8.884915965609252,
+          7.535833981819451,
+          9.187666000798345,
+          7.498166989535093,
+          8.194625028409064
+        ]
+      },
+      "summary": {
+        "payload_ms": {
+          "count": 8,
+          "p50_ms": 0.042625004425644875,
+          "p95_ms": 0.0631209637504071,
+          "p99_ms": 0.06622422835789621,
+          "max_ms": 0.06700004450976849,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "prepare_ms": {
+          "count": 8,
+          "p50_ms": 1.7873330507427454,
+          "p95_ms": 2.2405833995435382,
+          "p99_ms": 2.399016657145694,
+          "max_ms": 2.4386249715462327,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "request_to_swap_ms": {
+          "count": 8,
+          "p50_ms": 8.272645936813205,
+          "p95_ms": 10.497698042308912,
+          "p99_ms": 10.74870600248687,
+          "max_ms": 10.81145799253136,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "swap_interval_ms": {
+          "count": 7,
+          "p50_ms": 8.884915965609252,
+          "p95_ms": 11.045362614095211,
+          "p99_ms": 11.310672536492348,
+          "max_ms": 11.377000017091632,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        }
+      },
+      "selected_samples_per_frame": [
+        48,
+        48,
+        48,
+        48,
+        48,
+        48,
+        48,
+        48
+      ],
+      "primitives_per_frame": [
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ]
+      ],
+      "geometry_sha256_per_frame": [
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d"
+      ],
+      "measured_uploads": {
+        "texture_uploads": 8,
+        "texture_upload_bytes": 11980800,
+        "vertex_upload_bytes": 0,
+        "node_update_ms": 0.4449139814823866
+      },
+      "initial_uploads": {
+        "texture_uploads": 8,
+        "texture_upload_bytes": 24317952,
+        "vertex_upload_bytes": 0,
+        "node_update_ms": 0.4140420351177454
+      },
+      "known_base_navigation_texture_bytes": 15332352,
+      "gpu_stroke_fill_layers": 0,
+      "process_peak_rss_bytes": 287309824,
+      "quality": [
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8216,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.000119747472075,
+          "foreground_premultiplied_rgba_mae": 0.14225838264299803,
+          "within_experimental_tolerance": true,
+          "frame": 0,
+          "blocking_readback_ms": 2.0388750126585364,
+          "composite_rgba_mae": 0.0018048878205128205,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8216,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.000119747472075,
+          "foreground_premultiplied_rgba_mae": 0.14225838264299803,
+          "within_experimental_tolerance": true,
+          "frame": 2,
+          "blocking_readback_ms": 1.1677080765366554,
+          "composite_rgba_mae": 0.0018048878205128205,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8216,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.000119747472075,
+          "foreground_premultiplied_rgba_mae": 0.14225838264299803,
+          "within_experimental_tolerance": true,
+          "frame": 4,
+          "blocking_readback_ms": 1.0719170095399022,
+          "composite_rgba_mae": 0.0018048878205128205,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8216,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.000119747472075,
+          "foreground_premultiplied_rgba_mae": 0.14225838264299803,
+          "within_experimental_tolerance": true,
+          "frame": 7,
+          "blocking_readback_ms": 13.913542032241821,
+          "composite_rgba_mae": 0.0018048878205128205,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        }
+      ],
+      "quality_gate_passed": true,
+      "calm_ring_max_chord_error_logical_px": 0.0030113594870689875,
+      "gpu_memory_usage": "not measured; texture/vertex bytes are explicit resource sizes, not total VRAM",
+      "backend_diagnostics": [
+        "qt.scenegraph.general: basic render loop",
+        "qt.rhi.general: Metal device: Apple M1 Pro",
+        "qt.scenegraph.general: MSAA sample count for the swapchain is 4. Alpha channel requested = yes"
+      ],
+      "repeat": 0
+    },
+    {
+      "mode": "gpu_mesh",
+      "scenario": "stationary",
+      "image_sampling_policy": "reference-unit-scale-nearest-scaled-linear-v1",
+      "environment": {
+        "platform": "macOS-26.6.2-arm64-arm-64bit",
+        "host": "Evans-MacBook-Pro-4434.local",
+        "python": "3.11.17",
+        "qt": "6.12.0",
+        "qpa": "cocoa",
+        "graphics_api": "Metal",
+        "render_loop": "basic",
+        "dpr": 2.0,
+        "samples": 4
+      },
+      "first_request_to_swap_ms": 224.27462495397776,
+      "samples": {
+        "payload_ms": [
+          0.11791707947850227,
+          0.05733396392315626,
+          0.04662491846829653,
+          0.057666096836328506,
+          0.06320804823189974,
+          0.052584102377295494,
+          0.06450002547353506,
+          0.04850002005696297
+        ],
+        "prepare_ms": [
+          0.0037499703466892242,
+          0.010749907232820988,
+          0.0076659489423036575,
+          0.008874922059476376,
+          0.010458985343575478,
+          0.008917064405977726,
+          0.010499963536858559,
+          0.008750008419156075
+        ],
+        "request_to_swap_ms": [
+          9.522751090116799,
+          11.687792954035103,
+          12.249040883034468,
+          12.312081991694868,
+          12.576667009852827,
+          12.008626130409539,
+          11.759291053749621,
+          12.311707949265838
+        ],
+        "swap_interval_ms": [
+          12.316750013269484,
+          12.52979098353535,
+          12.637374922633171,
+          12.86145905032754,
+          12.315833009779453,
+          12.225333019159734,
+          12.581666931509972
+        ]
+      },
+      "summary": {
+        "payload_ms": {
+          "count": 8,
+          "p50_ms": 0.057500030379742384,
+          "p95_ms": 0.09922111057676372,
+          "p99_ms": 0.11417788569815455,
+          "max_ms": 0.11791707947850227,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "prepare_ms": {
+          "count": 8,
+          "p50_ms": 0.00889599323272705,
+          "p95_ms": 0.010662426939234138,
+          "p99_ms": 0.010732411174103618,
+          "max_ms": 0.010749907232820988,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "request_to_swap_ms": {
+          "count": 8,
+          "p50_ms": 12.128833506722003,
+          "p95_ms": 12.484062253497541,
+          "p99_ms": 12.55814605858177,
+          "max_ms": 12.576667009852827,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "swap_interval_ms": {
+          "count": 7,
+          "p50_ms": 12.52979098353535,
+          "p95_ms": 12.794233812019229,
+          "p99_ms": 12.848014002665877,
+          "max_ms": 12.86145905032754,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        }
+      },
+      "selected_samples_per_frame": [
+        48,
+        48,
+        48,
+        48,
+        48,
+        48,
+        48,
+        48
+      ],
+      "primitives_per_frame": [
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ]
+      ],
+      "geometry_sha256_per_frame": [
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d"
+      ],
+      "measured_uploads": {
+        "texture_uploads": 0,
+        "texture_upload_bytes": 0,
+        "vertex_upload_bytes": 0,
+        "node_update_ms": 0.0
+      },
+      "initial_uploads": {
+        "texture_uploads": 2,
+        "texture_upload_bytes": 15332352,
+        "vertex_upload_bytes": 42576,
+        "node_update_ms": 0.38791552651673555
+      },
+      "known_base_navigation_texture_bytes": 15332352,
+      "gpu_stroke_fill_layers": 16,
+      "process_peak_rss_bytes": 304316416,
+      "quality": [
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8486,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0037901467324257,
+          "foreground_premultiplied_rgba_mae": 6.26007777412641,
+          "within_experimental_tolerance": true,
+          "frame": 0,
+          "blocking_readback_ms": 1.1095419758930802,
+          "composite_rgba_mae": 0.08240584935897435,
+          "composite_rgba_p99_error": 1.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8486,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0037901467324257,
+          "foreground_premultiplied_rgba_mae": 6.26007777412641,
+          "within_experimental_tolerance": true,
+          "frame": 2,
+          "blocking_readback_ms": 1.4845830155536532,
+          "composite_rgba_mae": 0.08240584935897435,
+          "composite_rgba_p99_error": 1.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8486,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0037901467324257,
+          "foreground_premultiplied_rgba_mae": 6.26007777412641,
+          "within_experimental_tolerance": true,
+          "frame": 4,
+          "blocking_readback_ms": 6.235208944417536,
+          "composite_rgba_mae": 0.08240584935897435,
+          "composite_rgba_p99_error": 1.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8486,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0037901467324257,
+          "foreground_premultiplied_rgba_mae": 6.26007777412641,
+          "within_experimental_tolerance": true,
+          "frame": 7,
+          "blocking_readback_ms": 14.438791899010539,
+          "composite_rgba_mae": 0.08240584935897435,
+          "composite_rgba_p99_error": 1.0,
+          "composite_within_experimental_tolerance": true
+        }
+      ],
+      "quality_gate_passed": true,
+      "calm_ring_max_chord_error_logical_px": 0.0030113594870689875,
+      "gpu_memory_usage": "not measured; texture/vertex bytes are explicit resource sizes, not total VRAM",
+      "backend_diagnostics": [
+        "qt.scenegraph.general: basic render loop",
+        "qt.rhi.general: Metal device: Apple M1 Pro",
+        "qt.scenegraph.general: MSAA sample count for the swapchain is 4. Alpha channel requested = yes"
+      ],
+      "repeat": 0
+    },
+    {
+      "mode": "cpu_current",
+      "scenario": "pan",
+      "image_sampling_policy": "reference-unit-scale-nearest-scaled-linear-v1",
+      "environment": {
+        "platform": "macOS-26.6.2-arm64-arm-64bit",
+        "host": "Evans-MacBook-Pro-4434.local",
+        "python": "3.11.17",
+        "qt": "6.12.0",
+        "qpa": "cocoa",
+        "graphics_api": "Metal",
+        "render_loop": "basic",
+        "dpr": 2.0,
+        "samples": 4
+      },
+      "first_request_to_swap_ms": 298.3291249256581,
+      "samples": {
+        "payload_ms": [
+          0.0790000194683671,
+          0.23837503977119923,
+          0.23795897141098976,
+          0.2772079315036535,
+          0.25616702623665333,
+          0.2330410061404109,
+          0.22170809097588062,
+          0.255499966442585
+        ],
+        "prepare_ms": [
+          1.7860829830169678,
+          1.575708040036261,
+          1.4434999320656061,
+          1.7376249888911843,
+          1.741583924740553,
+          1.4278329908847809,
+          1.6134169418364763,
+          2.9801250202581286
+        ],
+        "request_to_swap_ms": [
+          10.561333037912846,
+          5.4289581021294,
+          10.654416983015835,
+          6.874624872580171,
+          8.343750960193574,
+          8.443415979854763,
+          8.448707987554371,
+          7.682999945245683
+        ],
+        "swap_interval_ms": [
+          16.45945804193616,
+          10.960042010992765,
+          7.145124953240156,
+          8.625791990198195,
+          8.694707998074591,
+          8.69549997150898,
+          7.954542059451342
+        ]
+      },
+      "summary": {
+        "payload_ms": {
+          "count": 8,
+          "p50_ms": 0.2381670055910945,
+          "p95_ms": 0.26984361466020346,
+          "p99_ms": 0.2757350681349635,
+          "max_ms": 0.2772079315036535,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "prepare_ms": {
+          "count": 8,
+          "p50_ms": 1.6755209653638303,
+          "p95_ms": 2.5622103072237215,
+          "p99_ms": 2.896542077651247,
+          "max_ms": 2.9801250202581286,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "request_to_swap_ms": {
+          "count": 8,
+          "p50_ms": 8.393583470024168,
+          "p95_ms": 10.621837602229789,
+          "p99_ms": 10.647901106858626,
+          "max_ms": 10.654416983015835,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "swap_interval_ms": {
+          "count": 7,
+          "p50_ms": 8.694707998074591,
+          "p95_ms": 14.809633232653137,
+          "p99_ms": 16.129493080079552,
+          "max_ms": 16.45945804193616,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        }
+      },
+      "selected_samples_per_frame": [
+        48,
+        42,
+        42,
+        48,
+        48,
+        42,
+        42,
+        48
+      ],
+      "primitives_per_frame": [
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          97,
+          8,
+          11
+        ],
+        [
+          97,
+          8,
+          11
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          97,
+          9,
+          12
+        ],
+        [
+          97,
+          9,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ]
+      ],
+      "geometry_sha256_per_frame": [
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "ae80f44dd84347f25e42c3c0ff699ed8b814b46e471b7146791bc31ad9b863b3",
+        "1d7fb2907df6ee4ce7123c1f270bea80817b131e31c7303a2ffc8f0fc7d04d13",
+        "37a09f283790301503a5afb6567ff7c0e4853db9e0a19f9c39c30b2bb868b76d",
+        "c3548bc0b5ff46a02692b432932011076ef6780dbbb00adde9f1c03182575ba5",
+        "3f4b3cd1f743b264acd0be79fd630e5d1c1dffbb79c23b434929e224d65d6935",
+        "20a469edfe3b130b33eabb537bcdbdbaf09d665e7e64ad39a6a7650ba03e1a51",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d"
+      ],
+      "measured_uploads": {
+        "texture_uploads": 8,
+        "texture_upload_bytes": 11980800,
+        "vertex_upload_bytes": 0,
+        "node_update_ms": 0.46879216097295284
+      },
+      "initial_uploads": {
+        "texture_uploads": 8,
+        "texture_upload_bytes": 24317952,
+        "vertex_upload_bytes": 0,
+        "node_update_ms": 0.42550021316856146
+      },
+      "known_base_navigation_texture_bytes": 15332352,
+      "gpu_stroke_fill_layers": 0,
+      "process_peak_rss_bytes": 283557888,
+      "quality": [
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8215,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0,
+          "foreground_premultiplied_rgba_mae": 0.0,
+          "within_experimental_tolerance": true,
+          "frame": 0,
+          "blocking_readback_ms": 3.906582947820425,
+          "composite_rgba_mae": 0.0,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 6434,
+          "candidate_support_pixels": 6434,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0,
+          "foreground_premultiplied_rgba_mae": 0.0,
+          "within_experimental_tolerance": true,
+          "frame": 2,
+          "blocking_readback_ms": 1.1263330234214664,
+          "composite_rgba_mae": 0.0,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8099,
+          "candidate_support_pixels": 8099,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0,
+          "foreground_premultiplied_rgba_mae": 0.0,
+          "within_experimental_tolerance": true,
+          "frame": 4,
+          "blocking_readback_ms": 4.886584007181227,
+          "composite_rgba_mae": 0.0,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8215,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0,
+          "foreground_premultiplied_rgba_mae": 0.0,
+          "within_experimental_tolerance": true,
+          "frame": 7,
+          "blocking_readback_ms": 2.589208073914051,
+          "composite_rgba_mae": 0.0,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        }
+      ],
+      "quality_gate_passed": true,
+      "calm_ring_max_chord_error_logical_px": 0.0030113594870689875,
+      "gpu_memory_usage": "not measured; texture/vertex bytes are explicit resource sizes, not total VRAM",
+      "backend_diagnostics": [
+        "qt.scenegraph.general: basic render loop",
+        "qt.rhi.general: Metal device: Apple M1 Pro",
+        "qt.scenegraph.general: MSAA sample count for the swapchain is 4. Alpha channel requested = yes"
+      ],
+      "repeat": 0
+    },
+    {
+      "mode": "cpu_batched",
+      "scenario": "pan",
+      "image_sampling_policy": "reference-unit-scale-nearest-scaled-linear-v1",
+      "environment": {
+        "platform": "macOS-26.6.2-arm64-arm-64bit",
+        "host": "Evans-MacBook-Pro-4434.local",
+        "python": "3.11.17",
+        "qt": "6.12.0",
+        "qpa": "cocoa",
+        "graphics_api": "Metal",
+        "render_loop": "basic",
+        "dpr": 2.0,
+        "samples": 4
+      },
+      "first_request_to_swap_ms": 272.572832996957,
+      "samples": {
+        "payload_ms": [
+          0.06591703277081251,
+          0.2590410877019167,
+          0.23999996483325958,
+          0.2984160091727972,
+          0.25666598230600357,
+          0.23466709535568953,
+          0.23204204626381397,
+          0.23499992676079273
+        ],
+        "prepare_ms": [
+          1.7234589904546738,
+          1.6464589862152934,
+          2.2582499077543616,
+          1.8787080189213157,
+          1.8890000646933913,
+          1.7164170276373625,
+          2.131042070686817,
+          1.5376670053228736
+        ],
+        "request_to_swap_ms": [
+          12.496916926465929,
+          12.000708025880158,
+          12.291749939322472,
+          12.03708304092288,
+          12.050624005496502,
+          12.315417057834566,
+          14.895792119204998,
+          19.734542001970112
+        ],
+        "swap_interval_ms": [
+          12.603917042724788,
+          12.54966703709215,
+          12.531499960459769,
+          12.347833020612597,
+          12.583332951180637,
+          15.174417058005929,
+          20.018375013023615
+        ]
+      },
+      "summary": {
+        "payload_ms": {
+          "count": 8,
+          "p50_ms": 0.23749994579702616,
+          "p95_ms": 0.284634786657989,
+          "p99_ms": 0.29565976466983557,
+          "max_ms": 0.2984160091727972,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "prepare_ms": {
+          "count": 8,
+          "p50_ms": 1.8010835046879947,
+          "p95_ms": 2.213727164780721,
+          "p99_ms": 2.2493453591596335,
+          "max_ms": 2.2582499077543616,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "request_to_swap_ms": {
+          "count": 8,
+          "p50_ms": 12.303583498578519,
+          "p95_ms": 18.04097954300232,
+          "p99_ms": 19.395829510176554,
+          "max_ms": 19.734542001970112,
+          "over_16_7_ms": 1,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "swap_interval_ms": {
+          "count": 7,
+          "p50_ms": 12.583332951180637,
+          "p95_ms": 18.565187626518306,
+          "p99_ms": 19.72773753572255,
+          "max_ms": 20.018375013023615,
+          "over_16_7_ms": 1,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        }
+      },
+      "selected_samples_per_frame": [
+        48,
+        42,
+        42,
+        48,
+        48,
+        42,
+        42,
+        48
+      ],
+      "primitives_per_frame": [
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          97,
+          8,
+          11
+        ],
+        [
+          97,
+          8,
+          11
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          97,
+          9,
+          12
+        ],
+        [
+          97,
+          9,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ]
+      ],
+      "geometry_sha256_per_frame": [
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "ae80f44dd84347f25e42c3c0ff699ed8b814b46e471b7146791bc31ad9b863b3",
+        "1d7fb2907df6ee4ce7123c1f270bea80817b131e31c7303a2ffc8f0fc7d04d13",
+        "37a09f283790301503a5afb6567ff7c0e4853db9e0a19f9c39c30b2bb868b76d",
+        "c3548bc0b5ff46a02692b432932011076ef6780dbbb00adde9f1c03182575ba5",
+        "3f4b3cd1f743b264acd0be79fd630e5d1c1dffbb79c23b434929e224d65d6935",
+        "20a469edfe3b130b33eabb537bcdbdbaf09d665e7e64ad39a6a7650ba03e1a51",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d"
+      ],
+      "measured_uploads": {
+        "texture_uploads": 8,
+        "texture_upload_bytes": 11980800,
+        "vertex_upload_bytes": 0,
+        "node_update_ms": 0.417834147810936
+      },
+      "initial_uploads": {
+        "texture_uploads": 8,
+        "texture_upload_bytes": 24317952,
+        "vertex_upload_bytes": 0,
+        "node_update_ms": 0.39758183993399143
+      },
+      "known_base_navigation_texture_bytes": 15332352,
+      "gpu_stroke_fill_layers": 0,
+      "process_peak_rss_bytes": 287277056,
+      "quality": [
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8216,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.000119747472075,
+          "foreground_premultiplied_rgba_mae": 0.14225838264299803,
+          "within_experimental_tolerance": true,
+          "frame": 0,
+          "blocking_readback_ms": 1.4017500216141343,
+          "composite_rgba_mae": 0.0018048878205128205,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 6434,
+          "candidate_support_pixels": 6433,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 0.9999101071464819,
+          "foreground_premultiplied_rgba_mae": 0.14083169152828595,
+          "within_experimental_tolerance": true,
+          "frame": 2,
+          "blocking_readback_ms": 6.673124968074262,
+          "composite_rgba_mae": 0.0014342948717948718,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8099,
+          "candidate_support_pixels": 8093,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 0.9996916640145193,
+          "foreground_premultiplied_rgba_mae": 0.17612805221109487,
+          "within_experimental_tolerance": true,
+          "frame": 4,
+          "blocking_readback_ms": 10.696958983317018,
+          "composite_rgba_mae": 0.0023344017094017095,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8216,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.000119747472075,
+          "foreground_premultiplied_rgba_mae": 0.14225838264299803,
+          "within_experimental_tolerance": true,
+          "frame": 7,
+          "blocking_readback_ms": 4.969957983121276,
+          "composite_rgba_mae": 0.0018048878205128205,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        }
+      ],
+      "quality_gate_passed": true,
+      "calm_ring_max_chord_error_logical_px": 0.0030113594870689875,
+      "gpu_memory_usage": "not measured; texture/vertex bytes are explicit resource sizes, not total VRAM",
+      "backend_diagnostics": [
+        "qt.scenegraph.general: basic render loop",
+        "qt.rhi.general: Metal device: Apple M1 Pro",
+        "qt.scenegraph.general: MSAA sample count for the swapchain is 4. Alpha channel requested = yes"
+      ],
+      "repeat": 0
+    },
+    {
+      "mode": "gpu_mesh",
+      "scenario": "pan",
+      "image_sampling_policy": "reference-unit-scale-nearest-scaled-linear-v1",
+      "environment": {
+        "platform": "macOS-26.6.2-arm64-arm-64bit",
+        "host": "Evans-MacBook-Pro-4434.local",
+        "python": "3.11.17",
+        "qt": "6.12.0",
+        "qpa": "cocoa",
+        "graphics_api": "Metal",
+        "render_loop": "basic",
+        "dpr": 2.0,
+        "samples": 4
+      },
+      "first_request_to_swap_ms": 296.65974993258715,
+      "samples": {
+        "payload_ms": [
+          0.0987909734249115,
+          0.2329580020159483,
+          0.22675003856420517,
+          0.24033291265368462,
+          0.2163329627364874,
+          0.23508293088525534,
+          0.23108301684260368,
+          0.24937500711530447
+        ],
+        "prepare_ms": [
+          0.008750008419156075,
+          0.40666607674211264,
+          0.34895807038992643,
+          0.4158749943599105,
+          0.3445000620558858,
+          0.4377500154078007,
+          0.3645409597083926,
+          0.3875419497489929
+        ],
+        "request_to_swap_ms": [
+          10.633207974024117,
+          4.231708007864654,
+          8.638292085379362,
+          2.6379579212516546,
+          12.853457941673696,
+          8.204498910345137,
+          3.473915974609554,
+          7.131249993108213
+        ],
+        "swap_interval_ms": [
+          16.79399993736297,
+          8.938000071793795,
+          2.9215830145403743,
+          13.126291916705668,
+          8.488166029565036,
+          3.7535419687628746,
+          7.383375079371035
+        ]
+      },
+      "summary": {
+        "payload_ms": {
+          "count": 8,
+          "p50_ms": 0.232020509429276,
+          "p95_ms": 0.24621027405373752,
+          "p99_ms": 0.24874206050299108,
+          "max_ms": 0.24937500711530447,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "prepare_ms": {
+          "count": 8,
+          "p50_ms": 0.37604145472869277,
+          "p95_ms": 0.4300937580410391,
+          "p99_ms": 0.43621876393444836,
+          "max_ms": 0.4377500154078007,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "request_to_swap_ms": {
+          "count": 8,
+          "p50_ms": 7.667874451726675,
+          "p95_ms": 12.076370452996342,
+          "p99_ms": 12.698040443938226,
+          "max_ms": 12.853457941673696,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "swap_interval_ms": {
+          "count": 7,
+          "p50_ms": 8.488166029565036,
+          "p95_ms": 15.693687531165775,
+          "p99_ms": 16.57393745612353,
+          "max_ms": 16.79399993736297,
+          "over_16_7_ms": 1,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        }
+      },
+      "selected_samples_per_frame": [
+        48,
+        42,
+        42,
+        48,
+        48,
+        42,
+        42,
+        48
+      ],
+      "primitives_per_frame": [
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          97,
+          8,
+          11
+        ],
+        [
+          97,
+          8,
+          11
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          97,
+          9,
+          12
+        ],
+        [
+          97,
+          9,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ]
+      ],
+      "geometry_sha256_per_frame": [
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "ae80f44dd84347f25e42c3c0ff699ed8b814b46e471b7146791bc31ad9b863b3",
+        "1d7fb2907df6ee4ce7123c1f270bea80817b131e31c7303a2ffc8f0fc7d04d13",
+        "37a09f283790301503a5afb6567ff7c0e4853db9e0a19f9c39c30b2bb868b76d",
+        "c3548bc0b5ff46a02692b432932011076ef6780dbbb00adde9f1c03182575ba5",
+        "3f4b3cd1f743b264acd0be79fd630e5d1c1dffbb79c23b434929e224d65d6935",
+        "20a469edfe3b130b33eabb537bcdbdbaf09d665e7e64ad39a6a7650ba03e1a51",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d"
+      ],
+      "measured_uploads": {
+        "texture_uploads": 0,
+        "texture_upload_bytes": 0,
+        "vertex_upload_bytes": 288480,
+        "node_update_ms": 1.0509607382118702
+      },
+      "initial_uploads": {
+        "texture_uploads": 2,
+        "texture_upload_bytes": 15332352,
+        "vertex_upload_bytes": 42576,
+        "node_update_ms": 0.3298339433968067
+      },
+      "known_base_navigation_texture_bytes": 15332352,
+      "gpu_stroke_fill_layers": 16,
+      "process_peak_rss_bytes": 303955968,
+      "quality": [
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8486,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0037901467324257,
+          "foreground_premultiplied_rgba_mae": 6.26007777412641,
+          "within_experimental_tolerance": true,
+          "frame": 0,
+          "blocking_readback_ms": 1.4864170225337148,
+          "composite_rgba_mae": 0.08240584935897435,
+          "composite_rgba_p99_error": 1.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 6434,
+          "candidate_support_pixels": 6561,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0040780424622908,
+          "foreground_premultiplied_rgba_mae": 6.612232695554305,
+          "within_experimental_tolerance": true,
+          "frame": 2,
+          "blocking_readback_ms": 2.0665840711444616,
+          "composite_rgba_mae": 0.06685430021367521,
+          "composite_rgba_p99_error": 1.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8099,
+          "candidate_support_pixels": 8277,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0042976235996088,
+          "foreground_premultiplied_rgba_mae": 6.985821987172274,
+          "within_experimental_tolerance": true,
+          "frame": 4,
+          "blocking_readback_ms": 17.922000028192997,
+          "composite_rgba_mae": 0.0888928952991453,
+          "composite_rgba_p99_error": 2.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8486,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0037901467324257,
+          "foreground_premultiplied_rgba_mae": 6.26007777412641,
+          "within_experimental_tolerance": true,
+          "frame": 7,
+          "blocking_readback_ms": 4.856624989770353,
+          "composite_rgba_mae": 0.08240584935897435,
+          "composite_rgba_p99_error": 1.0,
+          "composite_within_experimental_tolerance": true
+        }
+      ],
+      "quality_gate_passed": true,
+      "calm_ring_max_chord_error_logical_px": 0.0030113594870689875,
+      "gpu_memory_usage": "not measured; texture/vertex bytes are explicit resource sizes, not total VRAM",
+      "backend_diagnostics": [
+        "qt.scenegraph.general: basic render loop",
+        "qt.rhi.general: Metal device: Apple M1 Pro",
+        "qt.scenegraph.general: MSAA sample count for the swapchain is 4. Alpha channel requested = yes"
+      ],
+      "repeat": 0
+    },
+    {
+      "mode": "cpu_current",
+      "scenario": "zoom",
+      "image_sampling_policy": "reference-unit-scale-nearest-scaled-linear-v1",
+      "environment": {
+        "platform": "macOS-26.6.2-arm64-arm-64bit",
+        "host": "Evans-MacBook-Pro-4434.local",
+        "python": "3.11.17",
+        "qt": "6.12.0",
+        "qpa": "cocoa",
+        "graphics_api": "Metal",
+        "render_loop": "basic",
+        "dpr": 2.0,
+        "samples": 4
+      },
+      "first_request_to_swap_ms": 307.78254207689315,
+      "samples": {
+        "payload_ms": [
+          0.07441604975610971,
+          0.26066601276397705,
+          0.34245802089571953,
+          0.24245900567620993,
+          0.2482089912518859,
+          0.24700001813471317,
+          0.24358299560844898,
+          0.2435420174151659
+        ],
+        "prepare_ms": [
+          1.7022909596562386,
+          2.1471669897437096,
+          2.7095830300822854,
+          2.5846250355243683,
+          2.638916950672865,
+          2.606875030323863,
+          2.6323330821469426,
+          1.9891250412911177
+        ],
+        "request_to_swap_ms": [
+          10.026291012763977,
+          5.5062499595806,
+          12.127208057790995,
+          12.612333986908197,
+          16.12487598322332,
+          3.734458005055785,
+          4.057500045746565,
+          7.929334067739546
+        ],
+        "swap_interval_ms": [
+          12.59262498933822,
+          12.466500047594309,
+          12.925124960020185,
+          16.39908307697624,
+          4.028957919217646,
+          4.318834049627185,
+          8.171249995939434
+        ]
+      },
+      "summary": {
+        "payload_ms": {
+          "count": 8,
+          "p50_ms": 0.24529150687158108,
+          "p95_ms": 0.3138308180496096,
+          "p99_ms": 0.33673258032649755,
+          "max_ms": 0.34245802089571953,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "prepare_ms": {
+          "count": 8,
+          "p50_ms": 2.5957500329241157,
+          "p95_ms": 2.6848499022889882,
+          "p99_ms": 2.704636404523626,
+          "max_ms": 2.7095830300822854,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "request_to_swap_ms": {
+          "count": 8,
+          "p50_ms": 8.977812540251762,
+          "p95_ms": 14.895486284513025,
+          "p99_ms": 15.87899804348126,
+          "max_ms": 16.12487598322332,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "swap_interval_ms": {
+          "count": 7,
+          "p50_ms": 12.466500047594309,
+          "p95_ms": 15.35689564188942,
+          "p99_ms": 16.190645589958876,
+          "max_ms": 16.39908307697624,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        }
+      },
+      "selected_samples_per_frame": [
+        48,
+        48,
+        48,
+        48,
+        48,
+        48,
+        48,
+        48
+      ],
+      "primitives_per_frame": [
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ]
+      ],
+      "geometry_sha256_per_frame": [
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "6efb9cb7cea8b4d779328d1be2a3fc6c9d1cebebdf6edc3d4f28ec60e67bd180",
+        "f4b59254c714aa83c67b80d52a390a6f84daeb6aa0b823065ee9c6849fe7fac0",
+        "3d47e2fd30318f5d76d5ccb7110e39baf9a456da67f05bea0f1e54a19d9b2e44",
+        "214b2f6efa7ecd3966a6cda59198a4f368f4e6f6ea855eb6903367d04932bc85",
+        "68ef322c65c5a2bcc18e1955d1ccd5b4a8b75ba47231f3bf0710dfbe8373a754",
+        "eeda05a9b31d75f40ec239acc5f045dda57f008e510a9b66a27beb58eb64e9c0",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d"
+      ],
+      "measured_uploads": {
+        "texture_uploads": 8,
+        "texture_upload_bytes": 11980800,
+        "vertex_upload_bytes": 0,
+        "node_update_ms": 0.34337607212364674
+      },
+      "initial_uploads": {
+        "texture_uploads": 8,
+        "texture_upload_bytes": 24317952,
+        "vertex_upload_bytes": 0,
+        "node_update_ms": 0.4305408801883459
+      },
+      "known_base_navigation_texture_bytes": 15332352,
+      "gpu_stroke_fill_layers": 0,
+      "process_peak_rss_bytes": 283017216,
+      "quality": [
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8215,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0,
+          "foreground_premultiplied_rgba_mae": 0.0,
+          "within_experimental_tolerance": true,
+          "frame": 0,
+          "blocking_readback_ms": 16.619708039797843,
+          "composite_rgba_mae": 0.0,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8377,
+          "candidate_support_pixels": 8377,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0,
+          "foreground_premultiplied_rgba_mae": 0.0,
+          "within_experimental_tolerance": true,
+          "frame": 2,
+          "blocking_readback_ms": 1.0012919083237648,
+          "composite_rgba_mae": 0.0,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8368,
+          "candidate_support_pixels": 8368,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0,
+          "foreground_premultiplied_rgba_mae": 0.0,
+          "within_experimental_tolerance": true,
+          "frame": 4,
+          "blocking_readback_ms": 13.926625018939376,
+          "composite_rgba_mae": 0.0,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8215,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0,
+          "foreground_premultiplied_rgba_mae": 0.0,
+          "within_experimental_tolerance": true,
+          "frame": 7,
+          "blocking_readback_ms": 18.44804093707353,
+          "composite_rgba_mae": 0.0,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        }
+      ],
+      "quality_gate_passed": true,
+      "calm_ring_max_chord_error_logical_px": 0.0030113594870689875,
+      "gpu_memory_usage": "not measured; texture/vertex bytes are explicit resource sizes, not total VRAM",
+      "backend_diagnostics": [
+        "qt.scenegraph.general: basic render loop",
+        "qt.rhi.general: Metal device: Apple M1 Pro",
+        "qt.scenegraph.general: MSAA sample count for the swapchain is 4. Alpha channel requested = yes"
+      ],
+      "repeat": 0
+    },
+    {
+      "mode": "cpu_batched",
+      "scenario": "zoom",
+      "image_sampling_policy": "reference-unit-scale-nearest-scaled-linear-v1",
+      "environment": {
+        "platform": "macOS-26.6.2-arm64-arm-64bit",
+        "host": "Evans-MacBook-Pro-4434.local",
+        "python": "3.11.17",
+        "qt": "6.12.0",
+        "qpa": "cocoa",
+        "graphics_api": "Metal",
+        "render_loop": "basic",
+        "dpr": 2.0,
+        "samples": 4
+      },
+      "first_request_to_swap_ms": 214.45216599386185,
+      "samples": {
+        "payload_ms": [
+          0.0877920538187027,
+          0.2460830146446824,
+          0.2437499351799488,
+          0.24025002494454384,
+          0.25158305652439594,
+          0.24149997625499964,
+          0.2726669190451503,
+          0.2424169797450304
+        ],
+        "prepare_ms": [
+          1.858375035226345,
+          2.166916965506971,
+          3.735249978490174,
+          2.961000078357756,
+          3.0470830388367176,
+          2.5866670766845345,
+          2.804832998663187,
+          1.6719159903004766
+        ],
+        "request_to_swap_ms": [
+          2.7986670611426234,
+          19.065750064328313,
+          20.399874891154468,
+          6.650500115938485,
+          7.713500061072409,
+          8.04279197473079,
+          8.008666918613017,
+          7.658374961465597
+        ],
+        "swap_interval_ms": [
+          19.788208068348467,
+          20.681791938841343,
+          6.908375071361661,
+          8.014499908313155,
+          8.309249999001622,
+          8.286583004519343,
+          7.908875006251037
+        ]
+      },
+      "summary": {
+        "payload_ms": {
+          "count": 8,
+          "p50_ms": 0.2430834574624896,
+          "p95_ms": 0.26528756716288626,
+          "p99_ms": 0.2711910486686975,
+          "max_ms": 0.2726669190451503,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "prepare_ms": {
+          "count": 8,
+          "p50_ms": 2.695750037673861,
+          "p95_ms": 3.4943915496114637,
+          "p99_ms": 3.687078292714432,
+          "max_ms": 3.735249978490174,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "request_to_swap_ms": {
+          "count": 8,
+          "p50_ms": 7.861083489842713,
+          "p95_ms": 19.932931201765314,
+          "p99_ms": 20.306486153276637,
+          "max_ms": 20.399874891154468,
+          "over_16_7_ms": 2,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "swap_interval_ms": {
+          "count": 7,
+          "p50_ms": 8.286583004519343,
+          "p95_ms": 20.41371677769348,
+          "p99_ms": 20.62817690661177,
+          "max_ms": 20.681791938841343,
+          "over_16_7_ms": 2,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        }
+      },
+      "selected_samples_per_frame": [
+        48,
+        48,
+        48,
+        48,
+        48,
+        48,
+        48,
+        48
+      ],
+      "primitives_per_frame": [
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ]
+      ],
+      "geometry_sha256_per_frame": [
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "6efb9cb7cea8b4d779328d1be2a3fc6c9d1cebebdf6edc3d4f28ec60e67bd180",
+        "f4b59254c714aa83c67b80d52a390a6f84daeb6aa0b823065ee9c6849fe7fac0",
+        "3d47e2fd30318f5d76d5ccb7110e39baf9a456da67f05bea0f1e54a19d9b2e44",
+        "214b2f6efa7ecd3966a6cda59198a4f368f4e6f6ea855eb6903367d04932bc85",
+        "68ef322c65c5a2bcc18e1955d1ccd5b4a8b75ba47231f3bf0710dfbe8373a754",
+        "eeda05a9b31d75f40ec239acc5f045dda57f008e510a9b66a27beb58eb64e9c0",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d"
+      ],
+      "measured_uploads": {
+        "texture_uploads": 8,
+        "texture_upload_bytes": 11980800,
+        "vertex_upload_bytes": 0,
+        "node_update_ms": 0.45770895667374134
+      },
+      "initial_uploads": {
+        "texture_uploads": 8,
+        "texture_upload_bytes": 24317952,
+        "vertex_upload_bytes": 0,
+        "node_update_ms": 0.40470692329108715
+      },
+      "known_base_navigation_texture_bytes": 15332352,
+      "gpu_stroke_fill_layers": 0,
+      "process_peak_rss_bytes": 284950528,
+      "quality": [
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8216,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.000119747472075,
+          "foreground_premultiplied_rgba_mae": 0.14225838264299803,
+          "within_experimental_tolerance": true,
+          "frame": 0,
+          "blocking_readback_ms": 1.1010419111698866,
+          "composite_rgba_mae": 0.0018048878205128205,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8377,
+          "candidate_support_pixels": 8375,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 0.9994841951542147,
+          "foreground_premultiplied_rgba_mae": 0.1706024744486283,
+          "within_experimental_tolerance": true,
+          "frame": 2,
+          "blocking_readback_ms": 0.9932920802384615,
+          "composite_rgba_mae": 0.002063301282051282,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8368,
+          "candidate_support_pixels": 8364,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 0.9999192135297837,
+          "foreground_premultiplied_rgba_mae": 0.1394575496207004,
+          "within_experimental_tolerance": true,
+          "frame": 4,
+          "blocking_readback_ms": 6.6194579703733325,
+          "composite_rgba_mae": 0.0020092147435897437,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8216,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.000119747472075,
+          "foreground_premultiplied_rgba_mae": 0.14225838264299803,
+          "within_experimental_tolerance": true,
+          "frame": 7,
+          "blocking_readback_ms": 9.835167089477181,
+          "composite_rgba_mae": 0.0018048878205128205,
+          "composite_rgba_p99_error": 0.0,
+          "composite_within_experimental_tolerance": true
+        }
+      ],
+      "quality_gate_passed": true,
+      "calm_ring_max_chord_error_logical_px": 0.0030113594870689875,
+      "gpu_memory_usage": "not measured; texture/vertex bytes are explicit resource sizes, not total VRAM",
+      "backend_diagnostics": [
+        "qt.scenegraph.general: basic render loop",
+        "qt.rhi.general: Metal device: Apple M1 Pro",
+        "qt.scenegraph.general: MSAA sample count for the swapchain is 4. Alpha channel requested = yes"
+      ],
+      "repeat": 0
+    },
+    {
+      "mode": "gpu_mesh",
+      "scenario": "zoom",
+      "image_sampling_policy": "reference-unit-scale-nearest-scaled-linear-v1",
+      "environment": {
+        "platform": "macOS-26.6.2-arm64-arm-64bit",
+        "host": "Evans-MacBook-Pro-4434.local",
+        "python": "3.11.17",
+        "qt": "6.12.0",
+        "qpa": "cocoa",
+        "graphics_api": "Metal",
+        "render_loop": "basic",
+        "dpr": 2.0,
+        "samples": 4
+      },
+      "first_request_to_swap_ms": 256.71524996869266,
+      "samples": {
+        "payload_ms": [
+          0.07295806426554918,
+          0.2389999572187662,
+          0.23145799059420824,
+          0.22920791525393724,
+          0.27166702784597874,
+          0.2835410414263606,
+          0.20825001411139965,
+          0.23983302526175976
+        ],
+        "prepare_ms": [
+          0.00925001222640276,
+          0.4862910136580467,
+          0.5044579738751054,
+          0.4751670639961958,
+          0.3939580637961626,
+          0.395208946429193,
+          0.3331670304760337,
+          0.4022909561172128
+        ],
+        "request_to_swap_ms": [
+          0.6748740561306477,
+          9.563915897160769,
+          16.102832974866033,
+          9.052457986399531,
+          5.667042103596032,
+          7.9395410139113665,
+          7.646208046935499,
+          10.568124009296298
+        ],
+        "swap_interval_ms": [
+          10.159874917007983,
+          16.398209030739963,
+          9.381083073094487,
+          5.985750001855195,
+          8.19058297201991,
+          7.888625026680529,
+          10.82224992569536
+        ]
+      },
+      "summary": {
+        "payload_ms": {
+          "count": 8,
+          "p50_ms": 0.23522897390648723,
+          "p95_ms": 0.27938513667322695,
+          "p99_ms": 0.2827098604757339,
+          "max_ms": 0.2835410414263606,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "prepare_ms": {
+          "count": 8,
+          "p50_ms": 0.3987499512732029,
+          "p95_ms": 0.49809953779913485,
+          "p99_ms": 0.5031862866599113,
+          "max_ms": 0.5044579738751054,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "request_to_swap_ms": {
+          "count": 8,
+          "p50_ms": 8.495999500155449,
+          "p95_ms": 14.165684836916622,
+          "p99_ms": 15.71540334727615,
+          "max_ms": 16.102832974866033,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        },
+        "swap_interval_ms": {
+          "count": 7,
+          "p50_ms": 9.381083073094487,
+          "p95_ms": 14.725421299226578,
+          "p99_ms": 16.063651484437283,
+          "max_ms": 16.398209030739963,
+          "over_16_7_ms": 0,
+          "over_33_3_ms": 0,
+          "over_50_ms": 0
+        }
+      },
+      "selected_samples_per_frame": [
+        48,
+        48,
+        48,
+        48,
+        48,
+        48,
+        48,
+        48
+      ],
+      "primitives_per_frame": [
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ],
+        [
+          114,
+          10,
+          12
+        ]
+      ],
+      "geometry_sha256_per_frame": [
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d",
+        "6efb9cb7cea8b4d779328d1be2a3fc6c9d1cebebdf6edc3d4f28ec60e67bd180",
+        "f4b59254c714aa83c67b80d52a390a6f84daeb6aa0b823065ee9c6849fe7fac0",
+        "3d47e2fd30318f5d76d5ccb7110e39baf9a456da67f05bea0f1e54a19d9b2e44",
+        "214b2f6efa7ecd3966a6cda59198a4f368f4e6f6ea855eb6903367d04932bc85",
+        "68ef322c65c5a2bcc18e1955d1ccd5b4a8b75ba47231f3bf0710dfbe8373a754",
+        "eeda05a9b31d75f40ec239acc5f045dda57f008e510a9b66a27beb58eb64e9c0",
+        "784927618b0eea76f0f9eb4146a178fc95e3c27cc84fdaafc39e671430782b7d"
+      ],
+      "measured_uploads": {
+        "texture_uploads": 0,
+        "texture_upload_bytes": 0,
+        "vertex_upload_bytes": 298032,
+        "node_update_ms": 0.982624595053494
+      },
+      "initial_uploads": {
+        "texture_uploads": 2,
+        "texture_upload_bytes": 15332352,
+        "vertex_upload_bytes": 42576,
+        "node_update_ms": 0.3543320344761014
+      },
+      "known_base_navigation_texture_bytes": 15332352,
+      "gpu_stroke_fill_layers": 16,
+      "process_peak_rss_bytes": 304562176,
+      "quality": [
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8486,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0037901467324257,
+          "foreground_premultiplied_rgba_mae": 6.26007777412641,
+          "within_experimental_tolerance": true,
+          "frame": 0,
+          "blocking_readback_ms": 1.108083059079945,
+          "composite_rgba_mae": 0.08240584935897435,
+          "composite_rgba_p99_error": 1.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8377,
+          "candidate_support_pixels": 8523,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0032989560987886,
+          "foreground_premultiplied_rgba_mae": 6.222440309744031,
+          "within_experimental_tolerance": true,
+          "frame": 2,
+          "blocking_readback_ms": 3.797790966928005,
+          "composite_rgba_mae": 0.09567441239316239,
+          "composite_rgba_p99_error": 1.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8368,
+          "candidate_support_pixels": 8505,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.00414866381964,
+          "foreground_premultiplied_rgba_mae": 6.886703730645329,
+          "within_experimental_tolerance": true,
+          "frame": 4,
+          "blocking_readback_ms": 1.5154590364545584,
+          "composite_rgba_mae": 0.10868189102564102,
+          "composite_rgba_p99_error": 2.0,
+          "composite_within_experimental_tolerance": true
+        },
+        {
+          "reference_support_pixels": 8215,
+          "candidate_support_pixels": 8486,
+          "silhouette_precision_within_1px": 1.0,
+          "silhouette_recall_within_1px": 1.0,
+          "alpha_coverage_ratio": 1.0037901467324257,
+          "foreground_premultiplied_rgba_mae": 6.26007777412641,
+          "within_experimental_tolerance": true,
+          "frame": 7,
+          "blocking_readback_ms": 6.1700420919805765,
+          "composite_rgba_mae": 0.08240584935897435,
+          "composite_rgba_p99_error": 1.0,
+          "composite_within_experimental_tolerance": true
+        }
+      ],
+      "quality_gate_passed": true,
+      "calm_ring_max_chord_error_logical_px": 0.0030113594870689875,
+      "gpu_memory_usage": "not measured; texture/vertex bytes are explicit resource sizes, not total VRAM",
+      "backend_diagnostics": [
+        "qt.scenegraph.general: basic render loop",
+        "qt.rhi.general: Metal device: Apple M1 Pro",
+        "qt.scenegraph.general: MSAA sample count for the swapchain is 4. Alpha channel requested = yes"
+      ],
+      "repeat": 0
+    }
+  ],
+  "identical_selected_geometry": true,
+  "complete": true
+}

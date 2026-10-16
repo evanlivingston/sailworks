@@ -241,6 +241,18 @@ class SettingsDialog(QDialog):
             lambda palette: self.set_preference("chartPalette", palette)
         )
         form.addRow("Chart palette", self.palette_combo)
+        self.gpu_rendering = QCheckBox("GPU rendering (experimental)")
+        self.gpu_rendering.setChecked(
+            controller.settings.get("mapRenderer", "cpu") == "gpu"
+        )
+        self.gpu_rendering.setToolTip("Restart required.")
+        self.gpu_rendering.toggled.connect(self.set_gpu_rendering)
+        form.addRow(self.gpu_rendering)
+        self.renderer_status = QLabel()
+        self.renderer_status.setWordWrap(True)
+        form.addRow(self.renderer_status)
+        controller.renderer_changed.connect(self.refresh_renderer_status)
+        self.refresh_renderer_status()
         self.library_button = QPushButton("Data Library…")
         self.library_button.setToolTip("Manage imported forecasts, charts and polars")
         self.library_button.clicked.connect(self.show_library)
@@ -341,7 +353,29 @@ class SettingsDialog(QDialog):
             self.controller.settings.__dict__[key] = previous
             dict.__setitem__(self.controller.settings, key, previous)
             QMessageBox.warning(self, "Unable to save setting", str(exc))
-        self.controller.data.redraw()
+        if key != "mapRenderer":
+            self.controller.data.redraw()
+
+    def set_gpu_rendering(self, enabled):
+        self.set_preference("mapRenderer", "gpu" if enabled else "cpu")
+        self.gpu_rendering.blockSignals(True)
+        self.gpu_rendering.setChecked(
+            self.controller.settings.get("mapRenderer", "cpu") == "gpu"
+        )
+        self.gpu_rendering.blockSignals(False)
+        self.refresh_renderer_status()
+
+    def refresh_renderer_status(self):
+        pending = (self.controller.settings.get("mapRenderer", "cpu") == "gpu") != (
+            self.controller.map_renderer == "gpu"
+        )
+        fallback = self.controller.renderer_status().startswith("CPU fallback:")
+        self.renderer_status.setText(
+            "Restart to apply."
+            if pending
+            else "GPU unavailable; using CPU." if fallback else ""
+        )
+        self.renderer_status.setVisible(pending or fallback)
 
     def show_library(self):
         callback = getattr(self.parent(), "show_library", None)

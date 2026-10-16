@@ -498,6 +498,7 @@ class TestGribSampling(unittest.TestCase):
     def test_renderer_releases_evicted_handles_after_cross_file_sampling(self):
         sources = [self.file([record]) for record in self.field(0) + self.field(3)]
         renderer = WindOverlayRenderer(Mock())
+        renderer._source_retention_limit = 2
         job = SimpleNamespace(
             charts=tuple((s,) for s in sources),
             palette=(START + timedelta(minutes=30),),

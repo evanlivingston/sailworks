@@ -33,6 +33,7 @@ class SettingsManager(Storage):
         self.chartPalette = "cm93"
         self.smoothZoom = True
         self.panInertia = True
+        self.mapRenderer = "cpu"
         self.canadianCharts = True
 
         self.load_or_save_default()
