@@ -113,6 +113,66 @@ class QtPreviewChecks(unittest.TestCase):
         self.drain()
         return self.controller.session.log
 
+    def test_live_wind_barbs_keep_size_over_zoomed_base_and_retina(self):
+        from PySide6.QtGui import QImage, QPainter
+        from gweatherrouting.rendering.overlayrenderer import RenderJob, RenderState
+        from gweatherrouting.rendering.windpainter import flatten_wind_columns
+
+        canvas = self.window.map
+        style = (
+            canvas.time_control.time,
+            0.8,
+            True,
+            False,
+            True,
+        )
+        key = (style, canvas.get_scale_factor(), ())
+        job = RenderJob(key, MapViewport(canvas), (), 1, style)
+        job.barb_flat = flatten_wind_columns(
+            [[(0, 10, (canvas._center_lat, canvas._center_lon))]]
+        )
+        canvas.wind._states[canvas] = RenderState(key=key, frame=(job, None))
+        original_zoom = canvas._zoom
+        for factor in (1, 2):
+            bounds = []
+            for zoom in (original_zoom, original_zoom + 0.4, original_zoom + 2):
+                canvas._zoom = zoom
+                canvas._zoom_animating = True
+                image = QImage(
+                    canvas.width() * factor,
+                    canvas.height() * factor,
+                    QImage.Format.Format_ARGB32_Premultiplied,
+                )
+                image.setDevicePixelRatio(factor)
+                image.fill(Qt.GlobalColor.transparent)
+                painter = QPainter(image)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                canvas._paint_wind_barbs(painter)
+                painter.end()
+                import numpy as np
+
+                pixels = np.frombuffer(image.constBits(), dtype=np.uint8).reshape(
+                    image.height(), image.bytesPerLine()
+                )
+                ys, xs = np.nonzero(pixels[:, 3 : image.width() * 4 : 4])
+                self.assertGreater(len(xs), 0)
+                bounds.append((xs.min(), ys.min(), xs.max(), ys.max()))
+            self.assertEqual(bounds, [bounds[0]] * 3)
+            self.assertAlmostEqual(
+                (bounds[0][3] - bounds[0][1] + 1) / factor, 20, delta=1
+            )
+        canvas._zoom = original_zoom
+        canvas._zoom_animating = False
+
+        # The live overlay must still paint when the base/navigation caches
+        # are reused, rather than becoming part of either scaled image.
+        with patch.object(
+            canvas, "_paint_wind_barbs", wraps=canvas._paint_wind_barbs
+        ) as live:
+            canvas.grab()
+            canvas.grab()
+            self.assertEqual(live.call_count, 2)
+
     def test_floating_panels_redock_and_reset_without_losing_content(self):
         from gweatherrouting.qt.dockchrome import DockTitleBar, DOCK_MIN_WIDTH
 
@@ -2657,6 +2717,34 @@ class QtPreviewChecks(unittest.TestCase):
         self.window.weather_panel.wind.toggle()
         self.window.dashboard_action.trigger()
         self.assertTrue(self.window.map.dashboard_visible)
+
+    def test_weather_barb_density_updates_maps_and_persists(self):
+        from gweatherrouting.core.settings import SettingsManager
+        from gweatherrouting.rendering.windpainter import BARB_DENSITIES
+
+        panel = self.window.weather_panel
+        canvas = self.window.map
+        with (
+            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+            patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
+            patch.object(self.controller.data, "redraw") as redraw,
+            patch.object(
+                canvas.wind, "live_geometry_for_view", return_value=({}, 0.8)
+            ) as geometry,
+        ):
+            ORIGINAL_STORAGE_LOAD(self.controller.settings)
+            for key, _label, _spacing in BARB_DENSITIES:
+                panel.barb_density.setCurrentIndex(panel.barb_density.findData(key))
+                self.assertEqual(self.controller.settings.gribBarbDensity, key)
+                panel.refresh()
+                self.assertEqual(panel.barb_density.currentData(), key)
+                canvas._paint_wind_barbs(None)
+                self.assertEqual(geometry.call_args.kwargs["density"], key)
+            redraw.assert_called()
+            with patch.object(Storage, "load_or_save_default", ORIGINAL_STORAGE_LOAD):
+                self.assertEqual(SettingsManager().gribBarbDensity, "all")
+        self.window.views.setCurrentWidget(self.window.logs_view)
+        self.assertEqual(panel.barb_density.currentData(), "all")
 
     def test_weather_panel_controls_and_layout_survive_restart(self):
         self.window.weather_action.trigger()

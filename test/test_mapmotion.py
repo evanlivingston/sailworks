@@ -302,6 +302,7 @@ class TestDisplayPreferences(unittest.TestCase):
                 settings = SettingsManager()
                 self.assertTrue(settings.smoothZoom)
                 self.assertTrue(settings.panInertia)
+                self.assertEqual(settings.gribBarbDensity, "standard")
                 canvas = MotionMap()
                 canvas.bind_display_settings(settings)
                 settings.smoothZoom = False
@@ -341,4 +342,9 @@ class TestDisplayPreferences(unittest.TestCase):
                     self.assertTrue(switch.get_active())
                     switch.set_active(False)
                     self.assertFalse(settings[key])
+                density = window.builder.get_object("grib-barb-density")
+                self.assertEqual(density.get_active_id(), "standard")
+                density.set_active_id("all")
+                self.assertEqual(settings.gribBarbDensity, "all")
+                self.assertEqual(SettingsManager().gribBarbDensity, "all")
                 window.window.destroy()

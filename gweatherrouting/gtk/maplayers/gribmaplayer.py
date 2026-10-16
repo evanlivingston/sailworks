@@ -67,7 +67,13 @@ class GribMapLayer(GObject.GObject):
             getattr(self.settings_manager, "gribIsobarsVisible", True),
         )
         sources = tuple((grib,) for grib in self.grib_manager.gribs)
-        self._renderer.draw(gpsmap, cr, sources, style)
+        self._renderer.draw(
+            gpsmap,
+            cr,
+            sources,
+            style,
+            barb_density=getattr(self.settings_manager, "gribBarbDensity", "standard"),
+        )
 
     def do_render(self, gpsmap):
         pass

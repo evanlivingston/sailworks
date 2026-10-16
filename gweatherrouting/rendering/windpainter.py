@@ -31,6 +31,91 @@ except ImportError:  # pragma: no cover - matplotlib pulls contourpy in practice
 #: Isobar spacing in hPa; levels snap to multiples of this interval.
 ISOBAR_INTERVAL_HPA = 4.0
 
+#: Fixed screen-size wind barb geometry (CSS pixels, never zoom-scaled).
+BARB_SHAFT_LEN = 20.0
+BARB_SPACING = 3.5
+BARB_LEN = 8.0
+#: Screen-space cell size for thinning live barbs; bounds per-frame work.
+BARB_MIN_SPACING_PX = 44.0
+BARB_MAX_COUNT = 900
+BARB_DENSITIES = (
+    ("sparse", "Sparse", 64.0),
+    ("standard", "Standard", BARB_MIN_SPACING_PX),
+    ("dense", "Dense", 28.0),
+    ("very_dense", "Very dense", 16.0),
+    ("all", "All forecast points", 0.0),
+)
+_KT_PER_MS = 1.94384
+
+#: Precomputed bucket colors matching wind_color()'s 2 m/s intervals.
+_BUCKET_COLORS = tuple(wind_color(float(b)) for b in range(0, 30, 2))
+
+
+def barb_bucket_colors():
+    """Public bucket colors for Qt foreground painting (r, g, b floats)."""
+    return list(_BUCKET_COLORS)
+
+
+def barb_density_parameters(density):
+    """Cell size and proportional symbol budget; 'all' is unthinned/uncapped."""
+    step = next(
+        (spacing for key, _label, spacing in BARB_DENSITIES if key == density),
+        BARB_MIN_SPACING_PX,
+    )
+    if step == 0:
+        return 0.0, None
+    return step, round(BARB_MAX_COUNT * (BARB_MIN_SPACING_PX / step) ** 2)
+
+
+def _speed_bucket(wspeed):
+    if wspeed < 0:
+        return 0
+    bucket = int(wspeed // 2)
+    return bucket if bucket < len(_BUCKET_COLORS) else len(_BUCKET_COLORS) - 1
+
+
+def flatten_wind_columns(data):
+    """Flatten barb columns into numpy vectors for cheap per-frame reprojection.
+
+    Columns hold ``(direction, speed, (lat, lon))`` tuples. Returns
+    ``(dirs, speeds, lats, lons)`` or ``None`` when there is nothing to draw.
+    """
+    if not data:
+        return None
+    points = [point for column in data for point in column]
+    if not points:
+        return None
+    dirs, speeds, coordinates = zip(*points)
+    lats, lons = zip(*coordinates)
+    return (
+        np.array(dirs, dtype=np.float64),
+        np.array(speeds, dtype=np.float64),
+        np.array(lats, dtype=np.float64),
+        np.array(lons, dtype=np.float64),
+    )
+
+
+def mercator_project_flat(lats, lons, center_lat, center_lon, zoom, width, height):
+    """Project vectors to screen pixels for an explicit viewport size.
+
+    Used by foreground overlays whose canvas reports a padded allocation
+    (Qt base images) while painting into an unpadded widget.
+    """
+    tile = (2.0**zoom) * 256.0
+    cx = (center_lon + 180.0) / 360.0 * tile
+    clat = max(-85.051129, min(85.051129, center_lat))
+    clat_rad = math.radians(clat)
+    cy = (
+        (1.0 - math.log(math.tan(clat_rad) + 1.0 / math.cos(clat_rad)) / math.pi)
+        / 2.0
+        * tile
+    )
+    px = (lons + 180.0) / 360.0 * tile
+    lat_clipped = np.clip(lats, -85.051129, 85.051129)
+    lat_rad = np.radians(lat_clipped)
+    py = (1.0 - np.log(np.tan(lat_rad) + 1.0 / np.cos(lat_rad)) / math.pi) / 2.0 * tile
+    return px - cx + width / 2.0, py - cy + height / 2.0
+
 
 @lru_cache(maxsize=16384)
 def wind_on_ground(lat, lon):
@@ -109,7 +194,13 @@ class WindPainter:
 
         cr.restore()
 
-    def draw(self, gpsmap, cr, data, pressure=None):
+    def draw(self, gpsmap, cr, data, pressure=None, draw_barbs=True):
+        """Draw the cached background (fill + isobars) and, optionally, barbs.
+
+        Background rendering passes ``draw_barbs=False`` so barbs stay out of
+        the zoom-scaled raster; the foreground repaints them live via
+        :meth:`draw_barbs_live` at a fixed screen size.
+        """
         if (not data or len(data) == 0) and not pressure:
             return
 
@@ -124,10 +215,11 @@ class WindPainter:
         # Isobars sit above the fill so thin lines stay readable.
         self.draw_isobars(gpsmap, cr, pressure)
 
-        if not data:
+        if not data or not draw_barbs:
             return
 
-        # Draw wind barbs
+        # Legacy path: bake barbs into the surface (kept for compatibility).
+        # The live overlay below is the preferred foreground.
         cr.set_line_width(1)
         points = self._barb_points(gpsmap, data, scale)
         if points:
@@ -138,6 +230,208 @@ class WindPainter:
                 if gpsmap.render_cancelled():
                     return
                 self.draw_wind_barb(cr, xx, yy, p[0], p[1])
+
+    def draw_barbs_live(
+        self,
+        gpsmap,
+        cr,
+        data_or_flat,
+        opacity=None,
+        hide_on_ground=None,
+        on_ground=None,
+    ):
+        """Draw crisp fixed-size barbs for the current viewport.
+
+        Reprojects cached wind vectors every frame instead of scaling a
+        raster, so zooming never pixelates. Thins to a screen-space grid
+        and batches one stroke/fill per color bucket.
+        Returns the number of barbs drawn.
+        """
+        if data_or_flat is None:
+            return 0
+        if (
+            isinstance(data_or_flat, tuple)
+            and len(data_or_flat) == 4
+            and isinstance(data_or_flat[0], np.ndarray)
+        ):
+            flat = data_or_flat
+        else:
+            flat = flatten_wind_columns(data_or_flat)
+        if flat is None:
+            return 0
+        if opacity is None:
+            opacity = getattr(self.settings_manager, "gribArrowOpacity", 0.8)
+        if hide_on_ground is None:
+            hide_on_ground = not getattr(
+                self.settings_manager, "gribArrowOnGround", True
+            )
+        if on_ground is None:
+            on_ground = self._on_ground
+        step, max_count = barb_density_parameters(
+            getattr(self.settings_manager, "gribBarbDensity", "standard")
+        )
+        geometry, count = self.live_geometry_for_view(
+            flat,
+            gpsmap._center_lat,
+            gpsmap._center_lon,
+            gpsmap._zoom,
+            gpsmap.get_allocated_width(),
+            gpsmap.get_allocated_height(),
+            hide_on_ground=hide_on_ground,
+            on_ground=on_ground,
+            step=step,
+            max_count=max_count,
+        )
+        self.paint_barb_geometry(cr, geometry, opacity)
+        return count
+
+    @staticmethod
+    def build_barb_geometry(xxs, yys, dirs, speeds):
+        """Compute screen-space barb segments grouped by color bucket."""
+        buckets: dict[int, tuple[list, list, list]] = {}
+        for x, y, wdir, wspeed in zip(xxs, yys, dirs, speeds):
+            if not all(math.isfinite(value) for value in (x, y, wdir, wspeed)):
+                continue
+            angle = math.radians(float(wdir))
+            speed = float(wspeed)
+            bucket = _speed_bucket(speed)
+            entry = buckets.get(bucket)
+            if entry is None:
+                entry = buckets[bucket] = ([], [], [])
+            lines, tris, dots = entry
+            kt = speed * _KT_PER_MS
+            sin_a = math.sin(angle)
+            cos_a = math.cos(angle)
+            shaft_x, shaft_y = sin_a, -cos_a
+            perp_x, perp_y = cos_a, sin_a
+            tip_x = x + shaft_x * BARB_SHAFT_LEN
+            tip_y = y + shaft_y * BARB_SHAFT_LEN
+            lines.append((float(x), float(y), float(tip_x), float(tip_y)))
+            if kt < 2.5:
+                dots.append((float(x), float(y)))
+                continue
+            dist = BARB_SHAFT_LEN
+            remaining = kt
+            while remaining >= 47.5:
+                ax = x + shaft_x * dist
+                ay = y + shaft_y * dist
+                bx = ax + perp_x * BARB_LEN
+                by = ay + perp_y * BARB_LEN
+                cx = x + shaft_x * (dist - BARB_SPACING)
+                cy = y + shaft_y * (dist - BARB_SPACING)
+                tris.append((ax, ay, bx, by, cx, cy))
+                dist -= BARB_SPACING
+                remaining -= 50.0
+            while remaining >= 7.5:
+                ax = x + shaft_x * dist
+                ay = y + shaft_y * dist
+                lines.append((ax, ay, ax + perp_x * BARB_LEN, ay + perp_y * BARB_LEN))
+                dist -= BARB_SPACING
+                remaining -= 10.0
+            if remaining >= 2.5:
+                ax = x + shaft_x * dist
+                ay = y + shaft_y * dist
+                lines.append(
+                    (ax, ay, ax + perp_x * BARB_LEN * 0.5, ay + perp_y * BARB_LEN * 0.5)
+                )
+        return buckets
+
+    @staticmethod
+    def paint_barb_geometry(cr, geometry, opacity):
+        """Paint grouped geometry with one stroke/fill per color bucket."""
+        if not geometry:
+            return
+        cr.save()
+        cr.set_line_width(1.0)
+        cr.set_line_cap(cairo.LINE_CAP_BUTT)
+        for bucket in sorted(geometry):
+            lines, tris, dots = geometry[bucket]
+            color = _BUCKET_COLORS[bucket]
+            cr.set_source_rgba(color[0], color[1], color[2], opacity)
+            if lines or dots:
+                for x1, y1, x2, y2 in lines:
+                    cr.move_to(x1, y1)
+                    cr.line_to(x2, y2)
+                for x, y in dots:
+                    cr.move_to(x + 2.0, y)
+                    cr.arc(x, y, 2.0, 0, 2 * math.pi)
+                cr.stroke()
+            if tris:
+                for ax, ay, bx, by, cx, cy in tris:
+                    cr.move_to(ax, ay)
+                    cr.line_to(bx, by)
+                    cr.line_to(cx, cy)
+                    cr.close_path()
+                cr.fill()
+        cr.restore()
+
+    @staticmethod
+    def live_geometry_for_view(
+        flat,
+        center_lat,
+        center_lon,
+        zoom,
+        width,
+        height,
+        hide_on_ground=False,
+        on_ground=None,
+        step=BARB_MIN_SPACING_PX,
+        max_count=BARB_MAX_COUNT,
+    ):
+        """Toolkit-independent live barb geometry for an explicit viewport.
+
+        Returns ``(geometry, count)`` where geometry groups screen-space
+        lines/triangles/dots by color bucket. Used by the Qt foreground
+        painter; the cairo path above shares the same math.
+        """
+        if flat is None:
+            return {}, 0
+        dirs, speeds, lats, lons = flat
+        if len(dirs) == 0:
+            return {}, 0
+        xxs, yys = mercator_project_flat(
+            lats, lons, center_lat, center_lon, zoom, width, height
+        )
+        xxs = np.asarray(xxs, dtype=np.float64)
+        yys = np.asarray(yys, dtype=np.float64)
+        margin = BARB_SHAFT_LEN + BARB_LEN + 4.0
+        visible = (
+            (xxs >= -margin)
+            & (xxs <= width + margin)
+            & (yys >= -margin)
+            & (yys <= height + margin)
+            & np.isfinite(xxs)
+            & np.isfinite(yys)
+            & np.isfinite(dirs)
+            & np.isfinite(speeds)
+        )
+        idx = np.flatnonzero(visible)
+        if len(idx) == 0:
+            return {}, 0
+        if hide_on_ground and on_ground is not None:
+            idx = np.array(
+                [i for i in idx if not on_ground(float(lats[i]), float(lons[i]))],
+                dtype=np.int64,
+            )
+        # Select one native sample per cell in NumPy, avoiding a Python
+        # loop over every visible model node during each gesture tick.
+        kept_arr = idx
+        if step > 0:
+            cols = int(math.ceil((width + 2 * margin) / step)) + 1
+            cells = np.floor((yys[idx] + margin) / step).astype(
+                np.int64
+            ) * cols + np.floor((xxs[idx] + margin) / step).astype(np.int64)
+            _, first = np.unique(cells, return_index=True)
+            kept_arr = idx[np.sort(first)]
+        if max_count is not None and len(kept_arr) > max_count:
+            # Keep coverage across the whole view, including large displays.
+            kept_arr = kept_arr[
+                np.linspace(0, len(kept_arr) - 1, max_count, dtype=np.int64)
+            ]
+        kxx, kyy = xxs[kept_arr], yys[kept_arr]
+        kdirs, kspeeds = dirs[kept_arr], speeds[kept_arr]
+        geometry = WindPainter.build_barb_geometry(kxx, kyy, kdirs, kspeeds)
+        return geometry, int(len(kxx))
 
     def draw_isobars(self, gpsmap, cr, pressure):
         """Draw mean-sea-level pressure contours with configurable spacing and labels."""

@@ -174,6 +174,99 @@ class TestWindOverlay(unittest.TestCase):
         self.drain()
         self.assertEqual(self.renderer._load_wind.call_count, 2)
 
+    def test_barbs_stay_out_of_raster_and_keep_size_through_zoom(self):
+        # A lone sample produces no fill: all visible ink must be live barbs.
+        self.renderer._load_wind.return_value = [[(0, 10, (47.6, -122.4))]]
+        self.renderer._load_pressure = Mock(return_value=[])
+        self.draw()
+        self.drain()
+        job, background = self.renderer._states[self.canvas].frame
+        background.flush()
+        self.assertFalse(any(bytes(background.get_data())))
+        self.canvas._zoom_animating = True
+        for zoom in (12, 12.3, 13, 14):
+            self.canvas._zoom = zoom
+            self.clear_output()
+            self.draw()
+            self.surface.flush()
+            pixels = np.ndarray(
+                (300, 400, 4),
+                dtype=np.uint8,
+                buffer=self.surface.get_data(),
+                strides=(self.surface.get_stride(), 4, 1),
+            )
+            ys, xs = np.nonzero(pixels[:, :, 3])
+            self.assertGreater(len(xs), 0)
+            # Same position/size at each zoom; never a stretched preview.
+            bounds = (xs.min(), ys.min(), xs.max(), ys.max())
+            if zoom == 12:
+                initial = bounds
+            self.assertEqual(bounds, initial)
+        self.renderer._load_wind.assert_called_once()
+
+    def test_land_filter_runs_on_worker_and_publishes_only_water_samples(self):
+        self.settings.gribArrowOnGround = False
+        self.renderer._load_wind.return_value = [
+            [
+                (0, 10, (47.6, -122.4)),
+                (0, 10, (47.61, -122.41)),
+            ]
+        ]
+        self.renderer._load_pressure = Mock(return_value=[])
+        ui_thread = get_ident()
+
+        def on_ground(lat, lon):
+            self.assertNotEqual(get_ident(), ui_thread)
+            return lat == 47.6
+
+        self.renderer._land_mask.contains = Mock(side_effect=on_ground)
+        self.draw()
+        self.drain()
+        job, _ = self.renderer._states[self.canvas].frame
+        np.testing.assert_array_equal(job.barb_flat[2], [47.61])
+        self.draw()
+        self.assertEqual(self.renderer._land_mask.contains.call_count, 2)
+
+    def test_stationary_repaints_reuse_geometry_but_zoom_reprojects(self):
+        self.draw()
+        self.drain()
+        with patch.object(
+            WindPainter,
+            "live_geometry_for_view",
+            wraps=WindPainter.live_geometry_for_view,
+        ) as build:
+            self.draw()
+            self.draw()
+            self.assertEqual(build.call_count, 1)
+            self.canvas._zoom_animating = True
+            self.canvas._zoom += 0.5
+            self.draw()
+            self.draw()
+            self.assertEqual(build.call_count, 2)
+        self.renderer._load_wind.assert_called_once()
+
+    def test_density_changes_rebuild_foreground_without_reloading_weather(self):
+        self.draw()
+        self.drain()
+        frame = self.renderer._states[self.canvas].frame
+        with patch.object(
+            WindPainter,
+            "live_geometry_for_view",
+            wraps=WindPainter.live_geometry_for_view,
+        ) as build:
+            self.draw()
+            standard_step = build.call_args.kwargs["step"]
+            self.settings.gribBarbDensity = "dense"
+            self.draw()
+            self.assertLess(build.call_args.kwargs["step"], standard_step)
+            self.settings.gribBarbDensity = "all"
+            self.draw()
+            self.assertEqual(build.call_args.kwargs["step"], 0)
+            self.assertIsNone(build.call_args.kwargs["max_count"])
+            self.assertEqual(build.call_count, 3)
+        self.assertIs(self.renderer._states[self.canvas].frame, frame)
+        self.renderer._load_wind.assert_called_once()
+
     def test_forecast_style_sources_and_retina_invalidate_frame(self):
         self.draw()
         self.drain()
