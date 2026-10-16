@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "center": [48.4, -123.4],
+  "zoom": 9.0,
+  "time": "2026-10-15T12:00:00",
+  "navigation_points": 10000,
+  "log_points": 100000,
+  "wind_side": 316,
+  "datasets": []
+}
