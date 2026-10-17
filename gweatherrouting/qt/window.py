@@ -46,6 +46,7 @@ from .navigationpanel import NavigationPanel
 from .forecasttimeline import ForecastTimeline
 from .marinepanel import MarinePanel
 from .weatherpanel import WeatherPanel
+from .chartdebugpanel import ChartDebugPanel
 from .marinesettings import MarineSettings
 
 
@@ -229,6 +230,13 @@ class PreviewWindow(QMainWindow):
         self.weather_dock.toggleViewAction().triggered.connect(
             lambda checked: self._show_panel(self.weather_dock) if checked else None
         )
+        self.chart_debug_panel = ChartDebugPanel(
+            controller, self._active_map, (self.map, self.log_map)
+        )
+        self.chart_debug_dock = self._dock(
+            "Chart Debug", "chart-debug", self.chart_debug_panel
+        )
+        self.chart_debug_dock.hide()
         view_menu = self.menuBar().addMenu("View")
         view_menu.addAction(self.nmea_dock.toggleViewAction())
         view_menu.addAction(self.routing_dock.toggleViewAction())
@@ -237,6 +245,7 @@ class PreviewWindow(QMainWindow):
         view_menu.addAction(self.polar_manager_dock.toggleViewAction())
         view_menu.addAction(self.navigation_dock.toggleViewAction())
         view_menu.addAction(self.weather_dock.toggleViewAction())
+        view_menu.addAction(self.chart_debug_dock.toggleViewAction())
         view_menu.addAction(toolbar.toggleViewAction())
         view_menu.addAction(header.toggleViewAction())
         window_menu = self.menuBar().addMenu("Window")
