@@ -1,4 +1,4 @@
-"""Core notification scheduling can be supplied by a non-GLib frontend."""
+"""Core notification scheduling is injected at the UI boundary."""
 
 import unittest
 from unittest.mock import patch
@@ -60,3 +60,15 @@ class TestCoreScheduling(unittest.TestCase):
         self.core._reset_nmea(None)
         self.drain()
         self.assertFalse(events)
+
+
+class TestDefaultScheduling(unittest.TestCase):
+    def test_default_delivers_synchronously_without_importing_gi(self):
+        import sys
+        from gweatherrouting.core.scheduling import schedule_idle
+
+        with patch.dict(sys.modules, {"gi": None, "gi.repository": None}):
+            calls = []
+            result = schedule_idle(lambda value: calls.append(value) or 42, "event")
+        self.assertEqual(calls, ["event"])
+        self.assertEqual(result, 42)

@@ -189,7 +189,7 @@ class TestBatchCurrents(unittest.TestCase):
 
     def test_real_coastline_provider_accepts_batched_segments(self):
         from osgeo import ogr
-        from gweatherrouting.gtk.charts.gshhs import GSHHSVectorChart
+        from gweatherrouting.rendering.gshhs import GSHHSVectorChart
 
         data = ogr.GetDriverByName("Memory").CreateDataSource("")
         layer = data.CreateLayer("island", geom_type=ogr.wkbPolygon)
@@ -221,7 +221,7 @@ class TestBatchCurrents(unittest.TestCase):
 
     def test_coastline_repairs_invalid_land_and_checks_entire_segments(self):
         from osgeo import ogr
-        from gweatherrouting.gtk.charts.gshhs import GSHHSVectorChart
+        from gweatherrouting.rendering.gshhs import GSHHSVectorChart
 
         data = ogr.GetDriverByName("Memory").CreateDataSource("")
         layer = data.CreateLayer("land", geom_type=ogr.wkbPolygon)

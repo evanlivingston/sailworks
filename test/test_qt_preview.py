@@ -1,4 +1,4 @@
-"""Optional Qt integration runs in isolation from the existing GTK test suite."""
+"""Qt integration runs in an isolated process."""
 
 import importlib.util
 import os
@@ -8,9 +8,7 @@ import unittest
 from pathlib import Path
 
 
-@unittest.skipUnless(
-    importlib.util.find_spec("PySide6"), "Install the qt extra to test Qt"
-)
+@unittest.skipUnless(importlib.util.find_spec("PySide6"), "Install PySide6 to test Qt")
 class TestQtPreview(unittest.TestCase):
     def test_isolated_qt_frontend(self):
         environment = dict(

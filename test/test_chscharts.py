@@ -11,7 +11,6 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import cairo
-from gi.repository import GLib
 
 from gweatherrouting.core.chscharts import (
     CHSTileSource,
@@ -19,31 +18,8 @@ from gweatherrouting.core.chscharts import (
     tile_bbox,
     tile_in_canada,
 )
-from gweatherrouting.gtk.charts.chsrenderer import CHSRenderer
-from test.map_helpers import MapCanvas as TestMap
-
-
-class TestCHSPreferences(unittest.TestCase):
-    def test_settings_window_switch_persists(self):
-        from gweatherrouting.gtk.settings.settingsmanager import SettingsManager
-        from gweatherrouting.gtk.settings.settingswindow import SettingsWindow
-        from gweatherrouting.core.marine.coverage import CoveragePlanner
-
-        with TemporaryDirectory() as directory:
-            with patch("gweatherrouting.core.storage.DATA_DIR", directory):
-                settings = SettingsManager()
-                parent = SimpleNamespace(chart_manager=SimpleNamespace(charts=[]))
-                core = SimpleNamespace(
-                    connectionManager=SimpleNamespace(connections=[]),
-                    marine_manager=SimpleNamespace(coverage_planner=CoveragePlanner()),
-                )
-                window = SettingsWindow(parent, settings, core)
-                self.addCleanup(window.window.destroy)
-                switch = window.builder.get_object("canadian-charts")
-                self.assertTrue(switch.get_active())
-                switch.set_active(False)
-                self.assertFalse(settings.canadianCharts)
-                self.assertFalse(SettingsManager().canadianCharts)
+from gweatherrouting.rendering.chsrenderer import CHSRenderer
+from test.map_helpers import MapCanvas as TestMap, QueuedScheduler
 
 
 def tile_key(lat=49.3, lon=-123.17, zoom=14, factor=1):
@@ -122,7 +98,8 @@ class TestCHSBackgroundRendering(unittest.TestCase):
     def setUp(self):
         self.temporary = TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.renderer = CHSRenderer(self.temporary.name)
+        self.schedule = QueuedScheduler()
+        self.renderer = CHSRenderer(self.temporary.name, schedule=self.schedule)
         self.renderer.set_enabled(True)
         self.canvas = TestMap()
         self.canvas._center_lat, self.canvas._center_lon, self.canvas._zoom = (
@@ -138,10 +115,9 @@ class TestCHSBackgroundRendering(unittest.TestCase):
         self.renderer.draw(self.canvas, self.cr)
 
     def drain(self, done):
-        context = GLib.MainContext.default()
         deadline = time.monotonic() + 2
         while not done() and time.monotonic() < deadline:
-            context.iteration(False)
+            self.schedule.drain()
             time.sleep(0.001)
         self.assertTrue(done())
 
@@ -198,7 +174,7 @@ class TestCHSBackgroundRendering(unittest.TestCase):
         self.drain(lambda: not self.renderer._inflight and not self.renderer._pending)
         self.draw()
         with patch(
-            "gweatherrouting.gtk.charts.chsrenderer.time.monotonic",
+            "gweatherrouting.rendering.chsrenderer.time.monotonic",
             return_value=time.monotonic() + 1,
         ):
             self.draw()
@@ -327,18 +303,18 @@ class TestCHSBackgroundRendering(unittest.TestCase):
         new = cairo.ImageSurface(cairo.FORMAT_ARGB32, 256, 256)
         self.renderer._tiles[key] = (new, time.time())
         with patch(
-            "gweatherrouting.gtk.charts.chsrenderer.time.monotonic", return_value=10
+            "gweatherrouting.rendering.chsrenderer.time.monotonic", return_value=10
         ):
             self.draw()
             previous = self.renderer._blends[self.canvas][key][2]
             self.assertIsNotNone(previous)
             self.canvas.add_tick_callback.assert_called_once()
         with patch(
-            "gweatherrouting.gtk.charts.chsrenderer.time.monotonic", return_value=10.1
+            "gweatherrouting.rendering.chsrenderer.time.monotonic", return_value=10.1
         ):
             self.assertTrue(self.renderer._tick(self.canvas, None))
         with patch(
-            "gweatherrouting.gtk.charts.chsrenderer.time.monotonic", return_value=10.3
+            "gweatherrouting.rendering.chsrenderer.time.monotonic", return_value=10.3
         ):
             self.assertFalse(self.renderer._tick(self.canvas, None))
             self.draw()

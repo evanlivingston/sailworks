@@ -1,4 +1,4 @@
-"""Isolate the Qt portrayal-worker tests from GTK's process-wide GUI state."""
+"""Run Qt portrayal-worker tests in an isolated process."""
 
 import importlib.util
 import os

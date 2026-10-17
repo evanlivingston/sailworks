@@ -1,4 +1,4 @@
-"""Toolkit-independent Mercator coordinates shared by GTK and Qt canvases."""
+"""Toolkit-independent Mercator coordinates used by the map canvas."""
 
 import math
 from typing import Callable

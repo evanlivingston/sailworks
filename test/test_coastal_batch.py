@@ -9,7 +9,7 @@ import numpy as np
 from osgeo import ogr
 
 from gweatherrouting.core.marine.fields import FieldSelection
-from gweatherrouting.gtk.charts.gshhs import GSHHSVectorChart
+from gweatherrouting.rendering.gshhs import GSHHSVectorChart
 from test.test_marine_fields import START, field
 from test.test_current_routing import setup_router, current_field
 from gweatherrouting.core.marine.chs import DownloadCancelledError

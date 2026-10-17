@@ -9,16 +9,6 @@ run:
 build-standalone:
 	nuitka3 gweatherrouting/__main__.py --follow-imports --follow-stdlib 
 
-build-appimage:
-	pip install pyinstaller
-	cd appimage && bash appimagegen.sh -y
-
-build-windows:
-	powershell -ExecutionPolicy Bypass -File windows/build.ps1
-
-build-flatpak:
-	cd flatpak && bash flatpak-gen.sh -y
-
 setup-macos:
 	bash tools/macos/setup.sh
 

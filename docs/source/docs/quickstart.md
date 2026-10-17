@@ -4,38 +4,7 @@ Quickstart
 Installation
 ------------
 
-The recommended way to install GWeatherRouting is via **Flatpak** from Flathub:
-
-```
-flatpak install flathub org.gweatherrouting.gweatherrouting
-```
-
-Once installed, you can run it with:
-
-```
-flatpak run org.gweatherrouting.gweatherrouting
-```
-
-You can also browse the app page on [Flathub](https://flathub.org/apps/org.gweatherrouting.gweatherrouting).
-
-### Alternative: AppImage
-
-You can download the latest AppImage from [GitHub releases](https://github.com/dakk/gweatherrouting/releases). After downloading, make it executable:
-
-```
-chmod +x GWeatherRouting-linux-x86_64.AppImage
-```
-
-<img src="../_static/images/quickstart/1.png">
-
-### Alternative: Windows
-
-Download the latest [Windows portable ZIP](https://github.com/dakk/gweatherrouting/releases/download/v0.3.6/GWeatherRouting-win64.zip), extract it, and run `GWeatherRouting.bat` (or `GWeatherRouting-noconsole.vbs` to hide the console window).
-
-### Alternative: From source
-
-You can install gweatherrouting from source, following the instructions in the repository [README.md](https://github.com/dakk/gweatherrouting).
-
+Install this fork from source using the repository [README](https://github.com/evanlivingston/gweatherrouting#installation), then launch `gweatherrouting`. The former GTK portable build recipes have been retired.
 
 ### Chart navigation on macOS
 

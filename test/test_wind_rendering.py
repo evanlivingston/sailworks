@@ -10,18 +10,20 @@ import unittest
 from unittest.mock import Mock, patch
 
 import cairo
-from gi.repository import GLib
 import numpy as np
 from osgeo import gdal
 
 from gweatherrouting.core.grib import Grib
-from gweatherrouting.gtk.maplayers.gribmaplayer import (
-    GribMapLayer,
+from gweatherrouting.rendering.windpainter import (
     WindPainter,
     wind_on_ground,
 )
-from gweatherrouting.gtk.maplayers.windrenderer import DisplayGrib, WindLandMask
-from test.map_helpers import MapCanvas as TestMap
+from gweatherrouting.rendering.windrenderer import (
+    DisplayGrib,
+    WindLandMask,
+    WindOverlayRenderer,
+)
+from test.map_helpers import MapCanvas as TestMap, QueuedScheduler
 
 
 class TestDisplayGrib(unittest.TestCase):
@@ -98,7 +100,7 @@ class TestDisplayGrib(unittest.TestCase):
                 },
             }
         ]
-        with patch("gweatherrouting.gtk.maplayers.windrenderer.COUNTRY_SHAPES", shapes):
+        with patch("gweatherrouting.rendering.windrenderer.COUNTRY_SHAPES", shapes):
             mask = WindLandMask()
             self.assertTrue(mask.contains(0.5, 0.5))
             self.assertFalse(mask.contains(2, 2))
@@ -112,8 +114,8 @@ class TestWindOverlay(unittest.TestCase):
         self.clock = SimpleNamespace(time=datetime(2026, 1, 1), connect=Mock())
         self.source = object()
         self.manager = SimpleNamespace(gribs=[self.source])
-        self.layer = GribMapLayer(self.manager, self.clock, self.settings)
-        self.renderer = self.layer._renderer
+        self.schedule = QueuedScheduler()
+        self.renderer = WindOverlayRenderer(WindPainter, schedule=self.schedule)
         self.surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 400, 300)
         self.cr = cairo.Context(self.surface)
         self.renderer._load_wind = Mock(
@@ -122,16 +124,26 @@ class TestWindOverlay(unittest.TestCase):
                 for col in range(3)
             ]
         )
-        self.addCleanup(self.layer._forget, self.canvas)
+        self.addCleanup(self.renderer.forget, self.canvas)
 
     def draw(self):
-        self.layer.do_draw(self.canvas, self.cr)
+        self.renderer.draw(
+            self.canvas,
+            self.cr,
+            tuple((grib,) for grib in self.manager.gribs),
+            (
+                self.clock.time,
+                self.settings.gribArrowOpacity,
+                self.settings.gribArrowOnGround,
+                True,
+            ),
+            barb_density=getattr(self.settings, "gribBarbDensity", "standard"),
+        )
 
     def drain(self):
         deadline = time.monotonic() + 2
-        context = GLib.MainContext.default()
         while self.renderer._running and time.monotonic() < deadline:
-            context.iteration(False)
+            self.schedule.drain()
             time.sleep(0.001)
         self.assertFalse(self.renderer._running)
 
@@ -289,7 +301,7 @@ class TestWindOverlay(unittest.TestCase):
         self.renderer._start_next = Mock()
         self.draw()
         job = self.renderer._states[self.canvas].requested
-        self.layer.set_visible(False)
+        self.renderer.forget(self.canvas)
         self.assertTrue(job.cancel.is_set())
         self.renderer._completed(self.canvas, job, self.surface, None)
         self.assertNotIn(self.canvas, self.renderer._states)
@@ -301,15 +313,8 @@ class TestWindOverlay(unittest.TestCase):
         self.manager.gribs.clear()
         self.draw()
         self.assertNotIn(self.canvas, self.renderer._states)
-        self.layer._forget(self.canvas)
-        self.assertNotIn(self.canvas, self.layer._maps)
-
-    def test_time_change_requests_redraw(self):
-        self.draw()
-        self.drain()
-        self.canvas.queue_draw.reset_mock()
-        self.layer.on_time_change(self.clock)
-        self.canvas.queue_draw.assert_called_once()
+        self.renderer.forget(self.canvas)
+        self.assertNotIn(self.canvas, self.renderer._states)
 
     def test_old_forecast_completion_cannot_replace_new_time(self):
         self.renderer._start_next = Mock()
@@ -361,7 +366,7 @@ class TestWindOverlay(unittest.TestCase):
         self.clock.time += timedelta(minutes=1)
         self.draw()
         queued = self.renderer._states[self.canvas].requested
-        self.layer.set_visible(False)
+        self.renderer.forget(self.canvas)
         self.assertTrue(running.cancel.is_set())
         self.assertTrue(queued.cancel.is_set())
         self.renderer._completed(self.canvas, running, self.surface, None)
@@ -466,12 +471,12 @@ class TestWindOverlay(unittest.TestCase):
         point = (180, 6, (47.6, -122.4))
         available.get_wind.return_value = [point]
         self.renderer._worker_grib = Mock(side_effect=[unavailable, available])
-        from gweatherrouting.gtk.maplayers.windrenderer import WindOverlayRenderer
+        from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
 
         self.assertEqual(WindOverlayRenderer._load_wind(self.renderer, job), [[point]])
 
     def test_overlapping_forecasts_use_newest_once_and_keep_older_gap_coverage(self):
-        from gweatherrouting.gtk.maplayers.windrenderer import WindOverlayRenderer
+        from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
 
         old = SimpleNamespace(start_time=self.clock.time)
         new = SimpleNamespace(start_time=self.clock.time + timedelta(hours=6))

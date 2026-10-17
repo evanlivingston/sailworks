@@ -1,4 +1,4 @@
-"""Run in a separate process so GTK and Qt never own the same GUI event loop."""
+"""Run Qt integration checks in a separate process."""
 
 import json
 import math

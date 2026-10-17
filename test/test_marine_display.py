@@ -15,7 +15,7 @@ import numpy as np
 from gweatherrouting.core.marine.manager import MarineManager
 from gweatherrouting.core.marine.models import Capability, Sample, Series
 from gweatherrouting.core.timecontrol import TimeControl
-from gweatherrouting.gtk.maplayers.marinemaplayer import (
+from gweatherrouting.rendering.marinemaplayer import (
     MarineMapLayer,
     MarineRenderer,
     MarineSources,
@@ -24,8 +24,8 @@ from gweatherrouting.gtk.maplayers.marinemaplayer import (
     flow,
     current_style,
 )
-from gweatherrouting.gtk.widgets.mapwidget import MapPoint, MapViewport
-from gweatherrouting.gtk.widgets.overlayrenderer import RenderState
+from gweatherrouting.core.mapviewport import MapPoint, MapViewport
+from gweatherrouting.rendering.overlayrenderer import RenderState
 from test.map_helpers import MapCanvas
 from test.test_marine import START, dataset
 from test.test_marine_fields import field
@@ -58,7 +58,7 @@ class TestMarineDisplay(unittest.TestCase):
     def test_land_mask_repairs_invalid_geometry_before_clipping(self):
         from pathlib import Path
         from osgeo import ogr
-        from gweatherrouting.gtk.maplayers.marinelandmask import MarineLandMask
+        from gweatherrouting.rendering.marinelandmask import MarineLandMask
         from gweatherrouting.core.geo.shoreline import ShorelineGeometryCache
 
         geometry = ogr.CreateGeometryFromWkt(
@@ -86,7 +86,7 @@ class TestMarineDisplay(unittest.TestCase):
             mask = MarineLandMask(directory)
             view = self.job().viewport
             with patch(
-                "gweatherrouting.gtk.maplayers.marinelandmask.ogr.Open",
+                "gweatherrouting.rendering.marinelandmask.ogr.Open",
                 return_value=memory,
             ):
                 surface = mask.surface(view)
@@ -144,7 +144,7 @@ class TestMarineDisplay(unittest.TestCase):
         self.manager.add(value)
         self.manager.enable(value.id)
         job = self.job((field(),))
-        with patch("gweatherrouting.gtk.maplayers.marinemaplayer.arrow") as draw:
+        with patch("gweatherrouting.rendering.marinemaplayer.arrow") as draw:
             surface = MarineRenderer()._render(job)
         self.assertIsInstance(surface, cairo.ImageSurface)
         self.assertTrue(any(not call.kwargs for call in draw.call_args_list))
@@ -183,8 +183,8 @@ class TestMarineDisplay(unittest.TestCase):
         self.manager.enable(value.id)
         job = self.job()
         with (
-            patch("gweatherrouting.gtk.maplayers.marinemaplayer.label") as draw_label,
-            patch("gweatherrouting.gtk.maplayers.marinemaplayer.arrow") as draw_arrow,
+            patch("gweatherrouting.rendering.marinemaplayer.label") as draw_label,
+            patch("gweatherrouting.rendering.marinemaplayer.arrow") as draw_arrow,
         ):
             MarineRenderer()._render(job)
         draw_label.assert_called_once()
@@ -236,8 +236,8 @@ class TestMarineDisplay(unittest.TestCase):
 class TestMarineShoreline(unittest.TestCase):
     def test_clips_land_and_arrow_tips_preserves_holes_and_alignment(self):
         from osgeo import ogr
-        from gweatherrouting.gtk.maplayers.marinelandmask import MarineLandMask
-        from gweatherrouting.gtk.widgets.overlayrenderer import paint_viewport
+        from gweatherrouting.rendering.marinelandmask import MarineLandMask
+        from gweatherrouting.rendering.overlayrenderer import paint_viewport
 
         canvas = MapCanvas()
         canvas._center_lat, canvas._center_lon, canvas._zoom = 0, 0, 12
@@ -253,9 +253,7 @@ class TestMarineShoreline(unittest.TestCase):
         )
         with (
             tempfile.TemporaryDirectory() as directory,
-            patch(
-                "gweatherrouting.gtk.maplayers.marinelandmask.COUNTRY_SHAPES", [feature]
-            ),
+            patch("gweatherrouting.rendering.marinelandmask.COUNTRY_SHAPES", [feature]),
         ):
             mask = MarineLandMask(directory)
             land = mask.surface(view)
