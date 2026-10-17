@@ -74,6 +74,21 @@ class TestWeatherJobResources(unittest.TestCase):
         self.addCleanup(lambda: renderer.forget(object()))
         return renderer
 
+    def test_pan_prediction_marker_does_not_change_rendered_fields_or_vectors(self):
+        sources = self.sources()
+        frames = []
+        for predicted in (None, "pan_prediction", "zoom_prediction"):
+            renderer = self.renderer()
+            job = self.job(sources)
+            if predicted is not None:
+                setattr(job.viewport, predicted, True)
+            image = renderer._render(job)
+            frames.append((bytes(image.get_data()), job.barb_flat))
+        for image, vectors in frames[1:]:
+            self.assertEqual(frames[0][0], image)
+            for before, after in zip(frames[0][1], vectors):
+                np.testing.assert_array_equal(before, after)
+
     def test_cached_and_uncached_mixed_fields_pixels_and_provenance_are_identical(self):
         sources = self.sources()
         results = []

@@ -17,6 +17,7 @@ from gweatherrouting.core.grib import Grib
 from gweatherrouting.core.gribsampling import WeatherSampler
 from gweatherrouting.core.utils import COUNTRY_SHAPES, point_in_bbox
 from gweatherrouting.rendering.overlayrenderer import OverlayRenderer, covers
+from gweatherrouting.rendering.panprefetch import PanPreparationTime
 from gweatherrouting.rendering.windpainter import WindPainter
 from gweatherrouting.rendering.windpainter import (
     flatten_wind_columns,
@@ -132,6 +133,7 @@ class WindOverlayRenderer(OverlayRenderer):
     def __init__(self, painter, schedule=schedule_idle):
         super().__init__(schedule)
         self._last_content = {}
+        self._pan_preparation = PanPreparationTime()
         self._painter = painter
         self._gribs = OrderedDict()
         self._leased_providers = {}
@@ -166,12 +168,38 @@ class WindOverlayRenderer(OverlayRenderer):
     def forget(self, canvas):
         self._last_content.pop(canvas, None)
         super().forget(canvas)
+        if not self._states:
+            self._pan_preparation = PanPreparationTime()
         self._release_if_idle()
 
     def _completed(self, canvas, job, surface, error):
+        if (
+            surface is not None
+            and not error
+            and not job.cancel.is_set()
+            and job.started_at is not None
+            and job.finished_at is not None
+        ):
+            self._pan_preparation.observe(
+                self._pan_preparation_key(job.charts, job.factor, job.viewport._zoom),
+                job.finished_at - job.started_at,
+            )
         result = super()._completed(canvas, job, surface, error)
         self._release_if_idle()
         return result
+
+    @staticmethod
+    def _pan_preparation_key(charts, factor, zoom):
+        return (tuple(source for (source,) in charts), factor, zoom)
+
+    def pan_lookahead(self, canvas):
+        content = self._last_content.get(canvas)
+        if content is None:
+            return 1.0
+        charts, _palette, factor = content
+        return self._pan_preparation.lookahead(
+            self._pan_preparation_key(charts, factor, canvas._zoom)
+        )
 
     def _can_preview(self, job, key):
         # Playback changes the forecast before its replacement image is ready.
@@ -194,7 +222,15 @@ class WindOverlayRenderer(OverlayRenderer):
             )
         return super()._keep_active(job, canvas, key)
 
-    def prefetch_at(self, canvas, latitude, longitude):
+    def _fits_job(self, job, canvas):
+        if (
+            getattr(job.viewport, "pan_prediction", False)
+            and getattr(canvas, "is_moving", lambda: False)()
+        ):
+            return covers(job.viewport, canvas)
+        return super()._fits_job(job, canvas)
+
+    def prefetch_at(self, canvas, latitude, longitude, predictive=False, zoom=None):
         """Queue one speculative frame at an explicit center.
 
         The caller owns pixel geometry: pass the same center a pan would
@@ -221,6 +257,10 @@ class WindOverlayRenderer(OverlayRenderer):
         viewport = holder["viewport"]
         viewport._center_lat = max(-85, min(85, latitude))
         viewport._center_lon = longitude
+        viewport.pan_prediction = predictive
+        if zoom is not None:
+            viewport._zoom = zoom
+            viewport.zoom_prediction = True
         key = (palette, factor, tuple(c[0] for c in charts))
         return self.prefetch(canvas, key, viewport, charts, factor, palette)
 

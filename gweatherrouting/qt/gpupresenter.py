@@ -238,6 +238,7 @@ class GpuPresenter(QObject):
         self.canvas._gpu_batches = ()
         self.canvas._gpu_wind_raster = None
         self.canvas._gpu_raster_key = None
+        self.canvas._invalidate_base()
         self.canvas.update()
 
     def close(self):

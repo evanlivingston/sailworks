@@ -3562,6 +3562,36 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertNotIn(identifier, manager.fields.fields)
         self.assertEqual(len(manager.fields.fields), 1)
 
+    def test_current_panel_reuses_field_order_but_samples_each_view_and_time(self):
+        current, _ = self.marine_fixture()
+        manager = self.controller.core.marine_manager
+        manager.fields.add(current)
+        panel = self.window.marine_panels["currents"]
+        panel.invalidate_fields()
+        with patch.object(
+            manager.fields, "snapshot", wraps=manager.fields.snapshot
+        ) as snapshot:
+            for _ in range(3):
+                self.window.map._pan_pixels(-16, 0)
+                panel.refresh()
+            snapshot.assert_not_called()
+            from datetime import timedelta, timezone
+
+            with patch(
+                "gweatherrouting.qt.marinepanel.chart_instant",
+                return_value=self.controller.time_control.time.astimezone(timezone.utc)
+                + timedelta(hours=2),
+            ):
+                panel.refresh()
+                snapshot.assert_not_called()
+                self.assertIn(
+                    "Outside the loaded forecast times", panel.coverage.text()
+                )
+            manager.fields.enable(current.id, False)
+            self.assertGreater(snapshot.call_count, 0)
+            self.assertFalse(panel._ordered_current_fields)
+            self.assertIn("No enabled current models", panel.coverage.text())
+
     def test_marine_tides_heights_display_selection_and_provenance(self):
         current, tide = self.marine_fixture()
         manager = self.controller.core.marine_manager

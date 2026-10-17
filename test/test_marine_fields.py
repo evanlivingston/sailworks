@@ -81,6 +81,39 @@ def netcdf(path):
 
 
 class TestSpatialCurrents(unittest.TestCase):
+    def test_display_coverage_with_retained_order_matches_fresh_selection(self):
+        from gweatherrouting.core.marine.presentation import current_coverage
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = FieldStore(directory)
+            store.add(field(masked=True))
+            store.add(field(resolution=9000))
+            manager = SimpleNamespace(
+                fields=store,
+                coverage_planner=SimpleNamespace(
+                    worldwide=SimpleNamespace(credentials=False)
+                ),
+            )
+            ordered = store.snapshot().fields
+            for latitude, longitude, instant in (
+                (49.5, -125.5, START),
+                (50, -125, START + timedelta(minutes=30)),
+                (49.5, -125.5, START + timedelta(hours=2)),
+                (0, 0, START),
+            ):
+                expected = current_coverage(manager, latitude, longitude, instant)
+                with patch.object(
+                    store, "snapshot", side_effect=AssertionError("Re-sorted")
+                ):
+                    actual = current_coverage(
+                        manager,
+                        latitude,
+                        longitude,
+                        instant,
+                        selection=FieldSelection(ordered),
+                    )
+                self.assertEqual(expected, actual)
+
     def test_snapshot_priority_orders_finest_or_newest_first(self):
         with tempfile.TemporaryDirectory() as directory:
             store = FieldStore(directory)

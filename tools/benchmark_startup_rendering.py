@@ -29,6 +29,10 @@ SCENARIOS = (
     "zoom_out",
     "scrub_return",
     "pan_pause_pan",
+    "trackpad_pan",
+    "wheel_zoom",
+    "wheel_zoom_reverse",
+    "pan_zoom_reverse",
 )
 DIRECTORIES = ("gshhs", "grib", "enc", "marine", "polars", "chs-tiles")
 FILES = (
@@ -303,11 +307,20 @@ def worker(config):
     weather_events, prepared_views = [], []
     post_gesture_began = None
     first_prepared_view_ms = None
+    zoom_input_began = None
+    expected_zoom = None
+    first_prepared_zoom_ms = None
     if config.get("synchronous_base_charts"):
         canvas._base_chart_renderer.draw_base = lambda *args, **kwargs: False
     if config.get("uncached_weather_passes"):
         canvas.wind._reuse_job_sources = False
     canvas.wind._prefetch_enabled = bool(config.get("weather_prefetch"))
+    canvas._adaptive_pan_prefetch = not config.get("fixed_pan_lookahead", False)
+    canvas._zoom_prefetch_enabled = bool(
+        config.get("weather_prefetch")
+    ) and not config.get("disable_zoom_prefetch", False)
+    for panel in window.marine_panels.values():
+        panel._uncached_coverage_fields = bool(config.get("uncached_coverage_fields"))
     if config.get("disable_weather_field_cache"):
         canvas.wind._field_cache_enabled = False
     if config.get("weather_source_limit") is not None:
@@ -352,8 +365,16 @@ def worker(config):
     canvas.wind._schedule_event = trace_weather
 
     def observe_prepared_view():
-        nonlocal first_prepared_view_ms
+        nonlocal first_prepared_view_ms, first_prepared_zoom_ms
         status = canvas.wind.prepared_view_status(canvas)
+        if (
+            zoom_input_began is not None
+            and first_prepared_zoom_ms is None
+            and canvas._zoom == expected_zoom
+            and not canvas._zoom_animating
+            and status["current"]
+        ):
+            first_prepared_zoom_ms = (time.monotonic() - zoom_input_began) * 1000
         state = canvas.wind._states.get(canvas)
         frame_id = state.frame[0].request_id if state and state.frame else None
         view = (canvas._center_lat, canvas._center_lon, canvas._zoom)
@@ -625,6 +646,12 @@ def worker(config):
         warm_job_offset = len(jobs)
         gpu_probe_offset = len(gpu_probes)
         phase = "replay"
+        ui_profile = None
+        if config.get("profile_ui"):
+            import cProfile
+
+            ui_profile = cProfile.Profile()
+            ui_profile.enable()
         scenario = config["scenario"]
         initial_time = canvas.time_control.time
         if scenario in ("pan", "reverse_pan", "zoom_out", "pan_pause_pan"):
@@ -638,12 +665,87 @@ def worker(config):
                 canvas.height() / 2,
             )
         last_start = None
+        prepared_samples = []
+        frame_traces = []
         for index in range(config["frames"]):
             started = time.perf_counter()
+            stage_offsets = {key: len(values) for key, values in stages.items()}
+            probe_offset = len(gpu_probes)
             if last_start is not None:
                 samples["start_interval_ms"].append((started - last_start) * 1000)
             last_start = started
-            if scenario == "scrub_return":
+            mixed_zoom = scenario == "pan_zoom_reverse" and index in (
+                config["frames"] // 3,
+                config["frames"] // 2,
+            )
+            if scenario in ("wheel_zoom", "wheel_zoom_reverse") or mixed_zoom:
+                if (
+                    mixed_zoom
+                    or index == 0
+                    or (scenario == "wheel_zoom_reverse" and index == 8)
+                ):
+                    from PySide6.QtCore import QPoint, QPointF, Qt
+                    from PySide6.QtGui import QWheelEvent
+
+                    point = QPointF(canvas.width() * 0.3, canvas.height() * 0.4)
+                    event = QWheelEvent(
+                        point,
+                        point,
+                        QPoint(),
+                        QPoint(0, 480 if index in (0, config["frames"] // 3) else -480),
+                        Qt.MouseButton.NoButton,
+                        Qt.KeyboardModifier.NoModifier,
+                        Qt.ScrollPhase.NoScrollPhase,
+                        False,
+                    )
+                    zoom_input_began = time.monotonic()
+                    first_prepared_zoom_ms = None
+                    app.sendEvent(canvas, event)
+                    expected_zoom = (
+                        canvas._zoom_target
+                        if canvas._zoom_target is not None
+                        else canvas._zoom
+                    )
+            elif (
+                scenario == "pan_zoom_reverse"
+                and config["frames"] // 3 <= index < 2 * config["frames"] // 3
+            ):
+                pass
+            elif scenario in ("trackpad_pan", "pan_zoom_reverse"):
+                from PySide6.QtCore import QPoint, QPointF, Qt
+                from PySide6.QtGui import QWheelEvent
+
+                canvas._trackpad_scroll_pans = True
+                point = QPointF(canvas.width() / 2, canvas.height() / 2)
+                event = QWheelEvent(
+                    point,
+                    point,
+                    QPoint(
+                        config.get("trackpad_step_px", 16)
+                        * (
+                            1
+                            if scenario == "pan_zoom_reverse"
+                            and index >= 2 * config["frames"] // 3
+                            else -1
+                        ),
+                        0,
+                    ),
+                    QPoint(),
+                    Qt.MouseButton.NoButton,
+                    Qt.KeyboardModifier.NoModifier,
+                    (
+                        Qt.ScrollPhase.ScrollBegin
+                        if index == 0
+                        or (
+                            scenario == "pan_zoom_reverse"
+                            and index == 2 * config["frames"] // 3
+                        )
+                        else Qt.ScrollPhase.ScrollUpdate
+                    ),
+                    False,
+                )
+                app.sendEvent(canvas, event)
+            elif scenario == "scrub_return":
                 if index < 3:
                     minutes = 30 if index == 1 else 15
                     canvas.time_control.set_time(
@@ -700,6 +802,18 @@ def worker(config):
             samples["grab_ms"].append(grab())
             app.processEvents()
             observe_prepared_view()
+            prepared_samples.append(canvas.wind.prepared_view_status(canvas)["current"])
+            frame_traces.append(
+                dict(
+                    index=index,
+                    grab_ms=samples["grab_ms"][-1],
+                    stages_ms={
+                        key: sum(values[stage_offsets[key] :])
+                        for key, values in stages.items()
+                    },
+                    gpu_probes=gpu_probes[probe_offset:],
+                )
+            )
             rebuilds.append({key: len(stages[key]) - before[key] for key in before})
             surfaces.append(protocol.tracked_surface_bytes(canvas))
             until = started + config["interval_ms"] / 1000
@@ -707,6 +821,20 @@ def worker(config):
                 app.processEvents()
                 time.sleep(min(0.001, max(0, until - time.perf_counter())))
         replay_stage_counts = {key: len(values) for key, values in stages.items()}
+        if ui_profile is not None:
+            ui_profile.disable()
+        ui_profile_text = None
+        if ui_profile is not None:
+            import io
+            import pstats
+
+            stream = io.StringIO()
+            pstats.Stats(ui_profile, stream=stream).sort_stats(
+                "cumulative"
+            ).print_stats(80)
+            ui_profile_text = stream.getvalue()
+        if scenario in ("trackpad_pan", "pan_zoom_reverse"):
+            canvas._finish_trackpad_pan()
         replay_gpu_probe_end = len(gpu_probes)
         post_job_offset = len(jobs)
         phase = "settle"
@@ -737,6 +865,20 @@ def worker(config):
             "post_gesture_first_prepared_view_ms": first_prepared_view_ms,
             "weather_source_retention": canvas.wind._source_retention_limit,
             "weather_prefetch": dict(canvas.wind.prefetch_metrics),
+            "pan_lookahead": (
+                "fixed" if config.get("fixed_pan_lookahead") else "adaptive"
+            ),
+            "pan_preparation": dict(
+                seconds=canvas.wind._pan_preparation.seconds,
+                samples=canvas.wind._pan_preparation.samples,
+                lookahead_seconds=canvas.wind.pan_lookahead(canvas),
+            ),
+            "replay_prepared_samples": prepared_samples,
+            "frame_traces": frame_traces,
+            "ui_profile": ui_profile_text,
+            "uncached_coverage_fields": bool(config.get("uncached_coverage_fields")),
+            "first_prepared_zoom_ms": first_prepared_zoom_ms,
+            "zoom_prefetch_enabled": canvas._zoom_prefetch_enabled,
             "weather_schedule_events": weather_events,
             "weather_prepared_views": prepared_views,
             "weather_scheduling": (
@@ -823,7 +965,9 @@ def run(args):
         "credentials": "disabled",
         "trajectory_version": 1,
         "weather_profiled": args.profile_weather,
+        "ui_profiled": args.profile_ui,
         "weather_prefetch": args.weather_prefetch,
+        "trackpad_step_px": args.trackpad_step_px,
         "mode": "offscreen" if args.offscreen else "native-grab",
         **{
             key: getattr(args, key)
@@ -869,11 +1013,15 @@ def run(args):
                     "map_renderer": args.map_renderer,
                     "synchronous_base_charts": args.synchronous_base_charts,
                     "profile_weather": args.profile_weather,
+                    "profile_ui": args.profile_ui,
+                    "uncached_coverage_fields": args.uncached_coverage_fields,
                     "uncached_weather_passes": args.uncached_weather_passes,
                     "legacy_weather_scheduling": args.legacy_weather_scheduling,
                     "preserve_covered_weather_jobs": args.preserve_covered_weather_jobs,
                     "weather_source_limit": args.weather_source_limit,
                     "weather_prefetch": args.weather_prefetch,
+                    "fixed_pan_lookahead": args.fixed_pan_lookahead,
+                    "disable_zoom_prefetch": args.disable_zoom_prefetch,
                     "disable_weather_field_cache": args.disable_weather_field_cache,
                 }
                 config_path, output = root / "config.json", root / "result.json"
@@ -1052,12 +1200,17 @@ def main():
     parser.add_argument("--map-renderer", choices=("cpu", "gpu"))
     parser.add_argument("--synchronous-base-charts", action="store_true")
     parser.add_argument("--profile-weather", action="store_true")
+    parser.add_argument("--profile-ui", action="store_true")
+    parser.add_argument("--uncached-coverage-fields", action="store_true")
     parser.add_argument("--uncached-weather-passes", action="store_true")
     parser.add_argument("--legacy-weather-scheduling", action="store_true")
     parser.add_argument("--preserve-covered-weather-jobs", action="store_true")
     parser.add_argument("--weather-source-limit", type=int, default=None)
     parser.add_argument("--disable-weather-field-cache", action="store_true")
     parser.add_argument("--weather-prefetch", action="store_true")
+    parser.add_argument("--fixed-pan-lookahead", action="store_true")
+    parser.add_argument("--disable-zoom-prefetch", action="store_true")
+    parser.add_argument("--trackpad-step-px", type=int, default=16)
     args = parser.parse_args()
     try:
         if args.capture_current:
