@@ -303,37 +303,8 @@ class GDALRasterChart(ChartLayer):
         self.last_rect = [p1lat, p1lon, p2lat, p2lon]
         self.last_rasters = rasters
 
-        # print ('rendering',len(rasters))
         for x in rasters:
             x.do_draw(gpsmap, cr)
-
-        for x in self.metadata:
-            # Disable bbox rendering
-            # continue
-
-            bb = x[1]
-
-            min_r_lat = min(bb[0][0], bb[1][0])
-            max_r_lat = max(bb[0][0], bb[1][0])
-            min_r_lon = min(bb[0][1], bb[1][1])
-            max_r_lon = max(bb[0][1], bb[1][1])
-
-            xx, yy = gpsmap.convert_geographic_to_screen(
-                MapPoint.new_degrees(min_r_lat, min_r_lon)
-            )
-            xx2, yy2 = gpsmap.convert_geographic_to_screen(
-                MapPoint.new_degrees(max_r_lat, max_r_lon)
-            )
-
-            cr.set_source_rgba(1, 0, 0, 0.6)
-            cr.set_line_width(0.3)
-            cr.move_to(xx, yy)
-            cr.line_to(xx, yy2)
-            cr.line_to(xx2, yy2)
-            cr.line_to(xx2, yy)
-            cr.line_to(xx, yy)
-
-            cr.stroke()
 
     def do_render(self, gpsmap):
         pass
