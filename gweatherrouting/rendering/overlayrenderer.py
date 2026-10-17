@@ -95,6 +95,7 @@ def paint_viewport(canvas, cr, viewport, surface):
 
 
 class OverlayRenderer:
+
     def __init__(self, schedule=schedule_idle):
         self.schedule = schedule
         self._states = {}
@@ -168,6 +169,13 @@ class OverlayRenderer:
         state = self._states.get(canvas)
         if state is None:
             return False
+        if (
+            getattr(viewport, "zoom_prediction", False)
+            and state.frame is not None
+            and state.frame[0].key == key
+            and self._compatible_prefetch(state.frame[0].viewport, viewport)
+        ):
+            return False
         previous = self._speculative.pop(canvas, None)
         if previous is not None:
             self._cancel(previous, "superseded speculation")
@@ -176,7 +184,11 @@ class OverlayRenderer:
             and self._speculative_active[0] is canvas
         ):
             running = self._speculative_active[1]
-            if not running.cancel.is_set() and running.key == key:
+            if (
+                not running.cancel.is_set()
+                and running.key == key
+                and self._compatible_prefetch(running.viewport, viewport)
+            ):
                 return True
             self._cancel(running, "superseded speculation")
         job = RenderJob(key, viewport, charts, factor, palette)
@@ -189,6 +201,29 @@ class OverlayRenderer:
         self._schedule_event("request", job)
         self._start_next()
         return True
+
+    @staticmethod
+    def _compatible_prefetch(running, requested):
+        if not (
+            getattr(running, "zoom_prediction", False)
+            or getattr(requested, "zoom_prediction", False)
+        ):
+            return True  # Preserve the existing drift-tolerant pan policy.
+        return (
+            running._zoom == requested._zoom
+            and running.width == requested.width
+            and running.height == requested.height
+            and abs(
+                running._lon_to_x(running._center_lon)
+                - running._lon_to_x(requested._center_lon)
+            )
+            < 1
+            and abs(
+                running._lat_to_y(running._center_lat)
+                - running._lat_to_y(requested._center_lat)
+            )
+            < 1
+        )
 
     def cancel_speculation(self, canvas=None):
         """Drop queued/running speculation (benchmark settle, shutdown paths)."""
@@ -223,7 +258,7 @@ class OverlayRenderer:
         state.demand = MapViewport(canvas, on_redraw=lambda: None)
         if state.prefetched:
             for index, (spec_job, surface) in enumerate(state.prefetched):
-                if spec_job.key == key and fits(spec_job.viewport, canvas):
+                if spec_job.key == key and self._fits_job(spec_job, canvas):
                     state.prefetched.pop(index)
                     state.frame = (spec_job, surface)
                     spec_job.published_at = time.monotonic()
@@ -235,7 +270,7 @@ class OverlayRenderer:
             if speculation.key != key:
                 # Obsolete content can never serve this demand.
                 self._cancel(self._speculative.pop(canvas), "visible demand")
-            elif fits(speculation.viewport, canvas):
+            elif self._fits_job(speculation, canvas):
                 # Queued speculation already covers this demand: adopt it as
                 # the visible request instead of duplicating the work.
                 self._speculative.pop(canvas)
@@ -253,7 +288,7 @@ class OverlayRenderer:
             _view, spec_active = self._speculative_active
             if spec_active.key != key:
                 self._cancel(spec_active, "visible demand")
-            elif fits(spec_active.viewport, canvas):
+            elif self._fits_job(spec_active, canvas):
                 # Running speculation covers this demand: adopt its result.
                 self._speculative_active = None
                 spec_active.speculative = False
@@ -287,13 +322,13 @@ class OverlayRenderer:
             if state.requested is queued:
                 state.requested = None
         frame = state.frame
-        fresh = frame and frame[0].key == key and fits(frame[0].viewport, canvas)
+        fresh = frame and frame[0].key == key and self._fits_job(frame[0], canvas)
         if (
             self._coalesce_active
             and active is not None
             and not active.cancel.is_set()
             and active.key == key
-            and fits(active.viewport, canvas)
+            and self._fits_job(active, canvas)
         ):
             queued = self._pending.pop(canvas, None)
             if queued is not None:
@@ -304,7 +339,7 @@ class OverlayRenderer:
             requested
             and not requested.cancel.is_set()
             and requested.key == key
-            and fits(requested.viewport, canvas)
+            and self._fits_job(requested, canvas)
         )
         if fresh and requested and not pending:
             self._cancel(requested, "already fresh")
@@ -342,10 +377,13 @@ class OverlayRenderer:
     def _can_complete(self, job, key):
         return job.key == key
 
+    def _fits_job(self, job, canvas):
+        return fits(job.viewport, canvas)
+
     def _keep_active(self, job, canvas, key):
         return (
             not job.cancel.is_set()
-            and fits(job.viewport, canvas)
+            and self._fits_job(job, canvas)
             and self._can_complete(job, key)
         )
 

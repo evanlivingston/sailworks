@@ -23,6 +23,15 @@ superset trial was measured and rejected. R4 begins with a [bounded directional
 prefetch slice](rendering-weather-prefetch.md): one speculative frame ahead of
 release motion, idle-only scheduling, promotion on arrival with zero waste.
 
+A [continuous-pan prediction follow-up](rendering-pan-prediction.md) tests
+latency-aware, bounded lookahead and adoption during motion against real
+pixel-delta scrolling, without a candidate-only pause to finish preparation.
+The same branch adds [zoom-target preparation](rendering-zoom-target.md) during
+animation, with debounce and target-reversal cancellation.
+The [frame-spike investigation](rendering-frame-spikes.md) records UI attribution,
+display-facing metadata reuse and rejected seamark/hidden-panel trials; mixed
+gesture tail-latency improvements remain unproven.
+
 [Scheduling follow-up](rendering-weather-scheduling.md) adds active-request
 coalescing and lifecycle/coverage telemetry. The measured wider-margin survival
 trial was rejected; conservative pan thresholds remain the default. Cross-view

@@ -107,6 +107,161 @@ class TestOverlayScheduling(unittest.TestCase):
         key = state.key if state else (self.style, 1, tuple(c[0] for c in self.sources))
         return renderer.prefetch(canvas, key, viewport, self.sources, 1, self.style)
 
+    def prefetch_zoom(self, zoom, longitude=0):
+        viewport = MapViewport(self.canvas, MARGIN)
+        viewport._zoom = zoom
+        viewport._center_lon = longitude
+        viewport.zoom_prediction = True
+        key = self.renderer._states[self.canvas].key
+        return self.renderer.prefetch(
+            self.canvas, key, viewport, self.sources, 1, self.style
+        )
+
+    def test_zoom_speculation_replaces_changed_target_and_anchor(self):
+        self.draw()
+        self.renderer.finish()
+        target = self.canvas._zoom + 1
+        self.assertTrue(self.prefetch_zoom(target))
+        job = self.renderer._speculative_active[1]
+        requests = self.renderer.prefetch_metrics["requests"]
+        self.assertTrue(self.prefetch_zoom(target))
+        self.assertEqual(self.renderer.prefetch_metrics["requests"], requests)
+        self.assertFalse(job.cancel.is_set())
+        self.assertTrue(self.prefetch_zoom(target + 1))
+        self.assertTrue(job.cancel.is_set())
+        replacement = self.renderer._speculative[self.canvas]
+        self.renderer.finish()
+        self.assertIs(self.renderer._speculative_active[1], replacement)
+        self.assertTrue(self.prefetch_zoom(target + 1, longitude=1))
+        self.assertTrue(replacement.cancel.is_set())
+
+    def test_zoom_prediction_adopts_at_target_not_intermediate_scale(self):
+        self.draw()
+        self.renderer.finish()
+        target = self.canvas._zoom + 1
+        self.prefetch_zoom(target)
+        job = self.renderer._speculative_active[1]
+        self.canvas._zoom_animating = True
+        self.canvas._zoom += 0.5
+        self.draw()
+        self.assertIs(self.renderer._speculative_active[1], job)
+        self.assertFalse(job.cancel.is_set())
+        self.canvas._zoom = target
+        self.canvas._zoom_animating = False
+        self.draw()
+        self.assertIs(self.renderer._active_job, job)
+        self.assertFalse(self.renderer._pending)
+        self.renderer.finish()
+        self.assertIs(self.renderer._states[self.canvas].frame[0], job)
+
+    def test_zoom_return_to_prepared_camera_does_not_render_duplicate(self):
+        self.draw()
+        self.renderer.finish()
+        self.assertFalse(self.prefetch_zoom(self.canvas._zoom))
+        self.assertFalse(self.renderer._speculative)
+        self.assertIsNone(self.renderer._speculative_active)
+
+    def test_pan_lookahead_learns_execution_not_queue_or_publication_delay(self):
+        self.draw()
+        job = self.renderer._active_job
+        job.created_at, job.started_at, job.finished_at = 1, 10, 10.4
+        self.renderer._completed(self.canvas, job, self.surface, None)
+        self.assertAlmostEqual(self.renderer.pan_lookahead(self.canvas), 0.6)
+        self.assertEqual(self.renderer._pan_preparation.samples, 1)
+        self.canvas._zoom += 1
+        self.assertEqual(self.renderer.pan_lookahead(self.canvas), 1)
+
+    def test_predicted_pan_work_is_adopted_while_it_encloses_current_view(self):
+        self.canvas.is_moving = lambda: True
+        self.draw()
+        self.renderer.finish()
+        longitude = 256 * 360 / (256 * 2**self.canvas._zoom)
+        self.assertTrue(self.prefetch_view(0, longitude))
+        job = self.renderer._speculative_active[1]
+        job.viewport.pan_prediction = True
+        self.canvas.pan(32)  # 224px from prediction: enclosed, not inside fits().
+        self.draw()
+        self.assertIs(self.renderer._active_job, job)
+        self.assertFalse(job.cancel.is_set())
+        self.assertFalse(self.renderer._pending)
+        self.canvas.pan(448)
+        self.draw()
+        self.assertFalse(job.cancel.is_set())
+        self.renderer.finish()
+        self.assertIs(self.renderer._states[self.canvas].frame[0], job)
+        self.draw()
+        self.assertFalse(self.renderer._pending)
+        self.assertIsNone(self.renderer._active_job)
+        self.canvas.pan(513)  # Actual pixel enclosure, not an unbounded survival.
+        self.draw()
+        self.assertIsNotNone(self.renderer._active_job)
+
+    def test_predicted_work_uses_normal_refresh_threshold_after_pan_stops(self):
+        self.canvas.is_moving = lambda: True
+        self.draw()
+        self.renderer.finish()
+        job = self.renderer._states[self.canvas].frame[0]
+        job.viewport.pan_prediction = True
+        self.canvas.pan(192)
+        self.draw()
+        self.assertIsNone(self.renderer._active_job)
+        self.canvas.is_moving = lambda: False
+        self.draw()
+        self.assertIsNotNone(self.renderer._active_job)
+
+    def test_predicted_pan_never_adopts_other_content_or_zoom(self):
+        for change in ("style", "source", "dpr", "zoom", "reversal"):
+            with self.subTest(change=change):
+                self.setUp()
+                self.canvas.is_moving = lambda: True
+                self.draw()
+                self.renderer.finish()
+                longitude = 256 * 360 / (256 * 2**self.canvas._zoom)
+                self.prefetch_view(0, longitude)
+                job = self.renderer._speculative_active[1]
+                job.viewport.pan_prediction = True
+                if change == "style":
+                    self.style = (*self.style[:1], 0.4, *self.style[2:])
+                elif change == "source":
+                    self.sources = (("other forecast",),)
+                elif change == "dpr":
+                    self.canvas.factor = 2
+                elif change == "zoom":
+                    self.canvas._zoom += 1
+                else:
+                    self.canvas.pan(-160)
+                self.draw()
+                self.assertTrue(job.cancel.is_set())
+                self.assertEqual(self.renderer.prefetch_metrics["adopts"], 0)
+
+    def test_cancelled_failed_and_empty_jobs_do_not_train_pan_prediction(self):
+        for result in ("cancelled", "failed", "empty"):
+            with self.subTest(result=result):
+                self.setUp()
+                self.draw()
+                job = self.renderer._active_job
+                job.started_at, job.finished_at = 10, 20
+                if result == "cancelled":
+                    job.cancel.set()
+                self.renderer._completed(
+                    self.canvas,
+                    job,
+                    None if result == "empty" else self.surface,
+                    "failed" if result == "failed" else None,
+                )
+                self.assertEqual(self.renderer._pan_preparation.samples, 0)
+                self.assertEqual(self.renderer.pan_lookahead(self.canvas), 1)
+
+    def test_forgetting_last_view_drops_timing_context(self):
+        self.draw()
+        job = self.renderer._active_job
+        job.started_at, job.finished_at = 10, 10.4
+        self.renderer._completed(self.canvas, job, self.surface, None)
+        self.assertEqual(self.renderer._pan_preparation.samples, 1)
+        self.renderer.forget(self.canvas)
+        self.assertEqual(self.renderer._pan_preparation.samples, 0)
+        self.assertIsNone(self.renderer._pan_preparation.key)
+
     def test_covers_uses_actual_extent_and_requires_native_zoom(self):
         view = MapViewport(self.canvas, 256)
         for offset, expected in (
