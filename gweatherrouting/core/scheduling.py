@@ -1,9 +1,5 @@
-"""Default GTK scheduling, injected by other frontends at their UI boundary."""
+"""Synchronous default scheduling; the Qt frontend injects its UI scheduler."""
 
 
 def schedule_idle(callback, *args):
-    try:
-        from gi.repository import GLib
-    except ImportError:
-        return callback(*args)
-    return GLib.idle_add(callback, *args)
+    return callback(*args)

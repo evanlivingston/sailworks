@@ -2,10 +2,10 @@
 
 from unittest.mock import Mock
 
-from gweatherrouting.gtk.widgets.mapwidget import MapViewport
+from gweatherrouting.core.mapviewport import MercatorProjection
 
 
-class MapCanvas(MapViewport):
+class MapCanvas(MercatorProjection):
     __test__ = False
 
     def __init__(self):
@@ -19,5 +19,33 @@ class MapCanvas(MapViewport):
         self.remove_tick_callback = Mock()
         self.factor = 1
 
+    def get_allocated_width(self):
+        return self.width
+
+    def get_allocated_height(self):
+        return self.height
+
     def get_scale_factor(self):
         return self.factor
+
+
+class QueuedScheduler:
+    """Deliver worker completions on the test thread without a GUI toolkit."""
+
+    def __init__(self):
+        from queue import Queue
+
+        self.callbacks = Queue()
+
+    def __call__(self, callback, *args):
+        self.callbacks.put((callback, args))
+
+    def drain(self):
+        from queue import Empty
+
+        while True:
+            try:
+                callback, args = self.callbacks.get_nowait()
+            except Empty:
+                return
+            callback(*args)

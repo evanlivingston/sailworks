@@ -7,11 +7,11 @@ from weakref import WeakKeyDictionary
 
 import cairo
 
-from gweatherrouting.gtk.charts.chartmanager import ChartManager
-from gweatherrouting.gtk.charts.gdalvectorchart import GDALVectorChart
-from gweatherrouting.gtk.charts.vectordrawer.s57chartdrawer import S57ChartDrawer
-from gweatherrouting.gtk.widgets.mapwidget import MapPoint, MapViewport
-from test.map_helpers import MapCanvas as TestMap
+from gweatherrouting.rendering.chartcollection import ChartCollection
+from gweatherrouting.rendering.gdalvectorchart import GDALVectorChart
+from gweatherrouting.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
+from gweatherrouting.core.mapviewport import MapPoint, MapViewport
+from test.map_helpers import MapCanvas as TestMap, QueuedScheduler
 
 
 class DotLayer:
@@ -36,7 +36,7 @@ class TestChartSurfaceCache(unittest.TestCase):
         self.manager = SimpleNamespace(
             charts=[self.layer], _chart_surfaces=WeakKeyDictionary()
         )
-        self.draw = lambda cr: ChartManager._draw_base(
+        self.draw = lambda cr: ChartCollection._draw_base(
             self.manager, self.canvas, cr, self.manager.charts
         )
 
@@ -89,7 +89,7 @@ class TestChartSurfaceCache(unittest.TestCase):
     def test_palette_invalidates(self):
         self.render()
         self.manager.maps = []
-        ChartManager.on_chart_palette_changed(self.manager, "dark")
+        ChartCollection.on_chart_palette_changed(self.manager, "dark")
         self.render()
         self.assertEqual(self.layer.draws, 2)
 
@@ -180,10 +180,11 @@ class TestSoundingBatches(unittest.TestCase):
 
 class TestBackgroundENC(unittest.TestCase):
     def setUp(self):
-        from gweatherrouting.gtk.charts.encrenderer import ENCOverlayRenderer
+        from gweatherrouting.rendering.encrenderer import ENCOverlayRenderer
 
         self.canvas = TestMap()
-        self.renderer = ENCOverlayRenderer()
+        self.schedule = QueuedScheduler()
+        self.renderer = ENCOverlayRenderer(schedule=self.schedule)
         self.specs = (("test.000", 12000, ()),)
         self.surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 400, 300)
         self.cr = cairo.Context(self.surface)
@@ -191,7 +192,6 @@ class TestBackgroundENC(unittest.TestCase):
 
     def test_draw_returns_while_background_render_is_blocked(self):
         from threading import Event
-        from gi.repository import GLib
 
         started, release, finished = Event(), Event(), Event()
         self.addCleanup(release.set)
@@ -212,12 +212,11 @@ class TestBackgroundENC(unittest.TestCase):
         release.set()
         self.assertTrue(finished.wait(1))
         # Deliver the worker's completion on the main thread.
-        context = GLib.MainContext.default()
         import time
 
         deadline = time.monotonic() + 1
         while self.renderer._running and time.monotonic() < deadline:
-            context.iteration(False)
+            self.schedule.drain()
             time.sleep(0.001)
         self.assertFalse(self.renderer._running)
         self.assertIsNotNone(self.renderer._states[self.canvas].frame)
@@ -265,7 +264,7 @@ class TestBackgroundENC(unittest.TestCase):
         self.assertNotIn(self.canvas, self.renderer._states)
 
     def test_preview_stays_geographically_aligned_during_pan_and_zoom(self):
-        from gweatherrouting.gtk.widgets.overlayrenderer import MARGIN
+        from gweatherrouting.rendering.overlayrenderer import MARGIN
 
         self.renderer._start_next = Mock()
         self.renderer.draw(self.canvas, self.cr, self.specs, "cm93")
@@ -290,7 +289,7 @@ class TestBackgroundENC(unittest.TestCase):
         self.assertEqual(data[150 * self.surface.get_stride() + 200 * 4 + 2], 0)
 
     def test_manager_never_draws_enc_features_on_the_ui_thread(self):
-        manager = ChartManager(Mock())
+        manager = ChartCollection(Mock())
         manager._palette = "cm93"
         manager._enc_renderer._start_next = Mock()
         chart = GDALVectorChart.__new__(GDALVectorChart)
@@ -309,7 +308,7 @@ class TestBackgroundENC(unittest.TestCase):
         manager._enc_renderer.forget(self.canvas)
 
     def test_background_surface_preserves_retina_resolution(self):
-        from gweatherrouting.gtk.widgets.overlayrenderer import MARGIN, RenderJob
+        from gweatherrouting.rendering.overlayrenderer import MARGIN, RenderJob
 
         viewport = MapViewport(self.canvas, MARGIN, lambda: None)
         job = RenderJob((), viewport, (), 2, "cm93")

@@ -10,6 +10,7 @@ authors = [
 ]
 dependencies = [
     "PySide6-Essentials>=6.8,<7",
+    "pycairo",
     "requests",
     "keyring>=25,<26",
     "copernicusmarine>=2.2,<3; python_version >= '3.10'",
@@ -26,7 +27,6 @@ dependencies = [
     "nmeatoolkit>=0.2",
     "matplotlib",
     "weatherrouting>=0.2.1",
-    "PyGObject==3.50.0",
     "GDAL[numpy];sys_platform == 'darwin'",
     #"GDAL[numpy]==3.8.4;sys_platform == 'linux'",
     "GDAL[numpy];sys_platform == 'win32'"
@@ -43,10 +43,6 @@ classifiers = [
 [project.optional-dependencies]
 qt = [] # Compatibility extra: Qt is now installed by default.
 marine-global = ["copernicusmarine>=2.2,<3"]
-appimage = [
-    "vext @ git+https://github.com/vext-python/vext@32ad4d1c5f45797e244df1d2816f76b60f28e20e",
-    "vext.gi"
-]
 
 [project.urls]
 Homepage = "https://github.com/dakk/gweatherrouting"
@@ -56,7 +52,6 @@ Source = "https://github.com/dakk/gweatherrouting"
 
 [project.scripts]
 gweatherrouting = "gweatherrouting.__main__:main"
-gweatherrouting-gtk = "gweatherrouting.__main__:start_ui_gtk"
 gweatherrouting-qt = "gweatherrouting.qt.__main__:main"
 
 [tool.setuptools]
@@ -71,13 +66,6 @@ packages = [
     "gweatherrouting.qt",
     "gweatherrouting.rendering",
     "gweatherrouting.rendering.vectordrawer",
-    "gweatherrouting.gtk",
-    "gweatherrouting.gtk.maplayers",
-    "gweatherrouting.gtk.settings",
-    "gweatherrouting.gtk.widgets",
-    "gweatherrouting.gtk.gauges",
-    "gweatherrouting.gtk.charts",
-    "gweatherrouting.gtk.charts.vectordrawer",
 ]
 zip-safe = false
 
@@ -92,9 +80,6 @@ gweatherrouting = [
     "data/symbols/*",
     "data/s57/*",
     "data/icons/*",
-    "gtk/*.glade",
-    "gtk/settings/*.glade",
-    "gtk/widgets/*.glade"
 ]
 
 [build-system]

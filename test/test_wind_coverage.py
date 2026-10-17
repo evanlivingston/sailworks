@@ -322,32 +322,3 @@ class TestSupplementalGrib(unittest.TestCase):
         )
         np.testing.assert_allclose(values[0], expected)
         self.assertEqual(sources[0], supplement.name)
-
-
-class TestRoutingWindIntegration(unittest.TestCase):
-    def test_startup_recovers_wind_and_stop_closes_recovery(self):
-        from gweatherrouting.gtk.chartstack_routing import ChartStackRouting
-
-        chart = ChartStackRouting.__new__(ChartStackRouting)
-        env = SimpleNamespace(cancel=threading.Event())
-        chart.currentRouting = SimpleNamespace(
-            current_environment=env, position=(0, 0), time=START
-        )
-        chart._auto_currents = True
-        chart._show_download_progress = Mock()
-        chart._save_routing_gribs = Mock()
-        chart._routing_ui = Mock(side_effect=lambda fn, *args: fn(*args))
-        recovery = Mock()
-        gap = DataGap((0, 0), START, "wind", "no_coverage")
-        recovery.missing.return_value = [gap]
-        with patch(
-            "gweatherrouting.gtk.chartstack_routing.WindCoverageRecovery",
-            return_value=recovery,
-        ):
-            chart._prepare_routing_wind()
-        self.assertIs(env.wind_recovery, recovery)
-        recovery.refresh.assert_called_once_with()
-        recovery.recover.assert_called_once_with([gap])
-        chart.on_routing_stop(None)
-        recovery.close.assert_called_once()
-        self.assertTrue(env.cancel.is_set())

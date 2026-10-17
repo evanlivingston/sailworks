@@ -31,7 +31,7 @@ from gweatherrouting.core.marine.routing import (
     CurrentRoutingEnvironment,
     FrozenRoutingWind,
 )
-from gweatherrouting.gtk.charts.gshhs import GSHHSVectorChart
+from gweatherrouting.rendering.gshhs import GSHHSVectorChart
 
 
 def compare(actual, expected):

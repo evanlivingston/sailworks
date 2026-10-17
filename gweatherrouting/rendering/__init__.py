@@ -1,1 +1,1 @@
-"""Toolkit independent Cairo chart rendering shared by GTK and Qt."""
+"""Toolkit independent Cairo chart rendering used by the Qt frontend."""

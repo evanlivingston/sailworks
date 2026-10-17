@@ -10,11 +10,11 @@ import cairo
 from osgeo import ogr
 
 from gweatherrouting.core.enccharts import ENCCatalog, ENCCell, chart_scale_rank
-from gweatherrouting.gtk.charts.chartmanager import ChartManager
-from gweatherrouting.gtk.charts.encrenderer import ENCOverlayRenderer
-from gweatherrouting.gtk.widgets.overlayrenderer import RenderJob
-from gweatherrouting.gtk.charts.gdalvectorchart import GDALVectorChart
-from gweatherrouting.gtk.widgets.mapwidget import MapViewport
+from gweatherrouting.rendering.chartcollection import ChartCollection
+from gweatherrouting.rendering.encrenderer import ENCOverlayRenderer
+from gweatherrouting.rendering.overlayrenderer import RenderJob
+from gweatherrouting.rendering.gdalvectorchart import GDALVectorChart
+from gweatherrouting.core.mapviewport import MapViewport
 from test.map_helpers import MapCanvas as TestMap
 
 PANEL = [(0, 0), (0, 4), (4, 4), (4, 0)]
@@ -47,7 +47,7 @@ class TestZoomSelection(unittest.TestCase):
             setattr(
                 self.manager,
                 name,
-                MethodType(getattr(ChartManager, name), self.manager),
+                MethodType(getattr(ChartCollection, name), self.manager),
             )
 
     def test_catalog_selects_harbor_coastal_and_overview_by_zoom(self):
@@ -218,73 +218,3 @@ class TestScaleMosaic(unittest.TestCase):
         lat, lon = center.get_degrees()
         point = ogr.CreateGeometryFromWkt(f"POINT({lon} {lat})")
         self.assertFalse(coverage[0].Intersects(point))
-
-
-class TestZoomDownloadHover(unittest.TestCase):
-    def setUp(self):
-        from gweatherrouting.gtk.charts.chartdownload import ChartDownloadHover
-
-        self.hover = ChartDownloadHover.__new__(ChartDownloadHover)
-        self.hover.map = TestMap()
-        self.hover.map._center_lat = self.hover.map._center_lon = 1
-        self.hover.map._zoom = 15
-        self.hover.map._dragging = False
-        self.hover.map._zoom_animating = False
-        self.hover.map._inertia = None
-        self.hover._disposed = self.hover._downloading = False
-        self.hover._position = self.hover._pointer = (200, 150)
-        self.hover._timer = self.hover._leave_timer = 0
-        self.hover._view = None
-        self.hover.catalog = ENCCatalog("/unused")
-        self.hover.catalog.cells = [cell("US5TEST1", 12000), cell("US3TEST1", 80000)]
-        self.hover.manager = SimpleNamespace(charts=[loaded("US3TEST1", 80000)])
-        for name in ("detailed_chart_at", "chart_suggestion_at"):
-            setattr(
-                self.hover.manager,
-                name,
-                MethodType(getattr(ChartManager, name), self.hover.manager),
-            )
-        for name in (
-            "card",
-            "title",
-            "description",
-            "button",
-            "spinner",
-            "_load_catalog",
-        ):
-            setattr(self.hover, name, Mock())
-
-    def test_hover_offers_better_chart_despite_existing_coverage(self):
-        self.hover._hover()
-        self.assertEqual(self.hover._cell.name, "US5TEST1")
-        self.hover.button.set_label.assert_called_with("Download chart")
-        self.hover.card.popup.assert_called_once()
-
-    def test_hover_uses_cached_chart_without_network(self):
-        with patch.object(
-            self.hover.catalog, "downloaded_path", return_value="/cached/US5TEST1.000"
-        ):
-            self.hover._hover()
-        self.hover.button.set_label.assert_called_with("Use downloaded chart")
-        self.hover._downloaded = Mock()
-        self.hover._download(self.hover.button)
-        self.hover._downloaded.assert_called_once_with("/cached/US5TEST1.000", None)
-
-    def test_hover_stays_hidden_when_best_chart_enabled(self):
-        self.hover.manager.charts.append(loaded("US5TEST1", 12000))
-        self.hover._hover()
-        self.hover.card.popup.assert_not_called()
-
-    def test_stationary_cursor_rechecked_after_zoom_settles(self):
-        self.hover._cancel = Mock()
-        with patch(
-            "gweatherrouting.gtk.charts.chartdownload.GLib.timeout_add", return_value=7
-        ) as timer:
-            self.hover.map._zoom_animating = True
-            self.hover._on_draw(self.hover.map, None)
-            timer.assert_not_called()
-            self.hover.map._zoom = 16
-            self.hover.map._zoom_animating = False
-            self.hover._on_draw(self.hover.map, None)
-            timer.assert_called_once_with(700, self.hover._hover)
-            self.assertEqual(self.hover._timer, 7)

@@ -14,41 +14,11 @@ GNU General Public License for more details.
 For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
-import logging
-import signal
-
 from gweatherrouting import log  # noqa: F401
-
-logger = logging.getLogger("gweatherrouting")
-
-
-def start_ui_gtk():
-    import gi
-
-    gi.require_version("Gtk", "3.0")
-    gi.require_version("GLibUnix", "2.0")
-    from gi.repository import GLib, Gtk, GLibUnix
-
-    from gweatherrouting.core import Core
-    from gweatherrouting.gtk.mainwindow import MainWindow
-
-    main_window = MainWindow(Core())
-
-    # Let GLib handle SIGINT so Ctrl+C triggers a clean shutdown
-    def on_sigint():
-        main_window.quit(None, None)
-        return GLib.SOURCE_REMOVE
-
-    try:
-        GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signal.SIGINT, on_sigint)
-    except:
-        pass
-
-    Gtk.main()
 
 
 def main(argv=None):
-    """Launch Qt by default; retain start_ui_gtk for the explicit legacy command."""
+    """Launch the Qt application."""
     from gweatherrouting.qt.__main__ import main as start_ui_qt
 
     return start_ui_qt(argv)

@@ -20,4 +20,4 @@ jobs:
         run: |
           source .venv/bin/activate
           mkdir -p "$RUNNER_TEMP/gww-home"
-          HOME="$RUNNER_TEMP/gww-home" python -c 'import gi; gi.require_version("Gtk", "3.0"); gi.require_version("GIRepository", "2.0"); from gi.repository import GIRepository; GIRepository.Repository.get_default().require("Gtk", "3.0", 0); import osgeo.gdal_array; import gweatherrouting.__main__; print("GTK typelib, GDAL bindings, and app imports loaded")'
+          HOME="$RUNNER_TEMP/gww-home" python -c 'from PySide6.QtCore import qVersion; import osgeo.gdal_array; import gweatherrouting.__main__; print("Qt", qVersion(), "and GDAL bindings loaded")'
