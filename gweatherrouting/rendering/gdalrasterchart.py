@@ -37,8 +37,17 @@ logger = logging.getLogger("gweatherrouting")
 
 
 def dataset_bbox(dataset):
+    """Return [(lat, lon), (lat, lon)] corners of the raster footprint.
+
+    Coordinates are always (lat, lon) so consumers such as coverage selection
+    and drawing stay correct for every raster CRS. Both CRSs use traditional
+    GIS order (x=lon/easting, y=lat/northing), which matches the geotransform's
+    own (x, y) layout; authority order would expect (lat, lon) for a geographic
+    CRS and silently swap the axes.
+    """
     old_cs = osr.SpatialReference()
     old_cs.ImportFromWkt(dataset.GetProjectionRef())
+    old_cs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
 
     wgs84_wkt = """
     GEOGCS["WGS 84",
@@ -53,6 +62,7 @@ def dataset_bbox(dataset):
         AUTHORITY["EPSG","4326"]]"""
     new_cs = osr.SpatialReference()
     new_cs.ImportFromWkt(wgs84_wkt)
+    new_cs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
 
     transform = osr.CoordinateTransformation(old_cs, new_cs)
 
@@ -69,7 +79,11 @@ def dataset_bbox(dataset):
 
     originbr = transform.TransformPoint(minx, miny)
 
-    return [origin, originbr]
+    # Traditional order reports (lon, lat); callers expect (lat, lon).
+    return [
+        (origin[1], origin[0], origin[2]),
+        (originbr[1], originbr[0], originbr[2]),
+    ]
 
 
 class GDALSingleRasterChart:
