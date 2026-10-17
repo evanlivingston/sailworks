@@ -380,6 +380,7 @@ class WindPainter:
         on_ground=None,
         step=BARB_MIN_SPACING_PX,
         max_count=BARB_MAX_COUNT,
+        land_mask=None,
     ):
         """Toolkit-independent live barb geometry for an explicit viewport.
 
@@ -411,11 +412,6 @@ class WindPainter:
         idx = np.flatnonzero(visible)
         if len(idx) == 0:
             return {}, 0
-        if hide_on_ground and on_ground is not None:
-            idx = np.array(
-                [i for i in idx if not on_ground(float(lats[i]), float(lons[i]))],
-                dtype=np.int64,
-            )
         # Select one native sample per cell in NumPy, avoiding a Python
         # loop over every visible model node during each gesture tick.
         kept_arr = idx
@@ -431,6 +427,15 @@ class WindPainter:
             kept_arr = kept_arr[
                 np.linspace(0, len(kept_arr) - 1, max_count, dtype=np.int64)
             ]
+        # Mask after both density thinning and the count cap: hiding land must
+        # never replace a selected symbol with a different forecast sample.
+        if land_mask is not None:
+            kept_arr = kept_arr[~land_mask[kept_arr]]
+        elif hide_on_ground and on_ground is not None:
+            kept_arr = np.array(
+                [i for i in kept_arr if not on_ground(float(lats[i]), float(lons[i]))],
+                dtype=np.int64,
+            )
         kxx, kyy = xxs[kept_arr], yys[kept_arr]
         kdirs, kspeeds = dirs[kept_arr], speeds[kept_arr]
         geometry = WindPainter.build_barb_geometry(kxx, kyy, kdirs, kspeeds)

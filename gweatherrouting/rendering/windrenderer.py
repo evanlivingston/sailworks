@@ -6,7 +6,9 @@ from gweatherrouting.core.scheduling import schedule_idle
 from functools import lru_cache
 import json
 import logging
+import math
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import cairo
@@ -15,10 +17,12 @@ from osgeo import ogr
 
 from gweatherrouting.core.grib import Grib
 from gweatherrouting.core.gribsampling import WeatherSampler
+from gweatherrouting.core.storage import DATA_DIR
 from gweatherrouting.core.utils import COUNTRY_SHAPES, point_in_bbox
 from gweatherrouting.rendering.overlayrenderer import OverlayRenderer, covers
 from gweatherrouting.rendering.panprefetch import PanPreparationTime
 from gweatherrouting.rendering.windpainter import WindPainter
+from gweatherrouting.rendering.streamlines import trace_streamlines, geometry_for_view
 from gweatherrouting.rendering.windpainter import (
     flatten_wind_columns,
     barb_density_parameters,
@@ -28,13 +32,91 @@ logger = logging.getLogger("gweatherrouting")
 
 
 class WindLandMask:
-    """Keep expensive polygon containment out of Python's per-vertex loops."""
+    """Worker-only, cached containment using the installed chart shoreline."""
 
-    def __init__(self):
-        self._prepared = {}
+    def __init__(self, directory=None):
+        self.directory = Path(directory or DATA_DIR) / "gshhs" / "GSHHS_shp"
+        self._path = None
+        self._dataset = None
+        self._prepared = OrderedDict()
+        self._tiles = OrderedDict()
         self.contains = lru_cache(maxsize=16384)(self._contains)
 
+    def refresh_source(self, scale=0):
+        """Check once per background job, including after coastline installation."""
+        # Match the base chart's scale tiers instead of reading full-resolution
+        # global polygons for a zoomed-out view. Prefer finer data if this tier
+        # is absent, then fall back to any installed lower-resolution tier.
+        if scale > 5000:
+            quality = "c"
+        elif scale > 500:
+            quality = "l"
+        elif scale > 200:
+            quality = "i"
+        elif scale >= 15:
+            quality = "h"
+        else:
+            quality = "f"
+        qualities = (quality,) + tuple(
+            q for q in ("f", "h", "i", "l", "c") if q != quality
+        )
+        path = next(
+            (
+                self.directory / quality / f"GSHHS_{quality}_L1.shp"
+                for quality in qualities
+                if (self.directory / quality / f"GSHHS_{quality}_L1.shp").exists()
+            ),
+            None,
+        )
+        if path != self._path:
+            self._path = path
+            self._dataset = None
+            self._prepared.clear()
+            self._tiles.clear()
+            self.contains.cache_clear()
+
+    def _shoreline_contains(self, lat, lon):
+        if self._dataset is None:
+            self._dataset = ogr.Open(str(self._path))
+        if self._dataset is None:
+            raise RuntimeError(f"Unable to open shoreline: {self._path}")
+        layer = self._dataset.GetLayer(0)
+        tile = (math.floor(lon), math.floor(lat))
+        if tile not in self._tiles:
+            x, y = tile
+            layer.SetSpatialFilterRect(x, y, x + 1, y + 1)
+            layer.ResetReading()
+            self._tiles[tile] = tuple(
+                (feature.GetFID(), feature.GetGeometryRef().GetEnvelope())
+                for feature in layer
+            )
+            if len(self._tiles) > 32:
+                self._tiles.popitem(last=False)
+        self._tiles.move_to_end(tile)
+        point = ogr.Geometry(ogr.wkbPoint)
+        point.AddPoint_2D(lon, lat)
+        for fid, (west, east, south, north) in self._tiles[tile]:
+            # A coastal bucket may contain hundreds of tiny islands. Reject
+            # their envelopes before fetching/preparing geometry; otherwise
+            # water samples churn the bounded polygon cache on every point.
+            if not (west <= lon <= east and south <= lat <= north):
+                continue
+            if fid not in self._prepared:
+                feature = layer.GetFeature(fid)
+                geometry = feature.GetGeometryRef().Clone()
+                self._prepared[fid] = (geometry, geometry.CreatePreparedGeometry())
+                if len(self._prepared) > 64:
+                    self._prepared.popitem(last=False)
+            self._prepared.move_to_end(fid)
+            geometry, prepared = self._prepared[fid]
+            if (prepared or geometry).Contains(point):
+                return True
+        return False
+
     def _contains(self, lat, lon):
+        lon = (lon + 180) % 360 - 180
+        if self._path is not None:
+            return self._shoreline_contains(lat, lon)
         point = ogr.Geometry(ogr.wkbPoint)
         point.AddPoint_2D(lon, lat)
         for index, feature in enumerate(COUNTRY_SHAPES):
@@ -133,6 +215,10 @@ class WindOverlayRenderer(OverlayRenderer):
     def __init__(self, painter, schedule=schedule_idle):
         super().__init__(schedule)
         self._last_content = {}
+        # One retained wind frame per canvas while a pressure-only frame is
+        # visible. Visibility is not a request to discard decoded forecasts.
+        self._hidden_wind_frames = {}
+        self._barbs_over_land = {}
         self._pan_preparation = PanPreparationTime()
         self._painter = painter
         self._gribs = OrderedDict()
@@ -167,6 +253,8 @@ class WindOverlayRenderer(OverlayRenderer):
 
     def forget(self, canvas):
         self._last_content.pop(canvas, None)
+        self._hidden_wind_frames.pop(canvas, None)
+        self._barbs_over_land.pop(canvas, None)
         super().forget(canvas)
         if not self._states:
             self._pan_preparation = PanPreparationTime()
@@ -205,7 +293,9 @@ class WindOverlayRenderer(OverlayRenderer):
         # Playback changes the forecast before its replacement image is ready.
         # Keep the last completed forecast visible, then swap complete images.
         # Changes to sources, display style or pixel density still invalidate it.
-        return job.key[1:] == key[1:] and job.palette[1:] == key[0][1:]
+        # Switching symbol style can keep the previous symbols visible while
+        # the worker prepares streamlines; all raster-affecting style stays strict.
+        return job.key[1:] == key[1:] and job.palette[1:8] == key[0][1:8]
 
     def _can_complete(self, job, key):
         # Continuous scrubbing must not starve the display by cancelling every
@@ -918,20 +1008,28 @@ class WindOverlayRenderer(OverlayRenderer):
                 return None
         # Keep land-mask work on the worker, alongside weather sampling.
         # Only completed jobs publish these vectors to the foreground.
-        barb_data = data
-        if data and not job.palette[2]:
-            barb_data = []
+        job.barb_flat = flatten_wind_columns(data)
+        job.barb_land = None
+        if data:
+            self._land_mask.refresh_source(job.viewport.get_scale())
+        if data and self._wind_style(job.palette) != "streamlines":
+            land = []
             for column in data:
                 if job.cancel.is_set():
                     return None
-                barb_data.append(
-                    [
-                        point
-                        for point in column
-                        if not self._land_mask.contains(*point[2])
-                    ]
-                )
-        job.barb_flat = flatten_wind_columns(barb_data)
+                land.extend(self._land_mask.contains(*point[2]) for point in column)
+            job.barb_land = np.asarray(land, dtype=np.bool_)
+        job.streamlines = None
+        if data and self._wind_style(job.palette) == "streamlines":
+            job.streamlines = trace_streamlines(
+                job.viewport,
+                fill_data if fill_data is not None else data,
+                self._land_mask.contains,
+                job.cancel.is_set,
+                density=job.palette[9] if len(job.palette) > 9 else "standard",
+            )
+            if job.cancel.is_set():
+                return None
         viewport = job.viewport
         surface = cairo.ImageSurface(
             cairo.FORMAT_ARGB32,
@@ -957,12 +1055,35 @@ class WindOverlayRenderer(OverlayRenderer):
         self, canvas, cr, charts, palette, live_barbs=True, barb_density="standard"
     ):
         """Paint cached fill, then crisp live barbs for the current view."""
+        # Land visibility changes foreground selection only, never the cached
+        # fill/isobars or sampled field. Prepare flags with every wind job so
+        # toggling this setting cannot blank the overlay waiting for a rebuild.
+        self._barbs_over_land[canvas] = bool(palette[2])
+        palette = palette[:2] + (True,) + palette[3:]
+        if len(palette) > 9 and self._wind_style(palette) != "streamlines":
+            palette = palette[:9] + ("standard",) + palette[10:]
         if charts:
             self._last_content[canvas] = (
                 charts,
                 palette,
                 canvas.get_scale_factor(),
             )
+            state = self._states.get(canvas)
+            if state is not None:
+                show_wind = palette[4] if len(palette) > 4 else True
+                if not show_wind and state.frame is not None:
+                    previous = state.frame[0].palette
+                    if len(previous) < 5 or previous[4]:
+                        self._hidden_wind_frames[canvas] = state.frame
+                elif show_wind:
+                    retained = self._hidden_wind_frames.pop(canvas, None)
+                    key = (
+                        palette,
+                        canvas.get_scale_factor(),
+                        tuple(c[0] for c in charts),
+                    )
+                    if retained is not None and retained[0].key == key:
+                        state.frame = retained
         super().draw(canvas, cr, charts, palette)
         if live_barbs:
             self.draw_live_barbs(canvas, cr, barb_density)
@@ -994,11 +1115,27 @@ class WindOverlayRenderer(OverlayRenderer):
         job, _surface = state.frame
         if not self._can_preview(job, state.key):
             return {}, 0.0
+        if self._wind_style(job.palette) == "streamlines":
+            over_land = self._barbs_over_land.get(canvas, bool(job.palette[2]))
+            view = (center_lat, center_lon, zoom, width, height, over_land)
+            if getattr(job, "streamline_geometry_view", None) != view:
+                job.streamline_geometry = geometry_for_view(
+                    getattr(job, "streamlines", None),
+                    center_lat,
+                    center_lon,
+                    zoom,
+                    width,
+                    height,
+                    over_land,
+                )
+                job.streamline_geometry_view = view
+            return job.streamline_geometry, float(job.palette[1])
         flat = getattr(job, "barb_flat", None)
         if flat is None:
             return {}, 0.0
         step, max_count = barb_density_parameters(density)
-        view = (center_lat, center_lon, zoom, width, height, step, max_count)
+        over_land = self._barbs_over_land.get(canvas, bool(job.palette[2]))
+        view = (center_lat, center_lon, zoom, width, height, step, max_count, over_land)
         # Repaints of a stationary view reuse geometry; gestures only update
         # positions/selection, never reload weather or scale symbol strokes.
         if getattr(job, "barb_geometry_view", None) != view:
@@ -1011,10 +1148,19 @@ class WindOverlayRenderer(OverlayRenderer):
                 height,
                 step=step,
                 max_count=max_count,
+                land_mask=None if over_land else getattr(job, "barb_land", None),
             )
             job.barb_geometry_view = view
         geometry = job.barb_geometry
         return geometry, float(job.palette[1])
+
+    @staticmethod
+    def _wind_style(palette):
+        return (
+            "streamlines"
+            if len(palette) > 8 and palette[8] == "streamlines"
+            else "barbs"
+        )
 
     @staticmethod
     def _settings_for(palette):

@@ -7,11 +7,11 @@ from threading import Event, get_ident
 from types import SimpleNamespace
 import time
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import cairo
 import numpy as np
-from osgeo import gdal
+from osgeo import gdal, ogr
 
 from gweatherrouting.core.grib import Grib
 from gweatherrouting.rendering.windpainter import (
@@ -105,17 +105,110 @@ class TestDisplayGrib(unittest.TestCase):
             self.assertTrue(mask.contains(0.5, 0.5))
             self.assertFalse(mask.contains(2, 2))
 
+    def test_installed_coastline_keeps_known_offshore_points(self):
+        mask = WindLandMask()
+        mask.refresh_source(scale=100)
+        if mask._path is None:
+            self.skipTest("Installed GSHHS shoreline is unavailable")
+        self.assertFalse(mask.contains(48.5, -125))
+        self.assertFalse(mask.contains(49.1, -123.6))
+        self.assertTrue(mask.contains(40, -100))
+
+    def test_installed_shoreline_overrides_countries_and_reuses_tiles(self):
+        with TemporaryDirectory() as directory:
+            mask = WindLandMask(directory)
+            mask.refresh_source()
+            with patch("gweatherrouting.rendering.windrenderer.COUNTRY_SHAPES", []):
+                self.assertFalse(mask.contains(0.2, 0.2))
+                path = Path(directory) / "gshhs/GSHHS_shp/f/GSHHS_f_L1.shp"
+                path.parent.mkdir(parents=True)
+                dataset = ogr.GetDriverByName("ESRI Shapefile").CreateDataSource(
+                    str(path)
+                )
+                layer = dataset.CreateLayer("land", geom_type=ogr.wkbPolygon)
+                feature = ogr.Feature(layer.GetLayerDefn())
+                feature.SetGeometry(
+                    ogr.CreateGeometryFromWkt(
+                        "POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0), "
+                        "(0.4 0.4, 0.4 0.6, 0.6 0.6, 0.6 0.4, 0.4 0.4))"
+                    )
+                )
+                layer.CreateFeature(feature)
+                feature = layer = dataset = None
+                mask.refresh_source()
+                self.assertTrue(mask.contains(0.2, 0.2))
+                self.assertFalse(mask.contains(0.5, 0.5))
+                self.assertFalse(mask.contains(0.2, 1.2))
+                self.assertTrue(mask.contains(0.2, 360.2))
+                self.assertEqual(len(mask._prepared), 1)
+                self.assertEqual(len(mask._tiles), 2)
+                mask.refresh_source()
+                self.assertTrue(mask.contains(0.2, 0.2))
+                self.assertEqual(mask.contains.cache_info().hits, 1)
+
+    def test_shoreline_detail_tracks_chart_scale_and_invalidates_old_tiles(self):
+        with TemporaryDirectory() as directory:
+            mask = WindLandMask(directory)
+            for quality in ("c", "l", "i", "h", "f"):
+                path = mask.directory / quality / f"GSHHS_{quality}_L1.shp"
+                path.parent.mkdir(parents=True)
+                path.touch()
+            for scale, quality in (
+                (6000, "c"),
+                (1000, "l"),
+                (300, "i"),
+                (30, "h"),
+                (1, "f"),
+            ):
+                mask._tiles[(0, 0)] = ()
+                mask.refresh_source(scale)
+                self.assertEqual(mask._path.parent.name, quality)
+                self.assertFalse(mask._tiles)
+            mask._tiles[(0, 0)] = ()
+            mask.refresh_source(1)
+            self.assertTrue(mask._tiles)  # Same source keeps the working set.
+
+    def test_dense_island_bucket_does_not_churn_prepared_geometry_for_water(self):
+        with TemporaryDirectory() as directory:
+            mask = WindLandMask(directory)
+            path = mask.directory / "f/GSHHS_f_L1.shp"
+            path.parent.mkdir(parents=True)
+            dataset = ogr.GetDriverByName("ESRI Shapefile").CreateDataSource(str(path))
+            layer = dataset.CreateLayer("islands", geom_type=ogr.wkbPolygon)
+            for index in range(100):  # More islands than the 64-polygon cache.
+                x, y = (index % 10) * 0.08, (index // 10) * 0.08
+                feature = ogr.Feature(layer.GetLayerDefn())
+                feature.SetGeometry(
+                    ogr.CreateGeometryFromWkt(
+                        f"POLYGON (({x} {y}, {x + 0.01} {y}, "
+                        f"{x + 0.01} {y + 0.01}, {x} {y + 0.01}, {x} {y}))"
+                    )
+                )
+                layer.CreateFeature(feature)
+            feature = layer = dataset = None
+            mask.refresh_source()
+            self.assertFalse(mask.contains(0.95, 0.95))
+            self.assertEqual(len(mask._tiles[(0, 0)]), 100)
+            self.assertEqual(len(mask._prepared), 0)
+            self.assertTrue(mask.contains(0.005, 0.005))
+            self.assertEqual(len(mask._prepared), 1)
+            for longitude in np.linspace(0.8, 0.99, 100):
+                self.assertFalse(mask.contains(0.95, float(longitude)))
+            self.assertEqual(len(mask._prepared), 1)
+
 
 class TestWindOverlay(unittest.TestCase):
     def setUp(self):
         self.canvas = TestMap()
         self.canvas.connect = Mock()
         self.settings = SimpleNamespace(gribArrowOpacity=0.8, gribArrowOnGround=True)
+        self.wind_visible = True
         self.clock = SimpleNamespace(time=datetime(2026, 1, 1), connect=Mock())
         self.source = object()
         self.manager = SimpleNamespace(gribs=[self.source])
         self.schedule = QueuedScheduler()
         self.renderer = WindOverlayRenderer(WindPainter, schedule=self.schedule)
+        self.renderer._land_mask.contains = Mock(return_value=False)
         self.surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 400, 300)
         self.cr = cairo.Context(self.surface)
         self.renderer._load_wind = Mock(
@@ -136,6 +229,12 @@ class TestWindOverlay(unittest.TestCase):
                 self.settings.gribArrowOpacity,
                 self.settings.gribArrowOnGround,
                 True,
+                self.wind_visible,
+                4.0,
+                0.85,
+                True,
+                getattr(self.settings, "gribWindStyle", "barbs"),
+                getattr(self.settings, "gribBarbDensity", "standard"),
             ),
             barb_density=getattr(self.settings, "gribBarbDensity", "standard"),
         )
@@ -146,6 +245,201 @@ class TestWindOverlay(unittest.TestCase):
             self.schedule.drain()
             time.sleep(0.001)
         self.assertFalse(self.renderer._running)
+
+    def test_wind_toggle_restores_frame_without_rebuilding_weather(self):
+        self.draw()
+        self.drain()
+        original = self.renderer._states[self.canvas].frame
+        self.wind_visible = False
+        self.draw()
+        self.drain()
+        pressure_only = self.renderer._states[self.canvas].frame
+        self.assertIsNone(pressure_only[0].barb_flat)
+        self.wind_visible = True
+        with patch.object(
+            self.renderer, "_render", wraps=self.renderer._render
+        ) as render:
+            self.draw()
+            self.assertIs(self.renderer._states[self.canvas].frame, original)
+            self.assertFalse(self.renderer._running)
+            render.assert_not_called()
+        self.renderer._load_wind.assert_called_once()
+        self.assertNotIn(self.canvas, self.renderer._hidden_wind_frames)
+
+    def test_streamlines_are_opt_in_cached_and_respect_visibility_toggles(self):
+        from gweatherrouting.rendering.streamlines import trace_streamlines
+
+        self.renderer._load_wind.return_value = [
+            [(270, 8, (lat, lon)) for lat in np.linspace(47, 48.2, 9)]
+            for lon in np.linspace(-123.2, -121.6, 9)
+        ]
+        self.renderer._land_mask.contains = Mock(
+            side_effect=lambda lat, lon: lon > -122.4
+        )
+        self.renderer._load_pressure = Mock(return_value=[])
+        with patch(
+            "gweatherrouting.rendering.windrenderer.trace_streamlines",
+            wraps=trace_streamlines,
+        ) as trace:
+            self.draw()
+            self.drain()
+            trace.assert_not_called()
+            self.settings.gribWindStyle = "streamlines"
+            self.draw()
+            self.drain()
+            trace.assert_called_once()
+
+            frame = self.renderer._states[self.canvas].frame
+            self.assertIsNotNone(frame[0].streamlines)
+            args = (self.canvas, 400, 300, 47.6, -122.4, 12)
+            shown, _ = self.renderer.live_geometry_for_view(*args)
+            self.assertTrue(shown)
+            self.assertIs(self.renderer.live_geometry_for_view(*args)[0], shown)
+            self.settings.gribArrowOnGround = False
+            self.draw()
+            hidden, _ = self.renderer.live_geometry_for_view(*args)
+            self.assertTrue(hidden)
+            self.assertLess(
+                sum(len(v[0]) for v in hidden.values()),
+                sum(len(v[0]) for v in shown.values()),
+            )
+            self.wind_visible = False
+            self.draw()
+            self.drain()
+            self.wind_visible = True
+            self.draw()
+            self.assertIs(self.renderer._states[self.canvas].frame, frame)
+            trace.assert_called_once()
+
+    def test_streamline_density_retraces_on_worker_while_retaining_preview(self):
+        self.settings.gribWindStyle = "streamlines"
+        self.settings.gribBarbDensity = "sparse"
+        self.renderer._load_wind.return_value = [
+            [(270, 8, (lat, lon)) for lat in np.linspace(47, 48.2, 9)]
+            for lon in np.linspace(-123.2, -121.6, 9)
+        ]
+        self.renderer._load_pressure = Mock(return_value=[])
+        self.draw()
+        self.drain()
+        frame = self.renderer._states[self.canvas].frame
+        before = len(frame[0].streamlines[0])
+        geometry, _ = self.renderer.live_geometry_for_view(
+            self.canvas, 400, 300, 47.6, -122.4, 12
+        )
+        self.settings.gribBarbDensity = "dense"
+        self.draw()
+        self.assertIs(self.renderer._states[self.canvas].frame, frame)
+        self.assertIs(
+            self.renderer.live_geometry_for_view(
+                self.canvas, 400, 300, 47.6, -122.4, 12
+            )[0],
+            geometry,
+        )
+        self.drain()
+        current = self.renderer._states[self.canvas].frame
+        self.assertEqual(current[0].palette[9], "dense")
+        self.assertGreater(len(current[0].streamlines[0]), before)
+
+    def test_wind_restore_does_not_wait_for_pressure_only_job(self):
+        self.draw()
+        self.drain()
+        original = self.renderer._states[self.canvas].frame
+        started, release = Event(), Event()
+        self.addCleanup(release.set)
+
+        def pressure(job):
+            started.set()
+            release.wait(2)
+            return []
+
+        self.renderer._load_pressure = Mock(side_effect=pressure)
+        self.wind_visible = False
+        self.draw()
+        self.assertTrue(started.wait(1))
+        self.wind_visible = True
+        self.draw()
+        self.assertIs(self.renderer._states[self.canvas].frame, original)
+        geometry, opacity = self.renderer.live_geometry_for_view(
+            self.canvas, 400, 300, 47.6, -122.4, 12
+        )
+        self.assertTrue(geometry)
+        self.assertGreater(opacity, 0)
+        release.set()
+        self.drain()
+        self.assertIs(self.renderer._states[self.canvas].frame, original)
+        self.renderer._load_wind.assert_called_once()
+
+    def test_wind_toggle_never_restores_incompatible_forecast_or_style(self):
+        for change in ("time", "sources", "opacity"):
+            with self.subTest(change=change):
+                self.draw()
+                self.drain()
+                self.wind_visible = False
+                self.draw()
+                self.drain()
+                pressure_only = self.renderer._states[self.canvas].frame
+                if change == "time":
+                    self.clock.time += timedelta(hours=1)
+                elif change == "sources":
+                    self.manager.gribs = [object()]
+                elif change == "opacity":
+                    self.settings.gribArrowOpacity = 0.5
+                self.wind_visible = True
+                self.draw()
+                self.assertIs(self.renderer._states[self.canvas].frame, pressure_only)
+                self.drain()
+
+    def test_forget_releases_retained_hidden_wind_frame(self):
+        self.draw()
+        self.drain()
+        self.wind_visible = False
+        self.draw()
+        self.drain()
+        self.assertIn(self.canvas, self.renderer._hidden_wind_frames)
+        self.renderer.forget(self.canvas)
+        self.assertNotIn(self.canvas, self.renderer._hidden_wind_frames)
+
+    def test_land_toggle_keeps_offshore_barbs_without_worker_or_field_reload(self):
+        self.renderer._load_wind.return_value = [
+            [
+                (0, 10, (47.6, -122.4)),
+                (0, 10, (47.61, -122.41)),
+            ]
+        ]
+        self.renderer._land_mask.contains = Mock(
+            side_effect=lambda lat, lon: lat == 47.6
+        )
+        self.renderer._load_pressure = Mock(return_value=[])
+        self.draw()
+        self.drain()
+        original = self.renderer._states[self.canvas].frame
+
+        def geometry():
+            return self.renderer.live_geometry_for_view(
+                self.canvas, 400, 300, 47.6, -122.4, 12, density="all"
+            )[0]
+
+        all_barbs = geometry()
+        self.assertEqual(len(all_barbs[5][0]), 6)  # two shafts + four feathers
+        with patch.object(
+            self.renderer, "_render", wraps=self.renderer._render
+        ) as render:
+            self.settings.gribArrowOnGround = False
+            self.draw()
+            offshore = geometry()
+            self.assertEqual(len(offshore[5][0]), 3)
+            self.assertTrue(set(offshore[5][0]) < set(all_barbs[5][0]))
+            self.assertIs(self.renderer._states[self.canvas].frame, original)
+            self.settings.gribArrowOnGround = True
+            self.draw()
+            self.assertEqual(geometry(), all_barbs)
+            self.assertFalse(self.renderer._running)
+            render.assert_not_called()
+        self.renderer._load_wind.assert_called_once()
+        self.renderer._land_mask.contains.assert_has_calls(
+            [call(47.6, -122.4), call(47.61, -122.41)]
+        )
+        self.assertEqual(self.renderer._land_mask.contains.call_count, 2)
 
     def test_slow_grib_load_never_blocks_ui_and_uses_one_worker(self):
         started, release = Event(), Event()
@@ -216,7 +510,7 @@ class TestWindOverlay(unittest.TestCase):
             self.assertEqual(bounds, initial)
         self.renderer._load_wind.assert_called_once()
 
-    def test_land_filter_runs_on_worker_and_publishes_only_water_samples(self):
+    def test_land_filter_runs_on_worker_and_preserves_sample_selection(self):
         self.settings.gribArrowOnGround = False
         self.renderer._load_wind.return_value = [
             [
@@ -235,7 +529,8 @@ class TestWindOverlay(unittest.TestCase):
         self.draw()
         self.drain()
         job, _ = self.renderer._states[self.canvas].frame
-        np.testing.assert_array_equal(job.barb_flat[2], [47.61])
+        np.testing.assert_array_equal(job.barb_flat[2], [47.6, 47.61])
+        np.testing.assert_array_equal(job.barb_land, [True, False])
         self.draw()
         self.assertEqual(self.renderer._land_mask.contains.call_count, 2)
 
@@ -285,14 +580,13 @@ class TestWindOverlay(unittest.TestCase):
         for change in (
             lambda: setattr(self.clock, "time", self.clock.time + timedelta(hours=1)),
             lambda: setattr(self.settings, "gribArrowOpacity", 0.3),
-            lambda: setattr(self.settings, "gribArrowOnGround", False),
             lambda: setattr(self.canvas, "factor", 2),
             lambda: setattr(self.manager, "gribs", [object()]),
         ):
             change()
             self.draw()
             self.drain()
-        self.assertEqual(self.renderer._load_wind.call_count, 6)
+        self.assertEqual(self.renderer._load_wind.call_count, 5)
         job, surface = self.renderer._states[self.canvas].frame
         self.assertEqual(surface.get_device_scale(), (2, 2))
         self.assertEqual(surface.get_width(), job.viewport.width * 2)
@@ -421,7 +715,6 @@ class TestWindOverlay(unittest.TestCase):
         self.renderer._start_next = Mock()
         for change in (
             lambda: setattr(self.settings, "gribArrowOpacity", 0.2),
-            lambda: setattr(self.settings, "gribArrowOnGround", False),
             lambda: setattr(self.canvas, "factor", 2),
             lambda: setattr(self.manager, "gribs", [object()]),
         ):

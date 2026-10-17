@@ -24,6 +24,7 @@ class SettingsManager(Storage):
         self.gribArrowOpacity = 0.4
         self.gribArrowOnGround = False
         self.gribBarbDensity = "standard"
+        self.gribWindStyle = "barbs"
         self.gribIsobarsVisible = True
         self.gribIsobarInterval = 4.0
         self.gribIsobarOpacity = 0.85
