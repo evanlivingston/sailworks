@@ -37,6 +37,22 @@ off.
    follow-up may quilt seamarks via viewport-bbox coverage so they fill holes
    only, letting us delete the "enable any chart → disable seamarks" hack
    (`chartcollection.py:152-155`).
+6. **Rendered overlay frames can be stranded by the base-image cache.**
+   Confirmed on `dev` (2026-10-16, debug panel): the ENC quilt renders a
+   correct, full-viewport surface, but the base image is cached by
+   `_base_key() = (size, ratio, palette, wind_style, marine_key)` with **no
+   overlay-frame state**. Sequence: view change → base bakes while the
+   overlay worker is still rendering (bake = base-only) → frame publishes and
+   calls `canvas.queue_draw()` → `_draw_reusable_layer` sees an unchanged key
+   and reuses the stale base-only image → `_base_image` is never re-run, so
+   the frame is never composited. The ENC only appears once something else
+   forces a re-bake (zoom/palette/resize/pan-past-margin) that happens to
+   catch a ready frame — which is why the fallback to base map is
+   intermittent. Instrumented repro: frame `ready=True` after publish, but
+   the next no-view-change repaint re-baked `False`. Q2 must make a published
+   frame reach the screen (invalidate the base cache on publish, or composite
+   overlays at paint time rather than baking them into the base) — otherwise
+   even a correct quilt stays invisible.
 
 ## Architecture
 
@@ -97,9 +113,13 @@ automatically once rasters carry `_native_scale`.
   best-chart selection preferring a harbor KAP at harbor zoom.
 - **Q2 — Generic quilt renderer.** Absorb the ENC quilt; add raster
   descriptors and the worker-side raster LRU; unify ENC and raster ordering.
-  Tests: synthetic ENC-vs-raster scene asserting the best-scaled chart wins
-  each region and holes fall through to base; cancellation/reuse tests mirror
-  the existing overlay tests.
+  **Also fix the frame-stranding bug (finding 6):** a published overlay frame
+  must reach the screen — invalidate the base cache on publish (or composite
+  overlays at paint time) so a static view shows charts once the worker
+  finishes. Tests: synthetic ENC-vs-raster scene asserting the best-scaled
+  chart wins each region and holes fall through to base; a test that a frame
+  published after the bake is composited on the next repaint (no view change);
+  cancellation/reuse tests mirror the existing overlay tests.
 - **Q3 — Setting.** `chartQuilting` toggle, Qt checkbox, cache keys; test that
   the off-path matches the current stack output.
 - **Q4 — Validation and docs.** Bake-time benchmark against the saved startup
