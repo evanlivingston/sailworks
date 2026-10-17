@@ -15,6 +15,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
 import logging
+import math
 import time
 from os import listdir
 from os.path import isfile, join
@@ -37,8 +38,17 @@ logger = logging.getLogger("gweatherrouting")
 
 
 def dataset_bbox(dataset):
+    """Return [(lat, lon), (lat, lon)] corners of the raster footprint.
+
+    Coordinates are always (lat, lon) so consumers such as coverage selection
+    and drawing stay correct for every raster CRS. Both CRSs use traditional
+    GIS order (x=lon/easting, y=lat/northing), which matches the geotransform's
+    own (x, y) layout; authority order would expect (lat, lon) for a geographic
+    CRS and silently swap the axes.
+    """
     old_cs = osr.SpatialReference()
     old_cs.ImportFromWkt(dataset.GetProjectionRef())
+    old_cs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
 
     wgs84_wkt = """
     GEOGCS["WGS 84",
@@ -53,6 +63,7 @@ def dataset_bbox(dataset):
         AUTHORITY["EPSG","4326"]]"""
     new_cs = osr.SpatialReference()
     new_cs.ImportFromWkt(wgs84_wkt)
+    new_cs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
 
     transform = osr.CoordinateTransformation(old_cs, new_cs)
 
@@ -69,7 +80,72 @@ def dataset_bbox(dataset):
 
     originbr = transform.TransformPoint(minx, miny)
 
-    return [origin, originbr]
+    # Traditional order reports (lon, lat); callers expect (lat, lon).
+    return [
+        (origin[1], origin[0], origin[2]),
+        (originbr[1], originbr[0], originbr[2]),
+    ]
+
+
+# Nominal 96 dpi, matching core.enccharts.chart_scale_visible / chart_scale_rank.
+METERS_PER_PIXEL_TO_SCALE = 3779.527559
+
+# Mean Earth radius used by MapViewport.get_scale(), so derived raster scales
+# and display scales are computed on the same convention.
+_EARTH_RADIUS_M = 6378137.0
+
+
+def header_scale(metadata):
+    """Positive scale denominator from BSB/KAP SCALE/CSCALE fields, else 0."""
+    if not metadata:
+        return 0
+    lowered = {str(key).upper(): value for key, value in metadata.items()}
+    for key in ("CSCALE", "SCALE"):
+        raw = lowered.get(key)
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if ":" in text:
+            text = text.rsplit(":", 1)[-1]
+        try:
+            value = float(text)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return int(round(value))
+    return 0
+
+
+def native_scale_from_bbox(bbox, width_px, header_scale_value=0):
+    """Chart scale denominator for a raster footprint.
+
+    Prefers an explicit header scale; otherwise derives it from the
+    longitude-direction ground metres per pixel at the footprint centre using
+    the same 96 dpi convention and Earth radius as MapViewport.get_scale(), so
+    rasters rank against the display scale on one convention. Returns 0 when
+    the scale cannot be derived.
+    """
+    if header_scale_value:
+        return int(header_scale_value)
+    if not bbox or not width_px:
+        return 0
+    (lat_a, lon_a, *_), (lat_b, lon_b, *_) = bbox
+    lon_span = abs(lon_a - lon_b)
+    if lon_span <= 0:
+        return 0
+    centre_lat = (lat_a + lat_b) / 2.0
+    metres_per_degree_lon = (
+        math.cos(math.radians(centre_lat)) * 2.0 * math.pi * _EARTH_RADIUS_M / 360.0
+    )
+    ground_m_per_px = lon_span * metres_per_degree_lon / float(width_px)
+    return int(round(ground_m_per_px * METERS_PER_PIXEL_TO_SCALE))
+
+
+def dataset_native_scale(dataset, bbox):
+    """Compilation scale denominator for an open raster dataset (0 if unknown)."""
+    return native_scale_from_bbox(
+        bbox, dataset.RasterXSize, header_scale(dataset.GetMetadata())
+    )
 
 
 class GDALSingleRasterChart:
@@ -81,8 +157,9 @@ class GDALSingleRasterChart:
             raise Exception(f"Unable to open raster chart {path}")
 
         bbox = dataset_bbox(dataset)
+        scale = dataset_native_scale(dataset, bbox)
 
-        return (path, bbox, dataset.RasterXSize, dataset.RasterYSize)
+        return (path, bbox, dataset.RasterXSize, dataset.RasterYSize, scale)
 
     def __init__(self, path):
         dataset = gdal.Open(path, gdal.GA_ReadOnly)
@@ -162,12 +239,38 @@ class GDALRasterChart(ChartLayer):
         super().__init__(path, "raster", settings_manager, metadata, enabled)
         self.cached = {}
         self.loadLock = Lock()
+        self._native_scale = 0
 
         if metadata:
             self.on_metadata_update()
 
+    @staticmethod
+    def _file_entry(entry):
+        """Coerce a stored file entry to a 5-tuple with a valid footprint and scale.
+
+        Entries already carrying a scale were written with the corrected axis
+        order and are kept as-is. Legacy 4-tuples predate both the scale field
+        and the axis-order fix, so their stored footprint may have latitude and
+        longitude swapped; re-read the file to heal the footprint and derive the
+        scale from source metadata, falling back to the stored footprint when
+        the file can no longer be opened.
+        """
+        if len(entry) > 4:
+            return (entry[0], entry[1], entry[2], entry[3], entry[4])
+        try:
+            return GDALSingleRasterChart.get_file_info(entry[0])
+        except Exception:
+            path, bbox, width, height = entry[0], entry[1], entry[2], entry[3]
+            return (path, bbox, width, height, native_scale_from_bbox(bbox, width))
+
     def on_metadata_update(self):
-        pass
+        """Normalise file entries and expose the layer's native scale."""
+        entries = [self._file_entry(entry) for entry in self.metadata or []]
+        self.metadata = entries
+        scales = [entry[4] for entry in entries if entry[4]]
+        # A layer competes at its most detailed file's scale; ranking still
+        # defers to a chart whose compilation scale better matches the view.
+        self._native_scale = min(scales) if scales else 0
 
     def on_register(self, on_tick_handler=None):
         self.metadata = []
