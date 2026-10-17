@@ -61,7 +61,7 @@ class SessionController(QObject):
         self.chart_errors = []
         if load_charts:
             self.charts.load_base_chart()
-            for kind in ("vector", "raster"):
+            for kind in ("vector", "raster", "mbtiles"):
                 loader = getattr(self.charts, "load_" + kind + "_layer")
                 for entry in self.settings[kind + "Charts"]:
                     try:

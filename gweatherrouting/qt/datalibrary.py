@@ -182,6 +182,7 @@ class DataLibrary(QDialog):
         self.button(row, "Vector file…", self.import_vector)
         self.button(row, "Vector folder…", self.import_vector_folder)
         self.button(row, "Raster folder…", self.import_raster)
+        self.button(row, "MBTiles…", self.import_mbtiles)
         self.remove_chart_button = self.button(row, "Remove", self.remove_chart)
         layout.addLayout(row)
         note = QLabel(
@@ -489,6 +490,13 @@ class DataLibrary(QDialog):
         path = QFileDialog.getExistingDirectory(self, "Import raster chart folder")
         if path:
             self.data.import_chart(path, "raster")
+
+    def import_mbtiles(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import offline raster MBTiles", "", "MBTiles charts (*.mbtiles)"
+        )
+        if path:
+            self.data.import_chart(path, "mbtiles")
 
     def toggle_chart(self, item):
         if item.column() == 0:

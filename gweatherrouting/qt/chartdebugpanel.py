@@ -24,6 +24,7 @@ from gweatherrouting.rendering.chartclasses import CHART_CLASSES, chart_class_en
 from gweatherrouting.rendering.gdalrasterchart import GDALRasterChart
 from gweatherrouting.rendering.gdalvectorchart import GDALVectorChart
 from gweatherrouting.rendering.gshhs import GSHHSVectorChart
+from gweatherrouting.rendering.mbtilesrenderer import MBTilesChart
 from gweatherrouting.rendering.vectordrawer.cm93chartdrawer import CM93ChartDrawer
 from gweatherrouting.rendering.vectordrawer.osmchartdrawer import OSMChartDrawer
 from gweatherrouting.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
@@ -69,6 +70,8 @@ def raster_overlaps_window(metadata, window):
 
 
 def chart_kind(chart):
+    if isinstance(chart, MBTilesChart):
+        return "MBTiles"
     if isinstance(chart, GSHHSVectorChart):
         return "coastlines"
     if isinstance(chart, GDALRasterChart):
@@ -95,6 +98,14 @@ def chart_status(chart, window, scale, seamarks_layer=None):
     )
 
     def would_draw():
+        if isinstance(chart, MBTilesChart):
+            west, south, east, north = chart.info.bounds
+            envelopes = (
+                ((west, east, south, north),)
+                if west <= east
+                else ((west, 180, south, north), (-180, east, south, north))
+            )
+            return envelopes_overlap(envelopes, window)
         if is_enc:
             if not chart_scale_visible(chart._native_scale, scale):
                 return False
@@ -214,11 +225,16 @@ class ChartDebugPanel(QWidget):
             self.charts_tree.clear()
             for chart in collection.charts:
                 native = getattr(chart, "_native_scale", 0) or 0
+                native_label = (
+                    f"z{min(chart.info.zooms)}–{max(chart.info.zooms)}"
+                    if isinstance(chart, MBTilesChart)
+                    else f"1:{native:,}" if native else "—"
+                )
                 item = QTreeWidgetItem(
                     [
                         os.path.basename(chart.path.rstrip("/")),
                         chart_kind(chart),
-                        f"1:{native:,}" if native else "—",
+                        native_label,
                         (
                             chart_status(chart, window, scale, collection.osmLayer)
                             if chart_class_enabled(self.controller.settings, chart)

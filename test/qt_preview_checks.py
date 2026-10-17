@@ -580,7 +580,7 @@ class QtPreviewChecks(unittest.TestCase):
 
         object.__setattr__(self.controller.settings, "_Storage__init", True)
         panel = self.window.chart_layers_panel
-        self.assertEqual(len(panel.checkboxes), 7)
+        self.assertEqual(len(panel.checkboxes), 8)
         self.assertIn(self.window.chart_layers_dock, self.window.workspace.docks)
         chart = GDALRasterChart("/disabled", self.controller.settings, enabled=False)
         self.controller.charts.charts.append(chart)
@@ -617,6 +617,45 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertFalse(reloaded.chartENCVisible)
             self.assertFalse(reloaded.canadianCharts)
             self.assertTrue(reloaded.chartWorldVisible)
+
+    def test_mbtiles_import_toggle_persistence_and_remove_keeps_file(self):
+        from gweatherrouting.core.settings import SettingsManager
+        from gweatherrouting.rendering.mbtilesrenderer import MBTilesChart
+        from test.test_mbtiles import make_mbtiles
+
+        path = make_mbtiles(self.path / "offline.mbtiles")
+        original_mtime = Path(path).stat().st_mtime_ns
+        self.controller.data.import_chart(path, "mbtiles")
+        self.wait_for_data()
+        self.assertFalse(self.controller.data.error)
+        chart = self.controller.charts.charts[0]
+        self.assertIsInstance(chart, MBTilesChart)
+        self.assertEqual(len(self.controller.settings.mbtilesCharts), 1)
+        self.assertIn("chartMBTilesVisible", self.window.chart_layers_panel.checkboxes)
+        self.window.show_library()
+        library = self.window.library_dialog
+        self.assertTrue(library.imported_chart(chart))
+        self.assertEqual(library.charts.rowCount(), 1)
+        with (
+            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+            patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
+        ):
+            object.__setattr__(self.controller.settings, "_Storage__init", True)
+            self.controller.data.set_chart_enabled(chart, False)
+            with patch.object(Storage, "load_or_save_default", ORIGINAL_STORAGE_LOAD):
+                reloaded = SettingsManager()
+            self.assertFalse(reloaded.mbtilesCharts[0]["enabled"])
+            restored = self.controller.charts.load_mbtiles_layer(
+                reloaded.mbtilesCharts[0]["path"],
+                reloaded.mbtilesCharts[0]["metadata"],
+                False,
+            )
+            self.assertEqual(restored.info, chart.info)
+            self.controller.charts.charts.remove(restored)
+            self.controller.data.remove_chart(chart)
+        self.assertFalse(self.controller.settings.mbtilesCharts)
+        self.assertTrue(Path(path).exists())
+        self.assertEqual(Path(path).stat().st_mtime_ns, original_mtime)
 
     def test_qt_overlay_completes_without_glib_and_shutdown_discards_callbacks(self):
         import cairo

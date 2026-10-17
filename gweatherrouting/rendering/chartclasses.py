@@ -5,6 +5,7 @@ from gweatherrouting.common import resource_path
 from .gdalrasterchart import GDALRasterChart
 from .gdalvectorchart import GDALVectorChart
 from .gshhs import GSHHSVectorChart
+from .mbtilesrenderer import MBTilesChart
 from .vectordrawer.cm93chartdrawer import CM93ChartDrawer
 from .vectordrawer.osmchartdrawer import OSMChartDrawer
 from .vectordrawer.s57chartdrawer import S57ChartDrawer
@@ -13,6 +14,7 @@ CHART_CLASSES = (
     ("world", "chartWorldVisible", "World map / coastlines"),
     ("enc", "chartENCVisible", "Local ENC charts"),
     ("raster", "chartRasterVisible", "Raster charts (KAP / BSB / GeoTIFF)"),
+    ("mbtiles", "chartMBTilesVisible", "Offline MBTiles charts"),
     ("cm93", "chartCM93Visible", "CM93 charts"),
     ("seamarks", "chartSeamarksVisible", "OpenStreetMap seamarks"),
     ("vector", "chartVectorVisible", "Other vector charts"),
@@ -27,6 +29,8 @@ def chart_class(chart):
         return "world"
     if isinstance(chart, GDALRasterChart):
         return "raster"
+    if isinstance(chart, MBTilesChart):
+        return "mbtiles"
     if isinstance(chart, GDALVectorChart):
         drawer = getattr(chart, "drawer", None)
         if isinstance(drawer, S57ChartDrawer):

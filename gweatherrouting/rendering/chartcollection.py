@@ -35,6 +35,7 @@ from .chsrenderer import CHSRenderer
 from .gdalrasterchart import GDALRasterChart
 from .gdalvectorchart import GDALVectorChart
 from .encrenderer import ENCOverlayRenderer
+from .mbtilesrenderer import MBTilesChart, MBTilesRenderer
 from gweatherrouting.rendering.overlayrenderer import paint_viewport
 from .vectordrawer.s57chartdrawer import S57ChartDrawer
 from .gshhs import GSHHSVectorChart
@@ -54,6 +55,7 @@ class ChartCollection:
             object, tuple[tuple, MapViewport, cairo.ImageSurface]
         ] = WeakKeyDictionary()
         self._enc_renderer = ENCOverlayRenderer(schedule)
+        self._mbtiles_renderer = MBTilesRenderer(schedule)
         self._chs_renderer = CHSRenderer(os.path.join(DATA_DIR, "chs-tiles"), schedule)
 
         self.settings_manager.register_on_change(
@@ -72,6 +74,7 @@ class ChartCollection:
 
     def forget_map(self, canvas):
         self._enc_renderer.forget(canvas)
+        self._mbtiles_renderer.forget(canvas)
         self._chs_renderer.forget(canvas)
         self._chart_surfaces.pop(canvas, None)
         if canvas in self.maps:
@@ -87,6 +90,8 @@ class ChartCollection:
         for canvas in self.maps:
             if key == "chartENCVisible" and not enabled:
                 self._enc_renderer.forget(canvas)
+            if key == "chartMBTilesVisible" and not enabled:
+                self._mbtiles_renderer.forget(canvas)
             getattr(canvas, "invalidate_chart_sources", canvas.queue_draw)()
 
     def get_line_point_validity_providers(self):
@@ -167,6 +172,15 @@ class ChartCollection:
     def detailed_chart_at(self, lat, lon, scale, enabled=None):
         """Return the loaded chart best suited to this point and display scale."""
         settings = getattr(self, "settings_manager", {})
+        # Local imagery is an explicit top overlay; bounds are advisory coverage.
+        for chart in reversed(self.charts):
+            if (
+                isinstance(chart, MBTilesChart)
+                and (enabled is None or chart.enabled == enabled)
+                and chart_class_enabled(settings, chart)
+                and chart.info.contains(lat, lon)
+            ):
+                return chart
         candidates = sorted(
             (
                 c
@@ -266,12 +280,20 @@ class ChartCollection:
             self.gshhsLayer.force_downscale = True
         return chart
 
+    def load_mbtiles_layer(self, path, metadata=None, enabled=True):
+        chart = MBTilesChart(path, self.settings_manager, metadata, enabled)
+        self.charts.append(chart)
+        return chart
+
     def do_draw(self, gpsmap, cr):
-        base, enc = [], []
+        base, enc, mbtiles = [], [], []
         for chart in self.charts:
             if not chart_class_enabled(self.settings_manager, chart):
                 continue
-            if isinstance(chart, GDALVectorChart) and isinstance(
+            if isinstance(chart, MBTilesChart):
+                if chart.enabled:
+                    mbtiles.append((chart.info,))
+            elif isinstance(chart, GDALVectorChart) and isinstance(
                 chart.drawer, S57ChartDrawer
             ):
                 if chart.enabled:
@@ -287,6 +309,7 @@ class ChartCollection:
             self._draw_base(gpsmap, cr, base)
         self._chs_renderer.draw(gpsmap, cr)
         self._enc_renderer.draw(gpsmap, cr, tuple(enc), self._palette)
+        self._mbtiles_renderer.draw(gpsmap, cr, tuple(mbtiles), self._palette)
 
     def _draw_base(self, gpsmap, cr, charts):
         # Chart pixels are static while instruments, weather and routes repaint.

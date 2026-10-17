@@ -20,6 +20,7 @@ from gweatherrouting.core.modeldownloads import newest_entries, install_download
 from gweatherrouting.core.enccharts import ENCCatalog
 from gweatherrouting.core.storage import DATA_DIR, GRIB_DIR
 from gweatherrouting.rendering.gdalvectorchart import GDALVectorChart
+from gweatherrouting.rendering.mbtilesrenderer import MBTilesChart
 from gweatherrouting.rendering.gdalrasterchart import (
     GDALRasterChart,
     GDALSingleRasterChart,
@@ -339,6 +340,9 @@ class DataController(QObject):
             chart: ChartLayer
             if kind == "vector":
                 chart = GDALVectorChart(path, settings)
+            elif kind == "mbtiles":
+                chart = MBTilesChart(path, settings)
+                progress(100)
             else:
                 directory = str(Path(path).resolve()) + os.sep
                 files = [

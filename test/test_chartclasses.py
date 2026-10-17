@@ -16,6 +16,8 @@ from gweatherrouting.rendering.chartcollection import ChartCollection
 from gweatherrouting.rendering.gdalrasterchart import GDALRasterChart
 from gweatherrouting.rendering.gdalvectorchart import GDALVectorChart
 from gweatherrouting.rendering.gshhs import GSHHSVectorChart
+from gweatherrouting.rendering.mbtilesrenderer import MBTilesChart
+from gweatherrouting.core.mbtiles import MBTilesInfo
 from gweatherrouting.rendering.vectordrawer.cm93chartdrawer import CM93ChartDrawer
 from gweatherrouting.rendering.vectordrawer.osmchartdrawer import OSMChartDrawer
 from gweatherrouting.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
@@ -40,6 +42,7 @@ class TestChartClasses(unittest.TestCase):
         self.manager = ChartCollection(self.settings)
         self.manager._draw_base = Mock()
         self.manager._enc_renderer = Mock()
+        self.manager._mbtiles_renderer = Mock()
         self.manager._chs_renderer.draw = Mock()
         world = GSHHSVectorChart.__new__(GSHHSVectorChart)
         world.path, world.enabled = "/world", True
@@ -47,6 +50,13 @@ class TestChartClasses(unittest.TestCase):
             "world": world,
             "enc": vector("harbor.000", S57ChartDrawer),
             "raster": GDALRasterChart("/raster", self.settings),
+            "mbtiles": MBTilesChart(
+                "/offline.mbtiles",
+                self.settings,
+                MBTilesInfo(
+                    "/offline.mbtiles", "offline", (-123, 47, -122, 48), (10,)
+                ).metadata(),
+            ),
             "cm93": vector("/cm93", CM93ChartDrawer),
             "seamarks": vector("/seamarks", OSMChartDrawer),
             "vector": SimpleNamespace(path="other", enabled=True),
@@ -70,6 +80,8 @@ class TestChartClasses(unittest.TestCase):
                 self.manager.do_draw(MapCanvas(), Mock())
                 drawn_base = self.manager._draw_base.call_args.args[2]
                 enc_specs = self.manager._enc_renderer.draw.call_args.args[2]
+                mbtiles_specs = self.manager._mbtiles_renderer.draw.call_args.args[2]
+                self.assertEqual(bool(mbtiles_specs), kind != "mbtiles")
                 if kind == "enc":
                     self.assertFalse(enc_specs)
                 else:
@@ -106,6 +118,13 @@ class TestChartClasses(unittest.TestCase):
         self.settings.canadianCharts = True
         self.settings.chartENCVisible = False
         self.assertTrue(self.manager._chs_renderer.enabled)
+
+    def test_mbtiles_switch_cancels_pending_display_work(self):
+        canvas = Mock()
+        self.manager.add_map(canvas)
+        self.settings["chartMBTilesVisible"] = False
+        self.manager._mbtiles_renderer.forget.assert_called_once_with(canvas)
+        canvas.invalidate_chart_sources.assert_called_once()
 
     def test_hidden_enc_is_not_active_or_offered_for_download(self):
         self.manager.charts = [self.charts["enc"]]
