@@ -1,29 +1,26 @@
-"""Affinity-style dock chrome: native bars when docked, frameless panels floating.
+"""Panel chrome and application-owned tab dragging and docking previews."""
 
-Docked panels keep the native title bar (restyled: close on the left, no
-float button) so main-window drag/drop keeps working. Floating panels go
-frameless like Affinity: our own header with a left close button, drag to
-move, double-click to redock, edge resize, and a rounded mask so no native
-frame or white outline is drawn by the OS.
-"""
+from dataclasses import dataclass
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QRect, Qt, QTimer
-from PySide6.QtGui import QCursor, QRegion
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer
+from PySide6.QtGui import QCursor, QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractScrollArea,
     QAbstractSpinBox,
     QComboBox,
     QDockWidget,
+    QMainWindow,
     QHBoxLayout,
     QLabel,
     QScrollArea,
+    QTabBar,
     QToolButton,
     QWidget,
 )
 
 import logging
-from shiboken6 import isValid
+from shiboken6 import getCppPointer, isValid
 
 logger = logging.getLogger("gweatherrouting")
 
@@ -35,8 +32,7 @@ DOCK_MIN_WIDTH = 300
 # How long the thin scrollbar stays visible after the last scroll tick.
 SCROLLBAR_FLASH_MS = 900
 
-# Frameless floating panels: corner radius and resize-grip thickness.
-FLOATING_RADIUS = 12
+# Frameless floating panel resize-grip thickness.
 RESIZE_EDGE = 7
 
 
@@ -52,28 +48,355 @@ class _SnapPreview(QWidget):
             | Qt.WindowType.WindowTransparentForInput
             | Qt.WindowType.WindowDoesNotAcceptFocus,
         )
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        # Plain QWidgets need this or stylesheet backgrounds never paint.
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        # Draw directly in paintEvent: stylesheet backgrounds do not paint
+        # reliably on macOS top-level translucent windows.
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setObjectName("snap-preview")
         self.hide()
+
+    def paintEvent(self, event):  # noqa: N802
+        from PySide6.QtGui import QColor, QPainter, QPen
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(QColor(53, 132, 228, 65))
+        painter.setPen(QPen(QColor(53, 132, 228, 160), 2))
+        painter.drawRoundedRect(self.rect(), 4, 4)
 
     def show_at(self, rect):
         if self.geometry() != rect:
             self.setGeometry(rect)
         if not self.isVisible():
             self.show()
+        self.raise_()
 
     def dismiss(self):
         if self.isVisible():
             self.hide()
 
 
+@dataclass
+class _DropTarget:
+    kind: str
+    rect: QRect
+    dock: QDockWidget | None = None
+    area: Qt.DockWidgetArea = Qt.DockWidgetArea.NoDockWidgetArea
+
+
+class _EmptyTitleBar(QWidget):
+    def sizeHint(self):  # noqa: N802
+        return QSize(0, 0)
+
+    def minimumSizeHint(self):  # noqa: N802
+        return QSize(0, 0)
+
+
+class DockDragController(QObject):
+    """Keep Qt's tab reordering, but own tear-off and panel drop operations.
+
+    Floating panels are moved with QWidget.move(), never a native system move,
+    so desktop window tiling does not participate in panel drags.
+    """
+
+    def __init__(self, window: QMainWindow):
+        super().__init__(window)
+        self.window = window
+        self._pressed = None
+        self._drag_bar = None
+        self._sync_pending = False
+        QApplication.instance().installEventFilter(self)
+        self.schedule_sync()
+
+    def docks(self):
+        if not isValid(self.window):
+            return []
+        return self.window.findChildren(
+            QDockWidget, options=Qt.FindChildOption.FindDirectChildrenOnly
+        )
+
+    def schedule_sync(self, *_):
+        if not self._sync_pending:
+            self._sync_pending = True
+            QTimer.singleShot(0, self.sync_chrome)
+
+    def sync_chrome(self):
+        self._sync_pending = False
+        if not isValid(self.window):
+            return
+        for dock in self.docks():
+            frame = dock.findChild(_FloatingFrame)
+            if frame is not None and not dock.isFloating():
+                # Only an actually visible peer supplies a tab heading. A lone
+                # panel retains its header as a drag/close affordance.
+                tabbed = any(
+                    not peer.isHidden()
+                    for peer in self.window.tabifiedDockWidgets(dock)
+                )
+                frame.set_tabbed(tabbed)
+
+    def _tab_dock(self, tabs, index):
+        if index < 0:
+            return None
+        # QMainWindow stores the dock's C++ address as its internal tab data.
+        address = tabs.tabData(index)
+        return next(
+            (dock for dock in self.docks() if getCppPointer(dock)[0] == address), None
+        )
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        if not isValid(self.window):
+            return False
+        kind = event.type()
+        if watched is self.window and kind == QEvent.Type.LayoutRequest:
+            self.schedule_sync()
+        if kind == QEvent.Type.KeyPress and event.key() == Qt.Key.Key_Escape:
+            if self._drag_bar is not None:
+                bar = self._drag_bar
+                bar._clear_preview()
+                bar._press_offset = bar._press_global = None
+                bar.releaseMouse()
+                self._drag_bar = None
+                return True
+            self._pressed = None
+        if self._drag_bar is not None:
+            bar = self._drag_bar
+            if kind == QEvent.Type.MouseMove:
+                bar.drag_move(event.globalPosition().toPoint())
+                return True
+            if (
+                kind == QEvent.Type.MouseButtonRelease
+                and event.button() == Qt.MouseButton.LeftButton
+            ):
+                self._drag_bar = None
+                bar.mouseReleaseEvent(event)
+                return True
+        if isinstance(watched, QTabBar) and watched.parentWidget() is self.window:
+            if (
+                kind == QEvent.Type.MouseButtonPress
+                and event.button() == Qt.MouseButton.LeftButton
+            ):
+                dock = self._tab_dock(
+                    watched, watched.tabAt(event.position().toPoint())
+                )
+                if dock is not None:
+                    self._pressed = (watched, dock, event.globalPosition().toPoint())
+            elif (
+                kind == QEvent.Type.MouseButtonDblClick
+                and event.button() == Qt.MouseButton.LeftButton
+            ):
+                dock = self._tab_dock(
+                    watched, watched.tabAt(event.position().toPoint())
+                )
+                if dock is not None:
+                    self._pressed = None
+                    dock.setFloating(True)
+                    return True
+        if self._pressed is not None:
+            tabs, dock, origin = self._pressed
+            if kind == QEvent.Type.MouseButtonRelease:
+                self._pressed = None
+            elif (
+                kind == QEvent.Type.MouseMove
+                and event.buttons() & Qt.MouseButton.LeftButton
+            ):
+                cursor = event.globalPosition().toPoint()
+                if (
+                    cursor - origin
+                ).manhattanLength() < QApplication.startDragDistance():
+                    return False
+                if (
+                    tabs.rect()
+                    .adjusted(-12, -12, 12, 12)
+                    .contains(tabs.mapFromGlobal(cursor))
+                ):
+                    return False  # Qt still owns reordering within the strip.
+                self._pressed = None
+                # End Qt's internal reorder before removing this tab.
+                release = QMouseEvent(
+                    QEvent.Type.MouseButtonRelease,
+                    tabs.mapFromGlobal(cursor),
+                    cursor,
+                    Qt.MouseButton.LeftButton,
+                    Qt.MouseButton.NoButton,
+                    event.modifiers(),
+                )
+                QApplication.sendEvent(tabs, release)
+                size = dock.size()
+                dock.setFloating(True)
+                dock.resize(size)
+                bar = dock.titleBarWidget()
+                dock.move(
+                    cursor - QPoint(min(size.width() // 2, 100), bar.height() // 2)
+                )
+                bar._press_offset = cursor - dock.pos()
+                bar._press_global = origin
+                bar.grabMouse()
+                self._drag_bar = bar
+                bar._update_snap(cursor)
+                return True
+        return False
+
+    @staticmethod
+    def global_rect(widget):
+        return QRect(widget.mapToGlobal(QPoint()), widget.size())
+
+    def target_at(self, moving, cursor):
+        # Prefer floating panels in front of the workspace. Only their top and
+        # bottom edges are magnetic; the screen edges deliberately are not.
+        docks = [d for d in self.docks() if d is not moving and not d.isHidden()]
+        for dock in reversed(docks):
+            if not dock.isFloating():
+                continue
+            rect = self.global_rect(dock)
+            if rect.left() - 20 <= cursor.x() <= rect.right() + 20:
+                above = abs(cursor.y() - rect.top()) <= 24
+                below = abs(cursor.y() - rect.bottom()) <= 24
+                if above or below:
+                    height = moving.height()
+                    result = QRect(
+                        rect.left(),
+                        rect.top() - height if above else rect.bottom() + 1,
+                        rect.width(),
+                        height,
+                    )
+                    screen = QApplication.screenAt(cursor)
+                    if screen is not None and not screen.availableGeometry().contains(
+                        result
+                    ):
+                        continue
+                    return _DropTarget("float", result, dock)
+        for dock in docks:
+            if dock.isFloating() or dock.visibleRegion().isEmpty():
+                continue
+            area = self.window.dockWidgetArea(dock)
+            if not moving.allowedAreas() & area:
+                continue
+            rect = self.global_rect(dock)
+            # Include the tab strip immediately above the dock content.
+            hit = rect.adjusted(0, -36, 0, 0)
+            if not hit.contains(cursor):
+                continue
+            band = min(80, rect.height() // 4)
+            if rect.top() <= cursor.y() < rect.top() + band:
+                preview = QRect(rect)
+                preview.setHeight(rect.height() // 2)
+                return _DropTarget("top", preview, dock, area)
+            if cursor.y() > rect.bottom() - band:
+                preview = QRect(rect)
+                preview.setTop(rect.top() + rect.height() // 2)
+                return _DropTarget("bottom", preview, dock, area)
+            return _DropTarget("tab", rect, dock, area)
+        bounds = self.global_rect(self.window)
+        center = self.global_rect(self.window.centralWidget())
+        if bounds.contains(cursor) and center.top() <= cursor.y() <= center.bottom():
+            for area, edge in (
+                (Qt.DockWidgetArea.LeftDockWidgetArea, bounds.left()),
+                (Qt.DockWidgetArea.RightDockWidgetArea, bounds.right()),
+            ):
+                if abs(cursor.x() - edge) <= 32 and moving.allowedAreas() & area:
+                    width = max(
+                        DOCK_MIN_WIDTH, min(moving.width(), bounds.width() // 3)
+                    )
+                    x = (
+                        bounds.left()
+                        if area == Qt.DockWidgetArea.LeftDockWidgetArea
+                        else bounds.right() - width + 1
+                    )
+                    return _DropTarget(
+                        "area",
+                        QRect(x, center.top(), width, center.height()),
+                        area=area,
+                    )
+        return None
+
+    def apply_target(self, moving, target):
+        if target.kind == "float":
+            moving.setGeometry(target.rect)
+            return
+        peer = target.dock
+        if peer is not None and (
+            not isValid(peer) or peer.isHidden() or peer.isFloating()
+        ):
+            return
+        moving.setFloating(False)
+        # Let Qt finish restoring the previous dock location before we move it.
+        QApplication.processEvents()
+        # setFloating(False) restores the old tab group. Remove that saved
+        # placement before applying a new one (including splits in that group).
+        self.window.removeDockWidget(moving)
+        self.window.addDockWidget(target.area, moving)
+        if target.kind == "tab":
+            self.window.tabifyDockWidget(peer, moving)
+        elif target.kind in ("top", "bottom"):
+            self._split_sidebar(moving, target)
+        moving.show()
+        moving.raise_()
+        self.schedule_sync()
+
+    def _split_sidebar(self, moving, target):
+        # Qt retains a tabbed layout item even after all but one tab have been
+        # removed: splitDockWidget then silently tabifies. Rebuild just this
+        # sidebar's visible vertical groups, establishing splits BEFORE tabs.
+        # Other sidebar groups retain their order, active tabs, and heights.
+        groups = []
+        seen = {moving}
+        for dock in self.docks():
+            if (
+                dock in seen
+                or dock.isFloating()
+                or self.window.dockWidgetArea(dock) != target.area
+            ):
+                continue
+            members = [dock, *self.window.tabifiedDockWidgets(dock)]
+            members = [d for d in members if d is not moving and not d.isFloating()]
+            seen.update(members)
+            visible = [d for d in members if not d.isHidden()]
+            if not visible:
+                continue
+            active = next(
+                (d for d in visible if not d.visibleRegion().isEmpty()), visible[0]
+            )
+            groups.append((active.y(), members, active, active.height()))
+        groups.sort(key=lambda group: group[0])
+        ordered = []
+        hidden = {
+            dock: dock.isHidden() for _, members, _, _ in groups for dock in members
+        }
+        hidden[moving] = False
+        for y, members, active, height in groups:
+            if target.dock in members:
+                pair = [
+                    ([moving], moving, target.rect.height()),
+                    (members, active, target.rect.height()),
+                ]
+                ordered.extend(pair if target.kind == "top" else reversed(pair))
+            else:
+                ordered.append((members, active, height))
+        for members, _, _ in ordered:
+            for dock in members:
+                self.window.removeDockWidget(dock)
+        previous = None
+        for members, _, _ in ordered:
+            lead = members[0]
+            self.window.addDockWidget(target.area, lead, Qt.Orientation.Vertical)
+            if previous is not None:
+                self.window.splitDockWidget(previous, lead, Qt.Orientation.Vertical)
+            previous = lead
+        for members, active, _ in ordered:
+            for sibling in members[1:]:
+                self.window.tabifyDockWidget(members[0], sibling)
+            for dock in members:
+                dock.setVisible(not hidden[dock])
+            active.raise_()
+        self.window.resizeDocks(
+            [members[0] for members, _, _ in ordered],
+            [height for _, _, height in ordered],
+            Qt.Orientation.Vertical,
+        )
+
+
 class DockTitleBar(QWidget):
     """Frameless floating header: left close, title, drag-move, dblclick-dock."""
-
-    SNAP_MARGIN = 14
-    PANEL_MARGIN = 10
 
     def __init__(self, dock: QDockWidget):
         super().__init__(dock)
@@ -83,9 +406,7 @@ class DockTitleBar(QWidget):
         self._dock = dock
         self._press_offset = None
         self._press_global = None
-        self._snapped: str | None = None
-        self._presnap: QRect | None = None
-        self._pending_snap: tuple[str, QRect] | None = None
+        self._pending_snap: tuple[_DropTarget, QRect] | None = None
         self._last_snap_log: tuple | None = None
         self._preview: _SnapPreview | None = None
         layout = QHBoxLayout(self)
@@ -114,7 +435,7 @@ class DockTitleBar(QWidget):
         self.setToolTip("Drag to move · double-click to dock")
 
     def mousePressEvent(self, event):  # noqa: N802 - Qt virtual method name
-        if event.button() == Qt.MouseButton.LeftButton and self._dock.isFloating():
+        if event.button() == Qt.MouseButton.LeftButton:
             self._press_offset = event.globalPosition().toPoint() - self._dock.pos()
             self._press_global = event.globalPosition().toPoint()
             self.grabMouse()  # keep moves coming here once cursor leaves bar
@@ -132,8 +453,18 @@ class DockTitleBar(QWidget):
         if (
             self._press_offset is not None
             and event.buttons() & Qt.MouseButton.LeftButton
-            and self._dock.isFloating()
         ):
+            cursor = event.globalPosition().toPoint()
+            if not self._dock.isFloating():
+                if (
+                    cursor - self._press_global
+                ).manhattanLength() <= QApplication.startDragDistance():
+                    return
+                self._dock.setFloating(True)
+                self._press_offset = QPoint(
+                    min(100, self._dock.width() // 2), self.height() // 2
+                )
+                self.grabMouse()
             self.drag_move(event.globalPosition().toPoint())
             event.accept()
         else:
@@ -143,15 +474,6 @@ class DockTitleBar(QWidget):
         """Continue an in-progress header drag from any event source."""
         if self._press_offset is None or not self._dock.isFloating():
             return
-        if (
-            self._snapped is not None
-            and self._press_global is not None
-            and (cursor - self._press_global).manhattanLength()
-            > QApplication.startDragDistance()
-        ):
-            # Only restore free size once this is a real drag; a plain
-            # click to focus must leave a snapped panel alone.
-            self._unsnap_for_drag(cursor)
         self._dock.move(cursor - self._press_offset)
         self._update_snap(cursor)
 
@@ -167,6 +489,7 @@ class DockTitleBar(QWidget):
             self._press_global = None
             self.releaseMouse()
             if moved:
+                self._update_snap(cursor)
                 self._apply_snap()
             else:
                 self._clear_preview()
@@ -177,63 +500,28 @@ class DockTitleBar(QWidget):
             self._press_offset = None
             self._press_global = None
             self._clear_preview()
+            self.releaseMouse()
             if self._dock.windowState() & Qt.WindowState.WindowMaximized:
                 self._dock.showNormal()
-                self._snapped = None
             else:
                 self._dock.setFloating(False)
             event.accept()
         else:
             super().mouseDoubleClickEvent(event)
 
-    def clear_snap(self):
-        self._snapped = None
-        self._presnap = None
-
     # -- edge snap -------------------------------------------------------
     def _snap_target(self, cursor):
-        screen = QApplication.screenAt(cursor)
-        if screen is None:
-            # Cursor exactly on/past the edge: judge by the panel instead.
-            screen = (
-                QApplication.screenAt(self._dock.geometry().center())
-                or QApplication.primaryScreen()
-            )
-        if screen is None:
-            return None, None
-        avail = screen.availableGeometry()
-        geom = self._dock.geometry()
-        # Cursor at the edge (native-style grab) OR the panel edge touching
-        # or past the screen edge (grabbed by the middle, possibly dragged
-        # fast). Either one snaps; no upper bound so overshooting still
-        # matches instead of falling into a dead zone.
-        m = self.SNAP_MARGIN
-        if (
-            cursor.y() <= avail.top() + m
-            or geom.top() <= avail.top() + self.PANEL_MARGIN
-        ):
-            return "max", QRect(avail)
-        half = avail.width() // 2
-        if (
-            cursor.x() <= avail.left() + m
-            or geom.left() <= avail.left() + self.PANEL_MARGIN
-        ):
-            rect = QRect(avail)
-            rect.setWidth(half)
-            return "left", rect
-        if (
-            cursor.x() >= avail.right() - m
-            or geom.right() >= avail.right() - self.PANEL_MARGIN
-        ):
-            rect = QRect(avail)
-            rect.setLeft(avail.left() + half)
-            return "right", rect
-        return None, None
+        manager = self._dock.parentWidget().findChild(DockDragController)
+        target = manager.target_at(self._dock, cursor) if manager else None
+        return (target, target.rect) if target else (None, None)
 
     def _update_snap(self, cursor):
         kind, rect = self._snap_target(cursor)
         self._pending_snap = (kind, rect) if kind else None
-        key = (kind, rect.getRect() if rect is not None else None)
+        key = (
+            kind.kind if kind else None,
+            rect.getRect() if rect is not None else None,
+        )
         if key != self._last_snap_log:
             self._last_snap_log = key
             screen = QApplication.screenAt(cursor)
@@ -268,45 +556,10 @@ class DockTitleBar(QWidget):
                 self._dock.geometry().getRect(),
             )
             return
-        kind, rect = pending
-        dock = self._dock
-        if kind == "max":
-            if not self._snapped:
-                self._presnap = dock.geometry()
-            dock.showMaximized()
-            self._snapped = "max"
-            logger.debug("dock-snap release panel=%r: maximized", dock.windowTitle())
-            return
-        if dock.windowState() & Qt.WindowState.WindowMaximized:
-            dock.showNormal()
-        if not self._snapped:
-            self._presnap = dock.geometry()
-        dock.setGeometry(rect)
-        self._snapped = kind
-        logger.debug(
-            "dock-snap release panel=%r: snapped %s to %s",
-            dock.windowTitle(),
-            kind,
-            rect.getRect(),
-        )
-
-    def _unsnap_for_drag(self, cursor):
-        # Grabbing a snapped panel restores its free size, like native drag.
-        if not self._snapped or self._presnap is None:
-            return
-        dock = self._dock
-        if dock.windowState() & Qt.WindowState.WindowMaximized:
-            dock.showNormal()
-        restored = QRect(self._presnap)
-        ratio = 0.5
-        if dock.width() > 0:
-            ratio = min(1.0, max(0.0, (cursor.x() - dock.x()) / dock.width()))
-        restored.moveLeft(round(cursor.x() - restored.width() * ratio))
-        dock.setGeometry(restored)
-        # Re-anchor the drag to the restored window so it doesn't jump.
-        self._press_offset = cursor - dock.pos()
-        self._snapped = None
-        self._presnap = None
+        target, rect = pending
+        manager = self._dock.parentWidget().findChild(DockDragController)
+        if manager:
+            manager.apply_target(self._dock, target)
 
 
 class _ScrollActivity(QObject):
@@ -443,13 +696,7 @@ def style_scrollarea(
 
 
 def style_dock(dock: QDockWidget) -> QDockWidget:
-    """Native bar when docked, frameless Affinity-style panel when floating.
-
-    The float/popout *button* stays hidden by stylesheet (theme.py) and
-    DockWidgetFloatable stays enabled so docked drag-to-float and
-    programmatic setFloating() keep working; _FloatingFrame swaps the
-    chrome on topLevelChanged.
-    """
+    """Use custom chrome before floating, avoiding native window decoration."""
     dock.setFeatures(
         dock.features()
         | QDockWidget.DockWidgetFeature.DockWidgetClosable
@@ -457,15 +704,21 @@ def style_dock(dock: QDockWidget) -> QDockWidget:
         | QDockWidget.DockWidgetFeature.DockWidgetFloatable
     )
     dock.setMinimumWidth(DOCK_MIN_WIDTH)
-    if dock.titleBarWidget() is not None:
-        dock.setTitleBarWidget(None)  # type: ignore[arg-type]
     if dock.findChild(_FloatingFrame) is None:
         _FloatingFrame(dock)
+    window = dock.parentWidget()
+    if isinstance(window, QMainWindow):
+        manager = window.findChild(DockDragController)
+        if manager is None:
+            manager = DockDragController(window)
+        dock.topLevelChanged.connect(manager.schedule_sync)
+        dock.visibilityChanged.connect(manager.schedule_sync)
+        dock.dockLocationChanged.connect(manager.schedule_sync)
     return dock
 
 
 class _FloatingFrame(QObject):
-    """Swap a dock between native (docked) and frameless (floating) chrome."""
+    """Opaque frameless floating panels; no duplicate header under dock tabs."""
 
     _CURSORS = {
         (True, False, False, True): Qt.CursorShape.SizeBDiagCursor,
@@ -481,11 +734,12 @@ class _FloatingFrame(QObject):
     def __init__(self, dock: QDockWidget):
         super().__init__(dock)
         self._dock = dock
-        self._base_flags = dock.windowFlags()
-        self._bar: DockTitleBar | None = None
+        self._bar = DockTitleBar(dock)
+        self._empty = _EmptyTitleBar(dock)
+        self._empty.setFixedHeight(0)
+        dock.setTitleBarWidget(self._bar)
         self._resize: tuple[tuple, QRect, QPoint] | None = None
         dock.topLevelChanged.connect(self._sync)
-        dock.installEventFilter(self)
         self._sync(dock.isFloating())
 
     def _watch_descendants(self):
@@ -494,57 +748,32 @@ class _FloatingFrame(QObject):
         for child in self._dock.findChildren(QWidget):
             if child.property("_frameFiltered") is None:
                 child.setProperty("_frameFiltered", True)
-                child.installEventFilter(self)
                 child.setMouseTracking(True)
 
     # -- chrome swap -----------------------------------------------------
     def _sync(self, floating: bool):
         dock = self._dock
-        # Changing window flags hides the widget; restore prior visibility
-        # so redocking never unhides a closed panel (or hides an open one).
-        visible = dock.isVisible()
         if floating:
-            dock.setWindowFlags(
-                Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint
-            )
-            dock.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-            if self._bar is None:
-                self._bar = DockTitleBar(dock)
             if dock.titleBarWidget() is not self._bar:
                 dock.setTitleBarWidget(self._bar)
             self._watch_descendants()
-            if visible:
-                dock.show()
-            self._update_mask()
+            # Qt's built-in dock resize handler filters application events.
+            # Watch at the same level, before it consumes edge presses.
+            QApplication.instance().installEventFilter(self)
         else:
+            QApplication.instance().removeEventFilter(self)
             self._resize = None
-            dock.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-            dock.clearMask()
-            dock.setWindowFlags(self._base_flags)
-            if dock.titleBarWidget() is not None:
-                dock.setTitleBarWidget(None)  # type: ignore[arg-type]
-            if visible:
-                dock.show()
+            self._bar._clear_preview()
+        # Qt makes docks with custom title widgets frameless tool windows.
+        # Do not change flags or enable translucency during topLevelChanged:
+        # recreating the native window here breaks child compositing on macOS.
+        dock.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        dock.clearMask()
 
-    def _update_mask(self):
-        from PySide6.QtGui import QPainterPath
-
-        if self._dock.windowState() & Qt.WindowState.WindowMaximized:
-            self._dock.clearMask()
-            return
-        rect = self._dock.rect()
-        if rect.isEmpty():
-            return
-        path = QPainterPath()
-        path.addRoundedRect(
-            rect.x(),
-            rect.y(),
-            rect.width(),
-            rect.height(),
-            FLOATING_RADIUS,
-            FLOATING_RADIUS,
-        )
-        self._dock.setMask(QRegion(path.toFillPolygon().toPolygon()))
+    def set_tabbed(self, tabbed):
+        bar = self._empty if tabbed else self._bar
+        if self._dock.titleBarWidget() is not bar:
+            self._dock.setTitleBarWidget(bar)
 
     # -- edge resize ------------------------------------------------------
     def _edges(self, dock: QDockWidget, pos) -> tuple:
@@ -563,14 +792,9 @@ class _FloatingFrame(QObject):
             return False
         if not dock.isFloating():
             return False
-        if event.type() == QEvent.Type.Resize:
-            self._update_mask()
-            return False
-        if event.type() == QEvent.Type.WindowStateChange:
-            if dock.windowState() & Qt.WindowState.WindowMaximized:
-                dock.clearMask()
-            else:
-                self._update_mask()
+        if not isinstance(watched, QWidget) or not (
+            watched is dock or dock.isAncestorOf(watched)
+        ):
             return False
         if isinstance(watched, DockTitleBar):
             return False  # title bar owns move/double-click
@@ -659,6 +883,3 @@ class _FloatingFrame(QObject):
         if bottom:
             geom.setBottom(max(geom.bottom() + dy, geom.top() + 120))
         self._dock.setGeometry(geom)
-        bar = self._dock.titleBarWidget()
-        if isinstance(bar, DockTitleBar):
-            bar.clear_snap()  # manual resize breaks out of a snapped state
