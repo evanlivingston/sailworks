@@ -42,6 +42,14 @@ feature branches as focused follow-up commits; avoid rewriting shared history.
 
 ## Token-efficient validation and merging
 
+- Delegate test runs and validation commands to the `test-runner` subagent
+  defined in `.opencode/agents/test-runner.md`. Keep test selection, diagnosis,
+  and fixes in the primary agent; give the runner only the absolute working
+  directory, exact commands, required environment, and any timeout or log path.
+- Use the runner's configured lightweight model without overriding it or
+  passing the main conversation. Ask for concise counts and relevant failure
+  excerpts. If the runner or its model is unavailable, report the blocker
+  rather than silently switching to a heavier agent or running tests directly.
 - Validate with targeted tests covering changed modules, plus `black --check`
   and `git diff --check` on changed files only.
 - Run the full suite only on explicit request or when shared sampling/routing
