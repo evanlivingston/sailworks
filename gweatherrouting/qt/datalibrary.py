@@ -5,6 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QFileSystemWatcher, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -25,6 +26,9 @@ from PySide6.QtWidgets import (
 
 from .theme import section_label
 from .forecastdownload import ForecastDownloadOptions
+from .chartlayerspanel import ChartLayersPanel
+from .mapdatasetup import MapDataSetup
+from gweatherrouting.rendering.style import Style
 from gweatherrouting.core.forecastselection import IMPORTED, forecast_source
 
 FORECAST_FILTER = "GRIB forecasts (*.grib *.grb *.grib2 *.grb2);;All files (*)"
@@ -106,6 +110,7 @@ class DataLibrary(QDialog):
         self.data.changed.connect(self.refresh)
         controller.routing.changed.connect(self.refresh)
         controller.polars.changed.connect(self.refresh_buttons)
+        controller.map_data.changed.connect(self.refresh_buttons)
         self.refresh()
         self.forecast_watcher = QFileSystemWatcher(self)
         self.forecast_watcher.directoryChanged.connect(self._queue_forecast_scan)
@@ -169,8 +174,31 @@ class DataLibrary(QDialog):
         self.tabs.addTab(page, "Forecasts")
 
     def _charts(self):
-        page = QWidget()
-        layout = QVBoxLayout(page)
+        self.charts_page = QWidget()
+        outer = QVBoxLayout(self.charts_page)
+        self.chart_sections = QTabWidget()
+        outer.addWidget(self.chart_sections)
+        sources = QWidget()
+        source_layout = QVBoxLayout(sources)
+        self.chart_layers_panel = ChartLayersPanel(self.controller)
+        source_layout.addWidget(self.chart_layers_panel)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Chart colors"))
+        self.palette_combo = QComboBox()
+        self.palette_combo.setAccessibleName("Chart palette")
+        self.palette_combo.addItems(list(Style.chart_palettes))
+        self.palette_combo.setCurrentText(self.controller.settings.chartPalette)
+        self.palette_combo.setToolTip(
+            "Vector chart colors; PNG/MBTiles imagery keeps its original colors"
+        )
+        self.palette_combo.currentTextChanged.connect(self._set_palette)
+        self.controller.settings.register_on_change("chartPalette", self._sync_palette)
+        row.addWidget(self.palette_combo, 1)
+        source_layout.addLayout(row)
+        self.chart_sections.addTab(sources, "Sources & appearance")
+
+        local = QWidget()
+        layout = QVBoxLayout(local)
         layout.addWidget(section_label("Local charts"))
         self.charts = table(["Enabled / chart", "Type", "Path"])
         self.charts.setColumnWidth(0, 180)
@@ -182,6 +210,7 @@ class DataLibrary(QDialog):
         self.button(row, "Vector file…", self.import_vector)
         self.button(row, "Vector folder…", self.import_vector_folder)
         self.button(row, "Raster folder…", self.import_raster)
+        self.button(row, "MBTiles…", self.import_mbtiles)
         self.remove_chart_button = self.button(row, "Remove", self.remove_chart)
         layout.addLayout(row)
         note = QLabel(
@@ -189,6 +218,13 @@ class DataLibrary(QDialog):
         )
         note.setWordWrap(True)
         layout.addWidget(note)
+        self.chart_sections.addTab(local, "Local files")
+
+        downloads = QWidget()
+        layout = QVBoxLayout(downloads)
+        layout.addWidget(section_label("Base map data"))
+        self.map_data = MapDataSetup(self.controller.map_data)
+        layout.addWidget(self.map_data)
         layout.addWidget(section_label("Download NOAA ENC charts"))
         row = QHBoxLayout()
         self.latitude = coordinate(48.3, True)
@@ -213,7 +249,21 @@ class DataLibrary(QDialog):
         self.available_charts.setColumnWidth(3, 90)
         self.available_charts.itemSelectionChanged.connect(self.refresh_buttons)
         layout.addWidget(self.available_charts, 2)
-        self.tabs.addTab(page, "Charts")
+        self.chart_sections.addTab(downloads, "Downloads & base maps")
+        self.tabs.addTab(self.charts_page, "Charts")
+
+    def show_charts(self, section=0):
+        self.tabs.setCurrentWidget(self.charts_page)
+        self.chart_sections.setCurrentIndex(section)
+
+    def _set_palette(self, value):
+        self.controller.settings["chartPalette"] = value
+        self.data.redraw()
+
+    def _sync_palette(self, value):
+        blocked = self.palette_combo.blockSignals(True)
+        self.palette_combo.setCurrentText(value)
+        self.palette_combo.blockSignals(blocked)
 
     def _marine(self):
         from .marinelibrary import MarineLibraryTab
@@ -313,6 +363,7 @@ class DataLibrary(QDialog):
             self.data.task.busy
             or self.controller.routing.busy
             or self.controller.polars.task.busy
+            or self.controller.map_data.task.busy
             or self.marine.jobs.busy
         )
         for button in self.mutations:
@@ -489,6 +540,13 @@ class DataLibrary(QDialog):
         path = QFileDialog.getExistingDirectory(self, "Import raster chart folder")
         if path:
             self.data.import_chart(path, "raster")
+
+    def import_mbtiles(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import offline raster MBTiles", "", "MBTiles charts (*.mbtiles)"
+        )
+        if path:
+            self.data.import_chart(path, "mbtiles")
 
     def toggle_chart(self, item):
         if item.column() == 0:

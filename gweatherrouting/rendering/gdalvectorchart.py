@@ -14,6 +14,8 @@ GNU General Public License for more details.
 For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
+import math
+
 from osgeo import ogr
 
 from gweatherrouting.core.enccharts import chart_scale_visible
@@ -174,6 +176,88 @@ class GDALVectorChart(ChartLayer):
                 feat = layer.GetNextFeature()
 
         return results
+
+    def depth_at(self, lat, lon, tolerance=0.001):
+        """Nearest sounding depth and enclosing depth area near a point.
+
+        Returns {"sounding": metres, "distance_m": metres} and/or
+        {"area": (min, max)} in metres, or None when this chart has no
+        depth data near the point.
+        """
+        if not isinstance(self.drawer, S57ChartDrawer):
+            return None
+        bbox = ogr.CreateGeometryFromWkt(
+            self.get_bounding_wkt_of_coords(
+                lat - tolerance, lon - tolerance, lat + tolerance, lon + tolerance
+            )
+        )
+        point = ogr.Geometry(ogr.wkbPoint)
+        point.AddPoint_2D(lon, lat)
+        result = {}
+        sounding = None
+        cosine = math.cos(math.radians(lat))
+        layer = self.vector_file.GetLayerByName("SOUNDG")
+        if layer is not None:
+            previous = layer.GetSpatialFilter()
+            previous = previous.Clone() if previous is not None else None
+            layer.SetSpatialFilter(bbox)
+            layer.ResetReading()
+            try:
+                for feature in layer:
+                    geometry = feature.GetGeometryRef()
+                    if geometry is None:
+                        continue
+                    points = (
+                        (
+                            geometry.GetGeometryRef(i)
+                            for i in range(geometry.GetGeometryCount())
+                        )
+                        if geometry.GetGeometryCount()
+                        else (geometry,)
+                    )
+                    for point_geometry in points:
+                        if point_geometry.GetCoordinateDimension() < 3:
+                            continue
+                        x, y, z = point_geometry.GetPoint()
+                        if not all(math.isfinite(value) for value in (x, y, z)):
+                            continue
+                        # A matched multipoint may also contain distant soundings.
+                        if abs(x - lon) > tolerance or abs(y - lat) > tolerance:
+                            continue
+                        distance = ((x - lon) * cosine) ** 2 + (y - lat) ** 2
+                        if sounding is None or distance < sounding[0]:
+                            sounding = (distance, z)
+            finally:
+                layer.SetSpatialFilter(previous)
+        if sounding is not None:
+            result["sounding"] = sounding[1]
+            result["distance_m"] = sounding[0] ** 0.5 * 111320
+        layer = self.vector_file.GetLayerByName("DEPARE")
+        if layer is not None:
+            previous = layer.GetSpatialFilter()
+            previous = previous.Clone() if previous is not None else None
+            layer.SetSpatialFilter(bbox)
+            layer.ResetReading()
+            try:
+                for feature in layer:
+                    geometry = feature.GetGeometryRef()
+                    if geometry is not None and geometry.Intersects(point):
+                        area = (
+                            feature.GetField("DRVAL1"),
+                            feature.GetField("DRVAL2"),
+                        )
+                        if (
+                            all(
+                                value is not None and math.isfinite(value)
+                                for value in area
+                            )
+                            and area[0] <= area[1]
+                        ):
+                            result["area"] = area
+                            break
+            finally:
+                layer.SetSpatialFilter(previous)
+        return result or None
 
     def do_button_press(self, gpsmap, gdkeventbutton):
         return False

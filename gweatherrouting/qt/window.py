@@ -47,6 +47,7 @@ from .forecasttimeline import ForecastTimeline
 from .marinepanel import MarinePanel
 from .weatherpanel import WeatherPanel
 from .chartdebugpanel import ChartDebugPanel
+from .cursorstatus import CursorStatus
 from .marinesettings import MarineSettings
 
 
@@ -368,13 +369,10 @@ class PreviewWindow(QMainWindow):
             controller.core.routingManager.get_active()
             or next(iter(controller.core.routingManager), None)
         )
+        self.statusBar().setContentsMargins(12, 4, 12, 4)
         self.instruments = QLabel("Waiting for position")
-        self.cursor_status = QLabel()
-        self.cursor_status.setMinimumWidth(0)
-        self.cursor_status.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
-        )
-        self.statusBar().addWidget(self.cursor_status, 1)
+        self.cursor_status = CursorStatus()
+        self.statusBar().addPermanentWidget(self.cursor_status, 1)
         for canvas in (self.map, self.log_map):
             canvas.cursor_readout.connect(
                 lambda text, canvas=canvas: self._cursor_readout(canvas, text)
@@ -401,9 +399,7 @@ class PreviewWindow(QMainWindow):
             and not self.controller.offline
             and any(self.controller.map_data.missing().values())
         ):
-            self.show_settings()
-            assert self.settings_dialog is not None
-            self.settings_dialog.tabs.setCurrentWidget(self.settings_dialog.map_data)
+            self._ensure_library(chart_section=2)
 
     def _create_marine_panels(self, controller):
         self.marine_panels = {}
@@ -575,7 +571,9 @@ class PreviewWindow(QMainWindow):
             canvas is self._active_map()
             and self.views.currentWidget() is not self.polar_workspace
         ):
-            self.cursor_status.setText(text)
+            self.cursor_status.set_readout(
+                canvas._cursor_parts, canvas._cursor_coords if text else "", text
+            )
             self.cursor_status.setToolTip(text)
             self.statusBar().showMessage("" if text else self._connection_message())
 
@@ -942,11 +940,12 @@ class PreviewWindow(QMainWindow):
             )
 
     def _connection_message(self):
+        task = self.controller.connection_task
         return (
             "NMEA connections closed"
             if self.controller.offline
             else (
-                self.controller.connection_task.message
+                (task.message if task.message != "Done" else "")
                 or "Using saved NMEA connections"
             )
         )
@@ -1059,9 +1058,11 @@ class PreviewWindow(QMainWindow):
         self.settings_dialog.raise_()
         self.settings_dialog.activateWindow()
 
-    def _ensure_library(self):
+    def _ensure_library(self, chart_section=None):
         if self.library_dialog is None:
             self.library_dialog = DataLibrary(self.controller, self)
+        if chart_section is not None:
+            self.library_dialog.show_charts(chart_section)
         self.library_dialog.show()
         self.library_dialog.raise_()
         self.library_dialog.activateWindow()

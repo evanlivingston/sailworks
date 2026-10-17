@@ -15,6 +15,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
 import logging
+import math
 import os
 from typing import List, Optional
 from weakref import WeakKeyDictionary
@@ -30,10 +31,12 @@ from gweatherrouting.core.scheduling import schedule_idle
 from gweatherrouting.core.mapviewport import MapViewport
 
 from .chartlayer import ChartLayer
+from .chartclasses import CHART_CLASSES, chart_class_enabled
 from .chsrenderer import CHSRenderer
 from .gdalrasterchart import GDALRasterChart
 from .gdalvectorchart import GDALVectorChart
 from .encrenderer import ENCOverlayRenderer
+from .mbtilesrenderer import MBTilesChart, MBTilesRenderer
 from gweatherrouting.rendering.overlayrenderer import paint_viewport
 from .vectordrawer.s57chartdrawer import S57ChartDrawer
 from .gshhs import GSHHSVectorChart
@@ -53,6 +56,7 @@ class ChartCollection:
             object, tuple[tuple, MapViewport, cairo.ImageSurface]
         ] = WeakKeyDictionary()
         self._enc_renderer = ENCOverlayRenderer(schedule)
+        self._mbtiles_renderer = MBTilesRenderer(schedule)
         self._chs_renderer = CHSRenderer(os.path.join(DATA_DIR, "chs-tiles"), schedule)
 
         self.settings_manager.register_on_change(
@@ -61,12 +65,17 @@ class ChartCollection:
         self.settings_manager.register_on_change(
             "canadianCharts", self.on_canadian_charts_changed
         )
+        for _, key, _ in CHART_CLASSES:
+            self.settings_manager.register_on_change(
+                key, lambda value, key=key: self.on_chart_classes_changed(key, value)
+            )
 
     def add_map(self, canvas):
         self.maps.append(canvas)
 
     def forget_map(self, canvas):
         self._enc_renderer.forget(canvas)
+        self._mbtiles_renderer.forget(canvas)
         self._chs_renderer.forget(canvas)
         self._chart_surfaces.pop(canvas, None)
         if canvas in self.maps:
@@ -75,7 +84,16 @@ class ChartCollection:
     def on_canadian_charts_changed(self, enabled):
         self._chs_renderer.set_enabled(enabled)
         for canvas in self.maps:
-            canvas.queue_draw()
+            getattr(canvas, "invalidate_chart_sources", canvas.queue_draw)()
+
+    def on_chart_classes_changed(self, key, enabled):
+        self._chart_surfaces.clear()
+        for canvas in self.maps:
+            if key == "chartENCVisible" and not enabled:
+                self._enc_renderer.forget(canvas)
+            if key == "chartMBTilesVisible" and not enabled:
+                self._mbtiles_renderer.forget(canvas)
+            getattr(canvas, "invalidate_chart_sources", canvas.queue_draw)()
 
     def get_line_point_validity_providers(self):
         lpvp: List[LinePointValidityProvider] = []
@@ -122,7 +140,7 @@ class ChartCollection:
 
     def reload_base_chart(self):
         """Attach newly installed base data without replacing existing chart objects."""
-        previous_coast, previous_osm = self.gshhsLayer, self.osmLayer
+        previous_coast = self.gshhsLayer
         self.load_base_chart()
         fallback = resource_path("gweatherrouting", "data/countries.geojson")
         if self.gshhsLayer is not None:
@@ -138,8 +156,6 @@ class ChartCollection:
         if detailed:
             if self.gshhsLayer and previous_coast is None:
                 self.gshhsLayer.force_downscale = True
-            if self.osmLayer and previous_osm is None:
-                self.osmLayer.enabled = False
         self._chart_surfaces.clear()
 
     def load_vector_layer(self, path, metadata=None, enabled=True):
@@ -149,8 +165,6 @@ class ChartCollection:
         )
         self.charts += [chart]
 
-        if self.osmLayer and enabled and not path.lower().endswith(".000"):
-            self.osmLayer.enabled = False
         if self.gshhsLayer and enabled and not path.lower().endswith(".000"):
             self.gshhsLayer.force_downscale = True
 
@@ -158,8 +172,23 @@ class ChartCollection:
 
     def detailed_chart_at(self, lat, lon, scale, enabled=None):
         """Return the loaded chart best suited to this point and display scale."""
+        settings = getattr(self, "settings_manager", {})
+        # Local imagery is an explicit top overlay; bounds are advisory coverage.
+        for chart in reversed(self.charts):
+            if (
+                isinstance(chart, MBTilesChart)
+                and (enabled is None or chart.enabled == enabled)
+                and chart_class_enabled(settings, chart)
+                and chart.info.contains(lat, lon)
+            ):
+                return chart
         candidates = sorted(
-            (c for c in self.charts if enabled is None or c.enabled == enabled),
+            (
+                c
+                for c in self.charts
+                if (enabled is None or c.enabled == enabled)
+                and chart_class_enabled(settings, c)
+            ),
             key=lambda c: (
                 chart_scale_rank(getattr(c, "_native_scale", 0), scale),
                 not c.enabled,
@@ -190,7 +219,11 @@ class ChartCollection:
         """Offer a better scale, even when a usable chart already covers the point."""
         active = self.detailed_chart_at(lat, lon, scale, enabled=True)
         disabled = self.detailed_chart_at(lat, lon, scale, enabled=False)
-        cell = catalog.chart_at(lat, lon, scale)
+        cell = (
+            catalog.chart_at(lat, lon, scale)
+            if getattr(self, "settings_manager", {}).get("chartENCVisible", True)
+            else None
+        )
 
         def rank(chart):
             return chart_scale_rank(getattr(chart, "_native_scale", 0), scale)
@@ -244,16 +277,24 @@ class ChartCollection:
         )
         self.charts += [chart]
 
-        if self.osmLayer and enabled:
-            self.osmLayer.enabled = False
         if self.gshhsLayer and enabled:
             self.gshhsLayer.force_downscale = True
         return chart
 
+    def load_mbtiles_layer(self, path, metadata=None, enabled=True):
+        chart = MBTilesChart(path, self.settings_manager, metadata, enabled)
+        self.charts.append(chart)
+        return chart
+
     def do_draw(self, gpsmap, cr):
-        base, enc = [], []
+        base, enc, mbtiles = [], [], []
         for chart in self.charts:
-            if isinstance(chart, GDALVectorChart) and isinstance(
+            if not chart_class_enabled(self.settings_manager, chart):
+                continue
+            if isinstance(chart, MBTilesChart):
+                if chart.enabled:
+                    mbtiles.append((chart.info,))
+            elif isinstance(chart, GDALVectorChart) and isinstance(
                 chart.drawer, S57ChartDrawer
             ):
                 if chart.enabled:
@@ -269,6 +310,7 @@ class ChartCollection:
             self._draw_base(gpsmap, cr, base)
         self._chs_renderer.draw(gpsmap, cr)
         self._enc_renderer.draw(gpsmap, cr, tuple(enc), self._palette)
+        self._mbtiles_renderer.draw(gpsmap, cr, tuple(mbtiles), self._palette)
 
     def _draw_base(self, gpsmap, cr, charts):
         # Chart pixels are static while instruments, weather and routes repaint.
@@ -334,6 +376,28 @@ class ChartCollection:
     def do_busy(self):
         for x in filter(lambda x: x.enabled, self.charts):
             x.do_busy()
+
+    def depth_at(self, lat, lon, scale, tolerance=0.001):
+        """Depth data near a point from the best enabled ENC chart."""
+        settings = getattr(self, "settings_manager", {})
+        candidates = sorted(
+            (
+                c
+                for c in self.charts
+                if c.enabled
+                and isinstance(c, GDALVectorChart)
+                and isinstance(c.drawer, S57ChartDrawer)
+                and chart_class_enabled(settings, c)
+            ),
+            key=lambda c: (getattr(c, "_native_scale", 0) or math.inf, c.path),
+        )
+        for chart in candidates:
+            if not chart.covers_point(lat, lon, scale):
+                continue
+            result = chart.depth_at(lat, lon, tolerance)
+            if result:
+                return result
+        return None
 
     def query_point(self, lat, lon, tolerance=0.001):
         """Query all vector chart layers for features near a given lat/lon."""

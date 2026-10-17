@@ -1,0 +1,106 @@
+# Chart controls in Data Library
+
+Open **Data Library → Charts**. All chart controls now live here:
+
+- **Sources & appearance:** source-class checkboxes and vector chart colors.
+- **Local files:** imported chart selections, imports, and removal.
+- **Downloads & base maps:** world coastline/OpenSeaMap installation and NOAA ENC downloads.
+
+There is no separate Chart Layers dock or Map Data settings tab. Settings →
+Display retains only general interaction/renderer preferences, and Chart Debug
+is a read-only diagnostic inspector.
+
+Existing source selections, palettes and imported-file settings are retained.
+The startup missing-map-data offer opens Downloads & base maps directly,
+without opening Settings or starting an unrelated forecast scan.
+
+The source controls provide independent switches for Canadian online tiles (CHS), world
+coastlines/fallback map, local ENCs, raster charts, CM93, OpenStreetMap
+seamarks, offline MBTiles, and other vector charts.
+
+These persistent, display-only switches affect both chart and log maps.
+They do not rewrite individual chart selections in the library, alter routing
+coastline checks, or bypass normal chart scale/coverage rules. New imports
+respect their class switch. All classes are allowed by default; importing
+other charts no longer silently disables the built-in seamarks layer.
+
+To inspect one source, turn off the other classes. Turning every class off
+leaves the map background, instruments and navigation overlays. This panel
+controls source visibility; it does not redesign CHS/ENC handoff or change
+their drawing priority.
+
+## Cursor charted depth
+
+On both Qt maps, every cursor movement immediately looks up depth from enabled,
+scale-eligible local ENC charts covering that position. The most detailed
+compilation scale with usable data wins (unknown scales are last). This is
+an ENC lookup, not depth extraction from any raster overlay above the ENC.
+
+- **Nearby charted sounding:** the closest sounding within ±0.001° latitude
+  and longitude, with its approximate horizontal distance in metres. It is
+  not an interpolated depth exactly under the cursor.
+- **Charted depth range:** the enclosing ENC depth-area bounds when no nearby
+  sounding exists. Decimal bounds are retained; unknown bounds are omitted.
+
+Values are in metres, referenced to chart datum, **not tide-adjusted water
+depth or under-keel clearance**. No number appears where no usable ENC depth
+exists. CM93, bathymetry grids, CHS imagery and PNG MBTiles are not queried by
+this first version. Chart selections and visibility switches also clear stale
+cursor readings; routing calculations are unchanged.
+
+The bottom readout reserves fixed columns for wind, depth and coordinates,
+followed by currents. Missing observations leave their column blank instead
+of shifting the remaining values. Background status messages do not replace
+an active cursor readout; successful connection tasks do not display “Done”.
+
+The lookup runs on the UI thread alongside latitude/longitude, without a pause
+or timer, avoiding shared GDAL dataset access across threads. A read-only
+two-position smoke test using US2PACWY measured 3.48 ms
+first / 1.76 ms warm median for a sounding, and 6.34 ms first / 6.22 ms warm
+median for a depth-area lookup (10 warm repeats each). These are single-chart
+measurements, not a bound on latency across all loaded charts. Nearest-point
+ranking and reported distance use a local cosine-latitude approximation;
+depth values themselves are not interpolated or modified.
+
+## Offline MBTiles
+
+In **Data Library → Charts**, choose **MBTiles…** and select a `.mbtiles`
+archive. The app references the original file; it does not convert or copy it.
+Use **Offline MBTiles charts** in Sources & appearance to hide/show the whole class,
+or use individual library checkboxes to choose archives. Removing an entry
+does not delete its archive.
+
+This first version supports Web Mercator **PNG raster** MBTiles, both TMS
+(default) and XYZ row schemes. JPEG and vector/PBF archives are rejected with
+an explanation. An indexed tile table/view is required so zoom discovery does
+not scan a whole large archive; the source database is never modified to add
+an index. Tile zoom levels are discovered from the database; sparse
+areas fall back to available parent tiles, then show underlying charts where
+no imagery exists. Beyond the stored zoom range imagery is rescaled rather
+than invented. Low-zoom views requiring more than 512 tiles even at the lowest
+stored level are suppressed to bound work.
+
+SQLite reads and PNG decoding run in a background worker. The decoded cache
+retains at most 256 entries / 64 MiB, excluding in-flight rendering surfaces
+and SQLite's own cache. Connections are read-only and closed after each job;
+no tile downloads occur. Enabled archives paint above CHS and local ENCs, with
+later imports on top. This explicit overlay order is separate from Q2's quilt.
+
+These are images, not ENC objects or routing/depth data. Labels and soundings
+are baked into the source image; currency and navigation suitability depend
+on the archive. Metadata attribution (or the archive name) appears on the map.
+
+### Local validation
+
+224 targeted tests and 43 subtests passed, including import/persistence/removal,
+TMS/XYZ orientation, fractional zoom/retina output, parent fallback, corrupt
+tiles, exact coverage clipping, antimeridian wrap, cancellation, worker-only
+SQLite access, and bounded cache/work. Changed Python files pass Black and
+the diff whitespace check.
+
+Read-only smoke test on the supplied 2.1 GiB Vancouver Island archive: a
+900×600 view near Tofino (49.15, -125.9), zoom 12, DPR 1 rendered correctly.
+One run measured 4.5 ms metadata inspection, 27.9 ms initial rendering, and
+1.6 ms median of five cached repeats, retaining 20 tiles / 5 MiB. OS disk-cache
+state was not controlled; these are single-view smoke measurements, not a
+general speedup benchmark. Source size and modification time were unchanged.

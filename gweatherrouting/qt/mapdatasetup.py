@@ -132,16 +132,27 @@ class MapDataSetup(QWidget):
         layout.addLayout(row)
         layout.addStretch()
         controller.changed.connect(self.refresh)
+        controller.owner.data.task.changed.connect(self.refresh)
+        controller.owner.routing.changed.connect(self.refresh)
+        controller.owner.polars.task.changed.connect(self.refresh)
         self.refresh()
 
     def refresh(self):
         controller = self.controller
         missing = controller.missing()
         busy = controller.task.busy
+        blocked = (
+            busy
+            or controller.owner.data.task.busy
+            or controller.owner.routing.busy
+            or controller.owner.polars.task.busy
+        )
         for kind, button in self.downloads.items():
             label = "World Coastlines" if kind == "coastlines" else "OpenSeaMap"
             button.setText(("Download " if missing[kind] else "Installed: ") + label)
-            button.setEnabled(missing[kind] and not busy and not controller.task.closed)
+            button.setEnabled(
+                missing[kind] and not blocked and not controller.task.closed
+            )
         self.cancel.setEnabled(busy and not controller.cancel_event.is_set())
         self.progress.setVisible(busy)
         self.progress.setRange(0, 0 if controller.task.percent < 0 else 100)

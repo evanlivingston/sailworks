@@ -30,10 +30,18 @@ class SettingsManager(Storage):
         self.gribIsobarLabels = True
         self.vectorCharts = []
         self.rasterCharts = []
+        self.mbtilesCharts = []
         self.chartPalette = "cm93"
         self.smoothZoom = True
         self.panInertia = True
         self.mapRenderer = "cpu"
         self.canadianCharts = True
+        self.chartWorldVisible = True
+        self.chartENCVisible = True
+        self.chartRasterVisible = True
+        self.chartMBTilesVisible = True
+        self.chartCM93Visible = True
+        self.chartSeamarksVisible = True
+        self.chartVectorVisible = True
 
         self.load_or_save_default()

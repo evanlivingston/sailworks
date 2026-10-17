@@ -575,6 +575,117 @@ class QtPreviewChecks(unittest.TestCase):
         self.drain()
         self.assertFalse(events)  # Queued position predates the source reset.
 
+    def test_chart_layer_panel_switches_sources_on_both_maps_during_gesture(self):
+        from gweatherrouting.rendering.gdalrasterchart import GDALRasterChart
+
+        object.__setattr__(self.controller.settings, "_Storage__init", True)
+        self.window.show_library()
+        panel = self.window.library_dialog.chart_layers_panel
+        self.assertEqual(len(panel.checkboxes), 8)
+        chart = GDALRasterChart("/disabled", self.controller.settings, enabled=False)
+        self.controller.charts.charts.append(chart)
+        for canvas in (self.window.map, self.window.log_map):
+            canvas._base_cache = ("old pixels",)
+            canvas.drag = (0, 0)
+        panel.checkboxes["chartRasterVisible"].setChecked(False)
+        self.assertFalse(self.controller.settings.chartRasterVisible)
+        for canvas in (self.window.map, self.window.log_map):
+            self.assertIsNone(canvas._base_cache)
+            canvas.drag = None
+        panel.checkboxes["chartRasterVisible"].setChecked(True)
+        self.assertFalse(chart.enabled)
+        panel.checkboxes["canadianCharts"].setChecked(False)
+        self.assertFalse(self.controller.charts._chs_renderer.enabled)
+        self.assertTrue(panel.checkboxes["chartENCVisible"].isChecked())
+
+    def test_chart_layer_panel_tracks_external_settings_and_persists_choices(self):
+        from gweatherrouting.core.settings import SettingsManager
+
+        object.__setattr__(self.controller.settings, "_Storage__init", True)
+        self.window.show_library()
+        panel = self.window.library_dialog.chart_layers_panel
+        self.controller.settings.canadianCharts = False
+        self.assertFalse(panel.checkboxes["canadianCharts"].isChecked())
+        self.window.chart_debug_panel.refresh()
+        self.assertIn("CHS tiles: off", self.window.chart_debug_panel.summary.text())
+        with (
+            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+            patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
+        ):
+            panel.checkboxes["chartENCVisible"].setChecked(False)
+            with patch.object(Storage, "load_or_save_default", ORIGINAL_STORAGE_LOAD):
+                reloaded = SettingsManager()
+            self.assertFalse(reloaded.chartENCVisible)
+            self.assertFalse(reloaded.canadianCharts)
+            self.assertTrue(reloaded.chartWorldVisible)
+
+    def test_mbtiles_import_toggle_persistence_and_remove_keeps_file(self):
+        from gweatherrouting.core.settings import SettingsManager
+        from gweatherrouting.rendering.mbtilesrenderer import MBTilesChart
+        from test.test_mbtiles import make_mbtiles
+
+        path = make_mbtiles(self.path / "offline.mbtiles")
+        original_mtime = Path(path).stat().st_mtime_ns
+        self.controller.data.import_chart(path, "mbtiles")
+        self.wait_for_data()
+        self.assertFalse(self.controller.data.error)
+        chart = self.controller.charts.charts[0]
+        self.assertIsInstance(chart, MBTilesChart)
+        self.assertEqual(len(self.controller.settings.mbtilesCharts), 1)
+        self.window.show_library()
+        library = self.window.library_dialog
+        self.assertIn("chartMBTilesVisible", library.chart_layers_panel.checkboxes)
+        self.assertTrue(library.imported_chart(chart))
+        self.assertEqual(library.charts.rowCount(), 1)
+        with (
+            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+            patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
+        ):
+            object.__setattr__(self.controller.settings, "_Storage__init", True)
+            self.controller.data.set_chart_enabled(chart, False)
+            with patch.object(Storage, "load_or_save_default", ORIGINAL_STORAGE_LOAD):
+                reloaded = SettingsManager()
+            self.assertFalse(reloaded.mbtilesCharts[0]["enabled"])
+            restored = self.controller.charts.load_mbtiles_layer(
+                reloaded.mbtilesCharts[0]["path"],
+                reloaded.mbtilesCharts[0]["metadata"],
+                False,
+            )
+            self.assertEqual(restored.info, chart.info)
+            self.controller.charts.charts.remove(restored)
+            self.controller.data.remove_chart(chart)
+        self.assertFalse(self.controller.settings.mbtilesCharts)
+        self.assertTrue(Path(path).exists())
+        self.assertEqual(Path(path).stat().st_mtime_ns, original_mtime)
+
+    def test_chart_controls_are_consolidated_in_data_library(self):
+        from PySide6.QtWidgets import QCheckBox, QDockWidget
+
+        self.window.show_library()
+        library = self.window.library_dialog
+        library.show_charts()
+        self.assertIs(library.tabs.currentWidget(), library.charts_page)
+        self.assertEqual(
+            [
+                library.chart_sections.tabText(i)
+                for i in range(library.chart_sections.count())
+            ],
+            ["Sources & appearance", "Local files", "Downloads & base maps"],
+        )
+        self.assertEqual(len(library.chart_layers_panel.checkboxes), 8)
+        self.assertIsNone(self.window.findChild(QDockWidget, "chart-layers"))
+        self.assertFalse(self.window.chart_debug_panel.findChildren(QCheckBox))
+        self.window.show_settings()
+        settings = self.window.settings_dialog
+        self.assertFalse(hasattr(settings, "palette_combo"))
+        self.assertFalse(hasattr(settings, "map_data"))
+        self.assertNotIn(
+            "Map Data", [settings.tabs.tabText(i) for i in range(settings.tabs.count())]
+        )
+        self.assertFalse(
+            any("Canadian" in box.text() for box in settings.findChildren(QCheckBox))
+        )
+
     def test_qt_overlay_completes_without_glib_and_shutdown_discards_callbacks(self):
         import cairo
 
@@ -688,8 +799,8 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(
             self.controller.time_control.time, old_time + timedelta(hours=3)
         )
-        self.window.show_settings()
-        settings = self.window.settings_dialog
+        self.window.show_library()
+        settings = self.window.library_dialog
         settings.palette_combo.setCurrentText("dark")
         self.assertEqual(self.controller.settings.chartPalette, "dark")
         settings.hide()
@@ -2013,8 +2124,8 @@ class QtPreviewChecks(unittest.TestCase):
         self.drain()
         self.assertIs(self.window.views.currentWidget(), self.window.map)
         self.assertEqual(
-            self.window.tabifiedDockWidgets(self.window.nmea_dock),
-            [self.window.routing_dock],
+            set(self.window.tabifiedDockWidgets(self.window.nmea_dock)),
+            {self.window.routing_dock},
         )
         self.window._show_panel(self.window.nmea_dock)
         self.window.views.setCurrentWidget(self.window.logs_view)
@@ -3111,6 +3222,132 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(self.window.weather_dock.isFloating())
         self.assertFalse(self.window.weather_open)
 
+    def test_bottom_status_bar_has_consistent_padding(self):
+        margins = self.window.statusBar().contentsMargins()
+        self.assertEqual(
+            (margins.left(), margins.top(), margins.right(), margins.bottom()),
+            (12, 4, 12, 4),
+        )
+
+    def test_cursor_columns_stay_put_when_observations_disappear(self):
+        canvas = self.window.map
+        status = self.window.cursor_status
+        with (
+            patch.object(canvas.charts, "depth_at", return_value={"area": (9.1, 18.2)}),
+            patch.object(canvas._wind_cursor, "request") as wind,
+        ):
+            canvas._hover(QPointF(100, 100))
+            wind.call_args.args[-1]((180, 10))
+            QApplication.processEvents()
+            positions = {key: label.x() for key, label in status.fields.items()}
+            canvas._cursor_parts["depth"] = ""
+            canvas._cursor_parts["wind"] = ""
+            canvas._emit_cursor_readout()
+            QApplication.processEvents()
+            self.assertEqual(
+                {key: label.x() for key, label in status.fields.items()}, positions
+            )
+            self.assertEqual(status.fields["depth"].text(), "")
+            self.assertEqual(status.fields["wind"].text(), "")
+            self.assertIn("Lat ", status.fields["coords"].text())
+            self.window.statusBar().showMessage("Forecast models updated", 5000)
+            QApplication.processEvents()
+            self.assertTrue(status.fields["coords"].isVisible())
+
+    def test_connection_completion_does_not_show_generic_done(self):
+        self.controller.offline = False
+        task = self.controller.connection_task
+        task.message = "Done"
+        self.assertEqual(
+            self.window._connection_message(), "Using saved NMEA connections"
+        )
+        task.message = "Connection failed"
+        self.assertEqual(self.window._connection_message(), "Connection failed")
+
+    def test_cursor_chart_depth_updates_immediately_and_keeps_wind_and_coordinates(
+        self,
+    ):
+        canvas = self.window.map
+        with (
+            patch.object(
+                canvas.charts,
+                "depth_at",
+                return_value={"sounding": 12.4, "distance_m": 35},
+            ) as lookup,
+            patch.object(canvas._wind_cursor, "request") as wind,
+        ):
+            canvas._hover(QPointF(100, 100))
+            lookup.assert_called_once()
+            self.assertIn("12.4 m (35 m away)", self.window.cursor_status.text())
+            wind.call_args.args[-1]((180, 10))
+            text = self.window.cursor_status.text()
+            self.assertIn("12.4 m (35 m away)", text)
+            self.assertIn("Sounding", text)
+            self.assertNotIn("Nearby charted", text)
+            self.assertIn("  ·  ", text)
+            self.assertIn("Lat ", text)
+            self.assertIn("Wind", text)
+
+    def test_cursor_depth_range_preserves_decimals_and_cancels_on_source_change(self):
+        canvas = self.window.map
+        canvas.set_wind_visible(False)
+        with patch.object(
+            canvas.charts, "depth_at", return_value={"area": (9.1, 18.2)}
+        ) as lookup:
+            canvas._hover(QPointF(100, 100))
+            self.assertIn("Depth 9.1–18.2 m", self.window.cursor_status.text())
+            canvas.invalidate_chart_sources()
+            self.assertEqual(self.window.cursor_status.text(), "")
+            lookup.reset_mock()
+            canvas._sample_depth()
+            lookup.assert_not_called()
+
+    def test_cursor_depth_lookup_skips_stale_view_and_leave(self):
+        from PySide6.QtCore import QEvent
+
+        canvas = self.window.map
+        canvas.set_wind_visible(False)
+        with patch.object(canvas.charts, "depth_at", return_value=None) as lookup:
+            canvas._hover(QPointF(100, 100))
+            lookup.reset_mock()
+            canvas._zoom += 1
+            canvas._sample_depth()
+            lookup.assert_not_called()
+            canvas._hover(QPointF(100, 100))
+            lookup.reset_mock()
+            canvas.leaveEvent(QEvent(QEvent.Type.Leave))
+            canvas._sample_depth()
+            lookup.assert_not_called()
+
+    def test_cursor_depth_clears_when_individual_chart_selection_changes(self):
+        canvas = self.window.map
+        canvas.set_wind_visible(False)
+        canvas._hover(QPointF(100, 100))
+        self.controller.data.changed.emit()
+        self.assertEqual(self.window.cursor_status.text(), "")
+
+    def test_cursor_depth_updates_on_every_move_without_processing_timers(self):
+        canvas = self.window.map
+        canvas.set_wind_visible(False)
+        with patch.object(canvas.charts, "depth_at") as lookup:
+            for x, result, label in (
+                (100, {"sounding": 12.4, "distance_m": 35}, "12.4 m"),
+                (110, {"area": (9.1, 18.2)}, "9.1–18.2 m"),
+                (120, None, None),
+            ):
+                lookup.return_value = result
+                canvas.mouseMoveEvent(SimpleNamespace(position=lambda: QPointF(x, 100)))
+                text = self.window.cursor_status.text()
+                self.assertIn("Lat ", text)
+                if label:
+                    self.assertIn(label, text)
+                else:
+                    self.assertNotIn("Sounding", text)
+                    self.assertNotIn("Depth", text)
+                lat, lon = canvas.convert_screen_to_geographic(x, 100).get_degrees()
+                lookup.assert_called_with(lat, lon, canvas.get_scale())
+            self.assertEqual(lookup.call_count, 3)
+
     def test_cursor_coordinates_and_hidden_or_moving_weather_never_sample(self):
         from unittest.mock import Mock
 
@@ -3122,7 +3359,7 @@ class QtPreviewChecks(unittest.TestCase):
         )
         canvas.set_wind_visible(False)
         canvas.mouseMoveEvent(SimpleNamespace(position=lambda: QPointF(100, 100)))
-        self.assertIn("Latitude:", self.window.cursor_status.text())
+        self.assertIn("Lat ", self.window.cursor_status.text())
         canvas.set_wind_visible(True)
         canvas.drag = QPointF(100, 100)
         canvas.mouseMoveEvent(SimpleNamespace(position=lambda: QPointF(110, 100)))
@@ -3154,7 +3391,7 @@ class QtPreviewChecks(unittest.TestCase):
             canvas.mouseMoveEvent(
                 SimpleNamespace(position=lambda x=x: QPointF(100 + x, 100))
             )
-        self.assertIn("Latitude:", self.window.cursor_status.text())
+        self.assertIn("Lat ", self.window.cursor_status.text())
         self.assertNotIn("Wind", self.window.cursor_status.text())
         self.wait_for_cursor(lambda: "19.4 kts" in self.window.cursor_status.text())
         canvas._wind_cursor._sample.assert_called_once()
@@ -4400,11 +4637,12 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertTrue(self.window.settings_dialog.isVisible())
         self.assertIs(self.window.settings_dialog.controller, self.controller)
 
-    def test_map_data_settings_missing_selection_and_no_automatic_download(self):
+    def test_map_data_library_missing_selection_and_no_automatic_download(self):
         self.assertIsNone(self.window.settings_dialog)
-        self.window.show_settings()
-        page = self.window.settings_dialog.map_data
-        self.window.settings_dialog.tabs.setCurrentWidget(page)
+        self.window._ensure_library(chart_section=2)
+        library = self.window.library_dialog
+        page = library.map_data
+        library.show_charts(section=2)
         self.assertTrue(page.downloads["coastlines"].isEnabled())
         self.assertTrue(page.downloads["seamarks"].isEnabled())
         self.assertFalse(page.status.isVisible())
@@ -4415,13 +4653,15 @@ class QtPreviewChecks(unittest.TestCase):
             start.reset_mock()
             page.downloads["seamarks"].click()
             start.assert_called_once_with(("seamarks",))
-        self.window.settings_dialog.hide()
+        library.hide()
         self.controller.offline = False
         self.controller.load_charts = True
         self.window._offer_map_data()
         self.controller.offline = True
-        self.assertTrue(self.window.settings_dialog.isVisible())
-        self.assertIs(self.window.settings_dialog.tabs.currentWidget(), page)
+        self.assertTrue(library.isVisible())
+        self.assertIs(library.tabs.currentWidget(), library.charts_page)
+        self.assertEqual(library.chart_sections.currentIndex(), 2)
+        self.assertIsNone(self.window.settings_dialog)
 
     def test_map_data_real_coastline_install_reloads_on_ui_thread_without_duplicates(
         self,
@@ -4437,8 +4677,8 @@ class QtPreviewChecks(unittest.TestCase):
         (root / "gshhs" / "partial").write_text("interrupted old installation")
         setup = self.controller.map_data
         setup.directory = root
-        self.window.show_settings()
-        page = self.window.settings_dialog.map_data
+        self.window._ensure_library(chart_section=2)
+        page = self.window.library_dialog.map_data
         other = ChartLayer("user-chart", "raster", self.controller.settings)
         other.enabled = False
         with patch("gweatherrouting.rendering.chartcollection.DATA_DIR", str(root)):
@@ -4508,12 +4748,12 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertFalse(coast.enabled)
             self.assertIsNotNone(self.controller.charts.osmLayer)
             self.assertTrue(all(not b.isEnabled() for b in page.downloads.values()))
-            self.window.settings_dialog.hide()
+            self.window.library_dialog.hide()
             self.controller.offline = False
             self.controller.load_charts = True
             self.window._offer_map_data()
             self.controller.offline = True
-            self.assertFalse(self.window.settings_dialog.isVisible())
+            self.assertFalse(self.window.library_dialog.isVisible())
 
     def test_map_data_cancel_and_close_reject_late_chart_attachment(self):
         from gweatherrouting.core.mapdata import MapDownloadCancelledError

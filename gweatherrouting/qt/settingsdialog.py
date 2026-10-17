@@ -22,9 +22,7 @@ from PySide6.QtWidgets import (
 from gweatherrouting.core.connectionconfig import connection_config, connection_key
 from gweatherrouting.core.nmea2000datasource import N2K_FORMATS
 from gweatherrouting.core.serialdatasource import SerialDataSource
-from gweatherrouting.rendering.style import Style
 from .marinesettings import CurrentsAccount
-from .mapdatasetup import MapDataSetup
 
 
 def combo(entries):
@@ -220,7 +218,6 @@ class SettingsDialog(QDialog):
         for label, key in (
             ("Smooth zoom", "smoothZoom"),
             ("Pan inertia", "panInertia"),
-            ("Canadian online charts", "canadianCharts"),
         ):
             checkbox = QCheckBox(label)
             checkbox.setChecked(bool(controller.settings[key]))
@@ -228,19 +225,6 @@ class SettingsDialog(QDialog):
                 lambda value, key=key: self.set_preference(key, value)
             )
             form.addRow(checkbox)
-            if key == "canadianCharts":
-                checkbox.setEnabled(not controller.offline)
-        self.palette_combo = QComboBox()
-        self.palette_combo.addItems(list(Style.chart_palettes))
-        self.palette_combo.setCurrentText(controller.settings.chartPalette)
-        self.palette_combo.setAccessibleName("Chart palette")
-        self.palette_combo.setToolTip(
-            "Chart colors; independent of the workspace theme"
-        )
-        self.palette_combo.currentTextChanged.connect(
-            lambda palette: self.set_preference("chartPalette", palette)
-        )
-        form.addRow("Chart palette", self.palette_combo)
         self.gpu_rendering = QCheckBox("GPU rendering (experimental)")
         self.gpu_rendering.setChecked(
             controller.settings.get("mapRenderer", "cpu") == "gpu"
@@ -253,13 +237,7 @@ class SettingsDialog(QDialog):
         form.addRow(self.renderer_status)
         controller.renderer_changed.connect(self.refresh_renderer_status)
         self.refresh_renderer_status()
-        self.library_button = QPushButton("Data Library…")
-        self.library_button.setToolTip("Manage imported forecasts, charts and polars")
-        self.library_button.clicked.connect(self.show_library)
-        form.addRow(self.library_button)
         self.tabs.addTab(display, "Display")
-        self.map_data = MapDataSetup(controller.map_data)
-        self.tabs.addTab(self.map_data, "Map Data")
         self.currents = CurrentsAccount(controller.core.marine_manager.coverage_planner)
         self.tabs.addTab(self.currents, "Currents")
         self.status = QLabel()
@@ -376,8 +354,3 @@ class SettingsDialog(QDialog):
             else "GPU unavailable; using CPU." if fallback else ""
         )
         self.renderer_status.setVisible(pending or fallback)
-
-    def show_library(self):
-        callback = getattr(self.parent(), "show_library", None)
-        if callable(callback):
-            callback()
