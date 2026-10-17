@@ -351,6 +351,11 @@ class TrackMap(QWidget, MercatorProjection):
 
     map_redraw_idle = queue_draw
 
+    def invalidate_chart_sources(self):
+        """Apply explicit source switches even while a gesture preview is retained."""
+        self._invalidate_base()
+        self.queue_draw()
+
     @property
     def ais_targets(self):
         return self._ais_targets_state

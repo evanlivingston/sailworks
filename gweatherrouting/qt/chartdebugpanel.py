@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from gweatherrouting.core.enccharts import chart_scale_visible
+from gweatherrouting.rendering.chartclasses import CHART_CLASSES, chart_class_enabled
 from gweatherrouting.rendering.gdalrasterchart import GDALRasterChart
 from gweatherrouting.rendering.gdalvectorchart import GDALVectorChart
 from gweatherrouting.rendering.gshhs import GSHHSVectorChart
@@ -152,6 +153,8 @@ class ChartDebugPanel(QWidget):
             map_widget.view_changed.connect(self._schedule)
         # Deferred: data.changed fires inside itemChanged dispatch above.
         controller.data.changed.connect(self._schedule)
+        for key in ["canadianCharts", *(key for _, key, _ in CHART_CLASSES)]:
+            controller.settings.register_on_change(key, lambda _: self._schedule())
         self.charts_tree.itemChanged.connect(self._toggle_chart)
         self.refresh()
 
@@ -188,7 +191,9 @@ class ChartDebugPanel(QWidget):
         scale = map_widget.get_scale()
         window = viewport_window(map_widget)
         center_lat, center_lon = map_widget._center_lat, map_widget._center_lon
-        active = collection.detailed_chart_at(center_lat, center_lon, scale)
+        active = collection.detailed_chart_at(
+            center_lat, center_lon, scale, enabled=True
+        )
         self.summary.setText(
             "Zoom {zoom:.2f} · {mpp:.2f} m/px · ≈1:{nominal:,.0f}\n"
             "Center {lat:.4f}, {lon:.4f}\n"
@@ -203,6 +208,9 @@ class ChartDebugPanel(QWidget):
         )
         self._syncing = True
         try:
+            blocked = self.chs_toggle.blockSignals(True)
+            self.chs_toggle.setChecked(bool(self.controller.settings.canadianCharts))
+            self.chs_toggle.blockSignals(blocked)
             self.charts_tree.clear()
             for chart in collection.charts:
                 native = getattr(chart, "_native_scale", 0) or 0
@@ -211,7 +219,11 @@ class ChartDebugPanel(QWidget):
                         os.path.basename(chart.path.rstrip("/")),
                         chart_kind(chart),
                         f"1:{native:,}" if native else "—",
-                        chart_status(chart, window, scale, collection.osmLayer),
+                        (
+                            chart_status(chart, window, scale, collection.osmLayer)
+                            if chart_class_enabled(self.controller.settings, chart)
+                            else "class disabled"
+                        ),
                     ]
                 )
                 item._chart = chart

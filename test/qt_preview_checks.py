@@ -575,6 +575,49 @@ class QtPreviewChecks(unittest.TestCase):
         self.drain()
         self.assertFalse(events)  # Queued position predates the source reset.
 
+    def test_chart_layer_panel_switches_sources_on_both_maps_during_gesture(self):
+        from gweatherrouting.rendering.gdalrasterchart import GDALRasterChart
+
+        object.__setattr__(self.controller.settings, "_Storage__init", True)
+        panel = self.window.chart_layers_panel
+        self.assertEqual(len(panel.checkboxes), 7)
+        self.assertIn(self.window.chart_layers_dock, self.window.workspace.docks)
+        chart = GDALRasterChart("/disabled", self.controller.settings, enabled=False)
+        self.controller.charts.charts.append(chart)
+        for canvas in (self.window.map, self.window.log_map):
+            canvas._base_cache = ("old pixels",)
+            canvas.drag = (0, 0)
+        panel.checkboxes["chartRasterVisible"].setChecked(False)
+        self.assertFalse(self.controller.settings.chartRasterVisible)
+        for canvas in (self.window.map, self.window.log_map):
+            self.assertIsNone(canvas._base_cache)
+            canvas.drag = None
+        panel.checkboxes["chartRasterVisible"].setChecked(True)
+        self.assertFalse(chart.enabled)
+        panel.checkboxes["canadianCharts"].setChecked(False)
+        self.assertFalse(self.controller.charts._chs_renderer.enabled)
+        self.assertTrue(panel.checkboxes["chartENCVisible"].isChecked())
+
+    def test_chart_layer_panel_tracks_external_settings_and_persists_choices(self):
+        from gweatherrouting.core.settings import SettingsManager
+
+        object.__setattr__(self.controller.settings, "_Storage__init", True)
+        panel = self.window.chart_layers_panel
+        self.controller.settings.canadianCharts = False
+        self.assertFalse(panel.checkboxes["canadianCharts"].isChecked())
+        self.window.chart_debug_panel.refresh()
+        self.assertFalse(self.window.chart_debug_panel.chs_toggle.isChecked())
+        with (
+            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+            patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
+        ):
+            panel.checkboxes["chartENCVisible"].setChecked(False)
+            with patch.object(Storage, "load_or_save_default", ORIGINAL_STORAGE_LOAD):
+                reloaded = SettingsManager()
+            self.assertFalse(reloaded.chartENCVisible)
+            self.assertFalse(reloaded.canadianCharts)
+            self.assertTrue(reloaded.chartWorldVisible)
+
     def test_qt_overlay_completes_without_glib_and_shutdown_discards_callbacks(self):
         import cairo
 
@@ -2013,8 +2056,8 @@ class QtPreviewChecks(unittest.TestCase):
         self.drain()
         self.assertIs(self.window.views.currentWidget(), self.window.map)
         self.assertEqual(
-            self.window.tabifiedDockWidgets(self.window.nmea_dock),
-            [self.window.routing_dock],
+            set(self.window.tabifiedDockWidgets(self.window.nmea_dock)),
+            {self.window.routing_dock, self.window.chart_layers_dock},
         )
         self.window._show_panel(self.window.nmea_dock)
         self.window.views.setCurrentWidget(self.window.logs_view)

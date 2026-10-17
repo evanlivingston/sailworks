@@ -69,6 +69,7 @@ class WorkspacePreferences(QObject):
             self.window.polar_manager_dock,
             self.window.navigation_dock,
             self.window.weather_dock,
+            self.window.chart_layers_dock,
             *self.window.marine_docks.values(),
         )
 
