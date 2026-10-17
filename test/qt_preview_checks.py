@@ -3222,6 +3222,132 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(self.window.weather_dock.isFloating())
         self.assertFalse(self.window.weather_open)
 
+    def test_bottom_status_bar_has_consistent_padding(self):
+        margins = self.window.statusBar().contentsMargins()
+        self.assertEqual(
+            (margins.left(), margins.top(), margins.right(), margins.bottom()),
+            (12, 4, 12, 4),
+        )
+
+    def test_cursor_columns_stay_put_when_observations_disappear(self):
+        canvas = self.window.map
+        status = self.window.cursor_status
+        with (
+            patch.object(canvas.charts, "depth_at", return_value={"area": (9.1, 18.2)}),
+            patch.object(canvas._wind_cursor, "request") as wind,
+        ):
+            canvas._hover(QPointF(100, 100))
+            wind.call_args.args[-1]((180, 10))
+            QApplication.processEvents()
+            positions = {key: label.x() for key, label in status.fields.items()}
+            canvas._cursor_parts["depth"] = ""
+            canvas._cursor_parts["wind"] = ""
+            canvas._emit_cursor_readout()
+            QApplication.processEvents()
+            self.assertEqual(
+                {key: label.x() for key, label in status.fields.items()}, positions
+            )
+            self.assertEqual(status.fields["depth"].text(), "")
+            self.assertEqual(status.fields["wind"].text(), "")
+            self.assertIn("Lat ", status.fields["coords"].text())
+            self.window.statusBar().showMessage("Forecast models updated", 5000)
+            QApplication.processEvents()
+            self.assertTrue(status.fields["coords"].isVisible())
+
+    def test_connection_completion_does_not_show_generic_done(self):
+        self.controller.offline = False
+        task = self.controller.connection_task
+        task.message = "Done"
+        self.assertEqual(
+            self.window._connection_message(), "Using saved NMEA connections"
+        )
+        task.message = "Connection failed"
+        self.assertEqual(self.window._connection_message(), "Connection failed")
+
+    def test_cursor_chart_depth_updates_immediately_and_keeps_wind_and_coordinates(
+        self,
+    ):
+        canvas = self.window.map
+        with (
+            patch.object(
+                canvas.charts,
+                "depth_at",
+                return_value={"sounding": 12.4, "distance_m": 35},
+            ) as lookup,
+            patch.object(canvas._wind_cursor, "request") as wind,
+        ):
+            canvas._hover(QPointF(100, 100))
+            lookup.assert_called_once()
+            self.assertIn("12.4 m (35 m away)", self.window.cursor_status.text())
+            wind.call_args.args[-1]((180, 10))
+            text = self.window.cursor_status.text()
+            self.assertIn("12.4 m (35 m away)", text)
+            self.assertIn("Sounding", text)
+            self.assertNotIn("Nearby charted", text)
+            self.assertIn("  ·  ", text)
+            self.assertIn("Lat ", text)
+            self.assertIn("Wind", text)
+
+    def test_cursor_depth_range_preserves_decimals_and_cancels_on_source_change(self):
+        canvas = self.window.map
+        canvas.set_wind_visible(False)
+        with patch.object(
+            canvas.charts, "depth_at", return_value={"area": (9.1, 18.2)}
+        ) as lookup:
+            canvas._hover(QPointF(100, 100))
+            self.assertIn("Depth 9.1–18.2 m", self.window.cursor_status.text())
+            canvas.invalidate_chart_sources()
+            self.assertEqual(self.window.cursor_status.text(), "")
+            lookup.reset_mock()
+            canvas._sample_depth()
+            lookup.assert_not_called()
+
+    def test_cursor_depth_lookup_skips_stale_view_and_leave(self):
+        from PySide6.QtCore import QEvent
+
+        canvas = self.window.map
+        canvas.set_wind_visible(False)
+        with patch.object(canvas.charts, "depth_at", return_value=None) as lookup:
+            canvas._hover(QPointF(100, 100))
+            lookup.reset_mock()
+            canvas._zoom += 1
+            canvas._sample_depth()
+            lookup.assert_not_called()
+            canvas._hover(QPointF(100, 100))
+            lookup.reset_mock()
+            canvas.leaveEvent(QEvent(QEvent.Type.Leave))
+            canvas._sample_depth()
+            lookup.assert_not_called()
+
+    def test_cursor_depth_clears_when_individual_chart_selection_changes(self):
+        canvas = self.window.map
+        canvas.set_wind_visible(False)
+        canvas._hover(QPointF(100, 100))
+        self.controller.data.changed.emit()
+        self.assertEqual(self.window.cursor_status.text(), "")
+
+    def test_cursor_depth_updates_on_every_move_without_processing_timers(self):
+        canvas = self.window.map
+        canvas.set_wind_visible(False)
+        with patch.object(canvas.charts, "depth_at") as lookup:
+            for x, result, label in (
+                (100, {"sounding": 12.4, "distance_m": 35}, "12.4 m"),
+                (110, {"area": (9.1, 18.2)}, "9.1–18.2 m"),
+                (120, None, None),
+            ):
+                lookup.return_value = result
+                canvas.mouseMoveEvent(SimpleNamespace(position=lambda: QPointF(x, 100)))
+                text = self.window.cursor_status.text()
+                self.assertIn("Lat ", text)
+                if label:
+                    self.assertIn(label, text)
+                else:
+                    self.assertNotIn("Sounding", text)
+                    self.assertNotIn("Depth", text)
+                lat, lon = canvas.convert_screen_to_geographic(x, 100).get_degrees()
+                lookup.assert_called_with(lat, lon, canvas.get_scale())
+            self.assertEqual(lookup.call_count, 3)
+
     def test_cursor_coordinates_and_hidden_or_moving_weather_never_sample(self):
         from unittest.mock import Mock
 
@@ -3233,7 +3359,7 @@ class QtPreviewChecks(unittest.TestCase):
         )
         canvas.set_wind_visible(False)
         canvas.mouseMoveEvent(SimpleNamespace(position=lambda: QPointF(100, 100)))
-        self.assertIn("Latitude:", self.window.cursor_status.text())
+        self.assertIn("Lat ", self.window.cursor_status.text())
         canvas.set_wind_visible(True)
         canvas.drag = QPointF(100, 100)
         canvas.mouseMoveEvent(SimpleNamespace(position=lambda: QPointF(110, 100)))
@@ -3265,7 +3391,7 @@ class QtPreviewChecks(unittest.TestCase):
             canvas.mouseMoveEvent(
                 SimpleNamespace(position=lambda x=x: QPointF(100 + x, 100))
             )
-        self.assertIn("Latitude:", self.window.cursor_status.text())
+        self.assertIn("Lat ", self.window.cursor_status.text())
         self.assertNotIn("Wind", self.window.cursor_status.text())
         self.wait_for_cursor(lambda: "19.4 kts" in self.window.cursor_status.text())
         canvas._wind_cursor._sample.assert_called_once()

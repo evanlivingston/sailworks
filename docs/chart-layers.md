@@ -29,6 +29,39 @@ leaves the map background, instruments and navigation overlays. This panel
 controls source visibility; it does not redesign CHS/ENC handoff or change
 their drawing priority.
 
+## Cursor charted depth
+
+On both Qt maps, every cursor movement immediately looks up depth from enabled,
+scale-eligible local ENC charts covering that position. The most detailed
+compilation scale with usable data wins (unknown scales are last). This is
+an ENC lookup, not depth extraction from any raster overlay above the ENC.
+
+- **Nearby charted sounding:** the closest sounding within ±0.001° latitude
+  and longitude, with its approximate horizontal distance in metres. It is
+  not an interpolated depth exactly under the cursor.
+- **Charted depth range:** the enclosing ENC depth-area bounds when no nearby
+  sounding exists. Decimal bounds are retained; unknown bounds are omitted.
+
+Values are in metres, referenced to chart datum, **not tide-adjusted water
+depth or under-keel clearance**. No number appears where no usable ENC depth
+exists. CM93, bathymetry grids, CHS imagery and PNG MBTiles are not queried by
+this first version. Chart selections and visibility switches also clear stale
+cursor readings; routing calculations are unchanged.
+
+The bottom readout reserves fixed columns for wind, depth and coordinates,
+followed by currents. Missing observations leave their column blank instead
+of shifting the remaining values. Background status messages do not replace
+an active cursor readout; successful connection tasks do not display “Done”.
+
+The lookup runs on the UI thread alongside latitude/longitude, without a pause
+or timer, avoiding shared GDAL dataset access across threads. A read-only
+two-position smoke test using US2PACWY measured 3.48 ms
+first / 1.76 ms warm median for a sounding, and 6.34 ms first / 6.22 ms warm
+median for a depth-area lookup (10 warm repeats each). These are single-chart
+measurements, not a bound on latency across all loaded charts. Nearest-point
+ranking and reported distance use a local cosine-latitude approximation;
+depth values themselves are not interpolated or modified.
+
 ## Offline MBTiles
 
 In **Data Library → Charts**, choose **MBTiles…** and select a `.mbtiles`

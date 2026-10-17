@@ -15,6 +15,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
 import logging
+import math
 import os
 from typing import List, Optional
 from weakref import WeakKeyDictionary
@@ -375,6 +376,28 @@ class ChartCollection:
     def do_busy(self):
         for x in filter(lambda x: x.enabled, self.charts):
             x.do_busy()
+
+    def depth_at(self, lat, lon, scale, tolerance=0.001):
+        """Depth data near a point from the best enabled ENC chart."""
+        settings = getattr(self, "settings_manager", {})
+        candidates = sorted(
+            (
+                c
+                for c in self.charts
+                if c.enabled
+                and isinstance(c, GDALVectorChart)
+                and isinstance(c.drawer, S57ChartDrawer)
+                and chart_class_enabled(settings, c)
+            ),
+            key=lambda c: (getattr(c, "_native_scale", 0) or math.inf, c.path),
+        )
+        for chart in candidates:
+            if not chart.covers_point(lat, lon, scale):
+                continue
+            result = chart.depth_at(lat, lon, tolerance)
+            if result:
+                return result
+        return None
 
     def query_point(self, lat, lon, tolerance=0.001):
         """Query all vector chart layers for features near a given lat/lon."""
