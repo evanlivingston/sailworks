@@ -246,17 +246,22 @@ class GDALRasterChart(ChartLayer):
 
     @staticmethod
     def _file_entry(entry):
-        """Coerce a stored file entry to a 5-tuple, backfilling its scale.
+        """Coerce a stored file entry to a 5-tuple with a valid footprint and scale.
 
-        Legacy entries (path, bbox, width, height) carry no scale; derive it
-        from the stored footprint so pre-existing imports gain metadata without
-        re-opening files.
+        Entries already carrying a scale were written with the corrected axis
+        order and are kept as-is. Legacy 4-tuples predate both the scale field
+        and the axis-order fix, so their stored footprint may have latitude and
+        longitude swapped; re-read the file to heal the footprint and derive the
+        scale from source metadata, falling back to the stored footprint when
+        the file can no longer be opened.
         """
-        path, bbox, width, height = entry[0], entry[1], entry[2], entry[3]
-        scale = entry[4] if len(entry) > 4 else 0
-        if not scale:
-            scale = native_scale_from_bbox(bbox, width)
-        return (path, bbox, width, height, scale)
+        if len(entry) > 4:
+            return (entry[0], entry[1], entry[2], entry[3], entry[4])
+        try:
+            return GDALSingleRasterChart.get_file_info(entry[0])
+        except Exception:
+            path, bbox, width, height = entry[0], entry[1], entry[2], entry[3]
+            return (path, bbox, width, height, native_scale_from_bbox(bbox, width))
 
     def on_metadata_update(self):
         """Normalise file entries and expose the layer's native scale."""

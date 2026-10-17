@@ -279,6 +279,24 @@ class TestMetadataNormalisation(unittest.TestCase):
         self.assertGreater(entry[4], 0)
         self.assertGreater(chart._native_scale, 0)
 
+    def test_legacy_entry_refreshes_swapped_coverage_from_file(self):
+        with TemporaryDirectory() as directory:
+            path = make_raster(
+                join(directory, "legacy.tif"),
+                4326,
+                (-124.5, 0.01, 0, 48.5, 0, -0.01),
+                metadata={"CSCALE": "25000"},
+            )
+            swapped = [(-124.5, 48.5, 0), (-124.0, 48.0, 0)]
+            chart = self._chart([(path, swapped, 50, 50)])
+            chart.on_metadata_update()
+            entry = chart.metadata[0]
+            self.assertAlmostEqual(entry[1][0][0], 48.5)
+            self.assertAlmostEqual(entry[1][0][1], -124.5)
+            self.assertEqual(entry[4], 25000)
+            self.assertEqual(chart._native_scale, 25000)
+            self.assertIs(select(48.25, -124.25, HARBOR_MPP, [chart]), chart)
+
     def test_existing_scale_is_kept(self):
         chart = self._chart([("/a/new.tif", self.BOX, 100, 100, 30000)])
         chart.on_metadata_update()
