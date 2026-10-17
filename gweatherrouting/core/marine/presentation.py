@@ -24,8 +24,9 @@ def no_current_provider():
     )
 
 
-def current_coverage(manager, latitude, longitude, instant):
-    selection = manager.fields.snapshot()
+def current_coverage(manager, latitude, longitude, instant, selection=None):
+    if selection is None:
+        selection = manager.fields.snapshot()
     result = selection.sample(latitude, longitude, instant)
     if result.status == "available":
         field = manager.fields.fields[result.dataset_id]

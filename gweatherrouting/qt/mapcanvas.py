@@ -11,7 +11,7 @@ from PySide6.QtCore import QEvent, QPointF, Qt, QTimer, Signal, QRectF
 from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget, QMenu, QLabel, QPushButton
 
-from gweatherrouting.core.mapviewport import MercatorProjection, MapPoint
+from gweatherrouting.core.mapviewport import MercatorProjection, MapPoint, MapViewport
 from gweatherrouting.core.mapmotion import DragVelocity, PanInertia
 from gweatherrouting.rendering.style import Style
 from gweatherrouting.rendering.windpainter import WindPainter
@@ -24,6 +24,8 @@ from gweatherrouting.rendering.isochrones import IsochroneFrame, IsochronesRende
 from .windcursor import WindCursorSampler
 from .marineoverlay import MarineOverlay
 from .weathercoverage import WeatherCoverage
+from gweatherrouting.rendering.panprefetch import pan_prefetch_offset
+from gweatherrouting.rendering.overlayrenderer import MARGIN as WEATHER_MARGIN
 from .basecharts import BaseChartRenderer
 
 
@@ -42,6 +44,7 @@ class TrackMap(QWidget, MercatorProjection):
     # Wheel zoom events closer than this settle into one sharp re-render,
     # with a scaled preview painted in between (no overlay job storm).
     _ZOOM_SETTLE_MS = 250
+    _ZOOM_PREFETCH_MS = 100
     # Per-tick zoom easing rate and snap distance for the smooth animation.
     _ZOOM_EASE_RATE = 14.0
     _ZOOM_SNAP = 0.004
@@ -107,6 +110,9 @@ class TrackMap(QWidget, MercatorProjection):
         self._zoom_settle = QTimer(self)
         self._zoom_settle.setSingleShot(True)
         self._zoom_settle.timeout.connect(self._zoom_settle_timeout)
+        self._zoom_prefetch = QTimer(self)
+        self._zoom_prefetch.setSingleShot(True)
+        self._zoom_prefetch.timeout.connect(self._prefetch_zoom_target)
         self._scroll_settle = QTimer(self)
         self._scroll_settle.setSingleShot(True)
         self._scroll_settle.timeout.connect(self._finish_trackpad_pan)
@@ -744,6 +750,7 @@ class TrackMap(QWidget, MercatorProjection):
                 self._zoom_animating = True
                 self._zoom = max(1, min(20, self._zoom + math.log2(scale)))
                 self._recenter_on_anchor()
+                self._schedule_zoom_prefetch()
                 self.update()
                 self.view_changed.emit()
         else:
@@ -795,12 +802,9 @@ class TrackMap(QWidget, MercatorProjection):
             )
         self._trackpad_last_event = now
         self._pan_pixels(pixels.x(), pixels.y())
-        travel = (
-            self._trackpad_velocity[0] ** 2 + self._trackpad_velocity[1] ** 2
-        ) ** 0.5
-        if travel >= 192 and now - self._trackpad_last_speculation >= 0.5:
-            self._trackpad_last_speculation = now
-            self._prefetch_along(*self._trackpad_velocity)
+        if now - self._trackpad_last_speculation >= 0.5:
+            if self._prefetch_along(*self._trackpad_velocity):
+                self._trackpad_last_speculation = now
         if phase == Qt.ScrollPhase.ScrollEnd:
             self._finish_trackpad_pan()
         else:
@@ -833,12 +837,38 @@ class TrackMap(QWidget, MercatorProjection):
         self._trackpad_panning = False
         self._scroll_settle.stop()
         self._zoom_settle.stop()
+        self._zoom_prefetch.stop()
         if self._zoom_tick_token is not None:
             self.remove_tick_callback(self._zoom_tick_token)
             self._zoom_tick_token = None
         self._zoom_target = None
         self._zoom_animating = False
         self._zoom_anchor = None
+
+    def _schedule_zoom_prefetch(self):
+        if not getattr(self, "_zoom_prefetch_enabled", True):
+            return
+        # Every changed input target invalidates unfinished speculation; only
+        # a quiet target starts a new job, not every notch in a wheel stream.
+        self.wind.cancel_speculation(self)
+        self._zoom_prefetch.start(self._ZOOM_PREFETCH_MS)
+
+    def _prefetch_zoom_target(self):
+        if self.disposed or not self.isVisible() or not self._zoom_animating:
+            return False
+        target = self._zoom_target if self._zoom_target is not None else self._zoom
+        view = MapViewport(self)
+        view._zoom = target
+        if self._zoom_anchor is not None:
+            lat, lon, px, py = self._zoom_anchor
+            x, y = view.convert_geographic_to_screen(MapPoint(lat, lon))
+            center = view.convert_screen_to_geographic(
+                view.width / 2 + x - px, view.height / 2 + y - py
+            )
+            latitude, longitude = center.get_degrees()
+        else:
+            latitude, longitude = self._center_lat, self._center_lon
+        return self.wind.prefetch_at(self, latitude, longitude, zoom=target)
 
     def _refresh_after_gesture(self):
         if self._overlay_pending:
@@ -858,17 +888,26 @@ class TrackMap(QWidget, MercatorProjection):
 
     def _prefetch_along(self, vx, vy):
         """Queue one speculative frame along a pixel velocity vector."""
-        travel = (vx**2 + vy**2) ** 0.5
-        # One second of continued travel; ignore jitters inside the reuse
-        # margin and clamp runaway flings to a bounded lookahead.
-        if travel < 192 or self.disposed:
+        if self.disposed:
             return False
-        limit = 0.75 * max(self.width(), self.height())
-        scale = min(1.0, limit / travel)
-        center = self.convert_screen_to_geographic(
-            self.width() / 2 - vx * scale, self.height() / 2 - vy * scale
+        predictive = getattr(self, "_adaptive_pan_prefetch", True)
+        seconds = self.wind.pan_lookahead(self) if predictive else 1.0
+        # Stay within the worker's margin so predicted work can serve visible
+        # demand before completion, instead of being cancelled on approach.
+        offset = pan_prefetch_offset(
+            vx,
+            vy,
+            self.width(),
+            self.height(),
+            seconds,
+            WEATHER_MARGIN if predictive else None,
         )
-        return self.wind.prefetch_at(self, *center.get_degrees())
+        if offset is None:
+            return False
+        center = self.convert_screen_to_geographic(
+            self.width() / 2 - offset[0], self.height() / 2 - offset[1]
+        )
+        return self.wind.prefetch_at(self, *center.get_degrees(), predictive=predictive)
 
     def _set_smooth_zoom(self, enabled):
         if self.disposed:
@@ -1980,6 +2019,7 @@ class TrackMap(QWidget, MercatorProjection):
             event.accept()
             return
         self._zoom_animating = True
+        self._schedule_zoom_prefetch()
         self._ensure_zoom_tick()
         self._zoom_settle.start(self._ZOOM_SETTLE_MS)
         self.update()

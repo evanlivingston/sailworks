@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gweatherrouting.core.marine.fields import Area
+from gweatherrouting.core.marine.fields import Area, FieldSelection
 from gweatherrouting.core.marine.models import Capability, utc_time
 from gweatherrouting.core.marine.presentation import (
     current_coverage,
@@ -311,6 +311,7 @@ class MarinePanel(QWidget):
         self.manager = controller.core.marine_manager
         self.clock = controller.time_control
         self.closed = False
+        self._ordered_current_fields: tuple | None = None
         self.signature = None
         self.settings_callback = settings_callback
         self.library_callback = library_callback
@@ -355,7 +356,7 @@ class MarinePanel(QWidget):
         layout.addWidget(scroll, 1)
         self.clock.connect("time_change", self.invalidate)
         self.manager.connect("changed", self.invalidate)
-        self.manager.fields.connect("changed", self.invalidate)
+        self.manager.fields.connect("changed", self.invalidate_fields)
         self.timer = QTimer(self)
         self.timer.setInterval(250)
         self.timer.timeout.connect(self.refresh)
@@ -376,6 +377,10 @@ class MarinePanel(QWidget):
             self.signature = None
             self.refresh()
 
+    def invalidate_fields(self, *_):
+        self._ordered_current_fields = None
+        self.invalidate()
+
     def refresh(self):
         if self.closed:
             return
@@ -393,8 +398,19 @@ class MarinePanel(QWidget):
             return
         self.signature = signature
         if self.kind == "currents":
+            selection = None
+            if not getattr(self, "_uncached_coverage_fields", False):
+                if self._ordered_current_fields is None:
+                    self._ordered_current_fields = self.manager.fields.snapshot().fields
+                # Only immutable ordering is retained. Per-query used/missing
+                # bookkeeping remains fresh, and sampling is never cached.
+                selection = FieldSelection(self._ordered_current_fields)
             available, title, detail = current_coverage(
-                self.manager, signature[0], (signature[1] + 180) % 360 - 180, instant
+                self.manager,
+                signature[0],
+                (signature[1] + 180) % 360 - 180,
+                instant,
+                selection=selection,
             )
             self.coverage_detail.setText(detail)
         else:
@@ -416,7 +432,8 @@ class MarinePanel(QWidget):
         if self.closed:
             return
         self.closed = True
+        self._ordered_current_fields = None
         self.timer.stop()
         self.clock.disconnect("time_change", self.invalidate)
         self.manager.disconnect("changed", self.invalidate)
-        self.manager.fields.disconnect("changed", self.invalidate)
+        self.manager.fields.disconnect("changed", self.invalidate_fields)
