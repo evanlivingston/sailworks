@@ -1,7 +1,20 @@
-# Chart Layers panel
+# Chart controls in Data Library
 
-Open **View → Chart Layers** (also available in the Window menu). The panel
-provides independent switches for Canadian online tiles (CHS), world
+Open **Data Library → Charts**. All chart controls now live here:
+
+- **Sources & appearance:** source-class checkboxes and vector chart colors.
+- **Local files:** imported chart selections, imports, and removal.
+- **Downloads & base maps:** world coastline/OpenSeaMap installation and NOAA ENC downloads.
+
+There is no separate Chart Layers dock or Map Data settings tab. Settings →
+Display retains only general interaction/renderer preferences, and Chart Debug
+is a read-only diagnostic inspector.
+
+Existing source selections, palettes and imported-file settings are retained.
+The startup missing-map-data offer opens Downloads & base maps directly,
+without opening Settings or starting an unrelated forecast scan.
+
+The source controls provide independent switches for Canadian online tiles (CHS), world
 coastlines/fallback map, local ENCs, raster charts, CM93, OpenStreetMap
 seamarks, offline MBTiles, and other vector charts.
 
@@ -20,7 +33,7 @@ their drawing priority.
 
 In **Data Library → Charts**, choose **MBTiles…** and select a `.mbtiles`
 archive. The app references the original file; it does not convert or copy it.
-Use **Offline MBTiles charts** in Chart Layers to hide/show the whole class,
+Use **Offline MBTiles charts** in Sources & appearance to hide/show the whole class,
 or use individual library checkboxes to choose archives. Removing an entry
 does not delete its archive.
 

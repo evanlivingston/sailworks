@@ -47,7 +47,6 @@ from .forecasttimeline import ForecastTimeline
 from .marinepanel import MarinePanel
 from .weatherpanel import WeatherPanel
 from .chartdebugpanel import ChartDebugPanel
-from .chartlayerspanel import ChartLayersPanel
 from .marinesettings import MarineSettings
 
 
@@ -238,18 +237,7 @@ class PreviewWindow(QMainWindow):
             "Chart Debug", "chart-debug", self.chart_debug_panel
         )
         self.chart_debug_dock.hide()
-        self.chart_layers_panel = ChartLayersPanel(controller)
-        self.chart_layers_dock = self._dock(
-            "Chart Layers", "chart-layers", self.chart_layers_panel
-        )
-        self.tabifyDockWidget(self.nmea_dock, self.chart_layers_dock)
-        self.chart_layers_dock.toggleViewAction().triggered.connect(
-            lambda checked: (
-                self._show_panel(self.chart_layers_dock) if checked else None
-            )
-        )
         view_menu = self.menuBar().addMenu("View")
-        view_menu.addAction(self.chart_layers_dock.toggleViewAction())
         view_menu.addAction(self.nmea_dock.toggleViewAction())
         view_menu.addAction(self.routing_dock.toggleViewAction())
         view_menu.addAction(self.polar_selector_dock.toggleViewAction())
@@ -262,7 +250,6 @@ class PreviewWindow(QMainWindow):
         view_menu.addAction(header.toggleViewAction())
         window_menu = self.menuBar().addMenu("Window")
         window_menu.addSection("Panels")
-        window_menu.addAction(self.chart_layers_dock.toggleViewAction())
         window_menu.addAction(self.navigation_dock.toggleViewAction())
         window_menu.addAction(self.weather_dock.toggleViewAction())
         window_menu.addAction(self.nmea_dock.toggleViewAction())
@@ -414,9 +401,7 @@ class PreviewWindow(QMainWindow):
             and not self.controller.offline
             and any(self.controller.map_data.missing().values())
         ):
-            self.show_settings()
-            assert self.settings_dialog is not None
-            self.settings_dialog.tabs.setCurrentWidget(self.settings_dialog.map_data)
+            self._ensure_library(chart_section=2)
 
     def _create_marine_panels(self, controller):
         self.marine_panels = {}
@@ -753,7 +738,6 @@ class PreviewWindow(QMainWindow):
             self.polar_manager_dock,
             self.navigation_dock,
             self.weather_dock,
-            self.chart_layers_dock,
             *self.marine_docks.values(),
         ):
             dock.setFloating(False)
@@ -1073,9 +1057,11 @@ class PreviewWindow(QMainWindow):
         self.settings_dialog.raise_()
         self.settings_dialog.activateWindow()
 
-    def _ensure_library(self):
+    def _ensure_library(self, chart_section=None):
         if self.library_dialog is None:
             self.library_dialog = DataLibrary(self.controller, self)
+        if chart_section is not None:
+            self.library_dialog.show_charts(chart_section)
         self.library_dialog.show()
         self.library_dialog.raise_()
         self.library_dialog.activateWindow()

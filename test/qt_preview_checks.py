@@ -579,9 +579,9 @@ class QtPreviewChecks(unittest.TestCase):
         from gweatherrouting.rendering.gdalrasterchart import GDALRasterChart
 
         object.__setattr__(self.controller.settings, "_Storage__init", True)
-        panel = self.window.chart_layers_panel
+        self.window.show_library()
+        panel = self.window.library_dialog.chart_layers_panel
         self.assertEqual(len(panel.checkboxes), 8)
-        self.assertIn(self.window.chart_layers_dock, self.window.workspace.docks)
         chart = GDALRasterChart("/disabled", self.controller.settings, enabled=False)
         self.controller.charts.charts.append(chart)
         for canvas in (self.window.map, self.window.log_map):
@@ -602,11 +602,12 @@ class QtPreviewChecks(unittest.TestCase):
         from gweatherrouting.core.settings import SettingsManager
 
         object.__setattr__(self.controller.settings, "_Storage__init", True)
-        panel = self.window.chart_layers_panel
+        self.window.show_library()
+        panel = self.window.library_dialog.chart_layers_panel
         self.controller.settings.canadianCharts = False
         self.assertFalse(panel.checkboxes["canadianCharts"].isChecked())
         self.window.chart_debug_panel.refresh()
-        self.assertFalse(self.window.chart_debug_panel.chs_toggle.isChecked())
+        self.assertIn("CHS tiles: off", self.window.chart_debug_panel.summary.text())
         with (
             patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
             patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
@@ -631,9 +632,9 @@ class QtPreviewChecks(unittest.TestCase):
         chart = self.controller.charts.charts[0]
         self.assertIsInstance(chart, MBTilesChart)
         self.assertEqual(len(self.controller.settings.mbtilesCharts), 1)
-        self.assertIn("chartMBTilesVisible", self.window.chart_layers_panel.checkboxes)
         self.window.show_library()
         library = self.window.library_dialog
+        self.assertIn("chartMBTilesVisible", library.chart_layers_panel.checkboxes)
         self.assertTrue(library.imported_chart(chart))
         self.assertEqual(library.charts.rowCount(), 1)
         with (
@@ -656,6 +657,34 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(self.controller.settings.mbtilesCharts)
         self.assertTrue(Path(path).exists())
         self.assertEqual(Path(path).stat().st_mtime_ns, original_mtime)
+
+    def test_chart_controls_are_consolidated_in_data_library(self):
+        from PySide6.QtWidgets import QCheckBox, QDockWidget
+
+        self.window.show_library()
+        library = self.window.library_dialog
+        library.show_charts()
+        self.assertIs(library.tabs.currentWidget(), library.charts_page)
+        self.assertEqual(
+            [
+                library.chart_sections.tabText(i)
+                for i in range(library.chart_sections.count())
+            ],
+            ["Sources & appearance", "Local files", "Downloads & base maps"],
+        )
+        self.assertEqual(len(library.chart_layers_panel.checkboxes), 8)
+        self.assertIsNone(self.window.findChild(QDockWidget, "chart-layers"))
+        self.assertFalse(self.window.chart_debug_panel.findChildren(QCheckBox))
+        self.window.show_settings()
+        settings = self.window.settings_dialog
+        self.assertFalse(hasattr(settings, "palette_combo"))
+        self.assertFalse(hasattr(settings, "map_data"))
+        self.assertNotIn(
+            "Map Data", [settings.tabs.tabText(i) for i in range(settings.tabs.count())]
+        )
+        self.assertFalse(
+            any("Canadian" in box.text() for box in settings.findChildren(QCheckBox))
+        )
 
     def test_qt_overlay_completes_without_glib_and_shutdown_discards_callbacks(self):
         import cairo
@@ -770,8 +799,8 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(
             self.controller.time_control.time, old_time + timedelta(hours=3)
         )
-        self.window.show_settings()
-        settings = self.window.settings_dialog
+        self.window.show_library()
+        settings = self.window.library_dialog
         settings.palette_combo.setCurrentText("dark")
         self.assertEqual(self.controller.settings.chartPalette, "dark")
         settings.hide()
@@ -2096,7 +2125,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertIs(self.window.views.currentWidget(), self.window.map)
         self.assertEqual(
             set(self.window.tabifiedDockWidgets(self.window.nmea_dock)),
-            {self.window.routing_dock, self.window.chart_layers_dock},
+            {self.window.routing_dock},
         )
         self.window._show_panel(self.window.nmea_dock)
         self.window.views.setCurrentWidget(self.window.logs_view)
@@ -4482,11 +4511,12 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertTrue(self.window.settings_dialog.isVisible())
         self.assertIs(self.window.settings_dialog.controller, self.controller)
 
-    def test_map_data_settings_missing_selection_and_no_automatic_download(self):
+    def test_map_data_library_missing_selection_and_no_automatic_download(self):
         self.assertIsNone(self.window.settings_dialog)
-        self.window.show_settings()
-        page = self.window.settings_dialog.map_data
-        self.window.settings_dialog.tabs.setCurrentWidget(page)
+        self.window._ensure_library(chart_section=2)
+        library = self.window.library_dialog
+        page = library.map_data
+        library.show_charts(section=2)
         self.assertTrue(page.downloads["coastlines"].isEnabled())
         self.assertTrue(page.downloads["seamarks"].isEnabled())
         self.assertFalse(page.status.isVisible())
@@ -4497,13 +4527,15 @@ class QtPreviewChecks(unittest.TestCase):
             start.reset_mock()
             page.downloads["seamarks"].click()
             start.assert_called_once_with(("seamarks",))
-        self.window.settings_dialog.hide()
+        library.hide()
         self.controller.offline = False
         self.controller.load_charts = True
         self.window._offer_map_data()
         self.controller.offline = True
-        self.assertTrue(self.window.settings_dialog.isVisible())
-        self.assertIs(self.window.settings_dialog.tabs.currentWidget(), page)
+        self.assertTrue(library.isVisible())
+        self.assertIs(library.tabs.currentWidget(), library.charts_page)
+        self.assertEqual(library.chart_sections.currentIndex(), 2)
+        self.assertIsNone(self.window.settings_dialog)
 
     def test_map_data_real_coastline_install_reloads_on_ui_thread_without_duplicates(
         self,
@@ -4519,8 +4551,8 @@ class QtPreviewChecks(unittest.TestCase):
         (root / "gshhs" / "partial").write_text("interrupted old installation")
         setup = self.controller.map_data
         setup.directory = root
-        self.window.show_settings()
-        page = self.window.settings_dialog.map_data
+        self.window._ensure_library(chart_section=2)
+        page = self.window.library_dialog.map_data
         other = ChartLayer("user-chart", "raster", self.controller.settings)
         other.enabled = False
         with patch("gweatherrouting.rendering.chartcollection.DATA_DIR", str(root)):
@@ -4590,12 +4622,12 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertFalse(coast.enabled)
             self.assertIsNotNone(self.controller.charts.osmLayer)
             self.assertTrue(all(not b.isEnabled() for b in page.downloads.values()))
-            self.window.settings_dialog.hide()
+            self.window.library_dialog.hide()
             self.controller.offline = False
             self.controller.load_charts = True
             self.window._offer_map_data()
             self.controller.offline = True
-            self.assertFalse(self.window.settings_dialog.isVisible())
+            self.assertFalse(self.window.library_dialog.isVisible())
 
     def test_map_data_cancel_and_close_reject_late_chart_attachment(self):
         from gweatherrouting.core.mapdata import MapDownloadCancelledError

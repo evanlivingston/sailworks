@@ -1,4 +1,4 @@
-"""Chart inspector: live zoom/scale readout, per-chart window status, toggles.
+"""Read-only chart inspector: live zoom/scale and per-chart window status.
 
 Shows why each loaded chart does or does not contribute to the current view
 (scale window, coverage overlap, disabled), mirroring the paint decisions in
@@ -10,7 +10,6 @@ import os
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QCheckBox,
     QHeaderView,
     QLabel,
     QTreeWidget,
@@ -139,7 +138,6 @@ class ChartDebugPanel(QWidget):
         super().__init__(parent)
         self.controller = controller
         self._active_map = active_map
-        self._syncing = False
         self.summary = QLabel()
         self.summary.setWordWrap(True)
         self.charts_tree = QTreeWidget()
@@ -148,13 +146,9 @@ class ChartDebugPanel(QWidget):
         header = self.charts_tree.header()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        self.chs_toggle = QCheckBox("Canadian online tiles (CHS)")
-        self.chs_toggle.setChecked(bool(controller.settings.canadianCharts))
-        self.chs_toggle.toggled.connect(self._toggle_chs)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.addWidget(self.summary)
-        layout.addWidget(self.chs_toggle)
         layout.addWidget(self.charts_tree)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
@@ -162,37 +156,14 @@ class ChartDebugPanel(QWidget):
         self._timer.timeout.connect(self.refresh)
         for map_widget in maps:
             map_widget.view_changed.connect(self._schedule)
-        # Deferred: data.changed fires inside itemChanged dispatch above.
         controller.data.changed.connect(self._schedule)
         for key in ["canadianCharts", *(key for _, key, _ in CHART_CLASSES)]:
             controller.settings.register_on_change(key, lambda _: self._schedule())
-        self.charts_tree.itemChanged.connect(self._toggle_chart)
         self.refresh()
 
     def _schedule(self):
         # view_changed fires on every pan frame; coalesce to a cheap poll.
         self._timer.start()
-
-    def _toggle_chs(self, checked):
-        # Storage notifies ChartCollection, which re-enables the renderer.
-        self.controller.settings.canadianCharts = checked
-
-    def _toggle_chart(self, item, column):
-        if column != 0 or self._syncing:
-            return
-        chart = getattr(item, "_chart", None)
-        if chart is None:
-            return
-        enabled = item.checkState(0) == Qt.CheckState.Checked
-        entries = self.controller.settings[chart.ctype + "Charts"] or []
-        # Rebuilding the tree synchronously here would destroy this item while
-        # Qt is still dispatching itemChanged; defer to the timer instead.
-        if any(e["path"] == chart.path for e in entries):
-            self.controller.data.set_chart_enabled(chart, enabled)
-        else:
-            chart.enabled = enabled
-            self.controller.data.redraw()
-        self._schedule()
 
     def refresh(self):
         collection = self.controller.charts
@@ -208,47 +179,37 @@ class ChartDebugPanel(QWidget):
         self.summary.setText(
             "Zoom {zoom:.2f} · {mpp:.2f} m/px · ≈1:{nominal:,.0f}\n"
             "Center {lat:.4f}, {lon:.4f}\n"
-            "Active at center: {active}".format(
+            "Active at center: {active}\nCHS tiles: {chs}\n"
+            "Manage charts in Data Library → Charts".format(
                 zoom=map_widget._zoom,
                 mpp=scale,
                 nominal=scale * METERS_PER_PIXEL_TO_SCALE,
                 lat=center_lat,
                 lon=center_lon,
                 active=os.path.basename(active.path) if active else "none",
+                chs="on" if self.controller.settings.canadianCharts else "off",
             )
         )
-        self._syncing = True
-        try:
-            blocked = self.chs_toggle.blockSignals(True)
-            self.chs_toggle.setChecked(bool(self.controller.settings.canadianCharts))
-            self.chs_toggle.blockSignals(blocked)
-            self.charts_tree.clear()
-            for chart in collection.charts:
-                native = getattr(chart, "_native_scale", 0) or 0
-                native_label = (
-                    f"z{min(chart.info.zooms)}–{max(chart.info.zooms)}"
-                    if isinstance(chart, MBTilesChart)
-                    else f"1:{native:,}" if native else "—"
-                )
-                item = QTreeWidgetItem(
-                    [
-                        os.path.basename(chart.path.rstrip("/")),
-                        chart_kind(chart),
-                        native_label,
-                        (
-                            chart_status(chart, window, scale, collection.osmLayer)
-                            if chart_class_enabled(self.controller.settings, chart)
-                            else "class disabled"
-                        ),
-                    ]
-                )
-                item._chart = chart
-                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                item.setCheckState(
-                    0,
-                    Qt.CheckState.Checked if chart.enabled else Qt.CheckState.Unchecked,
-                )
-                item.setToolTip(0, chart.path)
-                self.charts_tree.addTopLevelItem(item)
-        finally:
-            self._syncing = False
+        self.charts_tree.clear()
+        for chart in collection.charts:
+            native = getattr(chart, "_native_scale", 0) or 0
+            native_label = (
+                f"z{min(chart.info.zooms)}–{max(chart.info.zooms)}"
+                if isinstance(chart, MBTilesChart)
+                else f"1:{native:,}" if native else "—"
+            )
+            item = QTreeWidgetItem(
+                [
+                    os.path.basename(chart.path.rstrip("/")),
+                    chart_kind(chart),
+                    native_label,
+                    (
+                        chart_status(chart, window, scale, collection.osmLayer)
+                        if chart_class_enabled(self.controller.settings, chart)
+                        else "class disabled"
+                    ),
+                ]
+            )
+            item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            item.setToolTip(0, chart.path)
+            self.charts_tree.addTopLevelItem(item)
