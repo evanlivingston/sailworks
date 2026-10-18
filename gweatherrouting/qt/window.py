@@ -775,7 +775,11 @@ class PreviewWindow(QMainWindow):
         self.source.addItems(["Live connections", "Loaded log"])
         self.source.currentIndexChanged.connect(self._source_changed)
         layout.addWidget(self.source)
-        self.streaming = QCheckBox("Stream live NMEA")
+        self.streaming = QCheckBox("Read live NMEA")
+        self.streaming.setToolTip(
+            "Read from configured instruments. Turning this off closes their "
+            "connections and stops recording; saved connection settings are kept."
+        )
         self.streaming.toggled.connect(self._stream_changed)
         layout.addWidget(self.streaming)
         connections = QPushButton("Configure connections…")
@@ -867,7 +871,11 @@ class PreviewWindow(QMainWindow):
         self.source.setCurrentIndex(0 if session.source == "live" else 1)
         self.source.setEnabled(not session.loading)
         self.streaming.setChecked(session.streaming)
-        self.streaming.setEnabled(session.source == "live" and not session.loading)
+        self.streaming.setEnabled(
+            session.source == "live"
+            and not session.loading
+            and not self.controller.connection_task.busy
+        )
         self.load_button.setEnabled(not session.loading)
         self.record.setChecked(session.recording)
         self.record.setEnabled(
@@ -912,9 +920,9 @@ class PreviewWindow(QMainWindow):
             text = "Recording stopped · saved automatically."
         else:
             text = (
-                "Streaming live connections"
+                "Reading live connections"
                 if session.streaming
-                else "Live stream paused"
+                else "Live NMEA reading off"
             )
         self.status.setText(text)
         path = session.recording_path
@@ -943,7 +951,7 @@ class PreviewWindow(QMainWindow):
         task = self.controller.connection_task
         return (
             "NMEA connections closed"
-            if self.controller.offline
+            if self.controller.offline or not self.session.streaming
             else (
                 (task.message if task.message != "Done" else "")
                 or "Using saved NMEA connections"
@@ -1003,7 +1011,7 @@ class PreviewWindow(QMainWindow):
 
     def _stream_changed(self, active):
         if not self.syncing:
-            self.session.set_streaming(active)
+            self.controller.set_live_reading(active)
 
     def _play(self, active):
         if not self.syncing:

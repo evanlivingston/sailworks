@@ -180,7 +180,11 @@ Source selection, live streaming, loaded log, play/pause, playback position,
 and speed also persist when switching tabs, hiding panels, or floating them.
 The session stays in memory until the app closes.
 Configure instrument inputs in **Settings > Connections**, then choose
-**Live connections** and enable **Stream live NMEA**.
+**Live connections** and enable **Read live NMEA**. This opens the configured
+instrument connections and reads incoming messages. Turning it off stops device
+reads, closes those connections and stops any active recording without deleting
+your saved connection settings. The on/off preference is remembered across app
+restarts; offline mode always keeps connections closed.
 
 Use **Load NMEA log…** to open an interpreted `.nmea`, `.log`, or `.txt` file.
 Select the primary interpreted file for NMEA 2000 recordings, rather than its
@@ -232,7 +236,7 @@ with the replay.
 
 Live collection retains the latest 20,000 samples in memory, with at most one
 sample per second per speed basis. Import retains the latest 20,000 samples
-without time resampling. **Stream live NMEA** in the shared NMEA panel pauses or resumes input;
+without time resampling. **Read live NMEA** in the shared NMEA panel connects or disconnects instruments;
 **Clear samples** in Performance clears the selected live/log history. The comparison
 uses the same samples when you select a different polar, so clear the history
 when changing boats or sail configurations. Save recordings through **Logs**
