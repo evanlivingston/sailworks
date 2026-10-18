@@ -2,6 +2,7 @@
 
 import logging
 import math
+import os
 
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import QGuiApplication, QPainter, QSurfaceFormat
@@ -51,6 +52,12 @@ class GpuPresenter(QObject):
         self.estimate = {}
         self._quick_window = None
         self.scene = None
+        self.weather = None
+        if os.environ.get("GWR_GPU_WEATHER") == "1":
+            from .gpuweatherjobs import WeatherStager
+
+            self.weather = WeatherStager(self)
+            self.weather.changed.connect(self.request)
         self.widget = QQuickWidget(canvas)
         self.widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -74,7 +81,7 @@ class GpuPresenter(QObject):
         self.widget.sceneGraphError.connect(lambda _error, reason: self.fail(reason))
         self.widget.statusChanged.connect(self._status_changed)
         try:
-            self.scene = MapScene(self.widget, self.fail)
+            self.scene = MapScene(self.widget, self.fail, self.request)
             self.scene.root.windowChanged.connect(lambda _window: self.request())
         except Exception:
             self.closed = True
@@ -202,6 +209,8 @@ class GpuPresenter(QObject):
         if not self.active or self.closed:
             return
         self.timer.stop()
+        if self.weather is not None:
+            self.weather.invalidate()
         self.deadline.stop()
         self.widget.hide()
         self.overlay.hide()
@@ -213,6 +222,8 @@ class GpuPresenter(QObject):
         if not self.active or self.closed:
             return
         self.active = False
+        if self.weather is not None:
+            self.weather.close()
         self.timer.stop()
         self.deadline.stop()
         self._failure_reason = reason
@@ -246,6 +257,8 @@ class GpuPresenter(QObject):
             return
         self.closed = True
         self.active = False
+        if self.weather is not None:
+            self.weather.close()
         self.timer.stop()
         self.deadline.stop()
         if self.widget is not None:

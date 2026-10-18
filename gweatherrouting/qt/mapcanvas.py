@@ -209,6 +209,22 @@ class TrackMap(QWidget, MercatorProjection):
 
     def _time_changed(self, _):
         self._cancel_cursor()
+        gpu = getattr(self, "_gpu", None)
+        stager = getattr(gpu, "weather", None)
+        if (
+            gpu is not None
+            and gpu.active
+            and stager is not None
+            and not self._marine_time_dependent()
+            and stager.request(self) is not None
+        ):
+            # The numerical field is already staged. CPU fill/isobar workers
+            # still receive exact-time requests in _gpu_frame, and queue_draw
+            # invalidates the base when a completed background arrives. Do
+            # not upload the same cached background for every uniform change.
+            self.invalidate_navigation()
+            self.update()
+            return
         self.queue_draw()
 
     def _boat_changed(self, _):
@@ -426,6 +442,12 @@ class TrackMap(QWidget, MercatorProjection):
             id(self.marine.sources),
         )
 
+    def _marine_time_dependent(self):
+        sources = self.marine.sources
+        return self.marine.visible and bool(
+            sources.fields or sources.levels.datasets or sources.currents.datasets
+        )
+
     def _base_key(self):
         width, height, ratio = self._view_pixel_size()
         return (
@@ -632,9 +654,29 @@ class TrackMap(QWidget, MercatorProjection):
     def _gpu_frame(self):
         from .mapframe import ImageFrame, MapFrame, prepare_wind
 
+        numerical_wind = None
+        stager = getattr(self._gpu, "weather", None)
+        if stager is not None:
+            numerical_wind = stager.request(self)
+        base_key = self._base_key()
+        if numerical_wind is not None and not self._marine_time_dependent():
+            # Queue asynchronous exact-time fill/isobars without allocating a
+            # new Cairo raster or uploading unchanged chart pixels. Completion
+            # still invalidates the base through the existing queue_draw hook.
+            self._build_padded_layer(
+                lambda: self._draw_weather_background(
+                    cairo.Context(
+                        cairo.RecordingSurface(cairo.CONTENT_COLOR_ALPHA, None)
+                    )
+                )
+            )
+            state = self.wind._states.get(self)
+            published = state.frame if state is not None else None
+            wind_key = base_key[4]
+            base_key = base_key[:4] + ((id(published),) + wind_key[1:],) + base_key[5:]
         previous_base = self._base_cache
         self._base_cache, base_target = self._resolve_reusable_layer(
-            self._base_cache, self._base_key(), self._base_image
+            self._base_cache, base_key, self._base_image
         )
         if self._base_cache is not previous_base:
             self.background = (
@@ -652,7 +694,11 @@ class TrackMap(QWidget, MercatorProjection):
             self._nav_cache, self._nav_key(), self._navigation_image
         )
         geometry, opacity = ({}, 0.0)
-        if self.wind_visible:
+        weather_item = getattr(getattr(self._gpu, "scene", None), "weather", None)
+        shader_ready = weather_item is not None and weather_item.property("ready")
+        if numerical_wind is not None and shader_ready:
+            opacity = float(self.controller.settings.gribArrowOpacity)
+        elif self.wind_visible:
             geometry, opacity = self.wind.live_geometry_for_view(
                 self,
                 self.width(),
@@ -664,6 +710,8 @@ class TrackMap(QWidget, MercatorProjection):
                     self.controller.settings, "gribBarbDensity", "standard"
                 ),
             )
+        if numerical_wind is not None:
+            opacity = float(self.controller.settings.gribArrowOpacity)
         ratio = float(self.devicePixelRatioF())
         raster_wind = None
         if ratio < 2:
@@ -704,6 +752,7 @@ class TrackMap(QWidget, MercatorProjection):
             self._gpu_batches,
             opacity,
             raster_wind,
+            numerical_wind,
         )
         self._check_weather_coverage()
         return frame
@@ -1977,6 +2026,21 @@ class TrackMap(QWidget, MercatorProjection):
         Style.chart_palettes[self.controller.settings.chartPalette].sea.apply(cr)
         cr.paint()
         self.charts.do_draw(self, cr)
+        self._draw_weather_background(cr)
+        self.marine.do_draw(self, cr)
+        surface.flush()
+        # copy() transfers ownership; Cairo's buffer can then be released.
+        image = QImage(
+            surface.get_data(),
+            surface.get_width(),
+            surface.get_height(),
+            surface.get_stride(),
+            QImage.Format.Format_ARGB32_Premultiplied,
+        ).copy()
+        image.setDevicePixelRatio(factor)
+        return image
+
+    def _draw_weather_background(self, cr):
         settings = self.controller.settings
         style = (
             self.time_control.time,
@@ -1995,18 +2059,6 @@ class TrackMap(QWidget, MercatorProjection):
             # Fill/isobars stay in the cached base image (smooth when scaled);
             # barbs paint crisp in paintEvent via _paint_wind_barbs().
             self.wind.draw(self, cr, sources, style, live_barbs=False)
-        self.marine.do_draw(self, cr)
-        surface.flush()
-        # copy() transfers ownership; Cairo's buffer can then be released.
-        image = QImage(
-            surface.get_data(),
-            surface.get_width(),
-            surface.get_height(),
-            surface.get_stride(),
-            QImage.Format.Format_ARGB32_Premultiplied,
-        ).copy()
-        image.setDevicePixelRatio(factor)
-        return image
 
     def mousePressEvent(self, event):  # noqa: N802 - Qt virtual method name
         self._cancel_cursor()
