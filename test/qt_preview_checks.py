@@ -187,7 +187,7 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertGreaterEqual(dock.width(), DOCK_MIN_WIDTH)
             dock.setFloating(False)
             self.drain()
-            self.assertIsNone(dock.titleBarWidget())
+            self.assertEqual(dock.titleBarWidget().height(), 0)
             self.assertIs(dock.widget(), content)
         dock.setFloating(True)
         self.window.reset_panels()
@@ -212,8 +212,12 @@ class QtPreviewChecks(unittest.TestCase):
         QTest.mousePress(child, Qt.MouseButton.LeftButton, pos=QPoint(2, 10))
         self.assertIsNone(frame._resize)
         QTest.mouseRelease(child, Qt.MouseButton.LeftButton, pos=QPoint(2, 10))
+        self.assertTrue(dock.isFloating())
         QTest.mousePress(dock, Qt.MouseButton.LeftButton, pos=QPoint(1, 100))
-        self.assertIsNotNone(frame._resize)
+        self.assertIsNotNone(
+            frame._resize,
+            f"floating={dock.isFloating()} size={dock.size()} grabber={dock.mouseGrabber()}",
+        )
         QTest.mouseRelease(dock, Qt.MouseButton.LeftButton, pos=QPoint(1, 100))
         self.assertIsNone(frame._resize)
 
