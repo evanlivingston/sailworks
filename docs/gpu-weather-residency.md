@@ -48,7 +48,7 @@ Those probes did not prove production GPU activation or a full-memory plateau.
 `DisplayGridIndex` subclasses for the numerical worker. They preserve the shared
 index's decoding, masks, float64 arithmetic, per-source six-band behavior and
 selection machinery, while a worker-wide LRU accounts for retained arrays.
-`WeatherBandLimitExceeded` deliberately does not inherit the sampler's recoverable
+`WeatherBandLimitError` deliberately does not inherit the sampler's recoverable
 exception classes. Unsupported resources therefore reject the staging request
 and retain CPU rendering instead of changing source provenance.
 
@@ -110,8 +110,9 @@ atlas regeneration and other pending renderer work remain.
 
 Four native/real-workload attempts were used: one synthetic integration pass,
 one blocked original-fixture verification, and two derived functional passes.
-Each command was bounded to 120 seconds. No budget or memory-limit extension
-was used. The [sanitized summary](profiles/rendering/2026-10-18/pr50-residency-functional-summary.json)
+Each initial command was bounded to 120 seconds. The separate CI-review budget
+below was recorded before its follow-up; no memory limit was increased. The
+[sanitized summary](profiles/rendering/2026-10-18/pr50-residency-functional-summary.json)
 preserves the key evidence without private paths/coordinates.
 
 ### Review / remaining gates
@@ -122,3 +123,37 @@ is no claim of end-to-end CPU-renderer speedup, instant scrubbing, fluid pan,
 power savings, total-memory bound, long-session plateau, minimum-Qt execution
 or non-Metal validation. Changed-time retries for an unchanged unsupported
 resource workload remain a follow-up. The broader renderer epic stays separate.
+
+### CI review follow-up budget
+
+CI on `21b40d5` identified a new exception-name convention failure, an incompatible
+cache-interface type, and a provider-list annotation in the changed code. It also
+flags complexity in the worker method extended by this change. Fix those issues
+in place, without suppressions, shared-sampler edits, or unrelated CI/dependency
+repairs. Preserve real cache behavior rather than satisfying typing with a cast.
+
+Budget: one additional focused implementation/validation iteration and one real-
+data native activation attempt (120 seconds). Refactor only worker resource
+ownership and request handoff needed to keep the changed methods reviewable;
+rerun the worker/cache/staging checks and a native functional replay. Existing
+`nmeatoolkit` collection failures and diagnostics elsewhere remain separate; no
+full-suite pass is claimed.
+
+Results: renamed the exception to `WeatherBandLimitError`, retained GridIndex's
+concrete OrderedDict cache contract with local/global references to the same
+arrays, and extracted worker-only resource lifetime/request handoff helpers.
+No type ignores/casts or shared-sampler edits were used. The global eviction
+removes both references; tests exercise hits, eviction, reload and close.
+
+- **40 targeted checks passed** after these corrections, one warning.
+- Targeted Flake8 and mypy (`--follow-imports=silent`) passed on **both changed
+  production modules**; Black passed on four newly changed Python files;
+  whitespace passed. Unchanged benchmark/telemetry checks were not repeated.
+- **One fresh derived real-data native scrub replay passed**: numerical shader
+  active, 734 symbols, 23/24 replay frames numerical, 60,512 retained decoded
+  bytes, 12 image requests including the initial pair replacement, no warnings.
+- The pan numbers above belong to `21b40d5`; pan was not rerun under this
+  follow-up budget. No pan improvement or full CI pass is claimed.
+
+The recorded follow-up budget is consumed. Leave unrelated dependency/type/lint
+failures to their own work rather than turning this residency fix into CI cleanup.

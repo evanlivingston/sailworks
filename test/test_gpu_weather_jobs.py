@@ -269,7 +269,7 @@ def test_shutdown_during_staging_does_not_release_arrays_under_worker(gribs):
 
 
 def test_worker_oversized_band_falls_back_without_publishing_partial_atlas(gribs):
-    from gweatherrouting.rendering.weathercache import WeatherBandLimitExceeded
+    from gweatherrouting.rendering.weathercache import WeatherBandLimitError
 
     canvas = canvas_for(gribs.file(gribs.field(0) + gribs.field(3), end=3))
     stager = WeatherStager()
@@ -295,7 +295,7 @@ def test_worker_oversized_band_falls_back_without_publishing_partial_atlas(gribs
             assert stager.frame is None and stager._prepared is None
             assert stager.request(canvas) is None
             assert stager.band_cache_statistics()["current_bytes"] == 0
-            assert not issubclass(WeatherBandLimitExceeded, ValueError)
+            assert not issubclass(WeatherBandLimitError, ValueError)
     finally:
         stager.close()
         stager._thread.join(5)

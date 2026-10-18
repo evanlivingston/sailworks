@@ -37,6 +37,71 @@ def source_key(source):
     )
 
 
+class _WeatherResources:
+    """Created, used and closed exclusively by the numerical weather worker."""
+
+    def __init__(self, byte_limit):
+        self.providers: list[DisplayWeatherSource] = []
+        self.sampler: WeatherSampler | None = None
+        self.signature: tuple | None = None
+        self.band_cache = DecodedBandCache(byte_limit)
+        self.land = WindLandMask()
+
+    def release(self):
+        for provider in self.providers:
+            provider.close()
+        self.providers.clear()
+        self.sampler = None
+        self.signature = None
+
+    def _open(self, sources, signature, cancel):
+        self.release()
+        for source in sources:
+            if cancel.is_set():
+                return
+            expected = signature[len(self.providers)][-1]
+            if source_key(source)[-1] != expected:
+                raise ValueError("Forecast file changed before staging")
+            self.providers.append(
+                DisplayWeatherSource(
+                    source.path,
+                    source.name,
+                    source.centre,
+                    source.bounds,
+                    source.start_time,
+                    source.last_forecast,
+                    source.model_name,
+                    band_cache=self.band_cache,
+                )
+            )
+        if cancel.is_set():
+            return
+        self.sampler = WeatherSampler(self.providers)
+        if len(self.sampler.indices) != len(self.providers):
+            raise ValueError("A selected weather source is unavailable")
+        self.signature = signature
+
+    def prepare(self, key, stamp, sources, cancel):
+        if self.signature != key[1]:
+            self._open(sources, key[1], cancel)
+        if cancel.is_set() or self.sampler is None:
+            return None
+        atlas = stage_barbs(self.sampler, stamp, key[0], self.land, cancel.is_set)
+        if any(
+            source_key(source)[-1] != entry[-1]
+            for source, entry in zip(sources, key[1])
+        ):
+            raise ValueError("Forecast file changed during staging")
+        return atlas
+
+    def close(self):
+        self.release()
+        self.land.contains.cache_clear()
+        self.land._prepared.clear()
+        self.land._tiles.clear()
+        self.land._dataset = None
+
+
 class WeatherStager(QObject):
     BAND_BYTE_LIMIT = 128 * 1024 * 1024
     changed = Signal()
@@ -137,103 +202,67 @@ class WeatherStager(QObject):
             self.failure = None
         self.changed.emit()
 
+    def _take_request(self):
+        with self._condition:
+            self._condition.wait_for(
+                lambda: self.closed
+                or self._pending is not None
+                or self._release_requested
+            )
+            if self.closed:
+                return True, None
+            if self._release_requested:
+                self._release_requested = False
+                return False, None
+            request, self._pending = self._pending, None
+            self._active = request
+            return False, request
+
+    def _finish_request(self, request, atlas, error, statistics):
+        key, cancel = request[0], request[3]
+        with self._condition:
+            self._band_stats = statistics
+            self._active = None
+            if (
+                atlas is not None
+                and not error
+                and not cancel.is_set()
+                and not self.closed
+            ):
+                self._prepared = key, atlas
+            # A time-only request already covered by this endpoint pair must
+            # not trigger a second staging pass after every scrub.
+            if atlas is not None and self._pending is not None:
+                pending_key, pending_stamp, _, _ = self._pending
+                if pending_key == key and atlas.staged.contains(pending_stamp):
+                    self._pending = None
+        if not cancel.is_set() and not self.closed:
+            self.completed.emit(key, atlas, error)
+
     def _run(self):
-        providers = []
-        signature = None
-        sampler = None
-        band_cache = DecodedBandCache(self.BAND_BYTE_LIMIT)
-        land = WindLandMask()
+        resources = _WeatherResources(self.BAND_BYTE_LIMIT)
         try:
             while True:
-                with self._condition:
-                    self._condition.wait_for(
-                        lambda: self.closed
-                        or self._pending is not None
-                        or self._release_requested
-                    )
-                    if self.closed:
-                        return
-                    if self._release_requested:
-                        self._release_requested = False
-                        request = None
-                    else:
-                        request, self._pending = self._pending, None
-                        self._active = request
+                closed, request = self._take_request()
+                if closed:
+                    return
                 if request is None:
-                    for provider in providers:
-                        provider.close()
-                    providers, sampler, signature = [], None, None
+                    resources.release()
                     with self._condition:
-                        self._band_stats = band_cache.statistics()
+                        self._band_stats = resources.band_cache.statistics()
                     continue
-                key, stamp, sources, cancel = request
                 atlas, error = None, ""
                 try:
-                    if signature != key[1]:
-                        for provider in providers:
-                            provider.close()
-                        providers, sampler, signature = [], None, None
-                        for source in sources:
-                            if cancel.is_set():
-                                break
-                            expected = key[1][len(providers)][-1]
-                            if source_key(source)[-1] != expected:
-                                raise ValueError("Forecast file changed before staging")
-                            providers.append(
-                                DisplayWeatherSource(
-                                    source.path,
-                                    source.name,
-                                    source.centre,
-                                    source.bounds,
-                                    source.start_time,
-                                    source.last_forecast,
-                                    source.model_name,
-                                    band_cache=band_cache,
-                                )
-                            )
-                        if not cancel.is_set():
-                            sampler = WeatherSampler(providers)
-                            if len(sampler.indices) != len(providers):
-                                raise ValueError(
-                                    "A selected weather source is unavailable"
-                                )
-                            signature = key[1]
-                    if not cancel.is_set() and sampler is not None:
-                        atlas = stage_barbs(sampler, stamp, key[0], land, cancel.is_set)
-                        if any(
-                            source_key(source)[-1] != entry[-1]
-                            for source, entry in zip(sources, key[1])
-                        ):
-                            raise ValueError("Forecast file changed during staging")
+                    atlas = resources.prepare(*request)
                 except Exception as exc:
                     error = str(exc)
-                with self._condition:
-                    self._band_stats = band_cache.statistics()
-                    self._active = None
-                    if (
-                        atlas is not None
-                        and not error
-                        and not cancel.is_set()
-                        and not self.closed
-                    ):
-                        self._prepared = key, atlas
-                    # A time-only request already covered by this endpoint pair
-                    # must not trigger a second staging pass after every scrub.
-                    if atlas is not None and self._pending is not None:
-                        pending_key, pending_stamp, _, _ = self._pending
-                        if pending_key == key and atlas.staged.contains(pending_stamp):
-                            self._pending = None
-                if not cancel.is_set() and not self.closed:
-                    self.completed.emit(key, atlas, error)
+                self._finish_request(
+                    request, atlas, error, resources.band_cache.statistics()
+                )
         finally:
-            for provider in providers:
-                provider.close()
+            resources.close()
             with self._condition:
-                self._band_stats = band_cache.statistics()
-            land.contains.cache_clear()
-            land._prepared.clear()
-            land._tiles.clear()
-            land._dataset = None
+                self._band_stats = resources.band_cache.statistics()
 
     def close(self):
         self.invalidate()

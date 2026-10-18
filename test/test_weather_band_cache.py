@@ -1,5 +1,6 @@
 """Worker-private cache limits must not change sampling or source selection."""
 
+from collections import OrderedDict
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -13,7 +14,7 @@ from gweatherrouting.rendering.weathercache import (
     DisplayGridIndex,
     DisplayWeatherSource,
     SourceBandCache,
-    WeatherBandLimitExceeded,
+    WeatherBandLimitError,
 )
 from test.test_weather_staging import gribs, START  # noqa: F401
 
@@ -32,7 +33,7 @@ def private_source(source, cache):
 
 
 def read(cache, owner, band):
-    values = SourceBandCache(cache, owner)
+    values = owner.arrays
     cache.reserve(owner, band, 32)
     value = values.get(band)
     if value is None:
@@ -42,16 +43,25 @@ def read(cache, owner, band):
     return value
 
 
+def cache_owner(cache):
+    class Owner:
+        pass
+
+    owner = Owner()
+    owner.arrays = SourceBandCache(cache, owner)
+    return owner
+
+
 def test_shared_lru_evicts_across_sources_and_protects_recent_hits():
     cache = DecodedBandCache(64)
-    first, second = object(), object()
+    first, second = cache_owner(cache), cache_owner(cache)
     read(cache, first, 1)
     read(cache, second, 1)
     read(cache, first, 1)
     read(cache, second, 2)
-    assert 1 in SourceBandCache(cache, first)
-    assert 1 not in SourceBandCache(cache, second)
-    assert 2 in SourceBandCache(cache, second)
+    assert 1 in first.arrays
+    assert 1 not in second.arrays
+    assert 2 in second.arrays
     assert cache.statistics() == dict(
         limit_bytes=64,
         current_bytes=64,
@@ -65,13 +75,13 @@ def test_shared_lru_evicts_across_sources_and_protects_recent_hits():
 
 def test_source_clear_releases_only_its_own_retention():
     cache = DecodedBandCache(64)
-    first, second = object(), object()
+    first, second = cache_owner(cache), cache_owner(cache)
     read(cache, first, 1)
     read(cache, second, 1)
-    SourceBandCache(cache, first).clear()
+    first.arrays.clear()
     assert cache.current_bytes == 32
-    assert 1 in SourceBandCache(cache, second)
-    SourceBandCache(cache, second).clear()
+    assert 1 in second.arrays
+    second.arrays.clear()
     assert cache.current_bytes == 0
     assert cache.statistics()["retained_bands"] == 0
 
@@ -83,7 +93,7 @@ def test_oversized_band_fails_before_gdal_read():
     index.width = index.height = 2
     index.band_cache = cache
     index.arrays = SourceBandCache(cache, index)
-    with pytest.raises(WeatherBandLimitExceeded, match="worker limit"):
+    with pytest.raises(WeatherBandLimitError, match="worker limit"):
         index.array(SimpleNamespace(band=1))
     index.dataset.GetRasterBand.assert_not_called()
     assert cache.current_bytes == 0
@@ -91,18 +101,18 @@ def test_oversized_band_fails_before_gdal_read():
 
 def test_budget_exception_cannot_be_swallowed_as_missing_weather():
     assert not issubclass(
-        WeatherBandLimitExceeded, (ValueError, RuntimeError, TypeError, IndexError)
+        WeatherBandLimitError, (ValueError, RuntimeError, TypeError, IndexError)
     )
 
 
 def test_unexpected_decoded_size_does_not_corrupt_existing_accounting():
     cache = DecodedBandCache(32)
-    owner = object()
+    owner = cache_owner(cache)
     original = read(cache, owner, 1)
-    with pytest.raises(WeatherBandLimitExceeded):
-        SourceBandCache(cache, owner)[1] = np.ones((3, 3), dtype=np.float64)
+    with pytest.raises(WeatherBandLimitError):
+        owner.arrays[1] = np.ones((3, 3), dtype=np.float64)
     assert cache.current_bytes == 32
-    assert SourceBandCache(cache, owner)[1] is original
+    assert owner.arrays[1] is original
 
 
 @pytest.mark.parametrize("limit", [0, -1])
@@ -117,6 +127,7 @@ def test_per_source_six_band_cap_remains_and_close_releases_it(gribs):
     private = private_source(source, cache)
     try:
         index = private.sampling
+        assert isinstance(index.arrays, OrderedDict)
         for record in index.records:
             index.array(record)
         assert len(index.arrays) == 6
@@ -171,7 +182,7 @@ def test_resource_failure_propagates_instead_of_falling_back_to_older_model(grib
     private = [private_source(source, cache) for source in (old, newer)]
     try:
         sampler = WeatherSampler(private)
-        with pytest.raises(WeatherBandLimitExceeded):
+        with pytest.raises(WeatherBandLimitError):
             sampler.sample_timestamps("wind", START.timestamp() + 3600, [0.5], [0.5])
     finally:
         for source in private:

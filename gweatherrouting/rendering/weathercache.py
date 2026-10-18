@@ -5,13 +5,12 @@ their existing GridIndex behavior. This does not bound GDAL/decode temporaries.
 """
 
 from collections import OrderedDict
-from collections.abc import MutableMapping
 
 from gweatherrouting.core.grib import Grib
 from gweatherrouting.core.gribsampling import GridIndex
 
 
-class WeatherBandLimitExceeded(Exception):
+class WeatherBandLimitError(Exception):
     """Resource failure, deliberately not a recoverable sampler exception."""
 
 
@@ -29,11 +28,12 @@ class DecodedBandCache:
             self.hits += 1
             return
         if size > self.byte_limit:
-            raise WeatherBandLimitExceeded(
+            raise WeatherBandLimitError(
                 f"Decoded weather band needs {size} bytes; worker limit is {self.byte_limit}"
             )
         while self.current_bytes + size > self.byte_limit:
-            _, value = self._entries.popitem(last=False)
+            (previous_owner, previous_band), value = self._entries.popitem(last=False)
+            previous_owner.arrays.discard_local(previous_band)
             self.current_bytes -= value.nbytes
             self.evictions += 1
         self.misses += 1
@@ -43,9 +43,7 @@ class DecodedBandCache:
         old = self._entries.get(key)
         previous_bytes = old.nbytes if old is not None else 0
         if self.current_bytes - previous_bytes + value.nbytes > self.byte_limit:
-            raise WeatherBandLimitExceeded(
-                "Decoded weather band exceeded its reservation"
-            )
+            raise WeatherBandLimitError("Decoded weather band exceeded its reservation")
         self._entries[key] = value
         self._entries.move_to_end(key)
         self.current_bytes += value.nbytes - previous_bytes
@@ -66,40 +64,40 @@ class DecodedBandCache:
         )
 
 
-class SourceBandCache(MutableMapping):
-    """Per-index OrderedDict interface backed by the shared worker LRU."""
+class SourceBandCache(OrderedDict):
+    """GridIndex's concrete OrderedDict contract, with shared LRU accounting.
+
+    The local dictionary and global LRU reference the same arrays, not copies.
+    """
 
     def __init__(self, cache, owner):
+        super().__init__()
         self.cache, self.owner = cache, owner
-
-    def __getitem__(self, band):
-        return self.cache._entries[self.owner, band]
 
     def __setitem__(self, band, value):
         self.cache.store(self.owner, band, value)
+        super().__setitem__(band, value)
 
     def __delitem__(self, band):
         self.cache.discard(self.owner, band)
+        super().__delitem__(band)
 
-    def __iter__(self):
-        return iter(
-            [band for owner, band in self.cache._entries if owner is self.owner]
-        )
-
-    def __len__(self):
-        return sum(owner is self.owner for owner, _ in self.cache._entries)
-
-    def move_to_end(self, band):
-        self.cache._entries.move_to_end((self.owner, band))
+    def move_to_end(self, band, last=True):
+        super().move_to_end(band, last=last)
+        self.cache._entries.move_to_end((self.owner, band), last=last)
 
     def popitem(self, last=True):
-        keys = list(self)
-        if not keys:
-            raise KeyError("No decoded bands for source")
-        band = keys[-1] if last else keys[0]
-        value = self[band]
-        del self[band]
+        band, value = super().popitem(last=last)
+        self.cache.discard(self.owner, band)
         return band, value
+
+    def clear(self):
+        for band in list(self):
+            del self[band]
+
+    def discard_local(self, band):
+        """The global LRU already removed/accounted for this entry."""
+        super().__delitem__(band)
 
 
 class DisplayGridIndex(GridIndex):

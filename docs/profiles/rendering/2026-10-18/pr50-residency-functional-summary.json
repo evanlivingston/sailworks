@@ -41,6 +41,20 @@
     "black_python_files_passed": 7,
     "full_suite_run": false
   },
+  "ci_review_followup": {
+    "worker_cache_checks_passed": 40,
+    "targeted_lint_modules_passed": 2,
+    "targeted_type_modules_passed": 2,
+    "black_changed_python_files_passed": 4,
+    "fresh_real_data_scrub_passed": true,
+    "numerical_active_replay_frames": 23,
+    "replay_frames": 24,
+    "final_symbols": 734,
+    "peak_retained_decoded_bytes": 60512,
+    "warnings": 0,
+    "pan_rerun": false,
+    "full_ci_pass_claimed": false
+  },
   "end_to_end_speedup_measured": false,
   "presentation_latency_measured": false,
   "continuous_pan_fixed": false,
