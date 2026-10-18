@@ -232,8 +232,6 @@ class TrackMap(QWidget, MercatorProjection):
 
     def set_wind_visible(self, visible):
         self.wind_visible = visible
-        if not visible:
-            self.wind.forget(self)
         self._cancel_cursor()
         self.queue_draw()
 
@@ -409,6 +407,12 @@ class TrackMap(QWidget, MercatorProjection):
             getattr(settings, "gribIsobarInterval", 4.0),
             getattr(settings, "gribIsobarOpacity", 0.85),
             getattr(settings, "gribIsobarLabels", True),
+            getattr(settings, "gribWindStyle", "barbs"),
+            (
+                getattr(settings, "gribBarbDensity", "standard")
+                if getattr(settings, "gribWindStyle", "barbs") == "streamlines"
+                else "standard"
+            ),
             tuple(
                 (id(grib), getattr(grib, "name", None))
                 for grib in self.controller.core.grib_manager.gribs
@@ -1983,6 +1987,8 @@ class TrackMap(QWidget, MercatorProjection):
             getattr(settings, "gribIsobarInterval", 4.0),
             getattr(settings, "gribIsobarOpacity", 0.85),
             getattr(settings, "gribIsobarLabels", True),
+            getattr(settings, "gribWindStyle", "barbs"),
+            getattr(settings, "gribBarbDensity", "standard"),
         )
         sources = tuple((grib,) for grib in self.controller.core.grib_manager.gribs)
         if self.wind_visible or getattr(settings, "gribIsobarsVisible", True):

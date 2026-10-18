@@ -136,22 +136,25 @@ class MarineRenderer(OverlayRenderer):
         )
         surface.set_device_scale(job.factor, job.factor)
         cr = cairo.Context(surface)
-        land = self._land_mask.surface(view)
-        selection = FieldSelection(sources.fields)
-        # Screen spacing keeps work and clutter bounded at every map scale.
-        for y in range(28, view.height, 64):
-            if job.cancel.is_set():
-                return None
-            for x in range(28, view.width, 64):
-                if self._land_mask.contains(land, x, y):
-                    continue
-                lat, lon = view.convert_screen_to_geographic(x, y).get_degrees()
-                result = selection.sample(lat, lon, instant)
-                if result.status != "available":
-                    continue
-                arrow(cr, x, y, *result.values)
-        # Clip the entire glyph, including tips that cross a coastal boundary.
-        self._land_mask.clear(cr, land)
+        # Stations are painted after field clipping and do not use this mask.
+        # Avoid decoding/rasterizing shorelines when there are no field arrows.
+        if sources.fields:
+            land = self._land_mask.surface(view)
+            selection = FieldSelection(sources.fields)
+            # Screen spacing keeps work and clutter bounded at every map scale.
+            for y in range(28, view.height, 64):
+                if job.cancel.is_set():
+                    return None
+                for x in range(28, view.width, 64):
+                    if self._land_mask.contains(land, x, y):
+                        continue
+                    lat, lon = view.convert_screen_to_geographic(x, y).get_degrees()
+                    result = selection.sample(lat, lon, instant)
+                    if result.status != "available":
+                        continue
+                    arrow(cr, x, y, *result.values)
+            # Clip the entire glyph, including tips that cross a coastal boundary.
+            self._land_mask.clear(cr, land)
         self._stations(cr, sources, view, instant, job.cancel)
         surface.flush()
         return None if job.cancel.is_set() else surface

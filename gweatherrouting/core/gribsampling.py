@@ -363,6 +363,12 @@ class WeatherSampler:
     """Newest compatible model run wins; file order, finest grid, then largest
     coverage break ties between models from the same issue time."""
 
+    _GRID_CACHE_TOLERANCE_DEG = (
+        0.5  # ~55 km; consecutive pan steps within this hit cache
+    )
+    _GRID_CACHE_ENTRY_LIMIT = 64
+    _GRID_CACHE_BYTE_LIMIT = 64 * 1024 * 1024
+
     def __init__(self, sources):
         self.indices = []
         for source in sources:
@@ -388,6 +394,8 @@ class WeatherSampler:
                         else record.valid
                     ),
                 )
+        self._grid_cache: OrderedDict[tuple, list] = OrderedDict()
+        self._grid_cache_bytes = 0
         # Stable sort preserves the first enabled file for equal issue times.
         resolutions: dict = {}
         spans: dict = {}
@@ -630,26 +638,80 @@ class WeatherSampler:
             return wind_value(uv)
         return None
 
+    @staticmethod
+    def _round_bounds(bounds):
+        """Round viewport bounds to a coarse lattice so nearby pans reuse cache.
+
+        Rounding to ~0.05 degrees (~5 km) keeps cache keys stable across
+        consecutive pan steps while introducing at most one native grid cell of
+        positional error, which is below the sampling resolution.
+        """
+        (south, west), (north, east) = bounds
+        return (
+            (round(south / 0.05) * 0.05, round(west / 0.05) * 0.05),
+            (round(north / 0.05) * 0.05, round(east / 0.05) * 0.05),
+        )
+
+    def _cached_grid(self, field, instant, bounds):
+        key = (field, instant, self._round_bounds(bounds))
+        cached = self._grid_cache.get(key)
+        if cached is not None:
+            # Move to end for LRU eviction order.
+            result, _bytes = cached
+            del self._grid_cache[key]
+            self._grid_cache[key] = (result, _bytes)
+            return result
+        return None
+
+    def _store_cached_grid(self, field, instant, bounds, result):
+        key = (field, instant, self._round_bounds(bounds))
+        # Estimate bytes: arrays are compact NumPy buffers, not Python tuples
+        byte_estimate = sum(getattr(a, "nbytes", 0) for a in result)
+        if byte_estimate > self._GRID_CACHE_BYTE_LIMIT:
+            return
+        if key in self._grid_cache:
+            self._grid_cache_bytes -= self._grid_cache[key][1]
+        self._grid_cache[key] = (result, byte_estimate)
+        self._grid_cache_bytes += byte_estimate
+        while (
+            len(self._grid_cache) > self._GRID_CACHE_ENTRY_LIMIT
+            or self._grid_cache_bytes > self._GRID_CACHE_BYTE_LIMIT
+        ):
+            _, (_, evicted_bytes) = self._grid_cache.popitem(last=False)
+            self._grid_cache_bytes -= evicted_bytes
+
     def grid(self, field, instant, bounds, cancel=lambda: False):
+        cached = self._cached_grid(field, instant, bounds)
+        if cached is not None:
+            return cached
         nodes = [
             index.nodes(bounds)
             for index in self.indices
             if any(r.element in FIELDS[field] for r in index.records)
         ]
         if not nodes:
-            return []
+            return None
         positions = np.unique(np.concatenate(nodes), axis=0)
         if not len(positions):
-            return []
+            return None
         values = self.sample(field, instant, positions[:, 0], positions[:, 1], cancel)
-        points = []
-        for (lat, lon), value in zip(positions, values):
-            if not np.isfinite(value).all():
-                continue
-            lon = (lon + 180) % 360 - 180
-            points.append(
-                (*wind_value(value), (float(lat), float(lon)))
-                if field == "wind"
-                else (float(lat), float(lon), float(value[0]))
-            )
-        return points
+        if field == "wind":
+            speeds = np.hypot(values[..., 0], values[..., 1])
+            directions = (
+                np.degrees(np.arctan2(-values[..., 0], -values[..., 1])) + 360.0
+            ) % 360.0
+            finite = np.isfinite(speeds) & np.isfinite(directions)
+            lats = positions[finite, 0].astype(np.float64)
+            lons = positions[finite, 1].astype(np.float64)
+            dirs = directions[finite].astype(np.float64)
+            spds = speeds[finite].astype(np.float64)
+            lons = (lons + 180) % 360 - 180
+            result = (dirs, spds, lats, lons)
+        else:
+            finite = np.isfinite(values).all(axis=-1)
+            lats = positions[finite, 0].astype(np.float64)
+            lons = positions[finite, 1].astype(np.float64)
+            vals = values[finite, 0].astype(np.float64)
+            result = (lats, lons, vals)
+        self._store_cached_grid(field, instant, bounds, result)
+        return result

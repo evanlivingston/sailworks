@@ -95,6 +95,28 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
+def array_content_hash(arrays):
+    """Hash typed array boundaries as well as bytes for wind/mask parity."""
+    if arrays is None:
+        return None
+    import numpy as np
+
+    content = hashlib.sha256()
+    for array in arrays:
+        contiguous = np.ascontiguousarray(array)
+        content.update(repr((contiguous.dtype.str, contiguous.shape)).encode())
+        content.update(contiguous.tobytes())
+    return content.hexdigest()
+
+
+def configure_wind_workload(settings, config):
+    """Explicit replay overrides; only called in the private worker sandbox."""
+    if config.get("wind_style") is not None:
+        settings.gribWindStyle = config["wind_style"]
+    if config.get("wind_over_land") is not None:
+        settings.gribArrowOnGround = config["wind_over_land"] == "show"
+
+
 def capture(source, destination):
     source_alias = str(source.absolute())
     source = source.resolve(strict=True)
@@ -258,6 +280,7 @@ def worker(config):
         offline=True, map_renderer=config.get("map_renderer")
     )
     controller.timer.stop()
+    configure_wind_workload(controller.settings, config)
     controller.time_control.set_time(datetime.fromisoformat(config["forecast_time"]))
     controller_ms = (time.perf_counter() - began) * 1000
     chs = controller.charts._chs_renderer
@@ -445,6 +468,14 @@ def worker(config):
                         "surface_size": [surface.get_width(), surface.get_height()],
                         "barb_sha256": digest.hexdigest(),
                         "barb_count": len(flat[0]) if flat is not None else 0,
+                        "barb_land_sha256": array_content_hash(
+                            (job.barb_land,)
+                            if getattr(job, "barb_land", None) is not None
+                            else None
+                        ),
+                        "streamlines_sha256": array_content_hash(
+                            getattr(job, "streamlines", None)
+                        ),
                     }
                 return surface
             finally:
@@ -615,6 +646,8 @@ def worker(config):
             "isobars": controller.settings.gribIsobarsVisible,
             "palette": controller.settings.chartPalette,
             "barb_density": controller.settings.gribBarbDensity,
+            "wind_style": controller.settings.get("gribWindStyle", "barbs"),
+            "wind_over_land": controller.settings.gribArrowOnGround,
             "isobar_interval": controller.settings.gribIsobarInterval,
             "marine_visible": canvas.marine.visible,
             "currents_visible": canvas.marine.currents_visible,
@@ -967,6 +1000,8 @@ def run(args):
         "weather_profiled": args.profile_weather,
         "ui_profiled": args.profile_ui,
         "weather_prefetch": args.weather_prefetch,
+        "wind_style": args.wind_style,
+        "wind_over_land": args.wind_over_land,
         "trackpad_step_px": args.trackpad_step_px,
         "mode": "offscreen" if args.offscreen else "native-grab",
         **{
@@ -1201,6 +1236,8 @@ def main():
     parser.add_argument("--synchronous-base-charts", action="store_true")
     parser.add_argument("--profile-weather", action="store_true")
     parser.add_argument("--profile-ui", action="store_true")
+    parser.add_argument("--wind-style", choices=("barbs", "streamlines"))
+    parser.add_argument("--wind-over-land", choices=("show", "hide"))
     parser.add_argument("--uncached-coverage-fields", action="store_true")
     parser.add_argument("--uncached-weather-passes", action="store_true")
     parser.add_argument("--legacy-weather-scheduling", action="store_true")

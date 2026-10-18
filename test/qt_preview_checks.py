@@ -3141,6 +3141,66 @@ class QtPreviewChecks(unittest.TestCase):
         canvas._dashboard_image()
         self.assertTrue(all(g.value is None for g in canvas.dashboard._gauges))
 
+    def test_wind_visibility_does_not_forget_prepared_weather(self):
+        canvas = self.window.map
+        with patch.object(canvas.wind, "forget") as forget:
+            canvas.set_wind_visible(False)
+            self.assertFalse(canvas.wind_visible)
+            canvas.set_wind_visible(True)
+            self.assertTrue(canvas.wind_visible)
+            forget.assert_not_called()
+
+    def test_land_checkbox_keeps_offshore_barbs_without_weather_rebuild(self):
+        canvas = self.window.map
+        canvas._center_lat, canvas._center_lon, canvas._zoom = 47.6, -122.4, 12
+        self.controller.core.grib_manager.gribs = [object()]
+        data = [[(0, 10, (47.6, -122.4)), (0, 10, (47.61, -122.41))]]
+        with (
+            patch.object(canvas.wind, "_load_wind", return_value=data) as load,
+            patch.object(canvas.wind, "_load_pressure", return_value=[]),
+            patch.object(
+                canvas.wind._land_mask,
+                "contains",
+                side_effect=lambda lat, lon: lat == 47.6,
+            ),
+        ):
+            panel = self.window.weather_panel
+            panel.on_ground.setChecked(True)
+            canvas._build_padded_layer(canvas._base_image)
+            deadline = time.monotonic() + 3
+            while canvas.wind._running and time.monotonic() < deadline:
+                self.drain()
+                time.sleep(0.001)
+            self.assertFalse(canvas.wind._running)
+
+            def geometry():
+                return canvas.wind.live_geometry_for_view(
+                    canvas,
+                    canvas.width(),
+                    canvas.height(),
+                    47.6,
+                    -122.4,
+                    12,
+                    density="all",
+                )[0]
+
+            all_barbs = geometry()
+            self.assertEqual(len(all_barbs[5][0]), 6)
+            frame = canvas.wind._states[canvas].frame
+            with patch.object(
+                canvas.wind, "_render", wraps=canvas.wind._render
+            ) as render:
+                panel.on_ground.setChecked(False)
+                canvas._build_padded_layer(canvas._base_image)
+                offshore = geometry()
+                self.assertEqual(len(offshore[5][0]), 3)
+                self.assertIs(canvas.wind._states[canvas].frame, frame)
+                panel.on_ground.setChecked(True)
+                canvas._build_padded_layer(canvas._base_image)
+                self.assertEqual(geometry(), all_barbs)
+                render.assert_not_called()
+            load.assert_called_once()
+
     def test_map_display_controls_are_independent_and_survive_restart(self):
         self.window.weather_panel.wind.toggle()
         self.window.dashboard_action.trigger()
@@ -3193,6 +3253,42 @@ class QtPreviewChecks(unittest.TestCase):
                 self.assertEqual(SettingsManager().gribBarbDensity, "all")
         self.window.views.setCurrentWidget(self.window.logs_view)
         self.assertEqual(panel.barb_density.currentData(), "all")
+
+    def test_weather_streamline_style_updates_render_key_and_persists(self):
+        from gweatherrouting.core.settings import SettingsManager
+
+        panel, canvas = self.window.weather_panel, self.window.map
+        before = canvas._wind_style_key()
+        with (
+            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+            patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
+            patch.object(self.controller.data, "redraw") as redraw,
+        ):
+            ORIGINAL_STORAGE_LOAD(self.controller.settings)
+            panel.wind_style.setCurrentIndex(panel.wind_style.findData("streamlines"))
+            self.assertEqual(self.controller.settings.gribWindStyle, "streamlines")
+            self.assertNotEqual(canvas._wind_style_key(), before)
+            self.assertTrue(panel.barb_density.isEnabled())
+            self.assertEqual(
+                panel.barb_density.itemText(panel.barb_density.findData("all")),
+                "Maximum",
+            )
+            sparse_key = canvas._wind_style_key()
+            panel.barb_density.setCurrentIndex(panel.barb_density.findData("dense"))
+            self.assertNotEqual(canvas._wind_style_key(), sparse_key)
+            self.assertEqual(self.controller.settings.gribBarbDensity, "dense")
+            redraw.assert_called()
+            with patch.object(Storage, "load_or_save_default", ORIGINAL_STORAGE_LOAD):
+                self.assertEqual(SettingsManager().gribWindStyle, "streamlines")
+            panel.wind_style.setCurrentIndex(panel.wind_style.findData("barbs"))
+            self.assertTrue(panel.barb_density.isEnabled())
+            self.assertEqual(
+                panel.barb_density.itemText(panel.barb_density.findData("all")),
+                "All forecast points",
+            )
+            barbs_key = canvas._wind_style_key()
+            panel.barb_density.setCurrentIndex(panel.barb_density.findData("sparse"))
+            self.assertEqual(canvas._wind_style_key(), barbs_key)
 
     def test_weather_panel_controls_and_layout_survive_restart(self):
         self.window.weather_action.trigger()

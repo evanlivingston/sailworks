@@ -18,6 +18,46 @@ from gweatherrouting.rendering.windpainter import (
 
 
 class TestLiveWindBarbs(unittest.TestCase):
+    def test_land_toggle_only_removes_symbols_after_thinning_and_count_cap(self):
+        lons, lats = np.meshgrid(np.linspace(-1, 1, 50), np.linspace(-1, 1, 50))
+        flat = (np.zeros(2500), np.full(2500, 1.0), lats.ravel(), lons.ravel())
+        land = np.arange(2500) % 3 == 0
+        for step, maximum in ((44, 900), (16, 20), (0, None)):
+            shown, count = WindPainter.live_geometry_for_view(
+                flat, 0, 0, 9, 1000, 1000, step=step, max_count=maximum
+            )
+            hidden, hidden_count = WindPainter.live_geometry_for_view(
+                flat,
+                0,
+                0,
+                9,
+                1000,
+                1000,
+                step=step,
+                max_count=maximum,
+                land_mask=land,
+            )
+            shown_lines = set(shown[0][0])  # <2.5 kt: shafts only
+            hidden_lines = set(hidden[0][0])
+            self.assertTrue(hidden_lines < shown_lines)
+            self.assertLess(hidden_count, count)
+            # Legacy callable masking obeys the same post-selection ordering.
+            lookup = dict(zip(zip(flat[2], flat[3]), land))
+            legacy, legacy_count = WindPainter.live_geometry_for_view(
+                flat,
+                0,
+                0,
+                9,
+                1000,
+                1000,
+                step=step,
+                max_count=maximum,
+                hide_on_ground=True,
+                on_ground=lambda lat, lon: lookup[lat, lon],
+            )
+            self.assertEqual(legacy, hidden)
+            self.assertEqual(legacy_count, hidden_count)
+
     def test_density_presets_add_detail_and_all_points_has_no_count_cap(self):
         side = 100
         lons, lats = np.meshgrid(np.linspace(-1, 1, side), np.linspace(-1, 1, side))
