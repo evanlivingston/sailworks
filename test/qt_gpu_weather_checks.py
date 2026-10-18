@@ -62,6 +62,9 @@ class NumericalMapChecks(Fixture):
             lambda: not gpu.scene.frame.wind and gpu.scene.frame.raster_wind is None
         )
         atlas = gpu.scene.frame.numerical_wind[0]
+        stats = gpu.weather.band_cache_statistics()
+        self.assertGreater(stats["peak_bytes"], 0)
+        self.assertLessEqual(stats["peak_bytes"], stats["limit_bytes"])
         requests = gpu.scene.weather_provider.requests
         for seconds in (61, 900, 3599, 5400, 10799):
             canvas.time_control.set_time(START + timedelta(seconds=seconds))
@@ -153,6 +156,7 @@ class NumericalMapChecks(Fixture):
         gpu.close()
         thread.join(5)
         self.assertFalse(thread.is_alive())
+        self.assertEqual(gpu.weather.band_cache_statistics()["current_bytes"], 0)
 
 
 if __name__ == "__main__":

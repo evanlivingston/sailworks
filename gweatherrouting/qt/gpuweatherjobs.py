@@ -10,6 +10,10 @@ from gweatherrouting.core.grib import Grib
 from gweatherrouting.core.gribsampling import WeatherSampler
 from gweatherrouting.core.routingjob import freeze_wind_sources
 from gweatherrouting.rendering.weatherbarbs import BarbView, stage_barbs
+from gweatherrouting.rendering.weathercache import (
+    DecodedBandCache,
+    DisplayWeatherSource,
+)
 from gweatherrouting.rendering.windrenderer import WindLandMask
 
 logger = logging.getLogger("gweatherrouting")
@@ -34,6 +38,7 @@ def source_key(source):
 
 
 class WeatherStager(QObject):
+    BAND_BYTE_LIMIT = 128 * 1024 * 1024
     changed = Signal()
     completed = Signal(object, object, str)
 
@@ -48,7 +53,14 @@ class WeatherStager(QObject):
         self._active = None
         self._prepared = None
         self._thread = None
+        self._release_requested = False
+        self._band_stats = {}
         self.completed.connect(self._accept)
+
+    def band_cache_statistics(self):
+        """Completed-request snapshot only; no worker handles/arrays cross threads."""
+        with self._condition:
+            return dict(self._band_stats)
 
     def request(self, canvas):
         if self.closed:
@@ -108,8 +120,10 @@ class WeatherStager(QObject):
         with self._condition:
             self._pending = None
             self._prepared = None
+            self._release_requested = True
             if self._active is not None:
                 self._active[3].set()
+            self._condition.notify()
 
     @Slot(object, object, str)
     def _accept(self, key, atlas, error):
@@ -127,17 +141,31 @@ class WeatherStager(QObject):
         providers = []
         signature = None
         sampler = None
+        band_cache = DecodedBandCache(self.BAND_BYTE_LIMIT)
         land = WindLandMask()
         try:
             while True:
                 with self._condition:
                     self._condition.wait_for(
-                        lambda: self.closed or self._pending is not None
+                        lambda: self.closed
+                        or self._pending is not None
+                        or self._release_requested
                     )
                     if self.closed:
                         return
-                    request, self._pending = self._pending, None
-                    self._active = request
+                    if self._release_requested:
+                        self._release_requested = False
+                        request = None
+                    else:
+                        request, self._pending = self._pending, None
+                        self._active = request
+                if request is None:
+                    for provider in providers:
+                        provider.close()
+                    providers, sampler, signature = [], None, None
+                    with self._condition:
+                        self._band_stats = band_cache.statistics()
+                    continue
                 key, stamp, sources, cancel = request
                 atlas, error = None, ""
                 try:
@@ -152,7 +180,7 @@ class WeatherStager(QObject):
                             if source_key(source)[-1] != expected:
                                 raise ValueError("Forecast file changed before staging")
                             providers.append(
-                                Grib(
+                                DisplayWeatherSource(
                                     source.path,
                                     source.name,
                                     source.centre,
@@ -160,6 +188,7 @@ class WeatherStager(QObject):
                                     source.start_time,
                                     source.last_forecast,
                                     source.model_name,
+                                    band_cache=band_cache,
                                 )
                             )
                         if not cancel.is_set():
@@ -167,15 +196,6 @@ class WeatherStager(QObject):
                             if len(sampler.indices) != len(providers):
                                 raise ValueError(
                                     "A selected weather source is unavailable"
-                                )
-                            # Bound potential six-band-per-source float64 caches.
-                            estimate = sum(
-                                i.width * i.height * 8 * min(6, i.dataset.RasterCount)
-                                for i in sampler.indices
-                            )
-                            if estimate > 128 * 1024 * 1024:
-                                raise ValueError(
-                                    "Selected forecasts exceed GPU worker band budget"
                                 )
                             signature = key[1]
                     if not cancel.is_set() and sampler is not None:
@@ -188,6 +208,7 @@ class WeatherStager(QObject):
                 except Exception as exc:
                     error = str(exc)
                 with self._condition:
+                    self._band_stats = band_cache.statistics()
                     self._active = None
                     if (
                         atlas is not None
@@ -207,6 +228,8 @@ class WeatherStager(QObject):
         finally:
             for provider in providers:
                 provider.close()
+            with self._condition:
+                self._band_stats = band_cache.statistics()
             land.contains.cache_clear()
             land._prepared.clear()
             land._tiles.clear()

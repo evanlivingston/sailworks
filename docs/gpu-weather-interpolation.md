@@ -45,6 +45,13 @@ are unchanged. There is no claim of instant scrubbing or measured power savings.
   during that handoff. Source fingerprints include file identity, size and modification
   time, checked before opening and after staging. Shutdown cancels without
   blocking the GUI on a GDAL read.
+- `rendering/weathercache.py` gives those private workers one byte-accounted
+  decoded-band LRU across selected sources. The 128 MiB retained-array limit is
+  enforced on demand, rather than rejecting every source's possible six-band
+  cache up front. Oversized bands fail before reading and propagate to worker
+  CPU fallback, never to the sampler's missing-value/source fallback. Invalidation
+  releases idle private handles/arrays on the worker; active cancellation waits
+  for worker ownership to end, without joining the GUI thread.
 - `WeatherBarbs.qml` uses a single bounded mesh, not a QML item per symbol or a
   full-screen neighborhood search per fragment. The vertex shader interpolates
   U/V; the fragment shader draws shafts, calm circles, pennants and feathers
@@ -61,22 +68,32 @@ are unchanged. There is no claim of instant scrubbing or measured power savings.
   background jobs still invalidate them. Time-sensitive route/navigation
   overlays continue updating. Active marine layers keep their original path.
 
-Staging limits are 262,144 candidate native nodes, 8,192 atlas cells, a potential
+Staging limits are 262,144 candidate native nodes, 8,192 atlas cells, a retained
 128 MiB decoded-band cache and 32 MiB atlas images per map. Wind above 250 m/s
 falls back rather than silently clipping the shader's bounded symbol geometry.
 These are explicit resource envelopes, not measurements of total RSS or VRAM.
 
-### Known real-forecast limitation
+### Real-forecast eligibility: historical failure and residency follow-up
 
 The manual application launch with the user's selected forecasts on October 17,
 2026 repeatedly logged `Selected forecasts exceed GPU worker band budget`.
 That session used CPU fallback for wind symbols; it did **not** demonstrate the
-new numerical shader on those forecasts. The current guard conservatively sums
-the potential six-band cache across all selected sources, rather than budgeting
-only bands resident for the active interval. Repeated requests can retry and
-repeat the warning. A bounded on-demand band-residency design and retry
-suppression remain follow-up work. Do not raise/remove the memory guard merely
-to label this workload GPU-accelerated.
+new numerical shader on those forecasts. The residency follow-up replaces that
+potential-cache rejection with bounded on-demand ownership, without raising the
+128 MiB limit or changing routing/shared sampler behavior.
+
+The [residency report](gpu-weather-residency.md) records numerical shader
+activation on a versioned functional fixture with the same 33 forecasts and saved
+scene: 734 symbols, ready shader, no CPU symbol batches/raster, about 61 KB
+retained decoded arrays. It is not a matched before/after speedup experiment.
+The original full snapshot is incomplete; the derived fixture omits 370 missing
+marine download-cache files and has a distinct content hash.
+
+Pan fluidity is **not** fixed: the functional pan replay used CPU symbols during
+all 24 moving frames and numerical symbols after settling. Exact-view atlas
+restaging remains a separate bottleneck. Unsupported resource workloads can
+still retry/warn on changed request times; interval-scoped retry suppression and
+long-session memory plateau remain follow-ups.
 
 ## Validation
 
