@@ -17,9 +17,12 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 
 import datetime
 import logging
+import math
 import re
 from functools import lru_cache
 from typing import Optional, Tuple
+
+import numpy as np
 
 from .gribsampling import GridIndex, WeatherSampler, number
 
@@ -222,10 +225,27 @@ class Grib(weatherrouting.Grib):
         return self._sampler
 
     def get_pressure(self, tt, bounds):
-        return self.sampler().grid("pressure", tt, bounds) or None
+        result = self.sampler().grid("pressure", tt, bounds)
+        if result is None:
+            return None
+        lats, lons, values = result
+        return [
+            (float(lat), float(lon), float(val))
+            for lat, lon, val in zip(lats, lons, values)
+        ]
 
     def get_wind(self, tt, bounds):
-        return self.sampler().grid("wind", tt, bounds)
+        result = self.sampler().grid("wind", tt, bounds)
+        if result is None:
+            return None
+        dirs, spds, lats, lons = result
+        dirs_rad = np.radians(dirs)
+        u = -spds * np.sin(dirs_rad)
+        v = -spds * np.cos(dirs_rad)
+        return [
+            (float(lat), float(lon), float(u_val), float(v_val))
+            for lat, lon, u_val, v_val in zip(lats, lons, u, v)
+        ]
 
     def close(self):
         if "_sampling" in self.__dict__:

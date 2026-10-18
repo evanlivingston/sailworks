@@ -74,28 +74,54 @@ def _speed_bucket(wspeed):
     return bucket if bucket < len(_BUCKET_COLORS) else len(_BUCKET_COLORS) - 1
 
 
-def flatten_wind_columns(data):
+def flatten_wind_columns(columns):
     """Flatten barb columns into numpy vectors for cheap per-frame reprojection.
 
-    Columns hold ``(direction, speed, (lat, lon))`` tuples. Returns
-    ``(dirs, speeds, lats, lons)`` or ``None`` when there is nothing to draw.
+    Accepts either:
+    * Array-columns from grid(): (lon, lats_array, dirs_array, speeds_array)
+    * Tuple-columns: list of columns, each column is list of
+      (dir, speed, (lat, lon)) tuples
+    Returns ``(dirs, speeds, lats, lons)`` or ``None`` when there is nothing
+    to draw.
     """
-    if not data:
+    if not columns:
         return None
-    points = [point for column in data for point in column]
-    if not points:
-        return None
-    dirs, speeds, coordinates = zip(*points)
-    lats, lons = zip(*coordinates)
-    return (
-        np.array(dirs, dtype=np.float64),
-        np.array(speeds, dtype=np.float64),
-        np.array(lats, dtype=np.float64),
-        np.array(lons, dtype=np.float64),
-    )
+    first = columns[0]
+    if isinstance(first, tuple) and len(first) >= 3 and hasattr(first[1], "shape"):
+        # Array-columns: (lon, lats_array, dirs_array, speeds_array)
+        all_lats = np.concatenate([col[1] for col in columns])
+        all_lons = np.concatenate(
+            [np.full(len(col[1]), col[0], dtype=np.float64) for col in columns]
+        )
+        all_dirs = np.concatenate([col[2] for col in columns])
+        all_speeds = np.concatenate([col[3] for col in columns])
+    else:
+        # Tuple-columns: list of columns, each column is list of point tuples
+        points = [point for column in columns for point in column]
+        if not points:
+            return None
+        dirs, speeds, coordinates = zip(*points)
+        lats, lons = zip(*coordinates)
+        all_lats = np.array(lats, dtype=np.float64)
+        all_lons = np.array(lons, dtype=np.float64)
+        all_dirs = np.array(dirs, dtype=np.float64)
+        all_speeds = np.array(speeds, dtype=np.float64)
+    return (all_dirs, all_speeds, all_lats, all_lons)
 
 
-def mercator_project_flat(lats, lons, center_lat, center_lon, zoom, width, height):
+def mercator_project_nodes(lats, lons, zoom):
+    """View-independent world pixels, with the reference projection arithmetic."""
+    tile = (2.0**zoom) * 256.0
+    px = (lons + 180.0) / 360.0 * tile
+    lat_clipped = np.clip(lats, -85.051129, 85.051129)
+    lat_rad = np.radians(lat_clipped)
+    py = (1.0 - np.log(np.tan(lat_rad) + 1.0 / np.cos(lat_rad)) / math.pi) / 2.0 * tile
+    return px, py
+
+
+def mercator_project_flat(
+    lats, lons, center_lat, center_lon, zoom, width, height, projected=None
+):
     """Project vectors to screen pixels for an explicit viewport size.
 
     Used by foreground overlays whose canvas reports a padded allocation
@@ -110,10 +136,9 @@ def mercator_project_flat(lats, lons, center_lat, center_lon, zoom, width, heigh
         / 2.0
         * tile
     )
-    px = (lons + 180.0) / 360.0 * tile
-    lat_clipped = np.clip(lats, -85.051129, 85.051129)
-    lat_rad = np.radians(lat_clipped)
-    py = (1.0 - np.log(np.tan(lat_rad) + 1.0 / np.cos(lat_rad)) / math.pi) / 2.0 * tile
+    px, py = (
+        mercator_project_nodes(lats, lons, zoom) if projected is None else projected
+    )
     return px - cx + width / 2.0, py - cy + height / 2.0
 
 
@@ -380,6 +405,8 @@ class WindPainter:
         on_ground=None,
         step=BARB_MIN_SPACING_PX,
         max_count=BARB_MAX_COUNT,
+        land_mask=None,
+        projected=None,
     ):
         """Toolkit-independent live barb geometry for an explicit viewport.
 
@@ -393,7 +420,7 @@ class WindPainter:
         if len(dirs) == 0:
             return {}, 0
         xxs, yys = mercator_project_flat(
-            lats, lons, center_lat, center_lon, zoom, width, height
+            lats, lons, center_lat, center_lon, zoom, width, height, projected=projected
         )
         xxs = np.asarray(xxs, dtype=np.float64)
         yys = np.asarray(yys, dtype=np.float64)
@@ -411,11 +438,6 @@ class WindPainter:
         idx = np.flatnonzero(visible)
         if len(idx) == 0:
             return {}, 0
-        if hide_on_ground and on_ground is not None:
-            idx = np.array(
-                [i for i in idx if not on_ground(float(lats[i]), float(lons[i]))],
-                dtype=np.int64,
-            )
         # Select one native sample per cell in NumPy, avoiding a Python
         # loop over every visible model node during each gesture tick.
         kept_arr = idx
@@ -431,6 +453,15 @@ class WindPainter:
             kept_arr = kept_arr[
                 np.linspace(0, len(kept_arr) - 1, max_count, dtype=np.int64)
             ]
+        # Mask after both density thinning and the count cap: hiding land must
+        # never replace a selected symbol with a different forecast sample.
+        if land_mask is not None:
+            kept_arr = kept_arr[~land_mask[kept_arr]]
+        elif hide_on_ground and on_ground is not None:
+            kept_arr = np.array(
+                [i for i in kept_arr if not on_ground(float(lats[i]), float(lons[i]))],
+                dtype=np.int64,
+            )
         kxx, kyy = xxs[kept_arr], yys[kept_arr]
         kdirs, kspeeds = dirs[kept_arr], speeds[kept_arr]
         geometry = WindPainter.build_barb_geometry(kxx, kyy, kdirs, kspeeds)

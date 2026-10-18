@@ -40,7 +40,22 @@ class WeatherPanel(QWidget):
             lambda enabled: active_map().set_wind_visible(enabled)
         )
         controls.addWidget(self.wind)
-        self.on_ground = self.checkbox("Wind arrows over land", "gribArrowOnGround")
+        self.wind_style = QComboBox()
+        self.wind_style.addItem("Barbs", "barbs")
+        self.wind_style.addItem("Streamlines", "streamlines")
+        self.wind_style.setToolTip(
+            "Static forecast-flow curves with direction chevrons, or native-point wind barbs. No particle animation."
+        )
+        self.wind_style.setCurrentIndex(
+            max(0, self.wind_style.findData(controller.settings.gribWindStyle))
+        )
+        self.wind_style.currentIndexChanged.connect(
+            lambda _index: self.set_preference(
+                "gribWindStyle", self.wind_style.currentData()
+            )
+        )
+        controls.addWidget(self.wind_style)
+        self.on_ground = self.checkbox("Show wind over land", "gribArrowOnGround")
         controls.addWidget(self.on_ground)
         form = QFormLayout()
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
@@ -50,16 +65,13 @@ class WeatherPanel(QWidget):
         for key, label, _spacing in BARB_DENSITIES:
             self.barb_density.addItem(label, key)
         self.barb_density.setCurrentIndex(self.density_index())
-        self.barb_density.setToolTip(
-            "Choose how many wind barbs to display. All forecast points shows "
-            "every visible sample without a symbol-count cap."
-        )
+        self.refresh_density_labels()
         self.barb_density.currentIndexChanged.connect(
             lambda _index: self.set_preference(
                 "gribBarbDensity", self.barb_density.currentData()
             )
         )
-        form.addRow("Barb density", self.barb_density)
+        form.addRow("Density", self.barb_density)
         controls.addLayout(form)
         controls.addWidget(section_label("Isobars"))
         self.isobars = self.checkbox("Show isobars", "gribIsobarsVisible")
@@ -129,10 +141,28 @@ class WeatherPanel(QWidget):
         index = self.barb_density.findData(self.controller.settings.gribBarbDensity)
         return index if index >= 0 else self.barb_density.findData("standard")
 
+    def refresh_density_labels(self):
+        streamlines = self.controller.settings.gribWindStyle == "streamlines"
+        for index, (key, label, _spacing) in enumerate(BARB_DENSITIES):
+            self.barb_density.setItemText(
+                index, "Maximum" if streamlines and key == "all" else label
+            )
+        self.barb_density.setToolTip(
+            "Choose streamline spacing. Denser settings add paths; Maximum remains capped for responsiveness."
+            if streamlines
+            else "Choose how many wind barbs to display. All forecast points shows every visible sample without a symbol-count cap."
+        )
+
     def refresh(self):
+        self.wind_style.blockSignals(True)
+        self.wind_style.setCurrentIndex(
+            max(0, self.wind_style.findData(self.controller.settings.gribWindStyle))
+        )
+        self.wind_style.blockSignals(False)
         self.barb_density.blockSignals(True)
         self.barb_density.setCurrentIndex(self.density_index())
         self.barb_density.blockSignals(False)
+        self.refresh_density_labels()
         for widget, value in (
             (self.wind, self.active_map().wind_visible),
             (self.on_ground, self.controller.settings.gribArrowOnGround),

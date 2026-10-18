@@ -152,6 +152,126 @@ class TestMarineDisplay(unittest.TestCase):
         job.cancel.set()
         self.assertIsNone(MarineRenderer()._render(job))
 
+    def test_station_only_render_skips_land_work_and_preserves_pixels(self):
+        original = dataset()
+        value = replace(
+            original,
+            station=replace(original.station, latitude=49.5, longitude=-125.5),
+            series=original.series
+            + (Series("water_level", "m", (Sample(START, 2.5, "2"),)),),
+        )
+        self.manager.add(value)
+        self.manager.enable(value.id)
+        job = self.job()
+        renderer = MarineRenderer()
+        reference = cairo.ImageSurface(
+            cairo.FORMAT_ARGB32, job.viewport.width, job.viewport.height
+        )
+        # The old path cleared a transparent field layer, then drew stations.
+        land = cairo.ImageSurface(
+            cairo.FORMAT_A8, job.viewport.width, job.viewport.height
+        )
+        land_cr = cairo.Context(land)
+        land_cr.set_source_rgba(1, 1, 1, 1)
+        land_cr.paint()
+        cr = cairo.Context(reference)
+        renderer._land_mask.clear(cr, land)
+        renderer._stations(cr, job.charts[0][0], job.viewport, job.palette, job.cancel)
+        reference.flush()
+        self.assertTrue(any(bytes(reference.get_data())))
+        with patch.object(
+            renderer._land_mask,
+            "surface",
+            side_effect=AssertionError("no field mask needed"),
+        ):
+            actual = renderer._render(job)
+        self.assertEqual(bytes(actual.get_data()), bytes(reference.get_data()))
+
+    def test_nonempty_fields_still_prepare_and_apply_shoreline_mask(self):
+        renderer = MarineRenderer()
+        job = self.job((field(),))
+        land = cairo.ImageSurface(
+            cairo.FORMAT_A8, job.viewport.width, job.viewport.height
+        )
+        with (
+            patch.object(renderer._land_mask, "surface", return_value=land) as surface,
+            patch.object(
+                renderer._land_mask, "clear", wraps=renderer._land_mask.clear
+            ) as clear,
+        ):
+            self.assertIsInstance(renderer._render(job), cairo.ImageSurface)
+        surface.assert_called_once_with(job.viewport)
+        clear.assert_called_once()
+
+    def test_cancelled_empty_fields_return_no_frame_without_land_work(self):
+        renderer = MarineRenderer()
+        job = self.job()
+        job.cancel.set()
+        with patch.object(
+            renderer._land_mask,
+            "surface",
+            side_effect=AssertionError("no field mask needed"),
+        ):
+            self.assertIsNone(renderer._render(job))
+
+    def test_benchmark_control_preserves_fields_stations_and_retina_pixels(self):
+        # Inline copy of the pre-optimization _render for comparison.
+        def marine_render(renderer, job):
+            import cairo
+
+            from gweatherrouting.core.marine.fields import FieldSelection
+            from gweatherrouting.rendering.marinemaplayer import arrow
+
+            sources = job.charts[0][0]
+            instant = job.palette
+            view = job.viewport
+            surface = cairo.ImageSurface(
+                cairo.FORMAT_ARGB32, view.width * job.factor, view.height * job.factor
+            )
+            surface.set_device_scale(job.factor, job.factor)
+            cr = cairo.Context(surface)
+            land = renderer._land_mask.surface(view)
+            selection = FieldSelection(sources.fields)
+            for y in range(28, view.height, 64):
+                if job.cancel.is_set():
+                    return None
+                for x in range(28, view.width, 64):
+                    if renderer._land_mask.contains(land, x, y):
+                        continue
+                    lat, lon = view.convert_screen_to_geographic(x, y).get_degrees()
+                    result = selection.sample(lat, lon, instant)
+                    if result.status != "available":
+                        continue
+                    arrow(cr, x, y, *result.values)
+            renderer._land_mask.clear(cr, land)
+            renderer._stations(cr, sources, view, instant, job.cancel)
+            surface.flush()
+            return None if job.cancel.is_set() else surface
+
+        original = dataset()
+        value = replace(
+            original, station=replace(original.station, latitude=49.5, longitude=-125.5)
+        )
+        self.manager.add(value)
+        self.manager.enable(value.id)
+        for fields in ((), (field(),), (field(masked=True),)):
+            for factor in (1, 2):
+                job = self.job(fields)
+                job.factor = factor
+                renderer = MarineRenderer()
+                land = cairo.ImageSurface(
+                    cairo.FORMAT_A8, job.viewport.width, job.viewport.height
+                )
+                with patch.object(renderer._land_mask, "surface", return_value=land):
+                    expected = marine_render(renderer, job)
+                    actual = renderer._render(job)
+                    self.assertEqual(
+                        bytes(actual.get_data()), bytes(expected.get_data())
+                    )
+                    job.cancel.set()
+                    self.assertIsNone(marine_render(renderer, job))
+                    self.assertIsNone(renderer._render(job))
+
     def test_source_changes_refresh_display_and_retire_old_snapshots(self):
         layer = MarineMapLayer(self.manager, self.clock)
         old = layer.sources
