@@ -37,6 +37,7 @@ class SessionController(QObject):
         load_charts=True,
         map_renderer=None,
         early_weather=False,
+        gpu_resident_fields=False,
     ):
         super().__init__(parent)
         if map_renderer not in (None, "cpu", "gpu"):
@@ -44,6 +45,7 @@ class SessionController(QObject):
         self.offline = offline
         self.load_charts = load_charts
         self.early_weather = early_weather
+        self.gpu_resident_fields = gpu_resident_fields
         self.scheduler = UiScheduler(self)
         self.core = Core(
             schedule=self.scheduler.submit,

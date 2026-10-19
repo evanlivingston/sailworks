@@ -69,7 +69,11 @@ class GpuPresenter(QObject):
         if os.environ.get("GWR_GPU_WEATHER") == "1":
             from .gpuweatherjobs import WeatherStager
 
-            self.weather = WeatherStager(self)
+            resident_fields = (
+                bool(getattr(canvas.controller, "gpu_resident_fields", False))
+                or os.environ.get("GWR_GPU_RESIDENT_FIELDS") == "1"
+            )
+            self.weather = WeatherStager(self, resident_fields=resident_fields)
             self.weather.changed.connect(self.request)
         self.widget = QQuickWidget(canvas)
         self.widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)

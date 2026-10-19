@@ -40,6 +40,7 @@ class BarbAtlas:
     pair: "WeatherTexturePair"
     anchors: tuple
     count: int
+    identity: object = None
 
     @property
     def images(self):
@@ -86,14 +87,29 @@ def _off_land(chosen, ids, points, view, land_mask, cancel):
     return chosen[np.asarray(keep, dtype=bool)]
 
 
-def stage_barbs(sampler, stamp, view, land_mask, cancel=lambda: False):
+def stage_barbs(
+    sampler,
+    stamp,
+    view,
+    land_mask,
+    cancel=lambda: False,
+    *,
+    store=None,
+    source=None,
+):
     """Select the same native nodes/cells/count budget as the CPU foreground.
 
     Only standard density modes with a finite cell size are supported. No
     resampled screen-grid approximation is substituted for native samples.
+
+    When a ``store`` is supplied the staged field is retained under its
+    stable identity: source, parameter, resident time window, spatial window
+    and resolution.  A field that is still resident is published again by
+    reference, so a time change inside the window and a return to a window
+    that is still resident cost no re-decode, no re-encode and no upload.
     """
     from gweatherrouting.qt.gpuweather import encode_component
-    from gweatherrouting.rendering.weatherstaging import StagedWind
+    from gweatherrouting.rendering.weatherstaging import StagedWind, time_window
 
     step, cap = barb_density_parameters(view.density)
     if step <= 0:
@@ -114,6 +130,22 @@ def stage_barbs(sampler, stamp, view, land_mask, cancel=lambda: False):
             view._x_to_lon(cx + view.width / 2 + margin),
         ),
     )
+    identity = None
+    if store is not None:
+        from gweatherrouting.qt.gpuweatherfields import FieldIdentity
+
+        before, after = time_window(sampler, stamp)
+        identity = FieldIdentity(
+            source=source,
+            parameter="wind",
+            before=before,
+            after=after,
+            window=bounds,
+            resolution=(rows, cols),
+        )
+        resident = store.acquire(identity)
+        if resident is not None:
+            return resident
     points = _native_points(sampler, bounds, cancel)
     if points is None:
         return None
@@ -176,9 +208,17 @@ def stage_barbs(sampler, stamp, view, land_mask, cancel=lambda: False):
     atlas_stage = StagedWind(staged.before, staged.after, a, b, ())
     if cancel():
         return None
-    return BarbAtlas(
+    atlas = BarbAtlas(
         atlas_stage,
         atlas_stage.texture_pair(),
         (encode_component(ax), encode_component(ay)),
         len(selected),
+        identity,
     )
+    if store is not None:
+        from gweatherrouting.qt.gpuweatherfields import ResidentField
+
+        store.store(
+            ResidentField(identity, atlas, (atlas_stage.first, atlas_stage.second))
+        )
+    return atlas

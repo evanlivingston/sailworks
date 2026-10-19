@@ -23,6 +23,14 @@ def main(argv=None):
         action="store_true",
         help="Do not open saved instrument connections",
     )
+    parser.add_argument(
+        "--gpu-resident-fields",
+        action="store_true",
+        help=(
+            "Experimental: keep decoded numerical fields resident in the GPU "
+            "presenter under a stable identity, with an explicit budget"
+        ),
+    )
     args = parser.parse_args(argv)
     try:
         from PySide6.QtWidgets import QApplication
@@ -42,6 +50,7 @@ def main(argv=None):
         offline=args.offline,
         map_renderer=args.map_renderer,
         early_weather=args.early_weather,
+        gpu_resident_fields=args.gpu_resident_fields,
     )
     window = PreviewWindow(controller)
     app.aboutToQuit.connect(window.workspace.close)

@@ -8,11 +8,17 @@ Images must be sampled with nearest filtering and decoded *before* blending.
 
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
 from threading import Lock
 
 import numpy as np
 from PySide6.QtGui import QImage
 from PySide6.QtQuick import QQuickImageProvider
+
+
+def _digest(image):
+    """A stable digest of the bytes an image serves."""
+    return hashlib.sha256(image.constBits().tobytes()).hexdigest()[:16]
 
 
 def encode_component(values):
@@ -88,6 +94,12 @@ class WeatherImageProvider(QQuickImageProvider):
     Publish on the GUI thread; requestImage may execute on a Qt loader thread.
     Only one pair is retained. URLs change only when a new pair is published,
     never when the time uniform changes. Reject oversized pairs before use.
+
+    A named publication keeps the pair under a stable key instead of replacing
+    it: the URLs of a resident field do not change, so a field that is still
+    resident is not uploaded again.  The retained pairs share their pixels
+    with the field store that owns them, so the accounted bytes are counted
+    once.
     """
 
     def __init__(self, byte_limit=32 * 1024 * 1024):
@@ -97,17 +109,32 @@ class WeatherImageProvider(QQuickImageProvider):
         self._generation = 0
         self._images = {}
         self.requests = 0
+        self.publishes = 0
 
-    def publish(self, pair):
+    def publish(self, pair, key=None):
+        """Publish ``pair`` and return the URLs of its images.
+
+        Without a key the historical generation scheme is used: every
+        publication replaces the retained pair and every URL changes.  With a
+        key the URLs are derived from the bytes they serve, so the same field
+        always publishes the same URLs and an image that is already resident
+        on the GPU is never uploaded a second time.
+        """
         if pair.nbytes > self.byte_limit:
             raise ValueError("Weather pair exceeds staging memory budget")
         with self._lock:
-            self._generation += 1
+            self.publishes += 1
+            if key is None:
+                self._generation += 1
+                names = [
+                    f"{self._generation}/{index}" for index in range(len(pair.images))
+                ]
+            else:
+                names = [f"{key}/{_digest(image)}" for image in pair.images]
             self._images = {
-                f"{self._generation}/{i}": QImage(image)
-                for i, image in enumerate(pair.images)
+                name: QImage(image) for name, image in zip(names, pair.images)
             }
-            return tuple(f"image://weather/{key}" for key in self._images)
+            return tuple(f"image://weather/{name}" for name in names)
 
     def clear(self):
         with self._lock:
