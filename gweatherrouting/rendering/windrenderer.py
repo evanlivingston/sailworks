@@ -622,30 +622,22 @@ class WindOverlayRenderer(OverlayRenderer):
         south, north = sorted((south, north))
         kept: list[tuple[Any, ...]] = []
         for column in columns:
-            lon, col_lats, col_dirs, col_speeds = column[:4]
-            if field == "wind":
-                mask = (
-                    (col_lats >= south - 1e-7)
-                    & (col_lats <= north + 1e-7)
-                    & (lon >= west - 1e-7)
-                    & (lon <= east + 1e-7)
-                )
-            else:
-                _, col_lats, col_vals = column
-                mask = (
-                    (col_lats >= south - 1e-7)
-                    & (col_lats <= north + 1e-7)
-                    & (lon >= west - 1e-7)
-                    & (lon <= east + 1e-7)
-                )
+            lon = float(column[0])
+            col_lats = column[1]
+            # A view may cross the antimeridian; the wrapped longitude is the
+            # one that falls inside the requested extent.
+            wrapped = lon
+            if wrapped < west - 1e-7 and wrapped + 360 <= east + 1e-7:
+                wrapped += 360
+            if not west - 1e-7 <= wrapped <= east + 1e-7:
+                continue
+            mask = (col_lats >= south - 1e-7) & (col_lats <= north + 1e-7)
             if not mask.any():
                 continue
             if field == "wind":
-                kept.append(
-                    (float(lon), col_lats[mask], col_dirs[mask], col_speeds[mask])
-                )
+                kept.append((lon, col_lats[mask], column[2][mask], column[3][mask]))
             else:
-                kept.append((float(lon), col_lats[mask], col_vals[mask]))
+                kept.append((lon, col_lats[mask], column[2][mask]))
         return kept
 
     def _contained_columns(self, job, kind, field, bounds):
@@ -656,12 +648,21 @@ class WindOverlayRenderer(OverlayRenderer):
             columns = self._field_cache.get(key)
             if columns is None:
                 continue
-            # Exact bounds match only: grid() handles rounded-bounds reuse.
-            if key[4] != bounds:
+            if kind != "native":
+                # Resampled grids depend on their exact bounds (regular
+                # linspace); containment would serve the wrong grid.
+                if key[4] != bounds:
+                    continue
+                self._field_cache.move_to_end(key)
+                self.field_cache_metrics["hits"] += 1
+                return columns
+            if not self._bounds_contain(key[4], bounds):
                 continue
             self._field_cache.move_to_end(key)
             self.field_cache_metrics["hits"] += 1
-            return columns
+            # A wider cached extent still answers the request, but only the
+            # requested points are returned, so nothing leaks in from outside.
+            return self._filter_columns(columns, field, bounds)
         return None
 
     @staticmethod
@@ -702,15 +703,18 @@ class WindOverlayRenderer(OverlayRenderer):
         north = min(rn, cn)
         if west >= east or south >= north:
             return [rect]
+        # Four bands around the cover. They tile the remainder exactly: the
+        # two full-width bands and the two side bands meet at the corners
+        # without leaving a gap or overlapping.
         pieces = []
-        if rw < west:
-            pieces.append(((rs, rw), (rn, west)))
-        if east < re:
-            pieces.append(((rs, east), (rn, re)))
         if rs < south:
-            pieces.append(((rs, west), (south, east)))
+            pieces.append(((rs, rw), (south, re)))
         if north < rn:
-            pieces.append(((north, west), (rn, east)))
+            pieces.append(((north, rw), (rn, re)))
+        if rw < west:
+            pieces.append(((south, rw), (north, west)))
+        if east < re:
+            pieces.append(((south, east), (north, re)))
         return pieces
 
     def _uncovered_rects(self, bounds, covers):
@@ -741,20 +745,142 @@ class WindOverlayRenderer(OverlayRenderer):
                 self._trim_decoded(resources, job)
                 return self._columns(data, field)
             bounds = self._viewport_bounds(job)
-            # grid() has its own rounded-bounds cache, so repeated or nearby
-            # pan steps return instantly without re-sampling.
-            data = sampler.grid(field, job.palette[0], bounds, job.cancel.is_set)
-            self._trim_decoded(resources, job)
-            if data is None:
+            if not self._field_cache_enabled:
+                data = sampler.grid(field, job.palette[0], bounds, job.cancel.is_set)
+                self._trim_decoded(resources, job)
+                return self._columns(data, field) if data is not None else []
+            cached = self._contained_columns(job, "native", field, bounds)
+            if cached is not None:
+                metrics = getattr(job, "weather_metrics", None)
+                if metrics is not None:
+                    metrics["field_cache_hits"] = metrics.get("field_cache_hits", 0) + 1
+                return cached
+            self.field_cache_metrics["misses"] += 1
+            prefix = self._field_key(job, "native", field, bounds)[:4]
+            overlaps = [
+                (key[4], columns)
+                for key, columns in self._field_cache.items()
+                if key[:4] == prefix and self._rect_overlap(key[4], bounds)
+            ]
+            parts, strips = self._sample_strips(job, sampler, field, bounds, overlaps)
+            if parts is None:
                 return []
-            columns = self._columns(data, field)
+            merged = self._merge_field(parts, field)
+            self._trim_decoded(resources, job)
+            columns = self._columns(merged, field) if merged is not None else []
             metrics = getattr(job, "weather_metrics", None)
             if metrics is not None:
                 metrics["field_cache_misses"] = metrics.get("field_cache_misses", 0) + 1
+                metrics["field_strips_sampled"] = metrics.get(
+                    "field_strips_sampled", 0
+                ) + len(strips)
+                metrics["field_strips_reused"] = metrics.get(
+                    "field_strips_reused", 0
+                ) + len(overlaps)
             if not job.cancel.is_set():
                 key = self._field_key(job, "native", field, bounds)
                 self._store_columns(key, columns)
             return columns
+
+    def _sample_strips(self, job, sampler, field, bounds, overlaps):
+        """Reuse the cached parts and sample only the strips the request adds.
+
+        Returns the flat field arrays and the number of sampled strips, or
+        None when the job was cancelled.
+        """
+        reused = []
+        for _cover, columns in overlaps:
+            reused.extend(self._filter_columns(columns, field, bounds))
+        parts = []
+        if reused:
+            parts.append(self._column_arrays(reused))
+        strips = self._uncovered_rects(bounds, [cover for cover, _ in overlaps])
+        for rect in strips:
+            if job.cancel.is_set():
+                return None, strips
+            chunk = sampler.grid(field, job.palette[0], rect, job.cancel.is_set)
+            if chunk is not None:
+                parts.append(self._grid_arrays(chunk, field))
+        return parts, strips
+
+    @staticmethod
+    def _column_arrays(columns):
+        """Flatten columns into parallel arrays with the values per slot."""
+        lats: list[Any] = []
+        lons: list[Any] = []
+        slots: list[list[Any]] = []
+        for column in columns:
+            lon = float(column[0])
+            col_lats = np.asarray(column[1], dtype=np.float64)
+            lats.append(col_lats)
+            lons.append(np.full(col_lats.shape, lon, dtype=np.float64))
+            for index, part in enumerate(column[2:]):
+                while len(slots) <= index:
+                    slots.append([])
+                slots[index].append(np.asarray(part, dtype=np.float64))
+        if not lats:
+            return None
+        return (
+            np.concatenate(lats),
+            np.concatenate(lons),
+            [np.concatenate(group) for group in slots],
+        )
+
+    @staticmethod
+    def _grid_arrays(chunk, field):
+        """A sampler grid result as parallel arrays with the values per slot."""
+        slot_values: tuple
+        if field == "wind":
+            dirs, speeds, lats, lons = chunk
+            slot_values = (dirs, speeds)
+        else:
+            lats, lons, values = chunk
+            slot_values = (values,)
+        return (
+            np.asarray(lats, dtype=np.float64),
+            np.asarray(lons, dtype=np.float64),
+            slot_values,
+        )
+
+    @classmethod
+    def _merge_field(cls, parts, field):
+        """Combine flat field arrays, keeping one sample per coordinate."""
+        lats: list[Any] = []
+        lons: list[Any] = []
+        slots: list[list[Any]] = []
+        for part in parts:
+            if part is None:
+                continue
+            part_lats, part_lons, part_slots = part
+            if not len(part_lats):
+                continue
+            lats.append(part_lats)
+            lons.append(part_lons)
+            while len(slots) < len(part_slots):
+                slots.append([])
+            for index, values in enumerate(part_slots):
+                slots[index].append(values)
+        if not lats:
+            return None
+        merged_lats = np.concatenate(lats)
+        merged_lons = np.concatenate(lons)
+        merged_slots = [np.concatenate(group) for group in slots]
+        # A shared edge is sampled twice, once per side; keep one sample.
+        order = np.lexsort((merged_lats, merged_lons))
+        merged_lats = merged_lats[order]
+        merged_lons = merged_lons[order]
+        merged_slots = [values[order] for values in merged_slots]
+        keep = np.ones(len(merged_lats), dtype=bool)
+        if len(merged_lats) > 1:
+            keep[1:] = (merged_lats[1:] != merged_lats[:-1]) | (
+                merged_lons[1:] != merged_lons[:-1]
+            )
+        merged_lats = merged_lats[keep]
+        merged_lons = merged_lons[keep]
+        merged_slots = [values[keep] for values in merged_slots]
+        if field == "wind":
+            return (merged_slots[0], merged_slots[1], merged_lats, merged_lons)
+        return (merged_lats, merged_lons, merged_slots[0])
 
     def _provider_field(self, job, field, providers):
         data: list[tuple] = []
