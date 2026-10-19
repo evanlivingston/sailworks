@@ -135,9 +135,26 @@ class SessionController(QObject):
         return "CPU" + (" (command-line override)" if self.renderer_override else "")
 
     def start_connections(self):
-        if not self.offline and not self.connections.polling_active:
+        if (
+            not self.closed
+            and not self.offline
+            and self.session.streaming
+            and not self.connections.polling_active
+        ):
             self.connection_task.start(
                 "Connecting instruments…", lambda _: self.connections.start_polling()
+            )
+
+    def set_live_reading(self, active):
+        """Start/stop device reads, not just delivery to the live display."""
+        if self.closed or self.connection_task.busy:
+            return
+        self.session.set_streaming(active)
+        if active:
+            self.start_connections()
+        elif self.connections.polling_active:
+            self.connection_task.start(
+                "Disconnecting instruments…", lambda _: self.connections.stop_polling()
             )
 
     def _changed(self, _):
@@ -170,6 +187,7 @@ class SessionController(QObject):
             self.closed
             or generation != self.generation
             or self.session.source != "live"
+            or not self.session.streaming
         ):
             return
         for packet in packets:
