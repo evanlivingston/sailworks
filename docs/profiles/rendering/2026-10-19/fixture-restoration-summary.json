@@ -1,0 +1,38 @@
+{
+  "task": "Authorized original-fixture restoration",
+  "outcome": "partial recovery only; original baseline identity remains blocked",
+  "expected_snapshot_sha256": "97cfda3c62a494c3d462ee8cde449d4d80ed1c62f387d70edcd9192dfb65d360",
+  "current_partial_inventory_sha256": "14507922caa9769601a173b96f6772b18ee1449af2931055f5cecbbc13c9e64e",
+  "existing_files_preserved": 533,
+  "exact_original_files_restored": 4006,
+  "current_verified_original_files": 4539,
+  "remaining_missing_files": 30,
+  "remaining_missing_category": "marine/source-cache/*.json metadata sidecars",
+  "original_manifest_unchanged": true,
+  "live_application_data_modified": false,
+  "downloads_performed": false,
+  "hardlinks_to_live_data_created": false,
+  "replacement_baseline_accepted": false,
+  "full_original_snapshot_verified": false,
+  "full_benchmark_checksum_gate_preserved": true,
+  "recovery_sources": {
+    "exact_bytes_found_in_live_application_data": true,
+    "older_october16_snapshot_checked_for_remaining_files": true,
+    "older_gwr_snapshot_checked_for_remaining_files": true,
+    "remaining_metadata_found_in_checked_sources": false
+  },
+  "validation": {
+    "utility_tests_passed": 5,
+    "subtests_passed": 5,
+    "black_checked_python_files": 2,
+    "actual_restore_attempts": 1,
+    "restore_exit_code": 1,
+    "nonzero_exit_explicitly_means_incomplete_recovery": true
+  },
+  "local_reports": [
+    "fixture-restore-plan-1.json",
+    "fixture-restore-plan-2.json",
+    "fixture-restore-result-1.json"
+  ],
+  "next_action": "Locate exact copies of the remaining sidecars or obtain explicit approval for a separately versioned baseline; do not fabricate metadata or weaken verification"
+}
