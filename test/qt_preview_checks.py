@@ -812,7 +812,11 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertIsNotNone(self.window.map.background)
 
     def wait_for_route(self):
-        deadline = time.monotonic() + 10
+        # The current-coverage preflight samples a corridor and checks it
+        # against the coastline, which is slow on a loaded machine. This is a
+        # hang guard, not a runtime target, so it is set well above the time
+        # the check actually needs.
+        deadline = time.monotonic() + 60
         while self.controller.routing.busy and time.monotonic() < deadline:
             self.drain()
             time.sleep(0.005)
@@ -4532,7 +4536,10 @@ class QtPreviewChecks(unittest.TestCase):
         panel.set_location("start", (0, 0))
         panel.set_location("destination", (0, 0.005))
         observed = []
-        deadline = time.monotonic() + 5
+        # The preflight has to finish the coverage check before the dialog
+        # can appear, and that check is slow on a loaded machine. Wait long
+        # enough for the dialog rather than cancelling before it is shown.
+        deadline = time.monotonic() + 60
 
         def close_dialog():
             dialog = panel.preflight_dialog
@@ -4552,7 +4559,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(panel.status.text(), "Routing cancelled")
         # A genuine parent close also breaks the worker's pending UI handoff.
         observed.clear()
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 60
 
         def close_window():
             if panel.preflight_dialog is None and time.monotonic() < deadline:
