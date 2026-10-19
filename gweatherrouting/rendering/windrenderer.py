@@ -11,6 +11,7 @@ import math
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import cairo
 import numpy as np
@@ -252,10 +253,15 @@ class WindOverlayRenderer(OverlayRenderer):
 
     def _release_if_idle(self):
         if not self._states and not self._running:
-            for grib in self._gribs.values():
-                grib.close()
-            self._gribs.clear()
-            self.cache_state = self._cache_snapshot()
+            self._release_resources()
+
+    def _release_resources(self):
+        for grib in self._gribs.values():
+            grib.close()
+        self._gribs.clear()
+        self._field_cache.clear()
+        self._field_cache_bytes = 0
+        self.cache_state = self._cache_snapshot()
 
     def forget(self, canvas):
         self._last_content.pop(canvas, None)
@@ -461,7 +467,7 @@ class WindOverlayRenderer(OverlayRenderer):
     def _source_scope(self, job):
         resources = getattr(job, "_weather_resources", None)
         owns_scope = resources is None
-        if owns_scope:
+        if resources is None:
             resources = {}
         try:
             if "opened" not in resources:
@@ -481,31 +487,7 @@ class WindOverlayRenderer(OverlayRenderer):
                     if isinstance(provider, Grib)
                 }
             )
-            providers = []
-            for (source,) in job.charts:
-                if job.cancel.is_set():
-                    break
-                pair = opened.get(id(source))
-                if pair is None:
-                    try:
-                        pair = source, self._worker_grib(source)
-                        opened[id(source)] = pair
-                        if isinstance(pair[1], Grib):
-                            self._leased_providers[id(pair[1])] = pair[1]
-                    except Exception as exc:
-                        # Retain successful opens, but retry unavailable sources
-                        # on the next pass just as the uncached path does.
-                        logger.debug("Weather source unavailable: %s", exc)
-                        continue
-                else:
-                    metrics = getattr(job, "weather_metrics", None)
-                    if metrics is not None:
-                        metrics["provider_reuses"] = (
-                            metrics.get("provider_reuses", 0) + 1
-                        )
-                    if isinstance(pair[1], Grib):
-                        self._retain_grib(source, pair[1])
-                providers.append(pair)
+            providers = self._scope_providers(job, opened)
             if providers != resources.get("providers"):
                 resources.pop("sampler", None)
             resources["providers"] = providers
@@ -513,6 +495,32 @@ class WindOverlayRenderer(OverlayRenderer):
         finally:
             if owns_scope:
                 self._release_providers(resources, self._gribs.values())
+
+    def _scope_providers(self, job, opened):
+        providers = []
+        for (source,) in job.charts:
+            if job.cancel.is_set():
+                break
+            pair = opened.get(id(source))
+            if pair is None:
+                try:
+                    pair = source, self._worker_grib(source)
+                    opened[id(source)] = pair
+                    if isinstance(pair[1], Grib):
+                        self._leased_providers[id(pair[1])] = pair[1]
+                except Exception as exc:
+                    # Retain successful opens, but retry unavailable sources
+                    # on the next pass just as the uncached path does.
+                    logger.debug("Weather source unavailable: %s", exc)
+                    continue
+            else:
+                metrics = getattr(job, "weather_metrics", None)
+                if metrics is not None:
+                    metrics["provider_reuses"] = metrics.get("provider_reuses", 0) + 1
+                if isinstance(pair[1], Grib):
+                    self._retain_grib(source, pair[1])
+            providers.append(pair)
+        return providers
 
     def _sampler_for(self, resources):
         provider_ids = tuple(id(p) for _, p in resources["providers"])
@@ -539,7 +547,7 @@ class WindOverlayRenderer(OverlayRenderer):
         # GridIndex arrays are a cache only. Dropping an entry never changes
         # record choice, masks, interpolation, or provider order. Do not open an
         # index just to account it, and do not touch GDAL's own driver cache.
-        entries = []
+        entries: list[tuple[Any, int, int]] = []
         for _, provider in resources.get("opened", {}).values():
             index = getattr(provider, "__dict__", {}).get("_sampling")
             if index is not None:
@@ -967,23 +975,11 @@ class WindOverlayRenderer(OverlayRenderer):
                 return cached
             if self._field_cache_enabled:
                 self.field_cache_metrics["misses"] += 1
-            south, north = sorted((bounds[0][0], bounds[1][0]))
-            west, east = bounds[0][1], bounds[1][1]
-            if east < west:
-                east += 360.0
-            span_lat = north - south
-            span_lon = east - west
-            if not (span_lat > 0 and span_lon > 0):
+            axes = self._resample_axes(bounds)
+            if axes is None:
                 return []
-            ncols = min(240, max(2, int(round(span_lon / 0.1)) + 1))
-            nrows = min(240, max(2, int(round(span_lat / 0.1)) + 1))
-            total = ncols * nrows
-            if total > 30000:
-                scale = (30000.0 / total) ** 0.5
-                ncols = max(2, int(ncols * scale))
-                nrows = max(2, int(nrows * scale))
-            lats = np.linspace(south, north, nrows)
-            lons = np.linspace(west, east, ncols)
+            lats, lons = axes
+            nrows, ncols = len(lats), len(lons)
             grid_lons, grid_lats = np.meshgrid(lons, lats)
             values = np.asarray(
                 sampler.sample(
@@ -997,53 +993,7 @@ class WindOverlayRenderer(OverlayRenderer):
             self._trim_decoded(resources, job)
             if job.cancel.is_set() or not np.isfinite(values).any():
                 return []
-            # Model footprints rarely fill the padded viewport. Shrink to
-            # the sampled footprint so coverage margins cannot empty every
-            # column; dropping whole columns keeps one shared latitude
-            # vector behind for fills and contouring.
-            finite = np.isfinite(values).all(axis=-1)
-            rows_with_data = np.flatnonzero(finite.any(axis=1))
-            cols_with_data = np.flatnonzero(finite.any(axis=0))
-            first_row, last_row = rows_with_data[0], rows_with_data[-1]
-            first_col, last_col = cols_with_data[0], cols_with_data[-1]
-            row_slice = slice(first_row, last_row + 1)
-            col_slice = slice(first_col, last_col + 1)
-            values = values[row_slice, col_slice]
-            finite = finite[row_slice, col_slice]
-            lats = lats[row_slice]
-            lons = lons[col_slice]
-            if field == "wind":
-                speed = np.hypot(values[..., 0], values[..., 1])
-                direction = (
-                    np.degrees(np.arctan2(-values[..., 0], -values[..., 1])) + 360.0
-                ) % 360.0
-            columns = []
-            for index in range(values.shape[1]):
-                if not finite[:, index].all():
-                    continue
-                lon = (lons[index] + 180.0) % 360.0 - 180.0
-                if field == "wind":
-                    columns.append(
-                        [
-                            (
-                                float(direction[row, index]),
-                                float(speed[row, index]),
-                                (float(lats[row]), float(lon)),
-                            )
-                            for row in range(values.shape[0])
-                        ]
-                    )
-                else:
-                    columns.append(
-                        [
-                            (
-                                float(lats[row]),
-                                float(lon),
-                                float(values[row, index, 0]),
-                            )
-                            for row in range(values.shape[0])
-                        ]
-                    )
+            columns = self._sampled_columns(values, lats, lons, field)
             if (
                 len(columns) >= 2
                 and not job.cancel.is_set()
@@ -1060,6 +1010,80 @@ class WindOverlayRenderer(OverlayRenderer):
             return columns if len(columns) >= 2 else []
 
     @staticmethod
+    def _resample_axes(bounds):
+        south, north = sorted((bounds[0][0], bounds[1][0]))
+        west, east = bounds[0][1], bounds[1][1]
+        if east < west:
+            east += 360.0
+        span_lat = north - south
+        span_lon = east - west
+        if not (span_lat > 0 and span_lon > 0):
+            return None
+        ncols = min(240, max(2, int(round(span_lon / 0.1)) + 1))
+        nrows = min(240, max(2, int(round(span_lat / 0.1)) + 1))
+        total = ncols * nrows
+        if total > 30000:
+            scale = (30000.0 / total) ** 0.5
+            ncols = max(2, int(ncols * scale))
+            nrows = max(2, int(nrows * scale))
+        return np.linspace(south, north, nrows), np.linspace(west, east, ncols)
+
+    @staticmethod
+    def _sampled_columns(values, lats, lons, field):
+        # Model footprints rarely fill the padded viewport. Shrink to the
+        # sampled footprint so coverage margins cannot empty every column;
+        # dropping whole columns keeps one shared latitude vector behind for
+        # fills and contouring.
+        finite = np.isfinite(values).all(axis=-1)
+        rows_with_data = np.flatnonzero(finite.any(axis=1))
+        cols_with_data = np.flatnonzero(finite.any(axis=0))
+        # No point carries a complete vector, so there is no footprint to
+        # index. Return an empty field instead of indexing an empty range.
+        if not len(rows_with_data) or not len(cols_with_data):
+            return []
+        first_row, last_row = rows_with_data[0], rows_with_data[-1]
+        first_col, last_col = cols_with_data[0], cols_with_data[-1]
+        row_slice = slice(first_row, last_row + 1)
+        col_slice = slice(first_col, last_col + 1)
+        values = values[row_slice, col_slice]
+        finite = finite[row_slice, col_slice]
+        lats = lats[row_slice]
+        lons = lons[col_slice]
+        if field == "wind":
+            speed = np.hypot(values[..., 0], values[..., 1])
+            direction = (
+                np.degrees(np.arctan2(-values[..., 0], -values[..., 1])) + 360.0
+            ) % 360.0
+        columns: list[list[tuple[float, float, Any]]] = []
+        for index in range(values.shape[1]):
+            if not finite[:, index].all():
+                continue
+            lon = (lons[index] + 180.0) % 360.0 - 180.0
+            if field == "wind":
+                columns.append(
+                    [
+                        (
+                            float(direction[row, index]),
+                            float(speed[row, index]),
+                            (float(lats[row]), float(lon)),
+                        )
+                        for row in range(values.shape[0])
+                    ]
+                )
+            else:
+                columns.append(
+                    [
+                        (
+                            float(lats[row]),
+                            float(lon),
+                            float(values[row, index, 0]),
+                        )
+                        for row in range(values.shape[0])
+                    ]
+                )
+        return columns
+
+    @staticmethod
     def _show_isobars(job):
         # Palettes built before the isobar toggle carry no fourth element.
         return job.palette[3] if len(job.palette) > 3 else True
@@ -1068,7 +1092,7 @@ class WindOverlayRenderer(OverlayRenderer):
         before = dict(self.cache_metrics)
         before_fields = dict(self.field_cache_metrics)
         job.weather_metrics = {}
-        resources = {}
+        resources: dict[str, Any] = {}
         if self._reuse_job_sources:
             job._weather_resources = resources
         try:
@@ -1170,6 +1194,8 @@ class WindOverlayRenderer(OverlayRenderer):
         self, canvas, cr, charts, palette, live_barbs=True, barb_density="standard"
     ):
         """Paint cached fill, then crisp live barbs for the current view."""
+        if self._closed:
+            return
         # Land visibility changes foreground selection only, never the cached
         # fill/isobars or sampled field. Prepare flags with every wind job so
         # toggling this setting cannot blank the overlay waiting for a rebuild.

@@ -3,6 +3,7 @@
 import logging
 import time
 from threading import Thread
+from typing import Any
 from weakref import WeakKeyDictionary
 
 import nmeatoolkit as nt
@@ -54,7 +55,9 @@ class SessionController(QObject):
             selected_renderer if selected_renderer in ("cpu", "gpu") else "cpu"
         )
         self.renderer_override = map_renderer is not None
-        self._renderer_states = WeakKeyDictionary()
+        self._renderer_states: WeakKeyDictionary[Any, dict[str, Any]] = (
+            WeakKeyDictionary()
+        )
         self.charts = ChartCollection(self.settings, self.scheduler.submit)
         if offline:
             self.charts._chs_renderer.set_enabled(False)

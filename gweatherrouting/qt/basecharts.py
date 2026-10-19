@@ -61,6 +61,19 @@ class BaseChartRenderer(OverlayRenderer):
         self._failed_key = None
         self.diagnostics = {}
 
+    def forget(self, canvas):
+        super().forget(canvas)
+        self._release_if_idle()
+
+    def _release_if_idle(self):
+        # Cancellation is asynchronous. Never drop a dataset while the worker
+        # may still be using it; completion hands ownership back to this thread.
+        if not self._states and not self._running:
+            self._release_resources()
+
+    def _release_resources(self):
+        self._charts.clear()
+
     def draw_base(self, canvas, cr, charts, palette, fallback=None):
         sources = describe_sources(charts)
         synchronous = ()
@@ -103,6 +116,7 @@ class BaseChartRenderer(OverlayRenderer):
         if error and demanded:
             self._failed_key = job.key
         result = super()._completed(canvas, job, surface, error)
+        self._release_if_idle()
         if error and demanded:
             # Do not leave a missing coastline after an unsupported driver/open
             # failure. Retry via the existing synchronous path for this content.
