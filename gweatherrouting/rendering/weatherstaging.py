@@ -53,6 +53,31 @@ class StagedWind:
         )
 
 
+def time_window(sampler, stamp):
+    """The resident time window that serves ``stamp``.
+
+    An instant that is itself a selection event gets a singleton window, so
+    the exact-time mask and new-cycle selection semantics are preserved and
+    no interpolation crosses a model-run switch.  Every other instant is
+    served by the window that brackets it.
+    """
+    events = sorted(
+        {
+            event
+            for identity in sampler.order
+            for event in (
+                identity[0],
+                sampler.coverage[identity],
+                *sampler._times[identity, "wind"],
+            )
+        }
+    )
+    pos = bisect_left(events, stamp)
+    if not events or pos == 0 or pos == len(events) or events[pos] == stamp:
+        return stamp, stamp
+    return events[pos - 1], events[pos]
+
+
 def stage_wind(sampler, stamp, lats, lons, cancel=lambda: False, byte_limit=16 << 20):
     """Stage a fixed query grid using a worker-private WeatherSampler.
 
@@ -70,26 +95,14 @@ def stage_wind(sampler, stamp, lats, lons, cancel=lambda: False, byte_limit=16 <
         raise ValueError("Staged wind exceeds memory budget")
     if not np.isfinite(stamp):
         raise ValueError("Invalid forecast time")
-    events = sorted(
-        {
-            event
-            for identity in sampler.order
-            for event in (
-                identity[0],
-                sampler.coverage[identity],
-                *sampler._times[identity, "wind"],
-            )
-        }
-    )
-    pos = bisect_left(events, stamp)
-    if not events or pos == 0 or pos == len(events) or events[pos] == stamp:
+    before, after = time_window(sampler, stamp)
+    if before == after:
         values = sampler.sample_timestamps("wind", stamp, lats, lons, cancel)
         if cancel():
             return None
         first = np.array(values.reshape(shape + (2,)), dtype=np.float32)
         first.setflags(write=False)
         return StagedWind(stamp, stamp, first, first, tuple(sampler.point_sources))
-    before, after = events[pos - 1], events[pos]
     # Use the requested interior instant, not a rounded hour or midpoint.
     lat, lon = lats.ravel(), lons.ravel()
     first = np.full((len(lat), 2), np.nan)

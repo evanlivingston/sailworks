@@ -9,6 +9,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from gweatherrouting.core.grib import Grib
 from gweatherrouting.core.gribsampling import WeatherSampler
 from gweatherrouting.core.routingjob import freeze_wind_sources
+from gweatherrouting.qt.gpuweatherfields import FieldStore
 from gweatherrouting.rendering.weatherbarbs import BarbView, stage_barbs
 from gweatherrouting.rendering.weathercache import (
     DecodedBandCache,
@@ -17,6 +18,11 @@ from gweatherrouting.rendering.weathercache import (
 from gweatherrouting.rendering.windrenderer import WindLandMask
 
 logger = logging.getLogger("gweatherrouting")
+
+# The declared residency budget of the GPU-resident field store. It is the
+# same 32 MiB the CPU staging path already allowed for one published pair, so
+# the field store does not raise the memory ceiling of the presenter.
+FIELD_BYTE_LIMIT = 32 * 1024 * 1024
 
 
 def source_key(source):
@@ -40,12 +46,16 @@ def source_key(source):
 class _WeatherResources:
     """Created, used and closed exclusively by the numerical weather worker."""
 
-    def __init__(self, byte_limit):
+    def __init__(self, byte_limit, field_limit=None, resident_fields=False):
         self.providers: list[DisplayWeatherSource] = []
         self.sampler: WeatherSampler | None = None
         self.signature: tuple | None = None
         self.band_cache = DecodedBandCache(byte_limit)
         self.land = WindLandMask()
+        self.resident_fields = resident_fields
+        self.fields = FieldStore(
+            field_limit if field_limit is not None else FIELD_BYTE_LIMIT
+        )
 
     def release(self):
         for provider in self.providers:
@@ -53,6 +63,9 @@ class _WeatherResources:
         self.providers.clear()
         self.sampler = None
         self.signature = None
+        # Resident fields belong to the selected sources; a source change
+        # releases them instead of letting them occupy the budget.
+        self.fields.clear()
 
     def _open(self, sources, signature, cancel):
         self.release()
@@ -86,7 +99,16 @@ class _WeatherResources:
             self._open(sources, key[1], cancel)
         if cancel.is_set() or self.sampler is None:
             return None
-        atlas = stage_barbs(self.sampler, stamp, key[0], self.land, cancel.is_set)
+        atlas = stage_barbs(
+            self.sampler,
+            stamp,
+            key[0],
+            self.land,
+            cancel.is_set,
+            **(
+                {"store": self.fields, "source": key[1]} if self.resident_fields else {}
+            ),
+        )
         if any(
             source_key(source)[-1] != entry[-1]
             for source, entry in zip(sources, key[1])
@@ -107,7 +129,7 @@ class WeatherStager(QObject):
     changed = Signal()
     completed = Signal(object, object, str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, resident_fields=False):
         super().__init__(parent)
         self.closed = False
         self.frame = None
@@ -120,12 +142,19 @@ class WeatherStager(QObject):
         self._thread = None
         self._release_requested = False
         self._band_stats = {}
+        self._field_stats = {}
+        self.resident_fields = resident_fields
         self.completed.connect(self._accept)
 
     def band_cache_statistics(self):
         """Completed-request snapshot only; no worker handles/arrays cross threads."""
         with self._condition:
             return dict(self._band_stats)
+
+    def field_store_statistics(self):
+        """Completed-request snapshot of the resident field store."""
+        with self._condition:
+            return dict(self._field_stats)
 
     def request(self, canvas):
         if self.closed:
@@ -218,10 +247,12 @@ class WeatherStager(QObject):
             self._active = request
             return False, request
 
-    def _finish_request(self, request, atlas, error, statistics):
+    def _finish_request(self, request, atlas, error, statistics, fields=None):
         key, cancel = request[0], request[3]
         with self._condition:
             self._band_stats = statistics
+            if fields is not None:
+                self._field_stats = fields
             self._active = None
             if (
                 atlas is not None
@@ -240,7 +271,9 @@ class WeatherStager(QObject):
             self.completed.emit(key, atlas, error)
 
     def _run(self):
-        resources = _WeatherResources(self.BAND_BYTE_LIMIT)
+        resources = _WeatherResources(
+            self.BAND_BYTE_LIMIT, resident_fields=self.resident_fields
+        )
         try:
             while True:
                 closed, request = self._take_request()
@@ -250,6 +283,7 @@ class WeatherStager(QObject):
                     resources.release()
                     with self._condition:
                         self._band_stats = resources.band_cache.statistics()
+                        self._field_stats = resources.fields.statistics()
                     continue
                 atlas, error = None, ""
                 try:
@@ -257,12 +291,17 @@ class WeatherStager(QObject):
                 except Exception as exc:
                     error = str(exc)
                 self._finish_request(
-                    request, atlas, error, resources.band_cache.statistics()
+                    request,
+                    atlas,
+                    error,
+                    resources.band_cache.statistics(),
+                    resources.fields.statistics(),
                 )
         finally:
             resources.close()
             with self._condition:
                 self._band_stats = resources.band_cache.statistics()
+                self._field_stats = resources.fields.statistics()
 
     def close(self):
         self.invalidate()

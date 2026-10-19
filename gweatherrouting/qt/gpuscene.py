@@ -24,6 +24,16 @@ from gweatherrouting.rendering.windpainter import barb_bucket_colors
 
 _POINT_ATTRIBUTES = QSGGeometry.defaultAttributes_Point2D()
 
+# The image properties of the numerical weather shader, in publication order.
+_WEATHER_SOURCES = (
+    "u0Source",
+    "v0Source",
+    "u1Source",
+    "v1Source",
+    "anchorXSource",
+    "anchorYSource",
+)
+
 
 class ImageItem(QQuickItem):
     failed = Signal(str)
@@ -70,6 +80,10 @@ class ImageItem(QQuickItem):
                 self.changed = False
                 self.counters["texture_uploads"] += 1
                 self.counters["texture_upload_bytes"] += self.layer.image.sizeInBytes()
+                self.counters["chart_texture_uploads"] += 1
+                self.counters[
+                    "chart_texture_upload_bytes"
+                ] += self.layer.image.sizeInBytes()
             target = QRectF(*self.layer.target)
             node.setRect(target)
             image = self.layer.image
@@ -141,7 +155,14 @@ class MapScene:
         self.layers = {}
         self.frame = None
         self.counters = dict(
-            texture_uploads=0, texture_upload_bytes=0, vertex_upload_bytes=0
+            texture_uploads=0,
+            texture_upload_bytes=0,
+            vertex_upload_bytes=0,
+            chart_texture_uploads=0,
+            chart_texture_upload_bytes=0,
+            weather_field_uploads=0,
+            weather_field_upload_bytes=0,
+            weather_field_reuses=0,
         )
         root_component = QQmlComponent(widget.engine())
         root_component.setData(b"import QtQuick\nItem { clip: true }", QUrl())
@@ -167,21 +188,25 @@ class MapScene:
         self.weather_atlas: Any = None
         self.weather_provider: Any = None
         self.weather_component: Any = None
+        self.weather_field_key: Any = None
+        self.weather_urls: dict = {}
+
+    def _field_key(self, atlas):
+        """The stable publication key of a staged field, if it has one."""
+        identity = getattr(atlas, "identity", None)
+        if identity is None:
+            return None
+        return identity.key()
 
     def present_weather(self, numerical, frame):
         if numerical is None:
             if self.weather is not None:
                 self.weather.setVisible(False)
-                for name in (
-                    "u0Source",
-                    "v0Source",
-                    "u1Source",
-                    "v1Source",
-                    "anchorXSource",
-                    "anchorYSource",
-                ):
+                for name in _WEATHER_SOURCES:
                     self.weather.setProperty(name, QUrl())
                 self.weather_atlas = None
+                self.weather_field_key = None
+                self.weather_urls = {}
                 self.weather_provider.clear()
             return
         atlas, blend = numerical
@@ -209,25 +234,28 @@ class MapScene:
             )
             self.weather.readyChanged.connect(self.request)
         if atlas is not self.weather_atlas:
-            urls = self.weather_provider.publish(atlas)
-            for name, url in zip(
-                (
-                    "u0Source",
-                    "v0Source",
-                    "u1Source",
-                    "v1Source",
-                    "anchorXSource",
-                    "anchorYSource",
-                ),
-                urls,
-            ):
-                self.weather.setProperty(name, QUrl(url))
+            key = self._field_key(atlas)
+            urls = self.weather_provider.publish(atlas, key)
+            changed = 0
+            changed_bytes = 0
+            for name, url, image in zip(_WEATHER_SOURCES, urls, atlas.images):
+                if url != self.weather_urls.get(name):
+                    self.weather.setProperty(name, QUrl(url))
+                    changed += 1
+                    changed_bytes += image.sizeInBytes()
+            self.weather_urls = dict(zip(_WEATHER_SOURCES, urls))
             rows, cols = atlas.pair.shape
             self.weather.setProperty("columns", cols)
             self.weather.setProperty("rows", rows)
+            self.weather_field_key = key
+            if not changed:
+                # The resident field is already on the GPU: nothing is uploaded.
+                self.counters["weather_field_reuses"] += 1
+            self.counters["texture_uploads"] += changed
+            self.counters["texture_upload_bytes"] += changed_bytes
+            self.counters["weather_field_uploads"] += changed
+            self.counters["weather_field_upload_bytes"] += changed_bytes
             self.weather_atlas = atlas
-            self.counters["texture_uploads"] += 6
-            self.counters["texture_upload_bytes"] += atlas.nbytes
         self.weather.setWidth(frame.width)
         self.weather.setHeight(frame.height)
         self.weather.setOpacity(frame.opacity)
@@ -283,16 +311,11 @@ class MapScene:
         self.frame = None
         if self.weather is not None:
             self.weather.setVisible(False)
-            for name in (
-                "u0Source",
-                "v0Source",
-                "u1Source",
-                "v1Source",
-                "anchorXSource",
-                "anchorYSource",
-            ):
+            for name in _WEATHER_SOURCES:
                 self.weather.setProperty(name, QUrl())
             self.weather_atlas = None
+            self.weather_field_key = None
+            self.weather_urls = {}
             self.weather_provider.clear()
         for item in (self.base, self.navigation, self.raster_wind):
             item.layer = None

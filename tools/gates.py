@@ -86,7 +86,7 @@ GATES = {
         "requires": ["snapshot"],
         "dependencies": ["PySide6", "numpy", "cairo", "osgeo.gdal"],
         "timeout_s": 110,
-        "env": {"GWR_GPU_WEATHER": "1"},
+        "env": {"GWR_GPU_WEATHER": "1", "GWR_GPU_RESIDENT_FIELDS": "1"},
         "command": [
             "{python}",
             "{tool}",
@@ -175,6 +175,68 @@ GATES = {
                 "source": (
                     "docs/adr-001-grib-rendering-architecture.md section 9 "
                     "standing constraint 4 (render callbacks are proxies)"
+                ),
+            },
+            {
+                "label": "resident field texture uploads during the scrub input phase",
+                "metric": (
+                    "runs[*].native_render_probe.gpu_counter_delta."
+                    "weather_field_uploads"
+                ),
+                "aggregate": "max",
+                "op": "<=",
+                "value": 0,
+                "ratified": False,
+                "source": (
+                    "NOT DERIVABLE for this workload. The recorded bound of zero "
+                    "texture uploads during a scrub "
+                    "(docs/profiles/rendering/2026-10-18/"
+                    "a0c-timeline-scrub-summary.json"
+                    "#candidate_texture_uploads_during_input=0) was measured on "
+                    "the independent vertical viewport, which renders no chart "
+                    "layer and never crosses a resident weather window. The app's "
+                    "scrub_return workload crosses the resident time window twice, "
+                    "and each crossing is a different field with different "
+                    "content, so no recorded evidence bounds this metric. It is "
+                    "reported without affecting the verdict."
+                ),
+            },
+            {
+                "label": "the resident field store stays inside its declared budget",
+                "metric": "runs[*].numerical_weather.field_store.current_bytes",
+                "aggregate": "max",
+                "op": "<=",
+                "value": 33554432,
+                "source": (
+                    "The 32 MiB CPU staging limit the presenter already enforced "
+                    "for one published pair "
+                    "(gweatherrouting/qt/gpuweather.py WeatherImageProvider."
+                    "byte_limit); the resident field store declares the same "
+                    "ceiling (gweatherrouting/qt/gpuweatherjobs.py "
+                    "FIELD_BYTE_LIMIT), so residency does not raise the memory "
+                    "ceiling of the presenter. The 128 MiB decoded-band budget "
+                    "(docs/history/gpu-weather-residency.md) is separate and "
+                    "unchanged."
+                ),
+            },
+            {
+                "label": "chart-layer texture uploads during the scrub input phase",
+                "metric": (
+                    "runs[*].native_render_probe.gpu_counter_delta."
+                    "chart_texture_uploads"
+                ),
+                "aggregate": "max",
+                "op": "<=",
+                "value": 0,
+                "ratified": False,
+                "source": (
+                    "NOT DERIVABLE for this workload. The chart base image and "
+                    "the navigation overlay contain the forecast-time dependent "
+                    "isobars and clock, so they are re-rendered and re-uploaded "
+                    "on every forecast-time change; that is chart work "
+                    "(#65/#68/#69) and no recorded evidence bounds it here. It is "
+                    "reported without affecting the verdict so the residual cost "
+                    "of the chart layer stays visible next to the field cost."
                 ),
             },
         ],

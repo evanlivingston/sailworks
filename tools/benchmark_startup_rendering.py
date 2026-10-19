@@ -157,6 +157,7 @@ def numerical_weather_status(canvas):
         cpu_symbol_batches=cpu_batches,
         cpu_raster_symbols=bool(raster),
         band_cache=stager.band_cache_statistics() if stager is not None else {},
+        field_store=stager.field_store_statistics() if stager is not None else {},
     )
 
 
