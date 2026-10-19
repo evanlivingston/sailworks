@@ -294,6 +294,7 @@ R5 (retention hardening, rollout). R0.2 is discharged by
 | [`profiles/rendering/2026-10-18/a0h-resident-worker-summary.json`](profiles/rendering/2026-10-18/a0h-resident-worker-summary.json) | Resident preparation 1.18–1.31 s vs 1.79–1.96 s; GUI bind 2.2–5.9 ms. |
 | [`rendering-m0-measurement-audit.md`](rendering-m0-measurement-audit.md) | What the instrumentation can and cannot prove; why readback is not presentation. |
 | [`profiling-priorities.md`](profiling-priorities.md) | Already-measured pan cost (0.841 s inclusive in `live_geometry_for_view`). Do not re-measure. |
+| [`../research/gpu-weather-texture/`](../research/gpu-weather-texture/) | **Prior art for D4**, not evidence and not shipped code. Its idea — pre-compute every forecast hour's U and V bands as GPU textures once, so that moving the forecast-time slider becomes a texture lookup rather than a re-stage — is the first attempt at the resident time window that D4 now specifies. It was never merged and nothing imports it. Kept because it records a rejected approach and the reason it was rejected. |
 
 ---
 
