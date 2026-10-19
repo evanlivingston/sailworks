@@ -314,17 +314,13 @@ class TestMixedGridIsobars(unittest.TestCase):
         native = self.renderer._load_field(self.mixed_job(), "wind")
         self.assertEqual(columns, native)
         self.assertFalse(
-            WindOverlayRenderer._columns_share_lats(
-                columns, lambda point: point[2][0]
-            )
+            WindOverlayRenderer._columns_share_lats(columns, lambda point: point[2][0])
         )
 
     def test_mixed_grids_fill_from_one_regular_grid(self):
         columns = self.renderer._resample_field(self.mixed_job(), "wind")
         self.assertTrue(
-            WindOverlayRenderer._columns_share_lats(
-                columns, lambda point: point[2][0]
-            )
+            WindOverlayRenderer._columns_share_lats(columns, lambda point: point[2][0])
         )
         for column in columns:
             for direction, speed, (lat, lon) in column:
@@ -355,9 +351,7 @@ class TestMixedGridIsobars(unittest.TestCase):
             )
         )
         # Native points still feed the barbs.
-        self.assertEqual(
-            painter.draw.call_args.args[2], renderer._load_wind(job)
-        )
+        self.assertEqual(painter.draw.call_args.args[2], renderer._load_wind(job))
 
     def test_mixed_grids_render_wind_and_isobars_together(self):
         job = self.mixed_job()
