@@ -16,15 +16,26 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 
 import json
 import logging
+from typing import cast
 
 import cairo
 from bs4 import BeautifulSoup
+from bs4.element import Tag
 
 
 from gweatherrouting.common import resource_path
 from gweatherrouting.core.storage import DATA_DIR
 
 logger = logging.getLogger("gweatherrouting")
+
+
+def _int_attribute(tag: Tag, name: str) -> int:
+    """Return an integer attribute of a tag.
+
+    The S57 symbol XML stores every numeric attribute as plain decimal
+    text, so the attribute read from the tag is always a string.
+    """
+    return int(cast(str, tag[name]))
 
 
 class S57SymbolProvider:
@@ -65,20 +76,39 @@ class S57SymbolProvider:
 
         for row in soup.find_all("symbol"):
             try:
-                name = row.find("name").text
-                try:
-                    description = row.find("description").text
-                except:
-                    description = ""
+                name_tag = row.find("name")
+                if name_tag is None:
+                    continue
+                name = name_tag.text
+
+                description_tag = row.find("description")
+                description = (
+                    description_tag.text if description_tag is not None else ""
+                )
 
                 bm = row.find("bitmap")
-                dim = int(bm["width"]), int(bm["height"])
-                dist = int(bm.find("distance")["max"]), int(bm.find("distance")["min"])
-                pivot = int(bm.find("pivot")["x"]), int(bm.find("pivot")["y"])
-                origin = int(bm.find("origin")["x"]), int(bm.find("origin")["y"])
-                gloc = int(bm.find("graphics-location")["x"]), int(
-                    bm.find("graphics-location")["y"]
+                if bm is None:
+                    continue
+
+                distance = bm.find("distance")
+                pivot_tag = bm.find("pivot")
+                origin_tag = bm.find("origin")
+                gloc_tag = bm.find("graphics-location")
+                if (
+                    distance is None
+                    or pivot_tag is None
+                    or origin_tag is None
+                    or gloc_tag is None
+                ):
+                    continue
+
+                dim = _int_attribute(bm, "width"), _int_attribute(bm, "height")
+                dist = _int_attribute(distance, "max"), _int_attribute(distance, "min")
+                pivot = _int_attribute(pivot_tag, "x"), _int_attribute(pivot_tag, "y")
+                origin = _int_attribute(origin_tag, "x"), _int_attribute(
+                    origin_tag, "y"
                 )
+                gloc = _int_attribute(gloc_tag, "x"), _int_attribute(gloc_tag, "y")
 
                 self.symbols[name] = {
                     "description": description,

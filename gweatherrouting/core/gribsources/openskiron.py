@@ -16,7 +16,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 
 import bz2
 import logging
-from typing import Callable, List
+from typing import Callable, List, cast
 
 import requests
 
@@ -34,6 +34,7 @@ class OpenSkironSource(GribSource):
 
     def get_download_list(self) -> List:
         from bs4 import BeautifulSoup
+        from bs4.element import Tag
 
         grib_files = []
 
@@ -44,17 +45,22 @@ class OpenSkironSource(GribSource):
             data = requests.get(url).text
             soup = BeautifulSoup(data, "html.parser")
 
-            for row in soup.find("table").find_all("tr"):
+            # The listing pages always carry a table and every row links to a
+            # file; the lookups keep their original failure mode when the
+            # page layout changes.
+            table = cast(Tag, soup.find("table"))
+            for row in table.find_all("tr"):
                 r = row.find_all("td")
 
                 if len(r) >= 3:
+                    link = cast(Tag, r[0].find("a", href=True))
                     grib_files.append(
                         [
                             r[0].text.strip(),
                             source_name,
                             r[1].text,
                             r[2].text,
-                            r[0].find("a", href=True)["href"],
+                            link["href"],
                         ]
                     )
 

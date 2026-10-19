@@ -18,7 +18,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, cast
 
 logger = logging.getLogger("gweatherrouting")
 
@@ -149,11 +149,16 @@ class AISManager:
         if mmsi is None:
             return
 
-        msg_type = data.get("msg_type")
-        if mmsi not in self._targets:
-            self._targets[mmsi] = AISTarget(mmsi=mmsi)
+        # pyais always reports the MMSI as an integer; the wider type comes
+        # from the heterogeneous decoded message dictionaries, not from the
+        # value itself.
+        mmsi_id = cast(int, mmsi)
 
-        target = self._targets[mmsi]
+        msg_type = data.get("msg_type")
+        if mmsi_id not in self._targets:
+            self._targets[mmsi_id] = AISTarget(mmsi=mmsi_id)
+
+        target = self._targets[mmsi_id]
         target.last_update = time.time()
 
         if msg_type in (1, 2, 3, 18, 19):
