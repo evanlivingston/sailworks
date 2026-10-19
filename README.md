@@ -95,6 +95,12 @@ Omit `--offline` to open saved instrument connections. `--log FILE` opens an
 interpreted NMEA log. `gweatherrouting-qt` remains an alias; the old `[qt]` install
 extra is compatible but no longer needed because PySide6 is a base dependency.
 
+For opt-in early-weather startup, use `python -m gweatherrouting --early-weather`
+(add `--offline` to keep instrument connections closed). It defers unused log
+plots and stages chart initialization after weather preparation in the real map.
+The default startup and renderer selection are unchanged. See
+[early-weather startup](docs/early-weather-startup.md) for limits and validation.
+
 See [default-launcher validation](docs/qt-default-validation.md) for platform and hardware validation notes.
 
 ## License
