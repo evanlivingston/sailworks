@@ -1,6 +1,7 @@
 """Qt Quick scene graph for the opt-in map presenter. Imported lazily."""
 
 import ctypes
+from typing import cast
 
 import numpy as np
 import shiboken6
@@ -142,8 +143,10 @@ class MapScene:
         )
         root_component = QQmlComponent(widget.engine())
         root_component.setData(b"import QtQuick\nItem { clip: true }", QUrl())
-        self.root = root_component.create()
-        if self.root is None:
+        root = root_component.create()
+        # The QML root is an Item; create() only reports it as a QObject.
+        self.root = cast(QQuickItem, root)
+        if root is None:
             raise RuntimeError(str(root_component.errors()))
         self.root_component = root_component
         widget.setContent(QUrl(), root_component, self.root)
@@ -180,7 +183,7 @@ class MapScene:
             key = batch.key
             active.add(key)
             if key not in self.layers:
-                layer = self.component.create()
+                layer = cast(QQuickItem, self.component.create())
                 if layer is None:
                     raise RuntimeError(str(self.component.errors()))
                 layer.setParent(self.root)

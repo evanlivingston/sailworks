@@ -2,12 +2,18 @@
 
 import logging
 import math
+from typing import TYPE_CHECKING, cast
 
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import QGuiApplication, QPainter, QSurfaceFormat
 from PySide6.QtWidgets import QWidget
 
 from .mapframe import resource_estimate
+
+if TYPE_CHECKING:
+    from PySide6.QtQuickWidgets import QQuickWidget
+
+    from .gpuscene import MapScene
 
 logger = logging.getLogger("gweatherrouting")
 
@@ -39,6 +45,13 @@ class GpuPresenter(QObject):
     CPU_SCENE_LIMIT = 128 * 1024 * 1024
     UPLOAD_LIMIT = 128 * 1024 * 1024
 
+    # The scene, widget and overlay are released to None sentinels when the
+    # GPU path is torn down. The sentinels are cast so the live attributes
+    # keep one declared type; every read of them happens while they are live.
+    widget: "QQuickWidget"
+    overlay: "DynamicOverlay"
+    scene: "MapScene"
+
     def __init__(self, canvas):
         super().__init__(canvas)
         from PySide6.QtQuickWidgets import QQuickWidget
@@ -50,7 +63,7 @@ class GpuPresenter(QObject):
         self.active, self.closed, self.initialized = True, False, False
         self.estimate = {}
         self._quick_window = None
-        self.scene = None
+        self.scene = cast("MapScene", None)
         self.widget = QQuickWidget(canvas)
         self.widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -231,9 +244,9 @@ class GpuPresenter(QObject):
         self.scene.clear()
         self.widget.deleteLater()
         self.overlay.deleteLater()
-        self.widget = None
-        self.overlay = None
-        self.scene = None
+        self.widget = cast("QQuickWidget", None)
+        self.overlay = cast("DynamicOverlay", None)
+        self.scene = cast("MapScene", None)
         self.canvas._gpu_geometry = None
         self.canvas._gpu_batches = ()
         self.canvas._gpu_wind_raster = None
