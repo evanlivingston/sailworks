@@ -38,7 +38,8 @@ from .mapcanvas import TrackMap
 from .routingpanel import RoutingPanel
 from .settingsdialog import SettingsDialog
 from .datalibrary import DataLibrary, FORECAST_FILTER
-from .plots import LogPlots, elapsed_offsets
+from .plots import LogPlots
+from .plotdata import elapsed_offsets
 from .workspace import WorkspacePreferences
 from .polarworkspace import PolarWorkspace
 from .polarlibrary import PolarLibrary
