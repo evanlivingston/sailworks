@@ -44,7 +44,8 @@ class WeatherPanel(QWidget):
         self.wind_style.addItem("Barbs", "barbs")
         self.wind_style.addItem("Streamlines", "streamlines")
         self.wind_style.setToolTip(
-            "Static forecast-flow curves with direction chevrons, or native-point wind barbs. No particle animation."
+            "Static forecast-flow curves with direction chevrons,"
+            " or native-point wind barbs. No particle animation."
         )
         self.wind_style.setCurrentIndex(
             max(0, self.wind_style.findData(controller.settings.gribWindStyle))
@@ -148,9 +149,12 @@ class WeatherPanel(QWidget):
                 index, "Maximum" if streamlines and key == "all" else label
             )
         self.barb_density.setToolTip(
-            "Choose streamline spacing. Denser settings add paths; Maximum remains capped for responsiveness."
+            "Choose streamline spacing. Denser settings add paths;"
+            " Maximum remains capped for responsiveness."
             if streamlines
-            else "Choose how many wind barbs to display. All forecast points shows every visible sample without a symbol-count cap."
+            else "Choose how many wind barbs to display."
+            " All forecast points shows every visible sample without a"
+            " symbol-count cap."
         )
 
     def refresh(self):

@@ -32,7 +32,8 @@ class ChartLayersPanel(QWidget):
             self._sync(key, self.settings.get(key, True))
             layout.addWidget(checkbox)
         note = QLabel(
-            "Choose individual charts in Local files. With all sources off, only the map background remains."
+            "Choose individual charts in Local files."
+            " With all sources off, only the map background remains."
         )
         note.setWordWrap(True)
         layout.addWidget(note)

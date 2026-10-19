@@ -8,11 +8,9 @@ from datetime import timedelta
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QCheckBox,
     QFormLayout,
     QHBoxLayout,
     QHeaderView,
-    QLabel,
     QProgressBar,
     QPushButton,
     QSpinBox,
