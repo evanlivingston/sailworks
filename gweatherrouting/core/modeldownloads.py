@@ -98,6 +98,67 @@ def _parse_estimate_size(text):
     raise ValueError("Unrecognized size estimate: " + text)
 
 
+def _missing_fields(missing):
+    """Weather fields among the missing downloads of one model."""
+    return tuple(
+        f for f in ("wind", "pressure") if any(m.startswith(f) for m in missing)
+    )
+
+
+def _gfs_estimate_mb(bounds, options, fields):
+    """Estimated megabytes for a custom GFS download over the bounds."""
+    from .gribsources.noaagfs import GFS_CUSTOM_HOURS
+
+    source = NOAAGFSSource()
+    source.bounds = bounds
+    steps = options.select(GFS_CUSTOM_HOURS)
+    if not steps:
+        return None
+    return _parse_estimate_size(source._estimate_custom_size(steps, fields))
+
+
+def _hrrr_estimate_mb(bounds, options, fields):
+    """Estimated megabytes for a custom HRRR download over the bounds."""
+    source = NOAAHRRRSource()
+    source.bounds = bounds
+    cap = source._max_hours(source._get_available_cycles(1)[0])
+    steps = options.select(range(cap + 1))
+    if not steps:
+        return None
+    return _parse_estimate_size(source._estimate_custom_size(steps, fields))
+
+
+def _hrdps_estimate_mb(options, fields):
+    """Estimated megabytes for a custom HRDPS download."""
+    available = range(0, 49, 3 if "wind" not in fields else 1)
+    steps = options.select(available)
+    if not steps:
+        return None
+    return _parse_estimate_size(ECCHRDPSource._estimate_custom_size(steps, fields))
+
+
+def _model_estimate_mb(name, bounds, options, fields):
+    """Estimated megabytes for one model, or None when it cannot be estimated."""
+    if name == "NOAA GFS":
+        return _gfs_estimate_mb(bounds, options, fields)
+    if name == "NOAA HRRR":
+        return _hrrr_estimate_mb(bounds, options, fields)
+    if name == "CMC HRDPS":
+        return _hrdps_estimate_mb(options, fields)
+    return None
+
+
+def _estimated_model_mb(name, bounds, selection, fields):
+    """Estimated megabytes for one model; None when it cannot be estimated."""
+    try:
+        options = DownloadOptions(
+            selection.hours, selection.interval, fields, selection.steps
+        )
+        return _model_estimate_mb(name, bounds, options, fields)
+    except Exception:
+        return None
+
+
 def estimate_missing_download(models_gaps, bounds, selection):
     """Local, network-free size estimate for the missing models/fields.
 
@@ -112,51 +173,14 @@ def estimate_missing_download(models_gaps, bounds, selection):
     for name, missing in models_gaps.items():
         if name == IMPORTED or name not in PROVIDERS or not missing:
             continue
-        fields = tuple(
-            f for f in ("wind", "pressure") if any(m.startswith(f) for m in missing)
-        )
+        fields = _missing_fields(missing)
         if not fields:
             continue
-        try:
-            options = DownloadOptions(
-                selection.hours, selection.interval, fields, selection.steps
-            )
-            if name == "NOAA GFS":
-                from .gribsources.noaagfs import GFS_CUSTOM_HOURS
-
-                source = PROVIDERS[name]()
-                source.bounds = bounds
-                steps = options.select(GFS_CUSTOM_HOURS)
-                if not steps:
-                    continue
-                total_mb += _parse_estimate_size(
-                    source._estimate_custom_size(steps, fields)
-                )
-            elif name == "NOAA HRRR":
-                source = PROVIDERS[name]()
-                source.bounds = bounds
-                cap = source._max_hours(source._get_available_cycles(1)[0])
-                steps = options.select(range(cap + 1))
-                if not steps:
-                    continue
-                total_mb += _parse_estimate_size(
-                    source._estimate_custom_size(steps, fields)
-                )
-            elif name == "CMC HRDPS":
-                from .gribsources.eccchrdps import ECCHRDPSource
-
-                available = range(0, 49, 3 if "wind" not in fields else 1)
-                steps = options.select(available)
-                if not steps:
-                    continue
-                total_mb += _parse_estimate_size(
-                    ECCHRDPSource._estimate_custom_size(steps, fields)
-                )
-            else:
-                continue
-            estimated = True
-        except Exception:
+        size_mb = _estimated_model_mb(name, bounds, selection, fields)
+        if size_mb is None:
             continue
+        total_mb += size_mb
+        estimated = True
     if not estimated:
         return None
     if total_mb < 1:
