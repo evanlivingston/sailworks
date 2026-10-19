@@ -76,14 +76,16 @@ class BaseChartRenderer(OverlayRenderer):
 
     def draw_base(self, canvas, cr, charts, palette, fallback=None):
         sources = describe_sources(charts)
-        synchronous = ()
+        # A list, not a tuple: the fallback path expects the chart sequence and
+        # the diagnostics sum over it, so the element type has to be known.
+        synchronous: list = []
         if sources is None and fallback is not None:
             # Keep layer order: only an audited PREFIX may move to the worker.
             # OSM/raster/CM93 and everything above them keep the existing path.
             for index, chart in enumerate(charts):
                 if describe_sources([chart]) is None:
                     sources = describe_sources(charts[:index])
-                    synchronous = charts[index:]
+                    synchronous = list(charts[index:])
                     break
         factor = canvas.get_scale_factor()
         pixels = (canvas.get_allocated_width() + 2 * MARGIN) * (
