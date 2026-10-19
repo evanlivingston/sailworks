@@ -128,7 +128,7 @@ raw tool report, and exits non-zero on `FAIL` so CI can use it.
 
 ### Verdicts
 
-The three outcomes are deliberately distinct, in the summary line and in the result JSON
+The four outcomes are deliberately distinct, in the summary line and in the result JSON
 (`"verdict"` plus `"evaluated"`):
 
 | Verdict | Meaning | Exit |
