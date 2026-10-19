@@ -525,22 +525,32 @@ class WindOverlayRenderer(OverlayRenderer):
 
     def _sampler_for(self, resources):
         provider_ids = tuple(id(p) for _, p in resources["providers"])
+        sampler = self._persistent_sampler
         if (
-            self._persistent_sampler is not None
+            sampler is not None
+            and self._persistent_sampler_provider_ids == provider_ids
+            and len(sampler.indices) == len(resources["providers"])
+        ):
+            resources["sampler"] = sampler
+            return sampler
+        if (
+            sampler is not None
             and self._persistent_sampler_provider_ids == provider_ids
         ):
-            sampler = self._persistent_sampler
-        else:
-            sources = [provider for _, provider in resources["providers"]]
-            sampler = (
-                WeatherSampler(sources)
-                if sources and all(isinstance(source, Grib) for source in sources)
-                else None
-            )
-            if sampler is not None:
-                self.cache_metrics["samplers"] += 1
-            self._persistent_sampler = sampler
-            self._persistent_sampler_provider_ids = provider_ids
+            # GridIndex construction can fail independently of opening GDAL.
+            # Do not cache the omission: build a fresh sampler so the missing
+            # index is attempted again on this pass.
+            logger.info("Rebuilding the weather sampler after a failed index")
+        sources = [provider for _, provider in resources["providers"]]
+        sampler = (
+            WeatherSampler(sources)
+            if sources and all(isinstance(source, Grib) for source in sources)
+            else None
+        )
+        if sampler is not None:
+            self.cache_metrics["samplers"] += 1
+        self._persistent_sampler = sampler
+        self._persistent_sampler_provider_ids = provider_ids
         resources["sampler"] = sampler
         return sampler
 
