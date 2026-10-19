@@ -2,6 +2,8 @@
 layout(location = 0) in vec2 marker;
 layout(location = 1) in vec2 localPoint;
 layout(location = 2) in vec2 wind;
+layout(location = 3) in float validWind;
+layout(location = 4) in float calmShaftY;
 layout(location = 0) out vec4 fragColor;
 layout(std140, binding = 0) uniform buf {
     mat4 qt_Matrix;
@@ -27,11 +29,12 @@ vec3 bucketColor(float speed) {
 }
 
 void main() {
+    if (validWind < 0.999) discard;
     if (any(greaterThan(abs(marker - round(marker)), vec2(0.00001)))) discard;
     if (any(isnan(wind)) || any(isinf(wind))) discard;
     float speed = length(wind);
     // Same true-east/north -> meteorological screen orientation as CPU.
-    vec2 shaft = speed > 0.0 ? vec2(-wind.x, wind.y) / speed : vec2(0,1);
+    vec2 shaft = speed > 0.0 ? vec2(-wind.x, wind.y) / speed : vec2(0,calmShaftY);
     vec2 perpendicular = vec2(-shaft.y, shaft.x);
     vec2 p = vec2(dot(localPoint, perpendicular), dot(localPoint, shaft));
     float distanceToInk = segment(p, vec2(0), vec2(0,20));
