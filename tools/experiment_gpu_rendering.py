@@ -1,4 +1,4 @@
-"""CPU/Metal retained-map feasibility experiment; see docs/gpu-rendering-experiment.md."""
+"""CPU/Metal retained-map feasibility experiment; see docs/history/gpu-rendering-experiment.md."""
 
 import argparse
 import importlib.util

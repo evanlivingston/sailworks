@@ -2,10 +2,10 @@
 
 > **Status: HISTORICAL.** The E2d disposable full-app persistent-field report,
 > written 2026-10-18. Superseded by
-> [ADR-001](adr-001-grib-rendering-architecture.md) D1-D3 and issues #64-#66.
+> [ADR-001](../adr-001-grib-rendering-architecture.md) D1-D3 and issues #64-#66.
 > Evidence, not a plan.
 
-2026-10-18; [plan entry](rendering-performance-plan.md#e2d-contract-disposable-full-app-persistent-field--atomic-symbol-control).
+2026-10-18; [plan entry](../rendering-performance-plan.md#e2d-contract-disposable-full-app-persistent-field--atomic-symbol-control).
 
 ## Decision: promising interaction evidence, lifecycle gate failed
 
@@ -135,7 +135,7 @@ Private raw files: `rendering-m0-app-persistent-reference.json`,
 `rendering-m0-app-persistent-candidate-diagnostic.json`, and
 `rendering-m0-app-persistent-comparison-diagnostic.json` in the OpenCode workspace.
 No private fixture, glyph coordinates or source paths are committed. The
-[sanitized summary](profiles/rendering/2026-10-18/m0-app-persistent-summary.json)
+[sanitized summary](../profiles/rendering/2026-10-18/m0-app-persistent-summary.json)
 records failed command statuses separately from replay evidence.
 
 ## Next gate

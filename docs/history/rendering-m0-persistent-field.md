@@ -1,10 +1,10 @@
 # M0 / E2c: persistent numerical field and exact selection indirection
 
 > **Status: HISTORICAL.** The E2c persistent-field report, written 2026-10-18.
-> Superseded by [ADR-001](adr-001-grib-rendering-architecture.md) D1-D3 and issues
+> Superseded by [ADR-001](../adr-001-grib-rendering-architecture.md) D1-D3 and issues
 > #64-#66. Evidence, not a plan.
 
-2026-10-18. [Plan entry](rendering-performance-plan.md#e2c-contract-persistent-gpu-field--exact-selection-indirection).
+2026-10-18. [Plan entry](../rendering-performance-plan.md#e2c-contract-persistent-gpu-field--exact-selection-indirection).
 This is separate, uncommitted M0 research; #50 stays unchanged and unmerged.
 
 > **Status update (2026-10-19):** PR #50 was merged to `dev` via `b9e2471` / PR #61
@@ -135,7 +135,7 @@ Private evidence files in the OpenCode workspace:
 - `rendering-m0-persistent-prepared.json` and `.npz` (reference and candidate inputs).
 - `rendering-m0-persistent-gpu.json` (native fidelity, upload and cleanup evidence).
 
-The [sanitized summary](profiles/rendering/2026-10-18/m0-persistent-field-summary.json)
+The [sanitized summary](../profiles/rendering/2026-10-18/m0-persistent-field-summary.json)
 records their hashes and key results without source paths or saved coordinates.
 
 **Next experiment, not automatic production work:** integrate persistent field

@@ -1,5 +1,10 @@
 # Preparing weather during zoom animation
 
+> **Status: HISTORICAL.** The zoom-target preparation work, written 2026-10-17; the behaviour it
+> describes is still current, and this document is kept for its reasoning.
+> The R0–R5 sequence in the implementation plan is the authority.
+> Evidence, not a plan.
+
 This extends the pan feature on the same branch; no separate PR is opened.
 CPU remains the default presenter. Sampling, forecast priority, masks, density,
 contouring and geographic projection formulas are unchanged.

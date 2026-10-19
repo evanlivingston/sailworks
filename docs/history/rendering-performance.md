@@ -2,15 +2,15 @@
 
 > **Status: HISTORICAL.** The historical benchmark protocol and its gate values.
 > The canonical roadmap and decision gates are in
-> [rendering-performance-plan.md](rendering-performance-plan.md). Evidence, not a
+> [rendering-performance-plan.md](../rendering-performance-plan.md). Evidence, not a
 > plan.
 
 ## Scope and decision gates
 
-The [canonical performance plan](rendering-performance-plan.md), tracking epic
+The [canonical performance plan](../rendering-performance-plan.md), tracking epic
 [#51](https://github.com/evanlivingston/gweatherrouting/issues/51), defines current
 milestones and experiment decisions. This document describes the historical
-benchmark protocol; the [implementation specification](rendering-implementation-plan.md)
+benchmark protocol; the [implementation specification](../rendering-implementation-plan.md)
 retains its invariants and earlier architecture context. Neither supersedes the
 canonical plan's evidence gates.
 
@@ -19,7 +19,7 @@ or reducing source data ad hoc. The current implementation adds a **benchmark
 tool only**. It does not change application rendering, sampling, source selection,
 or caching behavior.
 
-**Primary reference:** [normal saved startup state](rendering-startup-baseline-2026-10-15.md).
+**Primary reference:** [normal saved startup state](../rendering-startup-baseline-2026-10-15.md).
 The synthetic fixture remains a scaling diagnostic; it does not determine the
 optimization priority for the installed app.
 

@@ -286,7 +286,7 @@ the existing strict containment and inclusive segment-intersection semantics.
 Installations without Shapely retain the OGR path. No coastline simplification or
 environmental-factor removal is involved. The saved full-route comparison improved
 from a 63.79-second median to 41.39 seconds with identical path positions, times
-and source sets; see the [profiling report](routing-profile-2026-10-12.md).
+and source sets; see the [profiling report](history/routing-profile-2026-10-12.md).
 
 Live isochrones render on a background worker into a cached surface, using a
 snapshot of the search history. Main-thread draws paint the completed surface;

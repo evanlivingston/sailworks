@@ -1,7 +1,7 @@
 # A0h: resident numerical worker and clean timing windows
 
 > **Status: HISTORICAL.** The A0h resident-numerical-worker report, written
-> 2026-10-18. Superseded by [ADR-001](adr-001-grib-rendering-architecture.md)
+> 2026-10-18. Superseded by [ADR-001](../adr-001-grib-rendering-architecture.md)
 > D1-D3 and issues #64-#66. Evidence, not a plan.
 
 ## Outcome
@@ -16,8 +16,8 @@ Observed new-area preparation is **1.18–1.31 s with retained sources versus
 This supports source residency in this workload, not whole-application speedup,
 presentation latency, statistical significance or the reference application equivalence.
 
-The canonical contract/decision is in [the performance plan](rendering-performance-plan.md).
-See [machine-readable evidence](profiles/rendering/2026-10-18/a0h-resident-worker-summary.json).
+The canonical contract/decision is in [the performance plan](../rendering-performance-plan.md).
+See [machine-readable evidence](../profiles/rendering/2026-10-18/a0h-resident-worker-summary.json).
 All forecast data, raw images, timing samples, commands and logs remain outside Git.
 
 ## Implementation

@@ -1,5 +1,10 @@
 # R3 slice: bounded cross-view weather source retention
 
+> **Status: HISTORICAL.** The R3 bounded cross-view retention slice, written 2026-10-17; the
+> behaviour it describes is still current, and this document is kept for its
+> reasoning. The R0–R5 sequence in the implementation plan is the authority.
+> Evidence, not a plan.
+
 `WindOverlayRenderer` now retains up to 64 selected forecast handles across
 display jobs instead of two. Decoded `GridIndex` bands stay under the existing
 128 MiB retention budget; deselected or file-changed sources are closed

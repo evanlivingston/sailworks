@@ -1,5 +1,10 @@
 # R2 slice: background Qt base-chart portrayal
 
+> **Status: HISTORICAL.** The R2 base-chart-worker slice, written 2026-10-17; the
+> behaviour it describes is still current, and this document is kept for its
+> reasoning. The R0–R5 sequence in the implementation plan is the authority.
+> Evidence, not a plan.
+
 The Qt map now prepares an audited prefix of base chart layers on a background
 worker. GSHHS and `SimpleChartDrawer` vectors are supported. OSM, raster, CM93,
 custom subclasses and all layers above the first unsupported layer stay on the
@@ -36,7 +41,7 @@ offscreen prediction and data-pipeline restructuring remain unimplemented.
 ## Matched measurement — 2026-10-16
 
 Same private October 16 snapshot and GPU startup replay as
-[embedded rendering](gpu-embedded-rendering.md), native Metal/DPR 2. Three runs per
+[embedded rendering](../gpu-embedded-rendering.md), native Metal/DPR 2. Three runs per
 scenario, **48 frames** each. Baseline uses `--synchronous-base-charts`; candidate
 uses the worker. No network or instrument access. These results must not be
 compared numerically to the earlier 24-frame runs as though the protocol matched.

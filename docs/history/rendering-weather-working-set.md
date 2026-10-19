@@ -1,5 +1,10 @@
 # R3 slice: view-independent weather field working set
 
+> **Status: HISTORICAL.** The R3 view-independent field working set, written 2026-10-17; the
+> behaviour it describes is still current, and this document is kept for its
+> reasoning. The R0–R5 sequence in the implementation plan is the authority.
+> Evidence, not a plan.
+
 `WindOverlayRenderer` now keys sampled weather fields by source set, forecast
 instant, field and geographic extent — not by exact screen center. Previously
 sampled bounds are reused when they contain a new request; resampled fill grids

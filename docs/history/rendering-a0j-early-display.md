@@ -2,7 +2,7 @@
 
 > **Status: HISTORICAL.** The A0j early-display report, written 2026-10-19; the
 > visual blocker it records was repaired by [A0k](rendering-a0k-shader-safety.md).
-> Superseded by [ADR-001](adr-001-grib-rendering-architecture.md) and the issue
+> Superseded by [ADR-001](../adr-001-grib-rendering-architecture.md) and the issue
 > program. Evidence, not a plan.
 
 **Follow-up:** [A0k](rendering-a0k-shader-safety.md) fixes the missing-data overlay
@@ -115,5 +115,5 @@ Two of three native attempts used; unused retry is not consumed. Production
 startup, complete layers, broader interaction, memory plateau and presentation
 goals remain open. No commits, pushes, PR changes or merges performed.
 
-See the [canonical decision ledger](rendering-performance-plan.md) and
-[machine-readable evidence](profiles/rendering/2026-10-19/a0j-early-display-summary.json).
+See the [canonical decision ledger](../rendering-performance-plan.md) and
+[machine-readable evidence](../profiles/rendering/2026-10-19/a0j-early-display-summary.json).

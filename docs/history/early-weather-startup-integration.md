@@ -2,14 +2,14 @@
 
 > **Status: HISTORICAL.** The M0/A0l integration checkpoint for the opt-in
 > early-weather start-up slice, written 2026-10-19. Superseded by
-> [ADR-001](adr-001-grib-rendering-architecture.md) and issues #62-#70. Read for
+> [ADR-001](../adr-001-grib-rendering-architecture.md) and issues #62-#70. Read for
 > evidence; do not follow as a plan.
 
 Current milestone: M0/A0l, opt-in early-weather startup on `dev` (1f14649).
 
 This is the integration checkpoint for the early-weather startup slice. The
 canonical plan and decision ledger for the wider rendering effort is
-[the canonical performance plan](rendering-performance-plan.md); the earlier
+[the canonical performance plan](../rendering-performance-plan.md); the earlier
 A0i-A0k experiment reports and their evidence are preserved alongside it.
 
 ## Integration contract
@@ -69,4 +69,4 @@ as a main-application backend. Individual chart loaders/portrayal remain capable
 of blocking GUI work; next work should target measured controller/chart costs,
 not silently transplant the research harness. The branch is committed and pushed
 for review in the fork; it is not merged.
-See [integration behavior, evidence and limits](early-weather-startup.md).
+See [integration behavior, evidence and limits](../early-weather-startup.md).

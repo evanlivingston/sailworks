@@ -2,7 +2,7 @@
 
 > **Status: HISTORICAL.** The A0i independent-numerical-startup report, written
 > 2026-10-19. Superseded by
-> [ADR-001](adr-001-grib-rendering-architecture.md) and the issue program.
+> [ADR-001](../adr-001-grib-rendering-architecture.md) and the issue program.
 > Evidence, not a plan.
 
 ## Current outcome: user-authorized regeneration
@@ -49,7 +49,7 @@ Numerical open/task/close share a single owner thread; the service asserts no Qt
 application and no legacy window. Both workers exit 0 without timeout. Raw data
 remain private in `rendering-a0i-current-reference-1*` and
 `rendering-a0i-current-headless-1*`; fixture is `rendering-current-fixture-2026-10-19`.
-See [fresh-baseline summary](profiles/rendering/2026-10-19/a0i-current-startup-summary.json).
+See [fresh-baseline summary](../profiles/rendering/2026-10-19/a0i-current-startup-summary.json).
 
 Final targeted validation: **34 tests and 32 subtests pass**, Black on four changed
 Python files, changed-file whitespace checks, summary JSON and raw-evidence
@@ -83,7 +83,7 @@ a new, separately versioned baseline.
 
 Utility validation: five tests/five subtests and Black on two Python files pass.
 The private `fixture-restore-result-1.json` lists all restored and still-missing
-paths. See [restoration summary](profiles/rendering/2026-10-19/fixture-restoration-summary.json).
+paths. See [restoration summary](../profiles/rendering/2026-10-19/fixture-restoration-summary.json).
 The failed preflight and missing counts below describe the earlier pre-restoration
 state, not the current contents.
 
@@ -153,7 +153,7 @@ and new oracle capture. A replacement is not an identical comparison with A0h.
 Once an approved verified fixture is available, run the headless/concurrent-chart
 experiment before making any readiness or scene-integration claims.
 
-See [the canonical contract](rendering-performance-plan.md) and
-[machine-readable checkpoint](profiles/rendering/2026-10-19/a0i-independent-startup-summary.json).
+See [the canonical contract](../rendering-performance-plan.md) and
+[machine-readable checkpoint](../profiles/rendering/2026-10-19/a0i-independent-startup-summary.json).
 Production, routing and PR #50 remain unchanged. No commits, pushes, PR changes or
 merges were performed; no workload process was left running.

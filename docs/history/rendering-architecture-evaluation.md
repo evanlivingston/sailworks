@@ -3,7 +3,7 @@
 > **Status: HISTORICAL.** The A0a-A0k experiment record, written 2026-10-17 to
 > 2026-10-19, retained in full including the negative results. Planning and
 > decisions now live in
-> [ADR-001](adr-001-grib-rendering-architecture.md) and epic #51; the
+> [ADR-001](../adr-001-grib-rendering-architecture.md) and epic #51; the
 > implementation program is issues #62-#70. Evidence, not a plan. Do not start
 > new A0 slices from this document.
 
@@ -19,7 +19,7 @@ Authorized recovery has since restored 4,006 exact files, with the manifest and
 existing inputs preserved. Thirty marine cache metadata sidecars still lack
 exact local copies. The source of the loss is unknown; no fixture was overwritten
 or silently replaced. Full verification remains blocked; see the
-[partial restoration summary](profiles/rendering/2026-10-19/fixture-restoration-summary.json).
+[partial restoration summary](../profiles/rendering/2026-10-19/fixture-restoration-summary.json).
 This historical recovery blocker is superseded by the user's authorization for a
 new current-data baseline. Its first headless numerical/chart-startup mechanism
 passes, without yet integrating early live display; see the
@@ -29,7 +29,7 @@ Restore the original verified inputs or explicitly authorize a new versioned
 fixture/oracle before validating independent numerical startup. Cached A0h output
 arrays cannot replace the original input forecasts for a startup/decoding test.
 See [A0i checkpoint](rendering-a0i-independent-numerical.md) and
-[summary](profiles/rendering/2026-10-19/a0i-independent-startup-summary.json).
+[summary](../profiles/rendering/2026-10-19/a0i-independent-startup-summary.json).
 No early numerical-display integration or startup improvement is established.
 
 ## Previous checkpoint — A0h
@@ -48,7 +48,7 @@ startup and remaining chart/CPU weather work are not solved. The old ~295 ms tai
 does not recur in this sample, but heartbeat/render signals are not presentation
 and broader tail behavior is unproven. Global memory and scrub/layer/zoom acceptance
 remain open. See the [A0h report](rendering-a0h-resident-worker.md) and
-[summary](profiles/rendering/2026-10-18/a0h-resident-worker-summary.json).
+[summary](../profiles/rendering/2026-10-18/a0h-resident-worker-summary.json).
 Decision: support numerical ownership/clean timing, not whole-architecture rollout.
 
 ## Previous checkpoint — A0g
@@ -68,7 +68,7 @@ and heartbeat tails reach ~295 ms. No presentation, global memory plateau or
 the reference application-equivalent performance acceptance exists. The overall unattended budget
 is exhausted and all children are reaped. See the
 [progress/checkpoint](rendering-a0g-progress.md) and
-[machine-readable summary](profiles/rendering/2026-10-18/a0g-unattended-summary.json).
+[machine-readable summary](../profiles/rendering/2026-10-18/a0g-unattended-summary.json).
 Earlier sections below are historical contracts and outcomes, not current blockers.
 
 ## Architectural question
@@ -246,7 +246,7 @@ Private artifacts in the OpenCode workspace: `rendering-a0a-reference.json`,
 `rendering-a0a-candidate.json`, and `rendering-a0a-resources/` (checksummed image/
 numerical resources, oracle and metadata). They contain private scene data and
 remain outside Git. The sanitized
-[A0a summary](profiles/rendering/2026-10-18/a0a-vertical-summary.json) preserves key
+[A0a summary](../profiles/rendering/2026-10-18/a0a-vertical-summary.json) preserves key
 evidence, limitations and command-status uncertainty.
 
 ## Architecture review / next decision
@@ -302,11 +302,11 @@ pixels prove movement. Selection/missing-data acceptance was not relaxed.
 
 **Decision: stop/narrow at the second-destination count gate.** Diagnose actual
 candidate/reference counts and missing coverage before changing workload or
-portrayal. See [A0f evidence](profiles/rendering/2026-10-18/a0f-persistent-summary.json).
+portrayal. See [A0f evidence](../profiles/rendering/2026-10-18/a0f-persistent-summary.json).
 All work is experiment-only; Qt remains, production/#50 and routing are untouched.
 
 Initial A0e was drafted but **not accepted**: see the
-[new-area preparation result](profiles/rendering/2026-10-18/a0e-coverage-load-summary.json)
+[new-area preparation result](../profiles/rendering/2026-10-18/a0e-coverage-load-summary.json)
 and the canonical plan's A0e contract/outcome. Scheduler/bundle/process checks
 passed (27 tests, ten subtests), but both controller attempts failed. The second
 reached the real preparation app and rejected its viewport dimensions/scale before
@@ -325,7 +325,7 @@ native-scalar serialization correction, the second controller and preparation
 process both exited 0. All 33 forecasts were retained, 25 destination numerical
 selection/endpoint/anchor/count comparisons passed, and full loaded pixels matched
 the destination reference byte-for-byte. No destination bundle existed before
-the request. See [follow-up evidence](profiles/rendering/2026-10-18/a0e-followup-summary.json).
+the request. See [follow-up evidence](../profiles/rendering/2026-10-18/a0e-followup-summary.json).
 
 The GUI recorded 2,448 heartbeat ticks (p95 gap 17.2 ms, max 79.8 ms, two gaps over
 50 ms) and 32 camera input-state changes during a deliberate preparation hold.
@@ -365,7 +365,7 @@ that unavailable composition and byte-exact original composition on resident
 return, both before and after the timed replay. No timed input readbacks were
 added. Fifteen targeted tests/ten subtests and Black on four files passed.
 
-Evidence: [A0d safety summary](profiles/rendering/2026-10-18/a0d-coverage-safety-summary.json).
+Evidence: [A0d safety summary](../profiles/rendering/2026-10-18/a0d-coverage-safety-summary.json).
 Raw resources/reports remain outside Git. The earlier interrupted command deleted
 the prior `rendering-a0c-*` local raw artifacts; existing A0c versioned summaries
 are historical evidence, not newly reverified results. The new resource export is

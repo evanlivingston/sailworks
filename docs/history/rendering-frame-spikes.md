@@ -1,5 +1,10 @@
 # UI-thread frame-spike investigation
 
+> **Status: HISTORICAL.** The UI-thread frame-spike investigation, written 2026-10-17; its
+> conclusions still stand, and this document is kept for the evidence behind
+> them. The R0–R5 sequence in the implementation plan is the authority.
+> Evidence, not a plan.
+
 This follows the pan/zoom readiness improvements on the same feature branch.
 It targets movement-time UI work, not general CI cleanup. CPU presentation
 remains the default.

@@ -2,10 +2,10 @@
 
 > **Status: HISTORICAL.** The E1/E1b native-float-transport record, written
 > 2026-10-18; its 2e-5 gate result is the evidence ADR-001 D1 relies on. The work
-> is superseded by [ADR-001](adr-001-grib-rendering-architecture.md) D1 and issue
+> is superseded by [ADR-001](../adr-001-grib-rendering-architecture.md) D1 and issue
 > #64. Evidence, not a plan.
 
-2026-10-18; [plan experiment index](rendering-performance-plan.md#experiment-contracts-and-results-b1-e1-e3),
+2026-10-18; [plan experiment index](../rendering-performance-plan.md#experiment-contracts-and-results-b1-e1-e3),
 [epic #51](https://github.com/evanlivingston/gweatherrouting/issues/51).
 
 ## Decision
@@ -15,7 +15,7 @@ Explicit shader interpolation passed the unchanged accuracy gate; hardware
 linear filtering did not. Keep both findings. A broad Metal/C++ rewrite is not
 justified, and a production native-texture map integration is not proven.
 
-The [sanitized mechanism summary](profiles/rendering/2026-10-18/m0-mechanism-summary.json)
+The [sanitized mechanism summary](../profiles/rendering/2026-10-18/m0-mechanism-summary.json)
 retains key evidence without publishing private workload coordinates or paths.
 
 ## Experiment history and budgets

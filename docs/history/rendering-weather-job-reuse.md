@@ -1,5 +1,10 @@
 # R3 slice: reuse weather resources within a display job
 
+> **Status: HISTORICAL.** The R3 weather job-resource reuse slice, written 2026-10-17; the
+> behaviour it describes is still current, and this document is kept for its
+> reasoning. The R0–R5 sequence in the implementation plan is the authority.
+> Evidence, not a plan.
+
 `WindOverlayRenderer` now reuses private forecast handles, metadata indexes, and
 one shared `WeatherSampler` across a job's native wind, native pressure, mixed-grid
 pressure resampling, and mixed-grid wind-fill passes. No shared sampling/routing

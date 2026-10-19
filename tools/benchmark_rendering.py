@@ -1,4 +1,4 @@
-"""Isolated Qt rendering baselines. See docs/rendering-performance.md."""
+"""Isolated Qt rendering baselines. See docs/history/rendering-performance.md."""
 
 import argparse
 import hashlib

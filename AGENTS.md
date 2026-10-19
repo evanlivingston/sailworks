@@ -37,6 +37,10 @@ feature branches as focused follow-up commits; avoid rewriting shared history.
 - The target architecture is decided in `docs/adr-001-grib-rendering-architecture.md`.
   Read it first, then the issue it points at. The implementation of that ADR is the
   work program in issues #62-#70; work one issue at a time.
+- `docs/README.md` is the documentation index. Read it before browsing `docs/`.
+  It separates the current working set from `docs/history/`, which holds
+  completed-work records and experiment evidence: read those for why a decision
+  was made, never as a plan.
 - `docs/rendering-performance-plan.md` is the canonical roadmap and
   `docs/rendering-implementation-plan.md` holds the detailed R0-R5 sequence;
   older rendering plans/reports remain historical specifications and evidence.

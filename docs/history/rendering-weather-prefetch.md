@@ -1,5 +1,10 @@
 # R4 slice: bounded directional weather prefetch
 
+> **Status: HISTORICAL.** The R4 bounded directional prefetch slice, written 2026-10-17; the
+> behaviour it describes is still current, and this document is kept for its
+> reasoning. The R0–R5 sequence in the implementation plan is the authority.
+> Evidence, not a plan.
+
 The shared overlay scheduler now supports speculative frames, and the wind
 renderer prefetches one frame ahead of release motion. No sampling, routing,
 priority, interpolation, mask, density or contour code was changed. Prefetch

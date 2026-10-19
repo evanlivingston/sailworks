@@ -12,7 +12,7 @@ This file does three jobs, and each has one home:
 | --- | --- |
 | The canonical roadmap, current status and decision ledger | this file, starting at [Current checkpoint](#current-checkpoint) |
 | The architecture decision, and the work program that implements it | [ADR-001](adr-001-grib-rendering-architecture.md), then issues [#62–#70](milestones.md) |
-| The A0a–A0l experiment record, including the negative results | [`rendering-architecture-evaluation.md`](rendering-architecture-evaluation.md), the per-slice reports, and the machine-readable summaries under `docs/profiles/rendering/` |
+| The A0a–A0l experiment record, including the negative results | [`rendering-architecture-evaluation.md`](history/rendering-architecture-evaluation.md), the per-slice reports, and the machine-readable summaries under `docs/profiles/rendering/` |
 | The M0 mechanism-probe records (B1, E1-E3) | the per-experiment records linked from [Experiment contracts and results](#experiment-contracts-and-results-b1-e1-e3) |
 | The R0–R5 implementation detail, invariants and measurement contract | [`rendering-implementation-plan.md`](rendering-implementation-plan.md) |
 
@@ -45,12 +45,12 @@ For the wider documentation map, see [the documentation index](README.md).
   architectures, not isolated transport/worker optimizations. A0a-A0l are complete
   as experiments. The per-slice contracts, budgets, gates, negative results and
   decisions are in the [decision log](#decision-log) below; the narrative record is
-  [`rendering-architecture-evaluation.md`](rendering-architecture-evaluation.md)
+  [`rendering-architecture-evaluation.md`](history/rendering-architecture-evaluation.md)
   (A0a, A0b, A0c and the A0d-A0i checkpoints), the per-slice reports
-  ([A0g](rendering-a0g-progress.md), [A0h](rendering-a0h-resident-worker.md),
-  [A0i](rendering-a0i-independent-numerical.md),
-  [A0j](rendering-a0j-early-display.md), [A0k](rendering-a0k-shader-safety.md),
-  [A0l](early-weather-startup-integration.md)) and the machine-readable summaries
+  ([A0g](history/rendering-a0g-progress.md), [A0h](history/rendering-a0h-resident-worker.md),
+  [A0i](history/rendering-a0i-independent-numerical.md),
+  [A0j](history/rendering-a0j-early-display.md), [A0k](history/rendering-a0k-shader-safety.md),
+  [A0l](history/early-weather-startup-integration.md)) and the machine-readable summaries
   under `docs/profiles/rendering/`
   ([A0b](profiles/rendering/2026-10-18/a0b-wholepath-summary.json),
   [A0c](profiles/rendering/2026-10-18/a0c-timeline-scrub-summary.json),
@@ -65,16 +65,16 @@ For the wider documentation map, see [the documentation index](README.md).
   [`21b40d5`](https://github.com/evanlivingston/gweatherrouting/commit/21b40d5)
   (user-authorized scope extension) and
   [`175096d`](https://github.com/evanlivingston/gweatherrouting/commit/175096d)
-  (CI-review correction). See its [residency evidence](gpu-weather-residency.md).
+  (CI-review correction). See its [residency evidence](history/gpu-weather-residency.md).
 - **Starting code:** fork `origin/dev`, `1f1464971db340d5c5581a4d6452fc61e9d7754a`.
   PR #50 was a separate experimental candidate, not this baseline.
 - **Completed:** B1 render-signal instrumentation, E3a/E3b real-data residency and
   staging probes, E1/E1b native float transport/sampling probes, E2a/E2b retained
   field controls and E2c native field/selection indirection. See
-  [B1 evidence](rendering-m0-native-probe.md), [residency evidence](rendering-m0-residency.md)
-  [texture evidence](rendering-m0-float-textures.md),
-  [retained-field evidence](rendering-m0-retained-field.md) and
-  [persistent-resource evidence](rendering-m0-persistent-field.md).
+  [B1 evidence](history/rendering-m0-native-probe.md), [residency evidence](history/rendering-m0-residency.md)
+  [texture evidence](history/rendering-m0-float-textures.md),
+  [retained-field evidence](history/rendering-m0-retained-field.md) and
+  [persistent-resource evidence](history/rendering-m0-persistent-field.md).
 - **Not completed:** statistically useful baseline, presentation measurement,
   full E2/host integration, target ratification, broad E3 coverage or demonstrated
   end-to-end performance improvement. M0 is not complete merely because these
@@ -88,7 +88,7 @@ Reuse a verified private startup snapshot, including its source ordering,
 checksums, frozen forecast clock, saved settings/layout, density, and layers.
 The [October 15 report](rendering-startup-baseline-2026-10-15.md) is historical
 evidence, not a current baseline. B1 located and verified the existing October 16
-snapshot referenced by [continuous-pan work](rendering-pan-prediction.md). Its
+snapshot referenced by [continuous-pan work](history/rendering-pan-prediction.md). Its
 content hash matches the historical snapshot, but its frozen clock is October 16
 08:00; clock and content identity must both match for comparison. If unavailable
 or no longer representative, record the blocker and version any replacement;
@@ -173,12 +173,12 @@ must be distinguished from a current, correctly thinned scene. Investigate the
 concrete real-forecast eligibility blocker first (E3a below). This reorders M0
 experiments, not production milestones.
 
-Canonical records: the [E2 review and next gate](rendering-m0-retained-field.md)
-and the [residency review](rendering-m0-residency.md).
+Canonical records: the [E2 review and next gate](history/rendering-m0-retained-field.md)
+and the [residency review](history/rendering-m0-residency.md).
 
 ### E2a contract: retained field, current selection (not a frozen scene)
 
-- **Canonical record:** [E2a result and review](rendering-m0-retained-field.md)
+- **Canonical record:** [E2a result and review](history/rendering-m0-retained-field.md)
   holds the full question, mechanism, reference, preparation stall, workload,
   budget, success/stop conditions, result and decision.
 - **Question:** can repeated weather sampling be removed from pan restaging while
@@ -192,7 +192,7 @@ and the [residency review](rendering-m0-residency.md).
 
 ### E2b contract: native retained-field control, not production migration
 
-- **Canonical record:** [E2b result](rendering-m0-retained-field.md) holds the
+- **Canonical record:** [E2b result](history/rendering-m0-retained-field.md) holds the
   full scope, workload, gates, budget, decision and outcome.
 - **Question:** does E2a's mechanism improve numerical-ready render observations
   during real input, or does GUI assembly/image upload remain dominant?
@@ -203,7 +203,7 @@ and the [residency review](rendering-m0-residency.md).
 
 ### E2c contract: persistent GPU field / exact selection indirection
 
-- **Canonical record:** [E2c result](rendering-m0-persistent-field.md) holds the
+- **Canonical record:** [E2c result](history/rendering-m0-persistent-field.md) holds the
   full hypothesis, scope, fidelity reference, ownership/measurement rules, budget,
   stop condition, results table and next gate.
 - **Hypothesis:** field values can remain in one GPU resource while a compact
@@ -219,7 +219,7 @@ and the [residency review](rendering-m0-residency.md).
 
 ### E2d contract: disposable full-app persistent-field / atomic-symbol control
 
-- **Canonical record:** [E2d result](rendering-m0-app-persistent-field.md) holds
+- **Canonical record:** [E2d result](history/rendering-m0-app-persistent-field.md) holds
   the full hypothesis, scope, fidelity, boundary, measurement rules, budget,
   decision gate and the failed lifecycle record.
 - **Hypothesis:** a published immutable wider field allows current-view selection
@@ -232,7 +232,7 @@ and the [residency review](rendering-m0-residency.md).
 
 ### E3a experiment contract: real-forecast decoded-band working set
 
-- **Canonical record:** [E3a residency finding](rendering-m0-residency.md) holds
+- **Canonical record:** [E3a residency finding](history/rendering-m0-residency.md) holds
   the full question, scope, non-goals, budget, evidence list, fidelity gate,
   success/stop conditions, measurement table and review.
 - **Question:** does the user's actual forecast selection require the potential
@@ -245,7 +245,7 @@ and the [residency review](rendering-m0-residency.md).
 
 ### E3b contract: actual PR #50 staging, without changing the PR
 
-- **Canonical record:** [E3b follow-up](rendering-m0-residency.md) holds the full
+- **Canonical record:** [E3b follow-up](history/rendering-m0-residency.md) holds the full
   question, scope, checks, budget, non-goals, success/stop conditions, results and
   decision.
 - **Question:** do the actual native-node union, temporal endpoint selection, barb
@@ -261,7 +261,7 @@ and the [residency review](rendering-m0-residency.md).
 
 ### E1 experiment contract: native float textures and sampling
 
-- **Canonical record:** [E1/E1b result](rendering-m0-float-textures.md) holds the
+- **Canonical record:** [E1/E1b result](history/rendering-m0-float-textures.md) holds the
   full question, scope, budget, fidelity requirements, evidence list, decision
   gate, attempt history and results.
 - **Question:** can the installed PySide/Qt expose native float upload, retention,
@@ -276,7 +276,7 @@ and the [residency review](rendering-m0-residency.md).
 
 ### E1b contract: explicit interpolation, not a looser sampling gate
 
-- **Canonical record:** [E1b result and budget review](rendering-m0-float-textures.md).
+- **Canonical record:** [E1b result and budget review](history/rendering-m0-float-textures.md).
 - **Change:** a separately identified manual sampling shader was added to the same
   generated-field probe; the hardware-linear mode and the unchanged 2e-5
   accuracy threshold were both retained.
@@ -288,7 +288,7 @@ and the [residency review](rendering-m0-residency.md).
 
 ### B1 experiment contract and outcome
 
-- **Canonical record:** [B1 probe result and review](rendering-m0-native-probe.md)
+- **Canonical record:** [B1 probe result and review](history/rendering-m0-native-probe.md)
   holds the full question, scope, non-goals, budget, mechanism checks, timing
   endpoint, correctness requirements, success/stop conditions and the attempt
   outcomes.
@@ -387,7 +387,7 @@ or merge. Ask before pushing/creating PRs when not already authorized.
 The A0 slice contracts, budgets, gates, negative results and per-slice decisions,
 in reverse chronological order. This log is the canonical record of the A0
 program; the narrative version of the same evidence is
-[`rendering-architecture-evaluation.md`](rendering-architecture-evaluation.md),
+[`rendering-architecture-evaluation.md`](history/rendering-architecture-evaluation.md),
 with the per-slice reports and the machine-readable summaries under
 `docs/profiles/rendering/` alongside it. Do not start new A0 slices from here,
 and do not read any single entry as a current work item — the live work program
@@ -489,7 +489,7 @@ is issues [#62–#70](milestones.md).
   One of two full-display slots used; no fourth diagnostic or unused full repeat.
   Reevaluate next work around application integration/chart startup, not more
   transport optimization or global performance claims. Evidence:
-  [A0k correction](rendering-a0k-shader-safety.md).
+  [A0k correction](history/rendering-a0k-shader-safety.md).
 - Final A0k targeted validation: 43 tests/38 subtests, Black on five changed Python
   files, whitespace/JSON, 44 local links and raw-evidence consistency pass. Seven
   corrected transparent cases pass CPU support/palette gates; the fresh-display
@@ -542,7 +542,7 @@ is issues [#62–#70](milestones.md).
   portrayal diagnosis/repair with an independent CPU/transparent-background
   oracle, rather than preserving this flawed GPU reference. Two of three native
   attempt slots used; do not consume the third just to repeat a known-bad view.
-  Evidence: [A0j report](rendering-a0j-early-display.md).
+  Evidence: [A0j report](history/rendering-a0j-early-display.md).
 - Final targeted validation: 37 tests/38 subtests, Black on two changed Python
   files, whitespace/JSON and 39 local links pass. Raw-evidence checks confirm
   process exits, early-readback ordering, pan/return, exact final pixels and the
@@ -663,7 +663,7 @@ is issues [#62–#70](milestones.md).
   or obtain explicit approval for a new, separately identified fixture/oracle.
   Focused source/protocol tests and a no-worker-on-invalid-fixture regression are
   included; 42 tests/39 subtests, Black on two Python files, whitespace/JSON and
-  42 local links pass. Evidence: [A0i checkpoint](rendering-a0i-independent-numerical.md),
+  42 local links pass. Evidence: [A0i checkpoint](history/rendering-a0i-independent-numerical.md),
   [summary](profiles/rendering/2026-10-19/a0i-independent-startup-summary.json).
 
 ### A0h contract — resident data worker, deferred fidelity, matched timing
@@ -734,7 +734,7 @@ is issues [#62–#70](milestones.md).
   bottlenecks; propose independent chart/numerical publication and removal of the
   legacy startup dependency under a new contract. No automatic later milestones,
   production/#50/routing edits, commits, pushes, PR changes or merges.
-  Evidence: [A0h report](rendering-a0h-resident-worker.md),
+  Evidence: [A0h report](history/rendering-a0h-resident-worker.md),
   [summary](profiles/rendering/2026-10-18/a0h-resident-worker-summary.json).
 
 ### A0g unattended continuation contract — diagnose, finish repeated loads, freshness
@@ -841,7 +841,7 @@ is issues [#62–#70](milestones.md).
   in one owning worker thread, keep oracle validation outside timed interaction,
   and attribute GUI/render tails without correctness readbacks. No automatic
   later milestones, production/#50 edits, source/routing changes or commits/pushes.
-  Full progress and limits: [A0g checkpoint](rendering-a0g-progress.md),
+  Full progress and limits: [A0g checkpoint](history/rendering-a0g-progress.md),
   [A0g summary](profiles/rendering/2026-10-18/a0g-unattended-summary.json).
 
 ### A0f contract — persistent producer and visible, explicitly partial loading
