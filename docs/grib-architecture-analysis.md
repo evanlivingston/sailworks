@@ -185,8 +185,9 @@ main-thread isolation.
 
 Decisions and gap disposition are recorded in
 [`adr-001-grib-rendering-architecture.md`](adr-001-grib-rendering-architecture.md).
-Two items in the list below were changed by that ADR: GPU spatial interpolation is
-pending decision D2, and GPU-side decode is explicitly deferred (D5).
+Two items in the list below were changed by that ADR: GPU spatial interpolation was
+approved on 2026-10-19 (D2), bounded by the existing 2e-5 gate, and GPU-side decode is
+explicitly deferred (D5).
 
 ### VS MODERN GPU-OPTIMAL ARCHITECTURE
 
@@ -211,7 +212,7 @@ second, competing list.
 | --- | --- | --- | --- |
 | G1 | Decode location: CPU (GDAL -> NumPy) | D5 -- deferred, no near-term issue | — |
 | G2 | Data residency: CPU-side caches, no GPU-resident field | D1 | #64 |
-| G3 | Spatial interpolation: CPU Python loops | D2 -- open, pending user decision | #65 |
+| G3 | Spatial interpolation: CPU Python loops | D2 -- decided 2026-10-19, GPU, bounded at 2e-5 | #65 |
 | G4 | Pipeline model: strictly serial stages | D3 | #66 |
 | G5 | Time scrubbing: two-timestep, view-specific restage | D4 | #67 |
 | G6 | Memory management: per-worker CPU byte limits, no GPU budget | D1 | #64 |
@@ -261,8 +262,8 @@ the issue that owns the work is listed alongside.
 
 1. **GPU-Resident Numerical Weather Fields (Highest Impact)** — D1, issue #64.
    Eliminate the per-frame CPU->GPU upload during time scrubbing and panning.
-2. **GPU Spatial Sampling (High Impact)** — D2, issue #65. **Pending user decision**;
-   the 2e-5 accuracy gate is the bound if it proceeds. See the note above: the
+2. **GPU Spatial Sampling (High Impact)** — D2, issue #65. **Decided 2026-10-19: do it
+   on the GPU**, bounded by the existing 2e-5 accuracy gate. See the note above: the
    reference does this on the CPU, so this is an advance, not parity.
 3. **Asynchronous Double-Buffered Pipeline (High Impact)** — D3, issue #66.
    Preparation of frame N+1 overlaps presentation of frame N.

@@ -234,6 +234,13 @@ fewer synchronous rebuild/upload stalls; no holes or changed chart selection.
 4. Keep the routing/sampling numerical interface stable. If implementation must
    touch shared sampling/routing code, run the full suite and differential tests,
    including selected-source provenance and valid-time behavior.
+   **Amendment (ADR-001 D2, 2026-10-19).** *Spatial interpolation may be evaluated on
+   the GPU against a resident numeric field*, provided that values match the reference
+   sampler within **2e-5**, missing/mask semantics match exactly (a missing sample is
+   never filled from a neighbor), and global-grid wraparound behavior matches. The
+   reference sampler remains the authority and the CPU fallback. This amendment moves
+   *where* interpolation is evaluated; it does not relax any numerical gate, and it is
+   an advance beyond the reference implementation, which samples on the CPU.
 
 Likely touch points: `rendering/windrenderer.py`, `rendering/overlayrenderer.py`,
 `rendering/encrenderer.py`, and display-facing adapters around

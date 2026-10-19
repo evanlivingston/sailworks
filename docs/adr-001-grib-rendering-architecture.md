@@ -1,6 +1,7 @@
 # ADR-001: GRIB rendering architecture — reconciliation and decisions
 
-- **Status:** Proposed. D2 is **open** and requires user confirmation (see §4.2).
+- **Status:** Accepted. D2 was decided on 2026-10-19 in favour of option (a); the
+  amendment is applied in §6.
 - **Date:** 2026-10-19
 - **Supersedes:** nothing. **Amends:** [`rendering-implementation-plan.md`](rendering-implementation-plan.md)
   (the R0–R5 sequence and the invariants at lines 43–70), as recorded in §6.
@@ -73,7 +74,7 @@ The seven gaps, as named in [`grib-architecture-analysis.md`](grib-architecture-
 | --- | --- | --- | --- | --- |
 | G1 | Decode location: CPU (GDAL → NumPy) | **Deferred** | D5 | — |
 | G2 | Data residency: CPU-side caches, no GPU-resident field | **Closed** | D1 | [#64](https://github.com/evanlivingston/gweatherrouting/issues/64) |
-| G3 | Spatial interpolation: CPU Python loops | **Closed (pending D2)** | D2 | [#65](https://github.com/evanlivingston/gweatherrouting/issues/65) |
+| G3 | Spatial interpolation: CPU Python loops | **Closed** | D2 | [#65](https://github.com/evanlivingston/gweatherrouting/issues/65) |
 | G4 | Pipeline model: strictly serial stages | **Closed** | D3 | [#66](https://github.com/evanlivingston/gweatherrouting/issues/66) |
 | G5 | Time scrubbing: two-timestep, view-specific restage | **Closed** | D4 | [#67](https://github.com/evanlivingston/gweatherrouting/issues/67) |
 | G6 | Memory management: per-worker CPU byte limits, no GPU budget | **Closed** | D1 | [#64](https://github.com/evanlivingston/gweatherrouting/issues/64) |
@@ -120,7 +121,7 @@ fidelity, per lines 257–259.
 
 **Issue:** [#64](https://github.com/evanlivingston/gweatherrouting/issues/64)
 
-### 4.2 D2 — GPU spatial interpolation (**OPEN — requires user confirmation**)
+### 4.2 D2 — GPU spatial interpolation (**DECIDED 2026-10-19: option (a)**)
 
 **Conflict.** [`rendering-implementation-plan.md`](rendering-implementation-plan.md)
 line 216 states, under R3:
@@ -140,21 +141,18 @@ implicit: the R3 invariant and the target architecture would then disagree.
 | Benefit | Removes the largest remaining CPU cost from the interaction path | Removes per-frame upload only; CPU sampling cost remains |
 | Reference parity | **Beyond the reference** — the reference samples on the CPU (T6) | Matches the reference |
 
-**Recommendation: (a).** The machinery is already proven (E1b accuracy, A0k missing-data
-safety), the gate already exists and is strict, and CPU spatial sampling is the
-dominant remaining CPU cost. The amendment is narrow: it moves *where* interpolation is
-evaluated, and bounds the difference at 2e-5.
+**Decision: option (a) — amend the invariant.** Spatial interpolation may be evaluated
+on the GPU against a resident numeric field, bounded by the existing 2e-5 gate. The
+amendment is applied to
+[`rendering-implementation-plan.md`](rendering-implementation-plan.md) at R3 item 4 and
+recorded in §6.
 
-**If (a) is chosen**, the amendment to record in §6 is: *spatial interpolation may be
-evaluated on the GPU against a resident numeric field, provided values match the
-reference sampler within 2e-5, missing/mask semantics match exactly, and global-grid
-wraparound behavior matches.*
+This is an **advance beyond the reference**, which samples on the CPU (T6). It must not
+be described as parity. The CPU sampler remains the reference authority and the
+fallback path, and the 2e-5 gate is unchanged.
 
-**If (b) is chosen,** #65 is withdrawn and D3/D4 absorb its dependency; the CPU sampler
-becomes the long-term sampling authority and the sampling interface invariant stands.
-
-**Issue:** [#65](https://github.com/evanlivingston/gweatherrouting/issues/65) — *not to
-start until this is decided.*
+**Issue:** [#65](https://github.com/evanlivingston/gweatherrouting/issues/65) — now
+unblocked.
 
 ### 4.3 D3 — Frame N / N+1 overlap
 
@@ -247,7 +245,7 @@ roadmap.
 | --- | --- |
 | Lines 106–109 (`LayerFrame`) | Add a GPU-resident numerical field form; field identity is source+parameter+instant+window+resolution, not image identity. (D1) |
 | Lines 251–253 (R5 ledger) | Ledger additionally accounts for GPU-resident numerical fields. (D1) |
-| Line 216 (R3 invariant) | **Only if D2 = (a):** amend as quoted in §4.2, with 2e-5 as the error bound. |
+| Line 234 (R3 invariant) | **Amended (D2 = (a)):** spatial interpolation may be evaluated on the GPU against a resident numeric field, provided values match the reference sampler within 2e-5, missing/mask semantics match exactly, and global-grid wraparound behavior matches. |
 | Lines 77–93 (pipeline) | Add explicit N/N+1 overlap, ≤2 in flight, and generation-key publication rejection. (D3) |
 | Line 103 (`ContentKey`) | "Forecast instant/bracket" becomes a resident time window over multiple instants. (D4) |
 | Lines 212–215 (R3 reuse) | Reuse extends from spatial to temporal. (D4) |
@@ -280,12 +278,12 @@ R5 (retention hardening, rollout). R0.2 is discharged by
 
 ## 8. Open questions
 
-| # | Question | Owner | Blocks |
-| --- | --- | --- | --- |
-| Q1 | **D2: amend the R3 sampling invariant, or keep CPU sampling?** | user | #65 |
-| Q2 | Where does the ADR live in the docs tree, and does the repo adopt a `docs/adr/` convention? | maintainer | housekeeping |
-| Q3 | Is the R-sequence's "Immediate implementation order" (line 310) still authoritative, given that R0.1 was completed before the architecture decision? | maintainer | #63 |
-| Q4 | Does #69's Part 2 (remaining layers by measured cost) require its own re-profile issue, or is it in scope for #69? | maintainer | #69 |
+None. Q1 (D2) was decided on 2026-10-19 in favour of option (a). Q2 (ADR naming
+convention) resolved: ADRs live flat in `docs/` as `adr-NNN-slug.md`. Q3 (whether the
+R-sequence's "Immediate implementation order" was still authoritative) resolved: R0.1
+and R0.2 are discharged, and the live sequence is now the issue program. Q4 (whether
+issue #69's Part 2 needs its own issue) resolved: it does not; Part 2 stays inside
+#69 and begins only after Part 1 is measured.
 
 ---
 
