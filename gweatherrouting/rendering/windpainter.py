@@ -16,7 +16,6 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 
 import math
 from functools import lru_cache
-from typing import List
 
 import cairo
 import numpy as np
@@ -489,27 +488,23 @@ class WindPainter:
         current: list = []
         key = None
         for column in pressure:
-            column_lats = tuple(point[0] for point in column)
-            if len(column) < 2 or column_lats != key:
+            column_lats = tuple(column[1].tolist())
+            if len(column[1]) < 2 or column_lats != key:
                 if len(current) >= 2:
                     blocks.append(current)
-                current = [column] if len(column) >= 2 else []
-                key = column_lats if len(column) >= 2 else None
+                current = [column] if len(column[1]) >= 2 else []
+                key = column_lats if len(column[1]) >= 2 else None
                 continue
             current.append(column)
         if len(current) >= 2:
             blocks.append(current)
         grids = []
         for block in blocks:
-            latitudes = [point[0] for point in block[0]]
             grids.append(
                 (
-                    np.array(latitudes, dtype=np.float64),
-                    np.array([column[0][1] for column in block], dtype=np.float64),
-                    np.array(
-                        [[point[2] for point in column] for column in block],
-                        dtype=np.float64,
-                    ).T,
+                    np.array(block[0][1], dtype=np.float64),
+                    np.array([column[0] for column in block], dtype=np.float64),
+                    np.array([column[2] for column in block], dtype=np.float64).T,
                 )
             )
         return grids
@@ -632,38 +627,47 @@ class WindPainter:
 
     def _barb_points(self, gpsmap, data, scale):
         points = []
-        for row in data[::scale]:
+        for column in data[::scale]:
             if gpsmap.render_cancelled():
                 return []
-            for point in row[::scale]:
+            lon, lats, dirs, speeds = column[0], column[1], column[2], column[3]
+            for j in range(0, len(lats), scale):
+                lat = float(lats[j])
                 if not self.settings_manager.gribArrowOnGround:
-                    if self._on_ground(point[2][0], point[2][1]):
+                    if self._on_ground(lat, float(lon)):
                         continue
-                points.append(point)
+                points.append((dirs[j], speeds[j], (lat, float(lon))))
         return points
 
     def _grid_screen_points(self, gpsmap, data, scale):
-        # Batch-convert all grid points used as quad corners
-        point_map = {}
-        all_lats: List = []
-        all_lons: List = []
+        # Batch-convert all grid points used as quad corners. The columns are
+        # numpy arrays, so the whole grid is projected in one call and the
+        # result is kept per column; no per-point Python objects are made.
+        lat_chunks = []
+        lon_chunks = []
         for i in range(0, len(data), scale):
             if gpsmap.render_cancelled():
                 return
-            row = data[i]
-            for j in range(0, len(row), scale):
-                point_map[(i, j)] = len(all_lats)
-                d = row[j]
-                all_lats.append(d[2][0])
-                all_lons.append(d[2][1])
+            lon, lats = data[i][0], data[i][1]
+            sampled = lats[::scale]
+            lat_chunks.append(sampled)
+            lon_chunks.append(np.full(sampled.shape, lon, dtype=np.float64))
 
-        if not all_lats:
+        if not lat_chunks:
             return
 
-        lats = np.array(all_lats, dtype=np.float64)
-        lons = np.array(all_lons, dtype=np.float64)
+        lats = np.concatenate(lat_chunks)
+        lons = np.concatenate(lon_chunks)
         screen_xs, screen_ys = gpsmap.convert_geographic_to_screen_batch(lats, lons)
-        return point_map, screen_xs, screen_ys
+        xs_columns = []
+        ys_columns = []
+        offset = 0
+        for chunk in lat_chunks:
+            count = len(chunk)
+            xs_columns.append(screen_xs[offset : offset + count])
+            ys_columns.append(screen_ys[offset : offset + count])
+            offset += count
+        return xs_columns, ys_columns
 
     def _draw_color_fill(self, gpsmap, cr, data, scale):
         """Draw interpolated color fill between grid points."""
@@ -671,58 +675,101 @@ class WindPainter:
         projected = self._grid_screen_points(gpsmap, data, scale)
         if projected is None:
             return
-        point_map, screen_xs, screen_ys = projected
+        screen_xs, screen_ys = projected
 
         # A shared mesh avoids independently composited, antialiased cell edges.
         pat = cairo.MeshPattern()
         patches = 0
+        # Plain float lists index faster than numpy scalars and keep the work
+        # inside the quad loop free of new objects.
+        lats_by_column = [column[1].tolist() for column in data]
+        speeds_by_column = [column[3].tolist() for column in data]
         for i in range(0, len(data) - scale, scale):
             if gpsmap.render_cancelled():
                 return
-            for j in range(0, len(data[i]) - scale, scale):
-                try:
-                    d_tl = data[i][j]
-                    d_tr = data[i][j + scale]
-                    d_bl = data[i + scale][j]
-                    d_br = data[i + scale][j + scale]
-                except IndexError:
-                    continue
-
-                x_tl = screen_xs[point_map[(i, j)]]
-                y_tl = screen_ys[point_map[(i, j)]]
-                x_tr = screen_xs[point_map[(i, j + scale)]]
-                y_tr = screen_ys[point_map[(i, j + scale)]]
-                x_bl = screen_xs[point_map[(i + scale, j)]]
-                y_bl = screen_ys[point_map[(i + scale, j)]]
-                x_br = screen_xs[point_map[(i + scale, j + scale)]]
-                y_br = screen_ys[point_map[(i + scale, j + scale)]]
-
-                # Rows are longitude columns. Never join different latitude
-                # intervals when partial forecast coverage leaves a ragged grid.
-                if d_tl[2][0] != d_bl[2][0] or d_tr[2][0] != d_br[2][0]:
-                    continue
-                pat.begin_patch()
-                # Path: TL → TR → BR → BL (clockwise)
-                pat.move_to(x_tl, y_tl)
-                pat.line_to(x_tr, y_tr)
-                pat.line_to(x_br, y_br)
-                pat.line_to(x_bl, y_bl)
-
-                # Corners match path order: 0=TL, 1=TR, 2=BR, 3=BL
-                r, g, b = wind_color(d_tl[1])
-                pat.set_corner_color_rgba(0, r, g, b, opacity)
-                r, g, b = wind_color(d_tr[1])
-                pat.set_corner_color_rgba(1, r, g, b, opacity)
-                r, g, b = wind_color(d_br[1])
-                pat.set_corner_color_rgba(2, r, g, b, opacity)
-                r, g, b = wind_color(d_bl[1])
-                pat.set_corner_color_rgba(3, r, g, b, opacity)
-                pat.end_patch()
-
-                patches += 1
+            try:
+                lats_next = lats_by_column[i + scale]
+                speeds_next = speeds_by_column[i + scale]
+            except IndexError:
+                continue
+            patches += self._fill_column(
+                pat,
+                opacity,
+                screen_xs,
+                screen_ys,
+                i // scale,
+                lats_by_column[i],
+                lats_next,
+                speeds_by_column[i],
+                speeds_next,
+                scale,
+            )
 
         if patches:
             cr.save()
             cr.set_source(pat)
             cr.paint()
             cr.restore()
+
+    def _fill_column(
+        self,
+        pat,
+        opacity,
+        screen_xs,
+        screen_ys,
+        column,
+        lats,
+        lats_next,
+        speeds,
+        speeds_next,
+        scale,
+    ):
+        """Add the fill quads between two neighbouring columns."""
+        patches = 0
+        for j in range(0, len(lats) - scale, scale):
+            try:
+                lat_tl = lats[j]
+                lat_tr = lats[j + scale]
+                lat_bl = lats_next[j]
+                lat_br = lats_next[j + scale]
+                speed_tl = speeds[j]
+                speed_tr = speeds[j + scale]
+                speed_bl = speeds_next[j]
+                speed_br = speeds_next[j + scale]
+            except IndexError:
+                continue
+
+            row = j // scale
+            x_tl = screen_xs[column][row]
+            y_tl = screen_ys[column][row]
+            x_tr = screen_xs[column][row + 1]
+            y_tr = screen_ys[column][row + 1]
+            x_bl = screen_xs[column + 1][row]
+            y_bl = screen_ys[column + 1][row]
+            x_br = screen_xs[column + 1][row + 1]
+            y_br = screen_ys[column + 1][row + 1]
+
+            # Rows are longitude columns. Never join different latitude
+            # intervals when partial forecast coverage leaves a ragged grid.
+            if lat_tl != lat_bl or lat_tr != lat_br:
+                continue
+            pat.begin_patch()
+            # Path: TL → TR → BR → BL (clockwise)
+            pat.move_to(x_tl, y_tl)
+            pat.line_to(x_tr, y_tr)
+            pat.line_to(x_br, y_br)
+            pat.line_to(x_bl, y_bl)
+
+            # Corners match path order: 0=TL, 1=TR, 2=BR, 3=BL
+            r, g, b = wind_color(speed_tl)
+            pat.set_corner_color_rgba(0, r, g, b, opacity)
+            r, g, b = wind_color(speed_tr)
+            pat.set_corner_color_rgba(1, r, g, b, opacity)
+            r, g, b = wind_color(speed_br)
+            pat.set_corner_color_rgba(2, r, g, b, opacity)
+            r, g, b = wind_color(speed_bl)
+            pat.set_corner_color_rgba(3, r, g, b, opacity)
+            pat.end_patch()
+
+            patches += 1
+        return patches

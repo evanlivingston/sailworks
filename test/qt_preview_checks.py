@@ -3155,10 +3155,19 @@ class QtPreviewChecks(unittest.TestCase):
             forget.assert_not_called()
 
     def test_land_checkbox_keeps_offshore_barbs_without_weather_rebuild(self):
+        import numpy as np
+
         canvas = self.window.map
         canvas._center_lat, canvas._center_lon, canvas._zoom = 47.6, -122.4, 12
         self.controller.core.grib_manager.gribs = [object()]
-        data = [[(0, 10, (47.6, -122.4)), (0, 10, (47.61, -122.41))]]
+        data = [
+            (
+                -122.4,
+                np.array([47.6, 47.61]),
+                np.array([0.0, 0.0]),
+                np.array([10.0, 10.0]),
+            )
+        ]
         with (
             patch.object(canvas.wind, "_load_wind", return_value=data) as load,
             patch.object(canvas.wind, "_load_pressure", return_value=[]),

@@ -898,38 +898,6 @@ class WindOverlayRenderer(OverlayRenderer):
         return all(hasattr(a, "shape") and hasattr(a, "dtype") for a in data[1:])
 
     @staticmethod
-    def _columns_to_tuples(columns, field):
-        """Convert array-columns back to tuple columns for the painter.
-
-        Array wind column: (lon, lats_array, dirs_array, speeds_array)
-        Array pressure column: (lon, lats_array, values_array)
-        Returns list of columns, each column is list of point tuples.
-        """
-        if not columns:
-            return []
-        if not WindOverlayRenderer._is_array_format(
-            columns[0], 4 if field == "wind" else 3
-        ):
-            return columns
-        tuple_columns = []
-        for column in columns:
-            lon = column[0]
-            column_tuples: list[tuple[Any, ...]] = []
-            if field == "wind":
-                lats, dirs, speeds = column[1], column[2], column[3]
-                column_tuples = [
-                    (float(d), float(s), (float(lat), float(lon)))
-                    for lat, d, s in zip(lats, dirs, speeds)
-                ]
-            else:
-                lats, vals = column[1], column[2]
-                column_tuples = [
-                    (float(lat), float(lon), float(v)) for lat, v in zip(lats, vals)
-                ]
-            tuple_columns.append(column_tuples)
-        return tuple_columns
-
-    @staticmethod
     def _columns_share_lats(columns, key):
         """Whether columns form one regular grid for fills and contours."""
         if not columns:
@@ -973,9 +941,7 @@ class WindOverlayRenderer(OverlayRenderer):
         columns = self._load_field(job, "pressure")
         if (
             columns
-            and not WindPainter._pressure_blocks(
-                self._columns_to_tuples(columns, "pressure")
-            )
+            and not WindPainter._pressure_blocks(columns)
             and self._gridded_sources(job)
         ):
             # Mixed model grids (e.g. 0.25-degree GFS plus projected HRRR or
@@ -1087,33 +1053,19 @@ class WindOverlayRenderer(OverlayRenderer):
             direction = (
                 np.degrees(np.arctan2(-values[..., 0], -values[..., 1])) + 360.0
             ) % 360.0
-        columns: list[list[tuple[float, float, Any]]] = []
+        # Wind columns are (lon, lats, directions, speeds); pressure columns
+        # are (lon, lats, values).
+        columns: list[tuple[Any, ...]] = []
         for index in range(values.shape[1]):
             if not finite[:, index].all():
                 continue
-            lon = (lons[index] + 180.0) % 360.0 - 180.0
+            lon = float((lons[index] + 180.0) % 360.0 - 180.0)
             if field == "wind":
                 columns.append(
-                    [
-                        (
-                            float(direction[row, index]),
-                            float(speed[row, index]),
-                            (float(lats[row]), float(lon)),
-                        )
-                        for row in range(values.shape[0])
-                    ]
+                    (lon, lats, direction[:, index].copy(), speed[:, index].copy())
                 )
             else:
-                columns.append(
-                    [
-                        (
-                            float(lats[row]),
-                            float(lon),
-                            float(values[row, index, 0]),
-                        )
-                        for row in range(values.shape[0])
-                    ]
-                )
+                columns.append((lon, lats, values[:, index, 0].copy()))
         return columns
 
     @staticmethod
@@ -1150,14 +1102,19 @@ class WindOverlayRenderer(OverlayRenderer):
             self.cache_state = self._cache_snapshot()
             job.weather_metrics["retained_cache"] = dict(self.cache_state)
 
-    def _prepare_vectors(self, job, data, paint_data, fill_data):
+    def _prepare_vectors(self, job, data, fill_data):
         """Worker-side land flags and streamlines; False when the job is cancelled."""
         if data and self._wind_style(job.palette) != "streamlines":
             land: list[bool] = []
-            for column in paint_data:
+            for column in data:
                 if job.cancel.is_set():
                     return False
-                land.extend(self._land_mask.contains(*point[2]) for point in column)
+                lon = float(column[0])
+                # The flags line up with the flat barb vectors, which are
+                # concatenated in the same column-then-latitude order.
+                land.extend(
+                    self._land_mask.contains(lat, lon) for lat in column[1].tolist()
+                )
             job.barb_land = np.asarray(land, dtype=np.bool_)
         job.streamlines = None
         if data and self._wind_style(job.palette) == "streamlines":
@@ -1199,9 +1156,7 @@ class WindOverlayRenderer(OverlayRenderer):
         job.barb_land = None
         if data:
             self._land_mask.refresh_source(job.viewport.get_scale())
-        # Painter and land mask need tuple-format columns; convert once.
-        paint_data = self._columns_to_tuples(data, "wind") if data else []
-        if not self._prepare_vectors(job, data, paint_data, fill_data):
+        if not self._prepare_vectors(job, data, fill_data):
             return None
         viewport = job.viewport
         surface = cairo.ImageSurface(
@@ -1211,18 +1166,13 @@ class WindOverlayRenderer(OverlayRenderer):
         )
         surface.set_device_scale(job.factor, job.factor)
         settings = self._settings_for(job.palette)
-        # Painter (draw_isobars / _pressure_blocks) expects tuple-format
-        # columns; convert once so both wind and pressure match.
-        paint_pressure = (
-            self._columns_to_tuples(pressure, "pressure") if pressure else []
-        )
         # Barbs stay out of the cached raster so zoom previews only stretch
         # the smooth fill; the foreground repaints barbs live at fixed size.
         self._painter(settings, self._land_mask.contains).draw(
             viewport,
             cairo.Context(surface),
-            paint_data,
-            paint_pressure,
+            data,
+            pressure,
             fill_data=fill_data,
             draw_barbs=False,
         )
