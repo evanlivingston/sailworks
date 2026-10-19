@@ -122,6 +122,44 @@ def configure_wind_workload(settings, config):
         settings.gribArrowOnGround = config["wind_over_land"] == "show"
 
 
+def numerical_weather_status(canvas):
+    """Actual numerical-symbol state, not merely a hardware backend label."""
+    gpu = getattr(canvas, "_gpu", None)
+    stager = getattr(gpu, "weather", None)
+    scene = getattr(gpu, "scene", None)
+    frame = getattr(scene, "frame", None)
+    numerical = getattr(frame, "numerical_wind", None)
+    item = getattr(scene, "weather", None)
+    ready = item is not None and bool(item.property("ready"))
+    visible = item is not None and item.isVisible()
+    cpu_batches = len(frame.wind) if frame is not None else 0
+    raster = frame is not None and frame.raster_wind is not None
+    active = bool(
+        getattr(gpu, "active", False)
+        and numerical is not None
+        and ready
+        and visible
+        and not cpu_batches
+        and not raster
+    )
+    atlas = numerical[0] if numerical is not None else None
+    provider = getattr(scene, "weather_provider", None)
+    return dict(
+        enabled=stager is not None,
+        active=active,
+        shader_ready=bool(ready),
+        symbols=atlas.count if atlas is not None else 0,
+        atlas_bytes=atlas.nbytes if atlas is not None else 0,
+        interval=(
+            [atlas.staged.before, atlas.staged.after] if atlas is not None else None
+        ),
+        image_provider_requests=getattr(provider, "requests", 0),
+        cpu_symbol_batches=cpu_batches,
+        cpu_raster_symbols=bool(raster),
+        band_cache=stager.band_cache_statistics() if stager is not None else {},
+    )
+
+
 def capture(source, destination):
     source_alias = str(source.absolute())
     source = source.resolve(strict=True)
@@ -864,6 +902,7 @@ def worker(config):
                         for key, values in stages.items()
                     },
                     gpu_probes=gpu_probes[probe_offset:],
+                    numerical_weather=numerical_weather_status(canvas),
                 )
             )
             rebuilds.append({key: len(stages[key]) - before[key] for key in before})
@@ -962,6 +1001,7 @@ def worker(config):
             "warnings": warnings,
             "renderer_requested": controller.map_renderer,
             "renderer_status": controller.renderer_status(),
+            "numerical_weather": numerical_weather_status(canvas),
             "gpu_wind_renderer": canvas._gpu_wind_mode,
             "base_charts_mode": (
                 "synchronous" if config.get("synchronous_base_charts") else "worker"

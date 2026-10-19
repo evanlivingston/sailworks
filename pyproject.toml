@@ -81,6 +81,10 @@ gweatherrouting = [
     "data/symbols/*",
     "data/s57/*",
     "data/icons/*",
+    "qt/shaders/*.qml",
+    "qt/shaders/*.frag",
+    "qt/shaders/*.vert",
+    "qt/shaders/*.qsb",
 ]
 
 [build-system]
