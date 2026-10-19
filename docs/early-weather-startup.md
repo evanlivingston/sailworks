@@ -139,6 +139,8 @@ chart/portrayal work. Routing, calculation fidelity, broad pan/scrub/zoom/layer
 acceptance, memory plateau and presentation goals remain unchanged/open.
 
 This work starts from `dev` (1f14649) on `feature/early-weather-startup`, preserving
-the dirty research worktree. The branch is committed and pushed for review in
-the fork; it is not merged. See the
-[canonical checkpoint](rendering-performance-plan.md).
+the dirty research worktree. See the
+[integration checkpoint](early-weather-startup-integration.md) for the measured
+observations and the
+[canonical performance plan](rendering-performance-plan.md) for the wider
+rendering effort.

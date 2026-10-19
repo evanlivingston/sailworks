@@ -32,6 +32,20 @@ Verify actual remotes and branches before using them.
 Bug fixes found during fork review return to `dev` and relevant active
 feature branches as focused follow-up commits; avoid rewriting shared history.
 
+## Rendering performance work
+
+- Before rendering optimization, read `docs/rendering-performance-plan.md` and
+  identify the current milestone and hypothesis. It is the canonical roadmap;
+  older rendering plans/reports remain historical specifications and evidence.
+- Before an experiment, record scope/non-goals, baseline/workload, measurement
+  and fidelity gates, time/attempt budget, and stop condition. Stop and report
+  when the budget is exhausted or scope must expand; do not silently extend it.
+- Update evidence and adopt/revise/reject decisions before claiming completion.
+  Correctness tests, synthetic mechanism results, and real-workload performance
+  acceptance are separate. Never call grab/readback timing presentation FPS.
+- At each experiment/milestone gate, reevaluate the bottleneck and record
+  continue/narrow/pivot/stop. Do not start provisional later milestones by default.
+
 ## Review in our fork
 
 - Open PRs in `evanlivingston/gweatherrouting` for the user's review before

@@ -1,0 +1,65 @@
+{
+  "experiment": "A0f persistent producer and visible partial loading",
+  "decision": "stop/narrow at second-destination selection-count gate; partial mechanism evidence only",
+  "snapshot_sha256": "97cfda3c62a494c3d462ee8cde449d4d80ed1c62f387d70edcd9192dfb65d360",
+  "workload": "fixed saved clock/DPR; +576 then +1152 logical pixels east of initial; no prefetched destination exports",
+  "validation": {
+    "distinct_targeted_tests_passed": 32,
+    "final_core_tests_passed": 26,
+    "startup_harness_tests_previously_passed_unchanged_since": 6,
+    "subtests_passed": 13,
+    "black_checked_files": 6,
+    "native_controller_attempts": 2,
+    "native_producer_processes": 2,
+    "accepted_complete_native_runs": 0
+  },
+  "attempts": [
+    {
+      "local_artifact_directory_basename": "rendering-a0f-persistent-1",
+      "controller_exit_code": 1,
+      "producer_exit_code": 0,
+      "outcome": "First destination preview movement and loaded pixels exact; second preview rejected by nonblank guard on uniform land crop"
+    },
+    {
+      "local_artifact_directory_basename": "rendering-a0f-persistent-2",
+      "controller_exit_code": 1,
+      "producer_exit_code": 0,
+      "controller_duration_seconds": 42.8667139580939,
+      "outcome": "Both requests handled by same producer PID; second export rejected by existing blank/different selection-count gate"
+    }
+  ],
+  "second_attempt_partial_evidence": {
+    "same_pid_for_both_requests": true,
+    "first_destination_exact_reference_selections": 25,
+    "first_destination_complete_pixels_exact": true,
+    "first_destination_preview_motion_exact": true,
+    "first_destination_preview_content_colors": 166,
+    "first_destination_missing_coverage_masked": true,
+    "first_destination_coverage_boundary_motion_exact": true,
+    "first_destination_preparation_export_seconds_excluding_startup": 3.6605000840499997,
+    "first_destination_request_to_pixel_verification_seconds_including_wait_for_startup": 34.550097374944016,
+    "first_destination_gui_tick_gap_p95_ms": 17.668858054094017,
+    "first_destination_gui_tick_gap_max_ms": 92.70795807242393,
+    "second_destination_export_failure": "Selection count differs or is blank at time step 0",
+    "second_destination_successful_publication": false,
+    "empty_reference_vs_count_mismatch_distinguished": false
+  },
+  "measured_harness": {
+    "run_coverage_load.py": "898ff72c4a5de60ea7b29c4258c47be94cee141750d10e607f7f703eb7b1eccb",
+    "experiment_vertical_renderer.py": "b8600bec2fadd8e10b083e7a6a2344e5cbe598f23890b0f406816a2213a14b33",
+    "benchmark_startup_rendering.py": "eb67883a68cdcfd13346469aabfa2339ea9e1851605283cf6d31d032f2eebc46",
+    "persistent_coverage.py": "bf6390624b1ee507acd5daa40743711b28f7b7fdb4115cc05b8c4037fdcecfd0"
+  },
+  "limitations": {
+    "final_error_message_improvement_not_native_rerun": true,
+    "preview_is_explicitly_incomplete_weather": true,
+    "uniform_crop_does_not_prove_geographic_detail_motion": true,
+    "already_active_export_is_not_interrupted_by_newer_requests": true,
+    "native_stale_generation_cancellation_matrix_tested": false,
+    "global_memory_plateau_measured": false,
+    "paired_performance_comparison": false,
+    "presentation_measured": false,
+    "reference_equivalence": false,
+    "production_changes": false
+  }
+}

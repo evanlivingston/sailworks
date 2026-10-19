@@ -1,0 +1,70 @@
+{
+  "experiment": "A0e follow-up: settled new-area preparation and publication",
+  "decision": "support limited asynchronous load/publication mechanism; narrow to producer cost and visible resident-map interaction",
+  "snapshot_sha256": "97cfda3c62a494c3d462ee8cde449d4d80ed1c62f387d70edcd9192dfb65d360",
+  "initial_resources_metadata_sha256": "761596a925c3489ec6403427d338a09137b88dab033b4ce0d5235bef84634122",
+  "workload": {
+    "forecast_time": "2026-10-16T08:00:00",
+    "destination_pan_logical_pixels": [-576, 0],
+    "width": 710,
+    "height": 735,
+    "zoom": 10.236032947282732,
+    "destination_latitude": 36.82813685813827,
+    "destination_longitude": -121.29609928641156,
+    "forecasts": 33,
+    "host": "cocoa / Metal / DPR 2",
+    "destination_prepared_after_request": true
+  },
+  "validation": {
+    "targeted_tests_passed": 29,
+    "subtests_passed": 13,
+    "black_checked_files": 3,
+    "implementation_check_iterations": 2,
+    "controller_attempts": 2,
+    "native_preparation_children": 2,
+    "accepted_controller_attempts": 1
+  },
+  "attempts": [
+    {
+      "local_artifact_directory_basename": "rendering-a0e-followup-1",
+      "controller_exit_code": 1,
+      "preparation_exit_code": 0,
+      "outcome": "Destination preparation/publication and pixel checks passed in saved diagnostic, but final report serialization failed on NumPy int64; not accepted"
+    },
+    {
+      "local_artifact_directory_basename": "rendering-a0e-followup-2",
+      "controller_exit_code": 0,
+      "preparation_exit_code": 0,
+      "controller_duration_seconds": 42.71576924994588,
+      "preparation_command_duration_seconds": 38.56286412500776,
+      "outcome": "Accepted limited mechanism check"
+    }
+  ],
+  "accepted_run": {
+    "loading_pixels_verified": true,
+    "post_load_complete_pixels_exact": true,
+    "exact_reference_numerical_selections": 25,
+    "gui_ticks": 2448,
+    "held_preparation_camera_inputs": 32,
+    "gui_tick_gap_p50_ms": 16.110167023725808,
+    "gui_tick_gap_p95_ms": 17.208162380848076,
+    "gui_tick_gap_p99_ms": 18.08907813858241,
+    "gui_tick_gap_max_ms": 79.81074997223914,
+    "gui_tick_gaps_over_50_ms": 2,
+    "renderer_sha256": "dad96d19038ce348c93f4f2ec6419b0e2118ac7d2834e105acf739cb481ebfc6",
+    "startup_harness_sha256": "b59409e55056ebf0dc3196fb1d5ce035722f2d8b067d3299ed0469a7a0e594bc",
+    "replay_sha256": "b00ce64e5cb84151bb589a932134d2898f29956953efd177ac473c69e451ac56"
+  },
+  "limitations": {
+    "preparation_duration_includes_snapshot_sandbox_app_startup_and_reference_export": true,
+    "loading_screen_hides_map": true,
+    "camera_input_states_do_not_prove_visible_pan_or_presentation": true,
+    "native_cancellation_stale_generation_matrix_tested": false,
+    "cancellation_and_stale_result_ownership_have_synthetic_tests": true,
+    "memory_plateau_measured": false,
+    "paired_speedup_comparison": false,
+    "presentation_measured": false,
+    "reference_performance_equivalence": false,
+    "production_changes": false
+  }
+}

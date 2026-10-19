@@ -1,0 +1,49 @@
+{
+  "experiment": "A0i independent numerical startup draft",
+  "historical_pre_restoration_checkpoint": true,
+  "latest_user_authorized_baseline_summary": "a0i-current-startup-summary.json",
+  "latest_restoration_summary": "fixture-restoration-summary.json",
+  "decision": "blocked: original fixture inputs unavailable; stop before workload launch",
+  "expected_snapshot_sha256": "97cfda3c62a494c3d462ee8cde449d4d80ed1c62f387d70edcd9192dfb65d360",
+  "observed_inventory_sha256": "20d8f92cf7d47b5d01a7339652d554c961035f8da5c4c98de82e273751ad4307",
+  "validation": {
+    "targeted_tests_passed": 42,
+    "subtests_passed": 39,
+    "black_checked_changed_python_files": 2,
+    "local_links_checked": 42
+  },
+  "fixture_inventory": {
+    "missing_entries": 4036,
+    "changed_entries": 0,
+    "added_entries": 0,
+    "missing_by_directory": {
+      "chs-tiles": 2711,
+      "enc": 261,
+      "grib": 34,
+      "gshhs": 120,
+      "marine": 900,
+      "polars": 9,
+      "seamarks.pbf": 1
+    },
+    "cause_of_missing_files_established": false,
+    "original_fixture_modified_or_replaced_by_this_task": false
+  },
+  "workload_attempt": {
+    "local_artifact_directory_basename": "rendering-a0i-headless-1",
+    "preflight_attempts": 1,
+    "preflight_exit_code": 1,
+    "numerical_workload_processes_launched": 0,
+    "chart_workload_processes_launched": 0,
+    "first_field_seconds": null,
+    "chart_ready_seconds": null
+  },
+  "limits": {
+    "headless_startup_validated": false,
+    "field_equivalence_on_real_data_validated": false,
+    "chart_readiness_independence_validated": false,
+    "early_numerical_display_integrated": false,
+    "presentation_measured": false,
+    "production_or_routing_changes": false,
+    "commits_pushes_pr_changes_merges": false
+  }
+}

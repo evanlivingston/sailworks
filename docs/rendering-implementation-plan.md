@@ -1,8 +1,11 @@
 # Rendering implementation specification
 
-Status: staged implementation authorized; the production default remains the CPU
-renderer until the rollout gates below pass. This document is the consolidated
-plan; measurements and historical experiment reports remain separate evidence.
+Historical specification: the current roadmap and decision gates are in
+[the canonical performance plan](rendering-performance-plan.md), tracking epic
+[#51](https://github.com/evanlivingston/gweatherrouting/issues/51). Preserve this
+document's invariants and historical R0–R5 context; its sequence is not an
+independent instruction to continue implementation. CPU remains the production
+default until explicit rollout approval and validation.
 
 Implementation started: [R0.1 texture parity](gpu-texture-parity-r0.1.md) fixes the
 reproduced 2x Metal regression with unchanged quality gates. The opt-in

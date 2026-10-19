@@ -1,0 +1,100 @@
+{
+  "experiment": "A0g unattended repeated coverage and native generation freshness",
+  "decision": "support limited correctness/ownership mechanism; narrow to real preparation worker and GUI tails",
+  "snapshot_sha256": "97cfda3c62a494c3d462ee8cde449d4d80ed1c62f387d70edcd9192dfb65d360",
+  "forecast_time": "2026-10-16T08:00:00",
+  "workload": "same saved viewport/DPR; destinations +576/+1152 logical pixels east; native A-B-A with generations 3/4/5 at fixed source/time/style",
+  "budget": {
+    "implementation_check_iterations_used": 6,
+    "native_controller_attempts_used": 8,
+    "native_producer_processes_used": 8,
+    "attempt_budget_exhausted": true,
+    "children_left_running": false
+  },
+  "validation": {
+    "final_core_tests_passed": 30,
+    "subtests_passed": 21,
+    "black_checked_changed_python_files": 5,
+    "controller_exit_codes": [1, 1, 1, 0, 0, 0, 0, 0],
+    "producer_exit_codes": [0, 0, 0, 0, 0, 0, 0, 0],
+    "same_harness_v3_repeat_runs": [6, 7],
+    "native_aba_passed_runs": [5, 6, 7, 8]
+  },
+  "artifacts": [
+    "rendering-a0g-diagnosis-1",
+    "rendering-a0g-empty-2",
+    "rendering-a0g-empty-gpu-3",
+    "rendering-a0g-two-loads-4",
+    "rendering-a0g-freshness-5",
+    "rendering-a0g-repeat-6",
+    "rendering-a0g-repeat-7",
+    "rendering-a0g-attribution-8"
+  ],
+  "fidelity": {
+    "first_destination_symbols": 338,
+    "second_destination_reference_and_candidate_symbols": 0,
+    "numerical_checks_per_export": 25,
+    "final_run_exports": 4,
+    "final_run_total_numerical_checks": 100,
+    "final_run_reference_empty_checks": 25,
+    "old_a_generation": 3,
+    "coalesced_b_generation": 4,
+    "only_new_a_published_generation": 5,
+    "nonempty_reference_scene_pixels_exact": true,
+    "empty_scene_pixels_exact_against_explicit_corrected_oracle": true,
+    "empty_scene_pixels_exact_against_original_red_gpu_oracle": false,
+    "original_empty_frame_symbols": 0,
+    "original_empty_finite_endpoint_vectors": [0, 0],
+    "pixels_erroneously_changed_by_empty_gpu_layer": 2087400,
+    "original_empty_readback_preserved": true,
+    "reference_empty_host_badge_visible": true,
+    "host_badge_outside_scene_pixel_comparison": true,
+    "missing_preview_coverage_masked": true,
+    "first_preview_detail_motion_verified": true,
+    "uniform_second_preview_detail_motion_inconclusive": true
+  },
+  "final_detailed_run": {
+    "protocol": "independent-persistent-coverage-a0g-v4-detailed-attribution",
+    "controller_duration_seconds": 51.415172833018005,
+    "producer_ready_seconds": 30.900744750048034,
+    "prepare_export_seconds_by_generation": {
+      "1": 3.6232547499239445,
+      "2": 3.4872479579644278,
+      "5": 2.670108041027561
+    },
+    "private_source_open_ms_by_generation": {
+      "1": 640.7857090234756,
+      "2": 620.9186670603231,
+      "5": 658.2399168983102
+    },
+    "stage_and_field_ms_by_generation": {
+      "1": 71.63866597693413,
+      "2": 57.874833000823855,
+      "5": 71.13804202526808
+    },
+    "selection_oracle_ms_by_generation": {
+      "1": 1554.942167014815,
+      "2": 1385.357249993831,
+      "5": 1552.026959019713
+    },
+    "gui_publication_ms_first_two_destinations": [21.56437502708286, 16.082625021226704],
+    "gui_tick_gap_p95_ms_first_two_destinations": [17.730188032146543, 17.797978781163692],
+    "gui_tick_gap_max_ms_first_two_destinations": [59.940667008049786, 294.7862090077251],
+    "renderer_sha256": "9803618d49e0951ad05d8004e1ada89703d32312b4746304832c167d60c83454",
+    "scheduler_sha256": "8d937979fbe37491151277cd30749ad6eaf9d4415715dda4f75390bef68a9a4e",
+    "producer_sha256": "32fd701f911d4d8fe2bb906ef2d472fa3fb6a5e24c2069ed4f283fd5b3360aad",
+    "replay_sha256": "d6eebf425da0a400e81f1e9b89878fcef60ed451c97f4e10a1d64577e92c9dce"
+  },
+  "limitations": {
+    "empty_gpu_shader_driver_root_cause_unclassified": true,
+    "candidate_timing_includes_oracle_work_and_readbacks": true,
+    "unclassified_gui_tails_remain": true,
+    "global_memory_plateau_measured": false,
+    "source_time_zoom_cancellation_matrix_complete": false,
+    "presentation_measured": false,
+    "paired_speedup_proven": false,
+    "reference_equivalence_proven": false,
+    "production_changes": false,
+    "commits_pushes_merges": false
+  }
+}

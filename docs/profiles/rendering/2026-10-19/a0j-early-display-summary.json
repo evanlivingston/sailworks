@@ -1,0 +1,53 @@
+{
+  "experiment": "A0j early wind publication before chart readiness",
+  "decision": "stop/pivot at visual fidelity; publication mechanism only provisionally supported",
+  "snapshot_sha256": "1ed1bca1281ad4096713ce20af9c1473e70bd4eb0766a54965849b7ace698a03",
+  "selected_sources": 22,
+  "forecast_clock": "2026-10-19T08:00:00",
+  "native_attempts": 2,
+  "attempt_budget": 3,
+  "validation": {
+    "tests_passed": 37,
+    "subtests_passed": 38,
+    "black_checked_python_files": 2,
+    "whitespace_and_json_checks_passed": true,
+    "local_links_checked": 39,
+    "raw_evidence_crosscheck_passed": true,
+    "early_and_original_reference_red_dominant_pixels_exceed_half": true
+  },
+  "attempts": [
+    {"id": 1, "mechanism_passed": false, "reason": "camera round-trip drift", "numerical_exit": 0, "chart_exit": -15, "chart_cancelled_on_rejection": true},
+    {"id": 2, "mechanism_passed": true, "numerical_exit": 0, "chart_exit": 0, "timed_out": false, "cancelled": false}
+  ],
+  "passing_run": {
+    "preflight_seconds": 2.4982954160077497,
+    "field_available_seconds": 2.3916876249713823,
+    "wind_bound_seconds": 2.4288607499329373,
+    "early_readback_end_seconds": 2.4493896659696475,
+    "chart_ready_seconds": 28.53805879096035,
+    "chart_bound_seconds": 32.037213624920696,
+    "final_readback_end_seconds": 32.31209012493491,
+    "native_nodes": 12381,
+    "initial_symbols": 1053,
+    "pan_steps_while_charts_loading": 4,
+    "camera_return_exact": true,
+    "weather_pixels_unchanged_before_chart_bind": true,
+    "camera_and_field_preserved_on_chart_bind": true,
+    "concurrent_reference_scene_pixels_exact": true,
+    "headless_reference_arrays_and_selection_exact": true,
+    "concurrent_chart_numerical_checks": 25,
+    "gui_heartbeat_p95_ms_including_readbacks": 17.12029194459319,
+    "gui_heartbeat_max_ms_including_readbacks": 301.42491695005447,
+    "platform": "cocoa",
+    "backend": "Metal",
+    "dpr": 2
+  },
+  "visual_acceptance": false,
+  "visual_blocker": "inherited red flooding in nonempty original GPU reference and early/final candidate readbacks; root cause not established",
+  "clean_interaction_performance_accepted": false,
+  "presentation_measured": false,
+  "global_memory_plateau_verified": false,
+  "main_application_startup_integrated": false,
+  "production_routing_or_pr50_modified": false,
+  "next_scope": "bounded red-overlay diagnosis/repair against independent portrayal oracle"
+}
