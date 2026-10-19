@@ -656,8 +656,34 @@ class TrackMap(QWidget, MercatorProjection):
         )
         return (key, self._center_lat, self._center_lon, self._zoom, image), target
 
+    def _gpu_raster_wind(self, geometry, opacity, ratio):
+        """The wind layer of a GPU frame: a CPU raster below 2x, else batches."""
+        from .mapframe import ImageFrame, prepare_wind
+
+        raster_wind = None
+        if ratio < 2:
+            key = (id(geometry), opacity, self.width(), self.height(), ratio)
+            if geometry and key != self._gpu_raster_key:
+                self._gpu_wind_raster = self._wind_raster(geometry, opacity, ratio)
+                self._gpu_raster_key = key
+            if geometry:
+                # The raster was rendered above whenever the geometry exists.
+                image = cast(QImage, self._gpu_wind_raster)
+                raster_wind = ImageFrame(
+                    image, (0, 0, image.width() / ratio, image.height() / ratio)
+                )
+            self._gpu_batches = ()
+            self._gpu_wind_mode = "cpu"
+        else:
+            if geometry is not self._gpu_geometry or self._gpu_wind_mode != "gpu":
+                self._gpu_batches = prepare_wind(geometry)
+            self._gpu_wind_raster = None
+            self._gpu_raster_key = None
+            self._gpu_wind_mode = "gpu"
+        return raster_wind
+
     def _gpu_frame(self):
-        from .mapframe import ImageFrame, MapFrame, prepare_wind
+        from .mapframe import ImageFrame, MapFrame
 
         numerical_wind = None
         stager = getattr(self._gpu, "weather", None)
@@ -718,26 +744,7 @@ class TrackMap(QWidget, MercatorProjection):
         if numerical_wind is not None:
             opacity = float(self.controller.settings.gribArrowOpacity)
         ratio = float(self.devicePixelRatioF())
-        raster_wind = None
-        if ratio < 2:
-            key = (id(geometry), opacity, self.width(), self.height(), ratio)
-            if geometry and key != self._gpu_raster_key:
-                self._gpu_wind_raster = self._wind_raster(geometry, opacity, ratio)
-                self._gpu_raster_key = key
-            if geometry:
-                # The raster was rendered above whenever the geometry exists.
-                image = cast(QImage, self._gpu_wind_raster)
-                raster_wind = ImageFrame(
-                    image, (0, 0, image.width() / ratio, image.height() / ratio)
-                )
-            self._gpu_batches = ()
-            self._gpu_wind_mode = "cpu"
-        else:
-            if geometry is not self._gpu_geometry or self._gpu_wind_mode != "gpu":
-                self._gpu_batches = prepare_wind(geometry)
-            self._gpu_wind_raster = None
-            self._gpu_raster_key = None
-            self._gpu_wind_mode = "gpu"
+        raster_wind = self._gpu_raster_wind(geometry, opacity, ratio)
         self._gpu_geometry = geometry
         self._gpu_sequence += 1
 

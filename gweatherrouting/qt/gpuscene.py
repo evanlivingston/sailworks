@@ -2,7 +2,7 @@
 
 import ctypes
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import shiboken6
@@ -163,10 +163,10 @@ class MapScene:
         self.navigation.setZ(10000)
         for item in (self.base, self.navigation, self.raster_wind):
             item.failed.connect(fail)
-        self.weather = None
-        self.weather_atlas = None
-        self.weather_provider = None
-        self.weather_component = None
+        self.weather: Any = None
+        self.weather_atlas: Any = None
+        self.weather_provider: Any = None
+        self.weather_component: Any = None
 
     def present_weather(self, numerical, frame):
         if numerical is None:

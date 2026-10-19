@@ -2,15 +2,19 @@
 
 from dataclasses import dataclass
 import math
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from gweatherrouting.core.mapviewport import MercatorProjection
-from gweatherrouting.rendering.weatherstaging import stage_wind
+from gweatherrouting.rendering.weatherstaging import StagedWind, stage_wind
 from gweatherrouting.rendering.windpainter import (
     barb_density_parameters,
     mercator_project_flat,
 )
+
+if TYPE_CHECKING:
+    from gweatherrouting.qt.gpuweather import WeatherTexturePair
 
 
 @dataclass(frozen=True)
@@ -32,8 +36,8 @@ class BarbView(MercatorProjection):
 
 @dataclass(frozen=True)
 class BarbAtlas:
-    staged: object
-    pair: object
+    staged: StagedWind
+    pair: "WeatherTexturePair"
     anchors: tuple
     count: int
 
@@ -44,6 +48,42 @@ class BarbAtlas:
     @property
     def nbytes(self):
         return sum(image.sizeInBytes() for image in self.images)
+
+
+def _native_points(sampler, bounds, cancel):
+    """The unique native nodes of every gridded wind source in the bounds."""
+    nodes = []
+    count = 0
+    for index in sampler.indices:
+        if cancel():
+            return None
+        if not any(r.element in ("UGRD", "VGRD") for r in index.records):
+            continue
+        candidates = index.nodes(bounds)
+        count += len(candidates)
+        if count > 262144:
+            raise ValueError("Wind native-node staging exceeds point budget")
+        nodes.append(candidates)
+    if not nodes:
+        raise ValueError("No gridded wind sources")
+    points = np.unique(np.concatenate(nodes), axis=0)
+    if not len(points):
+        raise ValueError("No native wind nodes in view")
+    # Wind columns are longitude-major, then latitude-major on the CPU path.
+    return points[np.lexsort((points[:, 0], points[:, 1]))]
+
+
+def _off_land(chosen, ids, points, view, land_mask, cancel):
+    """Drop the chosen symbols that fall on land, if land is not wanted."""
+    if view.over_land:
+        return chosen
+    land_mask.refresh_source(view.get_scale())
+    keep = []
+    for i in chosen:
+        if cancel():
+            return None
+        keep.append(not land_mask.contains(*points[ids[i]]))
+    return chosen[np.asarray(keep, dtype=bool)]
 
 
 def stage_barbs(sampler, stamp, view, land_mask, cancel=lambda: False):
@@ -74,25 +114,9 @@ def stage_barbs(sampler, stamp, view, land_mask, cancel=lambda: False):
             view._x_to_lon(cx + view.width / 2 + margin),
         ),
     )
-    nodes = []
-    count = 0
-    for index in sampler.indices:
-        if cancel():
-            return None
-        if not any(r.element in ("UGRD", "VGRD") for r in index.records):
-            continue
-        candidates = index.nodes(bounds)
-        count += len(candidates)
-        if count > 262144:
-            raise ValueError("Wind native-node staging exceeds point budget")
-        nodes.append(candidates)
-    if not nodes:
-        raise ValueError("No gridded wind sources")
-    points = np.unique(np.concatenate(nodes), axis=0)
-    if not len(points):
-        raise ValueError("No native wind nodes in view")
-    # Wind columns are longitude-major, then latitude-major on the CPU path.
-    points = points[np.lexsort((points[:, 0], points[:, 1]))]
+    points = _native_points(sampler, bounds, cancel)
+    if points is None:
+        return None
     staged = stage_wind(
         sampler, stamp, points[:, 0][None, :], points[:, 1][None, :], cancel
     )
@@ -130,14 +154,9 @@ def stage_barbs(sampler, stamp, view, land_mask, cancel=lambda: False):
     chosen = np.sort(first)
     if cap is not None and len(chosen) > cap:
         chosen = chosen[np.linspace(0, len(chosen) - 1, cap, dtype=int)]
-    if not view.over_land:
-        land_mask.refresh_source(view.get_scale())
-        keep = []
-        for i in chosen:
-            if cancel():
-                return None
-            keep.append(not land_mask.contains(*points[ids[i]]))
-        chosen = chosen[np.asarray(keep, dtype=bool)]
+    chosen = _off_land(chosen, ids, points, view, land_mask, cancel)
+    if chosen is None:
+        return None
     selected = ids[chosen]
     slots = cells[chosen]
     a = np.full((rows * cols, 2), np.nan, dtype=np.float32)
