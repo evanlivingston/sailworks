@@ -136,7 +136,8 @@ class MBTilesRenderer(OverlayRenderer):
             return self._tiles[key]
         row = 2**zoom - 1 - y if info.scheme == "tms" else y
         result = db.execute(
-            "SELECT tile_data FROM tiles WHERE zoom_level=? AND tile_column=? AND tile_row=? LIMIT 1",
+            "SELECT tile_data FROM tiles"
+            " WHERE zoom_level=? AND tile_column=? AND tile_row=? LIMIT 1",
             (zoom, x, row),
         ).fetchone()
         surface = None
@@ -182,39 +183,53 @@ class MBTilesRenderer(OverlayRenderer):
             if job.cancel.is_set():
                 return None
             try:
-                target = min(info.zooms, key=lambda z: (abs(z - viewport._zoom), -z))
-                choices = [z for z in reversed(info.zooms) if z <= target]
-                for target in choices:
-                    ratio, left, top, ranges = tile_window(viewport, info, target)
-                    if (
-                        sum((b - a) * (d - c) for a, b, c, d, _ in ranges)
-                        <= self.MAX_VIEW_TILES
-                    ):
-                        break
-                else:
+                window = self._tile_window(viewport, info)
+                if window is None:
                     continue
-                if not ranges:
-                    continue
+                target, ratio, left, top, ranges = window
                 # Each job owns and closes its connection on the same thread.
                 with open_archive(info.path) as db:
-                    for a, b, c, d, clip in ranges:
-                        cr.save()
-                        try:
-                            cr.rectangle(*clip)
-                            cr.clip()
-                            for y in range(c, d):
-                                for x in range(a, b):
-                                    if job.cancel.is_set():
-                                        return None
-                                    self._paint_tile(
-                                        cr, db, info, target, x, y, ratio, left, top
-                                    )
-                        finally:
-                            cr.restore()
+                    if not self._paint_ranges(
+                        cr, db, info, target, ratio, left, top, ranges, job
+                    ):
+                        return None
             except (sqlite3.Error, OSError, ValueError, cairo.Error) as error:
                 logger.warning("Unable to render MBTiles %s: %s", info.path, error)
         surface.flush()
         return None if job.cancel.is_set() else surface
+
+    def _tile_window(self, viewport, info):
+        """Zoom level and tile window to draw, or None when the chart is skipped."""
+        target = min(info.zooms, key=lambda z: (abs(z - viewport._zoom), -z))
+        choices = [z for z in reversed(info.zooms) if z <= target]
+        for target in choices:
+            ratio, left, top, ranges = tile_window(viewport, info, target)
+            if (
+                sum((b - a) * (d - c) for a, b, c, d, _ in ranges)
+                <= self.MAX_VIEW_TILES
+            ):
+                break
+        else:
+            return None
+        if not ranges:
+            return None
+        return target, ratio, left, top, ranges
+
+    def _paint_ranges(self, cr, db, info, target, ratio, left, top, ranges, job):
+        """Draw the tile windows; returns False when the job was cancelled."""
+        for a, b, c, d, clip in ranges:
+            cr.save()
+            try:
+                cr.rectangle(*clip)
+                cr.clip()
+                for y in range(c, d):
+                    for x in range(a, b):
+                        if job.cancel.is_set():
+                            return False
+                        self._paint_tile(cr, db, info, target, x, y, ratio, left, top)
+            finally:
+                cr.restore()
+        return True
 
     def _paint_tile(self, cr, db, info, target, x, y, ratio, left, top):
         for zoom in reversed(info.zooms):
