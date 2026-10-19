@@ -1,6 +1,11 @@
 # M0 / E2d: disposable app persistent field / atomic symbol mode
 
-2026-10-18; [canonical contract](rendering-performance-plan.md#e2d-contract-disposable-full-app-persistent-field--atomic-symbol-control).
+> **Status: HISTORICAL.** The E2d disposable full-app persistent-field report,
+> written 2026-10-18. Superseded by
+> [ADR-001](adr-001-grib-rendering-architecture.md) D1-D3 and issues #64-#66.
+> Evidence, not a plan.
+
+2026-10-18; [plan entry](rendering-performance-plan.md#e2d-contract-disposable-full-app-persistent-field--atomic-symbol-control).
 
 ## Decision: promising interaction evidence, lifecycle gate failed
 
@@ -14,6 +19,10 @@ Next narrow task: isolate the prototype's scene/provider/readiness-signal lifeti
 require clean process exit and explicit nonblank pixel/transition controls, then
 repeat the matched interaction test. Do not widen into chart optimization or ship
 this experiment as a production pan fix. #50 is untouched, opt-in and unmerged.
+
+> **Status update (2026-10-19):** PR #50 was merged to `dev` via `b9e2471` / PR #61
+> `1a90515`. The experiment below was recorded when it was still unmerged; the
+> measurements are unchanged.
 
 ## What changed in the disposable process
 

@@ -4,6 +4,25 @@ Tracking epic: [#51](https://github.com/evanlivingston/gweatherrouting/issues/51
 This is the current roadmap and decision ledger. Earlier implementation plans
 and reports remain historical specifications/evidence, not competing task lists.
 
+## How to read this document
+
+This file does three jobs, and each has one home:
+
+| What you want | Read |
+| --- | --- |
+| The canonical roadmap, current status and decision ledger | this file, starting at [Current checkpoint](#current-checkpoint) |
+| The architecture decision, and the work program that implements it | [ADR-001](adr-001-grib-rendering-architecture.md), then issues [#62–#70](milestones.md) |
+| The A0a–A0l experiment record, including the negative results | [`rendering-architecture-evaluation.md`](rendering-architecture-evaluation.md), the per-slice reports, and the machine-readable summaries under `docs/profiles/rendering/` |
+| The M0 mechanism-probe records (B1, E1-E3) | the per-experiment records linked from [Experiment contracts and results](#experiment-contracts-and-results-b1-e1-e3) |
+| The R0–R5 implementation detail, invariants and measurement contract | [`rendering-implementation-plan.md`](rendering-implementation-plan.md) |
+
+Nothing is deleted evidence: every decision, threshold, negative result and
+budget stays either in this file or behind a link to the document that records it.
+Where a section below is a pointer, the linked document is the canonical record
+for that experiment; this plan keeps the roadmap entry and the decision.
+
+For the wider documentation map, see [the documentation index](README.md).
+
 ## Current checkpoint
 
 - **Architecture decided:** [`adr-001-grib-rendering-architecture.md`](adr-001-grib-rendering-architecture.md).
@@ -17,74 +36,38 @@ and reports remain historical specifications/evidence, not competing task lists.
   (current state, seven structural gaps) and
   [`reference-architecture-analysis.md`](reference-architecture-analysis.md)
   (reference techniques T1-T8).
-- **Open decision:** D2 (GPU spatial interpolation vs. the R3 sampling invariant) needs
-  a user decision before issue #65 may start.
+- **D2 decided 2026-10-19:** GPU spatial interpolation, bounded by the existing
+  2e-5 gate. The R3 sampling invariant is amended, not relaxed — see ADR-001 §4.2
+  and §6. Issue #65 is unblocked; the CPU sampler remains the reference authority
+  and the fallback path.
 - **Milestone:** M0 — reproducible baseline and architecture decision.
-- **Next decision:** A0 — evaluate a coherent alternative interaction architecture,
-  not isolated transport/worker optimizations. A0a (independent covered-pan
-  composition) matched initial pixels/selection but was inconclusive; A0b (matched
-  whole-path comparison) is complete; A0c (timeline scrub, fair head-to-head) is
-  complete: both reference and candidate scrub the same 12-step forecast-time
-  trajectory. Candidate renders all 24 revisions numerically (dispatch p95 2.0
-  ms vs reference p95 357.7 ms; 24/24 vs 12/24 revisions observed; 0 vs 41
-  texture uploads during input). One pair only — not adoption evidence. See
-  [architecture evaluation](rendering-architecture-evaluation.md),
-  [A0b summary](profiles/rendering/2026-10-18/a0b-wholepath-summary.json), and
-  [A0c summary](profiles/rendering/2026-10-18/a0c-timeline-scrub-summary.json).
-   A0d/A0e proved unavailable/resident recovery and first asynchronous loading.
-   A0g now passes persistent repeated loads, visible partial-map coverage and
-   native A→B→A freshness, including two identical-instrumentation repeats. The
-   second destination is reference-empty; its original GPU layer wrongly paints
-   red despite zero vectors, so the documented empty-only oracle correction is
-   essential—not unchanged original-GPU pixel equality. See the
-   [A0g progress/checkpoint](rendering-a0g-progress.md) and
-   [evidence summary](profiles/rendering/2026-10-18/a0g-unattended-summary.json).
-   A0h now implements a single-owner retained numerical worker and keeps oracle
-   checks/readbacks outside measured input. Two matched, reversed-order pairs
-   pass exact inputs/assets/ownership/deferred fidelity. Observed preparation is
-   1.18–1.31 s resident versus 1.79–1.96 s reopening sources; resident GUI bind is
-   2.2–5.9 ms. Heartbeat maxima are 38–49 ms in this sample, not presentation.
-   Legacy chart/oracle app startup remains ~31 s. See the
-   [A0h report](rendering-a0h-resident-worker.md) and
-   [summary](profiles/rendering/2026-10-18/a0h-resident-worker-summary.json).
-   A0i adds a headless numerical-service draft, but its input fixture lost 4,036
-   recorded files. Authorized recovery has restored 4,006 exact original files;
-   30 marine cache metadata sidecars remain unavailable in that historical fixture.
-   User authorized a NEW current-data baseline rather than further recovery.
-   New fixture verifies with 22 sources and saved hide-over-land/very-dense style.
-   Its reference export passes 300 numerical comparisons; one headless startup
-   run matches the first reference field/selection, available at 2.52 s versus
-   concurrent chart readiness at 28.87 s (3.43 s preflight excluded). Both workers
-   exit 0. A0j now binds a NEW headless field into a live independent Qt viewport
-   before chart readiness (readback ends 2.45 s; chart host ready 28.54 s), supports
-   covered pan/return and adds charts without resetting weather/camera. Its final
-   scene equals the concurrent reference. One rejected drift diagnostic, then
-   one mechanism pass; both workers exit 0 on the latter. However both reference
-    and candidate exhibited inherited red GPU flooding with NONEMPTY wind.
-    A0k now corrects the EXPERIMENTAL shader's missing-data handling: all-missing
-    layers are transparent, finite control pixels unchanged, real-data geometry/
-    colors pass the independent CPU tolerance. Fresh corrected early wind is
-    read back at 2.73 s versus chart readiness 28.39 s (3.53 s preflight excluded);
-    late charts preserve the field/camera and CPU support checks pass. Both
-    children exit 0. This is not production integration or broad visual/performance
-    acceptance. No old/new speedup/presentation claim. See the
-    [A0k correction](rendering-a0k-shader-safety.md).
-   A0h results remain historical evidence. See the
-   [A0i report](rendering-a0i-independent-numerical.md).
-   Decision: support retained numerical ownership and clean timing; close this
-   successful slice without consuming unused slots. Remaining chart publication/
-   startup, correct visual portrayal, scrub/layer/zoom, global memory and
-   presentation acceptance stay open. See the [A0j report](rendering-a0j-early-display.md).
-   Do not adopt the whole architecture yet. Keep the completed
-  #50 residency slice separate and unmerged.
-- **Delivered production slice:** user authorized extending #50; commits
+- **A0 experiment record (closed):** A0 evaluated coherent alternative interaction
+  architectures, not isolated transport/worker optimizations. A0a-A0l are complete
+  as experiments. The per-slice contracts, budgets, gates, negative results and
+  decisions are in the [decision log](#decision-log) below; the narrative record is
+  [`rendering-architecture-evaluation.md`](rendering-architecture-evaluation.md)
+  (A0a, A0b, A0c and the A0d-A0i checkpoints), the per-slice reports
+  ([A0g](rendering-a0g-progress.md), [A0h](rendering-a0h-resident-worker.md),
+  [A0i](rendering-a0i-independent-numerical.md),
+  [A0j](rendering-a0j-early-display.md), [A0k](rendering-a0k-shader-safety.md),
+  [A0l](early-weather-startup-integration.md)) and the machine-readable summaries
+  under `docs/profiles/rendering/`
+  ([A0b](profiles/rendering/2026-10-18/a0b-wholepath-summary.json),
+  [A0c](profiles/rendering/2026-10-18/a0c-timeline-scrub-summary.json),
+  [A0g](profiles/rendering/2026-10-18/a0g-unattended-summary.json),
+  [A0h](profiles/rendering/2026-10-18/a0h-resident-worker-summary.json)).
+  Do not start new A0 slices from this file, and do not adopt the whole
+  architecture yet: chart publication/startup, correct visual portrayal,
+  scrub/layer/zoom, global memory and presentation acceptance stay open.
+- **Delivered production slice:** the #50 residency work is **merged to `dev`** —
+  merge commit `b9e2471`, reaching `dev` via PR #61 `1a90515` on 2026-10-19. It
+  remains opt-in. Its content is commits
   [`21b40d5`](https://github.com/evanlivingston/gweatherrouting/commit/21b40d5)
-  and CI-review correction
+  (user-authorized scope extension) and
   [`175096d`](https://github.com/evanlivingston/gweatherrouting/commit/175096d)
-  are pushed to its existing review branch. See its
-  [residency evidence](https://github.com/evanlivingston/gweatherrouting/blob/175096d/docs/gpu-weather-residency.md).
+  (CI-review correction). See its [residency evidence](gpu-weather-residency.md).
 - **Starting code:** fork `origin/dev`, `1f1464971db340d5c5581a4d6452fc61e9d7754a`.
-  PR #50 is a separate, unmerged experimental candidate, not this baseline.
+  PR #50 was a separate experimental candidate, not this baseline.
 - **Completed:** B1 render-signal instrumentation, E3a/E3b real-data residency and
   staging probes, E1/E1b native float transport/sampling probes, E2a/E2b retained
   field controls and E2c native field/selection indirection. See
@@ -166,6 +149,14 @@ predecessor passes. A negative experiment can close an uncertainty successfully.
 | E3 | Actual forecast selection fits bounded on-demand residency | Saved-view lattice and actual #50 staging fit; values/masks/provenance checked; broader coverage/eviction/soak open | Supported saved-view slice |
 | A0 | A coherent decoupled renderer improves whole map/weather interaction | A0g coverage/freshness correctness passes. A0h retained numerical owner and clean timing pass two matched pairs with lower preparation cost and exact deferred fidelity. Empty-only oracle correction documented. Legacy chart/startup, broader workloads, memory and presentation remain open. | Numerical ownership/measurement supported; whole-path architecture acceptance open |
 
+## Experiment contracts and results (B1, E1-E3)
+
+These are the M0 mechanism probes. The full contract — question, scope,
+non-goals, gates, budget, stop condition, result and decision — is recorded in
+the per-experiment document linked from each entry. That document is the
+canonical record; the entries below keep the roadmap question, the fixed
+thresholds and the decision, and point to the evidence.
+
 ### E2 design review: avoid a misleading frozen-scene win
 
 Source review of `WindRenderer.live_geometry_for_view` found that every pan
@@ -182,265 +173,144 @@ must be distinguished from a current, correctly thinned scene. Investigate the
 concrete real-forecast eligibility blocker first (E3a below). This reorders M0
 experiments, not production milestones.
 
+Canonical records: the [E2 review and next gate](rendering-m0-retained-field.md)
+and the [residency review](rendering-m0-residency.md).
+
 ### E2a contract: retained field, current selection (not a frozen scene)
 
-- **Question:** can we remove repeated weather sampling from pan restaging while
+- **Canonical record:** [E2a result and review](rendering-m0-retained-field.md)
+  holds the full question, mechanism, reference, preparation stall, workload,
+  budget, success/stop conditions, result and decision.
+- **Question:** can repeated weather sampling be removed from pan restaging while
   keeping the current native-node membership, screen-cell thinning, cap, anchors,
   vectors, masks and atlas bytes at each view?
-- **Mechanism:** stage an immutable native-node field once for the saved viewport
-  plus 256 logical pixels of geographic coverage. For covered same-time pans,
-  supply the existing #50 selection/atlas routine with the retained numerical
-  values at its exact requested coordinates. Keep its current per-view native
-  node enumeration and thinning; do not translate already thinned symbols.
-- **Reference:** unchanged #50 `stage_barbs` using the sampler normally. Compare
-  six atlas image payloads, selected count, interval and array sizes for the same
-  views. Interleave reference/candidate ordering. Reject uncached coordinates,
-  different time intervals or scale/coverage escapes rather than fill blanks.
-- **Preparation stall:** in the candidate control, replace sampler `_side` and
-  decoded-band `array` access with hard failures. Atlas preparation must complete
-  from retained values only. This does not measure GUI/render responsiveness or
-  prove GPU texture retention; selection/packing still run on the CPU.
-- **Workload:** same 33-source derived functional fixture and saved view, a fixed
-  interior exact second, small forward/reverse pans and return within coverage.
-  No new downloads, user-data changes, source-priority changes or #50 file edits.
-- **Budget:** one implementation/targeted-validation iteration, one real-data
+- **Budget:** one implementation/targeted-validation iteration and one real-data
   process bounded to 120 seconds. No full native rendering run in this contract.
-- **Success:** exact atlas-byte/count equality for all covered views with blocked
-  numerical preparation, measured per-view CPU preparation times and a recorded
-  field-build cost. Isolated worker timing is not map FPS or end-to-end speedup.
-- **Stop:** any coverage, byte, count, time-interval or provenance disagreement,
-  resource rejection, or exhausted budget. Record the result and decide whether
-  to pursue a persistent-field/GPU-indirection design; do not relax selection gates.
-- **Outcome:** seven checks and three subtests passed; one real-data process
-  completed 27 interleaved view pairs with exact atlas/staging/provenance hashes
-  and numerical preparation blocked for retained queries. Reference warm worker
-  median/p95 20.1/42.5 ms; retained 2.7/2.9 ms; initial wider field build 80.8 ms,
-  1,921 retained nodes. This is isolated CPU preparation, not GUI/FPS evidence.
+- **Decision:** retained numerical data is useful, but the worker-only cache is not
+  a demonstrated pan-fluidity fix. Do not promote an isolated worker speedup as
+  application performance, and do not relax the selection/coverage gate.
 
 ### E2b contract: native retained-field control, not production migration
 
+- **Canonical record:** [E2b result](rendering-m0-retained-field.md) holds the
+  full scope, workload, gates, budget, decision and outcome.
 - **Question:** does E2a's mechanism improve numerical-ready render observations
   during real input, or does GUI assembly/image upload remain dominant?
-- **Scope:** two fresh-process native runs of the same saved derived functional
-  fixture and existing #50 app code: reference and experiment-only retained-field
-  control. Install the control only in the disposable worker process; do not edit
-  #50. Prime a wider immutable field before timed input. Preserve its per-view
-  native selection/packing and verify its initial atlas against the reference.
-- **Workload:** 24 eight-pixel forward/reverse wheel inputs at 16.667 ms intended
-  cadence, within 256-pixel retained coverage. Use B1's non-readback replay and
-  submitted-frame attribution, adding optional numerical-state metadata. Actual
-  render callbacks are still proxies, not compositor presentation or scanout.
-- **Gates:** identical startup/source/layout and per-input camera/time states;
-  do not compare if trajectories differ. Count all 24 input revisions, including
-  superseded/unobserved ones. Report first-any-render and first-numerical-render
-  observations separately, as well as all-input dispatch lateness and uploads.
-  Input-phase counts end one input interval after the last dispatch; label drain
-  callbacks separately. No field build/resampling may occur inside the retained
-  input phase; source/interval/coverage escapes must reject or restage honestly.
-- **Budget:** two implementation/targeted-validation iterations and two serial
-  native processes, each at most 120 seconds. No full matrix, backend switch,
-  production commits, extra #50 scope, or changed fidelity thresholds.
-- **Decision:** treat improved numerical readiness with unchanged view/content
-  as mechanism support only. A worse GUI/input tail is a mixed result, not a
+- **Decision:** improved numerical readiness with unchanged view/content is
+  mechanism support only. A worse GUI/input tail is a mixed result, not a
   performance win. Native texture residency and complete-frame latency remain
-  separate gates; no end-to-end speedup claim from one process pair.
-- **Outcome:** native controls and comparison completed with identical trajectories
-  and source/layout identity. Retained control completed 24 selections with no
-  field rebuild during input, but clean numerical-ready render observations were
-  only 1/24 versus 0/24; observed-only first-render p95 was 33.0 versus 21.9 ms.
-  This is a mixed result, not an application speedup. Do not promote the worker-
-  only cache as the pan fix. See [E2 evidence/review](rendering-m0-retained-field.md).
+  separate gates, and no end-to-end speedup follows from one process pair.
 
 ### E2c contract: persistent GPU field / exact selection indirection
 
+- **Canonical record:** [E2c result](rendering-m0-persistent-field.md) holds the
+  full hypothesis, scope, fidelity reference, ownership/measurement rules, budget,
+  stop condition, results table and next gate.
 - **Hypothesis:** field values can remain in one GPU resource while a compact
-  per-view selection references the exact current native nodes and anchors. This
-  removes the need to republish endpoint images for each covered camera change.
-- **Scope:** standalone Qt/RHI prototype using the derived 33-source functional
-  fixture, a wider retained field and nine covered pan/reversal views. Reconstruct
-  physical vectors and anchors through a two-texture shader, not a frozen scene.
-  No #50 edits, routing changes, default-on rollout or native app speedup claim.
-- **Reference/fidelity:** unchanged #50 `stage_barbs` at the same exact instants.
-  Compare selection-reconstructed endpoint arrays, masks, selected counts and
-  anchors exactly on CPU; compare GPU interpolated vectors within the existing
-  2e-5 m/s limit, missing masks/anchors exactly. Preserve source provenance through
-  stable node IDs. Exercise exact/interior endpoint handling and stale generation
-  rejection; reject coverage/source/time escapes rather than draw stale data.
-- **Ownership/measurement:** immutable field and selection generation keys; only
-  matching generations may bind. Reserve a 16 MiB texture-payload envelope before
-  allocation, including a replacement overlap. Record field versus selection
-  uploads, resource creation/release and readback fidelity. This is not a Python
-  lookup/RSS bound. No GDAL/sampling access in per-view candidate selection.
-- **Budget:** two implementation/targeted-validation iterations; one offline
-  real-data preparation process and two native mechanism attempts, each at most
-  120 seconds. GPU readbacks validate correctness only, not interaction FPS.
-- **Gate/stop:** stop on fidelity, generation/coverage or resource disagreement,
-  or exhausted budget. Only after this mechanism passes consider a separately
-  contracted full-app interaction/atomic symbol-presentation prototype. An atomic
-  resource bind here does not establish atomic CPU/GPU handoff in the app.
-- **Outcome:** 9/9 real-data CPU endpoint/mask/anchor/count comparisons exact;
-  native Metal passed nine forecast plus three generated missing/endpoint cases,
-  zero measured vector error. One forecast field upload across nine selection
-  updates, 13,920 bytes per view versus 41,760-byte reference atlases. Ten checks
-  and five subtests passed; tracked native resources released. Continue/narrow to
-  separately contracted full-app atomic handoff, not a production speedup claim.
-  See [E2c evidence](rendering-m0-persistent-field.md).
+  per-view selection references the exact current native nodes and anchors.
+- **Fixed gates:** GPU interpolated vectors must match the reference sampler
+  within **2e-5 m/s**; missing masks and anchors must match exactly; the reserved
+  texture-payload envelope is 16 MiB including replacement overlap. None of these
+  are relaxed.
+- **Decision:** continue/narrow to a separately contracted full-app atomic
+  handoff. The mechanism passed; adoption into the full renderer is not yet
+  justified, and an atomic resource bind here is not atomic CPU/GPU handoff in
+  the application.
 
 ### E2d contract: disposable full-app persistent-field / atomic-symbol control
 
+- **Canonical record:** [E2d result](rendering-m0-app-persistent-field.md) holds
+  the full hypothesis, scope, fidelity, boundary, measurement rules, budget,
+  decision gate and the failed lifecycle record.
 - **Hypothesis:** a published immutable wider field allows current-view selection
   without another weather job, while one symbol mode per frame prevents E2b's
-  mixed CPU/numerical submissions. Test readiness and interaction, not just uploads.
-- **Scope:** process-local hooks in the existing #50 app; no production file edits.
-  Retain Qt Quick's lossless packed-float image transport for this first app test;
-  native RGBA32F host integration is separate. Persist four field images and update
-  three selection images (node ID, anchors). Reuse the existing barb fragment shader.
-- **Fidelity:** fixed 33-source derived functional fixture, saved scene and exact
-  clock, dense barbs over land. Geographic filtering of retained nodes must preserve
-  native membership within covered pans; compare reference/candidate endpoint and
-  anchor inputs. Static initial glyph pixels must match before timed replay.
-  Source/interval/coverage/unsupported-style changes reject the retained fast path.
-- **Boundary:** only immutable arrays/metadata cross worker to GUI. GUI selection
-  may project/thin but cannot sample/GDAL. No stale translated preview. A numerical
-  submission contains no CPU symbol batches/raster; pending/not-ready selection
-  uses CPU alone. Loading/readiness must not be hidden by simply dropping symbols.
-- **Measurement:** matched reference/candidate 24-input forward/reverse native
-  replay; all input revisions and dispatch lateness retained. Record render-callback
-  numerical readiness, mixed modes, field/selection image requests, GUI selection
-  duration and field builds during input. Static readback is fidelity only, outside
-  the timed interval. Render callbacks are not compositor presentation.
-- **Budget:** two implementation/check iterations and three native attempts, each
-  bounded to 120 seconds (reference, candidate, one diagnostic retry if necessary).
-  Stop on pixel/input/source/coverage mismatch, errors, or budget exhaustion.
-- **Decision gate:** improved readiness with comparable trajectories is limited
-  mechanism evidence; one process pair cannot establish end-to-end speedup. If GUI
-  selection or assembly stalls input, record mixed/reject instead of broadening
-  into chart/background optimization. No #50 scope expansion, commits or merge.
-- **Outcome:** initial reference/candidate replay artifacts matched trajectories,
-  startup and harness identity. Initial pixel readbacks equal; candidate numerical-
-  ready observations 17/24 versus 0/24, no mixed submissions or field rebuilds in
-  motion. Both candidate commands reported exit 1 around teardown despite complete
-  artifacts; root cause after provider correction unclassified. Two iterations/
-  three native attempts consumed. **Stop/narrow to lifecycle and nonblank/temporal
-  fidelity**, no full-app pass or speedup claim. See
-  [E2d diagnostic evidence](rendering-m0-app-persistent-field.md).
+  mixed CPU/numerical submissions.
+- **Decision:** stop/narrow to lifecycle and nonblank/temporal fidelity. No
+  full-app pass or speedup claim. The declared two-iteration, three-native-
+  attempt budget is consumed; completed artifacts are diagnostic evidence, not
+  successful native integration runs.
 
 ### E3a experiment contract: real-forecast decoded-band working set
 
+- **Canonical record:** [E3a residency finding](rendering-m0-residency.md) holds
+  the full question, scope, non-goals, budget, evidence list, fidelity gate,
+  success/stop conditions, measurement table and review.
 - **Question:** does the user's actual forecast selection require the potential
   six-bands-per-source allocation that rejects PR #50, and can a global on-demand
   retained-band budget preserve the reference sampler's answers?
-- **Scope:** standalone offline probe, private-copy/checksummed snapshot, all
-  selected sources in their saved order, fixed viewport-derived query points,
-  nearby pan/return views and exact forecast instants. Compare existing per-source
-  six-band cache against an experiment-only global LRU adapter. Keep shared
-  sampler/routing and production application code unchanged.
-- **Non-goals:** windowed/partial decode, GPU shaders or transport, changing source
-  priorities, copying PR #50 into `dev`, increasing its guard, or production rollout.
-- **Budget:** two implementation/validation iterations; at most three serial
-  workload processes, each bounded to 120 seconds. Reference retention has a
-  512 MiB safety stop; candidate retention 128 MiB. No automatic larger budgets.
-- **Evidence:** potential guard estimate, actual retained-band peak, decode/hit/
-  eviction counts, per-query timings, source/point/clock identity, value/missing/
-  provenance hashes and usable sample counts. Record transient/GDAL/RSS limitations;
-  a retained-array bound is not a total process-memory bound.
-- **Fidelity gate:** identical queries and float64 values including NaNs, missing
-  masks and per-point provenance. A rejected oversized band is a failed workload,
-  not permission to skip it or fall back to another source.
-- **Success:** same answers under the candidate budget on this viewport/time
-  replay, with measured residency; this supports only on-demand band retention,
-  not the full E3 hypothesis or numerical GPU staging eligibility.
-- **Stop/review:** budget exhausted, fixture/metadata mismatch, resource rejection,
-  changed answers, or sustained decode thrashing. Record adopt/narrow/reject and
-  decide the next experiment from evidence rather than raising limits.
-- **Outcome:** nine reference/candidate queries matched exactly, including masks
-  and provenance. Potential estimate 1,369,235,952 bytes; measured peak retained
-  decoded arrays 62,080 bytes in both modes. Two workload processes, no budget
-  eviction or rejection. This proves the preflight estimate is not actual demand
-  for this workload, but does not prove PR #50 staging fits. E3 remains open.
+- **Fixed budgets:** reference retention stops at 512 MiB; candidate retention is
+  128 MiB. Both are recorded in the linked result table.
+- **Decision:** continue narrowly to E3b. E3a proves the preflight estimate is
+  not actual demand for this workload; it does not prove PR #50 staging fits.
 
-### E3b experiment contract: actual PR #50 staging, without changing the PR
+### E3b contract: actual PR #50 staging, without changing the PR
 
-- **Question:** do the actual native-node union, temporal endpoint selection,
-  barb atlas and image encoding fit a 128 MiB global decoded-band budget on the
-  saved view and clock?
-- **Scope:** read-only reuse of the three staging/transport modules from the
-  existing #50 worktree, identified by file hashes. Reuse E3a's private snapshot,
-  source ordering, cache adapter and resource rejection semantics in a separate
-  process. Do not modify the PR, import its application entrypoint, or bypass a
-  production guard in the running app.
-- **Checks:** full native-node query union subject to #50's existing count caps;
-  exact saved time, +1 second, +15 minutes; compare staged values against the
-  reference sampler at the same coordinates (document float32 error), matching
-  masks and provenance. Build actual barb atlases and report images/numerical
-  arrays separately from decoded-band retention and RSS.
-- **Budget:** at most two implementation/validation iterations and two workload
-  processes, each at most 120 seconds. Keep 128 MiB decoded retention; fail on
-  any unsupported count/resource condition, never skip a source to get a pass.
-- **Non-goals:** GUI/render throughput, native numerical texture transport, real
-  GPU eligibility, source-selection changes, production fixes, or widening #50.
-- **Success:** staging completes inside the explicit envelopes with differential
-  value/mask/provenance evidence. This permits designing a bounded production
-  residency change, not claiming the app is fixed or all E3 cases are proven.
-- **Stop/review:** exhausted budget, staging failure, non-finite mask mismatch,
-  provenance mismatch, or unexplained errors. Preserve results and choose a
-  smaller follow-up rather than extending the experiment automatically.
-- **Outcome:** one bounded process staged 1,406 unique native nodes (2,898
-  candidates), 734 visible symbols at all three instants. Decoded-band peak
-  60,512 bytes; atlas images 41,760 bytes; masks/provenance matched and maximum
-  component error was 4.38e-7 m/s. This supports bounded on-demand staging for
-  the saved view, not GPU rendering, arbitrary views, or a total-memory bound.
+- **Canonical record:** [E3b follow-up](rendering-m0-residency.md) holds the full
+  question, scope, checks, budget, non-goals, success/stop conditions, results and
+  decision.
+- **Question:** do the actual native-node union, temporal endpoint selection, barb
+  atlas and image encoding fit a 128 MiB global decoded-band budget on the saved
+  view and clock?
+- **Fixed gates:** decoded-band retention stays at 128 MiB, and staged values must
+  match the reference sampler within **2e-5 m/s** with matching masks and
+  provenance. Never skip a source to get a pass.
+- **Decision:** bounded on-demand decoded-band ownership is justified for this
+  saved-view staging workload. Do not increase the preflight limit; propose an
+  explicit cache/ownership replacement with rejection behaviour and expanded
+  coverage tests.
 
 ### E1 experiment contract: native float textures and sampling
 
+- **Canonical record:** [E1/E1b result](rendering-m0-float-textures.md) holds the
+  full question, scope, budget, fidelity requirements, evidence list, decision
+  gate, attempt history and results.
 - **Question:** can the installed PySide/Qt expose native float upload, retention,
-  GPU sampling and readback without the PR's byte-packed image transport? What
-  binding gaps constrain integration with the existing scene graph?
-- **Scope:** standalone generated-field native Qt/RHI probe, no forecasts or
-  application configuration. Attempt float upload/readback and linear sampling;
-  inspect actual exposed signatures rather than assuming C++ examples bind.
-- **Budget:** two implementation/validation iterations and two native probe
-  processes, each at most 120 seconds. No Qt rebuild, binding patch, language/host
-  migration or dependency installation to force a pass.
-- **Fidelity:** compare finite float32 data, sign/magnitude and validity payloads;
-  test interpolation separately with finite fields. Report missing-data policy
-  as a separate production requirement, not something hardware filtering solves.
-- **Evidence:** actual formats/backend, CPU transport bytes, resource ownership,
-  readback correctness, sampling error, and binding limitations. This is a
-  feasibility test, not real-forecast speedup or production adoption evidence.
-- **Decision gate:** use Python/Qt directly only for paths whose lifetime and
-  sampling hooks are actually exposed and tested; otherwise propose a small
-  native bridge with a specific missing interface, not a wholesale rewrite.
-- **Outcome:** budget consumed. Attempt 1 stopped before measurement because
-  shader-baker discovery assumed the wrong installed-wheel path. Corrected
-  installed-path discovery; five CPU checks passed. Attempt 2 reached native
-  Metal upload/readback with bit-preserved R32F payload, but linear-sampled
-  RGBA32F failed the predeclared 2e-5 gate with maximum error
-  0.002604166666666824. Keep this failure; do not relax the gate. Binding/sampler
-  cause is not established by this single generated-field result.
+  GPU sampling and readback without the PR's byte-packed image transport?
+- **Fixed gate:** the **2e-5** maximum-error threshold applies to both attempts.
+  Hardware linear filtering failed it (measured error 0.002604166666666824);
+  explicit `texelFetch` plus manual bilinear arithmetic passed it (maximum error
+  2.384185791015625e-7). The threshold is never relaxed.
+- **Decision:** native float transport works through the installed PySide/Qt RHI
+  bindings. A broad Metal/C++ rewrite is not justified, and production
+  native-texture map integration is not proven.
 
 ### E1b contract: explicit interpolation, not a looser sampling gate
 
-- **Question:** does texelFetch plus explicit float32 bilinear arithmetic remove
-  E1's error while retaining native float transport?
-- **Change:** add a separately identified manual sampling shader to the same
-  generated-field probe; retain the hardware-linear mode and unchanged 2e-5
-  accuracy threshold. Preserve raw transport checks and backend/format identity.
-- **Budget:** one implementation/validation iteration and one native process,
-  maximum 120 seconds. No shader precision/binding investigation beyond that
+- **Canonical record:** [E1b result and budget review](rendering-m0-float-textures.md).
+- **Change:** a separately identified manual sampling shader was added to the same
+  generated-field probe; the hardware-linear mode and the unchanged 2e-5
+  accuracy threshold were both retained.
+- **Budget:** one implementation/validation iteration and one native process, at
+  most 120 seconds. No shader precision/binding investigation beyond that
   attempt, no compiler/backend switch, and no target relaxation.
-- **Success:** exact upload/readback bits and finite-field sampling within the
-  original gate. This supports explicit shader sampling only, not hardware
-  filtering, production missing-corner semantics, map integration or speedup.
-- **Stop:** any failure exhausts this follow-up; record evidence and make an
-  architecture decision rather than automatically starting another shader trial.
-- **Outcome:** one native Metal process passed the unchanged gate with maximum
-  finite-field error 2.384185791015625e-7. R32F readback preserved every tested
-  float32 bit, including signed zero, NaN payload and infinities. Six CPU checks
-  passed; three textures/two uploads retained across three render callbacks.
-  Existing map integration and missing-corner policy remain untested.
+- **Decision:** support explicit shader sampling only — not hardware filtering,
+  not production missing-corner semantics, and not map integration or speedup.
+
+### B1 experiment contract and outcome
+
+- **Canonical record:** [B1 probe result and review](rendering-m0-native-probe.md)
+  holds the full question, scope, non-goals, budget, mechanism checks, timing
+  endpoint, correctness requirements, success/stop conditions and the attempt
+  outcomes.
+- **Question:** can the embedded app replay timestamp input and its consequent
+  rendering without forcing synchronous `_present()`, `grab()`, or framebuffer
+  readback, and what endpoint can we honestly observe?
+- **Budget:** at most two implementation/validation iterations and two native
+  smoke attempts, each bounded to 120 seconds. No silent timeout increases and no
+  full replay matrix while endpoint attribution is unresolved.
+- **Decision:** adopt for bounded mechanism experiments only. The endpoint is the
+  offscreen embedded scene's Qt render signal, never GPU completion, top-level
+  presentation or scanout. True presentation and usable-data coverage remain
+  unmeasured.
 
 ## Architecture recommendation after mechanism probes
+
+These five recommendations were the input to
+[ADR-001](adr-001-grib-rendering-architecture.md). **ADR-001 wins where they
+differ:** D1 (GPU-resident numerical field), D2 (GPU spatial interpolation,
+bounded by the 2e-5 gate), D3 (frame N/N+1 overlap), D4 (resident time windows)
+and D5 (GPU decode deferred) are the ratified decisions. Read ADR-001 for the
+decisions and this section for the reasoning that produced them.
 
 1. **Do not rewrite the app or switch to a macOS-only Metal backend.** Native
    numerical textures and a custom pipeline work through the installed Qt/PySide
@@ -475,45 +345,6 @@ States: unproven → experimenting → supported / rejected / inconclusive. Trac
 implementation and production validation separately from hypothesis status.
 Preserve rejected approaches and reasons. E1–E3 budgets must be entered before
 starting those experiments, after B1 identifies a usable measurement protocol.
-
-## B1 experiment contract and outcome
-
-- **Question:** can the embedded app replay timestamp input and its consequent
-  rendering without forcing synchronous `_present()`, `grab()`, or framebuffer
-  readback, and what endpoint can we honestly observe?
-- **Scope:** an opt-in, separately versioned native measurement mode, using the
-  existing private snapshot sandbox and input paths. Keep legacy grab reports
-  valid as historical diagnostics; refuse cross-protocol comparisons.
-- **Non-goals:** renderer optimization, replacing QQuickWidget, numerical texture
-  implementation, source pruning, prefetch tuning, or changing saved settings.
-- **Budget:** at most two implementation/validation iterations and two native
-  smoke attempts before a written review; one smoke process per attempt with a
-  120-second bound. Do not silently increase timeouts or launch a full replay
-  matrix while endpoint attribution is unresolved.
-- **Mechanism checks:** scheduled input runs independently of render completion;
-  record intended and actual dispatch times, late/coalesced/dropped requests and
-  timeouts, not only completed frames. Associate view/content revisions with
-  callbacks; do not attribute an unrelated/older frame to the latest input.
-  Avoid treating every input as a guaranteed distinct displayed frame.
-- **Timing endpoint:** first assess the embedded host's observable render and
-  top-level presentation boundaries. Record raw timestamps and thread/connection
-  semantics. If only render completion is observable, report input-to-render
-  proxy latency and mark presentation latency unmeasured. Never use offscreen
-  QQuickWindow swaps as proof of top-level widget presentation.
-- **Correctness:** verify mode identity/comparison rejection, missing callbacks,
-  out-of-order/stale frames, coalescing, timeout behavior, and no timed readback;
-  preserve offline/private-copy behavior and workload fingerprints. Collect
-  screenshots/content checks separately, outside timed runs.
-- **Success:** a tested, bounded replay with explicit endpoint semantics and
-  no forced paint/readback in timing; enough raw attribution to decide whether
-  the instrumentation supports E1/E2 comparisons. This alone does not pass M0.
-- **Stop:** budget exhausted, missing fixture/dependencies, or no defensible
-  callback attribution. Record the blocker and smallest follow-up; do not pivot
-  into a renderer rewrite to make measurement easier.
-- **Outcome:** adopt for bounded mechanism experiments only. Two iterations and
-  two native attempts consumed; no automatic extension. True presentation and
-  usable-data coverage remain unmeasured. See the linked evidence/review. E2's
-  contract is next; no host/backend replacement has been selected.
 
 ## Evidence and comparison rules
 
@@ -552,6 +383,15 @@ and open PRs retain their own scope; this epic does not authorize their overwrit
 or merge. Ask before pushing/creating PRs when not already authorized.
 
 ## Decision log
+
+The A0 slice contracts, budgets, gates, negative results and per-slice decisions,
+in reverse chronological order. This log is the canonical record of the A0
+program; the narrative version of the same evidence is
+[`rendering-architecture-evaluation.md`](rendering-architecture-evaluation.md),
+with the per-slice reports and the machine-readable summaries under
+`docs/profiles/rendering/` alongside it. Do not start new A0 slices from here,
+and do not read any single entry as a current work item — the live work program
+is issues [#62–#70](milestones.md).
 
 ### A0l — opt-in application startup integration
 
@@ -1256,6 +1096,10 @@ or merge. Ask before pushing/creating PRs when not already authorized.
   epic and M0 remain open. Do not automatically extend the exhausted validation
   budget or widen #50 into the rest of the renderer.
 
+> **Status update (2026-10-19):** PR #50 was merged to `dev` via `b9e2471` / PR #61
+> `1a90515`. The entry above was recorded when it was still unmerged; the
+> measurements are unchanged.
+
 ### 2026-10-18 — CI-review corrections delivered
 
 - CI identified new cache exception-name/concrete-interface typing issues and
@@ -1271,7 +1115,8 @@ or merge. Ask before pushing/creating PRs when not already authorized.
   no warnings. Pan was not rerun in this follow-up budget.
 - Unrelated repository CI failures (including missing `nmeatoolkit` during test
   collection and other lint/type diagnostics) remain outside this slice. No full
-  repository CI pass is claimed. #50 remains opt-in, open and unmerged.
+  repository CI pass is claimed. #50 remains opt-in; it was subsequently merged to
+  `dev` (merge commit `b9e2471`, via PR #61 `1a90515`).
 
 ### 2026-10-18 — E2 native gate rejects a worker-only pan claim
 

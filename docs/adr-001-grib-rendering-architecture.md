@@ -14,6 +14,27 @@ This document reconciles that specification with the 2026-10-19 current-state an
 the reference-technique analysis, records the resulting decisions, and maps them to
 executable issues. It deliberately does **not** restate the specification; it links to it.
 
+## Current checkpoint
+
+- **Canonical roadmap and decision ledger:**
+  [`rendering-performance-plan.md`](rendering-performance-plan.md) — start at its
+  "Current checkpoint". This ADR is the decision input to that roadmap.
+- **Implementation program:** epic #51, issues
+  [#62–#70](https://github.com/evanlivingston/gweatherrouting/issues/62); the
+  local index is [`milestones.md`](milestones.md). One issue at a time; each
+  states its own gate, evidence and validation command.
+- **R0–R5 implementation detail, invariants and measurement contract:**
+  [`rendering-implementation-plan.md`](rendering-implementation-plan.md), as
+  amended by §6 below.
+- **Experiment record:** the A0a–A0l slices in
+  [`rendering-architecture-evaluation.md`](rendering-architecture-evaluation.md)
+  and in the canonical plan's decision log; the M0 mechanism probes in the
+  `rendering-m0-*.md` records; machine-readable evidence under
+  `docs/profiles/rendering/`.
+- **Status:** D1–D5 are all settled. No decision in this ADR is awaiting a user
+  decision, and no A0 slice may be started from this document.
+- **Wider documentation map:** [the documentation index](README.md).
+
 ---
 
 ## 1. Context
@@ -238,8 +259,8 @@ R-sequence is amended as recorded in §6.
 
 ## 6. Amendments to `rendering-implementation-plan.md`
 
-To be applied when D2 is decided. Listed explicitly so the spec remains the single
-roadmap.
+Applied on 2026-10-19, when D2 was decided. Listed explicitly so the spec
+remains the single roadmap.
 
 | Location | Amendment |
 | --- | --- |

@@ -1,5 +1,9 @@
 # A0h: resident numerical worker and clean timing windows
 
+> **Status: HISTORICAL.** The A0h resident-numerical-worker report, written
+> 2026-10-18. Superseded by [ADR-001](adr-001-grib-rendering-architecture.md)
+> D1-D3 and issues #64-#66. Evidence, not a plan.
+
 ## Outcome
 
 **Implemented and validated an experiment-only persistent numerical data worker,
@@ -125,6 +129,10 @@ the retained resources up front). No production cold-start claim is made.
   untouched/unmerged; its recorded empty-GPU-layer issue still needs separate
   focused review. Global RSS/GPU memory plateau is not established by the worker's
   decoded-band budget or queue bounds.
+
+  > **Status update (2026-10-19):** PR #50 was merged to `dev` via `b9e2471` / PR #61
+  > `1a90515`. The A0h record above was written when it was still unmerged; the
+  > measurements are unchanged.
 
 **Decision: support retained numerical-worker ownership and this clean measurement
 protocol for further experiments; do not adopt the whole architecture yet.**

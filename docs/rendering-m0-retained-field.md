@@ -1,6 +1,10 @@
 # M0 / E2: retained field versus native interaction
 
-2026-10-18; [canonical plan and contracts](rendering-performance-plan.md),
+> **Status: HISTORICAL.** The E2a/E2b retained-field review, written 2026-10-18.
+> Superseded by [ADR-001](adr-001-grib-rendering-architecture.md) D1-D3 and issues
+> #64-#66. Evidence, not a plan.
+
+2026-10-18; [plan experiment index](rendering-performance-plan.md#experiment-contracts-and-results-b1-e1-e3),
 [epic #51](https://github.com/evanlivingston/gweatherrouting/issues/51).
 
 ## Review decision
@@ -14,6 +18,10 @@ The experiments below do not edit #50 or routing/shared sampling code. They use
 its modules read-only and, for the native control, install hooks only inside a
 disposable benchmark process. #50's approved decoded-band fix remains separate,
 published as `21b40d5` / `175096d`, opt-in and unmerged.
+
+> **Status update (2026-10-19):** PR #50 was merged to `dev` via `b9e2471` / PR #61
+> `1a90515`. The E2 review below was recorded when it was still unmerged; the
+> measurements are unchanged.
 
 ## E2a — retain values, recompute the current portrayal
 

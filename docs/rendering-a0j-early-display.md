@@ -1,5 +1,10 @@
 # A0j: early weather display — mechanism passed, visual acceptance blocked
 
+> **Status: HISTORICAL.** The A0j early-display report, written 2026-10-19; the
+> visual blocker it records was repaired by [A0k](rendering-a0k-shader-safety.md).
+> Superseded by [ADR-001](adr-001-grib-rendering-architecture.md) and the issue
+> program. Evidence, not a plan.
+
 **Follow-up:** [A0k](rendering-a0k-shader-safety.md) fixes the missing-data overlay
 in an opt-in experimental shader and revalidates early/late display against an
 independent CPU oracle. The artifact and rejected visual gate below are historical,

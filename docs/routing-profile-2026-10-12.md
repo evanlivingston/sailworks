@@ -1,5 +1,10 @@
 # Optimized routing profile — 2026-10-12
 
+> **Status: HISTORICAL.** The 2026-10-12 routing profile and the optimization
+> targets it identified. Current routing behaviour is
+> [current-routing.md](current-routing.md); current priorities are
+> [profiling-priorities.md](profiling-priorities.md). Evidence, not a plan.
+
 The saved three-waypoint route completed in **64.010 and 63.571 seconds** without
 instrumentation (median 63.791 seconds). Coastline checks and current sampling
 account for approximately **75%** of the sampling profile. These are the first

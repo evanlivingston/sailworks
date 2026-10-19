@@ -1,10 +1,11 @@
 # A0: compare coherent interaction architectures
 
-**Status:** historical evidence. The A0a-A0k slices below are retained as the
-experiment record, including the negative results. Planning and decisions now live in
-[`adr-001-grib-rendering-architecture.md`](adr-001-grib-rendering-architecture.md) and
-epic #51; the implementation program is issues #62-#70. Do not start new A0 slices
-from this document.
+> **Status: HISTORICAL.** The A0a-A0k experiment record, written 2026-10-17 to
+> 2026-10-19, retained in full including the negative results. Planning and
+> decisions now live in
+> [ADR-001](adr-001-grib-rendering-architecture.md) and epic #51; the
+> implementation program is issues #62-#70. Evidence, not a plan. Do not start
+> new A0 slices from this document.
 
 Status: experimental candidate, not a production design selection. Tracking:
 [#51](https://github.com/evanlivingston/gweatherrouting/issues/51).
@@ -150,6 +151,10 @@ architectural adoption. These are not automatically authorized production tasks.
   default-on switch, no downloads or approximation-gate relaxation.
 - **Stop:** fidelity/source/coverage mismatch, native lifecycle failure not resolved
   within budget, resource rejection, or exhaustion. Record reason and next decision.
+
+> **Status update (2026-10-19):** PR #50 was merged to `dev` via `b9e2471` / PR #61
+> `1a90515`. The A0a contract above was recorded when it was still unmerged; the
+> measurements are unchanged.
 
 ## Checkpoints
 
@@ -339,6 +344,10 @@ content during loading, under a separate bounded contract. Do not consume spare
 attempts, start later layer/zoom phases, or adopt/roll out the architecture by
 default. Twenty-nine tests/13 subtests and Black on three changed files passed;
 all source changes remain experiment-only, with #50 untouched and unmerged.
+
+> **Status update (2026-10-19):** PR #50 was merged to `dev` via `b9e2471` / PR #61
+> `1a90515`. The A0e follow-up record below was written when it was still
+> unmerged; the measurements are unchanged.
 
 The interrupted draft failed before producing an accepted candidate coverage
 run. It also weakened trajectory matching and could retain stale CPU weather in

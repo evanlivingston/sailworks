@@ -1,5 +1,10 @@
 # A0i: independent numerical startup — fresh-baseline mechanism passed
 
+> **Status: HISTORICAL.** The A0i independent-numerical-startup report, written
+> 2026-10-19. Superseded by
+> [ADR-001](adr-001-grib-rendering-architecture.md) and the issue program.
+> Evidence, not a plan.
+
 ## Current outcome: user-authorized regeneration
 
 Follow-up: [A0j early display](rendering-a0j-early-display.md) now passes the

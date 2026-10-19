@@ -5,6 +5,10 @@ source of truth. Update the issues, not this file.
 
 **Epic:** [#51 — evidence-gated renderer modernization](https://github.com/evanlivingston/gweatherrouting/issues/51)
 
+**Start here:** [ADR-001](adr-001-grib-rendering-architecture.md) for the
+architecture decision, then the issue below. For the wider documentation map,
+see [the documentation index](README.md).
+
 ## Issues
 
 | Issue | Title | Milestone | Depends on |

@@ -1,5 +1,10 @@
 # Rendering performance: application integration checkpoint
 
+> **Status: HISTORICAL.** The M0/A0l integration checkpoint for the opt-in
+> early-weather start-up slice, written 2026-10-19. Superseded by
+> [ADR-001](adr-001-grib-rendering-architecture.md) and issues #62-#70. Read for
+> evidence; do not follow as a plan.
+
 Current milestone: M0/A0l, opt-in early-weather startup on `dev` (1f14649).
 
 This is the integration checkpoint for the early-weather startup slice. The
@@ -22,6 +27,10 @@ A0i-A0k experiment reports and their evidence are preserved alongside it.
   across event turns. Do not import experiment tools or unmerged #50 modules into
   production, transfer GDAL handles across threads, or claim retained GPU transport
   has been integrated. This is a narrower first application slice.
+
+  > **Status update (2026-10-19):** PR #50 was merged to `dev` via `b9e2471` / PR #61
+  > `1a90515`. The integration contract above was recorded when it was still
+  > unmerged; the measurements are unchanged.
 - Baseline: approved private fixture `1ed1bca1...`, 22 sources, October 19 08:00,
   saved very-dense barbs/hide-over-land and layout. Actual validation on this new
   `dev`-based worktree is separate from old-branch timings/array evidence.

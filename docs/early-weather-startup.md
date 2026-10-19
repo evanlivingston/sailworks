@@ -14,6 +14,10 @@ default chart loading, renderer selection and plotting behavior are preserved.
 No routing calculations or forecast-selection logic changed. PR #50 and the
 retained numerical/GPU prototype remain separate and unmerged.
 
+> **Status update (2026-10-19):** PR #50 was merged to `dev` via `b9e2471` / PR #61
+> `1a90515`. The description above was recorded when it was still unmerged; the
+> behaviour and measurements are unchanged.
+
 ## What is integrated
 
 - The normal Charts workspace, controls, saved viewport and settings are restored.

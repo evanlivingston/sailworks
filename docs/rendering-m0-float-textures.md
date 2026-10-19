@@ -1,6 +1,11 @@
 # M0 / E1 and E1b: native float texture feasibility
 
-2026-10-18; [canonical plan and contracts](rendering-performance-plan.md),
+> **Status: HISTORICAL.** The E1/E1b native-float-transport record, written
+> 2026-10-18; its 2e-5 gate result is the evidence ADR-001 D1 relies on. The work
+> is superseded by [ADR-001](adr-001-grib-rendering-architecture.md) D1 and issue
+> #64. Evidence, not a plan.
+
+2026-10-18; [plan experiment index](rendering-performance-plan.md#experiment-contracts-and-results-b1-e1-e3),
 [epic #51](https://github.com/evanlivingston/gweatherrouting/issues/51).
 
 ## Decision
