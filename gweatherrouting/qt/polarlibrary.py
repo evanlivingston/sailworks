@@ -3,9 +3,6 @@
 import math
 from typing import cast
 
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-from matplotlib.figure import Figure
-from matplotlib.projections.polar import PolarAxes
 from PySide6.QtCore import Qt, QSortFilterProxyModel
 from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
@@ -34,6 +31,10 @@ from .theme import SURFACE, TEXT, MUTED, section_label
 
 class PolarPreview(QDialog):
     def __init__(self, name, polar, parent=None):
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+        from matplotlib.figure import Figure
+        from matplotlib.projections.polar import PolarAxes
+
         super().__init__(parent)
         self.setWindowTitle("Polar · " + name)
         self.resize(850, 650)

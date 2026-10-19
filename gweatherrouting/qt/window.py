@@ -38,7 +38,7 @@ from .mapcanvas import TrackMap
 from .routingpanel import RoutingPanel
 from .settingsdialog import SettingsDialog
 from .datalibrary import DataLibrary, FORECAST_FILTER
-from .plots import LogPlots, elapsed_offsets
+from .plotdata import elapsed_offsets
 from .workspace import WorkspacePreferences
 from .polarworkspace import PolarWorkspace
 from .polarlibrary import PolarLibrary
@@ -111,7 +111,7 @@ class PreviewWindow(QMainWindow):
         self.timeline = ForecastTimeline(controller, self)
         self.forecast_toolbar.addWidget(self.timeline)
         self.addToolBar(self.forecast_toolbar)
-        self.plots = LogPlots(self)
+        self.plots = self._build_plots(controller)
         self.log_time = TimeControl()
         self.log_map = TrackMap(controller, self, time_control=self.log_time)
         self.logs_view = QSplitter(Qt.Orientation.Vertical)
@@ -388,14 +388,39 @@ class PreviewWindow(QMainWindow):
         self.live_timer.start()
         self.refresh()
         self.workspace = WorkspacePreferences(self, workspace_path)
+        self._show_startup_status(controller)
         view_menu.addSeparator()
         view_menu.addAction("Reset layout", self.workspace.reset_layout)
         QTimer.singleShot(0, self._offer_map_data)
+
+    def _show_startup_status(self, controller):
+        """Report staged chart initialization while it is pending."""
+        startup = getattr(controller, "chart_startup", None)
+        if startup is None:
+            return
+        self.startup_status = QLabel(startup.message)
+        self.statusBar().addPermanentWidget(self.startup_status)
+        startup.changed.connect(lambda: self.startup_status.setText(startup.message))
+        startup.finished.connect(self._offer_map_data)
+
+    def _build_plots(self, controller):
+        """Build the log plot canvas, deferring Matplotlib when it is unused."""
+        if getattr(controller, "early_weather", False):
+            from .lazyplots import LazyLogPlots
+
+            return LazyLogPlots(self)
+        from .plots import LogPlots
+
+        return LogPlots(self)
 
     def _offer_map_data(self):
         if (
             not self.controller.closed
             and self.controller.load_charts
+            and (
+                self.controller.chart_startup is None
+                or self.controller.chart_startup.state == "ready"
+            )
             and not self.controller.offline
             and any(self.controller.map_data.missing().values())
         ):
