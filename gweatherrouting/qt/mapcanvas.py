@@ -289,8 +289,11 @@ class TrackMap(QWidget, MercatorProjection):
         self._finish_zoom_silent()
         self.controller.boat_changed.disconnect(self._boat_changed)
         self.charts.forget_map(self)
-        self._base_chart_renderer.forget(self)
-        self.wind.forget(self)
+        # Terminal teardown: close the renderers so their retained handles and
+        # prepared data are released, even if a queued completion callback
+        # never runs. Hide/show keeps the reusable forget path.
+        self._base_chart_renderer.close()
+        self.wind.close()
         self.isochrones.forget(self)
         self.marine.close()
         for token in list(self._ticks):

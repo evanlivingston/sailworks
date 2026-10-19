@@ -228,6 +228,33 @@ class BaseChartChecks(Fixture):
             self.wait(lambda: renderer._states[canvas].frame is not None)
         self.wait(lambda: renderer._states[canvas].requested is None)
 
+    def test_forgotten_chart_handles_release_only_after_worker_completion(self):
+        from gweatherrouting.rendering.overlayrenderer import RenderState
+
+        canvas = self.window.map
+        renderer = canvas._base_chart_renderer
+        chart = self.simple_chart()
+        descriptor = describe_sources([chart])[0]
+        job = RenderJob((), MapViewport(canvas), ((descriptor,),), 1, "cm93")
+        renderer._worker_chart(descriptor, "cm93")
+        renderer._states[canvas] = RenderState(requested=job)
+        renderer._running = True
+        renderer._active_canvas, renderer._active_job = canvas, job
+        renderer.forget(canvas)
+        self.assertTrue(job.cancel.is_set())
+        self.assertIn(descriptor, renderer._charts)
+        renderer._completed(canvas, job, None, None)
+        self.assertFalse(renderer._charts)
+
+    def test_idle_chart_handles_release_when_map_is_forgotten(self):
+        canvas = self.window.map
+        renderer = canvas._base_chart_renderer
+        chart = self.simple_chart()
+        descriptor = describe_sources([chart])[0]
+        renderer._worker_chart(descriptor, "cm93")
+        renderer.forget(canvas)
+        self.assertFalse(renderer._charts)
+
     def test_worker_margin_preserves_visible_pixels_and_fractional_pan(self):
         canvas = self.window.map
         chart = self.simple_chart()
