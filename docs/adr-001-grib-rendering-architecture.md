@@ -1,0 +1,305 @@
+# ADR-001: GRIB rendering architecture — reconciliation and decisions
+
+- **Status:** Proposed. D2 is **open** and requires user confirmation (see §4.2).
+- **Date:** 2026-10-19
+- **Supersedes:** nothing. **Amends:** [`rendering-implementation-plan.md`](rendering-implementation-plan.md)
+  (the R0–R5 sequence and the invariants at lines 43–70), as recorded in §6.
+- **Related epic:** [#51](https://github.com/evanlivingston/gweatherrouting/issues/51)
+
+This ADR is **not** a new architecture. The target architecture already exists in
+[`rendering-implementation-plan.md`](rendering-implementation-plan.md) — see "Architecture
+and ownership" (lines 71–123) and the R0–R5 implementation sequence (lines 130–266).
+This document reconciles that specification with the 2026-10-19 current-state analysis and
+the reference-technique analysis, records the resulting decisions, and maps them to
+executable issues. It deliberately does **not** restate the specification; it links to it.
+
+---
+
+## 1. Context
+
+### 1.1 What the analyses established
+
+| Analysis | Result |
+| --- | --- |
+| [`grib-architecture-analysis.md`](grib-architecture-analysis.md) | Current-state architecture with file/line citations, and the structural gaps listed in §3. |
+| [`reference-architecture-analysis.md`](reference-architecture-analysis.md) | Reference techniques T1–T8 with explicit evidence labels and coverage limits. |
+
+Two conclusions from the reference analysis materially shape this ADR:
+
+1. **The reference implementation performs spatial interpolation on the CPU** (T6), not on
+   the GPU. GPU spatial interpolation (D2) is therefore an advance *beyond* the reference,
+   not parity work, and must never be justified as "the reference does it this way."
+2. **The reference was not observed to have a unified residency budget or eviction**
+   (T7). Our D1 therefore extends, rather than mirrors.
+
+Four of the seven gaps have a direct reference analogue (T1/T4 async structure, T2 tiled
+storage, T3 retained scene graph, T5 animation-state time switching). Three do not
+(GPU spatial interpolation, unified GPU budget, cache-key coherence) and are places where
+we can exceed the reference.
+
+### 1.2 What the existing specification already settles
+
+These are **not** re-decided here. Citing them so that no agent reopens them.
+
+| Settled | Evidence |
+| --- | --- |
+| Host: mouse-transparent `QQuickWidget` for base/navigation/wind, sibling `QWidget` for route/track/AIS/dashboard | [`gpu-embedded-rendering.md`](gpu-embedded-rendering.md) line 12 and following. R0.2 is effectively discharged. |
+| A resource ledger with explicit trial limits (512 MiB estimated GPU storage, 128 MiB CPU scene snapshots, 128 MiB upload payload) | [`gpu-embedded-rendering.md`](gpu-embedded-rendering.md) lines 24–26. R5 is partially discharged. |
+| Layer/ownership model: `ViewState`, `ContentKey`, `LayerFrame`, UI/worker boundary, GPU boundary, publication generation rejection | [`rendering-implementation-plan.md`](rendering-implementation-plan.md) lines 77–120. |
+| Non-negotiable invariants (sampling, masks, interpolation, source ordering, fallback, density, glyph geometry, CPU fallback retained) | [`rendering-implementation-plan.md`](rendering-implementation-plan.md) lines 56–70. |
+| Measurement contract and required acceptance evidence per area | [`rendering-implementation-plan.md`](rendering-implementation-plan.md) lines 267–292. |
+| Program-level CPU-vs-GPU matched baseline (stationary p99 51.8→11.0 ms, pan 90.7→54.2 ms, zoom out 98.3→70.3 ms) | [`gpu-embedded-rendering.md`](gpu-embedded-rendering.md) lines 44–46. **Readback timings, not presentation.** |
+
+---
+
+## 2. Scope of this ADR
+
+**In scope:** layer boundaries, ownership, data representations, scheduling model, and
+the disposition of the seven structural gaps.
+
+**Explicitly out of scope (unchanged non-negotiables):** routing calculations, source
+selection and ordering, weather value fidelity, portrayal density/thinning/geometry,
+the CPU fallback path, the GTK frontend, network acquisition policy, and user-data
+mutation. These remain as stated in
+[`rendering-implementation-plan.md`](rendering-implementation-plan.md) lines 56–70.
+
+---
+
+## 3. Structural gaps and disposition
+
+The seven gaps, as named in [`grib-architecture-analysis.md`](grib-architecture-analysis.md):
+
+| # | Gap | Disposition | Decision | Issue |
+| --- | --- | --- | --- | --- |
+| G1 | Decode location: CPU (GDAL → NumPy) | **Deferred** | D5 | — |
+| G2 | Data residency: CPU-side caches, no GPU-resident field | **Closed** | D1 | [#64](https://github.com/evanlivingston/gweatherrouting/issues/64) |
+| G3 | Spatial interpolation: CPU Python loops | **Closed (pending D2)** | D2 | [#65](https://github.com/evanlivingston/gweatherrouting/issues/65) |
+| G4 | Pipeline model: strictly serial stages | **Closed** | D3 | [#66](https://github.com/evanlivingston/gweatherrouting/issues/66) |
+| G5 | Time scrubbing: two-timestep, view-specific restage | **Closed** | D4 | [#67](https://github.com/evanlivingston/gweatherrouting/issues/67) |
+| G6 | Memory management: per-worker CPU byte limits, no GPU budget | **Closed** | D1 | [#64](https://github.com/evanlivingston/gweatherrouting/issues/64) |
+| G7 | Threading model: serialized daemon threads, no overlap | **Closed** | D3 | [#66](https://github.com/evanlivingston/gweatherrouting/issues/66) |
+
+The analysis's comparison table additionally lists *resource granularity* (full-frame
+textures). That is a consequence of G2 and is addressed by D1, not tracked separately.
+
+---
+
+## 4. Decisions
+
+### 4.1 D1 — GPU-resident numerical field (`LayerFrame` extended)
+
+**Decision.** Add a **GPU-resident numerical field** alongside `LayerFrame`.
+
+`LayerFrame` is currently defined as "immutable pixels or geometry plus content key…"
+([`rendering-implementation-plan.md`](rendering-implementation-plan.md) lines 106–109) —
+i.e. a CPU-produced artifact handed to a presenter. Weather fields additionally need a
+form whose *numeric values* live on the GPU and are addressed by a stable identity, so
+that a time change or a pan within covered area reads the resident resource rather than
+re-uploading.
+
+**Field identity** is: source + parameter + time instant + spatial window + resolution.
+It is deliberately **not** a per-frame image identity.
+
+**Revises:** the `LayerFrame` definition (lines 106–109) and extends the R5 resource
+ledger (lines 251–253) to account for GPU-resident numerical fields alongside GPU
+textures.
+
+**Transport format.** Native float textures, with explicit shader arithmetic for
+interpolation, replacing the current RGBA8888 bit-packing. Justification:
+
+- Hardware linear filtering on native float textures **failed** the 2e-5 gate (max error
+  2.6e-3); explicit `texelFetch` + manual bilinear arithmetic **passed** (max error
+  2.4e-7) — [`rendering-m0-float-textures.md`](rendering-m0-float-textures.md), E1/E1b.
+- Missing values must not enter shader varyings as NaN; the A0k repair (integer-exponent
+  validity checks, finite missing-cell outputs, explicit validity discard) is the
+  validated pattern — [`rendering-a0k-shader-safety.md`](rendering-a0k-shader-safety.md).
+
+**Residency budget.** The existing ledger is extended, not replaced. Eviction protects
+visible content first and reduces speculation before it reduces selected-source
+fidelity, per lines 257–259.
+
+**Issue:** [#64](https://github.com/evanlivingston/gweatherrouting/issues/64)
+
+### 4.2 D2 — GPU spatial interpolation (**OPEN — requires user confirmation**)
+
+**Conflict.** [`rendering-implementation-plan.md`](rendering-implementation-plan.md)
+line 216 states, under R3:
+
+> Keep the routing/sampling numerical interface stable.
+
+Moving spatial sampling onto the GPU changes that interface. This cannot be left
+implicit: the R3 invariant and the target architecture would then disagree.
+
+**Options.**
+
+| | Option (a) — amend the invariant | Option (b) — keep CPU sampling |
+| --- | --- | --- |
+| Mechanism | Sample the resident field on the GPU with explicit bilinear arithmetic | Resample on the CPU, upload the resampled field |
+| Effect on the R3 invariant | Requires an explicit, reviewed amendment with a stated error bound | No change |
+| Fidelity | Bounded by the existing 2e-5 gate, which becomes the amendment's error bound | Same values as today |
+| Benefit | Removes the largest remaining CPU cost from the interaction path | Removes per-frame upload only; CPU sampling cost remains |
+| Reference parity | **Beyond the reference** — the reference samples on the CPU (T6) | Matches the reference |
+
+**Recommendation: (a).** The machinery is already proven (E1b accuracy, A0k missing-data
+safety), the gate already exists and is strict, and CPU spatial sampling is the
+dominant remaining CPU cost. The amendment is narrow: it moves *where* interpolation is
+evaluated, and bounds the difference at 2e-5.
+
+**If (a) is chosen**, the amendment to record in §6 is: *spatial interpolation may be
+evaluated on the GPU against a resident numeric field, provided values match the
+reference sampler within 2e-5, missing/mask semantics match exactly, and global-grid
+wraparound behavior matches.*
+
+**If (b) is chosen,** #65 is withdrawn and D3/D4 absorb its dependency; the CPU sampler
+becomes the long-term sampling authority and the sampling interface invariant stands.
+
+**Issue:** [#65](https://github.com/evanlivingston/gweatherrouting/issues/65) — *not to
+start until this is decided.*
+
+### 4.3 D3 — Frame N / N+1 overlap
+
+**Decision.** The pipeline model gains explicit **double buffering**: two sets of
+prepared resources alternate, so preparation of frame N+1 overlaps presentation of frame
+N.
+
+This extends, and does not replace, the existing scheduling work. R2 already requires
+that no file access or expensive portrayal happen on the interaction thread and that
+requests be coalesced (lines 201–203); R4 already defines the priority order
+visible > predicted > nearby > adjacent zoom (lines 231–232). Neither states that two
+preparations may be in flight, nor that a superseded request must not publish.
+
+**Added requirements:**
+
+- At most two preparations in flight; the older is cancelled or superseded.
+- Every prepared resource carries a generation key (source/time/coverage/scope);
+  publication is rejected on generation mismatch.
+- Coverage misses, stalled preparation, and unsupported states are **explicit** and
+  distinguishable from preview/current/missing/unavailable coverage (extends line 120).
+- No stale or clipped content may be presented as current.
+
+**Revises:** the pipeline diagram (lines 77–93) and adds the generation/overlap
+requirements to R2 and R4.
+
+**Issue:** [#66](https://github.com/evanlivingston/gweatherrouting/issues/66)
+
+### 4.4 D4 — Resident time windows
+
+**Decision.** `ContentKey`'s "forecast instant/bracket" (line 103) is extended to a
+**resident time window** covering multiple forecast instants over one spatial window.
+
+Consequences:
+
+- A time change within the window performs **zero** decodes and **zero** uploads.
+- The staged `before`/`after` pair becomes a special case of a general window; the
+  existing GPU temporal blend (`blend` uniform) generalizes to any instant in the
+  window.
+- **Time is decoupled from spatial preparation.** A time change must not invalidate
+  spatial resources, and a pan must not invalidate time resources.
+- Lookahead prepares the next window while the current one is displayed, so an interval
+  crossing does not stall. Interval crossings, source changes, and coverage misses show
+  an accurate loading state — a cached smooth scrub must not conceal poor settling.
+
+**Revises:** the `ContentKey` definition (line 103) and extends R3's reuse requirement
+(lines 212–215) from spatial to temporal reuse.
+
+**Issue:** [#67](https://github.com/evanlivingston/gweatherrouting/issues/67)
+
+### 4.5 D5 — GPU decode: explicitly deferred
+
+**Decision.** GPU-side GRIB decompression is **deferred**, with no near-term issue.
+
+Reasoning: R3 already warns "Do not assume windowed GRIB reads avoid full decoding;
+measure actual driver behavior before choosing that optimization" (lines 222–223). The
+profiled cost that matters for interaction is not the decompression itself but the
+per-frame re-upload and the CPU sampling loop, which D1 and D2 address. GPU decode
+would additionally require a decoder available to the GPU, which is a much larger
+dependency than the residency work, and would change the numerical values produced.
+
+**Revisit when:** D1 and D2 are landed and the remaining decode cost is re-profiled
+against the new baseline. It is a separate decision, not a silent omission.
+
+---
+
+## 5. Relationship to the existing sequences
+
+Three numbering schemes now coexist. This section fixes their relationship so that
+agents do not follow the wrong one.
+
+| Scheme | Scope | Granularity | Authority |
+| --- | --- | --- | --- |
+| **R0–R5** ([`rendering-implementation-plan.md`](rendering-implementation-plan.md) lines 130–266) | Implementation-detail sequence | Milestone with exit criteria | **Canonical for implementation detail.** |
+| **M0–M4** (epic #51, GitHub milestones) | Program phase | Phase | Canonical for program phase and target ratification. |
+| **#62–#70** (GitHub issues) | Executable unit | Single bounded change with one gate | Canonical for what an agent works on. |
+
+**Rule.** An agent works **one issue**. An issue's scope is a *subset* of the relevant
+R-slice; the R-slice exit criteria still apply and are not weakened. Where this ADR and
+the R-sequence disagree, **this ADR wins** (it is the later decision), and the
+R-sequence is amended as recorded in §6.
+
+---
+
+## 6. Amendments to `rendering-implementation-plan.md`
+
+To be applied when D2 is decided. Listed explicitly so the spec remains the single
+roadmap.
+
+| Location | Amendment |
+| --- | --- |
+| Lines 106–109 (`LayerFrame`) | Add a GPU-resident numerical field form; field identity is source+parameter+instant+window+resolution, not image identity. (D1) |
+| Lines 251–253 (R5 ledger) | Ledger additionally accounts for GPU-resident numerical fields. (D1) |
+| Line 216 (R3 invariant) | **Only if D2 = (a):** amend as quoted in §4.2, with 2e-5 as the error bound. |
+| Lines 77–93 (pipeline) | Add explicit N/N+1 overlap, ≤2 in flight, and generation-key publication rejection. (D3) |
+| Line 103 (`ContentKey`) | "Forecast instant/bracket" becomes a resident time window over multiple instants. (D4) |
+| Lines 212–215 (R3 reuse) | Reuse extends from spatial to temporal. (D4) |
+
+**Deferred and not amended:** R1 (host), R0.3/R0.4 (resource envelope, platform matrix),
+R5 (retention hardening, rollout). R0.2 is discharged by
+[`gpu-embedded-rendering.md`](gpu-embedded-rendering.md).
+
+---
+
+## 7. Evidence index
+
+| Artifact | Used for |
+| --- | --- |
+| [`grib-architecture-analysis.md`](grib-architecture-analysis.md) | Current state; the seven gaps. |
+| [`reference-architecture-analysis.md`](reference-architecture-analysis.md) | Reference techniques T1–T8; T6 correction (CPU spatial interpolation). |
+| [`rendering-implementation-plan.md`](rendering-implementation-plan.md) | The architecture being reconciled; invariants; R0–R5; measurement contract. |
+| [`gpu-embedded-rendering.md`](gpu-embedded-rendering.md) | Host decision; resource ledger; matched CPU/GPU baseline. |
+| [`rendering-m0-float-textures.md`](rendering-m0-float-textures.md) | E1/E1b: native float transport; hardware filtering fails 2e-5, explicit arithmetic passes. |
+| [`rendering-a0k-shader-safety.md`](rendering-a0k-shader-safety.md) | Missing-data handling; zero-alpha gate; the red-flood failure and its repair. |
+| [`rendering-a0j-early-display.md`](rendering-a0j-early-display.md) | Early weather before chart readiness; camera/clock preservation. |
+| [`rendering-a0h-resident-worker.md`](rendering-a0h-resident-worker.md) | Single-owner retained worker; exact deferred fidelity. |
+| [`rendering-architecture-evaluation.md`](rendering-architecture-evaluation.md) | A0a–A0k results **including the negative ones**; the "do not adopt on one pair" discipline. |
+| [`profiles/rendering/2026-10-18/a0c-timeline-scrub-summary.json`](profiles/rendering/2026-10-18/a0c-timeline-scrub-summary.json) | Scrub cost: 41 uploads / 568 MB; dispatch p95 357.7 ms. The cost D1/D3/D4 remove. |
+| [`profiles/rendering/2026-10-18/a0h-resident-worker-summary.json`](profiles/rendering/2026-10-18/a0h-resident-worker-summary.json) | Resident preparation 1.18–1.31 s vs 1.79–1.96 s; GUI bind 2.2–5.9 ms. |
+| [`rendering-m0-measurement-audit.md`](rendering-m0-measurement-audit.md) | What the instrumentation can and cannot prove; why readback is not presentation. |
+| [`profiling-priorities.md`](profiling-priorities.md) | Already-measured pan cost (0.841 s inclusive in `live_geometry_for_view`). Do not re-measure. |
+
+---
+
+## 8. Open questions
+
+| # | Question | Owner | Blocks |
+| --- | --- | --- | --- |
+| Q1 | **D2: amend the R3 sampling invariant, or keep CPU sampling?** | user | #65 |
+| Q2 | Where does the ADR live in the docs tree, and does the repo adopt a `docs/adr/` convention? | maintainer | housekeeping |
+| Q3 | Is the R-sequence's "Immediate implementation order" (line 310) still authoritative, given that R0.1 was completed before the architecture decision? | maintainer | #63 |
+| Q4 | Does #69's Part 2 (remaining layers by measured cost) require its own re-profile issue, or is it in scope for #69? | maintainer | #69 |
+
+---
+
+## 9. Supersedes / standing constraints
+
+This ADR does not supersede the canonical performance roadmap
+([`rendering-performance-plan.md`](rendering-performance-plan.md)) or the implementation
+specification. It amends them as recorded in §6.
+
+Standing constraints carried by every implementing issue:
+
+1. Thresholds are never relaxed: the 2e-5 numerical gate, the A0k zero-alpha
+   missing-data gate, and the existing barbs selection/anchor/count/atlas gates.
+2. Correctness, lifecycle, and performance are separate gates.
+3. Negative results are preserved with their reasons.
+4. Render callbacks are proxies, not presentation. Readback is fidelity, not timing.
+5. Every change is feature-flagged, default OFF, with the default path byte-identical.
