@@ -1,5 +1,10 @@
 # Rendering performance: baseline protocol and improvement plan
 
+> **Status: HISTORICAL.** The historical benchmark protocol and its gate values.
+> The canonical roadmap and decision gates are in
+> [rendering-performance-plan.md](rendering-performance-plan.md). Evidence, not a
+> plan.
+
 ## Scope and decision gates
 
 The [canonical performance plan](rendering-performance-plan.md), tracking epic

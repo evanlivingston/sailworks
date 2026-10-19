@@ -1,5 +1,11 @@
 # Rendering baseline — 2026-10-15
 
+> **Status: HISTORICAL.** The synthetic scaling baseline captured 2026-10-15; the
+> reference workload is
+> [rendering-startup-baseline-2026-10-15.md](rendering-startup-baseline-2026-10-15.md).
+> Superseded by [rendering-performance-plan.md](rendering-performance-plan.md).
+> Evidence, not a plan.
+
 This is the synthetic scaling baseline. Use [the normal startup baseline](rendering-startup-baseline-2026-10-15.md)
 as the primary workload and optimization priority for the installed app.
 

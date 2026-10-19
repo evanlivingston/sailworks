@@ -1,5 +1,10 @@
 # GPU rendering feasibility experiment — 2026-10-15
 
+> **Status: HISTORICAL.** The 2026-10-15 GPU rendering feasibility experiment,
+> retained with its failed composite reports. Superseded by the R0 sequence in
+> [rendering-implementation-plan.md](rendering-implementation-plan.md) and
+> [ADR-001](adr-001-grib-rendering-architecture.md). Evidence, not a plan.
+
 ## Outcome
 
 **GPU-backed presentation is worth pursuing, but this is not a production-ready

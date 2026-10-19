@@ -1,5 +1,11 @@
 # PR #50: bounded worker-private decoded-band residency
 
+> **Status: HISTORICAL.** PR #50's bounded decoded-band residency record, written
+> 2026-10-18; the PR merged to `dev` on 2026-10-19 (`b9e2471`, via PR #61
+> `1a90515`). Superseded as a work item by
+> [ADR-001](adr-001-grib-rendering-architecture.md) D1 and issue #64. Evidence,
+> not a plan.
+
 Scope extension approved by the user on 2026-10-18, following the M0 probes in
 [epic #51](https://github.com/evanlivingston/gweatherrouting/issues/51). The M0
 plan, probes and private results remain in their separate worktree; this change
@@ -117,8 +123,10 @@ preserves the key evidence without private paths/coordinates.
 
 ### Review / remaining gates
 
-**Decision: retain this narrow residency fix for human review, leave #50 opt-in
-and unmerged.** The saved-view eligibility defect has functional evidence; there
+**Decision: retain this narrow residency fix for human review, leave #50 opt-in.**
+PR #50 was merged to `dev` on 2026-10-19 (merge commit `b9e2471`, reaching `dev`
+via PR #61 `1a90515`); the opt-in default and every gate recorded below are
+unchanged. The saved-view eligibility defect has functional evidence; there
 is no claim of end-to-end CPU-renderer speedup, instant scrubbing, fluid pan,
 power savings, total-memory bound, long-session plateau, minimum-Qt execution
 or non-Metal validation. Changed-time retries for an unchanged unsupported

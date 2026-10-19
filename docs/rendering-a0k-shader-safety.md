@@ -1,5 +1,10 @@
 # A0k: missing wind shader safety — focused repair passed
 
+> **Status: HISTORICAL.** The A0k missing-data shader-safety report, written
+> 2026-10-19. Its zero-alpha gate is the fixed reference for missing-data
+> portrayal; the work itself is superseded by
+> [ADR-001](adr-001-grib-rendering-architecture.md) and the issue program.
+
 ## Outcome
 
 Fixed the red overlay in the **experimental renderer**, without changing wind

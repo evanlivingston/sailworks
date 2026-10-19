@@ -1,5 +1,10 @@
 # R0.1 — GPU texture parity implementation
 
+> **Status: HISTORICAL.** The R0.1 texture-parity implementation record for the
+> reproduced 2× Metal failures. Superseded by
+> [ADR-001](adr-001-grib-rendering-architecture.md) and the issue program.
+> Evidence, not a plan.
+
 Status: the reproduced 2x Metal fractional-pan failures are fixed. This completes
 the first implementation slice of the [rendering plan](rendering-implementation-plan.md),
 not the production GPU integration or the full platform/DPR matrix.

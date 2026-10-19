@@ -1,5 +1,10 @@
 # A0g unattended progress and checkpoint
 
+> **Status: HISTORICAL.** The A0g unattended-continuation checkpoint, written
+> 2026-10-18. The A0 program is closed as an experiment; superseded by
+> [ADR-001](adr-001-grib-rendering-architecture.md) and issues #62-#70. Evidence,
+> not a plan.
+
 ## Outcome
 
 **Persistent new-area loading, honest partial coverage, reference-empty wind and

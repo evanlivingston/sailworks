@@ -1,7 +1,11 @@
 # M0 / B1: embedded non-readback timing probe
 
+> **Status: HISTORICAL.** The B1 embedded timing-probe record, written 2026-10-17.
+> Superseded by [ADR-001](adr-001-grib-rendering-architecture.md) and the issue
+> program (#62-#70). Evidence, not a plan.
+
 2026-10-17; [epic #51](https://github.com/evanlivingston/gweatherrouting/issues/51),
-[canonical plan and experiment contract](rendering-performance-plan.md).
+[plan experiment index](rendering-performance-plan.md#experiment-contracts-and-results-b1-e1-e3).
 
 ## Outcome
 
