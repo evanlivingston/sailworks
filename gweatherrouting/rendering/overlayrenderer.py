@@ -4,7 +4,7 @@ import logging
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 
 import cairo
 from gweatherrouting.core.scheduling import schedule_idle
@@ -101,6 +101,9 @@ class OverlayRenderer:
         self._states = {}
         self._pending = OrderedDict()
         self._running = False
+        self._closed = False
+        self._worker_active = False
+        self._worker_lock = Lock()
         self._active_canvas = None
         self._active_job: RenderJob | None = None
         self._coalesce_active = True
@@ -137,6 +140,26 @@ class OverlayRenderer:
             )
             state.prefetched = None
 
+    def close(self):
+        """Cancel permanently; release worker resources even without UI delivery."""
+        with self._worker_lock:
+            if self._closed:
+                return
+            self._closed = True
+            if not self._worker_active:
+                self._release_resources()
+        for canvas in list(self._states):
+            self.forget(canvas)
+        if self._active_job is not None:
+            self._cancel(self._active_job, "closed")
+        self.cancel_speculation()
+        self._active_canvas = self._active_job = None
+        self._speculative_active = None
+
+    def _release_resources(self):
+        """Called only with no worker accessing resources (UI or worker thread)."""
+        pass
+
     def _cancel(self, job, reason):
         if not job.cancel.is_set():
             job.cancelled_at = time.monotonic()
@@ -164,7 +187,7 @@ class OverlayRenderer:
 
     def prefetch(self, canvas, key, viewport, charts, factor, palette):
         """Queue one speculative frame; it only runs while visible work is idle."""
-        if not self._prefetch_enabled:
+        if self._closed or not self._prefetch_enabled:
             return False
         state = self._states.get(canvas)
         if state is None:
@@ -248,6 +271,8 @@ class OverlayRenderer:
         pass
 
     def draw(self, canvas, cr, charts, palette):
+        if self._closed:
+            return
         if not charts:
             self.forget(canvas)
             return
@@ -256,15 +281,45 @@ class OverlayRenderer:
         state = self._states.setdefault(canvas, RenderState())
         state.key = key
         state.demand = MapViewport(canvas, on_redraw=lambda: None)
-        if state.prefetched:
-            for index, (spec_job, surface) in enumerate(state.prefetched):
-                if spec_job.key == key and self._fits_job(spec_job, canvas):
-                    state.prefetched.pop(index)
-                    state.frame = (spec_job, surface)
-                    spec_job.published_at = time.monotonic()
-                    self.prefetch_metrics["hits"] += 1
-                    self._schedule_event("publish", spec_job)
-                    break
+        self._promote_prefetched(canvas, state, key)
+        self._adopt_speculation(canvas, state, key)
+        self._coalesce_demand(canvas, state, key)
+        frame = state.frame
+        fresh = frame and frame[0].key == key and self._fits_job(frame[0], canvas)
+        requested = state.requested
+        pending = (
+            requested
+            and not requested.cancel.is_set()
+            and requested.key == key
+            and self._fits_job(requested, canvas)
+        )
+        if fresh and requested and not pending:
+            self._cancel(requested, "already fresh")
+            self._pending.pop(canvas, None)
+            state.requested = None
+        if (
+            not fresh
+            and not pending
+            and not getattr(canvas, "_zoom_animating", False)
+            and time.monotonic() >= state.retry_after
+        ):
+            self._request_visible(canvas, state, key, charts, factor, palette)
+        if frame and self._can_preview(frame[0], key):
+            self._paint(canvas, cr, *frame)
+
+    def _promote_prefetched(self, canvas, state, key):
+        if not state.prefetched:
+            return
+        for index, (spec_job, surface) in enumerate(state.prefetched):
+            if spec_job.key == key and self._fits_job(spec_job, canvas):
+                state.prefetched.pop(index)
+                state.frame = (spec_job, surface)
+                spec_job.published_at = time.monotonic()
+                self.prefetch_metrics["hits"] += 1
+                self._schedule_event("publish", spec_job)
+                break
+
+    def _adopt_speculation(self, canvas, state, key):
         speculation = self._speculative.get(canvas)
         if speculation is not None:
             if speculation.key != key:
@@ -298,6 +353,8 @@ class OverlayRenderer:
             # Same content, drifted view: keep it running while no visible
             # work is queued; it is preempted below if this draw requests
             # visible work, since one worker cannot serve both at once.
+
+    def _coalesce_demand(self, canvas, state, key):
         active = self._active_job if self._active_canvas is canvas else None
         if (
             self._coalesce_active
@@ -321,8 +378,6 @@ class OverlayRenderer:
             self._cancel(queued, "obsolete queued demand")
             if state.requested is queued:
                 state.requested = None
-        frame = state.frame
-        fresh = frame and frame[0].key == key and self._fits_job(frame[0], canvas)
         if (
             self._coalesce_active
             and active is not None
@@ -334,45 +389,28 @@ class OverlayRenderer:
             if queued is not None:
                 self._cancel(queued, "covered by active request")
             state.requested = active
+
+    def _request_visible(self, canvas, state, key, charts, factor, palette):
         requested = state.requested
-        pending = (
-            requested
-            and not requested.cancel.is_set()
-            and requested.key == key
-            and self._fits_job(requested, canvas)
-        )
-        if fresh and requested and not pending:
-            self._cancel(requested, "already fresh")
-            self._pending.pop(canvas, None)
-            state.requested = None
-        if (
-            not fresh
-            and not pending
-            and not getattr(canvas, "_zoom_animating", False)
-            and time.monotonic() >= state.retry_after
+        if requested is not None and not (
+            self._keep_active(requested, canvas, key) and requested is self._active_job
         ):
-            if requested is not None and not (
-                self._keep_active(requested, canvas, key)
-                and requested is self._active_job
-            ):
-                self._cancel(requested, "superseded request")
-            if (
-                self._speculative_active is not None
-                and self._speculative_active[0] is canvas
-            ):
-                # New visible work preempts drifted speculation.
-                self._cancel(self._speculative_active[1], "visible demand")
-            viewport = MapViewport(canvas, MARGIN, lambda: None)
-            job = RenderJob(key, viewport, charts, factor, palette)
-            self._next_request_id += 1
-            job.request_id = self._next_request_id
-            viewport.render_cancelled = job.cancel.is_set
-            state.requested = job
-            self._pending[canvas] = job
-            self._schedule_event("request", job)
-            self._start_next()
-        if frame and self._can_preview(frame[0], key):
-            self._paint(canvas, cr, *frame)
+            self._cancel(requested, "superseded request")
+        if (
+            self._speculative_active is not None
+            and self._speculative_active[0] is canvas
+        ):
+            # New visible work preempts drifted speculation.
+            self._cancel(self._speculative_active[1], "visible demand")
+        viewport = MapViewport(canvas, MARGIN, lambda: None)
+        job = RenderJob(key, viewport, charts, factor, palette)
+        self._next_request_id += 1
+        job.request_id = self._next_request_id
+        viewport.render_cancelled = job.cancel.is_set
+        state.requested = job
+        self._pending[canvas] = job
+        self._schedule_event("request", job)
+        self._start_next()
 
     def _can_complete(self, job, key):
         return job.key == key
@@ -395,7 +433,7 @@ class OverlayRenderer:
         paint_viewport(canvas, cr, job.viewport, surface)
 
     def _start_next(self):
-        if self._running:
+        if self._closed or self._running:
             return
         if self._pending:
             canvas, job = self._pending.popitem(last=False)
@@ -410,6 +448,8 @@ class OverlayRenderer:
             return
         job.started_at = time.monotonic()
         self._schedule_event("start", job)
+        with self._worker_lock:
+            self._worker_active = True
 
         def worker():
             surface, error = None, None
@@ -419,7 +459,12 @@ class OverlayRenderer:
                 error = str(exc)
             job.finished_at = time.monotonic()
             self._schedule_event("finish", job)
-            self.schedule(self._completed, canvas, job, surface, error)
+            with self._worker_lock:
+                self._worker_active = False
+                if self._closed:
+                    self._release_resources()
+            if not self._closed:
+                self.schedule(self._completed, canvas, job, surface, error)
 
         Thread(target=worker, name="overlay-render", daemon=True).start()
 
@@ -428,6 +473,10 @@ class OverlayRenderer:
 
     def _completed(self, canvas, job, surface, error):
         self._running = False
+        if self._closed:
+            self._active_canvas = self._active_job = None
+            self._speculative_active = None
+            return False
         if self._speculative_active is not None and self._speculative_active[1] is job:
             self._speculative_active = None
             state = self._states.get(canvas)

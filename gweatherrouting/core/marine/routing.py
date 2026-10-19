@@ -22,7 +22,6 @@ from gweatherrouting.core.gribsampling import WeatherSampler
 
 from .chs import DownloadCancelledError
 from .fields import Area, FieldSelection, field_sort_key, normalize_priority
-from .models import utc_time
 
 GEOD = Geod(ellps="WGS84")
 KNOT = 1852 / 3600

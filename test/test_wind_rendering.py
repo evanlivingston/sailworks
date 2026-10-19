@@ -213,7 +213,12 @@ class TestWindOverlay(unittest.TestCase):
         self.cr = cairo.Context(self.surface)
         self.renderer._load_wind = Mock(
             return_value=[
-                [(180, 6, (47.5 + row * 0.1, -122.5 + col * 0.1)) for row in range(3)]
+                (
+                    -122.5 + col * 0.1,
+                    np.array([47.5 + row * 0.1 for row in range(3)]),
+                    np.full(3, 180.0),
+                    np.full(3, 6.0),
+                )
                 for col in range(3)
             ]
         )
@@ -815,7 +820,15 @@ class TestWindOverlay(unittest.TestCase):
                 10.25 + lat * 90,
             ),
         )
-        data = [[(90, 8, (lat, lon)) for lat in range(3)] for lon in range(3)]
+        data = [
+            (
+                float(lon),
+                np.array([float(lat) for lat in range(3)]),
+                np.full(3, 90.0),
+                np.full(3, 8.0),
+            )
+            for lon in range(3)
+        ]
         surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 200, 200)
         painter._draw_color_fill(view, cairo.Context(surface), data, 1)
         surface.flush()

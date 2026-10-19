@@ -2,10 +2,12 @@
 
 ## Scope and decision gates
 
-The consolidated [implementation specification](rendering-implementation-plan.md)
-defines the production milestones, ownership boundaries, rollout gates, and
-validation contract. Its first implementation slice closes GPU texture parity;
-production presentation precedes the data-pipeline and prefetch work.
+The [canonical performance plan](rendering-performance-plan.md), tracking epic
+[#51](https://github.com/evanlivingston/gweatherrouting/issues/51), defines current
+milestones and experiment decisions. This document describes the historical
+benchmark protocol; the [implementation specification](rendering-implementation-plan.md)
+retains its invariants and earlier architecture context. Neither supersedes the
+canonical plan's evidence gates.
 
 First establish repeatable measurements; do not optimize by increasing padding
 or reducing source data ad hoc. The current implementation adds a **benchmark

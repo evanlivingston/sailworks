@@ -1,0 +1,48 @@
+{
+  "experiment": "A0e asynchronous new-area preparation",
+  "decision": "stop budget; narrow follow-up to preparation viewport initialization",
+  "snapshot_sha256": "97cfda3c62a494c3d462ee8cde449d4d80ed1c62f387d70edcd9192dfb65d360",
+  "initial_resources_metadata_sha256": "761596a925c3489ec6403427d338a09137b88dab033b4ce0d5235bef84634122",
+  "workload": "fixed saved clock, same viewport/DPR, destination 576 logical pixels east; no prefetched destination bundle",
+  "validation": {
+    "targeted_tests_passed": 27,
+    "subtests_passed": 10,
+    "black_checked_files": 6,
+    "controller_attempts": 2,
+    "native_preparation_children_launched": 1,
+    "accepted_native_runs": 0
+  },
+  "attempts": [
+    {
+      "local_artifact_directory_basename": "rendering-a0e-load-1",
+      "controller_exit_code": 1,
+      "duration_seconds": 4.234347624937072,
+      "failure": "Wrong helper module: rendering_protocol has no environment function; stopped before preparation launch"
+    },
+    {
+      "local_artifact_directory_basename": "rendering-a0e-load-2",
+      "controller_exit_code": 1,
+      "duration_seconds": 34.531857250025496,
+      "preparation_exit_code": 1,
+      "preparation_duration_seconds": 30.413710166001692,
+      "failure": "Preparation viewport dimensions/scale differ at pre-first-grab callback; no resources exported or published"
+    }
+  ],
+  "final_harness_identity": {
+    "run_coverage_load.py": "ecafceb329e52833bd9bb3e32b0ca844890d80e3ee4eed768a67a1f3428381b4",
+    "experiment_vertical_renderer.py": "73ed8ed76e84f701f3e3d7079e30c7f90aef7570ef49d43df5a0e48a078959cb",
+    "benchmark_startup_rendering.py": "b607672e0cd7debec533499ea32ad60c62622ecd2faea85e533cebe2719c9ad7",
+    "coverage_scheduler.py": "d41edd8e0b088d76cbf4777bc952516407b13696c078960e6090263e98a72a65",
+    "architecture_run_protocol.py": "e5703f937377ff9d55c415e9726b6ade4d7879b898a50f81cff38bc25c66bc5f"
+  },
+  "established": {
+    "synthetic_latest_request_and_stale_result_tests": true,
+    "synthetic_cancellation_and_process_reaping_tests": true,
+    "bundle_dtype_precision_checksum_identity_budget_tests": true,
+    "real_new_area_post_load_fidelity": false,
+    "accepted_native_heartbeat_measurement": false,
+    "presentation_measured": false,
+    "performance_comparison": false,
+    "production_changes": false
+  }
+}

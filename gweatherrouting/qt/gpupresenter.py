@@ -2,12 +2,19 @@
 
 import logging
 import math
+import os
+from typing import TYPE_CHECKING, cast
 
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import QGuiApplication, QPainter, QSurfaceFormat
 from PySide6.QtWidgets import QWidget
 
 from .mapframe import resource_estimate
+
+if TYPE_CHECKING:
+    from PySide6.QtQuickWidgets import QQuickWidget
+
+    from .gpuscene import MapScene
 
 logger = logging.getLogger("gweatherrouting")
 
@@ -39,6 +46,13 @@ class GpuPresenter(QObject):
     CPU_SCENE_LIMIT = 128 * 1024 * 1024
     UPLOAD_LIMIT = 128 * 1024 * 1024
 
+    # The scene, widget and overlay are released to None sentinels when the
+    # GPU path is torn down. The sentinels are cast so the live attributes
+    # keep one declared type; every read of them happens while they are live.
+    widget: "QQuickWidget"
+    overlay: "DynamicOverlay"
+    scene: "MapScene"
+
     def __init__(self, canvas):
         super().__init__(canvas)
         from PySide6.QtQuickWidgets import QQuickWidget
@@ -50,7 +64,13 @@ class GpuPresenter(QObject):
         self.active, self.closed, self.initialized = True, False, False
         self.estimate = {}
         self._quick_window = None
-        self.scene = None
+        self.scene = cast("MapScene", None)
+        self.weather = None
+        if os.environ.get("GWR_GPU_WEATHER") == "1":
+            from .gpuweatherjobs import WeatherStager
+
+            self.weather = WeatherStager(self)
+            self.weather.changed.connect(self.request)
         self.widget = QQuickWidget(canvas)
         self.widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
@@ -74,7 +94,7 @@ class GpuPresenter(QObject):
         self.widget.sceneGraphError.connect(lambda _error, reason: self.fail(reason))
         self.widget.statusChanged.connect(self._status_changed)
         try:
-            self.scene = MapScene(self.widget, self.fail)
+            self.scene = MapScene(self.widget, self.fail, self.request)
             self.scene.root.windowChanged.connect(lambda _window: self.request())
         except Exception:
             self.closed = True
@@ -202,6 +222,8 @@ class GpuPresenter(QObject):
         if not self.active or self.closed:
             return
         self.timer.stop()
+        if self.weather is not None:
+            self.weather.invalidate()
         self.deadline.stop()
         self.widget.hide()
         self.overlay.hide()
@@ -213,6 +235,8 @@ class GpuPresenter(QObject):
         if not self.active or self.closed:
             return
         self.active = False
+        if self.weather is not None:
+            self.weather.close()
         self.timer.stop()
         self.deadline.stop()
         self._failure_reason = reason
@@ -231,9 +255,9 @@ class GpuPresenter(QObject):
         self.scene.clear()
         self.widget.deleteLater()
         self.overlay.deleteLater()
-        self.widget = None
-        self.overlay = None
-        self.scene = None
+        self.widget = cast("QQuickWidget", None)
+        self.overlay = cast("DynamicOverlay", None)
+        self.scene = cast("MapScene", None)
         self.canvas._gpu_geometry = None
         self.canvas._gpu_batches = ()
         self.canvas._gpu_wind_raster = None
@@ -246,6 +270,8 @@ class GpuPresenter(QObject):
             return
         self.closed = True
         self.active = False
+        if self.weather is not None:
+            self.weather.close()
         self.timer.stop()
         self.deadline.stop()
         if self.widget is not None:

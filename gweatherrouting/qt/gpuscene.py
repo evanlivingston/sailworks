@@ -1,6 +1,8 @@
 """Qt Quick scene graph for the opt-in map presenter. Imported lazily."""
 
 import ctypes
+from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import shiboken6
@@ -132,9 +134,10 @@ class WindItem(QQuickItem):
 
 
 class MapScene:
-    def __init__(self, widget, fail):
+    def __init__(self, widget, fail, request=None):
         self.widget = widget
         self.fail = fail
+        self.request = request or widget.update
         self.layers = {}
         self.frame = None
         self.counters = dict(
@@ -142,8 +145,10 @@ class MapScene:
         )
         root_component = QQmlComponent(widget.engine())
         root_component.setData(b"import QtQuick\nItem { clip: true }", QUrl())
-        self.root = root_component.create()
-        if self.root is None:
+        root = root_component.create()
+        # The QML root is an Item; create() only reports it as a QObject.
+        self.root = cast(QQuickItem, root)
+        if root is None:
             raise RuntimeError(str(root_component.errors()))
         self.root_component = root_component
         widget.setContent(QUrl(), root_component, self.root)
@@ -158,6 +163,76 @@ class MapScene:
         self.navigation.setZ(10000)
         for item in (self.base, self.navigation, self.raster_wind):
             item.failed.connect(fail)
+        self.weather: Any = None
+        self.weather_atlas: Any = None
+        self.weather_provider: Any = None
+        self.weather_component: Any = None
+
+    def present_weather(self, numerical, frame):
+        if numerical is None:
+            if self.weather is not None:
+                self.weather.setVisible(False)
+                for name in (
+                    "u0Source",
+                    "v0Source",
+                    "u1Source",
+                    "v1Source",
+                    "anchorXSource",
+                    "anchorYSource",
+                ):
+                    self.weather.setProperty(name, QUrl())
+                self.weather_atlas = None
+                self.weather_provider.clear()
+            return
+        atlas, blend = numerical
+        if self.weather is None:
+            from .gpuweather import WeatherImageProvider
+
+            self.weather_provider = WeatherImageProvider()
+            self.widget.engine().addImageProvider("weather", self.weather_provider)
+            url = QUrl.fromLocalFile(
+                str(Path(__file__).parent / "shaders/WeatherBarbs.qml")
+            )
+            self.weather_component = QQmlComponent(self.widget.engine(), url)
+            self.weather = self.weather_component.create()
+            if self.weather is None:
+                raise RuntimeError(str(self.weather_component.errors()))
+            self.weather.setParent(self.root)
+            self.weather.setParentItem(self.root)
+            self.weather.setZ(100)
+            self.weather.shaderErrorChanged.connect(
+                lambda: (
+                    self.fail(self.weather.property("shaderError"))
+                    if self.weather.property("shaderError")
+                    else None
+                )
+            )
+            self.weather.readyChanged.connect(self.request)
+        if atlas is not self.weather_atlas:
+            urls = self.weather_provider.publish(atlas)
+            for name, url in zip(
+                (
+                    "u0Source",
+                    "v0Source",
+                    "u1Source",
+                    "v1Source",
+                    "anchorXSource",
+                    "anchorYSource",
+                ),
+                urls,
+            ):
+                self.weather.setProperty(name, QUrl(url))
+            rows, cols = atlas.pair.shape
+            self.weather.setProperty("columns", cols)
+            self.weather.setProperty("rows", rows)
+            self.weather_atlas = atlas
+            self.counters["texture_uploads"] += 6
+            self.counters["texture_upload_bytes"] += atlas.nbytes
+        self.weather.setWidth(frame.width)
+        self.weather.setHeight(frame.height)
+        self.weather.setOpacity(frame.opacity)
+        self.weather.setProperty("blend", blend)
+        self.weather.setVisible(True)
 
     def present(self, frame):
         if self.frame is not None and frame.sequence <= self.frame.sequence:
@@ -167,6 +242,7 @@ class MapScene:
         self.widget.setClearColor(QColor.fromRgbF(*frame.sea_color))
         self.base.present(frame.base, frame.dpr)
         self.navigation.present(frame.navigation, frame.dpr)
+        self.present_weather(frame.numerical_wind, frame)
         if frame.raster_wind is not None:
             self.raster_wind.setVisible(True)
             self.raster_wind.present(frame.raster_wind, frame.dpr)
@@ -180,7 +256,7 @@ class MapScene:
             key = batch.key
             active.add(key)
             if key not in self.layers:
-                layer = self.component.create()
+                layer = cast(QQuickItem, self.component.create())
                 if layer is None:
                     raise RuntimeError(str(self.component.errors()))
                 layer.setParent(self.root)
@@ -205,6 +281,19 @@ class MapScene:
 
     def clear(self):
         self.frame = None
+        if self.weather is not None:
+            self.weather.setVisible(False)
+            for name in (
+                "u0Source",
+                "v0Source",
+                "u1Source",
+                "v1Source",
+                "anchorXSource",
+                "anchorYSource",
+            ):
+                self.weather.setProperty(name, QUrl())
+            self.weather_atlas = None
+            self.weather_provider.clear()
         for item in (self.base, self.navigation, self.raster_wind):
             item.layer = None
             item.changed = True

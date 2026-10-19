@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 
 SPEC = importlib.util.spec_from_file_location(
     "startup_benchmark",
@@ -19,6 +20,34 @@ SPEC.loader.exec_module(benchmark)
 
 @unittest.skipUnless(sys.platform in ("darwin", "linux"), "Supported snapshot sandbox")
 class TestStartupSnapshot(unittest.TestCase):
+    def test_hardware_status_does_not_imply_numerical_symbols_active(self):
+        item = SimpleNamespace(property=lambda _name: True, isVisible=lambda: True)
+        staged = SimpleNamespace(before=1, after=2)
+        atlas = SimpleNamespace(count=7, nbytes=256, staged=staged)
+        frame = SimpleNamespace(numerical_wind=None, wind=(), raster_wind=None)
+        scene = SimpleNamespace(
+            frame=frame, weather=item, weather_provider=SimpleNamespace(requests=6)
+        )
+        stager = SimpleNamespace(band_cache_statistics=lambda: {"current_bytes": 64})
+        canvas = SimpleNamespace(
+            _gpu=SimpleNamespace(active=True, scene=scene, weather=stager)
+        )
+        self.assertFalse(benchmark.numerical_weather_status(canvas)["active"])
+        frame.numerical_wind = (atlas, 0.5)
+        status = benchmark.numerical_weather_status(canvas)
+        self.assertTrue(status["active"])
+        self.assertEqual(status["symbols"], 7)
+        self.assertEqual(status["interval"], [1, 2])
+        self.assertEqual(status["band_cache"]["current_bytes"], 64)
+        frame.wind = (object(),)
+        self.assertFalse(benchmark.numerical_weather_status(canvas)["active"])
+        frame.wind = ()
+        frame.raster_wind = object()
+        self.assertFalse(benchmark.numerical_weather_status(canvas)["active"])
+        self.assertFalse(
+            benchmark.numerical_weather_status(SimpleNamespace())["enabled"]
+        )
+
     def test_weather_identity_gate_rejects_changed_missing_and_unmatched_content(self):
         from copy import deepcopy
 

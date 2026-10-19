@@ -457,6 +457,7 @@ class QtPreviewChecks(unittest.TestCase):
                 self.controller.core.connect("boat_position", callback)
                 try:
                     self.controller.session.select_source("live")
+                    self.controller.session.set_streaming(True)
                     self.controller.session.start_recording()
                     recording = self.controller.session.recorder.path
                     self.controller.start_connections()
@@ -468,10 +469,23 @@ class QtPreviewChecks(unittest.TestCase):
                     self.assertGreater(
                         self.controller.connections.get_status()[0]["packets"], 0
                     )
-                    self.controller.session.stop_recording()
                     before = len(self.controller.points)
-                    self.controller.connections.stop_polling()
+                    self.wait_for_routing_stage(
+                        lambda: not self.controller.connection_task.busy
+                    )
+                    self.window.streaming.click()
+                    self.wait_for_routing_stage(
+                        lambda: not self.controller.connection_task.busy
+                    )
+                    self.assertFalse(self.controller.session.streaming)
+                    self.assertFalse(self.controller.session.recording)
+                    self.assertFalse(self.controller.connections.polling_active)
+                    self.assertEqual(self.controller.connections.sources, {})
                     self.assertIsNone(self.controller.connections.thread)
+                    self.assertEqual(
+                        self.controller.connections.connections[0]["port"],
+                        server.getsockname()[1],
+                    )
                     self.assertGreaterEqual(len(self.controller.points), before)
                     self.assertTrue(recording.exists())
                 finally:
@@ -812,7 +826,11 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertIsNotNone(self.window.map.background)
 
     def wait_for_route(self):
-        deadline = time.monotonic() + 10
+        # The current-coverage preflight samples a corridor and checks it
+        # against the coastline, which is slow on a loaded machine. This is a
+        # hang guard, not a runtime target, so it is set well above the time
+        # the check actually needs.
+        deadline = time.monotonic() + 60
         while self.controller.routing.busy and time.monotonic() < deadline:
             self.drain()
             time.sleep(0.005)
@@ -2062,6 +2080,75 @@ class QtPreviewChecks(unittest.TestCase):
                 self.controller.settings.vectorCharts[0]["path"], str(path)
             )
 
+    def test_read_live_toggle_stops_and_restarts_configured_connections(self):
+        controller = self.controller
+        controller.offline = False
+        release = Event()
+        self.addCleanup(release.set)
+
+        def start():
+            controller.connections._polling_active = True
+
+        def stop():
+            release.wait(3)
+            controller.connections._polling_active = False
+
+        with (
+            patch.object(
+                controller.connections, "start_polling", side_effect=start
+            ) as opened,
+            patch.object(
+                controller.connections, "stop_polling", side_effect=stop
+            ) as closed,
+        ):
+            controller.start_connections()
+            self.wait_for_routing_stage(lambda: not controller.connection_task.busy)
+            controller.session.start_recording()
+            self.window.streaming.click()
+            self.assertFalse(controller.session.streaming)
+            self.assertFalse(controller.session.recording)
+            self.assertTrue(controller.connection_task.busy)
+            self.assertFalse(self.window.streaming.isEnabled())
+            # A slow disconnect stays off the UI thread and cannot race a restart.
+            controller.set_live_reading(True)
+            self.assertFalse(controller.session.streaming)
+            release.set()
+            self.wait_for_routing_stage(lambda: not controller.connection_task.busy)
+            self.assertFalse(controller.connections.polling_active)
+            self.assertEqual(
+                self.window._connection_message(), "NMEA connections closed"
+            )
+            self.window.streaming.click()
+            self.wait_for_routing_stage(lambda: not controller.connection_task.busy)
+            self.assertTrue(controller.session.streaming)
+            self.assertTrue(controller.connections.polling_active)
+            self.assertEqual(opened.call_count, 2)
+            closed.assert_called_once()
+            controller.connections._polling_active = False
+
+    def test_saved_reading_off_does_not_open_connections_at_startup(self):
+        self.window.workspace.restore({"nmea": {"streaming": False}})
+        self.controller.offline = False
+        with patch.object(self.controller.connections, "start_polling") as opened:
+            self.controller.start_connections()
+            opened.assert_not_called()
+        self.assertFalse(self.window.streaming.isChecked())
+        self.assertFalse(self.window.workspace.save_state()["nmea"]["streaming"])
+
+    def test_offline_read_toggle_never_opens_connections(self):
+        with patch.object(self.controller.connections, "start_polling") as opened:
+            self.window.streaming.click()
+            self.window.streaming.click()
+            opened.assert_not_called()
+
+    def test_reading_off_ignores_already_queued_live_packets(self):
+        packet = NMEADataPacket.parse(rmc("120000"))
+        self.controller.set_live_reading(False)
+        with patch.object(self.controller.wind_pipe, "transform") as transform:
+            self.controller._consume((packet,), self.controller.generation)
+            transform.assert_not_called()
+        self.assertEqual(self.controller.points, [])
+
     def test_connection_start_and_reconnect_worker_keep_playback_and_close_safely(self):
         started, release = Event(), Event()
         controller = self.controller
@@ -3151,10 +3238,19 @@ class QtPreviewChecks(unittest.TestCase):
             forget.assert_not_called()
 
     def test_land_checkbox_keeps_offshore_barbs_without_weather_rebuild(self):
+        import numpy as np
+
         canvas = self.window.map
         canvas._center_lat, canvas._center_lon, canvas._zoom = 47.6, -122.4, 12
         self.controller.core.grib_manager.gribs = [object()]
-        data = [[(0, 10, (47.6, -122.4)), (0, 10, (47.61, -122.41))]]
+        data = [
+            (
+                -122.4,
+                np.array([47.6, 47.61]),
+                np.array([0.0, 0.0]),
+                np.array([10.0, 10.0]),
+            )
+        ]
         with (
             patch.object(canvas.wind, "_load_wind", return_value=data) as load,
             patch.object(canvas.wind, "_load_pressure", return_value=[]),
@@ -4532,7 +4628,10 @@ class QtPreviewChecks(unittest.TestCase):
         panel.set_location("start", (0, 0))
         panel.set_location("destination", (0, 0.005))
         observed = []
-        deadline = time.monotonic() + 5
+        # The preflight has to finish the coverage check before the dialog
+        # can appear, and that check is slow on a loaded machine. Wait long
+        # enough for the dialog rather than cancelling before it is shown.
+        deadline = time.monotonic() + 60
 
         def close_dialog():
             dialog = panel.preflight_dialog
@@ -4552,7 +4651,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(panel.status.text(), "Routing cancelled")
         # A genuine parent close also breaks the worker's pending UI handoff.
         observed.clear()
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 60
 
         def close_window():
             if panel.preflight_dialog is None and time.monotonic() < deadline:

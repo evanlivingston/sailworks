@@ -52,6 +52,7 @@ class MapFrame:
     wind: tuple[WindBatch, ...]
     opacity: float
     raster_wind: ImageFrame | None = None
+    numerical_wind: object = None
 
 
 def prepare_wind(geometry):
@@ -74,6 +75,15 @@ def resource_estimate(frame, layer_keys, window_pixels):
     }
     image_bytes = sum(images.values())
     vertex_bytes = sum(batch.vertices.nbytes for batch in frame.wind)
+    numerical = getattr(frame, "numerical_wind", None)
+    staged_bytes = 0
+    if numerical is not None:
+        atlas, _blend = numerical
+        image_bytes += atlas.nbytes
+        rows, cols = atlas.pair.shape
+        # Four vertices per symbol, connector indices and old/new buffers.
+        vertex_bytes += rows * cols * (4 * 32 + 24)
+        staged_bytes = atlas.staged.first.nbytes + atlas.staged.second.nbytes
     pixels = int(np.ceil(frame.width * frame.dpr)) * int(
         np.ceil(frame.height * frame.dpr)
     )
@@ -81,7 +91,7 @@ def resource_estimate(frame, layer_keys, window_pixels):
     # Resolved color + 4x MSAA per wind layer and QQuickWidget target. Include
     # old/new image and vertex storage and a whole-window triple-buffer estimate.
     return {
-        "cpu_scene_bytes": 2 * (image_bytes + vertex_bytes),
+        "cpu_scene_bytes": 2 * (image_bytes + vertex_bytes + staged_bytes),
         "upload_bytes": image_bytes + vertex_bytes,
         "gpu_estimate_bytes": (
             2 * (image_bytes + vertex_bytes)

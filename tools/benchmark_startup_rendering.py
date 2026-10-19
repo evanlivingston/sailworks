@@ -21,6 +21,11 @@ SPEC = importlib.util.spec_from_file_location(
 )
 protocol = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(protocol)
+NATIVE_SPEC = importlib.util.spec_from_file_location(
+    "native_rendering_probe", Path(__file__).with_name("native_rendering_probe.py")
+)
+native_protocol = importlib.util.module_from_spec(NATIVE_SPEC)
+NATIVE_SPEC.loader.exec_module(native_protocol)
 ROOT = Path(__file__).resolve().parents[1]
 SCENARIOS = (
     "stationary",
@@ -115,6 +120,44 @@ def configure_wind_workload(settings, config):
         settings.gribWindStyle = config["wind_style"]
     if config.get("wind_over_land") is not None:
         settings.gribArrowOnGround = config["wind_over_land"] == "show"
+
+
+def numerical_weather_status(canvas):
+    """Actual numerical-symbol state, not merely a hardware backend label."""
+    gpu = getattr(canvas, "_gpu", None)
+    stager = getattr(gpu, "weather", None)
+    scene = getattr(gpu, "scene", None)
+    frame = getattr(scene, "frame", None)
+    numerical = getattr(frame, "numerical_wind", None)
+    item = getattr(scene, "weather", None)
+    ready = item is not None and bool(item.property("ready"))
+    visible = item is not None and item.isVisible()
+    cpu_batches = len(frame.wind) if frame is not None else 0
+    raster = frame is not None and frame.raster_wind is not None
+    active = bool(
+        getattr(gpu, "active", False)
+        and numerical is not None
+        and ready
+        and visible
+        and not cpu_batches
+        and not raster
+    )
+    atlas = numerical[0] if numerical is not None else None
+    provider = getattr(scene, "weather_provider", None)
+    return dict(
+        enabled=stager is not None,
+        active=active,
+        shader_ready=bool(ready),
+        symbols=atlas.count if atlas is not None else 0,
+        atlas_bytes=atlas.nbytes if atlas is not None else 0,
+        interval=(
+            [atlas.staged.before, atlas.staged.after] if atlas is not None else None
+        ),
+        image_provider_requests=getattr(provider, "requests", 0),
+        cpu_symbol_batches=cpu_batches,
+        cpu_raster_symbols=bool(raster),
+        band_cache=stager.band_cache_statistics() if stager is not None else {},
+    )
 
 
 def capture(source, destination):
@@ -624,6 +667,12 @@ def worker(config):
         first_ms = (time.perf_counter() - began) * 1000
         settle()
         grab()
+        after_settle = config.get("_after_startup_settled")
+        if after_settle:
+            after_settle(canvas)
+            grab()
+            settle()
+            grab()
         settled_ms = (time.perf_counter() - began) * 1000
         if controller.chart_errors:
             raise RuntimeError("Saved chart layers failed to open")
@@ -678,6 +727,11 @@ def worker(config):
             values.clear()
         warm_job_offset = len(jobs)
         gpu_probe_offset = len(gpu_probes)
+        preparation_service = config.get("_preparation_service")
+        if preparation_service:
+            return preparation_service(canvas, app, settle, grab)
+        before_native = config.get("_before_native_probe")
+        native_fidelity = before_native(canvas, app) if before_native else None
         phase = "replay"
         ui_profile = None
         if config.get("profile_ui"):
@@ -700,7 +754,10 @@ def worker(config):
         last_start = None
         prepared_samples = []
         frame_traces = []
-        for index in range(config["frames"]):
+        native_probe = None
+        if config.get("measurement_mode") == "native-render":
+            native_probe = native_protocol.replay(canvas, config)
+        for index in range(0 if native_probe is not None else config["frames"]):
             started = time.perf_counter()
             stage_offsets = {key: len(values) for key, values in stages.items()}
             probe_offset = len(gpu_probes)
@@ -845,6 +902,7 @@ def worker(config):
                         for key, values in stages.items()
                     },
                     gpu_probes=gpu_probes[probe_offset:],
+                    numerical_weather=numerical_weather_status(canvas),
                 )
             )
             rebuilds.append({key: len(stages[key]) - before[key] for key in before})
@@ -866,7 +924,9 @@ def worker(config):
                 "cumulative"
             ).print_stats(80)
             ui_profile_text = stream.getvalue()
-        if scenario in ("trackpad_pan", "pan_zoom_reverse"):
+        if scenario in ("trackpad_pan", "pan_zoom_reverse") or (
+            native_probe is not None and scenario == "reverse_pan"
+        ):
             canvas._finish_trackpad_pan()
         replay_gpu_probe_end = len(gpu_probes)
         post_job_offset = len(jobs)
@@ -886,6 +946,8 @@ def worker(config):
         screen = app.primaryScreen().availableGeometry()
         return {
             "scenario": scenario,
+            "native_render_probe": native_probe,
+            "native_fidelity": native_fidelity,
             "startup": startup,
             "actual_viewport": [canvas.width(), canvas.height()],
             "window_size": [window.width(), window.height()],
@@ -939,6 +1001,7 @@ def worker(config):
             "warnings": warnings,
             "renderer_requested": controller.map_renderer,
             "renderer_status": controller.renderer_status(),
+            "numerical_weather": numerical_weather_status(canvas),
             "gpu_wind_renderer": canvas._gpu_wind_mode,
             "base_charts_mode": (
                 "synchronous" if config.get("synchronous_base_charts") else "worker"
@@ -970,6 +1033,7 @@ def worker(config):
                 "qt_style": app.style().objectName(),
                 "dpr": canvas.devicePixelRatioF(),
                 "available_screen": [screen.width(), screen.height()],
+                "refresh_rate_hz": app.primaryScreen().refreshRate(),
                 "timezone": list(time.tzname),
             },
         }
@@ -987,6 +1051,11 @@ def run(args):
         scenarios
     ):
         raise ValueError(f"Choose unique scenarios from {SCENARIOS}")
+    if args.measurement_mode == "native-render":
+        if args.offscreen or args.map_renderer != "gpu":
+            raise ValueError("native-render requires native Qt and --map-renderer gpu")
+        if any(s not in native_protocol.SCENARIOS for s in scenarios):
+            raise ValueError(f"native-render scenarios: {native_protocol.SCENARIOS}")
     workload = {
         "profile": "installed-startup-v1",
         "snapshot_sha256": manifest["content_sha256"],
@@ -1003,7 +1072,13 @@ def run(args):
         "wind_style": args.wind_style,
         "wind_over_land": args.wind_over_land,
         "trackpad_step_px": args.trackpad_step_px,
-        "mode": "offscreen" if args.offscreen else "native-grab",
+        "mode": (
+            "native-render-v1"
+            if args.measurement_mode == "native-render"
+            else "offscreen" if args.offscreen else "native-grab"
+        ),
+        "measurement_mode": args.measurement_mode,
+        "native_drain_timeout_s": args.native_drain_timeout_s,
         **{
             key: getattr(args, key)
             for key in (
@@ -1021,10 +1096,11 @@ def run(args):
         [
             protocol.file_hash(__file__),
             protocol.file_hash(Path(__file__).with_name("benchmark_rendering.py")),
+            protocol.file_hash(Path(__file__).with_name("native_rendering_probe.py")),
         ]
     )
     report = {
-        "schema_version": 1,
+        "schema_version": 2 if args.measurement_mode == "native-render" else 1,
         "revision": provenance,
         "workload": workload,
         "runs": [],
@@ -1110,10 +1186,18 @@ def run(args):
                 measured["repeat"] = repeat
                 report["runs"].append(measured)
                 save_checkpoint()
-                print(
-                    f"{scenario} [{repeat + 1}/{args.repeats}]: p99 {measured['summary']['grab_ms']['p99_ms']:.1f} ms; startup idle {measured['startup_to_worker_idle_ms']/1000:.1f}s",
-                    file=sys.stderr,
-                )
+                if args.measurement_mode == "native-render":
+                    inputs = measured["native_render_probe"]["inputs"]
+                    observed = sum(i["status"] == "observed" for i in inputs)
+                    print(
+                        f"{scenario}: {observed}/{len(inputs)} inputs observed at afterRendering (not presentation)",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"{scenario} [{repeat + 1}/{args.repeats}]: p99 {measured['summary']['grab_ms']['p99_ms']:.1f} ms; startup idle {measured['startup_to_worker_idle_ms']/1000:.1f}s",
+                        file=sys.stderr,
+                    )
     report["complete"] = True
     return report
 
@@ -1233,6 +1317,10 @@ def main():
     parser.add_argument("--worker-timeout-s", type=float, default=600)
     parser.add_argument("--offscreen", action="store_true")
     parser.add_argument("--map-renderer", choices=("cpu", "gpu"))
+    parser.add_argument(
+        "--measurement-mode", choices=("grab", "native-render"), default="grab"
+    )
+    parser.add_argument("--native-drain-timeout-s", type=float, default=2)
     parser.add_argument("--synchronous-base-charts", action="store_true")
     parser.add_argument("--profile-weather", action="store_true")
     parser.add_argument("--profile-ui", action="store_true")
@@ -1273,7 +1361,11 @@ def main():
                 parser.error("interval must be finite and nonnegative")
             if not all(
                 math.isfinite(v) and v > 0
-                for v in (args.settle_timeout_s, args.worker_timeout_s)
+                for v in (
+                    args.settle_timeout_s,
+                    args.worker_timeout_s,
+                    args.native_drain_timeout_s,
+                )
             ):
                 parser.error("timeouts must be finite and positive")
             report = run(args)

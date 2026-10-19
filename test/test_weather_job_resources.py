@@ -2,6 +2,7 @@
 
 from datetime import timedelta
 from types import SimpleNamespace
+from threading import Event
 import unittest
 from unittest.mock import patch
 
@@ -9,7 +10,7 @@ import numpy as np
 
 from gweatherrouting.core.gribsampling import GridIndex, WeatherSampler
 from gweatherrouting.core.mapviewport import MapViewport
-from gweatherrouting.rendering.overlayrenderer import RenderJob
+from gweatherrouting.rendering.overlayrenderer import RenderJob, RenderState
 from gweatherrouting.rendering.windpainter import WindPainter
 from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
 from test import test_grib_sampling as fixture
@@ -19,6 +20,15 @@ class TestWeatherJobResources(unittest.TestCase):
     setUp = fixture.TestGribSampling.setUp
     file = fixture.TestGribSampling.file
     field = fixture.TestGribSampling.field
+
+    def test_resampled_vectors_with_no_complete_point_are_empty(self):
+        values = np.array([[[1.0, np.nan], [np.nan, 2.0]]])
+        self.assertEqual(
+            WindOverlayRenderer._sampled_columns(
+                values, np.array([0.0]), np.array([0.0, 1.0]), "wind"
+            ),
+            [],
+        )
 
     def sources(self):
         split = [self.file([record]) for record in self.field(0) + self.field(3)]
@@ -88,6 +98,53 @@ class TestWeatherJobResources(unittest.TestCase):
             self.assertEqual(frames[0][0], image)
             for before, after in zip(frames[0][1], vectors):
                 np.testing.assert_array_equal(before, after)
+
+    def test_terminal_close_releases_handles_and_field_cache(self):
+        renderer = self.renderer()
+        renderer._render(self.job(self.sources()))
+        retained = list(renderer._gribs.values())
+        self.assertTrue(retained)
+        self.assertTrue(renderer._field_cache)
+        renderer.close()
+        renderer.close()
+        self.assertTrue(all(provider.dataset is None for provider in retained))
+        self.assertFalse(renderer._gribs)
+        self.assertFalse(renderer._field_cache)
+        self.assertEqual(renderer._field_cache_bytes, 0)
+
+    def test_running_worker_releases_real_handles_without_ui_delivery(self):
+        renderer = self.renderer()
+        job = self.job(self.sources())
+        entered, resume, released = Event(), Event(), Event()
+        self.addCleanup(resume.set)
+        providers, callbacks = [], []
+        renderer.schedule = lambda *args: callbacks.append(args)
+        release_resources = renderer._release_resources
+
+        def release():
+            release_resources()
+            released.set()
+
+        def render(_job):
+            providers.append(renderer._worker_grib(job.charts[0][0]))
+            entered.set()
+            if not resume.wait(5):
+                raise RuntimeError("Test did not release worker")
+
+        renderer._release_resources = release
+        renderer._render_fields = render
+        canvas = object()
+        renderer._states[canvas] = RenderState(requested=job)
+        renderer._pending[canvas] = job
+        renderer._start_next()
+        self.assertTrue(entered.wait(2))
+        renderer.close()
+        self.assertIsNotNone(providers[0].dataset)
+        resume.set()
+        self.assertTrue(released.wait(2))
+        self.assertIsNone(providers[0].dataset)
+        self.assertFalse(callbacks)
+        self.assertFalse(renderer._gribs)
 
     def test_cached_and_uncached_mixed_fields_pixels_and_provenance_are_identical(self):
         sources = self.sources()

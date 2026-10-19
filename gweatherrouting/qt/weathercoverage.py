@@ -15,7 +15,7 @@ from gweatherrouting.rendering.windrenderer import DisplayGrib
 
 def coverage_gaps(models, fields, instant, points, readers):
     """Per-model missing fields; full model names map to sorted field lists."""
-    gaps = {}
+    gaps: dict[str, list[str]] = {}
     if not fields or not models:
         return gaps
     lats, lons = np.asarray(points).T

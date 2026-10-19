@@ -26,6 +26,11 @@ python -m pip install --upgrade pip wheel setuptools
 GDAL_VERSION="$(gdal-config --version)"
 python -m pip install numpy
 python -m pip install --no-build-isolation "GDAL[numpy]==${GDAL_VERSION}"
+# pycairo has no macOS wheel, so pip builds it from the source distribution.
+# Since 1.29 that source distribution uses the meson build backend, which
+# --no-build-isolation cannot install on its own. Install the backend and
+# its build tool first so the editable install below can resolve it.
+python -m pip install meson-python ninja
 python -m pip install --no-build-isolation --editable .
 
 echo "Setup complete. Activate the environment with: source .venv/bin/activate"

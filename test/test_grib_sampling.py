@@ -356,7 +356,8 @@ class TestGribSampling(unittest.TestCase):
         for source in private:
             self.addCleanup(source.close)
         points = WeatherSampler(private).grid("wind", instant, ((0, 0), (1, 1)))
-        for direction, speed, (lat, lon) in points:
+        dirs, spds, lats, lons = points
+        for direction, speed, lat, lon in zip(dirs, spds, lats, lons):
             self.assertEqual(manager.get_wind_at(instant, lat, lon), (direction, speed))
         renderer = WindOverlayRenderer(Mock())
         renderer._worker_grib = lambda source: private[sources.index(source)]
@@ -364,9 +365,17 @@ class TestGribSampling(unittest.TestCase):
         job = SimpleNamespace(
             charts=tuple((s,) for s in sources), palette=(instant,), cancel=Event()
         )
+        # The display sampler and the grid answer with the same points.
         self.assertEqual(
-            sorted(p for column in renderer._load_wind(job) for p in column),
-            sorted(points),
+            sorted(
+                (float(lon), float(lat), float(direction), float(speed))
+                for lon, col_lats, col_dirs, col_speeds in renderer._load_wind(job)
+                for lat, direction, speed in zip(col_lats, col_dirs, col_speeds)
+            ),
+            sorted(
+                (float(lon), float(lat), float(direction), float(speed))
+                for direction, speed, lat, lon in zip(dirs, spds, lats, lons)
+            ),
         )
 
     def test_subhour_record_times_are_not_rounded_to_hours(self):

@@ -67,20 +67,20 @@ def _columns_to_arrays(columns):
             return columns_out
         else:
             # Pressure: (lat, lon, value)
-            columns_out = []
+            pressure_columns = []
             for col in columns:
                 lons_col = [p[1] for p in col]
                 lats_col = [p[0] for p in col]
                 vals_col = [p[2] for p in col]
                 lon = lons_col[0]
-                columns_out.append(
+                pressure_columns.append(
                     (
                         float(lon),
                         np.array(lats_col, dtype=np.float64),
                         np.array(vals_col, dtype=np.float64),
                     )
                 )
-            return columns_out
+            return pressure_columns
     return columns
 
 
@@ -139,6 +139,108 @@ class WindGrid:
         return values[0] / speed, values[1] / speed, speed
 
 
+def _cell(x, y, cell_size):
+    """Grid cell holding a screen point."""
+    return int(x // cell_size), int(y // cell_size)
+
+
+def _seed_positions(view, spacing, max_seeds):
+    """Seed points covering the view, centred first when the budget is capped."""
+    seeds = [
+        (x, y)
+        for y in np.arange(spacing / 2, view.height, spacing)
+        for x in np.arange(spacing / 2, view.width, spacing)
+    ]
+    if len(seeds) > max_seeds:
+        seeds = [seeds[i] for i in np.linspace(0, len(seeds) - 1, max_seeds, dtype=int)]
+    # Prioritize the visible center, not the overscan margins, when capped.
+    seeds.sort(
+        key=lambda point: (point[0] - view.width / 2) ** 2
+        + (point[1] - view.height / 2) ** 2
+    )
+    return seeds
+
+
+def _integrate_seed(
+    grid,
+    view,
+    seed,
+    cell_size,
+    cancelled,
+    max_segments,
+    occupied,
+    segments,
+    speeds,
+    arrows,
+):
+    """Integrate one seed in both directions; returns the cells it visited."""
+    sx, sy = seed
+    local = {_cell(sx, sy, cell_size)}
+    for sign in (1, -1):
+        x, y, previous = sx, sy, _cell(sx, sy, cell_size)
+        for step in range(MAX_STEPS):
+            if cancelled() or len(segments) >= max_segments:
+                break
+            velocity = grid.velocity(x, y)
+            if velocity is None:
+                break
+            dx, dy, _speed = velocity
+            midpoint = grid.velocity(x + sign * dx * STEP / 2, y + sign * dy * STEP / 2)
+            if midpoint is None:
+                break
+            dx, dy, speed = midpoint
+            nx, ny = x + sign * dx * STEP, y + sign * dy * STEP
+            if not (0 <= nx < view.width and 0 <= ny < view.height):
+                break
+            key = _cell(nx, ny, cell_size)
+            if key in occupied or (key in local and key != previous):
+                break
+            if grid.velocity(nx, ny) is None:
+                break
+            segments.append((x, y, nx, ny) if sign > 0 else (nx, ny, x, y))
+            speeds.append(speed)
+            arrows.append(step % 20 == 10)
+            local.add(key)
+            x, y, previous = nx, ny, key
+    return local
+
+
+def _project_segments(view, screen, speeds, arrows, on_ground, cancelled):
+    """Project traced segments to geographic coordinates and collect land flags."""
+    tile = 256 * 2.0**view._zoom
+    cx, cy = view._lon_to_x(view._center_lon), view._lat_to_y(view._center_lat)
+
+    def geographic(x, y):
+        lon = (cx + x - view.width / 2) / tile * 360 - 180
+        lat = np.degrees(
+            np.arctan(np.sinh(math.pi * (1 - 2 * (cy + y - view.height / 2) / tile)))
+        )
+        return lat, lon
+
+    lat1, lon1 = geographic(screen[:, 0], screen[:, 1])
+    lat2, lon2 = geographic(screen[:, 2], screen[:, 3])
+    mid_lat, mid_lon = geographic(
+        (screen[:, 0] + screen[:, 2]) / 2, (screen[:, 1] + screen[:, 3]) / 2
+    )
+    land: list[bool] = []
+    for lat, lon in zip(mid_lat, mid_lon):
+        if cancelled():
+            return None
+        land.append(on_ground(float(lat), float(lon)))
+    result = (
+        lat1,
+        lon1,
+        lat2,
+        lon2,
+        np.asarray(speeds),
+        np.asarray(land),
+        np.asarray(arrows),
+    )
+    for array in result:
+        array.setflags(write=False)
+    return result
+
+
 def trace_streamlines(
     view, columns, on_ground, cancelled=lambda: False, density="standard"
 ):
@@ -158,97 +260,37 @@ def trace_streamlines(
         return None
     grid = WindGrid(view, columns)
     spacing, max_seeds, max_segments = density_parameters(density)
-    seeds = [
-        (x, y)
-        for y in np.arange(spacing / 2, view.height, spacing)
-        for x in np.arange(spacing / 2, view.width, spacing)
-    ]
-    if len(seeds) > max_seeds:
-        seeds = [seeds[i] for i in np.linspace(0, len(seeds) - 1, max_seeds, dtype=int)]
-    # Prioritize the visible center, not the overscan margins, when capped.
-    seeds.sort(
-        key=lambda point: (point[0] - view.width / 2) ** 2
-        + (point[1] - view.height / 2) ** 2
-    )
-    occupied = set()
-    segments, speeds, arrows = [], [], []
+    seeds = _seed_positions(view, spacing, max_seeds)
+    occupied: set[tuple[int, int]] = set()
+    segments: list[tuple[float, float, float, float]] = []
+    speeds: list[float] = []
+    arrows: list[bool] = []
     cell_size = spacing / 2
-
-    def cell(x, y):
-        return int(x // cell_size), int(y // cell_size)
 
     for sx, sy in seeds:
         if cancelled():
             return None
-        if cell(sx, sy) in occupied:
+        if _cell(sx, sy, cell_size) in occupied:
             continue
-        local = {cell(sx, sy)}
-        for sign in (1, -1):
-            x, y, previous = sx, sy, cell(sx, sy)
-            for step in range(MAX_STEPS):
-                if cancelled() or len(segments) >= max_segments:
-                    break
-                velocity = grid.velocity(x, y)
-                if velocity is None:
-                    break
-                dx, dy, _speed = velocity
-                midpoint = grid.velocity(
-                    x + sign * dx * STEP / 2, y + sign * dy * STEP / 2
-                )
-                if midpoint is None:
-                    break
-                dx, dy, speed = midpoint
-                nx, ny = x + sign * dx * STEP, y + sign * dy * STEP
-                if not (0 <= nx < view.width and 0 <= ny < view.height):
-                    break
-                key = cell(nx, ny)
-                if key in occupied or (key in local and key != previous):
-                    break
-                if grid.velocity(nx, ny) is None:
-                    break
-                segments.append((x, y, nx, ny) if sign > 0 else (nx, ny, x, y))
-                speeds.append(speed)
-                arrows.append(step % 20 == 10)
-                local.add(key)
-                x, y, previous = nx, ny, key
+        local = _integrate_seed(
+            grid,
+            view,
+            (sx, sy),
+            cell_size,
+            cancelled,
+            max_segments,
+            occupied,
+            segments,
+            speeds,
+            arrows,
+        )
         occupied.update(local)
         if len(segments) >= max_segments:
             break
     if not segments or cancelled():
         return None
     screen = np.asarray(segments)
-    tile = 256 * 2.0**view._zoom
-    cx, cy = view._lon_to_x(view._center_lon), view._lat_to_y(view._center_lat)
-
-    def geographic(x, y):
-        lon = (cx + x - view.width / 2) / tile * 360 - 180
-        lat = np.degrees(
-            np.arctan(np.sinh(math.pi * (1 - 2 * (cy + y - view.height / 2) / tile)))
-        )
-        return lat, lon
-
-    lat1, lon1 = geographic(screen[:, 0], screen[:, 1])
-    lat2, lon2 = geographic(screen[:, 2], screen[:, 3])
-    mid_lat, mid_lon = geographic(
-        (screen[:, 0] + screen[:, 2]) / 2, (screen[:, 1] + screen[:, 3]) / 2
-    )
-    land = []
-    for lat, lon in zip(mid_lat, mid_lon):
-        if cancelled():
-            return None
-        land.append(on_ground(float(lat), float(lon)))
-    result = (
-        lat1,
-        lon1,
-        lat2,
-        lon2,
-        np.asarray(speeds),
-        np.asarray(land),
-        np.asarray(arrows),
-    )
-    for array in result:
-        array.setflags(write=False)
-    return result
+    return _project_segments(view, screen, speeds, arrows, on_ground, cancelled)
 
 
 def geometry_for_view(flat, center_lat, center_lon, zoom, width, height, over_land):
@@ -270,7 +312,7 @@ def geometry_for_view(flat, center_lat, center_lon, zoom, width, height, over_la
     )
     if not over_land:
         visible &= ~land
-    geometry = {}
+    geometry: dict[int, tuple[list[list[float]], list, list]] = {}
     buckets = np.clip((speeds // 2).astype(int), 0, len(barb_bucket_colors()) - 1)
     segments = np.column_stack((x1, y1, x2, y2))
     for bucket in np.unique(buckets[visible]):

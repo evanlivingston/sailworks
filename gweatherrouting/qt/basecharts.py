@@ -61,16 +61,31 @@ class BaseChartRenderer(OverlayRenderer):
         self._failed_key = None
         self.diagnostics = {}
 
+    def forget(self, canvas):
+        super().forget(canvas)
+        self._release_if_idle()
+
+    def _release_if_idle(self):
+        # Cancellation is asynchronous. Never drop a dataset while the worker
+        # may still be using it; completion hands ownership back to this thread.
+        if not self._states and not self._running:
+            self._release_resources()
+
+    def _release_resources(self):
+        self._charts.clear()
+
     def draw_base(self, canvas, cr, charts, palette, fallback=None):
         sources = describe_sources(charts)
-        synchronous = ()
+        # A list, not a tuple: the fallback path expects the chart sequence and
+        # the diagnostics sum over it, so the element type has to be known.
+        synchronous: list = []
         if sources is None and fallback is not None:
             # Keep layer order: only an audited PREFIX may move to the worker.
             # OSM/raster/CM93 and everything above them keep the existing path.
             for index, chart in enumerate(charts):
                 if describe_sources([chart]) is None:
                     sources = describe_sources(charts[:index])
-                    synchronous = charts[index:]
+                    synchronous = list(charts[index:])
                     break
         factor = canvas.get_scale_factor()
         pixels = (canvas.get_allocated_width() + 2 * MARGIN) * (
@@ -103,6 +118,7 @@ class BaseChartRenderer(OverlayRenderer):
         if error and demanded:
             self._failed_key = job.key
         result = super()._completed(canvas, job, surface, error)
+        self._release_if_idle()
         if error and demanded:
             # Do not leave a missing coastline after an unsupported driver/open
             # failure. Retry via the existing synchronous path for this content.

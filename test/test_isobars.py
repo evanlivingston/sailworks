@@ -58,9 +58,22 @@ def fake_viewport():
 def pressure_columns():
     """Regular 4x3 grid, pressure rising eastward across 4 hPa levels."""
     return [
-        [(48.0 + row, -124.0 + col, 1000.0 + col * 4 + row) for row in range(3)]
+        (
+            -124.0 + col,
+            np.array([48.0 + row for row in range(3)]),
+            np.array([1000.0 + col * 4 + row for row in range(3)]),
+        )
         for col in range(4)
     ]
+
+
+def assert_columns_equal(test, left, right):
+    """Compare column lists whose entries hold numpy arrays."""
+    test.assertEqual(len(left), len(right))
+    for actual, expected in zip(left, right):
+        test.assertEqual(actual[0], expected[0])
+        for index in range(1, len(actual)):
+            np.testing.assert_array_equal(actual[index], expected[index])
 
 
 def make_res_grib(path, origin_lon, origin_lat, step, width, height):
@@ -161,9 +174,13 @@ class TestPressureLoading(unittest.TestCase):
             charts=((old,), (new,)),
             cancel=Event(),
         )
-        self.assertEqual(
+        assert_columns_equal(
+            self,
             WindOverlayRenderer._load_pressure(renderer, job),
-            [[(0.0, 0.0, 1010.0), (1.0, 0.0, 1012.0)], [(0.0, 1.0, 1004.0)]],
+            [
+                (0.0, np.array([0.0, 1.0]), np.array([1010.0, 1012.0])),
+                (1.0, np.array([0.0]), np.array([1004.0])),
+            ],
         )
 
     def test_isobars_render_without_loading_wind(self):
@@ -183,7 +200,7 @@ class TestPressureLoading(unittest.TestCase):
         renderer._load_wind.assert_not_called()
         renderer._load_pressure.assert_called_once_with(job)
         self.assertEqual(painter.draw.call_args.args[2], [])
-        self.assertEqual(painter.draw.call_args.args[3], pressure_columns())
+        assert_columns_equal(self, painter.draw.call_args.args[3], pressure_columns())
 
     def test_show_isobars_handles_legacy_palettes(self):
         self.assertTrue(
@@ -239,12 +256,17 @@ class TestIsobarPainting(unittest.TestCase):
 
     def test_ragged_columns_do_not_crash(self):
         columns = pressure_columns()
-        columns.append([(49.5, -120.0, 1016.0)])
+        columns.append((-120.0, np.array([49.5]), np.array([1016.0])))
         self.assertTrue(any(self.paint(columns)))
 
     def test_flat_pressure_draws_no_lines(self):
         flat = [
-            [(48.0 + row, -124.0 + col, 1013.0) for row in range(3)] for col in range(4)
+            (
+                -124.0 + col,
+                np.array([48.0 + row for row in range(3)]),
+                np.full(3, 1013.0),
+            )
+            for col in range(4)
         ]
         self.assertFalse(any(self.paint(flat)))
 
@@ -299,7 +321,7 @@ class TestMixedGridIsobars(unittest.TestCase):
         columns = self.renderer._load_pressure(self.mixed_job())
         self.assertTrue(columns)
         self.assertTrue(WindPainter._pressure_blocks(columns))
-        values = [point[2] for column in columns for point in column]
+        values = [value for column in columns for value in column[2]]
         self.assertTrue(1000 < min(values) < max(values) < 1050)
 
     def test_mixed_grids_render_isobar_pixels_without_wind(self):
@@ -312,24 +334,20 @@ class TestMixedGridIsobars(unittest.TestCase):
         # Barbs draw from the dense native union, not the coarser fill grid.
         columns = self.renderer._load_wind(self.mixed_job())
         native = self.renderer._load_field(self.mixed_job(), "wind")
-        self.assertEqual(columns, native)
+        assert_columns_equal(self, columns, native)
         self.assertFalse(
-            WindOverlayRenderer._columns_share_lats(
-                columns, lambda point: point[2][0]
-            )
+            WindOverlayRenderer._columns_share_lats(columns, lambda point: point[2][0])
         )
 
     def test_mixed_grids_fill_from_one_regular_grid(self):
         columns = self.renderer._resample_field(self.mixed_job(), "wind")
         self.assertTrue(
-            WindOverlayRenderer._columns_share_lats(
-                columns, lambda point: point[2][0]
-            )
+            WindOverlayRenderer._columns_share_lats(columns, lambda point: point[2][0])
         )
         for column in columns:
-            for direction, speed, (lat, lon) in column:
-                self.assertTrue(0.0 <= direction < 360.0)
-                self.assertGreaterEqual(speed, 0.0)
+            directions, speeds = column[2], column[3]
+            self.assertTrue(np.all((directions >= 0.0) & (directions < 360.0)))
+            self.assertTrue(np.all(speeds >= 0.0))
 
     def test_mixed_grids_pass_gridded_fill_to_painter(self):
         from unittest.mock import Mock
@@ -355,8 +373,8 @@ class TestMixedGridIsobars(unittest.TestCase):
             )
         )
         # Native points still feed the barbs.
-        self.assertEqual(
-            painter.draw.call_args.args[2], renderer._load_wind(job)
+        assert_columns_equal(
+            self, painter.draw.call_args.args[2], renderer._load_wind(job)
         )
 
     def test_mixed_grids_render_wind_and_isobars_together(self):

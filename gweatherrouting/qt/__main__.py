@@ -9,6 +9,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="GWeatherRouting")
     parser.add_argument("--log", help="Load an interpreted NMEA log")
     parser.add_argument(
+        "--early-weather",
+        action="store_true",
+        help="Experimental: defer unused plots and initialize charts after weather preparation",
+    )
+    parser.add_argument(
         "--map-renderer",
         choices=("cpu", "gpu"),
         help="Override the saved map renderer for this session (GPU is experimental)",
@@ -33,13 +38,19 @@ def main(argv=None):
     app.setApplicationName("GWeatherRouting")
     app.setApplicationDisplayName("GWeatherRouting")
     apply_theme(app)
-    controller = SessionController(offline=args.offline, map_renderer=args.map_renderer)
+    controller = SessionController(
+        offline=args.offline,
+        map_renderer=args.map_renderer,
+        early_weather=args.early_weather,
+    )
     window = PreviewWindow(controller)
     app.aboutToQuit.connect(window.workspace.close)
     app.aboutToQuit.connect(window.timeline.dispose)
     app.aboutToQuit.connect(window.dispose_marine)
     app.aboutToQuit.connect(controller.close)
     window.show()
+    if controller.chart_startup is not None:
+        controller.chart_startup.start(window._active_map())
     controller.start_connections()
     if args.log:
         controller.load_path(args.log)

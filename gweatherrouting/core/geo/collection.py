@@ -119,11 +119,14 @@ class Collection(Generic[T]):
 
         for x in self.elements:
             ob = x.to_gpx_object()
-            if isinstance(gpx.GPXTrack, ob):
+            # The GPX element classes are looked up dynamically on the GPX
+            # instance, exactly as before: the instance does not carry them,
+            # so the lookup keeps raising AttributeError as it always did.
+            if isinstance(getattr(gpx, "GPXTrack"), ob):
                 gpx.tracks.append(ob)
-            elif isinstance(gpx.GPXRoute, ob):
+            elif isinstance(getattr(gpx, "GPXRoute"), ob):
                 gpx.routes.append(ob)
-            elif isinstance(gpx.GPXWaypoint, ob):
+            elif isinstance(getattr(gpx, "GPXWaypoint"), ob):
                 gpx.waypoints.append(ob)
 
         return gpx

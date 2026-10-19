@@ -3,6 +3,7 @@
 import logging
 import time
 from threading import Thread
+from typing import Any
 from weakref import WeakKeyDictionary
 
 import nmeatoolkit as nt
@@ -35,12 +36,14 @@ class SessionController(QObject):
         parent=None,
         load_charts=True,
         map_renderer=None,
+        early_weather=False,
     ):
         super().__init__(parent)
         if map_renderer not in (None, "cpu", "gpu"):
             raise ValueError("Map renderer must be cpu or gpu")
         self.offline = offline
         self.load_charts = load_charts
+        self.early_weather = early_weather
         self.scheduler = UiScheduler(self)
         self.core = Core(
             schedule=self.scheduler.submit,
@@ -54,12 +57,14 @@ class SessionController(QObject):
             selected_renderer if selected_renderer in ("cpu", "gpu") else "cpu"
         )
         self.renderer_override = map_renderer is not None
-        self._renderer_states = WeakKeyDictionary()
+        self._renderer_states: WeakKeyDictionary[Any, dict[str, Any]] = (
+            WeakKeyDictionary()
+        )
         self.charts = ChartCollection(self.settings, self.scheduler.submit)
         if offline:
             self.charts._chs_renderer.set_enabled(False)
         self.chart_errors = []
-        if load_charts:
+        if load_charts and not early_weather:
             self.charts.load_base_chart()
             for kind in ("vector", "raster", "mbtiles"):
                 loader = getattr(self.charts, "load_" + kind + "_layer")
@@ -100,6 +105,11 @@ class SessionController(QObject):
         self.timer.timeout.connect(self._tick)
         self.last_tick = time.monotonic()
         self.timer.start()
+        self.chart_startup = None
+        if load_charts and early_weather:
+            from .chartstartup import ChartStartup
+
+            self.chart_startup = ChartStartup(self)
 
     def set_renderer_status(self, canvas, actual, reason="", api=""):
         state = dict(actual=actual, reason=reason, api=api)
@@ -125,9 +135,26 @@ class SessionController(QObject):
         return "CPU" + (" (command-line override)" if self.renderer_override else "")
 
     def start_connections(self):
-        if not self.offline and not self.connections.polling_active:
+        if (
+            not self.closed
+            and not self.offline
+            and self.session.streaming
+            and not self.connections.polling_active
+        ):
             self.connection_task.start(
                 "Connecting instruments…", lambda _: self.connections.start_polling()
+            )
+
+    def set_live_reading(self, active):
+        """Start/stop device reads, not just delivery to the live display."""
+        if self.closed or self.connection_task.busy:
+            return
+        self.session.set_streaming(active)
+        if active:
+            self.start_connections()
+        elif self.connections.polling_active:
+            self.connection_task.start(
+                "Disconnecting instruments…", lambda _: self.connections.stop_polling()
             )
 
     def _changed(self, _):
@@ -160,6 +187,7 @@ class SessionController(QObject):
             self.closed
             or generation != self.generation
             or self.session.source != "live"
+            or not self.session.streaming
         ):
             return
         for packet in packets:
@@ -206,6 +234,8 @@ class SessionController(QObject):
         if self.closed:
             return
         self.closed = True
+        if self.chart_startup is not None:
+            self.chart_startup.close()
         self.routing.close()
         self.map_data.close()
         self.timer.stop()

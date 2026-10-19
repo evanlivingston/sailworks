@@ -1,0 +1,42 @@
+{
+  "experiment": "A0d coverage-loss safety restart",
+  "decision": "narrow: safety mechanism supported; cold-load architecture remains open",
+  "workload": {
+    "snapshot_sha256": "97cfda3c62a494c3d462ee8cde449d4d80ed1c62f387d70edcd9192dfb65d360",
+    "forecast_time": "2026-10-16T08:00:00",
+    "inputs": 24,
+    "relative_pan_steps": "12 x (-48, 0), then 12 x (48, 0) logical pixels",
+    "host": "cocoa / Metal / DPR 2",
+    "resources": "existing checksummed export; no new-area preparation"
+  },
+  "validation": {
+    "targeted_tests_passed": 15,
+    "subtests_passed": 10,
+    "black_checked_files": 4,
+    "native_attempts": 2,
+    "native_exit_codes": [0, 0],
+    "native_duration_seconds": [10.733535917010158, 9.937706959084608],
+    "native_stderr_empty": true
+  },
+  "final_run": {
+    "local_artifact_directory_basename": "rendering-a0d-safety-restart-2",
+    "renderer_sha256": "ca858ffc55da86a56492b53f328c1ff9cf4bbc6fec6b280bdb983361ef6e5686",
+    "driver_sha256": "b44c485665be08e4f07253c9cf33b1f38e1a7e846da7a6e35ae10adef23b856f",
+    "replay_sha256": "f8e7b5e9dc0ee559cf756c704e085e54990706b1bcaef702b6eaff88314ce0ab",
+    "unavailable_submissions": 15,
+    "ready_submissions": 9,
+    "initial_complete_pixels_exact": true,
+    "unavailable_composition_pixels_verified": true,
+    "stale_chart_weather_navigation_hidden": true,
+    "resident_return_pixels_exact": true,
+    "post_replay_return_pixels_exact": true
+  },
+  "limitations": {
+    "new_area_post_load_verified": false,
+    "async_preparation_tested": false,
+    "paired_performance_comparison": false,
+    "presentation_measured": false,
+    "end_to_end_speedup_proven": false,
+    "production_changes": false
+  }
+}

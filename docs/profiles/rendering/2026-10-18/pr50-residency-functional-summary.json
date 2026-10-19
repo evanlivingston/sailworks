@@ -1,0 +1,63 @@
+{
+  "kind": "functional-activation-evidence-not-speedup-benchmark",
+  "original_snapshot_sha256": "bd9464bf39629676d34fc570c2f8b6d647a8e6ff897176fd94e0a17200f51dac",
+  "derived_snapshot_sha256": "97cfda3c62a494c3d462ee8cde449d4d80ed1c62f387d70edcd9192dfb65d360",
+  "omitted_missing_marine_download_cache_files": 370,
+  "all_retained_files_match_original_checksums": true,
+  "forecasts": 33,
+  "enabled_charts": 32,
+  "marine_fields": 0,
+  "tide_datasets": 6,
+  "retained_decoded_byte_limit": 134217728,
+  "scrub_return": {
+    "frames": 24,
+    "numerical_active_replay_frames": 23,
+    "numerical_active_after_settle": true,
+    "final_symbols": 734,
+    "atlas_image_bytes": 41760,
+    "peak_retained_decoded_bytes": 60512,
+    "total_numerical_image_requests": 12,
+    "final_cpu_symbol_batches": 0,
+    "final_cpu_raster_symbols": false,
+    "warnings": 0
+  },
+  "trackpad_pan": {
+    "frames": 24,
+    "numerical_active_replay_frames": 0,
+    "numerical_active_after_settle": true,
+    "final_symbols": 522,
+    "atlas_image_bytes": 41760,
+    "peak_retained_decoded_bytes": 61296,
+    "final_cpu_symbol_batches": 0,
+    "final_cpu_raster_symbols": false,
+    "warnings": 0
+  },
+  "validation": {
+    "targeted_worker_cache_staging_transport_checks_passed": 40,
+    "benchmark_snapshot_telemetry_checks_passed": 11,
+    "native_synthetic_map_checks_passed": 1,
+    "derived_real_data_functional_replays_passed": 2,
+    "original_fixture_attempt_blocked_before_launch": 1,
+    "black_python_files_passed": 7,
+    "full_suite_run": false
+  },
+  "ci_review_followup": {
+    "worker_cache_checks_passed": 40,
+    "targeted_lint_modules_passed": 2,
+    "targeted_type_modules_passed": 2,
+    "black_changed_python_files_passed": 4,
+    "fresh_real_data_scrub_passed": true,
+    "numerical_active_replay_frames": 23,
+    "replay_frames": 24,
+    "final_symbols": 734,
+    "peak_retained_decoded_bytes": 60512,
+    "warnings": 0,
+    "pan_rerun": false,
+    "full_ci_pass_claimed": false
+  },
+  "end_to_end_speedup_measured": false,
+  "presentation_latency_measured": false,
+  "continuous_pan_fixed": false,
+  "total_memory_bound_proven": false,
+  "long_session_plateau_proven": false
+}

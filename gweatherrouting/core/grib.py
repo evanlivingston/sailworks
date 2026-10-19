@@ -17,7 +17,6 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 
 import datetime
 import logging
-import math
 import re
 from functools import lru_cache
 from typing import Optional, Tuple

@@ -1,0 +1,88 @@
+{
+  "kind": "mechanism-evidence-not-acceptance-benchmark",
+  "base_commit": "1f1464971db340d5c5581a4d6452fc61e9d7754a",
+  "local_changes": true,
+  "snapshot_sha256": "bd9464bf39629676d34fc570c2f8b6d647a8e6ff897176fd94e0a17200f51dac",
+  "forecast_time_local": "2026-10-16T08:00:00",
+  "selected_forecasts": 33,
+  "residency_lattice": {
+    "harness_sha256": "7c51ddbc15b59e22bee299bfd068f736fb8df2ed5362bb893fb090bdf5c276ce",
+    "reference_candidate_queries_matched": 9,
+    "points_per_query": 1089,
+    "usable_points_per_query": 1089,
+    "potential_cache_bytes": 1369235952,
+    "reference_peak_retained_bytes": 62080,
+    "candidate_peak_retained_bytes": 62080,
+    "candidate_limit_bytes": 134217728,
+    "loads": 12,
+    "hits": 168,
+    "global_evictions": 0,
+    "exact_value_mask_provenance_match": true
+  },
+  "native_node_staging": {
+    "harness_sha256": "d7f1f7272e79a57e3bd2f7d7b80bbe51a93258d8e121591d45d3a57ff530c306",
+    "native_candidates": 2898,
+    "unique_native_nodes": 1406,
+    "tested_offsets_seconds": [0, 1, 900],
+    "symbols_per_atlas": 734,
+    "atlas_image_bytes": 41760,
+    "peak_retained_decoded_bytes": 60512,
+    "max_component_error_mps": 0.00000043732825893982863,
+    "declared_component_error_limit_mps": 0.00002,
+    "mask_and_provenance_match": true,
+    "gpu_draw_tested": false
+  },
+  "float_textures": {
+    "qt": "6.12.0",
+    "backend": "Metal",
+    "hardware_linear": {
+      "status": "failed_accuracy_gate",
+      "max_sampling_error": 0.002604166666666824,
+      "declared_error_limit": 0.00002,
+      "cause_isolated": false
+    },
+    "manual_interpolation": {
+      "harness_sha256": "39afdc1e519337999cc1b73faed72da4ce47e4cf58cea1ea7dacbe4a5cf15428",
+      "status": "passed_generated_field",
+      "max_sampling_error": 0.0000002384185791015625,
+      "declared_error_limit": 0.00002,
+      "raw_float32_bits_preserved": true,
+      "field_transport_bytes": 96,
+      "equivalent_packed_transport_bytes": 192,
+      "missing_corner_policy_tested": false,
+      "map_integration_tested": false
+    }
+  },
+  "retained_field_worker": {
+    "harness_sha256": "16d6ac8986633f795c68bf181f961cb4d899119307604216cbb3185faa680a06",
+    "exact_reference_candidate_pairs": 27,
+    "retained_nodes": 1921,
+    "field_build_ms": 80.7850839337334,
+    "reference_worker_median_ms": 20.0551669113338,
+    "retained_worker_median_ms": 2.7288340497761965,
+    "numerical_preparation_blocked_for_retained_queries": true,
+    "map_fps_measured": false
+  },
+  "native_retained_control": {
+    "derived_functional_snapshot_sha256": "97cfda3c62a494c3d462ee8cde449d4d80ed1c62f387d70edcd9192dfb65d360",
+    "app_commit": "175096dcce19644a8ae1fbfc3f27683bd50344ea",
+    "matched_input_trajectories": true,
+    "inputs_per_control": 24,
+    "reference_observed_revisions": 18,
+    "retained_observed_revisions": 17,
+    "reference_clean_numerical_ready_revisions": 0,
+    "retained_clean_numerical_ready_revisions": 1,
+    "reference_dispatch_lateness_p95_ms": 23.90096511808222,
+    "retained_dispatch_lateness_p95_ms": 17.688373092096295,
+    "reference_observed_render_p95_ms": 21.9356812420301,
+    "retained_observed_render_p95_ms": 32.992666866630316,
+    "retained_selection_completions_during_input": 24,
+    "retained_field_builds_during_input": 0,
+    "result": "mixed_no_demonstrated_native_latency_win",
+    "worker_only_cache_promoted_as_pan_fix": false
+  },
+  "production_renderer_changed": false,
+  "presentation_latency_measured": false,
+  "total_memory_bound_proven": false,
+  "end_to_end_speedup_measured": false
+}

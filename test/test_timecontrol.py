@@ -22,9 +22,7 @@ from gweatherrouting.core.timecontrol import TimeControl, naive_wall_time
 
 
 def test_naive_wall_time_preserves_wall_clock_for_aware_datetime():
-    value = datetime.datetime(
-        2026, 10, 13, 9, 30, tzinfo=datetime.timezone.utc
-    )
+    value = datetime.datetime(2026, 10, 13, 9, 30, tzinfo=datetime.timezone.utc)
 
     assert naive_wall_time(value) == datetime.datetime(2026, 10, 13, 9, 30)
 

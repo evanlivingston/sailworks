@@ -1,0 +1,93 @@
+{
+  "experiment": "A0h retained numerical owner and deferred fidelity",
+  "decision": "support limited source-residency performance and measurement mechanism; no architecture adoption",
+  "snapshot_sha256": "97cfda3c62a494c3d462ee8cde449d4d80ed1c62f387d70edcd9192dfb65d360",
+  "protocol": "independent-persistent-coverage-a0h-v1",
+  "comparison_protocol": "matched-resident-worker-a0h-v1",
+  "workload": {
+    "forecast_time": "2026-10-16T08:00:00",
+    "host": "cocoa / Metal / DPR 2",
+    "fixed_pan_inputs_per_destination": 32,
+    "destination_offsets_east_logical_pixels": [576, 1152],
+    "native_replacement_generations": [3, 4, 5],
+    "only_latest_generation_published": 5,
+    "source_and_clock_changes_tested": false
+  },
+  "validation": {
+    "targeted_tests_passed": 39,
+    "subtests_passed": 34,
+    "black_checked_changed_python_files": 8,
+    "native_controllers_used": 4,
+    "native_producers_used": 4,
+    "all_controller_and_producer_exit_codes": 0,
+    "matched_pairs_accepted": 2,
+    "same_runtime_harness_for_all_four_cases": true,
+    "post_window_numerical_comparisons_per_case": 100,
+    "total_post_window_numerical_comparisons": 400,
+    "unchanged_timed_assets_match_post_window_reference": true,
+    "zero_guarded_explicit_readbacks_in_measured_windows": true,
+    "zero_reference_oracle_checks_inside_timed_exports": true,
+    "render_signals_present_in_measured_windows": true
+  },
+  "pairs": [
+    {
+      "order": ["reopen", "resident"],
+      "artifacts": ["rendering-a0h-reopen-1", "rendering-a0h-resident-1"],
+      "reopen_prepare_seconds": [1.9625615840777755, 1.7946884589036927],
+      "resident_prepare_seconds": [1.254115791991353, 1.1840264160418883],
+      "reopen_gui_publication_ms": [6.028542062267661, 2.959500066936016],
+      "resident_gui_publication_ms": [3.579624928534031, 3.2361249905079603],
+      "resident_gui_tick_gap_p95_ms": [17.583667067810893, 18.33863746142015],
+      "resident_gui_tick_gap_max_ms": [38.97420805878937, 40.245541953481734],
+      "reopen_source_opens_all_tasks": 8,
+      "resident_source_opens_all_tasks": 1,
+      "reopen_post_validation_seconds": 13.418552708928473,
+      "resident_post_validation_seconds": 11.097123582963832,
+      "reopen_replay_sha256": "a5f46f8b1313d3cb1897593a262a234024fc2bce0e277875dcb72a5621db1711",
+      "resident_replay_sha256": "7dab9ec9cb1ca4c9af4837460307994450571330f5580f262a2c0b902278bc0f"
+    },
+    {
+      "order": ["resident", "reopen"],
+      "artifacts": ["rendering-a0h-reopen-2", "rendering-a0h-resident-2"],
+      "reopen_prepare_seconds": [1.9421574580483139, 1.8276175420032814],
+      "resident_prepare_seconds": [1.3097232920117676, 1.1892509579192847],
+      "reopen_gui_publication_ms": [8.628792013041675, 2.724667079746723],
+      "resident_gui_publication_ms": [5.895958980545402, 2.2037079324945807],
+      "resident_gui_tick_gap_p95_ms": [17.698704486247152, 17.892614821903408],
+      "resident_gui_tick_gap_max_ms": [49.28841593209654, 38.492207997478545],
+      "reopen_source_opens_all_tasks": 8,
+      "resident_source_opens_all_tasks": 1,
+      "reopen_post_validation_seconds": 13.573059999966063,
+      "resident_post_validation_seconds": 11.098695292021148,
+      "reopen_replay_sha256": "8f82ed240d1d88385c7a2279f343060f48b605c15ed9e3392561647c14de0086",
+      "resident_replay_sha256": "7454bee476e0b56098bddbf2731681e80b3c33ec6ea9c3a89df26b817586f3dd"
+    }
+  ],
+  "ownership": {
+    "source_open_counter_measures_resource_group_factory_not_raw_gdal_calls": true,
+    "worker_tasks_per_case_including_validation": 8,
+    "resource_open_use_close_on_same_non_gui_thread": true,
+    "decoded_band_budget_bytes": 134217728,
+    "retained_resource_closes_per_resident_case": 1,
+    "closed_resources_and_processes": true
+  },
+  "runtime_identity": {
+    "run_coverage_load.py": "ad75cf762e3ca29ff16e6b65d77c6bc14ba4b9c35e83e604faed8dbcd9c497aa",
+    "experiment_vertical_renderer.py": "500914a5159279224f0dbb608f81ea8ad47ca856704d122de3ef6ddc8106baef",
+    "persistent_coverage.py": "bb7a96e1b79dbabcf6886b2c0fbd412b9e78a07d9529801fa1c0e2449d55eee5",
+    "resident_weather_worker.py": "8f17f602e5a8bcc57c512a35dd6cb179c27d23e63bed854f180e45d53471657c"
+  },
+  "limitations": {
+    "legacy_app_remains_chart_producer_and_post_window_oracle": true,
+    "legacy_host_startup_still_about_31_seconds": true,
+    "empty_only_reference_gpu_oracle_correction_preserved": true,
+    "old_295ms_tail_root_cause_isolated": false,
+    "global_memory_plateau_measured": false,
+    "presentation_measured": false,
+    "statistical_significance_claimed": false,
+    "whole_application_speedup_accepted": false,
+    "reference_equivalence_proven": false,
+    "production_or_routing_changes": false,
+    "commits_pushes_pr_changes_merges": false
+  }
+}

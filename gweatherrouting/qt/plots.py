@@ -163,10 +163,3 @@ class LogPlots(FigureCanvasQTAgg):
             axis.draw_artist(cursor)
         if blit:
             self.blit(self.figure.bbox)
-
-
-def elapsed_offsets(points):
-    if not points:
-        return ()
-    first = points[0].time
-    return np.array([(point.time - first).total_seconds() for point in points])
