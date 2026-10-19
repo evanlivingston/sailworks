@@ -92,6 +92,12 @@ immutable LayerFrame / geometry / coverage metadata
 CPU presenter OR feature-flagged Qt Quick presenter
 ```
 
+At most two preparations may be in flight: the older is cancelled or superseded
+while the next is prepared, so preparation of frame N+1 overlaps presentation of
+frame N. Every prepared resource carries a generation key (source/time/coverage/
+scope) and publication is rejected on generation mismatch, so a superseded request
+never publishes and stale content is never presented as current. See ADR-001 D3.
+
 * **Map scene controller:** owns camera, gestures, public map signals, lifecycle,
   selection/picking, and layer invalidation. Start with the existing contracts in
   `gweatherrouting/qt/mapcanvas.py`; do not replace controller/navigation APIs at
@@ -103,10 +109,20 @@ CPU presenter OR feature-flagged Qt Quick presenter
   palette/style/density revision, and geographic/scale coverage. View revision is
   separate: a useful completed chunk must not become disposable merely because
   the camera moved a few pixels.
+  The forecast component is a **resident time window** covering multiple instants
+  over one spatial window, so that time is decoupled from spatial preparation: a
+  time change within the window performs no decode and no upload, and a pan does
+  not invalidate the window. The staged before/after pair is a special case of a
+  general window. See ADR-001 D4.
 * **LayerFrame:** immutable pixels or geometry plus content key, geographic/world
   extent, portrayal scale, DPR, valid-time/source provenance, coverage/missing
   masks, byte cost, and publication generation. Freeze backing arrays/images;
   workers must not mutate buffers retained by a presenter.
+  A weather field additionally needs a **GPU-resident numerical field** form, whose
+  numeric values live on the GPU and are addressed by a stable identity of source +
+  parameter + forecast instant + spatial window + resolution -- not by a per-frame
+  image identity. This lets a time change or a covered pan read the resident
+  resource instead of re-uploading. See ADR-001 D1.
 * **UI/worker boundary:** retain `UiScheduler` delivery on the GUI thread. GDAL
   handles stay private to their worker; never move a UI-owned dataset onto a new
   thread. No worker touches QWidget/QQuickItem or scene-graph resources.
@@ -213,6 +229,8 @@ fewer synchronous rebuild/upload stalls; no holes or changed chart selection.
    Include interpolation halos, projected grids, longitude wrapping, masks, and
    contour boundary context. Reuse complete useful work instead of canceling it
    at each small camera change. Cancellation must be bounded and observable.
+   Reuse extends from spatial to temporal: work keyed by a resident time window
+   survives a time change within that window, and vice versa (ADR-001 D4).
 4. Keep the routing/sampling numerical interface stable. If implementation must
    touch shared sampling/routing code, run the full suite and differential tests,
    including selected-source provenance and valid-time behavior.
@@ -249,7 +267,8 @@ speculative traffic. Report useful-prefetch hit rate AND wasted work/bytes.
 ### R5 — Retention hardening and rollout
 
 * One resource ledger with domain limits for decoded CPU data, prepared geometry,
-  CPU images, GPU textures, transient MSAA/layer targets, and in-flight uploads.
+  CPU images, GPU textures, GPU-resident numerical fields, transient MSAA/layer
+  targets, and in-flight uploads.
   Account for shared buffers once, reserve allocations before work starts, and
   configure/measure relevant GDAL caches separately. Do not equate RSS with VRAM.
 * Protect currently visible content and in-use uploads; retain recent geographic
@@ -307,7 +326,16 @@ timings, or assert machine-dependent timing thresholds as universal CI tests.
   target `dev` and remain unmerged until approved. Do not fold unrelated storage
   fixes into the renderer change.
 
-Immediate implementation order: **R0.1 texture parity**, then R0.2 host integration
-and R0.3/R0.4 resource/platform gates, then the R1 feature-flagged presenter. R2–R5
-follow as distinct measured slices. The CPU renderer remains the production
-default throughout this first tranche.
+Immediate implementation order: **R0.1 texture parity** and **R0.2 host
+integration** are discharged (see `gpu-texture-parity-r0.1.md` and
+`gpu-embedded-rendering.md`, which fixes the host as a mouse-transparent
+`QQuickWidget` and records the initial resource ledger). R0.3/R0.4 resource and
+platform gates remain partly open and are folded into the validation issue.
+
+The live implementation sequence is now the issue program recorded in
+[`adr-001-grib-rendering-architecture.md`](adr-001-grib-rendering-architecture.md)
+and epic #51: GPU-resident numerical fields, GPU spatial interpolation, an
+overlapped preparation/presentation pipeline, resident time windows, GPU weather
+fill, chart/weather separation, then validation and rollout. R1-R5 above remain
+the detailed specification those issues implement. The CPU renderer remains the
+production default throughout.

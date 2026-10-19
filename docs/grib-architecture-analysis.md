@@ -1,5 +1,13 @@
 # Gweatherrouting GRIB Data Loading and Visualization Architecture Analysis
 
+**Read with:** [`adr-001-grib-rendering-architecture.md`](adr-001-grib-rendering-architecture.md)
+for the decisions and gap disposition, and
+[`reference-architecture-analysis.md`](reference-architecture-analysis.md) for the
+reference implementation's techniques.
+
+**What this document is:** a description of the code as it exists today, with file and
+line citations, and the structural gaps that follow from it. It is evidence, not a plan.
+
 ## CURRENT IMPLEMENTATION
 
 ### 1. GRIB LOADING
@@ -164,7 +172,21 @@
 
 ## COMPARATIVE ANALYSIS
 
-*Note: the reference application context would be provided separately, but based on architectural principles:*
+The reference implementation's techniques are analysed separately in
+[`reference-architecture-analysis.md`](reference-architecture-analysis.md). Read that
+alongside this document.
+
+**The "Modern GPU-Optimal" column below is aspirational, not a parity target.** The
+reference implementation performs *spatial* interpolation on the CPU (technique T6), so
+GPU spatial interpolation is an advance beyond the reference rather than a target it
+already meets. The load-bearing differences from the reference are architectural shape:
+async task groups, retained resources, a dirty-flag retained scene graph, and
+main-thread isolation.
+
+Decisions and gap disposition are recorded in
+[`adr-001-grib-rendering-architecture.md`](adr-001-grib-rendering-architecture.md).
+Two items in the list below were changed by that ADR: GPU spatial interpolation is
+pending decision D2, and GPU-side decode is explicitly deferred (D5).
 
 ### VS MODERN GPU-OPTIMAL ARCHITECTURE
 
@@ -178,6 +200,26 @@
 | **Memory Management** | Multi-layer CPU caches + GPU texture cache | Unified GPU memory budget with eviction | **Structural:** No GPU memory residency tracking; CPU caches don't reflect actual GPU usage |
 | **Time Scrubbing** | Worker restage required for new timestep pairs | Async prefetch + double/triple buffering | **Structural:** No lookahead or pipelining; time changes block on worker availability |
 | **Resource Granularity** | Full-frame textures/vertex buffers | Tile-based or clip-scoped rendering | **Structural:** No partial updates; entire frame reprocessed for small viewport changes |
+
+### THE SEVEN STRUCTURAL GAPS
+
+This is the list used by ADR-001 and by issues #62-#70. It matches the comparison
+table above; the narrative items that follow elaborate on these and are not a
+second, competing list.
+
+| # | Gap | Closing decision | Issue |
+| --- | --- | --- | --- |
+| G1 | Decode location: CPU (GDAL -> NumPy) | D5 -- deferred, no near-term issue | — |
+| G2 | Data residency: CPU-side caches, no GPU-resident field | D1 | #64 |
+| G3 | Spatial interpolation: CPU Python loops | D2 -- open, pending user decision | #65 |
+| G4 | Pipeline model: strictly serial stages | D3 | #66 |
+| G5 | Time scrubbing: two-timestep, view-specific restage | D4 | #67 |
+| G6 | Memory management: per-worker CPU byte limits, no GPU budget | D1 | #64 |
+| G7 | Threading model: serialized daemon threads, no overlap | D3 | #66 |
+
+The comparison table's "Resource Granularity" row (full-frame textures) is a
+consequence of G2 and is addressed by D1 rather than tracked separately. "Temporal
+Interpolation" is already aligned.
 
 ### SPECIFIC ARCHITECTURAL GAPS (NOT JUST "SLOW")
 
@@ -213,49 +255,18 @@
 
 ### HIGHEST-LEVERAGE ARCHITECTURAL CHANGES
 
-1. **GPU-Resident Numerical Weather Textures (Highest Impact)**
-   - **Change:** Modify `gpuweather` module to upload numerical textures once and retain them
-   - **Mechanism:** 
-     - Worker decodes and uploads U/V textures to GPU
-     - Textures retained in GPU memory with reference counting
-     - GUI samples textures directly via shader (no per-frame upload)
-   - **Benefit:** Eliminates CPU→GPU upload bottleneck during time scrubbing and panning
-   - **Files to modify:** `gpuweather.py`, `gpuscene.py`, `weather.frag` shader
+Ordered by leverage. The decision for each is recorded in
+[`adr-001-grib-rendering-architecture.md`](adr-001-grib-rendering-architecture.md);
+the issue that owns the work is listed alongside.
 
-2. **Compute Shader Spatial Sampling (High Impact)**
-   - **Change:** Offload bilinear sampling to GPU via texture sampling or compute shader
-   - **Mechanism:**
-     - Upload raw weather data as GPU textures (R32F format)
-     - Use hardware bilinear filtering or custom compute shader for interpolation
-     - Remove CPU-side `GridIndex.sample()` loops
-   - **Benefit:** Moves spatial interpolation bottleneck from CPU to parallel GPU
-   - **Files to modify:** `gribsampling.py` (remove CPU sampling), new compute shaders, modified `weather.frag`
-
-3. **Asynchronous Double-Buffered Pipeline (High Impact)**
-   - **Change:** Allow worker to prepare next frame while GUI renders current frame
-   - **Mechanism:**
-     - Two sets of weather resources (textures, vertex buffers) 
-     - Worker alternates between preparing frame N and N+1
-     - GUI renders frame N while worker prepares N+1
-   - **Benefit:** Hides worker latency behind render time; eliminates pipeline stalls
-   - **Files to modify:** `gpuweatherjobs.py` (double-buffer resources), `WeatherStager` (alternating preparation)
-
-4. **Unified GPU Memory Budget with Eviction (Medium Impact)**
-   - **Change:** Track actual GPU memory usage and implement eviction policy
-   - **Mechanism:**
-     - Monitor GPU texture/buffer allocation sizes
-     - Implement LRU eviction based on actual GPU residency
-     - Remove redundant CPU caches that don't reflect GPU state
-   - **Benefit:** Prevents GPU memory exhaustion; better aligns caching with actual resource constraints
-   - **Files to modify:** `DecodedBandCache`, `WeatherImageProvider`, add GPU memory tracking
-
-5. **Tile-Based or Clip-Scoped Rendering (Medium Impact)**
-   - **Change:** Render only visible tiles or scissor rectangles instead of full frame
-   - **Mechanism:**
-     - Divide weather textures into tiles
-     - Only upload/render tiles intersecting viewport
-     - Use scissor testing or partial texture updates
-   - **Benefit:** Reduces work during panning/zooming; better cache coherence
-   - **Files to modify:** `gpuscene.py` (tile-based rendering), `WeatherImageProvider` (partial updates)
-
-These changes would address the core architectural limitations identified in the rendering performance plan, moving from a CPU-bound, serialized pipeline to a GPU-first, asynchronous architecture with retained resources and better overlap between stages.
+1. **GPU-Resident Numerical Weather Fields (Highest Impact)** — D1, issue #64.
+   Eliminate the per-frame CPU->GPU upload during time scrubbing and panning.
+2. **GPU Spatial Sampling (High Impact)** — D2, issue #65. **Pending user decision**;
+   the 2e-5 accuracy gate is the bound if it proceeds. See the note above: the
+   reference does this on the CPU, so this is an advance, not parity.
+3. **Asynchronous Double-Buffered Pipeline (High Impact)** — D3, issue #66.
+   Preparation of frame N+1 overlaps presentation of frame N.
+4. **Unified GPU Memory Budget with Eviction (Medium Impact)** — D1, issue #64.
+   Extends the existing resource ledger to cover GPU-resident numerical fields.
+5. **Tile-Based or Clip-Scoped Rendering (Medium Impact)** — not yet decided.
+   Revisit after D1-D3 are landed and the remaining cost is re-profiled.

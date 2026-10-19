@@ -6,6 +6,19 @@ and reports remain historical specifications/evidence, not competing task lists.
 
 ## Current checkpoint
 
+- **Architecture decided:** [`adr-001-grib-rendering-architecture.md`](adr-001-grib-rendering-architecture.md).
+  Read it first. It reconciles the R0-R5 architecture in
+  `docs/rendering-implementation-plan.md` with the 2026-10-19 current-state and
+  reference-technique analyses, and records decisions D1-D5.
+- **Implementation program:** epic #51, issues #62-#70. One issue at a time; each
+  states its own gate, evidence and validation command. See
+  [`docs/milestones.md`](milestones.md) for the index.
+- **Analysis evidence:** [`grib-architecture-analysis.md`](grib-architecture-analysis.md)
+  (current state, seven structural gaps) and
+  [`reference-architecture-analysis.md`](reference-architecture-analysis.md)
+  (reference techniques T1-T8).
+- **Open decision:** D2 (GPU spatial interpolation vs. the R3 sampling invariant) needs
+  a user decision before issue #65 may start.
 - **Milestone:** M0 — reproducible baseline and architecture decision.
 - **Next decision:** A0 — evaluate a coherent alternative interaction architecture,
   not isolated transport/worker optimizations. A0a (independent covered-pan

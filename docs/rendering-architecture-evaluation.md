@@ -1,5 +1,11 @@
 # A0: compare coherent interaction architectures
 
+**Status:** historical evidence. The A0a-A0k slices below are retained as the
+experiment record, including the negative results. Planning and decisions now live in
+[`adr-001-grib-rendering-architecture.md`](adr-001-grib-rendering-architecture.md) and
+epic #51; the implementation program is issues #62-#70. Do not start new A0 slices
+from this document.
+
 Status: experimental candidate, not a production design selection. Tracking:
 [#51](https://github.com/evanlivingston/gweatherrouting/issues/51).
 

@@ -34,9 +34,15 @@ feature branches as focused follow-up commits; avoid rewriting shared history.
 
 ## Rendering performance work
 
-- Before rendering optimization, read `docs/rendering-performance-plan.md` and
-  identify the current milestone and hypothesis. It is the canonical roadmap;
+- The target architecture is decided in `docs/adr-001-grib-rendering-architecture.md`.
+  Read it first, then the issue it points at. The implementation of that ADR is the
+  work program in issues #62-#70; work one issue at a time.
+- `docs/rendering-performance-plan.md` is the canonical roadmap and
+  `docs/rendering-implementation-plan.md` holds the detailed R0-R5 sequence;
   older rendering plans/reports remain historical specifications and evidence.
+- Gate changes with one command from the runner built in #63. Do not re-run the
+  full test suite, and do not re-measure a baseline the change does not touch.
+  Recorded evidence under `docs/profiles/rendering/` is the reference.
 - Before an experiment, record scope/non-goals, baseline/workload, measurement
   and fidelity gates, time/attempt budget, and stop condition. Stop and report
   when the budget is exhausted or scope must expand; do not silently extend it.
