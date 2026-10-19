@@ -2,11 +2,11 @@
 
 > **Status: HISTORICAL.** The synthetic scaling baseline captured 2026-10-15; the
 > reference workload is
-> [rendering-startup-baseline-2026-10-15.md](rendering-startup-baseline-2026-10-15.md).
-> Superseded by [rendering-performance-plan.md](rendering-performance-plan.md).
+> [rendering-startup-baseline-2026-10-15.md](../rendering-startup-baseline-2026-10-15.md).
+> Superseded by [rendering-performance-plan.md](../rendering-performance-plan.md).
 > Evidence, not a plan.
 
-This is the synthetic scaling baseline. Use [the normal startup baseline](rendering-startup-baseline-2026-10-15.md)
+This is the synthetic scaling baseline. Use [the normal startup baseline](../rendering-startup-baseline-2026-10-15.md)
 as the primary workload and optimization priority for the installed app.
 
 ## Protocol
@@ -27,8 +27,8 @@ not release certifications.
 
 Raw reports, including every sample and workload/environment metadata:
 
-* [1x baseline](profiles/rendering/2026-10-15/baseline-1x.json)
-* [2x baseline](profiles/rendering/2026-10-15/baseline-2x.json)
+* [1x baseline](../profiles/rendering/2026-10-15/baseline-1x.json)
+* [2x baseline](../profiles/rendering/2026-10-15/baseline-2x.json)
 
 See [the protocol and plan](rendering-performance.md) for commands, manifests,
 comparison safeguards, excluded layers, and interpretation limits.

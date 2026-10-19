@@ -3,7 +3,7 @@
 > **Status: HISTORICAL.** PR #50's bounded decoded-band residency record, written
 > 2026-10-18; the PR merged to `dev` on 2026-10-19 (`b9e2471`, via PR #61
 > `1a90515`). Superseded as a work item by
-> [ADR-001](adr-001-grib-rendering-architecture.md) D1 and issue #64. Evidence,
+> [ADR-001](../adr-001-grib-rendering-architecture.md) D1 and issue #64. Evidence,
 > not a plan.
 
 Scope extension approved by the user on 2026-10-18, following the M0 probes in
@@ -118,7 +118,7 @@ Four native/real-workload attempts were used: one synthetic integration pass,
 one blocked original-fixture verification, and two derived functional passes.
 Each initial command was bounded to 120 seconds. The separate CI-review budget
 below was recorded before its follow-up; no memory limit was increased. The
-[sanitized summary](profiles/rendering/2026-10-18/pr50-residency-functional-summary.json)
+[sanitized summary](../profiles/rendering/2026-10-18/pr50-residency-functional-summary.json)
 preserves the key evidence without private paths/coordinates.
 
 ### Review / remaining gates

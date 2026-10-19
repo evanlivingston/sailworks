@@ -61,6 +61,6 @@ performance improvement follows from this audit.
 
 B1 subsequently located and verified the October 16 fixture, implemented a
 separate render-signal proxy, and completed two native smoke attempts. See
-[the evidence and budget review](rendering-m0-native-probe.md). The audit's
+[the evidence and budget review](history/rendering-m0-native-probe.md). The audit's
 presentation/coverage limitations still apply; historical grab reports were not
 reclassified as native presentation measurements.

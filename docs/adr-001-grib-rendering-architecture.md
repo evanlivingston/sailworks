@@ -27,7 +27,7 @@ executable issues. It deliberately does **not** restate the specification; it li
   [`rendering-implementation-plan.md`](rendering-implementation-plan.md), as
   amended by §6 below.
 - **Experiment record:** the A0a–A0l slices in
-  [`rendering-architecture-evaluation.md`](rendering-architecture-evaluation.md)
+  [`rendering-architecture-evaluation.md`](history/rendering-architecture-evaluation.md)
   and in the canonical plan's decision log; the M0 mechanism probes in the
   `rendering-m0-*.md` records; machine-readable evidence under
   `docs/profiles/rendering/`.
@@ -131,10 +131,10 @@ interpolation, replacing the current RGBA8888 bit-packing. Justification:
 
 - Hardware linear filtering on native float textures **failed** the 2e-5 gate (max error
   2.6e-3); explicit `texelFetch` + manual bilinear arithmetic **passed** (max error
-  2.4e-7) — [`rendering-m0-float-textures.md`](rendering-m0-float-textures.md), E1/E1b.
+  2.4e-7) — [`rendering-m0-float-textures.md`](history/rendering-m0-float-textures.md), E1/E1b.
 - Missing values must not enter shader varyings as NaN; the A0k repair (integer-exponent
   validity checks, finite missing-cell outputs, explicit validity discard) is the
-  validated pattern — [`rendering-a0k-shader-safety.md`](rendering-a0k-shader-safety.md).
+  validated pattern — [`rendering-a0k-shader-safety.md`](history/rendering-a0k-shader-safety.md).
 
 **Residency budget.** The existing ledger is extended, not replaced. Eviction protects
 visible content first and reduces speculation before it reduces selected-source
@@ -285,11 +285,11 @@ R5 (retention hardening, rollout). R0.2 is discharged by
 | [`reference-architecture-analysis.md`](reference-architecture-analysis.md) | Reference techniques T1–T8; T6 correction (CPU spatial interpolation). |
 | [`rendering-implementation-plan.md`](rendering-implementation-plan.md) | The architecture being reconciled; invariants; R0–R5; measurement contract. |
 | [`gpu-embedded-rendering.md`](gpu-embedded-rendering.md) | Host decision; resource ledger; matched CPU/GPU baseline. |
-| [`rendering-m0-float-textures.md`](rendering-m0-float-textures.md) | E1/E1b: native float transport; hardware filtering fails 2e-5, explicit arithmetic passes. |
-| [`rendering-a0k-shader-safety.md`](rendering-a0k-shader-safety.md) | Missing-data handling; zero-alpha gate; the red-flood failure and its repair. |
-| [`rendering-a0j-early-display.md`](rendering-a0j-early-display.md) | Early weather before chart readiness; camera/clock preservation. |
-| [`rendering-a0h-resident-worker.md`](rendering-a0h-resident-worker.md) | Single-owner retained worker; exact deferred fidelity. |
-| [`rendering-architecture-evaluation.md`](rendering-architecture-evaluation.md) | A0a–A0k results **including the negative ones**; the "do not adopt on one pair" discipline. |
+| [`rendering-m0-float-textures.md`](history/rendering-m0-float-textures.md) | E1/E1b: native float transport; hardware filtering fails 2e-5, explicit arithmetic passes. |
+| [`rendering-a0k-shader-safety.md`](history/rendering-a0k-shader-safety.md) | Missing-data handling; zero-alpha gate; the red-flood failure and its repair. |
+| [`rendering-a0j-early-display.md`](history/rendering-a0j-early-display.md) | Early weather before chart readiness; camera/clock preservation. |
+| [`rendering-a0h-resident-worker.md`](history/rendering-a0h-resident-worker.md) | Single-owner retained worker; exact deferred fidelity. |
+| [`rendering-architecture-evaluation.md`](history/rendering-architecture-evaluation.md) | A0a–A0k results **including the negative ones**; the "do not adopt on one pair" discipline. |
 | [`profiles/rendering/2026-10-18/a0c-timeline-scrub-summary.json`](profiles/rendering/2026-10-18/a0c-timeline-scrub-summary.json) | Scrub cost: 41 uploads / 568 MB; dispatch p95 357.7 ms. The cost D1/D3/D4 remove. |
 | [`profiles/rendering/2026-10-18/a0h-resident-worker-summary.json`](profiles/rendering/2026-10-18/a0h-resident-worker-summary.json) | Resident preparation 1.18–1.31 s vs 1.79–1.96 s; GUI bind 2.2–5.9 ms. |
 | [`rendering-m0-measurement-audit.md`](rendering-m0-measurement-audit.md) | What the instrumentation can and cannot prove; why readback is not presentation. |

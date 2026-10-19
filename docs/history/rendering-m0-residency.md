@@ -2,10 +2,10 @@
 
 > **Status: HISTORICAL.** The E3a/E3b decoded-band residency record, written
 > 2026-10-17/18. Superseded by
-> [ADR-001](adr-001-grib-rendering-architecture.md) D1 and issue #64. Evidence,
+> [ADR-001](../adr-001-grib-rendering-architecture.md) D1 and issue #64. Evidence,
 > not a plan.
 
-2026-10-17; [plan experiment index](rendering-performance-plan.md#experiment-contracts-and-results-b1-e1-e3),
+2026-10-17; [plan experiment index](../rendering-performance-plan.md#experiment-contracts-and-results-b1-e1-e3),
 [epic #51](https://github.com/evanlivingston/gweatherrouting/issues/51).
 
 ## Finding
@@ -14,7 +14,7 @@ PR #50's potential-cache estimate and actual display demand are radically
 different on this saved workload. This is evidence for on-demand residency, not
 permission to raise/remove the production safety guard.
 
-See the [sanitized mechanism summary](profiles/rendering/2026-10-18/m0-mechanism-summary.json)
+See the [sanitized mechanism summary](../profiles/rendering/2026-10-18/m0-mechanism-summary.json)
 for a durable machine-readable record of the key measurements.
 
 | Measurement | Reference | Global-budget candidate |

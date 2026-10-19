@@ -1,5 +1,10 @@
 # Continuous-pan weather preparation
 
+> **Status: HISTORICAL.** The continuous-pan weather preparation work, written 2026-10-17; the
+> behaviour it describes is still current, and this document is kept for its
+> reasoning. The R0–R5 sequence in the implementation plan is the authority.
+> Evidence, not a plan.
+
 This follow-up targets scrolling/panning, not general CI cleanup. It starts from
 merged `dev` in `feature/pan-prefetch-latency`; the unrelated uncommitted cleanup
 work remains in its original worktree. CPU presentation stays the default.

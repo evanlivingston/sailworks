@@ -3,7 +3,7 @@
 > **Status: HISTORICAL.** The A0k missing-data shader-safety report, written
 > 2026-10-19. Its zero-alpha gate is the fixed reference for missing-data
 > portrayal; the work itself is superseded by
-> [ADR-001](adr-001-grib-rendering-architecture.md) and the issue program.
+> [ADR-001](../adr-001-grib-rendering-architecture.md) and the issue program.
 
 ## Outcome
 
@@ -118,7 +118,7 @@ from preserved reports. No full suite or additional native workload was run.
 Private raw evidence: `rendering-a0k-shader-{1,2,3}` and
 `rendering-a0k-early-safe-1{,.json}` in the approved OpenCode temporary directory.
 PNGs and private forecast/chart inputs remain outside Git. See
-[machine-readable summary](profiles/rendering/2026-10-19/a0k-shader-safety-summary.json).
+[machine-readable summary](../profiles/rendering/2026-10-19/a0k-shader-safety-summary.json).
 
 **Decision: provisionally adopt the focused experimental shader repair and stop
 this slice.** The measured red-overlay blocker is resolved within the declared

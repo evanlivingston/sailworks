@@ -2,11 +2,11 @@
 
 > **Status: HISTORICAL.** The R0.1 texture-parity implementation record for the
 > reproduced 2× Metal failures. Superseded by
-> [ADR-001](adr-001-grib-rendering-architecture.md) and the issue program.
+> [ADR-001](../adr-001-grib-rendering-architecture.md) and the issue program.
 > Evidence, not a plan.
 
 Status: the reproduced 2x Metal fractional-pan failures are fixed. This completes
-the first implementation slice of the [rendering plan](rendering-implementation-plan.md),
+the first implementation slice of the [rendering plan](../rendering-implementation-plan.md),
 not the production GPU integration or the full platform/DPR matrix.
 
 ## Cause and change
@@ -51,10 +51,10 @@ before production rollout.
 Historical reports are unchanged. Candidate reports use the same fixture data
 and camera trajectories, with the changed renderer/code hashes recorded:
 
-* [Controlled candidate](profiles/rendering/2026-10-15/gpu-r0.1-controlled-2x.json):
+* [Controlled candidate](../profiles/rendering/2026-10-15/gpu-r0.1-controlled-2x.json):
   all three modes, three scenarios, eight steps, one repetition — nine replays,
   36 image comparisons. **All complete visual gates pass.**
-* [Saved-startup GPU candidate](profiles/rendering/2026-10-15/gpu-r0.1-startup.json):
+* [Saved-startup GPU candidate](../profiles/rendering/2026-10-15/gpu-r0.1-startup.json):
   three scenarios, 180 steps, three repetitions — nine replays, 36 image
   comparisons. **All complete visual gates pass.** Actual Metal/M1 Pro, native DPR 2.
 

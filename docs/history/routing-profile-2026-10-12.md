@@ -2,8 +2,8 @@
 
 > **Status: HISTORICAL.** The 2026-10-12 routing profile and the optimization
 > targets it identified. Current routing behaviour is
-> [current-routing.md](current-routing.md); current priorities are
-> [profiling-priorities.md](profiling-priorities.md). Evidence, not a plan.
+> [current-routing.md](../current-routing.md); current priorities are
+> [profiling-priorities.md](../profiling-priorities.md). Evidence, not a plan.
 
 The saved three-waypoint route completed in **64.010 and 63.571 seconds** without
 instrumentation (median 63.791 seconds). Coastline checks and current sampling
@@ -98,13 +98,13 @@ These are sensitivity calculations, not measured or promised gains. A further
 
 ## Artifacts
 
-- [Interactive sampling call tree](profiles/2026-10-12/sampling.html)
-- [Sampling text](profiles/2026-10-12/sampling.txt)
-- [cProfile cumulative and self times](profiles/2026-10-12/cprofile.txt)
-- [Raw cProfile data](profiles/2026-10-12/routing.prof)
-- [Baseline/result summaries](profiles/2026-10-12/summary.json)
-- [Sampling breakdown](profiles/2026-10-12/breakdown.json)
-- [Profiling harness](profiles/2026-10-12/run.py)
+- [Interactive sampling call tree](../profiles/2026-10-12/sampling.html)
+- [Sampling text](../profiles/2026-10-12/sampling.txt)
+- [cProfile cumulative and self times](../profiles/2026-10-12/cprofile.txt)
+- [Raw cProfile data](../profiles/2026-10-12/routing.prof)
+- [Baseline/result summaries](../profiles/2026-10-12/summary.json)
+- [Sampling breakdown](../profiles/2026-10-12/breakdown.json)
+- [Profiling harness](../profiles/2026-10-12/run.py)
 
 The harness uses the local saved inputs described above, writes only to
 `/private/tmp/gwr-routing-profile`, and neither downloads data nor saves app routes.
@@ -148,7 +148,7 @@ also changes as the number of calls falls, so use the unprofiled measurements
 for the overall speedup. The remaining main costs include current-field
 interpolation/selection, geodesics, and propagation bookkeeping.
 
-Artifacts: [first run](profiles/2026-10-12/coastal-after/after-1-run.json),
-[second run](profiles/2026-10-12/coastal-after/after-2-run.json),
-[follow-up call profile](profiles/2026-10-12/coastal-after/cprofile.txt), and
-[raw profile](profiles/2026-10-12/coastal-after/routing.prof).
+Artifacts: [first run](../profiles/2026-10-12/coastal-after/after-1-run.json),
+[second run](../profiles/2026-10-12/coastal-after/after-2-run.json),
+[follow-up call profile](../profiles/2026-10-12/coastal-after/cprofile.txt), and
+[raw profile](../profiles/2026-10-12/coastal-after/routing.prof).

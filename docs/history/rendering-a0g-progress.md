@@ -2,7 +2,7 @@
 
 > **Status: HISTORICAL.** The A0g unattended-continuation checkpoint, written
 > 2026-10-18. The A0 program is closed as an experiment; superseded by
-> [ADR-001](adr-001-grib-rendering-architecture.md) and issues #62-#70. Evidence,
+> [ADR-001](../adr-001-grib-rendering-architecture.md) and issues #62-#70. Evidence,
 > not a plan.
 
 ## Outcome
@@ -17,8 +17,8 @@ actual forecast selection without routing changes or silent portrayal/source
 degradation. All changes here are experiment-only. Qt remains; production and
 PR #50 are untouched. No commits, pushes, PR changes or merges were performed.
 
-Canonical contract and incremental decisions: [performance plan](rendering-performance-plan.md).
-Machine-readable evidence: [A0g summary](profiles/rendering/2026-10-18/a0g-unattended-summary.json).
+Canonical contract and incremental decisions: [performance plan](../rendering-performance-plan.md).
+Machine-readable evidence: [A0g summary](../profiles/rendering/2026-10-18/a0g-unattended-summary.json).
 Raw reports, reference images, app data and process logs remain outside Git.
 
 ## Progress through the bounded investigation

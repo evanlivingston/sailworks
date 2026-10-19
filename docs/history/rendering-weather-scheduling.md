@@ -1,5 +1,10 @@
 # Weather scheduling: coalesce active demand, reject the wider survival policy
 
+> **Status: HISTORICAL.** The weather scheduling change, written 2026-10-17; the behaviour it
+> describes is still current, and this document is kept for its reasoning.
+> The R0–R5 sequence in the implementation plan is the authority.
+> Evidence, not a plan.
+
 This follow-up changes display scheduling, not weather sampling or routing.
 Predictive prefetch and a cross-view data working set are **not implemented**.
 

@@ -1,10 +1,10 @@
 # M0 / E2: retained field versus native interaction
 
 > **Status: HISTORICAL.** The E2a/E2b retained-field review, written 2026-10-18.
-> Superseded by [ADR-001](adr-001-grib-rendering-architecture.md) D1-D3 and issues
+> Superseded by [ADR-001](../adr-001-grib-rendering-architecture.md) D1-D3 and issues
 > #64-#66. Evidence, not a plan.
 
-2026-10-18; [plan experiment index](rendering-performance-plan.md#experiment-contracts-and-results-b1-e1-e3),
+2026-10-18; [plan experiment index](../rendering-performance-plan.md#experiment-contracts-and-results-b1-e1-e3),
 [epic #51](https://github.com/evanlivingston/gweatherrouting/issues/51).
 
 ## Review decision
@@ -130,7 +130,7 @@ no tuning/retry matrix was launched to seek a better outcome.
 Private reports: `rendering-m0-native-retained-reference.json`,
 `rendering-m0-native-retained-candidate.json`, and
 `rendering-m0-native-retained-comparison.json`. The sanitized
-[mechanism summary](profiles/rendering/2026-10-18/m0-mechanism-summary.json) preserves
+[mechanism summary](../profiles/rendering/2026-10-18/m0-mechanism-summary.json) preserves
 the result without private paths/view coordinates.
 
 ## Architecture implication / next gate

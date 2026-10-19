@@ -7,35 +7,35 @@ document's invariants and historical R0–R5 context; its sequence is not an
 independent instruction to continue implementation. CPU remains the production
 default until explicit rollout approval and validation.
 
-Implementation started: [R0.1 texture parity](gpu-texture-parity-r0.1.md) fixes the
+Implementation started: [R0.1 texture parity](history/gpu-texture-parity-r0.1.md) fixes the
 reproduced 2x Metal regression with unchanged quality gates. The opt-in
 [embedded presenter](gpu-embedded-rendering.md) now works in the application;
 wider backend/resource gates remain open. A complete R0 exit is not claimed yet.
 
-R2 has a measured [base-chart worker slice](rendering-base-chart-worker.md):
+R2 has a measured [base-chart worker slice](history/rendering-base-chart-worker.md):
 audited Qt coastlines/simple vectors prepare off-thread with private handles.
 Other base types and main-thread composition remain synchronous. Split invalidation,
 predictive prefetch and cross-view data retention are still pending. R3 now has a
-[weather job-resource reuse slice](rendering-weather-job-reuse.md), cutting repeated
+[weather job-resource reuse slice](history/rendering-weather-job-reuse.md), cutting repeated
 source opens/indexing within a frame without changing sampling or forecast selection.
-A [bounded cross-view retention slice](rendering-weather-crossview.md) keeps up to
+A [bounded cross-view retention slice](history/rendering-weather-crossview.md) keeps up to
 64 selected handles/bands across jobs; deselected/changed sources close explicitly.
-A [field working-set slice](rendering-weather-working-set.md) keys sampled fields by
+A [field working-set slice](history/rendering-weather-working-set.md) keys sampled fields by
 source-set/time/field/extent with containment reuse (zero overfetch); a quantized
 superset trial was measured and rejected. R4 begins with a [bounded directional
-prefetch slice](rendering-weather-prefetch.md): one speculative frame ahead of
+prefetch slice](history/rendering-weather-prefetch.md): one speculative frame ahead of
 release motion, idle-only scheduling, promotion on arrival with zero waste.
 
-A [continuous-pan prediction follow-up](rendering-pan-prediction.md) tests
+A [continuous-pan prediction follow-up](history/rendering-pan-prediction.md) tests
 latency-aware, bounded lookahead and adoption during motion against real
 pixel-delta scrolling, without a candidate-only pause to finish preparation.
-The same branch adds [zoom-target preparation](rendering-zoom-target.md) during
+The same branch adds [zoom-target preparation](history/rendering-zoom-target.md) during
 animation, with debounce and target-reversal cancellation.
-The [frame-spike investigation](rendering-frame-spikes.md) records UI attribution,
+The [frame-spike investigation](history/rendering-frame-spikes.md) records UI attribution,
 display-facing metadata reuse and rejected seamark/hidden-panel trials; mixed
 gesture tail-latency improvements remain unproven.
 
-[Scheduling follow-up](rendering-weather-scheduling.md) adds active-request
+[Scheduling follow-up](history/rendering-weather-scheduling.md) adds active-request
 coalescing and lifecycle/coverage telemetry. The measured wider-margin survival
 trial was rejected; conservative pan thresholds remain the default. Cross-view
 working sets and predictive prefetch are still pending.
@@ -48,7 +48,7 @@ barbs, 1 hPa isobars, saved view/layout, and marine/navigation settings. Reuse i
 checksums and frozen forecast clock for comparisons; do not recapture different
 data to make a candidate look faster. Synthetic scenes supplement this workload.
 
-The [GPU experiment](gpu-rendering-experiment.md) demonstrated a retained-scene
+The [GPU experiment](history/gpu-rendering-experiment.md) demonstrated a retained-scene
 benefit, not a complete data-pipeline solution. It also found two controlled
 fractional-pan composite failures. Historical reports must not be overwritten
 with candidate results or have their failed quality flags reinterpreted.

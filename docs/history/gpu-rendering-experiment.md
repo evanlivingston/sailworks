@@ -2,8 +2,8 @@
 
 > **Status: HISTORICAL.** The 2026-10-15 GPU rendering feasibility experiment,
 > retained with its failed composite reports. Superseded by the R0 sequence in
-> [rendering-implementation-plan.md](rendering-implementation-plan.md) and
-> [ADR-001](adr-001-grib-rendering-architecture.md). Evidence, not a plan.
+> [rendering-implementation-plan.md](../rendering-implementation-plan.md) and
+> [ADR-001](../adr-001-grib-rendering-architecture.md). Evidence, not a plan.
 
 ## Outcome
 
@@ -23,7 +23,7 @@ All implementation is in standalone experiment tools.
 
 ## Experiment
 
-The private [startup snapshot](rendering-startup-baseline-2026-10-15.md) was
+The private [startup snapshot](../rendering-startup-baseline-2026-10-15.md) was
 loaded once in an isolated offline copy. We exported its padded base and
 navigation images and completed wind field: 710 x 743 logical viewport, DPR 2,
 2,126 retained native wind samples, dense barbs, original directions/speeds,
@@ -70,7 +70,7 @@ production occurs during these retained-scene replays.
 
 Three serial fresh-process repetitions per mode/scenario, rotating mode order:
 **27 startup-scene replays / 4,860 measured steps**. Each worker warms five
-frames before measurement. [Raw startup report](profiles/rendering/2026-10-15/gpu-startup.json).
+frames before measurement. [Raw startup report](../profiles/rendering/2026-10-15/gpu-startup.json).
 
 | Motion | Current CPU preparation median | Batched CPU preparation median | GPU preparation median | Qt swap-interval p99: current / batched / GPU |
 | --- | --- | --- | --- | --- |
@@ -126,7 +126,7 @@ mean error was 0.214/255, and maximum composite p99 error was 7/255.
 The separate controlled fixture exercises calm rings, cardinal/oblique directions,
 50-knot flags, all speed colors, and a high-contrast background grid. It has nine
 short validation replays (not pooled into the performance table):
-[raw controlled report](profiles/rendering/2026-10-15/gpu-controlled-2x.json).
+[raw controlled report](../profiles/rendering/2026-10-15/gpu-controlled-2x.json).
 All 36 glyph checks passed. **Two GPU fractional-pan composite checks failed**:
 p99 channel errors **12 and 19**, above the declared limit of 8, with mean errors
 0.355 and 0.520. This exposes a texture-resampling parity issue that the smoother
@@ -141,7 +141,7 @@ density, and model/source selection are not approximated or reduced.
 
 ## Recommendation and next gates
 
-The follow-on [implementation specification](rendering-implementation-plan.md)
+The follow-on [implementation specification](../rendering-implementation-plan.md)
 turns these gates into staged production work, starting with texture parity.
 
 Proceed to a **selective GPU presentation design**, not a wholesale application
