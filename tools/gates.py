@@ -1,0 +1,934 @@
+"""Gate registry for ``tools/gate_runner.py``.
+
+This module is **data only**.  It imports nothing beyond the standard library,
+so ``python tools/gate_runner.py --list`` stays instant and side-effect free:
+no GDAL, no Qt and no application import happens at module import time.
+
+Every gate records
+
+``milestone``
+    The issue the gate protects (``#64`` .. ``#70``).
+``kind``
+    ``correctness``, ``fidelity``, ``lifecycle``, ``performance`` or
+    ``validation``.  Correctness, lifecycle and performance stay separate
+    gates; one never substitutes for another.
+``tool``
+    The **existing** tool that owns the measurement.  The runner composes it
+    and never re-implements or replaces it.
+``command``
+    argv template for that tool.  ``{tool}`` is the tool, ``{tool_output}`` the
+    path it writes to, ``{snapshot}`` the caller supplied fixture, and
+    ``{scenarios}``/``{frames}``/``{repeats}`` the workload.
+``dependencies``
+    The modules the composed tool needs.  The runner probes the interpreter
+    for them **before** the tool is invoked, so a gate that cannot run is
+    reported as not evaluated rather than as a threshold failure.
+``checks``
+    Threshold evaluation against the JSON the tool emits.  Each check names a
+    metric path, an aggregate, a comparison and the threshold.
+``reference``
+    Where the threshold comes from.  ``kind`` is one of
+
+    ``recorded-evidence``
+        A number that already exists in this repository: a recorded summary
+        under ``docs/profiles/rendering/`` or a written contract in ``docs/``.
+        The value is fixed in the registry and is never re-measured.
+    ``measured-baseline``
+        A number produced by a prior run of the same tool on the same
+        fixture.  The caller supplies that artifact with ``--reference``; the
+        runner refuses to re-measure it on its own and says so.
+
+Threshold provenance is spelled out per check in ``checks[*].source`` so a
+reviewer can trace every number back to a recorded document.
+
+Thresholds that are **not** derivable from recorded evidence are not invented.
+They are declared with ``"ratified": False`` and are reported as unratified:
+the gate still runs and still enforces its ratified checks, but the result
+records that a bound is missing and the agent must ratify one.
+"""
+
+# Recorded evidence fixtures.  The runner records the fixture identity with
+# every result so a number is never compared across workloads silently.
+FIXTURES = {
+    "97cfda3c62a494c3d462ee8cde449d4d80ed1c62f387d70edcd9192dfb65d360": (
+        "A0c/A0h/A0g recorded evidence fixture, 2026-10-16 08:00, 4569 files "
+        "(33 forecasts). Recorded under docs/profiles/rendering/2026-10-18/."
+    ),
+    "1ed1bca1281ad4096713ce20af9c1473e70bd4eb0766a54965849b7ace698a03": (
+        "A0j/A0k current fixture, 2026-10-19 08:00, 5693 files (22 sources). "
+        "Recorded under docs/profiles/rendering/2026-10-19/."
+    ),
+}
+
+# Endpoint labels.  A render callback is a proxy; a readback is fidelity.  No
+# endpoint in this repository measures presentation.
+ENDPOINT_PROBE = (
+    "QQuickWindow.afterRendering render-callback proxy (embedded offscreen "
+    "scene). NOT presentation FPS, NOT input-to-present, NOT scanout."
+)
+ENDPOINT_GRAB = (
+    "Synchronous QWidget.grab()/readback probe. NOT presentation FPS, NOT "
+    "input-to-present, NOT scanout."
+)
+ENDPOINT_FIDELITY = (
+    "Framebuffer readback compared against an independent CPU oracle. "
+    "Fidelity only; the readback duration is not a timing measurement."
+)
+
+GATES = {
+    # ------------------------------------------------------------------ #64
+    "residency": {
+        "title": "GPU-resident numerical field cache",
+        "milestone": "#64",
+        "kind": "correctness",
+        "tool": "tools/benchmark_startup_rendering.py",
+        "endpoint": ENDPOINT_PROBE,
+        "requires": ["snapshot"],
+        "dependencies": ["PySide6", "numpy", "cairo", "osgeo.gdal"],
+        "timeout_s": 110,
+        "env": {"GWR_GPU_WEATHER": "1"},
+        "command": [
+            "{python}",
+            "{tool}",
+            "--snapshot",
+            "{snapshot}",
+            "--map-renderer",
+            "gpu",
+            "--measurement-mode",
+            "native-render",
+            "--scenarios",
+            "{scenarios}",
+            "--frames",
+            "{frames}",
+            "--repeats",
+            "{repeats}",
+            "--output",
+            "{tool_output}",
+        ],
+        "defaults": {"scenarios": ["scrub_return"], "frames": 24, "repeats": 1},
+        "full": {
+            "scenarios": ["scrub_return", "pan_pause_pan", "reverse_pan"],
+            "frames": 180,
+            "repeats": 3,
+        },
+        "tool_output": "{outdir}/{gate}.tool.json",
+        "result": "{outdir}/{gate}.tool.json",
+        "checks": [
+            {
+                "label": "texture uploads during the scrub input phase",
+                "metric": "runs[*].native_render_probe.gpu_counter_delta.texture_uploads",
+                "aggregate": "max",
+                "op": "<=",
+                "value": 0,
+                "source": (
+                    "docs/profiles/rendering/2026-10-18/"
+                    "a0c-timeline-scrub-summary.json"
+                    "#candidate_texture_uploads_during_input=0"
+                ),
+            },
+            {
+                "label": "texture upload bytes during the scrub input phase",
+                "metric": (
+                    "runs[*].native_render_probe.gpu_counter_delta."
+                    "texture_upload_bytes"
+                ),
+                "aggregate": "max",
+                "op": "<=",
+                "value": 0,
+                "source": (
+                    "docs/profiles/rendering/2026-10-18/"
+                    "a0c-timeline-scrub-summary.json"
+                    "#candidate_texture_upload_bytes_during_input=0"
+                ),
+            },
+            {
+                "label": "numerical weather path is active (no silent CPU fallback)",
+                "metric": "runs[*].numerical_weather.active",
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "docs/profiles/rendering/2026-10-18/"
+                    "pr50-residency-functional-summary.json"
+                    "#scrub_return.final_cpu_symbol_batches=0,"
+                    "#scrub_return.final_cpu_raster_symbols=false"
+                ),
+            },
+            {
+                "label": "resident decoded-band budget is respected",
+                "metric": "runs[*].numerical_weather.band_cache.peak_bytes",
+                "aggregate": "max",
+                "op": "<=",
+                "value": 134217728,
+                "source": (
+                    "docs/gpu-weather-residency.md (128 MiB retained decoded-band "
+                    "budget per GPU weather worker); "
+                    "docs/profiles/rendering/2026-10-18/"
+                    "pr50-residency-functional-summary.json"
+                    "#retained_decoded_byte_limit=134217728"
+                ),
+            },
+            {
+                "label": "the gate does not claim presentation latency",
+                "metric": "runs[*].native_render_probe.presentation_latency_measured",
+                "aggregate": "all",
+                "op": "is_false",
+                "source": (
+                    "docs/adr-001-grib-rendering-architecture.md section 9 "
+                    "standing constraint 4 (render callbacks are proxies)"
+                ),
+            },
+        ],
+        "reference": {
+            "kind": "recorded-evidence",
+            "source": (
+                "docs/profiles/rendering/2026-10-18/a0c-timeline-scrub-summary.json"
+            ),
+            "fixture": (
+                "97cfda3c62a494c3d462ee8cde449d4d80ed1c62f387d70edcd9192dfb65d360"
+            ),
+            "note": (
+                "The recorded candidate made 0 texture uploads and 0 upload "
+                "bytes during 24 scrub inputs, against 41 uploads / 568 MB for "
+                "the recorded serial reference. The bound is a property of the "
+                "architecture (a resident field is not re-uploaded), not a "
+                "same-workload timing comparison."
+            ),
+        },
+    },
+    # ------------------------------------------------------------------ #65
+    "interpolation": {
+        "title": "GPU spatial interpolation keeps the 2e-5 error bound",
+        "milestone": "#65",
+        "kind": "correctness",
+        "tool": "tools/experiment_float_textures.py",
+        "endpoint": ENDPOINT_FIDELITY,
+        "requires": [],
+        "dependencies": ["PySide6", "numpy"],
+        "timeout_s": 110,
+        "command": [
+            "{python}",
+            "{tool}",
+            "--sampling",
+            "manual",
+            "--output",
+            "{tool_output}",
+        ],
+        "defaults": {"scenarios": ["generated-field"], "frames": 1, "repeats": 1},
+        "full": {"scenarios": ["generated-field"], "frames": 1, "repeats": 1},
+        "tool_output": "{outdir}/{gate}.tool.json",
+        "result": "{outdir}/{gate}.tool.json",
+        "checks": [
+            {
+                "label": "maximum sampling error",
+                "metric": "max_sampling_error",
+                "aggregate": "max",
+                "op": "<=",
+                "value": 2e-05,
+                "source": (
+                    "docs/rendering-m0-float-textures.md (unchanged 2e-5 gate; "
+                    "E1b measured 2.384185791015625e-7, E1 hardware filtering "
+                    "measured 0.002604166666666824 and failed)"
+                ),
+            },
+            {
+                "label": "the probe's own error limit is still 2e-5",
+                "metric": "sampling_error_limit",
+                "aggregate": "max",
+                "op": "==",
+                "value": 2e-05,
+                "source": (
+                    "docs/rendering-performance-plan.md E1b (retain the "
+                    "hardware-linear mode and the unchanged 2e-5 threshold)"
+                ),
+            },
+            {
+                "label": "probe status",
+                "metric": "status",
+                "aggregate": "max",
+                "op": "==",
+                "value": "passed",
+                "source": "tools/experiment_float_textures.py (existing tool)",
+            },
+            {
+                "label": "float32 transport preserved every bit pattern",
+                "metric": "transport_bits_match",
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "docs/rendering-performance-plan.md E1 (R32F bit-preservation "
+                    "check: signed zero, NaN payload, infinities)"
+                ),
+            },
+        ],
+        "reference": {
+            "kind": "recorded-evidence",
+            "source": "docs/rendering-m0-float-textures.md",
+            "note": (
+                "The 2e-5 threshold is the unchanged numerical gate of the "
+                "program; the recorded E1b run measured 2.384185791015625e-7 on "
+                "native Metal. Hardware linear filtering measured "
+                "0.002604166666666824 and failed; this gate uses the adopted "
+                "explicit-arithmetic ('manual') sampling path only."
+            ),
+        },
+    },
+    # ------------------------------------------------------------------ #66
+    "pipeline": {
+        "title": "Async double-buffered preparation pipeline",
+        "milestone": "#66",
+        "kind": "performance",
+        "tool": "tools/benchmark_startup_rendering.py",
+        "endpoint": ENDPOINT_PROBE,
+        "requires": ["snapshot"],
+        "dependencies": ["PySide6", "numpy", "cairo", "osgeo.gdal"],
+        "timeout_s": 110,
+        "env": {"GWR_GPU_WEATHER": "1"},
+        "command": [
+            "{python}",
+            "{tool}",
+            "--snapshot",
+            "{snapshot}",
+            "--map-renderer",
+            "gpu",
+            "--measurement-mode",
+            "native-render",
+            "--scenarios",
+            "{scenarios}",
+            "--frames",
+            "{frames}",
+            "--repeats",
+            "{repeats}",
+            "--output",
+            "{tool_output}",
+        ],
+        "defaults": {"scenarios": ["scrub_return"], "frames": 24, "repeats": 1},
+        "full": {
+            "scenarios": ["scrub_return", "pan_pause_pan", "reverse_pan"],
+            "frames": 180,
+            "repeats": 3,
+        },
+        "tool_output": "{outdir}/{gate}.tool.json",
+        "result": "{outdir}/{gate}.tool.json",
+        "checks": [
+            {
+                "label": "inputs dropped before they rendered",
+                "metric": "runs[*].native_render_probe.inputs[*].status",
+                "aggregate": "count_eq",
+                "match": "superseded_unobserved",
+                "op": "==",
+                "value": 0,
+                "source": (
+                    "docs/profiles/rendering/2026-10-18/"
+                    "a0c-timeline-scrub-summary.json"
+                    "#candidate_observed_revisions=24 of 24 "
+                    "(recorded serial reference: 12 of 24)"
+                ),
+            },
+            {
+                "label": "inputs that never rendered",
+                "metric": "runs[*].native_render_probe.inputs[*].status",
+                "aggregate": "count_eq",
+                "match": "timeout_unobserved",
+                "op": "==",
+                "value": 0,
+                "source": (
+                    "docs/profiles/rendering/2026-10-18/"
+                    "a0c-timeline-scrub-summary.json"
+                    "#candidate_observed_revisions=24 of 24"
+                ),
+            },
+            {
+                "label": "inputs dispatched later than 50 ms",
+                "metric": "runs[*].native_render_probe.inputs[*].dispatch_late_ms",
+                "aggregate": "count_gt",
+                "match": 50,
+                "op": "<",
+                "value": 22,
+                "fixture_sensitive": True,
+                "source": (
+                    "docs/profiles/rendering/2026-10-18/"
+                    "a0c-timeline-scrub-summary.json"
+                    "#reference_dispatch_over_50_ms=22 of 24 inputs "
+                    "(recorded candidate: 0)"
+                ),
+            },
+            {
+                "label": "input dispatch lateness p95 (ms)",
+                "metric": "runs[*].native_render_probe.inputs[*].dispatch_late_ms",
+                "aggregate": "p95",
+                "op": "<",
+                "value": 357.7485605550464,
+                "fixture_sensitive": True,
+                "baseline": {
+                    "metric": "runs[*].native_render_probe.inputs[*].dispatch_late_ms",
+                    "aggregate": "p95",
+                    "scale": 1.0,
+                },
+                "source": (
+                    "docs/profiles/rendering/2026-10-18/"
+                    "a0c-timeline-scrub-summary.json"
+                    "#reference_dispatch_lateness_p95_ms=357.7485605550464"
+                ),
+            },
+            {
+                "label": "the gate does not claim presentation latency",
+                "metric": "runs[*].native_render_probe.presentation_latency_measured",
+                "aggregate": "all",
+                "op": "is_false",
+                "source": (
+                    "docs/adr-001-grib-rendering-architecture.md section 9 "
+                    "standing constraint 4 (render callbacks are proxies)"
+                ),
+            },
+        ],
+        "reference": {
+            "kind": "recorded-evidence",
+            "source": (
+                "docs/profiles/rendering/2026-10-18/a0c-timeline-scrub-summary.json"
+            ),
+            "fixture": (
+                "97cfda3c62a494c3d462ee8cde449d4d80ed1c62f387d70edcd9192dfb65d360"
+            ),
+            "note": (
+                "The recorded serial reference dispatched 22 of 24 inputs over "
+                "50 ms with p95 357.7 ms and observed 12 of 24 revisions; the "
+                "recorded resident candidate reached p95 2.0 ms, 0 inputs over "
+                "50 ms and 24 of 24 revisions. The gate is the improvement "
+                "bound, not a claim of presentation latency."
+            ),
+        },
+    },
+    # ------------------------------------------------------------------ #67
+    "scrub": {
+        "title": "Instant forecast-time scrubbing from a resident time window",
+        "milestone": "#67",
+        "kind": "performance",
+        "tool": "tools/benchmark_startup_rendering.py",
+        "endpoint": ENDPOINT_PROBE,
+        "requires": ["snapshot"],
+        "dependencies": ["PySide6", "numpy", "cairo", "osgeo.gdal"],
+        "timeout_s": 110,
+        "env": {"GWR_GPU_WEATHER": "1"},
+        "command": [
+            "{python}",
+            "{tool}",
+            "--snapshot",
+            "{snapshot}",
+            "--map-renderer",
+            "gpu",
+            "--measurement-mode",
+            "native-render",
+            "--scenarios",
+            "{scenarios}",
+            "--frames",
+            "{frames}",
+            "--repeats",
+            "{repeats}",
+            "--output",
+            "{tool_output}",
+        ],
+        "defaults": {"scenarios": ["scrub_return"], "frames": 24, "repeats": 1},
+        "full": {
+            "scenarios": ["scrub_return", "pan_pause_pan", "reverse_pan"],
+            "frames": 180,
+            "repeats": 3,
+        },
+        "tool_output": "{outdir}/{gate}.tool.json",
+        "result": "{outdir}/{gate}.tool.json",
+        "checks": [
+            {
+                "label": "texture uploads during the scrub input phase",
+                "metric": "runs[*].native_render_probe.gpu_counter_delta.texture_uploads",
+                "aggregate": "max",
+                "op": "<=",
+                "value": 0,
+                "source": (
+                    "docs/profiles/rendering/2026-10-18/"
+                    "a0c-timeline-scrub-summary.json"
+                    "#candidate_texture_uploads_during_input=0"
+                ),
+            },
+            {
+                "label": "texture upload bytes during the scrub input phase",
+                "metric": (
+                    "runs[*].native_render_probe.gpu_counter_delta."
+                    "texture_upload_bytes"
+                ),
+                "aggregate": "max",
+                "op": "<=",
+                "value": 0,
+                "source": (
+                    "docs/profiles/rendering/2026-10-18/"
+                    "a0c-timeline-scrub-summary.json"
+                    "#candidate_texture_upload_bytes_during_input=0"
+                ),
+            },
+            {
+                "label": "input dispatch lateness p95 (ms)",
+                "metric": "runs[*].native_render_probe.inputs[*].dispatch_late_ms",
+                "aggregate": "p95",
+                "op": "<",
+                "value": 357.7485605550464,
+                "fixture_sensitive": True,
+                "baseline": {
+                    "metric": "runs[*].native_render_probe.inputs[*].dispatch_late_ms",
+                    "aggregate": "p95",
+                    "scale": 1.0,
+                },
+                "source": (
+                    "docs/profiles/rendering/2026-10-18/"
+                    "a0c-timeline-scrub-summary.json"
+                    "#reference_dispatch_lateness_p95_ms=357.7485605550464"
+                ),
+            },
+            {
+                "label": "the gate does not claim presentation latency",
+                "metric": "runs[*].native_render_probe.presentation_latency_measured",
+                "aggregate": "all",
+                "op": "is_false",
+                "source": (
+                    "docs/adr-001-grib-rendering-architecture.md section 9 "
+                    "standing constraint 4 (render callbacks are proxies)"
+                ),
+            },
+        ],
+        "reference": {
+            "kind": "recorded-evidence",
+            "source": (
+                "docs/profiles/rendering/2026-10-18/a0c-timeline-scrub-summary.json"
+            ),
+            "fixture": (
+                "97cfda3c62a494c3d462ee8cde449d4d80ed1c62f387d70edcd9192dfb65d360"
+            ),
+            "note": (
+                "The recorded resident candidate issued 0 uploads and 0 upload "
+                "bytes across 24 scrub inputs and reached dispatch p95 2.0 ms, "
+                "against 41 uploads / 568 MB and p95 357.7 ms for the recorded "
+                "serial reference. The recorded 41-upload / 568 MB cost is the "
+                "cost this milestone removes."
+            ),
+        },
+    },
+    # ------------------------------------------------------------------ #68
+    "fill": {
+        "title": "GPU weather fill: production path and unchanged barbs gates",
+        "milestone": "#68",
+        "kind": "fidelity",
+        "tool": "tools/benchmark_startup_rendering.py",
+        "endpoint": ENDPOINT_GRAB,
+        "requires": ["snapshot"],
+        "dependencies": ["PySide6", "numpy", "cairo", "osgeo.gdal"],
+        "timeout_s": 110,
+        "env": {"GWR_GPU_WEATHER": "1"},
+        "command": [
+            "{python}",
+            "{tool}",
+            "--snapshot",
+            "{snapshot}",
+            "--map-renderer",
+            "gpu",
+            "--scenarios",
+            "{scenarios}",
+            "--frames",
+            "{frames}",
+            "--repeats",
+            "{repeats}",
+            "--output",
+            "{tool_output}",
+        ],
+        "defaults": {"scenarios": ["stationary"], "frames": 24, "repeats": 1},
+        "full": {
+            "scenarios": ["stationary", "pan", "scrub_return"],
+            "frames": 180,
+            "repeats": 3,
+        },
+        "tool_output": "{outdir}/{gate}.tool.json",
+        "result": "{outdir}/{gate}.tool.json",
+        "checks": [
+            {
+                "label": "barb selection count is unchanged",
+                "metric": "runs[*].numerical_weather.symbols",
+                "aggregate": "max",
+                "op": "==",
+                "value": 1053,
+                "source": (
+                    "docs/profiles/rendering/2026-10-19/a0k-shader-safety-summary.json"
+                    "#initial_selected_symbols=1053 on fixture 1ed1bca1 "
+                    "(the barbs selection/count gate, unchanged)"
+                ),
+            },
+            {
+                "label": "the numerical shader is ready",
+                "metric": "runs[*].numerical_weather.shader_ready",
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "docs/profiles/rendering/2026-10-19/a0k-shader-safety-summary.json"
+                    "#initial_selected_symbols=1053 with the numerical shader active"
+                ),
+            },
+            {
+                "label": "the numerical path is active",
+                "metric": "runs[*].numerical_weather.active",
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "docs/profiles/rendering/2026-10-18/"
+                    "pr50-residency-functional-summary.json"
+                    "#scrub_return.final_cpu_symbol_batches=0"
+                ),
+            },
+            {
+                "label": "no silent CPU symbol fallback",
+                "metric": "runs[*].numerical_weather.cpu_symbol_batches",
+                "aggregate": "max",
+                "op": "==",
+                "value": 0,
+                "source": (
+                    "docs/profiles/rendering/2026-10-18/"
+                    "pr50-residency-functional-summary.json"
+                    "#scrub_return.final_cpu_symbol_batches=0"
+                ),
+            },
+            {
+                "label": "no silent CPU raster fallback",
+                "metric": "runs[*].numerical_weather.cpu_raster_symbols",
+                "aggregate": "all",
+                "op": "is_false",
+                "source": (
+                    "docs/profiles/rendering/2026-10-18/"
+                    "pr50-residency-functional-summary.json"
+                    "#scrub_return.final_cpu_raster_symbols=false"
+                ),
+            },
+            {
+                "label": "no run reported an overlay error",
+                "metric": "runs[*].warnings",
+                "aggregate": "list_length",
+                "op": "==",
+                "value": 0,
+                "source": (
+                    "docs/profiles/rendering/2026-10-18/"
+                    "pr50-residency-functional-summary.json#scrub_return.warnings=0"
+                ),
+            },
+            {
+                "label": "barb atlas image bytes",
+                "metric": "runs[*].numerical_weather.atlas_bytes",
+                "aggregate": "max",
+                "op": "<=",
+                "value": 0,
+                "ratified": False,
+                "source": (
+                    "NOT DERIVABLE for this fixture. The only recorded atlas byte "
+                    "value is 41760 in "
+                    "docs/profiles/rendering/2026-10-18/pr50-residency-functional-summary.json"
+                    "#scrub_return.atlas_image_bytes, measured on fixture 97cfda3c "
+                    "(33 forecasts), not on fixture 1ed1bca1 (22 sources). The "
+                    "placeholder threshold is never enforced; #68 must record an "
+                    "atlas bound for its own fixture and set it here."
+                ),
+            },
+        ],
+        "open_requirements": [
+            "A0k zero-alpha missing-data readback gate: the only existing owner is "
+            "tools/diagnose_barb_overlay.py, and it refuses to run against the "
+            "current production shader (tools/experiment_app_persistent_weather.py"
+            "#shader_sources raises 'Reference barb vertex shader changed' because "
+            "gweatherrouting/qt/shaders/barbs.vert no longer carries the "
+            "experimental node-id indirection it rewrites). #68 must restore that "
+            "diagnostic against the production shader - or ratify an equivalent "
+            "all-missing/finite-control readback owner - before the A0k gate can "
+            "be claimed. The A0k thresholds themselves are fixed: exactly zero "
+            "alpha for all-missing layers, byte-identical finite control pixels, "
+            "and zero ink outside the 3 physical-pixel rasterisation support "
+            "(docs/profiles/rendering/2026-10-19/a0k-shader-safety-summary.json).",
+        ],
+        "reference": {
+            "kind": "recorded-evidence",
+            "source": (
+                "docs/profiles/rendering/2026-10-19/a0k-shader-safety-summary.json"
+            ),
+            "fixture": (
+                "1ed1bca1281ad4096713ce20af9c1473e70bd4eb0766a54965849b7ace698a03"
+            ),
+            "note": (
+                "The recorded A0k run on this same fixture selected 1053 barbs "
+                "with the numerical shader active, all-missing layers exactly "
+                "transparent and finite control pixels unchanged. The barbs "
+                "selection/count gate is enforced here unchanged; the readback "
+                "half of the A0k gate has no runnable owner today and is listed "
+                "as an open requirement."
+            ),
+        },
+    },
+    # ------------------------------------------------------------------ #69
+    "chart-separation": {
+        "title": "Chart composition separated from weather generation",
+        "milestone": "#69",
+        "kind": "lifecycle",
+        "tool": "tools/check_early_weather_startup.py",
+        "endpoint": (
+            "Real application startup observation against the frozen fixture "
+            "clock. The recorded end-to-end readback duration is a fidelity "
+            "probe, not a presentation measurement."
+        ),
+        "requires": ["snapshot"],
+        "dependencies": ["PySide6", "numpy", "cairo", "osgeo.gdal"],
+        "timeout_s": 115,
+        "command": [
+            "{python}",
+            "{tool}",
+            "--fixture-tools",
+            "{app_root}/tools",
+            "--snapshot",
+            "{snapshot}",
+            "--directory",
+            "{tool_output}",
+        ],
+        "defaults": {"scenarios": ["early-weather"], "frames": 1, "repeats": 1},
+        "full": {"scenarios": ["early-weather", "baseline"], "frames": 1, "repeats": 1},
+        "tool_output": "{outdir}/{gate}.tool",
+        "result": "{outdir}/{gate}.tool/result.json",
+        "checks": [
+            {
+                "label": "the early-weather startup check passed",
+                "metric": "passed",
+                "aggregate": "max",
+                "op": "is_true",
+                "source": (
+                    "tools/check_early_weather_startup.py (existing tool, own "
+                    "verdict: no errors, clean entry exit, weather preserved)"
+                ),
+            },
+            {
+                "label": "weather was presented before chart readiness (s)",
+                "metric": "first_weather_seconds",
+                "aggregate": "max",
+                "op": "<",
+                "value": {
+                    "metric": "charts_initialized_seconds",
+                    "aggregate": "max",
+                },
+                "source": (
+                    "docs/profiles/rendering/2026-10-19/a0j-early-display-summary.json"
+                    "#passing_run.field_available_seconds=2.39 vs "
+                    "#passing_run.chart_ready_seconds=28.54"
+                ),
+            },
+            {
+                "label": "weather was available no later than the recorded "
+                "chart-ready time (s)",
+                "metric": "first_weather_seconds",
+                "aggregate": "max",
+                "op": "<=",
+                "value": 28.386719958041795,
+                "source": (
+                    "docs/profiles/rendering/2026-10-19/a0k-shader-safety-summary.json"
+                    "#fresh_display.chart_ready_seconds=28.386719958041795"
+                ),
+            },
+            {
+                "label": "adding charts did not reset weather or the camera",
+                "metric": "camera_weather_preserved",
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "docs/profiles/rendering/2026-10-19/a0k-shader-safety-summary.json"
+                    "#fresh_display.weather_pixels_unchanged_before_chart_bind=true,"
+                    "#fresh_display.camera_and_field_preserved_on_chart_bind=true"
+                ),
+            },
+        ],
+        "reference": {
+            "kind": "recorded-evidence",
+            "source": (
+                "docs/profiles/rendering/2026-10-19/a0j-early-display-summary.json"
+            ),
+            "fixture": (
+                "1ed1bca1281ad4096713ce20af9c1473e70bd4eb0766a54965849b7ace698a03"
+            ),
+            "note": (
+                "The recorded early-weather run published weather at 2.39-2.73 s "
+                "while the chart host became ready at 28.39-28.54 s and bound at "
+                "31.88-32.04 s, with the camera and field preserved across the "
+                "chart bind. The bound used here is the recorded chart-ready "
+                "time: weather must be published while charts are still loading."
+            ),
+        },
+    },
+    # ------------------------------------------------------------------ #70
+    "validation": {
+        "title": "Validation, soak and rollout decision",
+        "milestone": "#70",
+        "kind": "validation",
+        "tool": "tools/benchmark_startup_rendering.py",
+        "endpoint": ENDPOINT_GRAB,
+        "requires": ["snapshot"],
+        "dependencies": ["PySide6", "numpy", "cairo", "osgeo.gdal"],
+        "timeout_s": 110,
+        "env": {"GWR_GPU_WEATHER": "1"},
+        "command": [
+            "{python}",
+            "{tool}",
+            "--snapshot",
+            "{snapshot}",
+            "--map-renderer",
+            "gpu",
+            "--scenarios",
+            "{scenarios}",
+            "--frames",
+            "{frames}",
+            "--repeats",
+            "{repeats}",
+            "--output",
+            "{tool_output}",
+        ],
+        "defaults": {"scenarios": ["stationary"], "frames": 24, "repeats": 1},
+        "full": {
+            "scenarios": [
+                "stationary",
+                "pan",
+                "reverse_pan",
+                "zoom_out",
+                "scrub_return",
+                "pan_pause_pan",
+                "trackpad_pan",
+                "wheel_zoom",
+                "wheel_zoom_reverse",
+                "pan_zoom_reverse",
+            ],
+            "frames": 180,
+            "repeats": 3,
+        },
+        "tool_output": "{outdir}/{gate}.tool.json",
+        "result": "{outdir}/{gate}.tool.json",
+        "min_runs_per_scenario": 3,
+        "checks": [
+            {
+                "label": "the numerical path is reported, not silently skipped",
+                "metric": "runs[*].numerical_weather.enabled",
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "docs/profiles/rendering/2026-10-18/"
+                    "pr50-residency-functional-summary.json"
+                    "#scrub_return.final_cpu_symbol_batches=0"
+                ),
+            },
+            {
+                "label": "no silent CPU symbol fallback",
+                "metric": "runs[*].numerical_weather.cpu_symbol_batches",
+                "aggregate": "max",
+                "op": "==",
+                "value": 0,
+                "source": (
+                    "docs/profiles/rendering/2026-10-18/"
+                    "pr50-residency-functional-summary.json"
+                    "#scrub_return.final_cpu_symbol_batches=0"
+                ),
+            },
+            {
+                "label": "no silent CPU raster fallback",
+                "metric": "runs[*].numerical_weather.cpu_raster_symbols",
+                "aggregate": "all",
+                "op": "is_false",
+                "source": (
+                    "docs/profiles/rendering/2026-10-18/"
+                    "pr50-residency-functional-summary.json"
+                    "#scrub_return.final_cpu_raster_symbols=false"
+                ),
+            },
+            {
+                "label": "no run reported an overlay error",
+                "metric": "runs[*].warnings",
+                "aggregate": "list_length",
+                "op": "==",
+                "value": 0,
+                "source": (
+                    "docs/profiles/rendering/2026-10-18/"
+                    "pr50-residency-functional-summary.json#scrub_return.warnings=0"
+                ),
+            },
+            {
+                "label": "every run produced frame samples",
+                "metric": "runs[*].summary.grab_ms.count",
+                "aggregate": "min",
+                "op": ">",
+                "value": 0,
+                "source": (
+                    "docs/rendering-performance.md (a run without frame samples "
+                    "is not an acceptance timing; do not treat a partial report "
+                    "as a completed baseline)"
+                ),
+            },
+            {
+                "label": "memory plateau bound",
+                "metric": "runs[*].tracked_surface_bytes_per_frame[*]",
+                "aggregate": "max",
+                "op": "<=",
+                "value": 0,
+                "ratified": False,
+                "source": (
+                    "NOT DERIVABLE from recorded evidence. No numeric memory "
+                    "plateau budget is recorded in docs/; "
+                    "docs/rendering-implementation-plan.md (Memory row) requires "
+                    "a recorded numeric budget and a long-run plateau, and "
+                    "docs/profiles/rendering/2026-10-18/a0g-unattended-summary.json"
+                    "#limitations.global_memory_plateau_measured=false. The "
+                    "placeholder threshold 0 is a placeholder only and is never "
+                    "enforced; #70 must ratify a real bound and set it here."
+                ),
+            },
+        ],
+        "reference": {
+            "kind": "measured-baseline",
+            "source": (
+                "A prior run of the same tool on the same fixture, supplied by "
+                "the caller with --reference PATH."
+            ),
+            "produce": (
+                "python tools/gate_runner.py --gate validation --snapshot <snap> "
+                "--output <dir> --full   # then keep <dir>/validation.tool.json "
+                "as the baseline artifact"
+            ),
+            "note": (
+                "The enforced part of this gate is derivable from recorded "
+                "evidence (per-layer GPU/loading/fallback reporting, no silent "
+                "CPU fallback, no overlay warnings) and needs no baseline. The "
+                "no-regression comparison against a stored baseline is only "
+                "evaluated when the caller passes --reference; the runner never "
+                "re-measures a baseline on its own. The memory plateau bound is "
+                "not derivable from recorded evidence and is reported as "
+                "unratified until #70 ratifies one."
+            ),
+        },
+        "baseline_checks": [
+            {
+                "label": "grab p99 did not regress against the stored baseline",
+                "metric": "runs[*].summary.grab_ms.p99_ms",
+                "aggregate": "max",
+                "op": "<=",
+                "baseline": {
+                    "metric": "runs[*].summary.grab_ms.p99_ms",
+                    "aggregate": "max",
+                    "scale": 1.0,
+                },
+                "source": (
+                    "matched reference artifact supplied with --reference; "
+                    "compare like-for-like on the same fixture and environment"
+                ),
+            },
+        ],
+    },
+}
+
+# Gates whose enforced thresholds are not yet derived from recorded evidence.
+# They still run and still enforce every ratified check.
+GATES_NEEDING_RATIFICATION = tuple(
+    sorted(
+        gate_id
+        for gate_id, gate in GATES.items()
+        if any(not check.get("ratified", True) for check in gate["checks"])
+    )
+)
