@@ -160,7 +160,7 @@ GATES = {
                 "op": "<=",
                 "value": 134217728,
                 "source": (
-                    "docs/gpu-weather-residency.md (128 MiB retained decoded-band "
+                    "docs/history/gpu-weather-residency.md (128 MiB retained decoded-band "
                     "budget per GPU weather worker); "
                     "docs/profiles/rendering/2026-10-18/"
                     "pr50-residency-functional-summary.json"
@@ -225,7 +225,7 @@ GATES = {
                 "op": "<=",
                 "value": 2e-05,
                 "source": (
-                    "docs/rendering-m0-float-textures.md (unchanged 2e-5 gate; "
+                    "docs/history/rendering-m0-float-textures.md (unchanged 2e-5 gate; "
                     "E1b measured 2.384185791015625e-7, E1 hardware filtering "
                     "measured 0.002604166666666824 and failed)"
                 ),
@@ -262,7 +262,7 @@ GATES = {
         ],
         "reference": {
             "kind": "recorded-evidence",
-            "source": "docs/rendering-m0-float-textures.md",
+            "source": "docs/history/rendering-m0-float-textures.md",
             "note": (
                 "The 2e-5 threshold is the unchanged numerical gate of the "
                 "program; the recorded E1b run measured 2.384185791015625e-7 on "
@@ -857,7 +857,7 @@ GATES = {
                 "op": ">",
                 "value": 0,
                 "source": (
-                    "docs/rendering-performance.md (a run without frame samples "
+                    "docs/history/rendering-performance.md (a run without frame samples "
                     "is not an acceptance timing; do not treat a partial report "
                     "as a completed baseline)"
                 ),
