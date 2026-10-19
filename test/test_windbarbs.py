@@ -3,6 +3,7 @@
 import math
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import cairo
 import numpy as np
@@ -14,7 +15,9 @@ from gweatherrouting.rendering.windpainter import (
     WindPainter,
     barb_density_parameters,
     flatten_wind_columns,
+    mercator_project_nodes,
 )
+from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
 
 
 class TestLiveWindBarbs(unittest.TestCase):
@@ -130,6 +133,67 @@ class TestLiveWindBarbs(unittest.TestCase):
         self.assertGreater(origins[:, 0].max(), 3900)
         self.assertLess(origins[:, 1].min(), 100)
         self.assertGreater(origins[:, 1].max(), 2900)
+
+    def test_cached_projection_preserves_exact_geometry_for_every_density(self):
+        lons, lats = np.meshgrid(np.linspace(-181, 181, 90), np.linspace(-90, 90, 70))
+        flat = (
+            np.arange(lats.size, dtype=float) % 360,
+            np.arange(lats.size, dtype=float) % 35,
+            lats.ravel(),
+            lons.ravel(),
+        )
+        for zoom in (1, 4.3, 9):
+            projected = mercator_project_nodes(flat[2], flat[3], zoom)
+            for latitude, longitude in ((0, 0), (48.4, -123.4), (85, 180)):
+                for density, _label, _spacing in BARB_DENSITIES:
+                    step, maximum = barb_density_parameters(density)
+                    args = (flat, latitude, longitude, zoom, 800, 600)
+                    options = dict(step=step, max_count=maximum)
+                    self.assertEqual(
+                        WindPainter.live_geometry_for_view(*args, **options),
+                        WindPainter.live_geometry_for_view(
+                            *args, **options, projected=projected
+                        ),
+                    )
+
+    @staticmethod
+    def renderer_frame(flat):
+        renderer = object.__new__(WindOverlayRenderer)
+        canvas = object()
+        job = SimpleNamespace(barb_flat=flat, palette=(None, 0.8, True))
+        renderer._states = {canvas: SimpleNamespace(frame=(job, None), key=None)}
+        renderer._barbs_over_land = {}
+        renderer._can_preview = lambda *_: True
+        return renderer, canvas, job
+
+    def test_projection_reused_for_pan_and_replaced_on_zoom_and_new_frame(self):
+        flat = flatten_wind_columns([[(90, 5, (48.01, -123.02))]])
+        renderer, canvas, job = self.renderer_frame(flat)
+        target = "gweatherrouting.rendering.windrenderer.mercator_project_nodes"
+        with patch(target, wraps=mercator_project_nodes) as project:
+            for latitude in (48, 48.01, 48.02):
+                renderer.live_geometry_for_view(canvas, 800, 600, latitude, -123, 9)
+            self.assertEqual(project.call_count, 1)
+            old = job.barb_projection
+            self.assertTrue(all(not a.flags.writeable for a in old[1]))
+            renderer.live_geometry_for_view(canvas, 800, 600, 48, -123, 9.3)
+            self.assertEqual(project.call_count, 2)
+            self.assertIsNot(job.barb_projection, old)
+            new = SimpleNamespace(barb_flat=flat, palette=(None, 0.8, True))
+            renderer._states[canvas].frame = (new, None)
+            renderer.live_geometry_for_view(canvas, 800, 600, 48, -123, 9.3)
+            self.assertEqual(project.call_count, 3)
+            self.assertIsNot(new.barb_projection, job.barb_projection)
+
+    def test_large_frames_do_not_retain_projected_arrays(self):
+        array = np.zeros(8 * 1024 * 1024 // 16 + 1)
+        renderer, canvas, job = self.renderer_frame((array,) * 4)
+        with patch.object(
+            WindPainter, "live_geometry_for_view", return_value=({}, 0)
+        ) as live:
+            renderer.live_geometry_for_view(canvas, 800, 600, 48, -123, 9)
+        self.assertFalse(hasattr(job, "barb_projection"))
+        self.assertIsNone(live.call_args.kwargs["projected"])
 
     def test_projection_matches_existing_map_coordinates(self):
         view = SimpleNamespace(
