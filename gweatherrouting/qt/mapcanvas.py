@@ -3,7 +3,7 @@
 import math
 import sys
 import time
-from typing import Optional
+from typing import Optional, cast
 
 import cairo
 import numpy as np
@@ -83,7 +83,7 @@ class TrackMap(QWidget, MercatorProjection):
         self._gpu_sequence = 0
         self._gpu_geometry = None
         self._gpu_batches = ()
-        self._gpu_wind_raster = None
+        self._gpu_wind_raster: Optional[QImage] = None
         self._gpu_raster_key = None
         self._gpu_wind_mode = None
         self._overlay_pending = False
@@ -270,20 +270,15 @@ class TrackMap(QWidget, MercatorProjection):
         self._wind_cursor.close()
         self.controller.data.changed.disconnect(self._cancel_cursor)
         self.weather_coverage.close()
-        try:
-            self.controller.data.task.changed.disconnect(self._download_progress)
-        except (RuntimeError, TypeError):
-            pass
-        try:
-            self.controller.data.forecast_loaded.disconnect(
-                self._note_installed_forecast
-            )
-        except (RuntimeError, TypeError):
-            pass
-        try:
-            self.controller.data.task.finished.disconnect(self._fetch_finished)
-        except (RuntimeError, TypeError):
-            pass
+        self._disconnect_optional(
+            self.controller.data.task.changed, self._download_progress
+        )
+        self._disconnect_optional(
+            self.controller.data.forecast_loaded, self._note_installed_forecast
+        )
+        self._disconnect_optional(
+            self.controller.data.task.finished, self._fetch_finished
+        )
         self.cursor_readout.emit("")
         self._cancel_inertia(settle=False)
         self._finish_zoom_silent()
@@ -299,6 +294,13 @@ class TrackMap(QWidget, MercatorProjection):
         for token in list(self._ticks):
             self.remove_tick_callback(token)
         self.time_control.disconnect("time_change", self._time_changed)
+
+    def _disconnect_optional(self, signal, slot):
+        """Disconnect a signal, tolerating a slot that was never connected."""
+        try:
+            signal.disconnect(slot)
+        except (RuntimeError, TypeError):
+            pass
 
     def hideEvent(self, event):  # noqa: N802 - Qt virtual method name
         if self._gpu is not None:
@@ -675,7 +677,8 @@ class TrackMap(QWidget, MercatorProjection):
                 self._gpu_wind_raster = self._wind_raster(geometry, opacity, ratio)
                 self._gpu_raster_key = key
             if geometry:
-                image = self._gpu_wind_raster
+                # The raster was rendered above whenever the geometry exists.
+                image = cast(QImage, self._gpu_wind_raster)
                 raster_wind = ImageFrame(
                     image, (0, 0, image.width() / ratio, image.height() / ratio)
                 )
@@ -925,7 +928,8 @@ class TrackMap(QWidget, MercatorProjection):
         center = self.convert_screen_to_geographic(
             self.width() / 2 - offset[0], self.height() / 2 - offset[1]
         )
-        return self.wind.prefetch_at(self, *center.get_degrees(), predictive=predictive)
+        latitude, longitude = center.get_degrees()
+        return self.wind.prefetch_at(self, latitude, longitude, predictive=predictive)
 
     def _set_smooth_zoom(self, enabled):
         if self.disposed:
@@ -1568,35 +1572,39 @@ class TrackMap(QWidget, MercatorProjection):
         bounds = self._view_download_bounds()
         if bounds is None:
             return
-        context = self._coverage_context()
-        if context is not None:
-            for model in requested:
-                self._fetch_awaiting[model] = context
+        self._record_fetch_context(requested)
         self._fetch_initiator = "all" if models is None else requested[0]
         widgets = [self.coverage_fetch] + [
             self._ensure_fetch_button(model) for model in requested
         ]
-        for widget in widgets:
-            widget.setEnabled(False)
+        self._set_fetch_widgets_enabled(widgets, False)
         try:
             started = self.controller.data.download_selected(bounds, requested)
         except Exception:
             self._fetch_initiator = None
-            for widget in widgets:
-                widget.setEnabled(True)
+            self._set_fetch_widgets_enabled(widgets, True)
             raise
         if started:
             # A download is running; every other fetch would refuse while busy.
-            for widget in (
-                self.coverage_fetch,
-                *self.coverage_fetch_buttons.values(),
-            ):
-                widget.setEnabled(False)
+            self._set_fetch_widgets_enabled(
+                [self.coverage_fetch, *self.coverage_fetch_buttons.values()], False
+            )
         else:
             # Another task is busy; keep the buttons usable for a later click.
             self._fetch_initiator = None
-            for widget in widgets:
-                widget.setEnabled(True)
+            self._set_fetch_widgets_enabled(widgets, True)
+
+    def _record_fetch_context(self, requested):
+        """Remember the view context each requested model is fetched for."""
+        context = self._coverage_context()
+        if context is not None:
+            for model in requested:
+                self._fetch_awaiting[model] = context
+
+    def _set_fetch_widgets_enabled(self, widgets, enabled):
+        """Enable or disable the given fetch buttons in order."""
+        for widget in widgets:
+            widget.setEnabled(enabled)
 
     def _check_weather_coverage(self):
         if self.disposed or self.is_moving():

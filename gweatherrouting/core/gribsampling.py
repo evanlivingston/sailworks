@@ -394,7 +394,7 @@ class WeatherSampler:
                         else record.valid
                     ),
                 )
-        self._grid_cache: OrderedDict[tuple, list] = OrderedDict()
+        self._grid_cache: OrderedDict[tuple, tuple] = OrderedDict()
         self._grid_cache_bytes = 0
         # Stable sort preserves the first enabled file for equal issue times.
         resolutions: dict = {}
@@ -695,6 +695,7 @@ class WeatherSampler:
         if not len(positions):
             return None
         values = self.sample(field, instant, positions[:, 0], positions[:, 1], cancel)
+        result: tuple
         if field == "wind":
             speeds = np.hypot(values[..., 0], values[..., 1])
             directions = (

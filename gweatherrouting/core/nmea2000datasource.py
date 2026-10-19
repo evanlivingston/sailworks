@@ -3,15 +3,33 @@
 import logging
 import select
 import socket
+from typing import Callable, Dict, List, Protocol, TypedDict
 
 import serial  # type: ignore[import-untyped]
 
 from .actisense import ActisenseDecoder, frame
-from .nmea2000 import N2KAsciiDecoder, instruments
+from .nmea2000 import N2KAsciiDecoder, N2KMessage, instruments
 
 logger = logging.getLogger("gweatherrouting")
 
-N2K_FORMATS = {
+
+class N2KDecoder(Protocol):
+    """Common interface of the NMEA 2000 gateway decoders."""
+
+    def feed(self, chunk: bytes) -> List[N2KMessage]:
+        """Decode a chunk of gateway bytes into PGN messages."""
+
+
+class N2KFormat(TypedDict):
+    """Description of a supported NMEA 2000 gateway format."""
+
+    label: str
+    baudrate: int
+    decoder: Callable[[], N2KDecoder]
+    configure_gateway: bool
+
+
+N2K_FORMATS: Dict[str, N2KFormat] = {
     "actisense": {
         "label": "Actisense BST",
         "baudrate": 230400,
@@ -42,9 +60,7 @@ class NMEA2000DataSource:
         # `protocol`, while keeping protocol and format separate in new ones.
         self.format = config.get("format")
         if self.format is None:
-            self.format = (
-                self.protocol if self.protocol in N2K_FORMATS else "actisense"
-            )
+            self.format = self.protocol if self.protocol in N2K_FORMATS else "actisense"
         self.direction = config.get("direction", "in")
         self.connection_type = config["type"]
         self.baudrate = config.get("baudrate", 230400)

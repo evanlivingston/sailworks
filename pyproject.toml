@@ -25,6 +25,7 @@ dependencies = [
     "shapely>=2,<3",
     "pyproj>=3.6,<4",
     "nmeatoolkit>=0.2",
+    "appdirs",
     "matplotlib",
     "weatherrouting>=0.2.1",
     "GDAL[numpy];sys_platform == 'darwin'",

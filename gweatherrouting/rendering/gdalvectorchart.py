@@ -194,70 +194,89 @@ class GDALVectorChart(ChartLayer):
         point = ogr.Geometry(ogr.wkbPoint)
         point.AddPoint_2D(lon, lat)
         result = {}
-        sounding = None
         cosine = math.cos(math.radians(lat))
         layer = self.vector_file.GetLayerByName("SOUNDG")
         if layer is not None:
-            previous = layer.GetSpatialFilter()
-            previous = previous.Clone() if previous is not None else None
-            layer.SetSpatialFilter(bbox)
-            layer.ResetReading()
-            try:
-                for feature in layer:
-                    geometry = feature.GetGeometryRef()
-                    if geometry is None:
-                        continue
-                    points = (
-                        (
-                            geometry.GetGeometryRef(i)
-                            for i in range(geometry.GetGeometryCount())
-                        )
-                        if geometry.GetGeometryCount()
-                        else (geometry,)
-                    )
-                    for point_geometry in points:
-                        if point_geometry.GetCoordinateDimension() < 3:
-                            continue
-                        x, y, z = point_geometry.GetPoint()
-                        if not all(math.isfinite(value) for value in (x, y, z)):
-                            continue
-                        # A matched multipoint may also contain distant soundings.
-                        if abs(x - lon) > tolerance or abs(y - lat) > tolerance:
-                            continue
-                        distance = ((x - lon) * cosine) ** 2 + (y - lat) ** 2
-                        if sounding is None or distance < sounding[0]:
-                            sounding = (distance, z)
-            finally:
-                layer.SetSpatialFilter(previous)
-        if sounding is not None:
-            result["sounding"] = sounding[1]
-            result["distance_m"] = sounding[0] ** 0.5 * 111320
+            sounding = self._nearest_sounding(layer, bbox, lat, lon, tolerance, cosine)
+            if sounding is not None:
+                result["sounding"] = sounding[1]
+                result["distance_m"] = sounding[0] ** 0.5 * 111320
         layer = self.vector_file.GetLayerByName("DEPARE")
         if layer is not None:
-            previous = layer.GetSpatialFilter()
-            previous = previous.Clone() if previous is not None else None
-            layer.SetSpatialFilter(bbox)
-            layer.ResetReading()
-            try:
-                for feature in layer:
-                    geometry = feature.GetGeometryRef()
-                    if geometry is not None and geometry.Intersects(point):
-                        area = (
-                            feature.GetField("DRVAL1"),
-                            feature.GetField("DRVAL2"),
-                        )
-                        if (
-                            all(
-                                value is not None and math.isfinite(value)
-                                for value in area
-                            )
-                            and area[0] <= area[1]
-                        ):
-                            result["area"] = area
-                            break
-            finally:
-                layer.SetSpatialFilter(previous)
+            area = self._enclosing_depth_area(layer, bbox, point)
+            if area is not None:
+                result["area"] = area
         return result or None
+
+    def _nearest_sounding(self, layer, bbox, lat, lon, tolerance, cosine):
+        """Closest sounding point inside the tolerance box, or None."""
+        previous = layer.GetSpatialFilter()
+        previous = previous.Clone() if previous is not None else None
+        layer.SetSpatialFilter(bbox)
+        layer.ResetReading()
+        try:
+            best = None
+            for feature in layer:
+                geometry = feature.GetGeometryRef()
+                if geometry is None:
+                    continue
+                for point_geometry in self._point_geometries(geometry):
+                    candidate = self._sounding_candidate(
+                        point_geometry, lat, lon, tolerance, cosine
+                    )
+                    if candidate is not None and (
+                        best is None or candidate[0] < best[0]
+                    ):
+                        best = candidate
+            return best
+        finally:
+            layer.SetSpatialFilter(previous)
+
+    @staticmethod
+    def _point_geometries(geometry):
+        count = geometry.GetGeometryCount()
+        if count:
+            return (geometry.GetGeometryRef(i) for i in range(count))
+        return (geometry,)
+
+    @staticmethod
+    def _sounding_candidate(point_geometry, lat, lon, tolerance, cosine):
+        """Distance and depth of one sounding point, or None if it is unusable."""
+        if point_geometry.GetCoordinateDimension() < 3:
+            return None
+        x, y, z = point_geometry.GetPoint()
+        if not all(math.isfinite(value) for value in (x, y, z)):
+            return None
+        # A matched multipoint may also contain distant soundings.
+        if abs(x - lon) > tolerance or abs(y - lat) > tolerance:
+            return None
+        distance = ((x - lon) * cosine) ** 2 + (y - lat) ** 2
+        return (distance, z)
+
+    def _enclosing_depth_area(self, layer, bbox, point):
+        """First depth area that encloses the point, or None."""
+        previous = layer.GetSpatialFilter()
+        previous = previous.Clone() if previous is not None else None
+        layer.SetSpatialFilter(bbox)
+        layer.ResetReading()
+        try:
+            for feature in layer:
+                geometry = feature.GetGeometryRef()
+                if geometry is not None and geometry.Intersects(point):
+                    area = (
+                        feature.GetField("DRVAL1"),
+                        feature.GetField("DRVAL2"),
+                    )
+                    if (
+                        all(
+                            value is not None and math.isfinite(value) for value in area
+                        )
+                        and area[0] <= area[1]
+                    ):
+                        return area
+            return None
+        finally:
+            layer.SetSpatialFilter(previous)
 
     def do_button_press(self, gpsmap, gdkeventbutton):
         return False

@@ -109,7 +109,8 @@ def read_info(path):
             else:
                 z = zooms[0]
                 left, right, low, high = db.execute(
-                    "SELECT min(tile_column), max(tile_column), min(tile_row), max(tile_row) FROM tiles WHERE zoom_level=?",
+                    "SELECT min(tile_column), max(tile_column),"
+                    " min(tile_row), max(tile_row) FROM tiles WHERE zoom_level=?",
                     (z,),
                 ).fetchone()
                 top, bottom = (

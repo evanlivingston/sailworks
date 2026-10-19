@@ -7,7 +7,6 @@ from functools import lru_cache
 import json
 import logging
 import math
-import math
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -240,7 +239,7 @@ class WindOverlayRenderer(OverlayRenderer):
         # Persistent weather sampler shared across jobs so its grid-result cache
         # survives pan steps. Invalidated when the provider set changes.
         self._persistent_sampler = None
-        self._persistent_sampler_provider_ids = ()
+        self._persistent_sampler_provider_ids: tuple[int, ...] = ()
         # View-independent field working set: previously sampled geographic
         # bounds are reused when they contain a new request (exact data, no
         # overfetch); resampled grids reuse on exact matches only.
@@ -359,10 +358,12 @@ class WindOverlayRenderer(OverlayRenderer):
         viewport = holder["viewport"]
         viewport._center_lat = max(-85, min(85, latitude))
         viewport._center_lon = longitude
-        viewport.pan_prediction = predictive
+        # The prediction markers live on the viewport at runtime; the type
+        # checker cannot see the dynamic attributes set by the map canvas.
+        setattr(viewport, "pan_prediction", predictive)
         if zoom is not None:
             viewport._zoom = zoom
-            viewport.zoom_prediction = True
+            setattr(viewport, "zoom_prediction", True)
         key = (palette, factor, tuple(c[0] for c in charts))
         return self.prefetch(canvas, key, viewport, charts, factor, palette)
 
@@ -524,22 +525,32 @@ class WindOverlayRenderer(OverlayRenderer):
 
     def _sampler_for(self, resources):
         provider_ids = tuple(id(p) for _, p in resources["providers"])
+        sampler = self._persistent_sampler
         if (
-            self._persistent_sampler is not None
+            sampler is not None
+            and self._persistent_sampler_provider_ids == provider_ids
+            and len(sampler.indices) == len(resources["providers"])
+        ):
+            resources["sampler"] = sampler
+            return sampler
+        if (
+            sampler is not None
             and self._persistent_sampler_provider_ids == provider_ids
         ):
-            sampler = self._persistent_sampler
-        else:
-            sources = [provider for _, provider in resources["providers"]]
-            sampler = (
-                WeatherSampler(sources)
-                if sources and all(isinstance(source, Grib) for source in sources)
-                else None
-            )
-            if sampler is not None:
-                self.cache_metrics["samplers"] += 1
-            self._persistent_sampler = sampler
-            self._persistent_sampler_provider_ids = provider_ids
+            # GridIndex construction can fail independently of opening GDAL.
+            # Do not cache the omission: build a fresh sampler so the missing
+            # index is attempted again on this pass.
+            logger.info("Rebuilding the weather sampler after a failed index")
+        sources = [provider for _, provider in resources["providers"]]
+        sampler = (
+            WeatherSampler(sources)
+            if sources and all(isinstance(source, Grib) for source in sources)
+            else None
+        )
+        if sampler is not None:
+            self.cache_metrics["samplers"] += 1
+        self._persistent_sampler = sampler
+        self._persistent_sampler_provider_ids = provider_ids
         resources["sampler"] = sampler
         return sampler
 
@@ -609,7 +620,7 @@ class WindOverlayRenderer(OverlayRenderer):
         """Filter array-columns to the given bounds."""
         (south, west), (north, east) = bounds
         south, north = sorted((south, north))
-        kept = []
+        kept: list[tuple[Any, ...]] = []
         for column in columns:
             lon, col_lats, col_dirs, col_speeds = column[:4]
             if field == "wind":
@@ -769,6 +780,82 @@ class WindOverlayRenderer(OverlayRenderer):
         return data
 
     @staticmethod
+    def _wind_arrays(data):
+        """Tuple-format wind rows as parallel float arrays."""
+        # Deduplicate by coordinate (keep first), filter nonfinite,
+        # like the old dict-based code.
+        seen = set()
+        dirs_list, speeds_list, lats_list, lons_list = [], [], [], []
+        for p in data:
+            if not (math.isfinite(p[0]) and math.isfinite(p[1])):
+                continue
+            coord = (p[2][0], p[2][1])
+            if coord in seen:
+                continue
+            seen.add(coord)
+            dirs_list.append(p[0])
+            speeds_list.append(p[1])
+            lats_list.append(p[2][0])
+            lons_list.append(p[2][1])
+        return (
+            np.array(dirs_list, dtype=np.float64),
+            np.array(speeds_list, dtype=np.float64),
+            np.array(lats_list, dtype=np.float64),
+            np.array(lons_list, dtype=np.float64),
+        )
+
+    @staticmethod
+    def _pressure_arrays(data):
+        """Tuple-format pressure rows as parallel float arrays."""
+        seen = set()
+        lats_list, lons_list, values_list = [], [], []
+        for p in data:
+            if not all(map(math.isfinite, p)):
+                continue
+            coord = (p[0], p[1])
+            if coord in seen:
+                continue
+            seen.add(coord)
+            lats_list.append(p[0])
+            lons_list.append(p[1])
+            values_list.append(p[2])
+        return (
+            np.array(lats_list, dtype=np.float64),
+            np.array(lons_list, dtype=np.float64),
+            np.array(values_list, dtype=np.float64),
+        )
+
+    @staticmethod
+    def _column_spans(lons_s):
+        """Unique longitudes with the sample slice bounds of each one."""
+        unique_lons, start_indices = np.unique(lons_s, return_index=True)
+        n = len(lons_s)
+        return [
+            (
+                float(unique_lons[i]),
+                int(start_indices[i]),
+                int(start_indices[i + 1]) if i + 1 < len(unique_lons) else n,
+            )
+            for i in range(len(unique_lons))
+        ]
+
+    @staticmethod
+    def _wind_columns(lons_s, lats_s, dirs_s, speeds_s):
+        """Group sorted wind samples into one column per longitude."""
+        return [
+            (lon, lats_s[start:end], dirs_s[start:end], speeds_s[start:end])
+            for lon, start, end in WindOverlayRenderer._column_spans(lons_s)
+        ]
+
+    @staticmethod
+    def _pressure_columns(lons_s, lats_s, values_s):
+        """Group sorted pressure samples into one column per longitude."""
+        return [
+            (lon, lats_s[start:end], values_s[start:end])
+            for lon, start, end in WindOverlayRenderer._column_spans(lons_s)
+        ]
+
+    @staticmethod
     def _columns(data, field):
         # Group data into columns by longitude, sorted by latitude.
         # Accepts either:
@@ -782,44 +869,12 @@ class WindOverlayRenderer(OverlayRenderer):
             if WindOverlayRenderer._is_array_format(data, 4):
                 dirs, speeds, lats, lons = data
             else:
-                # Deduplicate by coordinate (keep first), filter nonfinite,
-                # like the old dict-based code.
-                seen = set()
-                dirs_list, speeds_list, lats_list, lons_list = [], [], [], []
-                for p in data:
-                    if not (math.isfinite(p[0]) and math.isfinite(p[1])):
-                        continue
-                    coord = (p[2][0], p[2][1])
-                    if coord in seen:
-                        continue
-                    seen.add(coord)
-                    dirs_list.append(p[0])
-                    speeds_list.append(p[1])
-                    lats_list.append(p[2][0])
-                    lons_list.append(p[2][1])
-                dirs = np.array(dirs_list, dtype=np.float64)
-                speeds = np.array(speeds_list, dtype=np.float64)
-                lats = np.array(lats_list, dtype=np.float64)
-                lons = np.array(lons_list, dtype=np.float64)
+                dirs, speeds, lats, lons = WindOverlayRenderer._wind_arrays(data)
         else:
             if WindOverlayRenderer._is_array_format(data, 3):
                 lats, lons, values = data
             else:
-                seen = set()
-                lats_list, lons_list, values_list = [], [], []
-                for p in data:
-                    if not all(map(math.isfinite, p)):
-                        continue
-                    coord = (p[0], p[1])
-                    if coord in seen:
-                        continue
-                    seen.add(coord)
-                    lats_list.append(p[0])
-                    lons_list.append(p[1])
-                    values_list.append(p[2])
-                lats = np.array(lats_list, dtype=np.float64)
-                lons = np.array(lons_list, dtype=np.float64)
-                values = np.array(values_list, dtype=np.float64)
+                lats, lons, values = WindOverlayRenderer._pressure_arrays(data)
 
         if len(lons) == 0:
             return []
@@ -829,33 +884,10 @@ class WindOverlayRenderer(OverlayRenderer):
         lons_s = lons[order]
         lats_s = lats[order]
         if field == "wind":
-            dirs_s = dirs[order]
-            speeds_s = speeds[order]
-        else:
-            values_s = values[order]
-
-        # Find unique longitudes and their start indices
-        unique_lons, start_indices = np.unique(lons_s, return_index=True)
-
-        columns = []
-        n = len(lons_s)
-        for i in range(len(unique_lons)):
-            start = int(start_indices[i])
-            end = int(start_indices[i + 1]) if i + 1 < len(unique_lons) else n
-            if field == "wind":
-                columns.append(
-                    (
-                        float(unique_lons[i]),
-                        lats_s[start:end],
-                        dirs_s[start:end],
-                        speeds_s[start:end],
-                    )
-                )
-            else:
-                columns.append(
-                    (float(unique_lons[i]), lats_s[start:end], values_s[start:end])
-                )
-        return columns
+            return WindOverlayRenderer._wind_columns(
+                lons_s, lats_s, dirs[order], speeds[order]
+            )
+        return WindOverlayRenderer._pressure_columns(lons_s, lats_s, values[order])
 
     @staticmethod
     def _is_array_format(data, expected_len):
@@ -882,6 +914,7 @@ class WindOverlayRenderer(OverlayRenderer):
         tuple_columns = []
         for column in columns:
             lon = column[0]
+            column_tuples: list[tuple[Any, ...]] = []
             if field == "wind":
                 lats, dirs, speeds = column[1], column[2], column[3]
                 column_tuples = [
@@ -1117,6 +1150,28 @@ class WindOverlayRenderer(OverlayRenderer):
             self.cache_state = self._cache_snapshot()
             job.weather_metrics["retained_cache"] = dict(self.cache_state)
 
+    def _prepare_vectors(self, job, data, paint_data, fill_data):
+        """Worker-side land flags and streamlines; False when the job is cancelled."""
+        if data and self._wind_style(job.palette) != "streamlines":
+            land: list[bool] = []
+            for column in paint_data:
+                if job.cancel.is_set():
+                    return False
+                land.extend(self._land_mask.contains(*point[2]) for point in column)
+            job.barb_land = np.asarray(land, dtype=np.bool_)
+        job.streamlines = None
+        if data and self._wind_style(job.palette) == "streamlines":
+            job.streamlines = trace_streamlines(
+                job.viewport,
+                fill_data if fill_data is not None else data,
+                self._land_mask.contains,
+                job.cancel.is_set,
+                density=job.palette[9] if len(job.palette) > 9 else "standard",
+            )
+            if job.cancel.is_set():
+                return False
+        return True
+
     def _render_fields(self, job):
         show_wind = job.palette[4] if len(job.palette) > 4 else True
         data = self._load_wind(job) if show_wind else []
@@ -1146,24 +1201,8 @@ class WindOverlayRenderer(OverlayRenderer):
             self._land_mask.refresh_source(job.viewport.get_scale())
         # Painter and land mask need tuple-format columns; convert once.
         paint_data = self._columns_to_tuples(data, "wind") if data else []
-        if data and self._wind_style(job.palette) != "streamlines":
-            land = []
-            for column in paint_data:
-                if job.cancel.is_set():
-                    return None
-                land.extend(self._land_mask.contains(*point[2]) for point in column)
-            job.barb_land = np.asarray(land, dtype=np.bool_)
-        job.streamlines = None
-        if data and self._wind_style(job.palette) == "streamlines":
-            job.streamlines = trace_streamlines(
-                job.viewport,
-                fill_data if fill_data is not None else data,
-                self._land_mask.contains,
-                job.cancel.is_set,
-                density=job.palette[9] if len(job.palette) > 9 else "standard",
-            )
-            if job.cancel.is_set():
-                return None
+        if not self._prepare_vectors(job, data, paint_data, fill_data):
+            return None
         viewport = job.viewport
         surface = cairo.ImageSurface(
             cairo.FORMAT_ARGB32,
@@ -1276,10 +1315,19 @@ class WindOverlayRenderer(OverlayRenderer):
             return {}, 0.0
         step, max_count = barb_density_parameters(density)
         over_land = self._barbs_over_land.get(canvas, bool(job.palette[2]))
-        view = (center_lat, center_lon, zoom, width, height, step, max_count, over_land)
+        barb_view = (
+            center_lat,
+            center_lon,
+            zoom,
+            width,
+            height,
+            step,
+            max_count,
+            over_land,
+        )
         # Repaints of a stationary view reuse geometry; gestures only update
         # positions/selection, never reload weather or scale symbol strokes.
-        if getattr(job, "barb_geometry_view", None) != view:
+        if getattr(job, "barb_geometry_view", None) != barb_view:
             # Retain only the current zoom's world pixels on this immutable
             # frame. Pans still recompute selection and exact screen positions.
             # Large frames use the uncached path rather than growing retention.
@@ -1303,7 +1351,7 @@ class WindOverlayRenderer(OverlayRenderer):
                 land_mask=None if over_land else getattr(job, "barb_land", None),
                 projected=projection[1] if projection is not None else None,
             )
-            job.barb_geometry_view = view
+            job.barb_geometry_view = barb_view
         geometry = job.barb_geometry
         return geometry, float(job.palette[1])
 

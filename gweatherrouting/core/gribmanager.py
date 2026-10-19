@@ -27,7 +27,6 @@ from gweatherrouting.core.gribsources import (
     ECCHRDPSource,
     NOAAGFSSource,
     NOAAHRRRSource,
-    OpenSkironSource,
 )
 from gweatherrouting.core.storage import GRIB_DIR, Storage
 
