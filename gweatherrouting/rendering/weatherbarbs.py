@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 import math
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -20,6 +20,7 @@ from gweatherrouting.rendering.windpainter import (
 
 if TYPE_CHECKING:
     from gweatherrouting.qt.gpuweather import WeatherTexturePair
+    from gweatherrouting.qt.gpuweatherfields import BarbSelection, GeographicField
 
 
 # The spatial lattice of a resident field, in view pixels.  A covered camera
@@ -55,18 +56,18 @@ class BarbAtlas:
     """
 
     staged: StagedWind
-    pair: "WeatherTexturePair"
+    pair: "WeatherTexturePair | None"
     anchors: tuple
     count: int
     identity: object = None
-    field: object = None
-    selection: object = None
+    field: "GeographicField | None" = None
+    selection: "BarbSelection | None" = None
 
     @property
     def images(self):
         if self.field is not None:
-            return self.field.images + self.selection.images
-        return self.pair.images + self.anchors
+            return self.field.images + cast("BarbSelection", self.selection).images
+        return cast("WeatherTexturePair", self.pair).images + self.anchors
 
     @property
     def nbytes(self):
@@ -248,7 +249,7 @@ def stage_field(
     # Multiple selected forecasts often share a grid (different times/runs).
     # Their candidate nodes are identical. Deduplicate only enumeration;
     # stage_wind above still evaluates every source under the existing policy.
-    grids = {}
+    grids: dict[tuple, Any] = {}
     for grid in sampler.indices:
         if any(record.element in ("UGRD", "VGRD") for record in grid.records):
             geometry = NativeGridGeometry.from_index(grid)
@@ -281,7 +282,6 @@ def stage_selection(sampler, field, stamp, view, land_mask, cancel=lambda: False
     """
     from gweatherrouting.qt.gpuweather import encode_component
     from gweatherrouting.qt.gpuweatherfields import BarbSelection
-    from gweatherrouting.rendering.weatherstaging import StagedWind
 
     step, cap = barb_density_parameters(view.density)
     if step <= 0:
@@ -335,11 +335,9 @@ def stage_selection(sampler, field, stamp, view, land_mask, cancel=lambda: False
     cells = cell_y * cols + cell_x
     _, first_cell = np.unique(cells, return_index=True)
     chosen = np.sort(first_cell)
-    if cap is not None and len(chosen) > cap:
-        chosen = chosen[np.linspace(0, len(chosen) - 1, cap, dtype=int)]
+    chosen = _cap_selection(chosen, cap)
     if not view.over_land and field.land_flags is not None:
-        if field.land_quality != shoreline_quality(view.get_scale()):
-            raise FieldCoverageError("Resident land mask has a different scale")
+        _require_land_quality(field, view)
         chosen = chosen[~field.land_flags[node_ids[ids[chosen]]]]
     elif not view.over_land and sampler is None:
         raise FieldCoverageError("Resident land decisions are unavailable")
@@ -367,6 +365,19 @@ def stage_selection(sampler, field, stamp, view, land_mask, cancel=lambda: False
         field=field,
         node_image=encode_component(selection_ids.reshape(rows, cols)),
     )
+
+
+def _cap_selection(chosen, cap):
+    """Apply the existing evenly-spaced symbol cap, when configured."""
+    if cap is not None and len(chosen) > cap:
+        return chosen[np.linspace(0, len(chosen) - 1, cap, dtype=int)]
+    return chosen
+
+
+def _require_land_quality(field, view):
+    """Reject retained land decisions from a different shoreline tier."""
+    if field.land_quality != shoreline_quality(view.get_scale()):
+        raise FieldCoverageError("Resident land mask has a different scale")
 
 
 def stage_barbs(
