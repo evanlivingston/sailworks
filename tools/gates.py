@@ -333,6 +333,189 @@ GATES = {
             ),
         },
     },
+    # ------------------------------------------------------------------ #71
+    "float-transport": {
+        "title": "Native float texture transport in the Qt Quick scene graph",
+        "milestone": "#71",
+        "kind": "correctness",
+        "tool": "tools/experiment_float_transport_qsg.py",
+        "endpoint": ENDPOINT_FIDELITY,
+        "requires": [],
+        "dependencies": ["PySide6", "numpy"],
+        "timeout_s": 120,
+        "env": {"QT_SCALE_FACTOR": "1"},
+        "command": [
+            "{python}",
+            "{tool}",
+            "--output",
+            "{tool_output}",
+        ],
+        "defaults": {"scenarios": ["generated-field"], "frames": 1, "repeats": 1},
+        "full": {"scenarios": ["generated-field"], "frames": 1, "repeats": 1},
+        "tool_output": "{outdir}/{gate}.tool.json",
+        "result": "{outdir}/{gate}.tool.json",
+        "checks": [
+            {
+                "label": "maximum interpolation error at a probe-chosen position",
+                "metric": (
+                    "transports.float_through_texture_type_provider."
+                    "probe_position_max_abs_error"
+                ),
+                "aggregate": "max",
+                "op": "<=",
+                "value": 2e-05,
+                "source": (
+                    "docs/history/rendering-m0-float-textures.md (unchanged 2e-5 "
+                    "gate; E1b measured 2.384185791015625e-7 with explicit "
+                    "texelFetch arithmetic and E1 hardware filtering measured "
+                    "0.002604166666666824 and failed)"
+                ),
+            },
+            {
+                "label": "the probe's own error limit is still 2e-5",
+                "metric": "numerical_limit",
+                "aggregate": "max",
+                "op": "==",
+                "value": 2e-05,
+                "source": (
+                    "docs/history/rendering-m0-float-textures.md (the unchanged "
+                    "program numerical gate; it is not relaxed here)"
+                ),
+            },
+            {
+                "label": "float32 transport preserved every sampled texel exactly",
+                "metric": (
+                    "transports.float_through_texture_type_provider."
+                    "sampled_cells_exact"
+                ),
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "docs/history/rendering-m0-float-textures.md (E1: R32F "
+                    "upload/readback preserved all eight test bit patterns, "
+                    "including signed zero, a NaN payload and infinities)"
+                ),
+            },
+            {
+                "label": "an all-missing field contributes exactly zero alpha pixels",
+                "metric": "missing_data.all_missing.alpha_pixels",
+                "aggregate": "max",
+                "op": "==",
+                "value": 0,
+                "source": (
+                    "docs/profiles/rendering/2026-10-19/a0k-shader-safety-summary.json"
+                    "#missing_only_layers_exactly_transparent=true; "
+                    "docs/history/rendering-a0k-shader-safety.md (missing-only "
+                    "controls require exactly zero alpha pixels, not a low "
+                    "fraction of errors)"
+                ),
+            },
+            {
+                "label": "an all-missing field contributes no significant ink",
+                "metric": "missing_data.all_missing.significant_alpha_pixels",
+                "aggregate": "max",
+                "op": "==",
+                "value": 0,
+                "source": (
+                    "docs/profiles/rendering/2026-10-19/a0k-shader-safety-summary.json"
+                    "#significant_alpha_threshold=25 (the recorded A0k "
+                    "significance rule; the corrected run reports zero)"
+                ),
+            },
+            {
+                "label": "the finite control field is painted everywhere",
+                "metric": "missing_data.finite_control.alpha_pixels",
+                "aggregate": "max",
+                "op": "==",
+                "value": {
+                    "metric": "missing_data.finite_control.total_pixels",
+                    "aggregate": "max",
+                },
+                "source": (
+                    "docs/profiles/rendering/2026-10-19/a0k-shader-safety-summary.json"
+                    "#finite_control_pixels_unchanged=true (the finite control "
+                    "must be painted, not discarded)"
+                ),
+            },
+            {
+                "label": "the float transport's end-to-end error is no worse "
+                "than the application's own byte-packed transport",
+                "metric": (
+                    "transports.float_through_texture_type_provider.numerical."
+                    "max_abs_error"
+                ),
+                "aggregate": "max",
+                "op": "<=",
+                "value": {
+                    "metric": "transports.control_packed.numerical.max_abs_error",
+                    "aggregate": "max",
+                },
+                "ratified": False,
+                "source": (
+                    "NOT DERIVABLE from recorded evidence. The comparison is "
+                    "against the byte-packed control measured in the same run "
+                    "of tools/experiment_float_transport_qsg.py, not against a "
+                    "recorded number: no recorded artifact holds the "
+                    "interpolation error of the application's byte-packed "
+                    "transport through the QSG path. The placeholder bound is "
+                    "never enforced; #71 step 2 must record the byte-packed "
+                    "control error and ratify this comparison."
+                ),
+            },
+            {
+                "label": "the float texture reached the scene graph in a float "
+                "format",
+                "metric": "transports.simple_texture_node_float__isolated.rhi_format",
+                "aggregate": "max",
+                "op": "==",
+                "value": "RGBA32F",
+                "source": (
+                    "docs/adr-001-grib-rendering-architecture.md section 4.1 (D1 "
+                    "transport format: native float textures); "
+                    "docs/history/rendering-m0-float-textures.md (E1/E1b used "
+                    "native R32F and RGBA32F textures)"
+                ),
+            },
+            {
+                "label": "the probe ran every stage to completion",
+                "metric": "status",
+                "aggregate": "max",
+                "op": "==",
+                "value": "completed",
+                "source": (
+                    "tools/experiment_float_transport_qsg.py (the probe writes a "
+                    "completed report only after every transport, the missing-"
+                    "data cases and the replication have run)"
+                ),
+            },
+            {
+                "label": "the gate does not claim presentation latency",
+                "metric": "presentation_latency_measured",
+                "aggregate": "all",
+                "op": "is_false",
+                "source": (
+                    "docs/adr-001-grib-rendering-architecture.md section 9 "
+                    "standing constraint 4 (render callbacks are proxies)"
+                ),
+            },
+        ],
+        "reference": {
+            "kind": "recorded-evidence",
+            "source": (
+                "docs/history/rendering-m0-float-textures.md; "
+                "docs/profiles/rendering/2026-10-19/a0k-shader-safety-summary.json"
+            ),
+            "note": (
+                "The 2e-5 numerical gate is the unchanged program gate, "
+                "recorded in the E1b evidence: explicit texelFetch arithmetic "
+                "measured 2.384185791015625e-7 and hardware linear filtering "
+                "measured 0.002604166666666824 and failed. The zero-alpha "
+                "missing-data gate is the recorded A0k gate: missing-only "
+                "controls require exactly zero alpha pixels. Neither threshold "
+                "is relaxed here."
+            ),
+        },
+    },
     # ------------------------------------------------------------------ #65
     "interpolation": {
         "title": "GPU spatial interpolation keeps the 2e-5 error bound",
