@@ -60,6 +60,15 @@ For the wider documentation map, see [the documentation index](README.md).
   budget is exhausted; do not start another native run without recording a new
   budget first.
 
+  **Rescope decision (2026-10-19):** ADR-001 §4.6 (D6) makes the independent
+  viewport the target weather interaction path. Issues #64–#68 are re-pointed to
+  it; the legacy frame assembler stays the default application path until #70
+  decides rollout. The follow-up history is split into `2e4617e` (reuse and
+  correctness) and `8370945` (temporary speculative prefetch). The prefetch
+  precursor is explicitly temporary: #66 supersedes its scheduling, #67
+  supersedes its time handling, and #73 removes it once both land. Do not extend
+  the precursor or treat its 12/18 time result as the #67 design.
+
 - **User-directed pivot — independent GRIB viewport:** replace the GRIB interaction
   subsystem rather than continue adapting `TrackMap._gpu_frame`. The new viewport
   owns camera/time state, asynchronous field demand and GPU portrayal. Reuse the

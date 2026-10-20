@@ -1,7 +1,8 @@
 # ADR-001: GRIB rendering architecture — reconciliation and decisions
 
 - **Status:** Accepted. D2 was decided on 2026-10-19 in favour of option (a); the
-  amendment is applied in §6.
+  amendment is applied in §6. D6 (target interaction path) was decided on
+  2026-10-19 in §4.6.
 - **Date:** 2026-10-19
 - **Supersedes:** nothing. **Amends:** [`rendering-implementation-plan.md`](rendering-implementation-plan.md)
   (the R0–R5 sequence and the invariants at lines 43–70), as recorded in §6.
@@ -31,7 +32,7 @@ executable issues. It deliberately does **not** restate the specification; it li
   and in the canonical plan's decision log; the M0 mechanism probes in the
   `rendering-m0-*.md` records; machine-readable evidence under
   `docs/profiles/rendering/`.
-- **Status:** D1–D5 are all settled. No decision in this ADR is awaiting a user
+- **Status:** D1–D6 are all settled. No decision in this ADR is awaiting a user
   decision, and no A0 slice may be started from this document.
 - **Wider documentation map:** [the documentation index](README.md).
 
@@ -237,6 +238,32 @@ dependency than the residency work, and would change the numerical values produc
 **Revisit when:** D1 and D2 are landed and the remaining decode cost is re-profiled
 against the new baseline. It is a separate decision, not a silent omission.
 
+### 4.6 D6 — Independent viewport is the target weather interaction path
+
+**Decision (2026-10-19).** The independent GRIB viewport
+(`gweatherrouting/qt/gribviewport.py`) is the target weather interaction path.
+The existing weather frame path (`TrackMap._gpu_frame` / MapFrame / MapScene /
+WeatherStager / ContentKey) is legacy and is retired once #69 and #70 complete the
+layer migration. The viewport owns camera/time state, field demand and
+field/selection portrayal, and reuses the existing decoder, sampler, source
+semantics and shaders.
+
+Consequences:
+
+- D1–D4 apply to the viewport's field store, preparation pipeline and time
+  windows. Issues #64–#68 are re-pointed to that vehicle.
+- The default application path stays unchanged until #70 makes an explicit
+  rollout decision. Viewport work stays behind its standalone entry point and
+  runtime flags.
+- Charts, fill, contours and routing are not yet in the viewport. #68 and #69
+  provide them before #70 can consider a default switch.
+- Numerical, mask, source-order and selection gates are unchanged. Visual
+  fidelity remains a separate, currently deferred gate.
+
+**Revises:** the program target implied by §4.1–§4.4 and the issue mapping in §3.
+**Issues:** [#64](https://github.com/evanlivingston/gweatherrouting/issues/64)–[#70](https://github.com/evanlivingston/gweatherrouting/issues/70);
+review vehicle [#72](https://github.com/evanlivingston/gweatherrouting/pull/72).
+
 ---
 
 ## 5. Relationship to the existing sequences
@@ -270,6 +297,7 @@ remains the single roadmap.
 | Lines 77–93 (pipeline) | Add explicit N/N+1 overlap, ≤2 in flight, and generation-key publication rejection. (D3) |
 | Line 103 (`ContentKey`) | "Forecast instant/bracket" becomes a resident time window over multiple instants. (D4) |
 | Lines 212–215 (R3 reuse) | Reuse extends from spatial to temporal. (D4) |
+| §4.6 (program target) | The independent viewport is the target weather interaction path; issues #64–#68 are re-pointed to it and the frame assembler is retired at #69/#70. (D6) |
 
 **Deferred and not amended:** R1 (host), R0.3/R0.4 (resource envelope, platform matrix),
 R5 (retention hardening, rollout). R0.2 is discharged by

@@ -16,12 +16,20 @@ see [the documentation index](README.md).
 | [#62](https://github.com/evanlivingston/gweatherrouting/issues/62) | ADR: target GRIB rendering architecture | M0 | — |
 | [#63](https://github.com/evanlivingston/gweatherrouting/issues/63) | Tooling: one-command performance gate runner | M0 | #62 |
 | [#64](https://github.com/evanlivingston/gweatherrouting/issues/64) | GPU-resident numerical field cache | M1 | #62, #63 |
+| [#71](https://github.com/evanlivingston/gweatherrouting/issues/71) | Native float texture transport (bounded spike) | M1 | #62, #63 |
 | [#65](https://github.com/evanlivingston/gweatherrouting/issues/65) | GPU spatial interpolation | M2 | #64 |
 | [#66](https://github.com/evanlivingston/gweatherrouting/issues/66) | Async double-buffered pipeline | M2 | #64 |
 | [#67](https://github.com/evanlivingston/gweatherrouting/issues/67) | Instant forecast-time scrubbing | M2 | #64, #66 |
 | [#68](https://github.com/evanlivingston/gweatherrouting/issues/68) | Production GPU weather fill | M2 | #64, #65 |
 | [#69](https://github.com/evanlivingston/gweatherrouting/issues/69) | Chart/weather layer separation, then remaining layers | M2/M3 | #62, #63 |
 | [#70](https://github.com/evanlivingston/gweatherrouting/issues/70) | Validation, soak and rollout decision | M4 | #64–#69 |
+| [#73](https://github.com/evanlivingston/gweatherrouting/issues/73) | Cleanup: remove the viewport speculative-prefetch precursor | M2 | #66, #67 |
+
+**Target path (ADR-001 §4.6, D6):** the independent viewport is the target weather
+interaction path. #64–#68 are worked against it; the frame assembler stays the
+default application path until #70 makes an explicit rollout decision. #73 removes
+the temporary prefetch precursor once #66/#67 provide overlap and resident time
+windows.
 
 ## Evidence
 
