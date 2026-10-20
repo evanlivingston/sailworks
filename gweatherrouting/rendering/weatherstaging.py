@@ -9,10 +9,89 @@ new-cycle selection semantics. Never interpolate across a model-run switch.
 """
 
 from bisect import bisect_left
+from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
 
 import numpy as np
+
+# The declared ceiling of the resident per-node sample memo.  It retains the
+# endpoint pair and provenance of native nodes already sampled for one
+# (source set, time window), so a re-centred field only samples the nodes the
+# previous window did not contain.  This is a declared budget, not a measured
+# optimum; the per-entry byte cost is an estimate that includes the two-key
+# tuple overhead.
+SAMPLING_MEMO_BYTES = 16 * 1024 * 1024
+SAMPLING_ENTRY_BYTES = 112
+LAND_ENTRY_BYTES = 72
+
+
+class NodeSampleMemo:
+    """A bounded memo of per-node sampled endpoints and land decisions.
+
+    The memo is a pure function of its inputs: it stores the exact float32
+    endpoint pair ``stage_wind`` computed for a node, so restoring it is
+    bit-identical to sampling that node again.  A missing endpoint is never
+    stored, so a hole still follows the sampler's fallback every time.  Land
+    flags are stored only for the shoreline quality they were computed for.
+    Access is on the owning worker thread only.
+    """
+
+    def __init__(self, byte_limit=SAMPLING_MEMO_BYTES):
+        if byte_limit <= 0:
+            raise ValueError("Sampling memo budget must be positive")
+        self.byte_limit = byte_limit
+        self._entries = OrderedDict()
+        self.current_bytes = self.peak_bytes = 0
+        self.hits = self.misses = self.evictions = 0
+
+    def _get(self, key, entry_bytes):
+        entry = self._entries.get(key)
+        if entry is None:
+            self.misses += 1
+            return None
+        self._entries.move_to_end(key)
+        self.hits += 1
+        return entry[0]
+
+    def _put(self, key, value, entry_bytes):
+        old = self._entries.pop(key, None)
+        if old is not None:
+            self.current_bytes -= old[1]
+        while self.current_bytes + entry_bytes > self.byte_limit and self._entries:
+            _, (_, size) = self._entries.popitem(last=False)
+            self.current_bytes -= size
+            self.evictions += 1
+        self._entries[key] = (value, entry_bytes)
+        self.current_bytes += entry_bytes
+        self.peak_bytes = max(self.peak_bytes, self.current_bytes)
+
+    def get_sample(self, namespace, key):
+        return self._get(("sample", namespace, key), SAMPLING_ENTRY_BYTES)
+
+    def put_sample(self, namespace, key, first, second, origin):
+        self._put(
+            ("sample", namespace, key),
+            (first[0], first[1], second[0], second[1], origin),
+            SAMPLING_ENTRY_BYTES,
+        )
+
+    def get_land(self, key, quality):
+        return self._get(("land", quality, key), LAND_ENTRY_BYTES)
+
+    def put_land(self, key, quality, over_land):
+        self._put(("land", quality, key), bool(over_land), LAND_ENTRY_BYTES)
+
+    def statistics(self):
+        return dict(
+            limit_bytes=self.byte_limit,
+            current_bytes=self.current_bytes,
+            peak_bytes=self.peak_bytes,
+            retained_entries=len(self._entries),
+            hits=self.hits,
+            misses=self.misses,
+            evictions=self.evictions,
+        )
 
 
 @dataclass(frozen=True)
@@ -78,13 +157,86 @@ def time_window(sampler, stamp):
     return events[pos - 1], events[pos]
 
 
-def stage_wind(sampler, stamp, lats, lons, cancel=lambda: False, byte_limit=16 << 20):
+def _exact_snapshot(
+    sampler,
+    stamp,
+    lats,
+    lons,
+    shape,
+    cancel,
+    memo=None,
+    memo_namespace=None,
+    node_key=None,
+):
+    """The snapshot of one exact instant, with the memo's endpoints reused.
+
+    The memo holds the exact float32 pair of the nodes it has already
+    sampled for the same ``(source set, time window)``, so a re-centred
+    window only samples the nodes it does not have.  A restored node is
+    bit-identical to sampling it again.
+    """
+    lat, lon = lats.ravel(), lons.ravel()
+    values = np.full((len(lat), 2), np.nan)
+    origins = np.full(len(lat), "", dtype=object)
+    keys = None
+    if memo is not None and memo_namespace is not None and node_key is not None:
+        keys = [node_key((float(a), float(b))) for a, b in zip(lat, lon)]
+        for position, key in enumerate(keys):
+            entry = memo.get_sample(memo_namespace, key)
+            if entry is None:
+                continue
+            values[position] = entry[0:2]
+            origins[position] = entry[4]
+    missing = ~np.isfinite(values).all(axis=1)
+    if missing.any():
+        sampled = sampler.sample_timestamps(
+            "wind", stamp, lat[missing], lon[missing], cancel
+        )
+        if cancel():
+            return None
+        values[missing] = sampled
+        for node_index, name in zip(np.flatnonzero(missing), sampler.point_sources):
+            origins[node_index] = name
+    if cancel():
+        return None
+    first = np.array(values.reshape(shape + (2,)), dtype=np.float32)
+    first.setflags(write=False)
+    if keys is not None:
+        flat = first.reshape(-1, 2)
+        for node_index in np.flatnonzero(np.isfinite(flat).all(axis=1)):
+            memo.put_sample(
+                memo_namespace,
+                keys[node_index],
+                flat[node_index],
+                flat[node_index],
+                origins[node_index],
+            )
+    return StagedWind(stamp, stamp, first, first, tuple(origins))
+
+
+def stage_wind(  # noqa: C901 - staging, memo reuse and cancellation kept together
+    sampler,
+    stamp,
+    lats,
+    lons,
+    cancel=lambda: False,
+    byte_limit=16 << 20,
+    *,
+    memo=None,
+    memo_namespace=None,
+    node_key=None,
+):
     """Stage a fixed query grid using a worker-private WeatherSampler.
 
     Reuse the result only for the same coordinates and sampler generation.
     Missing points stay missing; per-point fallback across split files and
     older model cycles follows WeatherSampler, including grid-vector rotation.
     Cancellation never returns a cacheable partial snapshot.
+
+    A supplied ``memo`` (a :class:`NodeSampleMemo`) prefills the endpoints of
+    nodes already sampled for the same ``(source set, time window)``.  The
+    memo stores the exact float32 pair, so a prefilled node is bit-identical
+    to sampling it again; only finite pairs are stored.
     """
     lats, lons = np.broadcast_arrays(np.asarray(lats), np.asarray(lons))
     shape = lats.shape
@@ -97,17 +249,24 @@ def stage_wind(sampler, stamp, lats, lons, cancel=lambda: False, byte_limit=16 <
         raise ValueError("Invalid forecast time")
     before, after = time_window(sampler, stamp)
     if before == after:
-        values = sampler.sample_timestamps("wind", stamp, lats, lons, cancel)
-        if cancel():
-            return None
-        first = np.array(values.reshape(shape + (2,)), dtype=np.float32)
-        first.setflags(write=False)
-        return StagedWind(stamp, stamp, first, first, tuple(sampler.point_sources))
+        return _exact_snapshot(
+            sampler, stamp, lats, lons, shape, cancel, memo, memo_namespace, node_key
+        )
     # Use the requested interior instant, not a rounded hour or midpoint.
     lat, lon = lats.ravel(), lons.ravel()
     first = np.full((len(lat), 2), np.nan)
     second = np.full_like(first, np.nan)
     origins = np.full(len(lat), "", dtype=object)
+    keys = None
+    if memo is not None and memo_namespace is not None and node_key is not None:
+        keys = [node_key((float(a), float(b))) for a, b in zip(lat, lon)]
+        for position, key in enumerate(keys):
+            entry = memo.get_sample(memo_namespace, key)
+            if entry is None:
+                continue
+            first[position] = entry[0:2]
+            second[position] = entry[2:4]
+            origins[position] = entry[4]
     for identity in sampler.order:
         if cancel():
             return None
@@ -136,6 +295,19 @@ def stage_wind(sampler, stamp, lats, lons, cancel=lambda: False, byte_limit=16 <
     second = second.reshape(shape + (2,)).astype(np.float32)
     first.setflags(write=False)
     second.setflags(write=False)
+    if keys is not None:
+        flat_first, flat_second = first.reshape(-1, 2), second.reshape(-1, 2)
+        finite = np.isfinite(flat_first).all(axis=1) & np.isfinite(flat_second).all(
+            axis=1
+        )
+        for node_index in np.flatnonzero(finite):
+            memo.put_sample(
+                memo_namespace,
+                keys[node_index],
+                flat_first[node_index],
+                flat_second[node_index],
+                origins[node_index],
+            )
     return StagedWind(
         before,
         after,

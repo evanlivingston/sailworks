@@ -1044,6 +1044,91 @@ def worker(config):
         logger.removeHandler(handler)
 
 
+def cpu_fallback_probe(snapshot, args, workload):
+    """Prove that the retained CPU fallback still renders the weather.
+
+    The application's own CPU renderer is the fallback that stays available
+    while the GPU path is experimental.  It is run here on the same fixture
+    and the same saved selection as the GPU path, and the evidence is the
+    number of frames whose prepared wind view was current: a fallback that
+    is merely present is not a fallback that works.
+    """
+    with tempfile.TemporaryDirectory(prefix="gwr-cpu-fallback-") as directory:
+        root = Path(directory)
+        prepare_sandbox(snapshot, root)
+        config = {
+            **workload,
+            "scenario": "stationary",
+            "map_renderer": "cpu",
+            "synchronous_base_charts": args.synchronous_base_charts,
+            "profile_weather": args.profile_weather,
+            "profile_ui": args.profile_ui,
+            "uncached_coverage_fields": args.uncached_coverage_fields,
+            "uncached_weather_passes": args.uncached_weather_passes,
+            "legacy_weather_scheduling": args.legacy_weather_scheduling,
+            "preserve_covered_weather_jobs": args.preserve_covered_weather_jobs,
+            "weather_source_limit": args.weather_source_limit,
+            "weather_prefetch": args.weather_prefetch,
+            "fixed_pan_lookahead": args.fixed_pan_lookahead,
+            "disable_zoom_prefetch": args.disable_zoom_prefetch,
+            "disable_weather_field_cache": args.disable_weather_field_cache,
+        }
+        config_path, output = root / "config.json", root / "result.json"
+        config_path.write_text(json.dumps(config))
+        env = dict(
+            os.environ,
+            HOME=str(root / "home"),
+            XDG_DATA_HOME=str(root / "xdg-data"),
+            XDG_CONFIG_HOME=str(root / "xdg-config"),
+            XDG_CACHE_HOME=str(root / "xdg-cache"),
+            PYTHONHASHSEED="0",
+            PYTHONPATH=str(ROOT),
+            QT_SCALE_FACTOR=str(args.scale),
+        )
+        if args.offscreen:
+            env["QT_QPA_PLATFORM"] = "offscreen"
+        else:
+            env.pop("QT_QPA_PLATFORM", None)
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--worker",
+                str(config_path),
+                "--output",
+                str(output),
+            ],
+            env=env,
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=args.worker_timeout_s,
+        )
+        if result.returncode:
+            diagnostics = Path(str(args.output).replace(".json", ".cpu-fallback.log"))
+            diagnostics.write_text(result.stdout + result.stderr)
+            raise RuntimeError(
+                f"The CPU fallback probe exited {result.returncode}; "
+                f"diagnostics: {diagnostics}"
+            )
+        measured = json.loads(output.read_text())
+    prepared = measured.get("replay_prepared_samples") or []
+    return {
+        "renderer_requested": measured.get("renderer_requested"),
+        "renderer_status": measured.get("renderer_status"),
+        "frames": measured["summary"]["grab_ms"]["count"],
+        "prepared_view_current_frames": sum(1 for value in prepared if value),
+        "prepared_view_samples": len(prepared),
+        "warnings": measured.get("warnings", []),
+        "numerical_weather": measured.get("numerical_weather"),
+        "note": (
+            "the retained CPU fallback: the application's own CPU renderer, "
+            "on the same fixture, the same saved selection and the same "
+            "scenario as the GPU run"
+        ),
+    }
+
+
 def run(args):
     snapshot = args.snapshot.resolve(strict=True)
     manifest = verify_snapshot(snapshot)
@@ -1200,6 +1285,8 @@ def run(args):
                         file=sys.stderr,
                     )
     report["complete"] = True
+    if args.cpu_fallback_probe:
+        report["cpu_fallback"] = cpu_fallback_probe(snapshot, args, workload)
     return report
 
 
@@ -1318,6 +1405,15 @@ def main():
     parser.add_argument("--worker-timeout-s", type=float, default=600)
     parser.add_argument("--offscreen", action="store_true")
     parser.add_argument("--map-renderer", choices=("cpu", "gpu"))
+    parser.add_argument(
+        "--cpu-fallback-probe",
+        action="store_true",
+        help=(
+            "after the measured runs, replay the same scenario with the "
+            "application's own CPU renderer and report whether it still "
+            "renders the weather"
+        ),
+    )
     parser.add_argument(
         "--measurement-mode", choices=("grab", "native-render"), default="grab"
     )

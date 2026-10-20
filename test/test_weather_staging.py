@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from gweatherrouting.core.gribsampling import WeatherSampler
-from gweatherrouting.rendering.weatherstaging import stage_wind
+from gweatherrouting.rendering.weatherstaging import NodeSampleMemo, stage_wind
 from test import test_grib_sampling as grib_fixtures
 
 START = grib_fixtures.START
@@ -128,3 +128,68 @@ def test_projected_grid_relative_vectors_are_rotated_by_existing_sampler(gribs):
     lons, lats = to_world.transform(xx, yy)
     staged = stage_wind(sampler, START.timestamp() + 3600, lats, lons)
     assert_parity(sampler, staged, lats, lons, [0.0003, 0.25, 1.5, 2.999])
+
+
+def test_node_memo_shifted_window_is_bit_identical_to_cold_staging(gribs):
+    """A memoized shift is a pure function of the same inputs."""
+    from gweatherrouting.rendering.weatherbarbs import _node_key
+
+    sampler = WeatherSampler([gribs.file(gribs.field(0) + gribs.field(3), end=3)])
+    stamp = (START + timedelta(hours=1.5)).timestamp()
+    namespace = ("source-set", stamp - 1, stamp + 1)
+    # Two overlapping query grids inside the fixture's -0.5..0.5 source extent.
+    lat, lon = np.mgrid[-0.4:0.4:5j, -0.4:0.0:5j]
+    shifted_lat, shifted_lon = np.mgrid[-0.4:0.4:5j, -0.2:0.2:5j]
+    cold_a = stage_wind(sampler, stamp, lat, lon)
+    cold_b = stage_wind(sampler, stamp, shifted_lat, shifted_lon)
+    memo = NodeSampleMemo()
+    warm_a = stage_wind(
+        sampler,
+        stamp,
+        lat,
+        lon,
+        memo=memo,
+        memo_namespace=namespace,
+        node_key=_node_key,
+    )
+    warm_b = stage_wind(
+        sampler,
+        stamp,
+        shifted_lat,
+        shifted_lon,
+        memo=memo,
+        memo_namespace=namespace,
+        node_key=_node_key,
+    )
+    np.testing.assert_array_equal(warm_a.first, cold_a.first)
+    np.testing.assert_array_equal(warm_a.second, cold_a.second)
+    np.testing.assert_array_equal(warm_b.first, cold_b.first)
+    np.testing.assert_array_equal(warm_b.second, cold_b.second)
+    assert warm_a.sources == cold_a.sources
+    assert warm_b.sources == cold_b.sources
+    assert memo.hits > 0
+    # A different time window must not reuse the previous window's values.
+    other = stage_wind(
+        sampler,
+        (START + timedelta(hours=2.5)).timestamp(),
+        lat,
+        lon,
+        memo=memo,
+        memo_namespace=("source-set", stamp + 1, stamp + 2),
+        node_key=_node_key,
+    )
+    expected = stage_wind(sampler, (START + timedelta(hours=2.5)).timestamp(), lat, lon)
+    np.testing.assert_array_equal(other.first, expected.first)
+    np.testing.assert_array_equal(other.second, expected.second)
+
+
+def test_land_memo_round_trips_the_same_per_node_decision():
+    memo = NodeSampleMemo()
+    key = (1.0, 2.0)
+    assert memo.get_land(key, "high") is None
+    memo.put_land(key, "high", False)
+    assert memo.get_land(key, "high") is False
+    # A stored False is a hit, not a miss; another quality is separate.
+    assert memo.get_land(key, "low") is None
+    memo.put_land(key, "high", True)
+    assert memo.get_land(key, "high") is True

@@ -1,0 +1,240 @@
+{
+  "issue": 67,
+  "decision": "adopt",
+  "reason": "The resident time window covers the recorded nine-hour sweep: native viewport-interaction on the 22-source fixture gives pan 0/120, zoom 0/24 and time 0/18 loading, so continuous_weather is true and the gate is 11/11. Two consecutive native runs after the fix gave identical numbers. A forecast-time change inside the window is served from the resident field store: the time phase decoded nothing (zero decoded-band misses), and the interval crossings published no new field images. The window holds six members over the declared nine-hour horizon in 24.5 MB of the 128 MiB store ceiling with no evictions, so the sweep fits the declared budget and no blocker is recorded.",
+  "profile": {
+    "artifact": "prepare-breakdown.json",
+    "cold_field_total_ms": 792.119,
+    "native_points_ms": 19.963,
+    "stage_wind_ms": 331.028,
+    "land_loop_ms": 263.976,
+    "image_encode_ms": 159.348,
+    "index_build_ms": 17.803,
+    "node_count": 11506,
+    "shifted_window_new_point_fraction": 0.0815,
+    "note": "Unchanged from the #66 profile: the resident time window reuses the same staging path, so the per-window cost is unchanged."
+  },
+  "resident_time_window": {
+    "horizon_hours": 9.0,
+    "horizon_source": "the recorded sweep moves the forecast instant over nine hours (camera.time + (i % 9) hours); the window holds the demand windows of the forecast instants inside that span",
+    "members": 6,
+    "member_shape": "one singleton at every selection event and one bracket between two events, over one spatial window",
+    "member_list": [
+      "singleton 2026-10-19T15:00Z",
+      "bracket 15:00Z-18:00Z",
+      "singleton 18:00Z",
+      "bracket 18:00Z-21:00Z",
+      "singleton 21:00Z",
+      "bracket 21:00Z-00:00Z"
+    ],
+    "anchor": "the demand's interval start; the anchor is kept while the demand stays inside the horizon, so a time change inside the window does not re-anchor it",
+    "spatial_window": "the presented field's own window; every member shares that window, its geometry and its resolution",
+    "fill_policy": "the fill starts only where the presented field was prepared, continues only while the camera stays inside that field's window, and an interactive demand cancels it",
+    "flag": "--resident-time-window (GribViewportModel(resident_time_window=True)); default off, the gate harness enables it"
+  },
+  "fixture_sha256": "1ed1bca1281ad4096713ce20af9c1473e70bd4eb0766a54965849b7ace698a03",
+  "sources_opened": 22,
+  "source_order_preserved": true,
+  "gate": "viewport-interaction",
+  "gate_kind": "correctness",
+  "gate_verdict": "pass",
+  "checks_passed": 11,
+  "checks_failed": 0,
+  "failing_check": null,
+  "reference": {
+    "artifact": "viewport-resident-prototype-summary.json (#66) and viewport-continuous-summary.json",
+    "pan_loading": {
+      "time_window": "0/120",
+      "resident_prototype": "0/120",
+      "double_buffer": "18/120",
+      "precursor": "5/120"
+    },
+    "zoom_loading": {
+      "time_window": "0/24",
+      "resident_prototype": "0/24",
+      "double_buffer": "0/24",
+      "precursor": "0/24"
+    },
+    "time_loading": {
+      "time_window": "0/18",
+      "resident_prototype": "11/18",
+      "retention_only": "16/18",
+      "double_buffer": "16/18",
+      "precursor": "12/18"
+    }
+  },
+  "observations": {
+    "prepared_while_presenting": 13,
+    "preparation_span_count": 14,
+    "presentation_span_count": 175,
+    "superseded_rejected_observed": 2,
+    "superseded_retained_observed": 5,
+    "time_lookaheads_observed": 0,
+    "superseded_never_published": true,
+    "generation_mismatch_rejected": true,
+    "slot_handoffs": 8,
+    "resident_window_fields": 6
+  },
+  "phases": [
+    {
+      "name": "sustained-pan",
+      "inputs": 120,
+      "loading_inputs": 0,
+      "field_preparations": 8,
+      "publication_delta": {
+        "field_publications": 8,
+        "selection_publications": 127
+      },
+      "decoded_band_delta": {
+        "hits": 62,
+        "misses": 2,
+        "evictions": 0
+      },
+      "time_window_hits": 0,
+      "time_window_fills": 0,
+      "time_window_blocked": 89
+    },
+    {
+      "name": "anchored-zoom",
+      "inputs": 24,
+      "loading_inputs": 0,
+      "field_preparations": 3,
+      "publication_delta": {
+        "field_publications": 3,
+        "selection_publications": 24
+      },
+      "decoded_band_delta": {
+        "hits": 23,
+        "misses": 4,
+        "evictions": 3
+      },
+      "time_window_hits": 0,
+      "time_window_fills": 3,
+      "time_window_blocked": 0
+    },
+    {
+      "name": "time-crossings",
+      "inputs": 18,
+      "loading_inputs": 0,
+      "field_preparations": 1,
+      "publication_delta": {
+        "field_publications": 1,
+        "selection_publications": 18
+      },
+      "decoded_band_delta": {
+        "hits": 1,
+        "misses": 0,
+        "evictions": 0
+      },
+      "time_window_hits": 11,
+      "time_window_fills": 0,
+      "time_window_blocked": 0
+    }
+  ],
+  "counters": {
+    "field_preparations": 13,
+    "covered_reuses": 175,
+    "misses": 6,
+    "cancelled": 0,
+    "stale_rejected": 2,
+    "generation_rejected": 1,
+    "slot_handoffs": 8,
+    "proactive_recentres": 7,
+    "time_lookaheads": 0,
+    "superseded_retained": 5,
+    "time_window_hits": 13,
+    "time_window_fills": 5,
+    "time_window_fields": 5,
+    "time_window_cancelled": 0,
+    "time_window_blocked": 89
+  },
+  "time_window_counters": {
+    "resident_window_hits": 13,
+    "window_members_prepared": 5,
+    "window_fills_started": 5,
+    "window_members_resident": 6,
+    "fill_blocked_by_camera": 89,
+    "fill_cancelled_by_demand": 0,
+    "decoded_band_misses_in_time_phase": 0,
+    "provider_field_publications_in_time_phase": 1,
+    "provider_field_publications_note": "the eleven demand-window changes published no new field images: the window's images are published when the window is filled. The single publication is the last window member, whose preparation completed about 0.1 s into the sweep; it was published once and was not re-encoded.",
+    "uploads_note": "This gate has no hardware-upload counter. The provider's publication count is the observable proxy: no re-encode and no new publication happened for the forecast-time changes. The render context rebinds the newly presented interval's textures at an interval crossing; those images were already published and were not re-encoded."
+  },
+  "retained": {
+    "field_bytes": 24472139,
+    "field_entries": 13,
+    "field_limit": 134217728,
+    "field_evictions": 0,
+    "provider_bytes": 2673664,
+    "provider_limit": 33554432,
+    "provider_bytes_respected": true,
+    "sampling_memo": {
+      "limit_bytes": 16777216,
+      "current_bytes": 5159064,
+      "peak_bytes": 5159064,
+      "retained_entries": 52477,
+      "hits": 43340,
+      "misses": 50805,
+      "evictions": 0
+    },
+    "cold_ready_seconds": 1.37,
+    "close_ms": 21.0
+  },
+  "native_attempts": 3,
+  "native_attempt_seconds": [9.431, 10.173, 10.146],
+  "native_attempt_numbers": {
+    "run_1": {
+      "verdict": "fail",
+      "pan_loading": "aborted at input 79 (0 loading in 79 inputs)",
+      "zoom_loading": "0/24",
+      "time_loading": "0/18",
+      "note": "The pan phase aborted on an empty assertion: the worker promoted a prepared field from its own thread between a camera update and the render context's publication, so the published content and the model's presented field disagreed. Fixed by giving the presented field a single owner (commit b8bca25)."
+    },
+    "run_2": {
+      "verdict": "pass",
+      "pan_loading": "0/120",
+      "zoom_loading": "0/24",
+      "time_loading": "0/18"
+    },
+    "run_3_confirmatory": {
+      "verdict": "pass",
+      "pan_loading": "0/120",
+      "zoom_loading": "0/24",
+      "time_loading": "0/18"
+    }
+  },
+  "targeted_validation": {
+    "tests_passed": 100,
+    "failed": 0,
+    "skipped": 0,
+    "warnings": 1,
+    "warning": "GDAL FutureWarning",
+    "suite": "test_gribviewport.py test_gpuweather_fields.py test_weather_barbs.py test_weather_staging.py test_weather_band_cache.py test_gpu_weather.py test_gpu_weather_jobs.py",
+    "changed_python_black_check": "pass",
+    "whitespace_check": "pass",
+    "worktree_clean": true,
+    "log": "/private/var/folders/w7/hb5wv1x1715821rqd1_3xf4r0000gn/T/opencode/issue67-tests-1.log",
+    "note": "The suite is 100 tests: the 96 of the #66 record plus four new resident-window tests in the viewport file (40 in that file)."
+  },
+  "endpoint": "QQuickWindow.afterRendering render-callback proxy; not presentation FPS, input-to-present or scanout",
+  "timing_percentile": "nearest rank p95",
+  "visual_fidelity": "failed/user-deferred, not rerun or passed",
+  "change": {
+    "window_layer": "GribViewportModel holds a bounded resident time window: the demand windows of the forecast instants inside a declared nine-hour horizon, over the presented field's own spatial window. Each member is the field the pipeline already stages - the singleton at a selection event and the bracket between two events - so no numerical value, mask, source order or interpolation changes.",
+    "decoupling_layer": "A forecast-time change inside the window finds a resident field in the store and never prepares one: the spatial preparation is not invalidated by a time change, and a time change does not invalidate the window's spatial preparation.",
+    "fill_layer": "The missing members are prepared over the presented field's window, geometry and resolution, so a member shares the spatial preparation. The fill is the lowest-priority work: it starts only where the presented field was prepared, it continues only while the camera stays inside that field's window, and an interactive demand cancels it, so spatial re-centring keeps its priority over the pan pipeline.",
+    "publication_layer": "The window's field images are published once, when the window is filled, so a forecast-time change inside the window publishes nothing and re-encodes nothing.",
+    "ownership_layer": "The presented field has a single owner: the render context's thread. The worker hands the prepared slot forward and the next camera update adopts it, so a publication in flight cannot disagree with the model.",
+    "flag": "--resident-time-window on the viewport entry point, resident_time_window=True on the model; default off. The default application path does not import the viewport and is byte-identical.",
+    "semantics": "The linear temporal blend is unchanged: the blend uniform still interpolates inside the member's own interval, and an event instant is still a singleton with the exact-time mask. The recorded numerical, mask, source-order and selection tests pass unchanged."
+  },
+  "limits": [
+    "The 0/18 time result is stable across two consecutive native runs (runs 2 and 3) with identical phase numbers.",
+    "The last window member completed about 0.1 s into the sweep; the margin to its demand (input 7, 233 ms) is about 0.13 s. The fill had 0.94 s of work and the anchored-zoom phase offers about 0.9 s, so the margin is thin and a slower fill would show loading inputs.",
+    "The window is filled in the background, so a sweep that starts before the fill finishes can still show a loading input at the member that is missing; the demand outside the resident window shows an accurate loading state and then correct content.",
+    "No direct hardware-upload measurement: the provider's publication count is the observable proxy, and the render context rebinds the newly presented interval's textures at an interval crossing.",
+    "The horizon is a workload property of the recorded nine-hour sweep; a longer sweep needs a longer horizon and more retained bytes, bounded by the 128 MiB store ceiling.",
+    "Visual fidelity remains failed/user-deferred, not rerun or passed."
+  ],
+  "next_step": "#68 and #69 own the production fill and the layer migration in the viewport; keep this window, do not widen its horizon without new evidence."
+}

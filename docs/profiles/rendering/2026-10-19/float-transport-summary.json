@@ -1,0 +1,1045 @@
+{
+  "protocol": "qsg-float-transport-e2x-v1",
+  "status": "completed",
+  "started": "2026-10-19T16:49:21-0700",
+  "numerical_limit": 2e-05,
+  "presentation_latency_measured": false,
+  "readback_is_fidelity": true,
+  "transports": {
+    "api_facts": {
+      "qimage_format_r32f_available": false,
+      "qimage_float_formats": [
+        "Format_RGBA16FPx4",
+        "Format_RGBA16FPx4_Premultiplied",
+        "Format_RGBA32FPx4",
+        "Format_RGBA32FPx4_Premultiplied",
+        "Format_RGBX16FPx4",
+        "Format_RGBX32FPx4"
+      ],
+      "create_texture_from_image_rgba32f": {
+        "qsg_size": [
+          2,
+          2
+        ],
+        "has_alpha_channel": true,
+        "rhi_format": null,
+        "rhi_flags": [],
+        "render_target": false
+      },
+      "create_texture_from_image_rgbx32f": {
+        "qsg_size": [
+          2,
+          2
+        ],
+        "has_alpha_channel": false,
+        "rhi_format": null,
+        "rhi_flags": [],
+        "render_target": false
+      },
+      "create_texture_from_image_rgba16f": {
+        "qsg_size": [
+          2,
+          2
+        ],
+        "has_alpha_channel": true,
+        "rhi_format": null,
+        "rhi_flags": [],
+        "render_target": false
+      },
+      "create_texture_from_image_rgba8888": {
+        "qsg_size": [
+          2,
+          2
+        ],
+        "has_alpha_channel": true,
+        "rhi_format": null,
+        "rhi_flags": [],
+        "render_target": false
+      },
+      "create_texture_from_rhi_texture_r32f": {
+        "qsg_size": [
+          2,
+          2
+        ],
+        "rhi_format": "R32F"
+      },
+      "texture_factory_for_float_image": {
+        "factory": "QQuickTextureFactory",
+        "image_format": "Format.Format_RGBA32FPx4"
+      },
+      "qsg_dynamic_texture_instantiable": false,
+      "qsg_dynamic_texture_error": "'QSGDynamicTexture' represents a C++ abstract class and cannot be instantiated"
+    },
+    "calibration": {
+      "framebuffer_linear": true,
+      "codes": {
+        "0": [
+          0,
+          128,
+          64,
+          255
+        ],
+        "32": [
+          32,
+          128,
+          64,
+          255
+        ],
+        "64": [
+          64,
+          128,
+          64,
+          255
+        ],
+        "128": [
+          128,
+          128,
+          64,
+          255
+        ],
+        "192": [
+          192,
+          128,
+          64,
+          255
+        ],
+        "255": [
+          255,
+          128,
+          64,
+          255
+        ]
+      },
+      "note": "an exactly linear 8-bit framebuffer lets the probe carry a byte-split float32 payload through the readback without loss"
+    },
+    "control_packed": {
+      "transport": "image_provider_rgba8888_packed",
+      "shader": "application weather.frag (byte-packed decoder, unchanged)",
+      "blend": 0.5,
+      "image_status": "Ready",
+      "shader_status": "Compiled",
+      "shader_error": "",
+      "frame_size": [
+        48,
+        64
+      ],
+      "alpha_pixels": 3072,
+      "significant_alpha_pixels": 3072,
+      "total_pixels": 3072,
+      "interpolated_min": -1000.0,
+      "interpolated_max": 878.4846801757812,
+      "nan_values_in_readback": 0,
+      "raw_center_pixel": [
+        60,
+        0,
+        0,
+        255
+      ],
+      "numerical": {
+        "max_abs_error": 0.0001220703125,
+        "flip_rows": false,
+        "flip_y": false,
+        "compared_pixels": 3072,
+        "limit": 2e-05,
+        "passed": false
+      },
+      "probe_position_values": {
+        "0.0700,0.0900": -903.2176513671875,
+        "0.5000,0.5000": -0.20833343267440796,
+        "0.9300,0.9100": 12.282600402832031
+      },
+      "probe_position_expected": {
+        "0.0700,0.0900": -903.2176513671875,
+        "0.5000,0.5000": -0.20833343267440796,
+        "0.9300,0.9100": 12.282600402832031
+      },
+      "probe_position_max_abs_error": 0.0,
+      "probe_position_limit": 2e-05,
+      "probe_position_passed": true,
+      "sampled_cells": {
+        "0,0": -1000.0,
+        "3,1": 1000.0,
+        "5,4": -3.25,
+        "7,5": 12.75
+      },
+      "expected_cells": {
+        "0,0": -1000.0,
+        "3,1": 1000.0,
+        "5,4": -3.25,
+        "7,5": 12.75
+      },
+      "sampled_cells_exact": true,
+      "provider_requests": 4,
+      "upload_bytes": 384
+    },
+    "float_through_image_provider": {
+      "transport": "image_provider_rgba32f",
+      "shader": "application weather.frag (float decoder)",
+      "blend": 0.5,
+      "image_status": "Ready",
+      "shader_status": "Compiled",
+      "shader_error": "",
+      "frame_size": [
+        48,
+        64
+      ],
+      "alpha_pixels": 3072,
+      "significant_alpha_pixels": 3072,
+      "total_pixels": 3072,
+      "interpolated_min": 0.0,
+      "interpolated_max": 1.0,
+      "nan_values_in_readback": 0,
+      "raw_center_pixel": [
+        63,
+        0,
+        0,
+        255
+      ],
+      "numerical": {
+        "max_abs_error": 1000.0,
+        "flip_rows": false,
+        "flip_y": false,
+        "compared_pixels": 3072,
+        "limit": 2e-05,
+        "passed": false
+      },
+      "sampled_cells": {
+        "0,0": 0.0,
+        "3,1": 1.0,
+        "5,4": 0.0,
+        "7,5": 1.0
+      },
+      "expected_cells": {
+        "0,0": -1000.0,
+        "3,1": 1000.0,
+        "5,4": -3.25,
+        "7,5": 12.75
+      },
+      "sampled_cells_exact": false,
+      "provider_requests": 4,
+      "upload_bytes": 768
+    },
+    "float_through_texture_provider": {
+      "transport": "qsg_texture_provider_rgba32f",
+      "shader": "application weather.frag (float decoder)",
+      "blend": 0.5,
+      "image_status": "Ready",
+      "shader_status": "Compiled",
+      "shader_error": "",
+      "frame_size": [
+        48,
+        64
+      ],
+      "alpha_pixels": 3072,
+      "significant_alpha_pixels": 3072,
+      "total_pixels": 3072,
+      "interpolated_min": 0.0,
+      "interpolated_max": 0.0,
+      "nan_values_in_readback": 0,
+      "raw_center_pixel": [
+        0,
+        0,
+        0,
+        255
+      ],
+      "numerical": {
+        "max_abs_error": 1000.0,
+        "flip_rows": false,
+        "flip_y": false,
+        "compared_pixels": 3072,
+        "limit": 2e-05,
+        "passed": false
+      },
+      "sampled_cells": {
+        "0,0": 0.0,
+        "3,1": 0.0,
+        "5,4": 0.0,
+        "7,5": 0.0
+      },
+      "expected_cells": {
+        "0,0": -1000.0,
+        "3,1": 1000.0,
+        "5,4": -3.25,
+        "7,5": 12.75
+      },
+      "sampled_cells_exact": false,
+      "rhi_format": null,
+      "rhi_flags": []
+    },
+    "float_through_texture_type_provider": {
+      "transport": "image_provider_texture_type_rgba32f",
+      "shader": "application weather.frag (float decoder)",
+      "blend": 0.5,
+      "image_status": "Ready",
+      "shader_status": "Compiled",
+      "shader_error": "",
+      "frame_size": [
+        48,
+        64
+      ],
+      "alpha_pixels": 3072,
+      "significant_alpha_pixels": 3072,
+      "total_pixels": 3072,
+      "interpolated_min": -1000.0,
+      "interpolated_max": 878.4846801757812,
+      "nan_values_in_readback": 0,
+      "raw_center_pixel": [
+        60,
+        0,
+        0,
+        255
+      ],
+      "numerical": {
+        "max_abs_error": 0.0001220703125,
+        "flip_rows": false,
+        "flip_y": false,
+        "compared_pixels": 3072,
+        "limit": 2e-05,
+        "passed": false
+      },
+      "probe_position_values": {
+        "0.0700,0.0900": -903.2176513671875,
+        "0.5000,0.5000": -0.20833343267440796,
+        "0.9300,0.9100": 12.282600402832031
+      },
+      "probe_position_expected": {
+        "0.0700,0.0900": -903.2176513671875,
+        "0.5000,0.5000": -0.20833343267440796,
+        "0.9300,0.9100": 12.282600402832031
+      },
+      "probe_position_max_abs_error": 0.0,
+      "probe_position_limit": 2e-05,
+      "probe_position_passed": true,
+      "sampled_cells": {
+        "0,0": -1000.0,
+        "3,1": 1000.0,
+        "5,4": -3.25,
+        "7,5": 12.75
+      },
+      "expected_cells": {
+        "0,0": -1000.0,
+        "3,1": 1000.0,
+        "5,4": -3.25,
+        "7,5": 12.75
+      },
+      "sampled_cells_exact": true,
+      "provider_requests": 4,
+      "rhi_format": "RGBA32F",
+      "rhi_flags": [],
+      "upload_bytes": 768
+    },
+    "r32f_transport__isolated": {
+      "transport": "r32f_texture",
+      "shader": "application weather.frag (float decoder)",
+      "blend": 0.5,
+      "image_status": "Ready",
+      "shader_status": "Compiled",
+      "shader_error": "",
+      "frame_size": [
+        48,
+        64
+      ],
+      "alpha_pixels": 3072,
+      "significant_alpha_pixels": 3072,
+      "total_pixels": 3072,
+      "interpolated_min": 0.0,
+      "interpolated_max": 0.0,
+      "nan_values_in_readback": 0,
+      "raw_center_pixel": [
+        0,
+        0,
+        0,
+        255
+      ],
+      "numerical": {
+        "max_abs_error": 1000.0,
+        "flip_rows": false,
+        "flip_y": false,
+        "compared_pixels": 3072,
+        "limit": 2e-05,
+        "passed": false
+      },
+      "probe_position_values": {
+        "0.0700,0.0900": 0.0,
+        "0.5000,0.5000": 0.0,
+        "0.9300,0.9100": 0.0
+      },
+      "probe_position_expected": {
+        "0.0700,0.0900": -903.2176513671875,
+        "0.5000,0.5000": -0.20833343267440796,
+        "0.9300,0.9100": 12.282600402832031
+      },
+      "probe_position_max_abs_error": 903.2176513671875,
+      "probe_position_limit": 2e-05,
+      "probe_position_passed": false,
+      "sampled_cells": {
+        "0,0": 0.0,
+        "3,1": 0.0,
+        "5,4": 0.0,
+        "7,5": 0.0
+      },
+      "expected_cells": {
+        "0,0": -1000.0,
+        "3,1": 1000.0,
+        "5,4": -3.25,
+        "7,5": 12.75
+      },
+      "sampled_cells_exact": false,
+      "case": "r32f",
+      "upload_bytes": 192,
+      "bytes_per_float": 4,
+      "rhi_format": "R32F"
+    },
+    "simple_texture_node_float__isolated": {
+      "case": "rgba32f",
+      "qsg_size": [
+        8,
+        6
+      ],
+      "has_alpha_channel": true,
+      "rhi_format": "RGBA32F",
+      "rhi_flags": [],
+      "render_target": false,
+      "upload_bytes": 768
+    },
+    "simple_texture_node_packed__isolated": {
+      "case": "rgba8888_packed",
+      "qsg_size": [
+        16,
+        6
+      ],
+      "has_alpha_channel": true,
+      "rhi_format": "RGBA8",
+      "rhi_flags": [],
+      "render_target": false,
+      "upload_bytes": 384
+    },
+    "missing_all_missing__isolated": {
+      "transport": "image_provider_texture_type_rgba32f",
+      "shader": "application weather.frag (float decoder)",
+      "blend": 0.5,
+      "image_status": "Ready",
+      "shader_status": "Compiled",
+      "shader_error": "",
+      "frame_size": [
+        48,
+        64
+      ],
+      "alpha_pixels": 0,
+      "significant_alpha_pixels": 0,
+      "total_pixels": 3072,
+      "interpolated_min": 0.0,
+      "interpolated_max": 0.0,
+      "nan_values_in_readback": 0,
+      "raw_center_pixel": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "numerical": {
+        "max_abs_error": Infinity,
+        "flip_rows": false,
+        "flip_y": false,
+        "compared_pixels": 0,
+        "limit": 2e-05,
+        "passed": false
+      },
+      "provider_requests": 4,
+      "case": "all_missing"
+    },
+    "missing_partially_missing__isolated": {
+      "transport": "image_provider_texture_type_rgba32f",
+      "shader": "application weather.frag (float decoder)",
+      "blend": 0.5,
+      "image_status": "Ready",
+      "shader_status": "Compiled",
+      "shader_error": "",
+      "frame_size": [
+        48,
+        64
+      ],
+      "alpha_pixels": 2560,
+      "significant_alpha_pixels": 2560,
+      "total_pixels": 3072,
+      "interpolated_min": -1000.0,
+      "interpolated_max": 878.4846801757812,
+      "nan_values_in_readback": 0,
+      "raw_center_pixel": [
+        60,
+        0,
+        0,
+        255
+      ],
+      "numerical": {
+        "max_abs_error": 0.0001220703125,
+        "flip_rows": false,
+        "flip_y": false,
+        "compared_pixels": 2560,
+        "limit": 2e-05,
+        "passed": false
+      },
+      "provider_requests": 4,
+      "case": "partially_missing"
+    },
+    "missing_finite_control__isolated": {
+      "transport": "image_provider_texture_type_rgba32f",
+      "shader": "application weather.frag (float decoder)",
+      "blend": 0.5,
+      "image_status": "Ready",
+      "shader_status": "Compiled",
+      "shader_error": "",
+      "frame_size": [
+        48,
+        64
+      ],
+      "alpha_pixels": 3072,
+      "significant_alpha_pixels": 3072,
+      "total_pixels": 3072,
+      "interpolated_min": -1000.0,
+      "interpolated_max": 878.4846801757812,
+      "nan_values_in_readback": 0,
+      "raw_center_pixel": [
+        60,
+        0,
+        0,
+        255
+      ],
+      "numerical": {
+        "max_abs_error": 0.0001220703125,
+        "flip_rows": false,
+        "flip_y": false,
+        "compared_pixels": 3072,
+        "limit": 2e-05,
+        "passed": false
+      },
+      "provider_requests": 4,
+      "case": "finite_control"
+    },
+    "missing_data_packed__isolated": {
+      "all_missing": {
+        "transport": "image_provider_rgba8888_packed",
+        "shader": "application weather.frag (byte-packed decoder, unchanged)",
+        "blend": 0.5,
+        "image_status": "Ready",
+        "shader_status": "Compiled",
+        "shader_error": "",
+        "frame_size": [
+          48,
+          64
+        ],
+        "alpha_pixels": 0,
+        "significant_alpha_pixels": 0,
+        "total_pixels": 3072,
+        "interpolated_min": 0.0,
+        "interpolated_max": 0.0,
+        "nan_values_in_readback": 0,
+        "raw_center_pixel": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "numerical": {
+          "max_abs_error": Infinity,
+          "flip_rows": false,
+          "flip_y": false,
+          "compared_pixels": 0,
+          "limit": 2e-05,
+          "passed": false
+        },
+        "provider_requests": 4
+      },
+      "partially_missing": {
+        "transport": "image_provider_rgba8888_packed",
+        "shader": "application weather.frag (byte-packed decoder, unchanged)",
+        "blend": 0.5,
+        "image_status": "Ready",
+        "shader_status": "Compiled",
+        "shader_error": "",
+        "frame_size": [
+          48,
+          64
+        ],
+        "alpha_pixels": 2560,
+        "significant_alpha_pixels": 2560,
+        "total_pixels": 3072,
+        "interpolated_min": -1000.0,
+        "interpolated_max": 878.4846801757812,
+        "nan_values_in_readback": 0,
+        "raw_center_pixel": [
+          60,
+          0,
+          0,
+          255
+        ],
+        "numerical": {
+          "max_abs_error": 0.0001220703125,
+          "flip_rows": false,
+          "flip_y": false,
+          "compared_pixels": 2560,
+          "limit": 2e-05,
+          "passed": false
+        },
+        "provider_requests": 4
+      },
+      "finite_control": {
+        "transport": "image_provider_rgba8888_packed",
+        "shader": "application weather.frag (byte-packed decoder, unchanged)",
+        "blend": 0.5,
+        "image_status": "Ready",
+        "shader_status": "Compiled",
+        "shader_error": "",
+        "frame_size": [
+          48,
+          64
+        ],
+        "alpha_pixels": 3072,
+        "significant_alpha_pixels": 3072,
+        "total_pixels": 3072,
+        "interpolated_min": -1000.0,
+        "interpolated_max": 878.4846801757812,
+        "nan_values_in_readback": 0,
+        "raw_center_pixel": [
+          60,
+          0,
+          0,
+          255
+        ],
+        "numerical": {
+          "max_abs_error": 0.0001220703125,
+          "flip_rows": false,
+          "flip_y": false,
+          "compared_pixels": 3072,
+          "limit": 2e-05,
+          "passed": false
+        },
+        "provider_requests": 4
+      }
+    },
+    "packed_decode_on_float_texture__isolated": {
+      "transport": "image_provider_texture_type_rgba32f",
+      "shader": "application weather.frag (byte-packed decoder, unchanged)",
+      "max_abs_error_vs_oracle": 3.6267774588438875e+25,
+      "decoded_min": -2.2669082735423684e+24,
+      "decoded_max": 3.6267774588438875e+25,
+      "alpha_pixels": 3072,
+      "provider_requests": 4,
+      "note": "the unchanged byte-packed decoder reads two texels per cell from a float texture, so the field grid is halved and the values are reinterpreted bytes"
+    },
+    "float_through_texture_type_provider__isolated": {
+      "transport": "image_provider_texture_type_rgba32f",
+      "shader": "application weather.frag (float decoder)",
+      "blend": 0.5,
+      "image_status": "Ready",
+      "shader_status": "Compiled",
+      "shader_error": "",
+      "frame_size": [
+        48,
+        64
+      ],
+      "alpha_pixels": 3072,
+      "significant_alpha_pixels": 3072,
+      "total_pixels": 3072,
+      "interpolated_min": -1000.0,
+      "interpolated_max": 878.4846801757812,
+      "nan_values_in_readback": 0,
+      "raw_center_pixel": [
+        60,
+        0,
+        0,
+        255
+      ],
+      "numerical": {
+        "max_abs_error": 0.0001220703125,
+        "flip_rows": false,
+        "flip_y": false,
+        "compared_pixels": 3072,
+        "limit": 2e-05,
+        "passed": false
+      },
+      "probe_position_values": {
+        "0.0700,0.0900": -903.2176513671875,
+        "0.5000,0.5000": -0.20833343267440796,
+        "0.9300,0.9100": 12.282600402832031
+      },
+      "probe_position_expected": {
+        "0.0700,0.0900": -903.2176513671875,
+        "0.5000,0.5000": -0.20833343267440796,
+        "0.9300,0.9100": 12.282600402832031
+      },
+      "probe_position_max_abs_error": 0.0,
+      "probe_position_limit": 2e-05,
+      "probe_position_passed": true,
+      "sampled_cells": {
+        "0,0": -1000.0,
+        "3,1": 1000.0,
+        "5,4": -3.25,
+        "7,5": 12.75
+      },
+      "expected_cells": {
+        "0,0": -1000.0,
+        "3,1": 1000.0,
+        "5,4": -3.25,
+        "7,5": 12.75
+      },
+      "sampled_cells_exact": true,
+      "provider_requests": 4,
+      "rhi_format": "RGBA32F",
+      "rhi_flags": [],
+      "upload_bytes": 768
+    }
+  },
+  "errors": [],
+  "environment": {
+    "qt": "6.12.0",
+    "python": "3.11.17",
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "host": "Evans-MacBook-Pro-4434.local",
+    "graphics_api": "Metal",
+    "device_pixel_ratio": 2.0,
+    "logical_size": [
+      32,
+      24
+    ]
+  },
+  "api_facts": {
+    "qimage_format_r32f_available": false,
+    "qimage_float_formats": [
+      "Format_RGBA16FPx4",
+      "Format_RGBA16FPx4_Premultiplied",
+      "Format_RGBA32FPx4",
+      "Format_RGBA32FPx4_Premultiplied",
+      "Format_RGBX16FPx4",
+      "Format_RGBX32FPx4"
+    ],
+    "create_texture_from_image_rgba32f": {
+      "qsg_size": [
+        2,
+        2
+      ],
+      "has_alpha_channel": true,
+      "rhi_format": null,
+      "rhi_flags": [],
+      "render_target": false
+    },
+    "create_texture_from_image_rgbx32f": {
+      "qsg_size": [
+        2,
+        2
+      ],
+      "has_alpha_channel": false,
+      "rhi_format": null,
+      "rhi_flags": [],
+      "render_target": false
+    },
+    "create_texture_from_image_rgba16f": {
+      "qsg_size": [
+        2,
+        2
+      ],
+      "has_alpha_channel": true,
+      "rhi_format": null,
+      "rhi_flags": [],
+      "render_target": false
+    },
+    "create_texture_from_image_rgba8888": {
+      "qsg_size": [
+        2,
+        2
+      ],
+      "has_alpha_channel": true,
+      "rhi_format": null,
+      "rhi_flags": [],
+      "render_target": false
+    },
+    "create_texture_from_rhi_texture_r32f": {
+      "qsg_size": [
+        2,
+        2
+      ],
+      "rhi_format": "R32F"
+    },
+    "texture_factory_for_float_image": {
+      "factory": "QQuickTextureFactory",
+      "image_format": "Format.Format_RGBA32FPx4"
+    },
+    "qsg_dynamic_texture_instantiable": false,
+    "qsg_dynamic_texture_error": "'QSGDynamicTexture' represents a C++ abstract class and cannot be instantiated"
+  },
+  "measurement_instrument": {
+    "framebuffer_linear": true,
+    "codes": {
+      "0": [
+        0,
+        128,
+        64,
+        255
+      ],
+      "32": [
+        32,
+        128,
+        64,
+        255
+      ],
+      "64": [
+        64,
+        128,
+        64,
+        255
+      ],
+      "128": [
+        128,
+        128,
+        64,
+        255
+      ],
+      "192": [
+        192,
+        128,
+        64,
+        255
+      ],
+      "255": [
+        255,
+        128,
+        64,
+        255
+      ]
+    },
+    "note": "an exactly linear 8-bit framebuffer lets the probe carry a byte-split float32 payload through the readback without loss"
+  },
+  "missing_data": {
+    "all_missing": {
+      "transport": "image_provider_texture_type_rgba32f",
+      "shader": "application weather.frag (float decoder)",
+      "blend": 0.5,
+      "image_status": "Ready",
+      "shader_status": "Compiled",
+      "shader_error": "",
+      "frame_size": [
+        48,
+        64
+      ],
+      "alpha_pixels": 0,
+      "significant_alpha_pixels": 0,
+      "total_pixels": 3072,
+      "interpolated_min": 0.0,
+      "interpolated_max": 0.0,
+      "nan_values_in_readback": 0,
+      "raw_center_pixel": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "numerical": {
+        "max_abs_error": Infinity,
+        "flip_rows": false,
+        "flip_y": false,
+        "compared_pixels": 0,
+        "limit": 2e-05,
+        "passed": false
+      },
+      "provider_requests": 4,
+      "case": "all_missing"
+    },
+    "partially_missing": {
+      "transport": "image_provider_texture_type_rgba32f",
+      "shader": "application weather.frag (float decoder)",
+      "blend": 0.5,
+      "image_status": "Ready",
+      "shader_status": "Compiled",
+      "shader_error": "",
+      "frame_size": [
+        48,
+        64
+      ],
+      "alpha_pixels": 2560,
+      "significant_alpha_pixels": 2560,
+      "total_pixels": 3072,
+      "interpolated_min": -1000.0,
+      "interpolated_max": 878.4846801757812,
+      "nan_values_in_readback": 0,
+      "raw_center_pixel": [
+        60,
+        0,
+        0,
+        255
+      ],
+      "numerical": {
+        "max_abs_error": 0.0001220703125,
+        "flip_rows": false,
+        "flip_y": false,
+        "compared_pixels": 2560,
+        "limit": 2e-05,
+        "passed": false
+      },
+      "provider_requests": 4,
+      "case": "partially_missing"
+    },
+    "finite_control": {
+      "transport": "image_provider_texture_type_rgba32f",
+      "shader": "application weather.frag (float decoder)",
+      "blend": 0.5,
+      "image_status": "Ready",
+      "shader_status": "Compiled",
+      "shader_error": "",
+      "frame_size": [
+        48,
+        64
+      ],
+      "alpha_pixels": 3072,
+      "significant_alpha_pixels": 3072,
+      "total_pixels": 3072,
+      "interpolated_min": -1000.0,
+      "interpolated_max": 878.4846801757812,
+      "nan_values_in_readback": 0,
+      "raw_center_pixel": [
+        60,
+        0,
+        0,
+        255
+      ],
+      "numerical": {
+        "max_abs_error": 0.0001220703125,
+        "flip_rows": false,
+        "flip_y": false,
+        "compared_pixels": 3072,
+        "limit": 2e-05,
+        "passed": false
+      },
+      "provider_requests": 4,
+      "case": "finite_control"
+    }
+  },
+  "missing_data_packed": {
+    "all_missing": {
+      "transport": "image_provider_rgba8888_packed",
+      "shader": "application weather.frag (byte-packed decoder, unchanged)",
+      "blend": 0.5,
+      "image_status": "Ready",
+      "shader_status": "Compiled",
+      "shader_error": "",
+      "frame_size": [
+        48,
+        64
+      ],
+      "alpha_pixels": 0,
+      "significant_alpha_pixels": 0,
+      "total_pixels": 3072,
+      "interpolated_min": 0.0,
+      "interpolated_max": 0.0,
+      "nan_values_in_readback": 0,
+      "raw_center_pixel": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "numerical": {
+        "max_abs_error": Infinity,
+        "flip_rows": false,
+        "flip_y": false,
+        "compared_pixels": 0,
+        "limit": 2e-05,
+        "passed": false
+      },
+      "provider_requests": 4
+    },
+    "partially_missing": {
+      "transport": "image_provider_rgba8888_packed",
+      "shader": "application weather.frag (byte-packed decoder, unchanged)",
+      "blend": 0.5,
+      "image_status": "Ready",
+      "shader_status": "Compiled",
+      "shader_error": "",
+      "frame_size": [
+        48,
+        64
+      ],
+      "alpha_pixels": 2560,
+      "significant_alpha_pixels": 2560,
+      "total_pixels": 3072,
+      "interpolated_min": -1000.0,
+      "interpolated_max": 878.4846801757812,
+      "nan_values_in_readback": 0,
+      "raw_center_pixel": [
+        60,
+        0,
+        0,
+        255
+      ],
+      "numerical": {
+        "max_abs_error": 0.0001220703125,
+        "flip_rows": false,
+        "flip_y": false,
+        "compared_pixels": 2560,
+        "limit": 2e-05,
+        "passed": false
+      },
+      "provider_requests": 4
+    },
+    "finite_control": {
+      "transport": "image_provider_rgba8888_packed",
+      "shader": "application weather.frag (byte-packed decoder, unchanged)",
+      "blend": 0.5,
+      "image_status": "Ready",
+      "shader_status": "Compiled",
+      "shader_error": "",
+      "frame_size": [
+        48,
+        64
+      ],
+      "alpha_pixels": 3072,
+      "significant_alpha_pixels": 3072,
+      "total_pixels": 3072,
+      "interpolated_min": -1000.0,
+      "interpolated_max": 878.4846801757812,
+      "nan_values_in_readback": 0,
+      "raw_center_pixel": [
+        60,
+        0,
+        0,
+        255
+      ],
+      "numerical": {
+        "max_abs_error": 0.0001220703125,
+        "flip_rows": false,
+        "flip_y": false,
+        "compared_pixels": 3072,
+        "limit": 2e-05,
+        "passed": false
+      },
+      "provider_requests": 4
+    }
+  },
+  "summary": {
+    "control_packed_max_abs_error": 0.0001220703125,
+    "control_packed_probe_position_max_abs_error": 0.0,
+    "float_through_image_provider_max_abs_error": 1000.0,
+    "qsg_texture_provider_max_abs_error": 1000.0,
+    "float_through_texture_type_provider_max_abs_error": 0.0001220703125,
+    "float_through_texture_type_provider_probe_position_max_abs_error": 0.0,
+    "float_transport_sampled_cells_exact": true,
+    "float_transport_isolated_replication_error": 0.0001220703125,
+    "float_transport_isolated_replication_probe_position_error": 0.0,
+    "all_missing_alpha_pixels": 0,
+    "all_missing_significant_alpha_pixels": 0,
+    "partially_missing_alpha_pixels": 2560,
+    "partially_missing_significant_alpha_pixels": 2560,
+    "finite_control_max_abs_error": 0.0001220703125,
+    "finite_control_alpha_pixels": 3072,
+    "simple_texture_node_rgba32f": "RGBA32F",
+    "simple_texture_node_rgba32f_flags": [],
+    "simple_texture_node_rgba32f_error": null,
+    "simple_texture_node_rgba8888_packed": "RGBA8",
+    "simple_texture_node_rgba8888_packed_error": null,
+    "create_texture_from_image_rgba32f": null,
+    "qimage_format_r32f_available": false,
+    "float_transport_via_qsg": true,
+    "float_transport_via_image_provider": false,
+    "missing_data_zero_alpha": true
+  },
+  "harness_sha256": "1b0ae7c3d0b0f3f0920b1b6447aafc90f586749434d72c645df11afb81732e48"
+}

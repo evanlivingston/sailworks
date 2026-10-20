@@ -186,7 +186,83 @@ def _field_images(staged):
     return tuple(images)
 
 
-def stage_field(
+def _lattice_plan(sampler, window, index):
+    """The gridded form's lattice, and the lattice's nodes the field holds.
+
+    The lattice is a regular grid in the viewport's projection, so the GPU's
+    2x2 texelFetch bilinear becomes a geographic interpolation.  Its origin is
+    quantised on the global grid, so its nodes keep their positions when the
+    window moves.
+
+    A lattice node that coincides with one of the field's own nodes takes
+    that node's value: the field already holds it, so the gridded form never
+    asks the sampler for it twice.  The remaining nodes are sampled in the
+    field's own sampling pass, so the gridded form adds no second pass.
+    """
+    from gweatherrouting.rendering.weathergrid import build_lattice, lattice_spacing
+
+    spacing = lattice_spacing(sampler, window)
+    if not spacing:
+        return None
+    lattice = build_lattice(window, spacing)
+    lons, lats = lattice.nodes()
+    held = np.full(len(lats), -1, dtype=np.int64)
+    for position, key in enumerate(
+        _node_key((float(a), float(b))) for a, b in zip(lats, lons)
+    ):
+        node = index.get(key)
+        if node is not None:
+            held[position] = node
+    return lattice, lons, lats, held
+
+
+def _gridded_form(plan, staged, offset, field_staged):
+    """The gridded form of one field, from the field's own sampling pass.
+
+    The lattice's nodes that the field already holds take the field's own
+    value; the rest take the value sampled alongside the field's nodes.  The
+    values are therefore the CPU sampler's values at the lattice's node
+    positions, a missing node stays missing, and no weather is decoded twice.
+    """
+    from gweatherrouting.qt.gpuweather import encode_component
+    from gweatherrouting.rendering.weathergrid import GriddedField
+
+    lattice, _lons, lats, held = plan
+    count = len(lats)
+    values = np.full((count, 2), np.nan)
+    second = np.full_like(values, np.nan)
+    origins = [""] * count
+    missing = held < 0
+    if missing.any():
+        values[missing] = np.asarray(staged.first[0][offset:])[missing]
+        second[missing] = np.asarray(staged.second[0][offset:])[missing]
+        names = list(staged.sources[offset:])
+        for position, name in zip(np.flatnonzero(missing), names):
+            origins[position] = name
+    kept = np.flatnonzero(~missing)
+    if len(kept):
+        nodes = held[kept]
+        values[kept] = np.asarray(field_staged.first[0]).reshape(-1, 2)[nodes]
+        second[kept] = np.asarray(field_staged.second[0]).reshape(-1, 2)[nodes]
+        for position, node in zip(kept, nodes):
+            origins[position] = field_staged.sources[node]
+    rows, cols = lattice.shape
+    grid = np.asarray(values).reshape(cols, rows, 2).transpose(1, 0, 2)
+    other = np.asarray(second).reshape(cols, rows, 2).transpose(1, 0, 2)
+    images = tuple(
+        encode_component(plane)
+        for plane in (
+            grid[:, :, 0],
+            grid[:, :, 1],
+            other[:, :, 0],
+            other[:, :, 1],
+        )
+    )
+    grid_staged = StagedWind(staged.before, staged.after, grid, other, tuple(origins))
+    return GriddedField(lattice=lattice, staged=grid_staged, images=images)
+
+
+def stage_field(  # noqa: C901 - native/gridded forms share one sampling pass
     sampler,
     stamp,
     window,
@@ -196,6 +272,8 @@ def stage_field(
     view=None,
     land_mask=None,
     geometry=None,
+    memo=None,
+    grid=False,
 ):
     """Stage the geographic numerical field of one spatial window.
 
@@ -203,6 +281,18 @@ def stage_field(
     the wind parameter at those nodes.  It does not depend on the exact
     view, so a covered camera move reuses it without decoding weather or
     sampling it again.
+
+    With ``grid`` the field also carries its *gridded form*: the same values
+    on a regular lattice in the viewport's projection, which is what the GPU's
+    fill interpolates.  The lattice's nodes are sampled in the field's own
+    pass, and the lattice nodes that coincide with the field's own nodes
+    reuse the field's value, so the gridded form adds no second pass over
+    the weather and the CPU sampler stays the reference authority.
+
+    A supplied ``memo`` (a :class:`~gweatherrouting.rendering.weatherstaging.
+    NodeSampleMemo`) lets a re-centred window reuse the per-node endpoints and
+    land decisions of the window it overlaps.  The memo is a pure function of
+    the same inputs, so the staged field is bit-identical to a cold staging.
     """
     from gweatherrouting.qt.gpuweatherfields import GeographicField, NativeGridGeometry
 
@@ -221,28 +311,65 @@ def stage_field(
     points = geometry.points if reuse else _native_points(sampler, window, cancel)
     if points is None:
         return None
-    staged = stage_wind(
-        sampler, stamp, points[:, 0][None, :], points[:, 1][None, :], cancel
-    )
-    if staged is None:
-        return None
-    if any(
-        np.any(np.linalg.norm(a, axis=-1) > 250) for a in (staged.first, staged.second)
-    ):
-        raise ValueError("Wind exceeds bounded GPU symbol range")
     index = (
         geometry.index
         if reuse
         else {_node_key(point): position for position, point in enumerate(points)}
     )
+    # The gridded form: a regular lattice in the viewport's projection.  Its
+    # nodes join the field's own nodes in ONE sampling pass, so the gridded
+    # form adds no second pass over the weather; the nodes the field already
+    # holds are reused instead of sampled again.
+    plan = _lattice_plan(sampler, window, index) if grid else None
+    query_lats = points[:, 0]
+    query_lons = points[:, 1]
+    if plan is not None:
+        _lattice, lons, lats, held = plan
+        missing = held < 0
+        query_lats = np.concatenate((query_lats, lats[missing]))
+        query_lons = np.concatenate((query_lons, lons[missing]))
+    staged = stage_wind(
+        sampler,
+        stamp,
+        query_lats[None, :],
+        query_lons[None, :],
+        cancel,
+        memo=memo,
+        memo_namespace=(identity.source, identity.before, identity.after),
+        node_key=_node_key,
+    )
+    if staged is None:
+        return None
+    count = len(points)
+    field_staged = StagedWind(
+        staged.before,
+        staged.after,
+        staged.first[:, :count],
+        staged.second[:, :count],
+        staged.sources[:count],
+    )
+    if any(
+        np.any(np.linalg.norm(a, axis=-1) > 250)
+        for a in (field_staged.first, field_staged.second)
+    ):
+        raise ValueError("Wind exceeds bounded GPU symbol range")
     land_flags = geometry.land_flags if reuse else None
     if view is not None and not view.over_land and land_flags is None:
+        quality = shoreline_quality(view.get_scale())
         land_mask.refresh_source(view.get_scale())
         flags = []
         for point in points:
             if cancel():
                 return None
-            flags.append(land_mask.contains(*point))
+            key = _node_key(point)
+            cached = memo.get_land(key, quality) if memo is not None else None
+            if cached is not None:
+                flags.append(cached)
+                continue
+            over_land = land_mask.contains(*point)
+            flags.append(over_land)
+            if memo is not None:
+                memo.put_land(key, quality, over_land)
         land_flags = np.asarray(flags, dtype=bool)
         land_flags.setflags(write=False)
     points.setflags(write=False)
@@ -254,12 +381,15 @@ def stage_field(
         if any(record.element in ("UGRD", "VGRD") for record in grid.records):
             geometry = NativeGridGeometry.from_index(grid)
             grids.setdefault(geometry.key(), geometry)
+    grid_field = (
+        _gridded_form(plan, staged, count, field_staged) if plan is not None else None
+    )
     return GeographicField(
         identity=identity,
         points=points,
-        staged=staged,
+        staged=field_staged,
         index=index,
-        images=_field_images(staged),
+        images=_field_images(field_staged),
         generation=identity.key(),
         grids=tuple(grids.values()),
         land_flags=land_flags,
@@ -269,6 +399,7 @@ def stage_field(
             if view is None or view.over_land
             else shoreline_quality(view.get_scale())
         ),
+        grid=grid_field,
     )
 
 
@@ -506,7 +637,9 @@ def stage_barbs(
     return atlas
 
 
-def _stage_with_field(sampler, stamp, view, land_mask, cancel, store, source):
+def _stage_with_field(
+    sampler, stamp, view, land_mask, cancel, store, source, grid=False
+):
     """Stage the current-view selection from a resident geographic field."""
     from gweatherrouting.qt.gpuweatherfields import FieldIdentity
 
@@ -526,7 +659,14 @@ def _stage_with_field(sampler, stamp, view, land_mask, cancel, store, source):
     field = store.acquire(identity)
     if field is None or (not view.over_land and field.land_flags is None):
         field = stage_field(
-            sampler, stamp, window, identity, cancel, view=view, land_mask=land_mask
+            sampler,
+            stamp,
+            window,
+            identity,
+            cancel,
+            view=view,
+            land_mask=land_mask,
+            grid=grid,
         )
         if field is None:
             return None
@@ -546,6 +686,7 @@ def _stage_with_field(sampler, stamp, view, land_mask, cancel, store, source):
             cancel,
             view=view,
             land_mask=land_mask,
+            grid=grid,
         )
         if fallback is None:
             return None
