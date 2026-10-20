@@ -5,6 +5,14 @@ handle GRIB decoding. `Grib`, `GribManager`, private cursor/display handles,
 ordinary routing, current-assisted routing, and frontier batches all use the
 same record selection, bilinear interpolation, and time blending rules.
 
+**Display-policy follow-up (2026-10-20; not implemented):** the user-approved
+[forecast coherence decision](rendering-performance-plan.md#forecast-display-coherence) requires pinning the
+weather display to one file/run/member, with additional files only for explicit
+geographic stitching. The shared-sampler behavior documented below remains current;
+do not read the new display policy as an implemented change to cursor/display or
+routing selection. In particular, existing cross-file pairing and fallback are not
+permission to mix predictions in the future coherent display path.
+
 ## Records and selection
 
 Each relevant band is indexed once by element, level, reference time, valid

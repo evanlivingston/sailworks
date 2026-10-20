@@ -323,3 +323,18 @@ Standing constraints carried by every implementing issue:
 3. Negative results are preserved with their reasons.
 4. Render callbacks are proxies, not presentation. Readback is fidelity, not timing.
 5. Every change is feature-flagged, default OFF, with the default path byte-identical.
+
+## 10. Display forecast coherence — accepted policy, implementation pending
+
+The 2026-10-20 user review of epic #51 requires one chosen forecast file and coherent
+model run/member for the weather display, except explicitly defined geographic
+stitching. Spatial/time interpolation within that selection is allowed; implicit
+cross-file components, temporal endpoints, older-run gap filling and spatial blending
+across forecast ownership are not. A file containing multiple runs/members must still
+respect the chosen identity. Ensemble statistics are explicit products, not fallback.
+
+This is a display-policy amendment, not a change to routing selection or a claim of
+complete the reference application parity. Implementation is pending in a focused follow-up; #70's
+current measured candidate remains unchanged. See
+[forecast display coherence](rendering-performance-plan.md#forecast-display-coherence) for the source audit,
+acceptance contract, separate resampling question and #51 progress checkpoint.
