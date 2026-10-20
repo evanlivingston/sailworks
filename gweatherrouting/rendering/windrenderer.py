@@ -49,16 +49,9 @@ class WindLandMask:
         # Match the base chart's scale tiers instead of reading full-resolution
         # global polygons for a zoomed-out view. Prefer finer data if this tier
         # is absent, then fall back to any installed lower-resolution tier.
-        if scale > 5000:
-            quality = "c"
-        elif scale > 500:
-            quality = "l"
-        elif scale > 200:
-            quality = "i"
-        elif scale >= 15:
-            quality = "h"
-        else:
-            quality = "f"
+        from gweatherrouting.rendering.windpainter import shoreline_quality
+
+        quality = shoreline_quality(scale)
         qualities = (quality,) + tuple(
             q for q in ("f", "h", "i", "l", "c") if q != quality
         )

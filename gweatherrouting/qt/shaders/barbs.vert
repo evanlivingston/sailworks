@@ -10,6 +10,8 @@ layout(std140, binding = 0) uniform buf {
     mat4 qt_Matrix;
     float qt_Opacity;
     float blend;
+    int nodeIdIndirection;
+    int fieldColumns;
 };
 layout(binding = 1) uniform sampler2D u0;
 layout(binding = 2) uniform sampler2D v0;
@@ -17,6 +19,7 @@ layout(binding = 3) uniform sampler2D u1;
 layout(binding = 4) uniform sampler2D v1;
 layout(binding = 5) uniform sampler2D anchorX;
 layout(binding = 6) uniform sampler2D anchorY;
+layout(binding = 7) uniform sampler2D nodeId;
 
 uint fieldBits(sampler2D field, ivec2 cell) {
     uvec3 low = uvec3(round(texelFetch(field, ivec2(cell.x * 2, cell.y), 0).rgb * 255.0));
@@ -34,15 +37,30 @@ bool finiteVector(uvec2 bits) {
 
 void main() {
     ivec2 size = textureSize(u0, 0) / ivec2(2, 1);
+    // With the node-id indirection the mesh cell indexes the selection, and
+    // the selection names the node of the resident field.  Without it the
+    // mesh cell indexes the field directly, as the historical path does.
+    ivec2 grid = nodeIdIndirection == 1 ? textureSize(nodeId, 0) / ivec2(2, 1) : size;
     // A 2N-1 mesh has two vertices per symbol axis. Every other mesh cell
     // connects neighboring quads; its fractional marker discards that gap.
-    ivec2 vertex = ivec2(round(qt_MultiTexCoord0 * vec2(size * 2 - 1)));
+    ivec2 vertex = ivec2(round(qt_MultiTexCoord0 * vec2(grid * 2 - 1)));
     ivec2 cell = vertex / 2;
     marker = vec2(cell);
     localPoint = (vec2(vertex % 2) * 2.0 - 1.0) * 32.0;
     vec2 anchor = vec2(decodeField(anchorX, cell), decodeField(anchorY, cell));
-    uvec2 aBits = uvec2(fieldBits(u0, cell), fieldBits(v0, cell));
-    uvec2 bBits = uvec2(fieldBits(u1, cell), fieldBits(v1, cell));
+    ivec2 field = cell;
+    if (nodeIdIndirection == 1) {
+        int id = int(decodeField(nodeId, cell));
+        field = ivec2(max(id, 0) % max(fieldColumns, 1), max(id, 0) / max(fieldColumns, 1));
+    }
+    uvec2 aBits = uvec2(fieldBits(u0, field), fieldBits(v0, field));
+    uvec2 bBits = uvec2(fieldBits(u1, field), fieldBits(v1, field));
+    if (nodeIdIndirection == 1 && decodeField(nodeId, cell) < 0.0) {
+        // An unselected cell carries no symbol: a missing wind discards it
+        // exactly like a missing datum, and never reaches the fragment stage.
+        aBits = uvec2(0x7fc00000u);
+        bBits = aBits;
+    }
     bool valid = blend <= 0.0 ? finiteVector(aBits)
                : (blend >= 1.0 ? finiteVector(bBits)
                   : finiteVector(aBits) && finiteVector(bBits));

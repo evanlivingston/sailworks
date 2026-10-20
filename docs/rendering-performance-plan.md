@@ -25,6 +25,87 @@ For the wider documentation map, see [the documentation index](README.md).
 
 ## Current checkpoint
 
+- **Continuous-weather follow-up (user authorized, PR #72 / #64):** stay in the
+  independent viewport. Prepare a padded geographic window before the camera
+  reaches its edge; reuse numerical fields across zooms only when the existing
+  shoreline-resolution policy is identical; prepare bounded nearby exact times
+  and open time intervals on the same worker. Retain exact source/mask semantics,
+  current-view node selection and honest loading for genuinely unprepared demand.
+  No charts, routing, native-float transport, CPU fallback or default-app changes.
+  Reference is the recorded `viewport-tryout-summary.json` (49/120 pan, 24/24 zoom,
+  16/18 time loading inputs), not another baseline run. Reuse the identical
+  `viewport-interaction` workload, with an explicit continuous-weather check;
+  report input/render proxies separately from weather availability. Success for
+  that bounded workload means zero loading inputs, no stale selections and the
+  existing byte/lifecycle limits respected. Arbitrary jumps beyond prepared
+  coverage may still load. Numerical/source/mask tests remain required; the prior
+  pixel mismatch remains user-deferred, not passed. Budget: 60 minutes, at most
+  three targeted validation rounds and two <=120-second native gate attempts.
+  Stop/report at budget exhaustion or scope expansion; update the decision and
+  evidence before claiming completion. No merge is authorized.
+
+  **Validation state (measured; acceptance not met):** the blocker cleared with
+  a free runner model. Targeted tests passed (86), `black --check` (9 files) and
+  `git diff --check` passed, and two native `viewport-interaction` attempts ran
+  against fixture `1ed1bca1…`. Loading inputs fell from 49/120 to 9/120 pan and
+  from 24/24 to 0/24 zoom; hourly time changes stayed at 12/18 because each
+  unseen open interval is a full field preparation faster than the gate's
+  30 inputs/s sweep. The store retained 33 prepared fields in 58.8 MB with no
+  evictions, so capacity was not the time-phase cause; the declared ceiling is
+  now the 128 MiB decoded-band value. The continuous-weather check still fails,
+  so the gate verdict is **fail** and completion is not claimed. Evidence:
+  [viewport-continuous-summary.json](profiles/rendering/2026-10-19/viewport-continuous-summary.json).
+  Decision: **narrow** — pan and zoom are continuous on this workload; time
+  scrubbing needs prefetch prioritisation or honest loading. The two-attempt
+  budget is exhausted; do not start another native run without recording a new
+  budget first.
+
+  **Rescope decision (2026-10-19):** ADR-001 §4.6 (D6) makes the independent
+  viewport the target weather interaction path. Issues #64–#68 are re-pointed to
+  it; the legacy frame assembler stays the default application path until #70
+  decides rollout. The follow-up history is split into `2e4617e` (reuse and
+  correctness) and `8370945` (temporary speculative prefetch). The prefetch
+  precursor is explicitly temporary: #66 supersedes its scheduling, #67
+  supersedes its time handling, and #73 removes it once both land. Do not extend
+  the precursor or treat its 12/18 time result as the #67 design.
+
+- **User-directed pivot — independent GRIB viewport:** replace the GRIB interaction
+  subsystem rather than continue adapting `TrackMap._gpu_frame`. The new viewport
+  owns camera/time state, asynchronous field demand and GPU portrayal. Reuse the
+  existing decoder, weather/source semantics and corrected field/selection shaders,
+  but do not depend on legacy map-frame assembly, chart readiness or CPU-symbol
+  fallback for camera motion. Continue on the existing #64 branch; no default-app
+  replacement or merge until the independent vertical path is reviewed. Earlier
+  integration attempts remain evidence, not proof of a finished foundation.
+  The independent path launches with `python -m gweatherrouting.qt.gribviewport`:
+  no paths means the saved ordered forecast selection (read only); `--data-dir`
+  points at another saved selection, and `--time` freezes the forecast UTC clock.
+  Drag pans, wheel zooms, trackpad pans; the time control and ±1-hour buttons
+  change forecast demand. This is a wind-barb viewport, not charts/fill/contours.
+  The default application and its opt-in exact-view atlas path remain unchanged.
+
+  **Try-out gate contract:** use the existing gate runner's `viewport-interaction`
+  gate with the recorded 22-source fixture. Exercise 120 sustained 12-pixel pan
+  inputs, return, anchored zoom and forecast-time crossings; wait for matching
+  content after each phase. Check source order, current-only content, loading on
+  misses, cancellation/close, and declared retained-byte limits. Record dispatch,
+  handler and render-callback proxy counts; do not invent a presentation-FPS or
+  speedup acceptance threshold. Numerical-field publications and selection
+  publications are separate, neither is a hardware-upload measurement. Visual
+  fidelity remains failed/deferred, not passed. Budget: two targeted test rounds
+  and one <=120-second native gate attempt, no baseline rerun. Stop and report at
+  budget exhaustion; keep work for review, not merge.
+  Harness setup exception: the first gate invocation failed on a shadowed
+  `tools` import before Qt or the workload started. Load the existing fixture
+  verifier by path, as the gate runner does its registry; retain that
+  NOT-EVALUATED log separately. One actual native attempt remains in budget.
+  **Result/decision:** one actual native run passed all six correctness checks
+  with the 22 saved sources; 75 targeted tests and changed-file checks passed.
+  Continue as a review-only standalone try-out, not finished #64: loading
+  occurred on 49/120 pan, 24/24 zoom and 16/18 time inputs. Selection/preparation
+  is still the weather-availability bottleneck even though input dispatch was
+  responsive. No later milestone or integration is started by this result.
+  Evidence: [`viewport-tryout-summary.json`](profiles/rendering/2026-10-19/viewport-tryout-summary.json).
 - **Architecture decided:** [`adr-001-grib-rendering-architecture.md`](adr-001-grib-rendering-architecture.md).
   Read it first. It reconciles the R0-R5 architecture in
   `docs/rendering-implementation-plan.md` with the 2026-10-19 current-state and
