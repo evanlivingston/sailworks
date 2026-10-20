@@ -274,8 +274,12 @@ class GribViewportModel:
         land_mask=None,
         resident_time_window=False,
         grid=False,
+        display_identity=None,
     ):
         self.paths = tuple(str(path) for path in paths)
+        if display_identity is not None and len(self.paths) != 1:
+            raise ValueError("A display identity must belong to exactly one file")
+        self.display_identity = display_identity
         self._land_mask = land_mask
         # The gridded form of the field is staged only when the numerical
         # fill needs it.  The default path stages the node list alone, so
@@ -892,6 +896,7 @@ class GribViewportModel:
                         metadata.last_forecast,
                         metadata.model_name,
                         band_cache=bands,
+                        display_identity=self.display_identity,
                     )
                 )
             # Opening/indexing must never happen while holding the caller's lock.
@@ -1153,6 +1158,7 @@ def _source_key(source):
         source.centre,
         source.start_time,
         source.last_forecast,
+        getattr(source, "display_identity", None),
         version,
     )
 
@@ -1224,7 +1230,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
         resets neither the weather nor the camera nor the forecast time.
         """
 
-        prepared = Signal()
+        prepared = Signal(int)
         cameraChanged = Signal(object)  # noqa: N815 - Qt signal name
         stateChanged = Signal(str)  # noqa: N815 - Qt signal name
         chartPublished = Signal(object)  # noqa: N815 - Qt signal name
@@ -1240,6 +1246,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
         ):
             super().__init__(parent)
             self._model = model
+            self._source_generation = 0
+            self._disposed = False
+            self._wind_opacity = 1.0
             self._camera = None
             self._drag = None
             self._state = "loading"
@@ -1250,6 +1259,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             format_.setSamples(4)
             format_.setAlphaBufferSize(8)
             self.setFormat(format_)
+            self.setClearColor(Qt.GlobalColor.transparent)
             self.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
             self._provider = WeatherImageProvider()
             self.engine().addImageProvider("weather", self._provider)
@@ -1353,7 +1363,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self.chartStateChanged.connect(
                 self._chart_state_changed, Qt.ConnectionType.QueuedConnection
             )
-            self._model.on_change = self.prepared.emit
+            self._attach_model()
+            # Parent teardown need not deliver closeEvent to child widgets.
+            self.destroyed.connect(lambda: model.close())
             # This signal is declared by QML, not by the QQuickItem Python stub.
             getattr(self._barbs, "readyChanged").connect(self._readiness_changed)
 
@@ -1448,12 +1460,58 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             if self._barbs.property("ready") and self._model.state == "ready":
                 self._show_state("ready")
 
-        def _refresh(self):
+        def _attach_model(self):
+            generation = self._source_generation
+            self._model.on_change = lambda: self.prepared.emit(generation)
+
+        def replace_model(self, model):
+            """Retire a source immediately; queued old callbacks cannot republish."""
+            if self._chart_model is not None:
+                raise ValueError("Replace chart-enabled viewports as a whole")
+            self._weather.setVisible(False)
+            old = self._model
+            old.on_change = None
+            self._source_generation += 1
+            old.close()  # nonjoining; the owning worker releases private handles
+            self._provider.clear()
+            self._published = self._published_fill = None
+            self._published_generations.clear()
+            self._weather_ready_at = None
+            self._model = model
+            self._attach_model()
+            self._show_state("loading")
+            if self._camera is not None and not self._disposed:
+                self.set_camera(self._camera)
+
+        def set_wind_opacity(self, opacity):
+            self._wind_opacity = max(0.0, min(1.0, float(opacity)))
+            self._barbs.setOpacity(self._wind_opacity)
+
+        def dispose(self):
+            if self._disposed:
+                return
+            self._disposed = True
+            self._source_generation += 1
+            self._model.on_change = None
+            self._model.close()
+            self._chart_timer.stop()
+            if self._chart_model is not None:
+                self._chart_model.close()
+            self._provider.clear()
+            if self._chart_provider is not None:
+                self._chart_provider.clear()
+            self._weather.setVisible(False)
+
+        def _refresh(self, generation):
+            if generation != self._source_generation or self._disposed:
+                return
             if self._camera is not None:
                 self.set_camera(self._camera)
 
         def set_camera(self, camera):
             """Adopt a camera and publish the portrayal it may show."""
+            if self._disposed:
+                return "unavailable"
             began = time.perf_counter()
             state = "loading"
             try:
@@ -1605,7 +1663,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._barbs.setProperty("nodeIdIndirection", True)
             self._barbs.setProperty("fieldColumns", FIELD_COLUMNS)
             self._barbs.setProperty("blend", field.staged.weight(camera.stamp()))
-            self._barbs.setOpacity(1.0)
+            self._barbs.setOpacity(self._wind_opacity)
 
         def publication_counters(self):
             """The published traffic, counted apart by kind and by layer."""
@@ -1706,12 +1764,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             event.accept()
 
         def closeEvent(self, event):  # noqa: N802 - Qt virtual method name
-            self._model.close()
-            if self._chart_model is not None:
-                self._chart_model.close()
-            self._provider.clear()
-            if self._chart_provider is not None:
-                self._chart_provider.clear()
+            self.dispose()
             super().closeEvent(event)
 
     return GribViewport

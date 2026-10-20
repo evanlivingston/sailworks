@@ -143,6 +143,7 @@ class DisplayGrib(Grib):
             source.last_forecast,
         )
         self._arrays = OrderedDict()
+        self.display_identity = getattr(source, "display_identity", None)
         self._pressure_arrays = OrderedDict()
         transform = self.dataset.GetGeoTransform()
         self._lons = (
@@ -151,6 +152,15 @@ class DisplayGrib(Grib):
         self._lats = (
             transform[3] + (np.arange(self.dataset.RasterYSize) + 0.5) * transform[5]
         )
+
+    @property
+    def sampling(self):
+        if "_sampling" not in self.__dict__:
+            from gweatherrouting.core.gribsampling import GridIndex
+            from .displayforecast import restrict_index
+
+            self._sampling = restrict_index(GridIndex(self), self.display_identity)
+        return self._sampling
 
     def close(self):
         self._arrays.clear()
@@ -407,6 +417,7 @@ class WindOverlayRenderer(OverlayRenderer):
             source.start_time,
             source.last_forecast,
             repr(source.bounds),
+            getattr(source, "display_identity", None),
             file_version,
         )
 

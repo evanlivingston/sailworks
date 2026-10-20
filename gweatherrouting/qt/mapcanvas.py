@@ -80,6 +80,7 @@ class TrackMap(QWidget, MercatorProjection):
         self._nav_cache = None  # (key, lat, lon, zoom, QImage)
         self._dash_cache = None  # (key, QImage)
         self._gpu = None
+        self._weather_presenter = None
         self._gpu_sequence = 0
         self._gpu_geometry = None
         self._gpu_batches = ()
@@ -179,31 +180,40 @@ class TrackMap(QWidget, MercatorProjection):
         controller.boat_changed.connect(self._boat_changed)
         controller.settings.register_on_change("smoothZoom", self._set_smooth_zoom)
         controller.settings.register_on_change("panInertia", self._set_pan_inertia)
-        if getattr(controller, "map_renderer", "cpu") == "gpu":
-            try:
-                from .gpupresenter import GpuPresenter
+        # The new host is weather-only. Never start the old full-map GPU host
+        # beside it; charts/marine and complete navigation remain TrackMap's.
+        from .weatherpresenter import WeatherPresenter
 
-                self._gpu = GpuPresenter(self)
-                if self._gpu.active:
-                    controller.set_renderer_status(self, "pending")
-            except (ImportError, RuntimeError, OSError) as exc:
-                import logging
+        self._weather_presenter = WeatherPresenter(self)
+        controller.display_forecast.changed.connect(self._display_forecast_changed)
+        controller.set_renderer_status(self, "pending")
 
-                logging.getLogger("gweatherrouting").warning(
-                    "GPU map unavailable; using CPU: %s", exc
-                )
-                controller.set_renderer_status(self, "cpu", reason=str(exc))
-        elif hasattr(controller, "set_renderer_status"):
-            controller.set_renderer_status(self, "cpu")
+    def _display_forecast_changed(self):
+        self._cancel_cursor()
+        self.wind.forget(self)
+        self._base_cache = None
+        self.weather_coverage.key = None
+        self._weather_presenter.source_changed()
+        # Apply the selected forecast's geographic extents and time bounds
+        sources = self.controller.display_forecast.sources()
+        if sources:
+            self._apply_forecast_extents(sources[0].path)
+            self.time_control.set_time(sources[0].start_time)
+        self.queue_draw()
 
     def update(self, *args):
         super().update(*args)
+        presenter = getattr(self, "_weather_presenter", None)
+        if presenter is not None:
+            presenter.request()
         gpu = getattr(self, "_gpu", None)
         if gpu is not None and gpu.active:
             gpu.request()
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
+        if self._weather_presenter is not None:
+            self._weather_presenter.request()
         if self._gpu is not None and self._gpu.active:
             self._gpu.request()
 
@@ -279,6 +289,11 @@ class TrackMap(QWidget, MercatorProjection):
         if self.disposed:
             return
         self.disposed = True
+        if self._weather_presenter is not None:
+            self.controller.display_forecast.changed.disconnect(
+                self._display_forecast_changed
+            )
+            self._weather_presenter.close()
         if self._gpu is not None:
             self._gpu.close()
         if hasattr(self.controller, "forget_renderer"):
@@ -319,6 +334,8 @@ class TrackMap(QWidget, MercatorProjection):
             pass
 
     def hideEvent(self, event):  # noqa: N802 - Qt virtual method name
+        if self._weather_presenter is not None:
+            self._weather_presenter.suspend()
         if self._gpu is not None:
             self._gpu.suspend()
         self._gpu_geometry = None
@@ -436,7 +453,7 @@ class TrackMap(QWidget, MercatorProjection):
             ),
             tuple(
                 (id(grib), getattr(grib, "name", None))
-                for grib in self.controller.core.grib_manager.gribs
+                for grib in self.controller.display_forecast.sources()
             ),
         )
 
@@ -543,6 +560,36 @@ class TrackMap(QWidget, MercatorProjection):
             self.controller.settings.chartPalette
         ].sea.color or (0.83, 0.92, 0.93, 1.0)
         return QColor.fromRgbF(*color)
+
+    def _apply_forecast_extents(self, path=None):
+        """Zoom to the file's bounds when a display forecast is selected."""
+        try:
+            from gweatherrouting.core.grib import Grib
+
+            meta = Grib.parse_metadata(str(path or ""))
+            bounds = meta.bounds
+            # bounds is expected [south, west, north, east] or similar
+            south, west, north, east = (
+                (float(bounds[0]), float(bounds[1]), float(bounds[2]), float(bounds[3]))
+                if len(bounds) >= 4
+                else (0, 0, 0, 0)
+            )
+            self._center_lat = (south + north) / 2
+            self._center_lon = (west + east) / 2
+            # Rough zoom from span; adjust for view size
+            lat_span = abs(north - south)
+            lon_span = abs(east - west)
+            span = max(lat_span, lon_span)
+            if span > 0:
+                # Approximate: world ~180 lat; at zoom ~3 per 30 deg; scale roughly
+                self._zoom = max(
+                    1, min(20, round(math.log2(180.0 / max(span, 1.0)) + 3))
+                )
+            else:
+                self._zoom = 6.0
+            self.queue_draw()
+        except Exception:
+            pass
 
     def _zoom_preview_target(self, cached_lat, cached_lon, cached_zoom, size):
         """Target rect that stretches a cached layer through the zoom anchor."""
@@ -1235,7 +1282,14 @@ class TrackMap(QWidget, MercatorProjection):
                 self._base_cache[4],
             )
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self._paint_wind_barbs(painter)
+        if not self._weather_presenter.active:
+            self._paint_wind_barbs(painter)
+            self._paint_foreground(painter)
+        painter.end()
+        self._check_weather_coverage()
+
+    def _paint_foreground(self, painter):
+        """Complete navigation/AIS/isochrones and dynamic overlays above weather."""
         self._nav_cache = self._draw_reusable_layer(
             painter, self._nav_cache, self._nav_key(), self._navigation_image
         )
@@ -1244,8 +1298,6 @@ class TrackMap(QWidget, MercatorProjection):
         self._paint_track_overlay(painter)
         self._paint_dashboard(painter)
         self._paint_caption(painter)
-        painter.end()
-        self._check_weather_coverage()
 
     def _paint_wind_barbs(self, painter):
         """Crisp fixed-size foreground barbs over the scaled base image."""
@@ -1663,6 +1715,8 @@ class TrackMap(QWidget, MercatorProjection):
             widget.setEnabled(enabled)
 
     def _check_weather_coverage(self):
+        from gweatherrouting.core.forecastselection import forecast_source
+
         if self.disposed or self.is_moving():
             self.coverage_notice.hide()
             self.coverage_fetch.hide()
@@ -1686,11 +1740,16 @@ class TrackMap(QWidget, MercatorProjection):
         )
         points = tuple((lat, (lon + 180) % 360 - 180) for lat, lon in points)
         self.weather_coverage.request(
-            self.controller.data.selection.models,
+            tuple(
+                dict.fromkeys(
+                    forecast_source(source)
+                    for source in self.controller.display_forecast.sources()
+                )
+            ),
             fields,
             self.time_control.time,
             points,
-            tuple(self.controller.core.grib_manager.gribs),
+            self.controller.display_forecast.sources(),
         )
         if (
             not self.weather_coverage.running
@@ -1895,7 +1954,7 @@ class TrackMap(QWidget, MercatorProjection):
     def _weather_context(self):
         return (
             self.time_control.time,
-            tuple(self.controller.core.grib_manager.gribs),
+            self.controller.display_forecast.sources(),
             self._center_lat,
             self._center_lon,
             self._zoom,
@@ -2007,6 +2066,8 @@ class TrackMap(QWidget, MercatorProjection):
             self.coverage_notice.adjustSize()
             self._layout_coverage()
         super().resizeEvent(event)
+        if self._weather_presenter is not None:
+            self._weather_presenter.request()
         if self._gpu is not None and self._gpu.active:
             self._gpu.request()
 
@@ -2072,7 +2133,7 @@ class TrackMap(QWidget, MercatorProjection):
             getattr(settings, "gribWindStyle", "barbs"),
             getattr(settings, "gribBarbDensity", "standard"),
         )
-        sources = tuple((grib,) for grib in self.controller.core.grib_manager.gribs)
+        sources = tuple((grib,) for grib in self.controller.display_forecast.sources())
         if self.wind_visible or getattr(settings, "gribIsobarsVisible", True):
             # Fill/isobars stay in the cached base image (smooth when scaled);
             # barbs paint crisp in paintEvent via _paint_wind_barbs().

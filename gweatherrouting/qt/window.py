@@ -1118,13 +1118,15 @@ class PreviewWindow(QMainWindow):
 
     def _forecast_loaded(self, grib):
         imported = self.controller.data.operation == "forecast"
-        if imported:
-            self.timeline.pause()
-            self.controller.time_control.set_time(grib.start_time)
+        # Import/enabling is not a display choice and must not reset either clock.
         self.timeline.refresh()
         self.map.queue_draw()
         self.statusBar().showMessage(
-            "Forecast imported and enabled" if imported else "Forecast models updated",
+            (
+                "Forecast imported; choose its display run in Weather"
+                if imported
+                else "Forecast models updated"
+            ),
             5000,
         )
 
