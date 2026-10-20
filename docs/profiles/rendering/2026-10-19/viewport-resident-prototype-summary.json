@@ -25,9 +25,22 @@
   "failing_check": "weather remains current during every interaction input",
   "reference": {
     "artifact": "viewport-continuous-summary.json (retired precursor) and viewport-double-buffer-summary.json (#66 no lookahead)",
-    "pan_loading": {"prototype": "0/120", "double_buffer": "18/120", "precursor": "5/120"},
-    "zoom_loading": {"prototype": "0/24", "double_buffer": "0/24", "precursor": "0/24"},
-    "time_loading": {"prototype": "11/18", "retention_only": "16/18", "double_buffer": "16/18", "precursor": "12/18"}
+    "pan_loading": {
+      "prototype": "0/120",
+      "double_buffer": "18/120",
+      "precursor": "5/120"
+    },
+    "zoom_loading": {
+      "prototype": "0/24",
+      "double_buffer": "0/24",
+      "precursor": "0/24"
+    },
+    "time_loading": {
+      "prototype": "11/18",
+      "retention_only": "16/18",
+      "double_buffer": "16/18",
+      "precursor": "12/18"
+    }
   },
   "observations": {
     "prepared_while_presenting": 15,
@@ -101,22 +114,59 @@
     "cold_ready_seconds": 1.376738875056617,
     "close_ms": 20.816625095903873
   },
-  "native_attempts": 5,
-  "native_attempt_seconds": [11.565, 11.128, 11.085, 11.24, 10.67],
+  "native_attempts": 6,
+  "native_attempt_seconds": [
+    11.565,
+    11.128,
+    11.085,
+    11.24,
+    10.67,
+    10.9
+  ],
   "native_attempt_numbers": {
-    "run_1": {"pan_loading": "0/120", "zoom_loading": "0/24", "time_loading": "16/18"},
-    "run_2": {"pan_loading": "0/120", "zoom_loading": "0/24", "time_loading": "16/18"},
-    "run_3": {"pan_loading": "0/120", "zoom_loading": "0/24", "time_loading": "16/18"},
-    "run_4_retention_only": {"pan_loading": "0/120", "zoom_loading": "0/24", "time_loading": "16/18"},
-    "run_5_retention_and_lookahead": {"pan_loading": "0/120", "zoom_loading": "0/24", "time_loading": "11/18"}
+    "run_1": {
+      "pan_loading": "0/120",
+      "zoom_loading": "0/24",
+      "time_loading": "16/18"
+    },
+    "run_2": {
+      "pan_loading": "0/120",
+      "zoom_loading": "0/24",
+      "time_loading": "16/18"
+    },
+    "run_3": {
+      "pan_loading": "0/120",
+      "zoom_loading": "0/24",
+      "time_loading": "16/18"
+    },
+    "run_4_retention_only": {
+      "pan_loading": "0/120",
+      "zoom_loading": "0/24",
+      "time_loading": "16/18"
+    },
+    "run_5_retention_and_lookahead": {
+      "pan_loading": "0/120",
+      "zoom_loading": "0/24",
+      "time_loading": "11/18"
+    },
+    "run_6_confirmatory": {
+      "pan_loading": "0/120",
+      "zoom_loading": "0/24",
+      "time_loading": "11/18"
+    }
   },
   "targeted_validation": {
-    "tests_passed": 52,
+    "tests_passed": 96,
+    "failed": 0,
+    "skipped": 0,
     "warnings": 1,
     "warning": "GDAL FutureWarning",
+    "suite": "test_gribviewport.py test_gpuweather_fields.py test_weather_barbs.py test_weather_staging.py test_weather_band_cache.py test_gpu_weather.py test_gpu_weather_jobs.py",
     "changed_python_black_check": "pass",
     "whitespace_check": "pass",
-    "full_suite": "not run"
+    "worktree_clean": true,
+    "log": "/private/var/folders/w7/hb5wv1x1715821rqd1_3xf4r0000gn/T/opencode/issue66-final-tests.log",
+    "note": "The earlier 52-test count was the changed-test subset; the full targeted suite is 96."
   },
   "endpoint": "QQuickWindow.afterRendering render-callback proxy; not presentation FPS, input-to-present or scanout",
   "timing_percentile": "nearest rank p95",
@@ -130,7 +180,7 @@
     "semantics": "The memo is a pure function of the same inputs; a new stage_wind test asserts a memoized shifted window is bit-identical to cold staging, and a land-memo test asserts a stored False is a hit. A superseded field is only reused when it actually covers the later demand. The application path passes no memo and is byte-identical."
   },
   "limits": [
-    "The 11/18 time result is one native run after retention plus one-step lookahead; the retention-only run was 16/18",
+    "The 11/18 time result is stable across two independent native runs after retention plus one-step lookahead (runs 5 and 6); the retention-only run was 16/18.",
     "continuous_weather (all 162 ready) stays red as the brief expects",
     "No direct hardware-upload or presentation-FPS measurement",
     "The temporal lookahead is a single N+1 step, not resident time windows; deeper sweeps can still outrun preparation",

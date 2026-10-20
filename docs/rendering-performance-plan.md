@@ -69,6 +69,21 @@ For the wider documentation map, see [the documentation index](README.md).
   supersedes its time handling, and #73 removes it once both land. Do not extend
   the precursor or treat its 12/18 time result as the #67 design.
 
+  **#66 result (2026-10-19):** adopted on `feature/async-double-buffered-66`,
+  stacked on the #64 review branch; nothing was pushed or merged. One cold
+  preparation measured 792 ms, dominated by sampling (331 ms) and the per-node
+  land loop (264 ms); a 120 px-shifted window reuses 91.85% of its nodes. The
+  prototype adds a bounded per-node sampling/land memo, deterministic
+  re-centering of the resident window while presenting, retention of completed
+  superseded fields, and one N+1 temporal lookahead. Native
+  `viewport-interaction` on the 22-source fixture: pan **0/120** loading (was
+  18/120; precursor 5/120), zoom **0/24**, time **11/18** (was 16/18; target
+  ≤12/18). The structural observations hold; gate 10/11 with only
+  `continuous_weather` red. Targeted 96 tests, `black --check` and whitespace
+  clean. Decision: **adopt**; #67 owns resident time windows and broader
+  time-sweep acceptance. Evidence:
+  [viewport-resident-prototype-summary.json](profiles/rendering/2026-10-19/viewport-resident-prototype-summary.json).
+
 - **User-directed pivot — independent GRIB viewport:** replace the GRIB interaction
   subsystem rather than continue adapting `TrackMap._gpu_frame`. The new viewport
   owns camera/time state, asynchronous field demand and GPU portrayal. Reuse the
