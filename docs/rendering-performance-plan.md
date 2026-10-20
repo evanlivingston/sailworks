@@ -109,6 +109,33 @@ For the wider documentation map, see [the documentation index](README.md).
   migration. Evidence:
   [viewport-time-window-summary.json](profiles/rendering/2026-10-19/viewport-time-window-summary.json).
 
+- **#73 result (2026-10-19):** cleanup of the retired precursor on
+  `feature/async-double-buffered-66`; nothing was pushed, merged or opened as a PR.
+  `rg` finds none of `_prefetch_request`, `_prefetch_attempts`, `_speculative`,
+  `prefetch_completed` or `prefetch_rejected` in `gweatherrouting/qt/gribviewport.py`,
+  and the model's 15 counters hold no prefetch counter. The precursor's unexplained
+  `PREPARED_VIEW_FACTOR`/`REFILL_VIEW_FACTOR` are replaced by the window/guard policy
+  named by #66/#67 — `RESIDENT_WINDOW_FACTOR` 1.5 and `REFILL_GUARD_FACTOR` 1.25 — with
+  the values unchanged: the resident window is 1.5x the viewport (193 px per side of
+  runway on the recorded 900x700 camera, about 0.53 s of pan at the recorded 360 px/s)
+  and the guard fires 112.5 px (about 0.31 s) before the camera leaves that window,
+  against a measured 159 ms re-centred window and a 792 ms cold window. The 128 MiB
+  store ceiling is re-derived and kept: the observed worst case is 33 fields in
+  58,785,331 B (43.8% of the cap, 2.28x margin, 0 evictions), #67's resident time window
+  holds 13 fields in 24,472,139 B and adds members rather than replacing them, and no
+  eviction has ever been observed, so lowering the cap would trade against an
+  unmeasured workload. The `continuous_weather` check now names the mechanism that
+  provides continuity — #66's overlapped preparation pipeline plus #67's resident time
+  window — with its metric, aggregate and threshold unchanged, and the gate's milestone
+  reads `#64/#66/#67`. One native `viewport-interaction` on the 22-source fixture after
+  the change: pan **0/120** loading, zoom **0/24**, time **0/18** (the precursor recorded
+  5/120, 0/24, 12/18), `continuous_weather` true, gate **11/11**; the store held 13
+  fields in 24,472,139 B of the 128 MiB ceiling with 0 evictions and the sampling memo
+  peaked at 5.16 MB of 16 MiB. Targeted 100 tests, `black --check` and whitespace clean.
+  Decision: **continue**; the interaction contract still holds and #68/#69 own the
+  remaining viewport work. Visual fidelity stays failed/user-deferred. Evidence:
+  [viewport-cleanup-summary.json](profiles/rendering/2026-10-19/viewport-cleanup-summary.json).
+
 - **User-directed pivot — independent GRIB viewport:** replace the GRIB interaction
   subsystem rather than continue adapting `TrackMap._gpu_frame`. The new viewport
   owns camera/time state, asynchronous field demand and GPU portrayal. Reuse the

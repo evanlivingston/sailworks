@@ -1,0 +1,270 @@
+{
+  "issue": 73,
+  "decision": "continue",
+  "reason": "The retired precursor is provably gone from the viewport, its unexplained tuning factors are replaced by a documented window/guard policy with the values unchanged, the 128 MiB store ceiling is re-derived against the recorded runs and kept, and the continuous-weather gate check now describes the mechanism that provides continuity (#66's overlapped preparation pipeline plus #67's resident time window) instead of the removed precursor. One native viewport-interaction on the 22-source fixture after the change is PASS 11/11 with pan 0/120, zoom 0/24 and time 0/18 loading, no regression against the precursor's recorded pan 5/120, zoom 0/24, time 12/18. No #66/#67 behaviour, threshold, scope or default-application change was made.",
+  "branch": "feature/async-double-buffered-66",
+  "base_commit": "9e50a10",
+  "fixture_sha256": "1ed1bca1281ad4096713ce20af9c1473e70bd4eb0766a54965849b7ace698a03",
+  "sources_opened": 22,
+  "source_order_preserved": true,
+  "precursor_proof": {
+    "claim": "No speculative-prefetch precursor residue remains in the viewport.",
+    "commands": [
+      {
+        "command": "rg -n \"_prefetch_request|_prefetch_attempts|_speculative|prefetch_completed|prefetch_rejected\" gweatherrouting/qt/gribviewport.py",
+        "exit": 1,
+        "output": "",
+        "meaning": "no match: every precursor identifier is absent"
+      },
+      {
+        "command": "rg -n \"prefetch_completed|prefetch_rejected\" gweatherrouting/qt/gribviewport.py",
+        "exit": 1,
+        "output": "",
+        "meaning": "no match: the model's counter set holds no prefetch counters"
+      },
+      {
+        "command": "rg -n \"prefetch|speculative\" gweatherrouting/qt/gribviewport.py",
+        "exit": 0,
+        "output": "593:        no speculative random prefetch is introduced.",
+        "meaning": "one prose line in the re-centring docstring asserts that the pipeline introduces no speculative random prefetch; it is an assertion of the precursor's absence, not residue"
+      }
+    ],
+    "model_counter_set": [
+      "field_preparations",
+      "covered_reuses",
+      "misses",
+      "cancelled",
+      "stale_rejected",
+      "generation_rejected",
+      "slot_handoffs",
+      "proactive_recentres",
+      "time_lookaheads",
+      "superseded_retained",
+      "time_window_hits",
+      "time_window_fills",
+      "time_window_fields",
+      "time_window_cancelled",
+      "time_window_blocked"
+    ],
+    "model_counter_count": 15,
+    "prefetch_counters_remaining": 0,
+    "retirement_test": "test/test_gribviewport.py::test_the_speculative_prefetcher_is_retired still asserts that the model has no _prefetch_request, _prefetch_attempts or _speculative attribute, and it passes.",
+    "outside_the_viewport": "The application's overlay renderer keeps its own _speculative prefetch (gweatherrouting/rendering/overlayrenderer.py, test/test_overlay_scheduling.py). That is the default application's overlay path, not the viewport precursor, and it is untouched."
+  },
+  "window_and_guard_policy": {
+    "policy": "A resident field's spatial window covers 1.5x the camera viewport, so a covered camera move reuses the resident field. The refill guard is the viewport expanded by 1.25x; the re-centring trigger fires when the resident field stops covering the guard, which is before the camera's own demand leaves the resident window.",
+    "renamed": {
+      "PREPARED_VIEW_FACTOR": "RESIDENT_WINDOW_FACTOR",
+      "REFILL_VIEW_FACTOR": "REFILL_GUARD_FACTOR"
+    },
+    "values": {
+      "RESIDENT_WINDOW_FACTOR": 1.5,
+      "REFILL_GUARD_FACTOR": 1.25
+    },
+    "values_changed": false,
+    "behaviour_changed": false,
+    "use_sites_updated": [
+      "gweatherrouting/qt/gribviewport.py: the request key, the prepared window, the guard preference, the #66 re-centring trigger, the resident time window's requirement and the preparation's geometry fallback"
+    ],
+    "derivation": {
+      "recorded_camera": "900x700 view, 32 px symbol margin, zoom 9.837590787619122 (the gate's fixture camera)",
+      "camera_demand_px": "964x764 (900 + 2x32 by 700 + 2x32)",
+      "resident_window_px": "1350x1050 (1.5x the viewport, before the lattice quantisation)",
+      "runway_px": {
+        "x_per_side": 193,
+        "y_per_side": 143,
+        "formula": "(1.5 - 1) / 2 * 900 - 32 and (1.5 - 1) / 2 * 700 - 32"
+      },
+      "runway_seconds": {
+        "x": 0.536,
+        "y": 0.397,
+        "pan_rate": "12 px per input at 30 inputs/s = 360 px/s (the recorded gate sweep)"
+      },
+      "guard_gap_px": 112.5,
+      "guard_gap_seconds": 0.3125,
+      "guard_gap_formula": "(1.25 - 1) / 2 * 900: the re-centring trigger fires this far before the camera's own demand leaves the resident window",
+      "lattice_px": 64,
+      "lattice_note": "The 64 px field lattice quantises the window outward, so the measured runway is never smaller: on the recorded camera the quantised resident window is 1472 px wide and the measured runway is 252.6 px per side, above the nominal 193 px.",
+      "preparation_cost_ms": {
+        "recentred_window": 159,
+        "cold_window": 792,
+        "source": "docs/profiles/rendering/2026-10-19/prepare-breakdown.json (a 120 px shifted window, i.e. one field-lattice step ahead)"
+      },
+      "preparation_cadence": {
+        "preparations_in_the_pan_phase": 11,
+        "pan_phase_seconds": 4.0,
+        "seconds_per_preparation": 0.36,
+        "source": "docs/profiles/rendering/2026-10-19/viewport-resident-prototype-summary.json (120 inputs at 30 Hz)"
+      },
+      "sufficiency": "The guard's 112.5 px (0.31 s) gap between the re-centring trigger and the loss of coverage exceeds the measured 159 ms cost of a re-centred window, and the resident window's 193 px (0.53 s) runway exceeds the recorded preparation cadence of 0.36 s. The recorded runs hold: #67 completed the sustained pan with 0/120 loading inputs, and the #73 run below repeats it."
+    }
+  },
+  "store_budget_rederivation": {
+    "ceiling_bytes": 134217728,
+    "ceiling_mib": 128,
+    "kind": "declared cap, not a measured optimum",
+    "history": "The ceiling was raised from 32 MiB to the decoded-band ceiling of 128 MiB during the precursor experiment (8370945), so it was never derived from a residency requirement.",
+    "observed_worst_case": {
+      "fields": 33,
+      "bytes": 58785331,
+      "mib": 56.05,
+      "fraction_of_ceiling": 0.438,
+      "margin_bytes": 75432397,
+      "margin_factor": 2.28,
+      "evictions": 0,
+      "source": "docs/profiles/rendering/2026-10-19/viewport-continuous-summary.json (#64 follow-up, 128 MiB setting)"
+    },
+    "resident_time_window_case": {
+      "fields": 13,
+      "window_members": 6,
+      "bytes": 24472139,
+      "mib": 23.34,
+      "fraction_of_ceiling": 0.182,
+      "margin_factor": 5.48,
+      "evictions": 0,
+      "source": "docs/profiles/rendering/2026-10-19/viewport-time-window-summary.json",
+      "note": "The resident time window adds members over the same spatial window rather than replacing fields."
+    },
+    "other_declared_budgets": {
+      "sampling_memo_bytes": 16777216,
+      "sampling_memo_peak_bytes": 5159064,
+      "image_provider_bytes": 33554432,
+      "image_provider_used_bytes": 2673664,
+      "note": "Separate budgets; neither is drawn from the field store."
+    },
+    "decision": "keep 128 MiB unchanged",
+    "rationale": "The ceiling is a declared cap, the observed worst case is 43.8% of it with a 2.28x margin and no eviction has ever been observed, the resident time window adds members rather than replacing them, and lowering the cap would trade against an unmeasured workload (a longer resident time horizon, a larger view, a source set beyond the recorded 22) that no recorded run covers."
+  },
+  "gate_check_repoint": {
+    "gate": "viewport-interaction",
+    "metric": "continuous_weather",
+    "aggregate": "all",
+    "op": "is_true",
+    "threshold_changed": false,
+    "measurement_changed": false,
+    "measurement_note": "test/qt_gribviewport_checks.py still computes report[\"continuous_weather\"] as the complete report with every interaction input ready; the tool was not touched.",
+    "old_label": "weather remains current during every interaction input",
+    "new_label": "weather stays current through the overlapped preparation and the resident time window",
+    "new_provenance": "issue #66's overlapped, double-buffered preparation pipeline and issue #67's resident time window (docs/profiles/rendering/2026-10-19/viewport-time-window-summary.json)",
+    "old_milestone": "#64",
+    "new_milestone": "#64/#66/#67",
+    "milestone_note": "The gate protects #64's interaction contract, #66's structural observations and #67's continuity, so the milestone reference was stale at #64 alone."
+  },
+  "gate": "viewport-interaction",
+  "gate_kind": "correctness",
+  "gate_verdict": "pass",
+  "checks_passed": 11,
+  "checks_failed": 0,
+  "native_attempts": 1,
+  "native_attempt_seconds": 10.866,
+  "native_attempt_commit": "988085f967e9e3fcb8986674011ab1f54d78fa1f",
+  "native_attempt_dirty": false,
+  "phases": [
+    {
+      "name": "sustained-pan",
+      "inputs": 120,
+      "loading_inputs": 0,
+      "field_preparations": 8
+    },
+    {
+      "name": "anchored-zoom",
+      "inputs": 24,
+      "loading_inputs": 0,
+      "field_preparations": 3
+    },
+    {
+      "name": "time-crossings",
+      "inputs": 18,
+      "loading_inputs": 0,
+      "field_preparations": 1
+    }
+  ],
+  "counters": {
+    "field_preparations": 13,
+    "covered_reuses": 176,
+    "misses": 6,
+    "cancelled": 0,
+    "stale_rejected": 2,
+    "generation_rejected": 1,
+    "slot_handoffs": 9,
+    "proactive_recentres": 8,
+    "time_lookaheads": 0,
+    "superseded_retained": 5,
+    "time_window_hits": 13,
+    "time_window_fills": 5,
+    "time_window_fields": 5,
+    "time_window_cancelled": 0,
+    "time_window_blocked": 90
+  },
+  "observations": {
+    "prepared_while_presenting": 14,
+    "preparation_span_count": 16,
+    "presentation_span_count": 176,
+    "slot_handoffs": 9,
+    "superseded_rejected_observed": 2,
+    "superseded_retained_observed": 5,
+    "generation_mismatch_rejected": true,
+    "superseded_never_published": true,
+    "resident_window_fields": 6
+  },
+  "retained": {
+    "field_bytes": 24472139,
+    "field_entries": 13,
+    "field_limit": 134217728,
+    "field_evictions": 0,
+    "provider_bytes": 2673664,
+    "provider_limit": 33554432,
+    "provider_bytes_respected": true,
+    "sampling_memo": {
+      "limit_bytes": 16777216,
+      "current_bytes": 5159064,
+      "peak_bytes": 5159064,
+      "retained_entries": 52477,
+      "evictions": 0
+    },
+    "cold_ready_seconds": 1.421,
+    "close_ms": 24.942
+  },
+  "reference": {
+    "artifact": "docs/profiles/rendering/2026-10-19/viewport-time-window-summary.json (#67) and viewport-continuous-summary.json (the retired precursor)",
+    "pan_loading": {
+      "cleanup": "0/120",
+      "resident_time_window": "0/120",
+      "precursor": "5/120"
+    },
+    "zoom_loading": {
+      "cleanup": "0/24",
+      "resident_time_window": "0/24",
+      "precursor": "0/24"
+    },
+    "time_loading": {
+      "cleanup": "0/18",
+      "resident_time_window": "0/18",
+      "precursor": "12/18"
+    },
+    "regression_against_the_precursor": "none: pan 0/120 vs 5/120, zoom 0/24 vs 0/24, time 0/18 vs 12/18"
+  },
+  "targeted_validation": {
+    "tests_passed": 100,
+    "failed": 0,
+    "skipped": 0,
+    "warnings": 1,
+    "warning": "GDAL FutureWarning",
+    "suite": "test_gribviewport.py test_gpuweather_fields.py test_weather_barbs.py test_weather_staging.py test_weather_band_cache.py test_gpu_weather.py test_gpu_weather_jobs.py",
+    "changed_python_black_check": "pass (2 files: gweatherrouting/qt/gribviewport.py, tools/gates.py)",
+    "whitespace_check": "pass",
+    "worktree_clean": true,
+    "log": "/private/var/folders/w7/hb5wv1x1715821rqd1_3xf4r0000gn/T/opencode/issue73-tests.log",
+    "note": "The full targeted suite is 100 tests; the 96 recorded in the #66/#67 summaries was the earlier count."
+  },
+  "endpoint": "QQuickWindow.afterRendering render-callback proxy; not presentation FPS, input-to-present or scanout",
+  "timing_percentile": "nearest rank p95",
+  "visual_fidelity": "failed/user-deferred, not rerun or passed",
+  "limits": [
+    "The window/guard derivation is geometric and uses the recorded fixture camera and the recorded 12 px per input, 30 inputs/s sweep; it is not a latency measurement of a presentation",
+    "The 128 MiB ceiling stays a declared cap; no recorded run exercises a longer resident time horizon or a larger view",
+    "No default-application change: the legacy frame assembler remains the default path",
+    "Visual fidelity remains failed/user-deferred and was not rerun"
+  ],
+  "next_step": "The cleanup is complete and the interaction contract still holds. #68 (production fill) and #69 (layer migration) own the remaining viewport work; do not extend the precursor or re-tune the window/guard factors without a new measurement."
+}
