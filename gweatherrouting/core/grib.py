@@ -300,13 +300,33 @@ class Grib(weatherrouting.Grib):
         return self.sampler().wind_at(t, lat, lon)
 
     @staticmethod
+    def _bounds_from_dataset(dataset):
+        """Derive [west, south, east, north] bounds from GDAL geotransform."""
+        gt = dataset.GetGeoTransform()
+        if gt is None:
+            return [0.0, 0.0, 0.0, 0.0]
+        x_origin, x_res, _, y_origin, _, y_res = gt
+        cols = dataset.RasterXSize
+        rows = dataset.RasterYSize
+        # For typical north-up lat/lon grids: x_res > 0, y_res < 0
+        x_min = x_origin
+        x_max = x_origin + x_res * cols
+        y_min = y_origin + y_res * rows
+        y_max = y_origin
+        # Clamp longitudes to [-180, 180]
+        west = min(max(x_min, -180.0), 180.0)
+        east = min(max(x_max, -180.0), 180.0)
+        south = min(max(y_min, -90.0), 90.0)
+        north = min(max(y_max, -90.0), 90.0)
+        return [west, south, east, north]
+
+    @staticmethod
     def parse_metadata(path):
         dataset = gdal.Open(path)
         if dataset is None:
             raise ValueError("Unable to open forecast: " + path)
         centre = ""
-        # TODO: get bounds and timeframe
-        bounds = [0, 0, 0, 0]
+        bounds = Grib._bounds_from_dataset(dataset)
         start_time = None
         hours_forecasted = None
         models = set()
