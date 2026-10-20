@@ -84,6 +84,31 @@ For the wider documentation map, see [the documentation index](README.md).
   time-sweep acceptance. Evidence:
   [viewport-resident-prototype-summary.json](profiles/rendering/2026-10-19/viewport-resident-prototype-summary.json).
 
+- **#67 result (2026-10-19):** adopted on `feature/async-double-buffered-66`, stacked on
+  #66; nothing was pushed, merged or opened as a PR. The viewport now holds a bounded
+  **resident time window**: the demand windows of the forecast instants inside a declared
+  nine-hour horizon — the span of the recorded sweep — over the presented field's own
+  spatial window. Each member is the field the pipeline already stages (the singleton at
+  a selection event and the bracket between two events), so no numerical value, mask,
+  source order or interpolation changes. A forecast-time change inside the window is
+  served from the resident store: it prepares nothing, decodes nothing and publishes no
+  new field image. The fill is the lowest-priority work — it starts only where the
+  presented field was prepared, continues only while the camera stays inside that
+  field's window, and an interactive demand cancels it — so spatial re-centring keeps
+  its priority and the pan does not regress. Native `viewport-interaction` on the
+  22-source fixture: pan **0/120** loading, zoom **0/24**, time **0/18** (was 11/18),
+  `continuous_weather` true, gate **11/11**; two consecutive runs after the fix gave
+  identical phase numbers. The window holds six members in 24.5 MB of the 128 MiB store
+  ceiling with no evictions and the sampling memo peaked at 5.2 MB of 16 MiB, so the
+  recorded sweep fits the declared budget and no blocker is recorded. The presented field
+  gained a single owner (the render context's thread): the worker had promoted a field
+  from its own thread between an update and a publication, which failed one pan run.
+  The window is behind `--resident-time-window` (default off); the default application
+  path does not import the viewport. Targeted 96 tests, `black --check` and whitespace
+  clean. Decision: **adopt**; #68 and #69 own the production fill and the layer
+  migration. Evidence:
+  [viewport-time-window-summary.json](profiles/rendering/2026-10-19/viewport-time-window-summary.json).
+
 - **User-directed pivot — independent GRIB viewport:** replace the GRIB interaction
   subsystem rather than continue adapting `TrackMap._gpu_frame`. The new viewport
   owns camera/time state, asynchronous field demand and GPU portrayal. Reuse the
