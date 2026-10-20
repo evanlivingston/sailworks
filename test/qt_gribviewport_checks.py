@@ -478,7 +478,9 @@ def _missing_neighbour_observations(widget, field, camera, blend, pump):
     from gweatherrouting.rendering.weathergrid import mercator_lat
 
     lattice = field.grid.lattice
-    view = camera.view()
+    # The widget's *current* camera: the independence observation above moved
+    # it, so the passed-in camera no longer describes what is on screen.
+    view = widget._camera.view()
     rect = _grid_rect(view, lattice)
     planes = [decode_component(image) for image in field.grid.images]
     # The node nearest the viewport's centre: the four cells that touch it
@@ -524,19 +526,43 @@ def _missing_neighbour_observations(widget, field, camera, blend, pump):
     keys = list(readback)
     pixels = _grab(widget)
     alpha = pixels[..., 3]
+    # The framebuffer is in device pixels and the view's coordinates are in
+    # logical pixels: the neighbourhood is measured in the framebuffer's own
+    # scale, or it would be read at the wrong place.
+    scale = alpha.shape[1] / float(widget.width())
+    node_x = screen_x * scale
+    node_y = screen_y * scale
+    cell_x = span_x * scale
+    cell_y = span_y * scale
     near = alpha[
-        max(0, int(round(screen_y - span_y / 2))) : int(round(screen_y + span_y / 2))
-        + 1,
-        max(0, int(round(screen_x - span_x / 2))) : int(round(screen_x + span_x / 2))
-        + 1,
+        max(0, int(round(node_y - cell_y / 2))) : int(round(node_y + cell_y / 2)) + 1,
+        max(0, int(round(node_x - cell_x / 2))) : int(round(node_x + cell_x / 2)) + 1,
     ]
     far = alpha.copy()
     far[
-        max(0, int(round(screen_y - span_y / 2))) : int(round(screen_y + span_y / 2))
-        + 1,
-        max(0, int(round(screen_x - span_x / 2))) : int(round(screen_x + span_x / 2))
-        + 1,
+        max(0, int(round(node_y - cell_y / 2))) : int(round(node_y + cell_y / 2)) + 1,
+        max(0, int(round(node_x - cell_x / 2))) : int(round(node_x + cell_x / 2)) + 1,
     ] = 0
+    # The hole the missing node leaves: the shader's 2x2 bilinear reads the
+    # missing corner over two cells in each axis, and the hole is bounded by
+    # the transparent pixels inside the lattice's rectangle.
+    inside = alpha[
+        max(0, int(round(rect.y() * scale))) : int(
+            round((rect.y() + rect.height()) * scale)
+        ),
+        max(0, int(round(rect.x() * scale))) : int(
+            round((rect.x() + rect.width()) * scale)
+        ),
+    ]
+    hole = np.argwhere(inside == 0)
+    hole_box = None
+    if len(hole):
+        hole_box = [
+            int(hole[:, 0].min()),
+            int(hole[:, 0].max()),
+            int(hole[:, 1].min()),
+            int(hole[:, 1].max()),
+        ]
     outcome = {
         "missing_node": [lat, lon],
         "node_value_before": original,
@@ -548,6 +574,9 @@ def _missing_neighbour_observations(widget, field, camera, blend, pump):
         "node_cell_significant_alpha_pixels": int((near > 25).sum()),
         "other_alpha_pixels": int((far > 0).sum()),
         "total_pixels": int(alpha.size),
+        "framebuffer_scale": scale,
+        "hole_pixels": int((inside == 0).sum()),
+        "hole_box_device_pixels": hole_box,
         "rect": [rect.x(), rect.y(), rect.width(), rect.height()],
         "fill_blend": float(widget._fill.property("blend")),
         "fill_grid_width": float(widget._fill.property("gridWidth")),

@@ -332,6 +332,26 @@ GATES = {
                     "the locality of the rule, not a performance threshold."
                 ),
             },
+            {
+                "label": (
+                    "the cell of a missing lattice node contributes exactly "
+                    "zero alpha pixels"
+                ),
+                "metric": "fill.missing_neighbour.node_cell_alpha_pixels",
+                "aggregate": "max",
+                "op": "==",
+                "value": 0,
+                "source": (
+                    "issue #65: the A0k rule read in the framebuffer itself, "
+                    "not only in the byte-exact readback. The missing node's "
+                    "own cell is measured in the framebuffer's own device "
+                    "scale, and it must contribute no alpha at all: a missing "
+                    "sample is never filled from a neighbour "
+                    "(docs/profiles/rendering/2026-10-19/"
+                    "a0k-shader-safety-summary.json "
+                    "#missing_only_layers_exactly_transparent=true)."
+                ),
+            },
         ],
     },
     # ------------------------------------------------------------------ #64
