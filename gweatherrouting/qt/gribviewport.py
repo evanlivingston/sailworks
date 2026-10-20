@@ -199,6 +199,7 @@ class GribViewportModel:
             generation_rejected=0,
             slot_handoffs=0,
             proactive_recentres=0,
+            time_lookaheads=0,
             superseded_retained=0,
         )
 
@@ -421,27 +422,98 @@ class GribViewportModel:
         it does not, one deterministic re-centred window is queued.  The back
         slot is filled by the existing two-slot pipeline, so no third slot and
         no speculative random prefetch is introduced.
+
+        When the camera is spatially stationary, the same idle worker prepares
+        exactly one temporal lookahead window instead: the forecast interval
+        that follows the presented field.  It uses the same two-slot pipeline
+        and is skipped as soon as that window is resident.
         """
         if self._active is not None or self._pending is not None:
             return
-        if _covers(field, _expanded(camera, REFILL_VIEW_FACTOR)):
+        if not _covers(field, _expanded(camera, REFILL_VIEW_FACTOR)):
+            target = self._recentre_camera(camera, previous)
+            if target is None:
+                # Stationary: no spatial window to move to.
+                self._look_ahead_time(camera, field)
+                return
+            if (
+                field_window(_expanded(target, PREPARED_VIEW_FACTOR).view())
+                == field.identity.window
+            ):
+                return
+            key = self._request_key(target)
+            if key == self._request_key(camera):
+                # The camera has not yet crossed into a new window; nothing to
+                # prepare that its own demand would not already ask for.
+                return
+            if self._active is not None and self._active[2] == key:
+                return
+            self.counters["proactive_recentres"] += 1
+            self._request(target)
             return
-        target = self._recentre_camera(camera, previous)
+        if self._spatially_stationary(camera, previous):
+            self._look_ahead_time(camera, field)
+
+    @staticmethod
+    def _spatially_stationary(camera, previous):
+        if previous is None:
+            return False
+        return (
+            camera.center_lon,
+            camera.center_lat,
+            camera.zoom,
+            camera.width,
+            camera.height,
+        ) == (
+            previous.center_lon,
+            previous.center_lat,
+            previous.zoom,
+            previous.width,
+            previous.height,
+        )
+
+    def _next_time_camera(self, camera, field):
+        """The camera for the forecast interval after ``field``, or None."""
+        after = field.identity.after
+        events = self._events
+        index = bisect_left(events, after)
+        if index < len(events) and events[index] == after:
+            index += 1
+        if index >= len(events):
+            return None
+        following = events[index]
+        gap = following - after
+        if gap <= 0:
+            return None
+        stamp = after + min(1.0, gap / 2.0)
+        moment = (
+            datetime.fromtimestamp(stamp)
+            if camera.time.tzinfo is None
+            else datetime.fromtimestamp(stamp, timezone.utc)
+        )
+        return replace(camera, time=moment)
+
+    def _look_ahead_time(self, camera, field):
+        """Prepare the single next forecast window for a stationary camera.
+
+        Deterministic N+1 only: the interval that starts at the presented
+        field's ``after`` boundary.  The existing two-slot pipeline carries it,
+        and a prepared window stays resident for the demand that follows; this
+        is not #67-style time residency.
+        """
+        target = self._next_time_camera(camera, field)
         if target is None:
-            return
-        if (
-            field_window(_expanded(target, PREPARED_VIEW_FACTOR).view())
-            == field.identity.window
-        ):
             return
         key = self._request_key(target)
         if key == self._request_key(camera):
-            # The camera has not yet crossed into a new window; nothing to
-            # prepare that its own demand would not already ask for.
             return
-        if self._active is not None and self._active[2] == key:
-            return
-        self.counters["proactive_recentres"] += 1
+        for resource in self._slots:
+            if resource is not None and _covers(resource.field, target):
+                return
+        for resident in self._store.fields():
+            if _covers(resident, target):
+                return
+        self.counters["time_lookaheads"] += 1
         self._request(target)
 
     def observations(self):
@@ -457,6 +529,7 @@ class GribViewportModel:
                 "generation_rejected": self.counters["generation_rejected"],
                 "superseded_rejected": self.counters["stale_rejected"],
                 "superseded_retained": self.counters["superseded_retained"],
+                "time_lookaheads": self.counters["time_lookaheads"],
                 "slot_handoffs": self.counters["slot_handoffs"],
                 "slots_filled": sum(resource is not None for resource in self._slots),
                 "front_slot": self._front_index,

@@ -548,7 +548,8 @@ def test_recentre_if_needed_queues_one_window_only_when_the_guard_fails(monkeypa
     model._condition = Condition()
     model._active = None
     model._pending = None
-    model.counters = {"proactive_recentres": 0}
+    model.counters = {"proactive_recentres": 0, "time_lookaheads": 0}
+    model._events = ()
     queued = []
     monkeypatch.setattr(model, "_request", lambda camera: queued.append(camera))
     monkeypatch.setattr(
@@ -557,6 +558,7 @@ def test_recentre_if_needed_queues_one_window_only_when_the_guard_fails(monkeypa
 
     class FakeIdentity:
         window = ((-100.0, -100.0), (100.0, 100.0))
+        before = after = 0.0
 
     class FakeField:
         identity = FakeIdentity()
@@ -577,6 +579,45 @@ def test_recentre_if_needed_queues_one_window_only_when_the_guard_fails(monkeypa
     model._pending = None
     model._recentre_if_needed(camera, camera, FakeField())
     assert len(queued) == 1
+
+
+def test_a_stationary_ready_field_prepares_one_time_lookahead(gribs, monkeypatch):
+    import time as clock
+
+    paths, _source = _paths(gribs)
+    model = GribViewportModel(paths, land_mask=Land())
+    camera = _camera(time=START)
+    real_prepare = model._prepare
+    seen = []
+
+    def observed(camera_, cancel):
+        seen.append(camera_)
+        return real_prepare(camera_, cancel)
+
+    monkeypatch.setattr(model, "_prepare", observed)
+    try:
+        field, _selection = _wait_ready(model, camera=camera)
+        expected = model._next_time_camera(camera, field)
+        assert expected is not None
+        deadline = clock.monotonic() + 10
+        while len(seen) < 2 and clock.monotonic() < deadline:
+            clock.sleep(0.01)
+        assert len(seen) >= 2
+        lookahead = seen[-1]
+        # One deterministic N+1 step on the same spatial window, inside the
+        # interval that follows the presented field's after boundary.
+        assert lookahead.stamp() == pytest.approx(expected.stamp())
+        assert (lookahead.center_lon, lookahead.center_lat, lookahead.zoom) == (
+            camera.center_lon,
+            camera.center_lat,
+            camera.zoom,
+        )
+        assert model._time_key(lookahead.stamp()) != model._time_key(camera.stamp())
+        assert model.counters["time_lookaheads"] == 1
+    finally:
+        model.close()
+        if model._thread is not None:
+            model._thread.join(5)
 
 
 def test_zoom_reuses_values_only_with_the_same_shoreline_policy(gribs):

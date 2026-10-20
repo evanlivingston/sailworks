@@ -323,6 +323,7 @@ def run(snapshot):
         )
         report["slot_handoffs"] = observations["slot_handoffs"]
         report["superseded_retained_observed"] = observations["superseded_retained"]
+        report["time_lookaheads_observed"] = observations["time_lookaheads"]
         # Explicit cold miss and pending close; loading must not disable camera input.
         entered = Event()
 
