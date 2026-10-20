@@ -593,7 +593,9 @@ def _surface_image(surface):
 
     The surface is ARGB32 and premultiplied, the same layout as the
     application's own framebuffer readback, so the bytes are copied without
-    a conversion.
+    a conversion.  The copy is the surface's bytes and nothing else: the
+    image shares them, so the composed surface is published with one copy
+    instead of two.
     """
     from PySide6.QtGui import QImage
 
@@ -608,7 +610,7 @@ def _surface_image(surface):
         height,
         stride,
         QImage.Format.Format_ARGB32_Premultiplied,
-    ).copy()
+    )
 
 
 def chart_image_provider():

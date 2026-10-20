@@ -296,14 +296,41 @@ For the wider documentation map, see [the documentation index](README.md).
   window and the pan then loses the weather. The recorded budget of three native
   attempts was exceeded (**thirteen**, plus one no-chart diagnostic) and the
   diagnosis between the attempts is in the evidence. Targeted **115** tests,
-  `black --check` (5 files) and whitespace clean. Decision: **adopt** for Part 1;
-  **Part 2 (the remaining layers, ordered by measurement) was not reached** — the
-  session's measurement budget went to the interference above, the recorded pan
-  cost of `docs/profiling-priorities.md` (0.841 s inclusive in
+  `black --check` (5 files) and whitespace clean. Decision: **adopt** for Part 1.
+  **Part 2 (the remaining layers, ordered by measurement) is recorded below**; the
+  recorded pan cost of `docs/profiling-priorities.md` (0.841 s inclusive in
   `WindOverlayRenderer.live_geometry_for_view` over 60 frames, 0.429 s of it Mercator
-  projection) was not re-measured, and the next concrete step is Part 2's
-  re-profile in the viewport. Visual fidelity stays deferred: this is structural,
+  projection) was not re-measured. Visual fidelity stays deferred: this is structural,
   ordering and preservation evidence, not a visual verdict. Evidence:
+  [viewport-chart-separation-summary.json](profiles/rendering/2026-10-19/viewport-chart-separation-summary.json).
+
+- **#69 Part 2 result (2026-10-20):** the remaining layer, ordered by measurement, on
+  `feature/async-double-buffered-66`. The re-profile is the viewport's **chart
+  layer's own composition** on the recorded fixture (a 900x700 view with the
+  application's 256 px margin), measured as the median of **five** compositions after
+  the first, so the shares are the steady state: **76.8 ms** per composition, of which
+  the **base chart composition is 74.8 ms — 97.4%**. The chart layer's one-time
+  sampler setup (its own GDAL handles over the selected forecasts) is **673.6 ms**.
+  The candidate the issue named first is **refuted by the measurement**: the
+  application's own contour drawing is **0.3 ms, 0.4%** of the composition, so
+  retaining the worker-generated contour geometry would not pay for itself here; the
+  pressure sampling is 1.5 ms (2.0%) once the sampler's grid cache is warm. Streamline
+  generation and drawing are not in the viewport at all (they are an application's
+  wind style), so the measurement does not apply to this vehicle. The **migration** is
+  the chart layer's **publication path**: the composed surface reaches the scene
+  graph with **one** copy of its bytes instead of two — **0.6 ms → 0.2 ms** (70.9%
+  less) with **identical pixels**. The dominant cost, the base chart composition,
+  is the **application's own code** and this issue may not change the application's
+  chart rendering, so it is migrated by keeping the layer out of the interaction path
+  (the settle policy above), not by rewriting the application's portrayal; that is
+  the next concrete step. Native `viewport-interaction` after the migration: pan
+  **0/120**, zoom **0/24**, time **0/18**, `continuous_weather` **true**, gate
+  **30/30**. Note on the fixture: after the first recorded green run the environment
+  emptied the fixture's CHS tile cache (4980 files, none of them part of this gate's
+  measurement) and the runner's strict snapshot verification refused further runs; the
+  tiles were restored byte for byte from the application's own cache, the snapshot
+  verified again against the manifest's hash, and the final run was made on the
+  restored fixture. Decision: **adopt**. Evidence:
   [viewport-chart-separation-summary.json](profiles/rendering/2026-10-19/viewport-chart-separation-summary.json).
 
 - **User-directed pivot — independent GRIB viewport:** replace the GRIB interaction

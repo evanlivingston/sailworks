@@ -44,8 +44,8 @@
   "fill_placement_max_abs_error": 4.172325134277344e-07
  },
  "chart_evidence": {
-  "weather_ready_at": 1023789.628149208,
-  "chart_ready_at": 1023797.5908025,
+  "weather_ready_at": 1024224.017105916,
+  "chart_ready_at": 1024231.319483791,
   "weather_before_chart": true,
   "chart_requested_after_weather": true,
   "chart_loading_state_explicit": true,
@@ -67,25 +67,29 @@
    "weather": "72f8c779a2c707b2"
   },
   "layer_generations": {
-   "published": [2],
-   "rejected": [1],
-   "outcomes": {"1": "superseded", "2": "published"}
+   "published": [
+    1
+   ],
+   "rejected": [],
+   "outcomes": {
+    "1": "published"
+   }
   },
   "supersession_probe": {
    "generation": 3,
    "superseded_never_published": true
   },
   "counters": {
-   "requests": 2,
-   "reuses": 6,
+   "requests": 1,
+   "reuses": 7,
    "compositions": 1,
    "publications": 1,
-   "superseded_rejected": 1,
+   "superseded_rejected": 0,
    "cancelled": 0,
    "failures": 0,
-   "isobars": 2,
+   "isobars": 1,
    "yielded": 0,
-   "stale": 1
+   "stale": 0
   }
  },
  "native_attempts": {
@@ -95,19 +99,123 @@
   "over_budget": true,
   "why": "The first attempts exposed a real interference between the chart layer and the weather pipeline that the planned budget did not anticipate: the sustained pan lost the weather (99 of 120 inputs in loading) while the chart layer was enabled. The attempts were spent diagnosing it, not repeating a measurement.",
   "attempts": [
-   {"n": 1, "pan_ready": 21, "pan_loading": 99, "zoom_ready": 24, "time_ready": 18, "continuous_weather": false, "diagnosis": "the chart layer recomposed on every camera change (71 generations during the pan) and starved the field worker"},
-   {"n": 2, "pan_ready": 42, "pan_loading": 78, "zoom_ready": 24, "time_ready": 18, "continuous_weather": false, "diagnosis": "the settle timer was re-armed by the model's publications, so the chart still composed during the interaction"},
-   {"n": 3, "pan_ready": 42, "pan_loading": 78, "zoom_ready": 24, "time_ready": 18, "continuous_weather": false, "diagnosis": "the chart's own sampler setup and pressure sampling overlapped the pan"},
-   {"n": 4, "pan_ready": 42, "pan_loading": 78, "zoom_ready": 24, "time_ready": 18, "continuous_weather": false, "diagnosis": "the chart worker yielded to the busy field worker and re-queued, and the yield lived in a loop"},
-   {"n": 5, "pan_ready": 42, "pan_loading": 78, "zoom_ready": 24, "time_ready": 18, "continuous_weather": false, "diagnosis": "the retained composition's margin was never checked; the camera moved past it during the pan"},
-   {"n": 6, "pan_ready": 51, "pan_loading": 69, "zoom_ready": 24, "time_ready": 18, "continuous_weather": false, "diagnosis": "the chart's loading state was a child QWidget over the render context, which cost a full-window composite"},
-   {"n": 7, "pan_ready": 57, "pan_loading": 63, "zoom_ready": 24, "time_ready": 18, "continuous_weather": false, "diagnosis": "the chart's first composition overlapped the start of the pan"},
-   {"n": 8, "pan_ready": 42, "pan_loading": 78, "zoom_ready": 24, "time_ready": 18, "continuous_weather": false, "diagnosis": "the chart did no work at all (0 compositions) and the pan still failed: the chart observations before the phases had disturbed the weather pipeline's resident window"},
-   {"n": 9, "pan_ready": 21, "pan_loading": 99, "zoom_ready": 24, "time_ready": 18, "continuous_weather": false, "diagnosis": "the probe's spatial camera move re-anchored the resident window away from the pan"},
-   {"n": 10, "pan_ready": 21, "pan_loading": 99, "zoom_ready": 24, "time_ready": 18, "continuous_weather": false, "diagnosis": "the chart's worker polled the weather pipeline while a request was pending"},
-   {"n": 11, "pan_ready": 21, "pan_loading": 99, "zoom_ready": 24, "time_ready": 18, "continuous_weather": false, "diagnosis": "the chart observations still ran before the phases"},
-   {"n": 12, "pan_ready": 120, "pan_loading": 0, "zoom_ready": 24, "time_ready": 18, "continuous_weather": true, "diagnosis": "the phases are clean once the chart observations follow them, but the chart never composed because every request yielded to the busy field worker"},
-   {"n": 13, "pan_ready": 120, "pan_loading": 0, "zoom_ready": 24, "time_ready": 18, "continuous_weather": true, "diagnosis": "the chart composes, publishes and supersedes correctly with the phases intact"}
+   {
+    "n": 1,
+    "pan_ready": 21,
+    "pan_loading": 99,
+    "zoom_ready": 24,
+    "time_ready": 18,
+    "continuous_weather": false,
+    "diagnosis": "the chart layer recomposed on every camera change (71 generations during the pan) and starved the field worker"
+   },
+   {
+    "n": 2,
+    "pan_ready": 42,
+    "pan_loading": 78,
+    "zoom_ready": 24,
+    "time_ready": 18,
+    "continuous_weather": false,
+    "diagnosis": "the settle timer was re-armed by the model's publications, so the chart still composed during the interaction"
+   },
+   {
+    "n": 3,
+    "pan_ready": 42,
+    "pan_loading": 78,
+    "zoom_ready": 24,
+    "time_ready": 18,
+    "continuous_weather": false,
+    "diagnosis": "the chart's own sampler setup and pressure sampling overlapped the pan"
+   },
+   {
+    "n": 4,
+    "pan_ready": 42,
+    "pan_loading": 78,
+    "zoom_ready": 24,
+    "time_ready": 18,
+    "continuous_weather": false,
+    "diagnosis": "the chart worker yielded to the busy field worker and re-queued, and the yield lived in a loop"
+   },
+   {
+    "n": 5,
+    "pan_ready": 42,
+    "pan_loading": 78,
+    "zoom_ready": 24,
+    "time_ready": 18,
+    "continuous_weather": false,
+    "diagnosis": "the retained composition's margin was never checked; the camera moved past it during the pan"
+   },
+   {
+    "n": 6,
+    "pan_ready": 51,
+    "pan_loading": 69,
+    "zoom_ready": 24,
+    "time_ready": 18,
+    "continuous_weather": false,
+    "diagnosis": "the chart's loading state was a child QWidget over the render context, which cost a full-window composite"
+   },
+   {
+    "n": 7,
+    "pan_ready": 57,
+    "pan_loading": 63,
+    "zoom_ready": 24,
+    "time_ready": 18,
+    "continuous_weather": false,
+    "diagnosis": "the chart's first composition overlapped the start of the pan"
+   },
+   {
+    "n": 8,
+    "pan_ready": 42,
+    "pan_loading": 78,
+    "zoom_ready": 24,
+    "time_ready": 18,
+    "continuous_weather": false,
+    "diagnosis": "the chart did no work at all (0 compositions) and the pan still failed: the chart observations before the phases had disturbed the weather pipeline's resident window"
+   },
+   {
+    "n": 9,
+    "pan_ready": 21,
+    "pan_loading": 99,
+    "zoom_ready": 24,
+    "time_ready": 18,
+    "continuous_weather": false,
+    "diagnosis": "the probe's spatial camera move re-anchored the resident window away from the pan"
+   },
+   {
+    "n": 10,
+    "pan_ready": 21,
+    "pan_loading": 99,
+    "zoom_ready": 24,
+    "time_ready": 18,
+    "continuous_weather": false,
+    "diagnosis": "the chart's worker polled the weather pipeline while a request was pending"
+   },
+   {
+    "n": 11,
+    "pan_ready": 21,
+    "pan_loading": 99,
+    "zoom_ready": 24,
+    "time_ready": 18,
+    "continuous_weather": false,
+    "diagnosis": "the chart observations still ran before the phases"
+   },
+   {
+    "n": 12,
+    "pan_ready": 120,
+    "pan_loading": 0,
+    "zoom_ready": 24,
+    "time_ready": 18,
+    "continuous_weather": true,
+    "diagnosis": "the phases are clean once the chart observations follow them, but the chart never composed because every request yielded to the busy field worker"
+   },
+   {
+    "n": 13,
+    "pan_ready": 120,
+    "pan_loading": 0,
+    "zoom_ready": 24,
+    "time_ready": 18,
+    "continuous_weather": true,
+    "diagnosis": "the chart composes, publishes and supersedes correctly with the phases intact"
+   }
   ],
   "diagnostic": {
    "name": "no-chart-layer",
@@ -151,7 +259,55 @@
   "the 2e-5 numerical gate and the A0k zero-alpha gate"
  ],
  "part_2": {
-  "status": "not reached",
-  "reason": "Part 1 consumed the session's measurement budget: the interference between the chart layer and the weather pipeline needed thirteen native runs and two structural changes to the layer (the settle policy and the yield), and Part 2's re-profile and layer migration were not attempted in the remaining budget. The recorded pan cost of docs/profiling-priorities.md (0.841 s inclusive in WindOverlayRenderer.live_geometry_for_view over 60 frames, 0.429 s of it Mercator projection) was not re-measured."
+  "status": "reached",
+  "vehicle": "the independent viewport's chart layer",
+  "already_measured_pan_cost_not_remeasured": "docs/profiling-priorities.md: 0.841 s inclusive attributed to WindOverlayRenderer.live_geometry_for_view over 60 frames, of which 0.429 s is Mercator projection. That is the application's path and it was not re-measured.",
+  "reprofile": {
+   "what": "the viewport's chart layer's own composition on the recorded fixture (a 900x700 view with the application's 256 px margin), measured as the median of five compositions after the first, so the shares are the steady state and not a first-call cost",
+   "one_time_sampler_setup_ms": 673.6,
+   "steady_state_per_composition_ms": 76.8,
+   "stages": [
+    {
+     "stage": "base_chart_draw",
+     "ms": 74.8,
+     "share": 0.974
+    },
+    {
+     "stage": "pressure_sampling",
+     "ms": 1.5,
+     "share": 0.02
+    },
+    {
+     "stage": "isobar_contours",
+     "ms": 0.3,
+     "share": 0.004
+    },
+    {
+     "stage": "surface_to_image",
+     "ms": 0.2,
+     "share": 0.002
+    }
+   ],
+   "next_dominant_bottleneck": "the chart layer's base chart composition: 74.8 ms, 97.4% of the steady-state composition. It is the application's own composition (BaseChartRenderer with the application's drawers and palette), and this issue may not change the application's chart rendering, so the cost is migrated by keeping the layer out of the interaction path, not by rewriting the application's portrayal.",
+   "refuted_candidate": "contour/isobar generation: the application's own contour drawing is 0.3 ms, 0.4% of the composition. Retaining the worker-generated contour geometry would not pay for itself here; the recorded negative result keeps it off the list.",
+   "other_candidates": "streamline generation and drawing are not in the viewport at all (they are an application's wind style), so the measurement does not apply to this vehicle."
+  },
+  "migration": {
+   "layer": "the chart layer's publication path (the upload cost candidate)",
+   "what": "the composed cairo surface is published as the scene graph's image with one copy of the surface's bytes instead of two: the image shares the bytes the surface already produced",
+   "before_ms": 0.6,
+   "after_ms": 0.2,
+   "share_less": 0.709,
+   "identical_pixels": true,
+   "note": "the transport is not the dominant cost; it is migrated because it is the chart layer's own upload path and the change is pixel-identical. The dominant cost, the base chart composition, is the application's own code and is left alone."
+  },
+  "gate_after_part_2": {
+   "verdict": "pass",
+   "sustained_pan_loading": 0,
+   "anchored_zoom_loading": 0,
+   "time_crossings_loading": 0,
+   "continuous_weather": true
+  },
+  "fixture_note": "After the recorded green run the environment emptied the fixture's CHS tile cache (4980 files, none of them part of this gate's measurement) and the runner's strict snapshot verification refused further runs. The tiles were restored byte for byte from the application's own cache, the snapshot verified again with the manifest's hash 1ed1bca1..., and the final run above was made on the restored fixture."
  }
 }
