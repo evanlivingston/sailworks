@@ -4,6 +4,7 @@ These checks are model-level and headless: they do not need a GPU, a window
 or the application's frame pipeline.
 """
 
+from dataclasses import replace
 from datetime import timedelta
 import inspect
 from pathlib import Path
@@ -323,6 +324,119 @@ def test_cancelled_preparation_never_replaces_current_demand(gribs, monkeypatch)
             model._thread.join(5)
 
 
+def test_a_prepared_back_slot_is_handed_forward_while_the_front_is_presented(
+    gribs, monkeypatch
+):
+    from threading import Event
+    import time
+
+    paths, _source = _paths(gribs)
+    model = GribViewportModel(paths, land_mask=Land())
+    entered, release = Event(), Event()
+    real_prepare = model._prepare
+
+    def blocked(camera, cancel):
+        entered.set()
+        release.wait(5)
+        return real_prepare(camera, cancel)
+
+    monkeypatch.setattr(model, "_prepare", blocked)
+    try:
+        front, _selection = _wait_ready(model)
+        # A demand outside the front window starts the worker on the back slot
+        # while the front is still presentable.
+        moved = _camera(center_lon=1.2)
+        assert model.update(moved)[0] == "loading"
+        assert entered.wait(5)
+        state, presented, _selection = model.update(_camera())
+        assert state == "ready" and presented is front
+        with model._condition:
+            assert model.observations()["slots_filled"] == 1
+        release.set()
+        moved_field, _selection = _wait_ready(model, camera=moved, timeout=10)
+        assert moved_field is not front
+        observations = model.observations()
+        assert observations["slot_handoffs"] >= 1
+        assert observations["slots_filled"] >= 1
+        assert front.generation in observations["published_generations"]
+    finally:
+        release.set()
+        model.close()
+        if model._thread is not None:
+            model._thread.join(5)
+
+
+def test_a_superseded_request_never_publishes(gribs, monkeypatch):
+    from threading import Event
+    import time
+
+    paths, _source = _paths(gribs)
+    reference = GribViewportModel(paths, land_mask=Land())
+    try:
+        old_field, _selection = _wait_ready(reference)
+    finally:
+        reference.close()
+    model = GribViewportModel(paths, land_mask=Land())
+    entered, release = Event(), Event()
+
+    def blocked(camera, cancel):
+        entered.set()
+        release.wait(5)
+        return old_field
+
+    monkeypatch.setattr(model, "_prepare", blocked)
+    try:
+        model.update(_camera())
+        assert entered.wait(5)
+        # A different forecast bracket supersedes the active request.
+        model.update(_camera(time=START + timedelta(hours=5)))
+        assert model._active[1].is_set()
+        release.set()
+        deadline = time.monotonic() + 5
+        while model.counters["stale_rejected"] == 0 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        observations = model.observations()
+        assert observations["superseded_rejected"] >= 1
+        assert old_field.generation not in observations["published_generations"]
+        assert model._field is None
+    finally:
+        release.set()
+        model.close()
+        if model._thread is not None:
+            model._thread.join(5)
+
+
+def test_a_generation_mismatch_is_rejected_not_presented(gribs):
+    paths, _source = _paths(gribs)
+    model = GribViewportModel(paths, land_mask=Land())
+    try:
+        _field, _selection = _wait_ready(model)
+        with model._condition:
+            resource = next(item for item in model._slots if item is not None)
+            stale = replace(resource, generation=("stale",), slot=0)
+            model._store.clear()
+            model._field = None
+            model._slots = [stale, None]
+            model._front_index = 0
+            before = model.counters["generation_rejected"]
+        state, presented, selection = model.update(_camera())
+        assert state == "loading"
+        assert presented is None and selection is None
+        observations = model.observations()
+        assert model.counters["generation_rejected"] > before
+        assert observations["generation_rejected"] >= 1
+        assert stale.generation not in observations["published_generations"]
+    finally:
+        model.close()
+
+
+def test_the_speculative_prefetcher_is_retired():
+    assert not hasattr(GribViewportModel, "_prefetch_request")
+    model = object.__new__(GribViewportModel)
+    assert not hasattr(model, "_prefetch_attempts")
+    assert not hasattr(model, "_speculative")
+
+
 def test_zoom_reuses_values_only_with_the_same_shoreline_policy(gribs):
     from dataclasses import replace
     import numpy as np
@@ -353,8 +467,7 @@ def test_zoom_reuses_values_only_with_the_same_shoreline_policy(gribs):
         model.close()
 
 
-def test_exact_future_event_is_prefetched_without_blending_across_it(gribs):
-    import time
+def test_exact_future_event_is_prepared_on_demand_without_blending_across_it(gribs):
     import numpy as np
     from gweatherrouting.qt.gpuweather import decode_component
     from gweatherrouting.core.gribsampling import WeatherSampler
@@ -365,22 +478,11 @@ def test_exact_future_event_is_prefetched_without_blending_across_it(gribs):
     future = _camera(time=START + timedelta(hours=3))
     try:
         _wait_ready(model)
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            with model._condition:
-                warmed = any(
-                    gribviewport._covers(field, future)
-                    for field in model._store.fields()
-                )
-            if warmed:
-                break
-            time.sleep(0.005)
-        assert warmed, "Future exact event was not prepared in the background"
-        misses = model.counters["misses"]
-        state, field, selection = model.update(future)
-        assert state == "ready"
+        # #66 replaces speculative lookahead with demand-driven slots: the
+        # future event is prepared when it is requested, not guessed in idle
+        # time, and still keeps exact-instant (no blend) semantics.
+        field, selection = _wait_ready(model, camera=future)
         assert field.identity.before == field.identity.after == future.stamp()
-        assert model.counters["misses"] == misses
         direct = stage_barbs(
             WeatherSampler([source]), future.stamp(), future.view(), Land()
         )

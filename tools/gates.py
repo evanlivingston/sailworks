@@ -108,7 +108,20 @@ GATES = {
                 "metric": metric,
                 "aggregate": "all",
                 "op": "is_true",
-                "source": "docs/rendering-performance-plan.md: Try-out gate contract (behavioral invariant, not a timing threshold)",
+                "source": (
+                    "issue #66 experiment contract (structural observation, "
+                    "not a timing threshold)"
+                    if metric
+                    in (
+                        "prepared_while_presenting",
+                        "superseded_never_published",
+                        "generation_mismatch_rejected",
+                    )
+                    else (
+                        "docs/rendering-performance-plan.md: Try-out gate "
+                        "contract (behavioral invariant, not a timing threshold)"
+                    )
+                ),
             }
             for label, metric in (
                 ("pan, zoom and time settle without stale content", "complete"),
@@ -123,6 +136,18 @@ GATES = {
                 (
                     "weather remains current during every interaction input",
                     "continuous_weather",
+                ),
+                (
+                    "preparation overlaps presentation",
+                    "prepared_while_presenting",
+                ),
+                (
+                    "superseded preparation never publishes",
+                    "superseded_never_published",
+                ),
+                (
+                    "generation mismatch is rejected",
+                    "generation_mismatch_rejected",
                 ),
             )
         ],

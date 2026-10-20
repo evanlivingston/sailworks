@@ -28,8 +28,10 @@ def run(snapshot):
     spec.loader.exec_module(fixture)
     from gweatherrouting.qt.gribviewport import (
         GribViewportModel,
+        PreparedResource,
         ViewportCamera,
         _covers,
+        _generation_key,
         _viewport_widget_class,
         saved_selection,
     )
@@ -84,6 +86,16 @@ def run(snapshot):
             assert widget._published == model._field.generation
         else:
             assert not widget._weather.isVisible(), "Stale weather visible on miss"
+
+    def wait_idle(timeout=5):
+        deadline = time.perf_counter() + timeout
+        while (
+            model._active is not None or model._pending is not None
+        ) and time.perf_counter() < deadline:
+            loop = QEventLoop()
+            QTimer.singleShot(10, loop.quit)
+            loop.exec()
+        return model._active is None and model._pending is None
 
     def mouse(kind, x, button, buttons):
         point = QPointF(x, 350)
@@ -202,6 +214,109 @@ def run(snapshot):
         )
         widget.set_camera(camera)
         assert settle(), "Time return failed"
+        # Structural observation: a preparation completed after its request was
+        # superseded must be rejected, never published.
+        real_prepare = model._prepare
+        superseded_entered = Event()
+        held = model._field
+
+        def superseded(camera_, cancel):
+            superseded_entered.set()
+            cancel.wait(5)
+            return held
+
+        published_before = set(model.observations()["published_demands"])
+        rejected_before = set(model.observations()["rejected_demands"])
+        stale_before = model.counters["stale_rejected"]
+        model._prepare = superseded
+        widget.set_camera(replace(camera, time=camera.time + timedelta(days=90)))
+        superseded_entered.wait(5)
+        widget.set_camera(replace(camera, time=camera.time + timedelta(days=91)))
+        deadline = time.perf_counter() + 5
+        while (
+            model.counters["stale_rejected"] == stale_before
+            and time.perf_counter() < deadline
+        ):
+            wait = QEventLoop()
+            QTimer.singleShot(10, wait.quit)
+            wait.exec()
+        model._prepare = real_prepare
+        with model._condition:
+            for request in (model._pending, model._active):
+                if request is not None:
+                    request[1].set()
+            model._pending = None
+        widget.set_camera(camera)
+        assert settle(), "Supersession probe did not return to ready"
+        assert wait_idle(), "Supersession probe left work in flight"
+        superseded = model.observations()
+        rejected_now = set(superseded["rejected_demands"]) - rejected_before
+        published_now = set(superseded["published_demands"]) | published_before
+        report["superseded_rejected_observed"] = len(rejected_now)
+        report["superseded_never_published"] = bool(rejected_now) and not (
+            rejected_now & published_now
+        )
+        # Structural observation: a prepared resource whose generation no
+        # longer matches its field may not be presented.
+        assert wait_idle(), "Supersession probe left work in flight"
+        with model._condition:
+            resource = next((item for item in model._slots if item is not None), None)
+            if resource is None:
+                resource = PreparedResource(
+                    field=model._field,
+                    generation=_generation_key(model._field),
+                    demand=model._request_key(camera),
+                    slot=0,
+                    span=(0.0, 0.0),
+                )
+            saved_slots = list(model._slots)
+            saved_front = model._front_index
+            saved_field = model._field
+            saved_state = model._state
+            saved_store = model._store
+            stale = replace(resource, generation=("stale-generation",), slot=0)
+            model._slots = [stale, None]
+            model._front_index = 0
+            model._field = None
+            model._store = type(saved_store)(saved_store.byte_limit)
+        generation_before = model.counters["generation_rejected"]
+        model._prepare = lambda camera_, cancel: None
+        mismatch_state = widget.set_camera(camera)
+        with model._condition:
+            model._slots = saved_slots
+            model._front_index = saved_front
+            model._field = saved_field
+            model._state = saved_state
+            model._store = saved_store
+            if model._pending is not None:
+                model._pending[1].set()
+                model._pending = None
+        model._prepare = real_prepare
+        widget.set_camera(camera)
+        assert settle(), "Generation probe did not return to ready"
+        report["generation_mismatch_rejected"] = (
+            mismatch_state == "loading"
+            and model.counters["generation_rejected"] > generation_before
+            and "stale-generation" not in widget.observations()["published_generations"]
+        )
+        assert wait_idle(), "Generation probe left work in flight"
+        observations = model.observations()
+        presentation = [
+            span
+            for span in widget.observations()["presentation_spans"]
+            if span[2] == "ready"
+        ]
+        preparation = observations["preparation_spans"]
+        report["preparation_span_count"] = len(preparation)
+        report["presentation_span_count"] = len(presentation)
+        report["prepared_while_presenting"] = sum(
+            1
+            for began, ended in preparation
+            if any(
+                began < stop and start < ended for start, stop, _state in presentation
+            )
+        )
+        report["slot_handoffs"] = observations["slot_handoffs"]
         # Explicit cold miss and pending close; loading must not disable camera input.
         entered = Event()
 

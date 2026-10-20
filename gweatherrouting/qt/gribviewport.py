@@ -23,6 +23,7 @@ import os
 from pathlib import Path
 import sys
 from threading import Condition, Event, Thread
+import time
 
 from gweatherrouting.qt.gpuweatherfields import (
     FIELD_COLUMNS,
@@ -109,6 +110,43 @@ def _covers(field, camera):
     return field.identity.contains(camera.stamp()) and _spatially_covers(field, camera)
 
 
+def _generation_key(field):
+    """The content generation of a prepared resource: source/time/coverage/scope.
+
+    ``field.identity.key()`` already hashes source, parameter, time window,
+    spatial window and resolution.  The remaining components are kept explicit
+    so a resource assembled for another demand cannot be mistaken for this one
+    even if some identity fields happen to collide.
+    """
+    identity = field.identity
+    return (
+        field.generation,
+        identity.key(),
+        identity.source,
+        identity.time_window,
+        identity.window,
+        identity.resolution,
+        field.land_quality,
+    )
+
+
+@dataclass(frozen=True)
+class PreparedResource:
+    """One prepared field in a front/back slot.
+
+    ``generation`` is computed when the worker finishes the preparation and is
+    re-derived before publication.  A mismatch is rejected rather than shown.
+    ``span`` is the ``perf_counter`` preparation interval used to observe
+    overlap with presentation.
+    """
+
+    field: object
+    generation: tuple
+    demand: tuple
+    slot: int
+    span: tuple
+
+
 class GribViewportModel:
     """The viewport's field scheduler and current-selection owner.
 
@@ -137,8 +175,17 @@ class GribViewportModel:
         self._error = ""
         self._store = FieldStore(field_bytes)
         self._events = ()
-        self._prefetch_attempts = set()
-        self._speculative = False
+        # Two prepared-resource slots: the front slot is what the viewport may
+        # present, the back slot is what the worker fills.  At most two requests
+        # are in flight (one active, one pending); a replaced request is
+        # cancelled and can never publish.
+        self._slots = [None, None]
+        self._front_index = None
+        self._preparation_spans = []
+        self._published_generations = set()
+        self._rejected_generations = set()
+        self._published_demands = set()
+        self._rejected_demands = set()
         self.on_change = None
         self.counters = dict(
             field_preparations=0,
@@ -146,8 +193,8 @@ class GribViewportModel:
             misses=0,
             cancelled=0,
             stale_rejected=0,
-            prefetch_completed=0,
-            prefetch_rejected=0,
+            generation_rejected=0,
+            slot_handoffs=0,
         )
 
     # ------------------------------------------------------------- state
@@ -172,16 +219,42 @@ class GribViewportModel:
 
         Returns ``(state, field, selection)``.  ``state`` is ``ready`` only
         when the selection belongs to the field that is actually published.
+        The front slot is presented; the back slot is a prepared N+1 that may
+        be handed forward without waiting for the worker.
         """
         with self._condition:
             if self._closed:
                 return ("unavailable", None, None)
             self._camera = camera
-            candidates = tuple(
-                field for field in self._store.fields() if _covers(field, camera)
-            )
+            for index, resource in enumerate(self._slots):
+                if resource is None:
+                    continue
+                if self._generation_rejection(resource) is not None:
+                    self.counters["generation_rejected"] += 1
+                    self._rejected_generations.add(resource.generation)
+                    self._slots[index] = None
+            candidates = []
+            seen = set()
+
+            def add_candidate(field):
+                if field is not None and id(field) not in seen:
+                    seen.add(id(field))
+                    candidates.append(field)
+
+            # The front slot is preferred, then the prepared back slot, then
+            # the byte-budgeted store for fields no longer in a slot.
+            if self._front_index is not None:
+                front = self._slots[self._front_index]
+                if front is not None and _covers(front.field, camera):
+                    add_candidate(front.field)
+            for resource in self._slots:
+                if resource is not None and _covers(resource.field, camera):
+                    add_candidate(resource.field)
             if self._field is not None and _covers(self._field, camera):
-                candidates = (self._field,) + candidates
+                add_candidate(self._field)
+            for field in self._store.fields():
+                if _covers(field, camera):
+                    add_candidate(field)
             guard = _expanded(camera, REFILL_VIEW_FACTOR)
             field = next(
                 (item for item in candidates if _covers(item, guard)),
@@ -190,6 +263,10 @@ class GribViewportModel:
             if field is not None:
                 self._field = field
                 self._store.protect(field.identity)
+                for index, resource in enumerate(self._slots):
+                    if resource is not None and resource.field is field:
+                        self._front_index = index
+                        break
         if field is not None and _covers(field, camera):
             try:
                 selection = select_resident(
@@ -204,10 +281,11 @@ class GribViewportModel:
                     self._field = field
                     self._store.acquire(field.identity)
                     self._store.protect(field.identity)
-                    self._pending = None
-                    self._desired_key = self._request_key(camera)
                     self._state = "ready"
-                    self._condition.notify_all()
+                    self._failed_key = None
+                    self._error = ""
+                    self._published_generations.add(field.generation)
+                    self._published_demands.add(self._request_key(camera))
                 return ("ready", field, selection)
         with self._condition:
             if self._failed_key == self._request_key(camera):
@@ -232,68 +310,64 @@ class GribViewportModel:
             None if camera.over_land else shoreline_quality(camera.view().get_scale()),
         )
 
-    def _prefetch_request(self):
-        """At most one speculative task; demand always goes first.
-
-        Keep a finite attempted-plan set so eviction never causes an idle
-        prefetch/re-evict loop. Only the existing byte-budgeted store retains data.
-        """
-        camera, field = self._camera, self._field
-        if camera is None or field is None or not _covers(field, camera):
-            return None
-        guard = _expanded(camera, REFILL_VIEW_FACTOR)
-        spatial = not any(_covers(item, guard) for item in self._store.fields())
-        pos = bisect_left(self._events, camera.stamp())
-        events = self._events[max(0, pos - 4) : pos + 5]
-        # Exact instants retain singleton semantics. Interval midpoint demands
-        # prepare their open intervals; they are never substituted at events.
-        stamps = sorted(
-            events,
-            key=lambda stamp: (abs(stamp - camera.stamp()), stamp < camera.stamp()),
-        )
-        neighbors = self._events[max(0, pos - 1) : pos + 2]
-        stamps += [(a + b) / 2 for a, b in zip(neighbors, neighbors[1:])]
-        zone = camera.time.tzinfo or timezone.utc
-        targets = [
-            replace(camera, time=datetime.fromtimestamp(stamp, tz=zone))
-            for stamp in stamps
-        ]
-        plans = [
-            (
-                "time",
-                field.identity.window,
-                self._time_key(target.stamp()),
-                field.land_quality,
-            )
-            for target in targets
-        ]
-        spatial_key = ("space", self._request_key(camera))
-        self._prefetch_attempts.intersection_update(set(plans) | {spatial_key})
-        if spatial and spatial_key not in self._prefetch_attempts:
-            self._prefetch_attempts.add(spatial_key)
-            return camera, Event(), self._request_key(camera)
-        for target, key in zip(targets, plans):
-            if key in self._prefetch_attempts:
-                continue
-            self._prefetch_attempts.add(key)
-            if any(_covers(item, target) for item in self._store.fields()):
-                continue
-            return target, Event(), self._request_key(target)
+    def _generation_rejection(self, resource):
+        """Reject a resource whose recorded generation no longer derives."""
+        if resource.generation != _generation_key(resource.field):
+            return "generation"
         return None
 
+    def _publication_rejection(self, resource, camera):
+        """Why this resource may not be presented, or ``None`` if it may."""
+        rejection = self._generation_rejection(resource)
+        if rejection is not None:
+            return rejection
+        if camera is None or not _covers(resource.field, camera):
+            return "coverage"
+        return None
+
+    def _back_index(self):
+        """The slot the worker may fill without overwriting the front."""
+        if self._front_index is not None:
+            return 1 - self._front_index
+        for index, resource in enumerate(self._slots):
+            if resource is None:
+                return index
+        return 1
+
+    def _adopt(self, resource):
+        """Promote a prepared back-slot resource to the presented front."""
+        self._field = resource.field
+        self._front_index = resource.slot
+        self._store.acquire(resource.field.identity)
+        self._store.protect(resource.field.identity)
+        self._failed_key = None
+        self._error = ""
+        self._state = "ready"
+        self.counters["slot_handoffs"] += 1
+
     def _request(self, camera):
-        """Queue a preparation; a camera move inside the window keeps it."""
+        """Queue the latest demand; a replaced request is cancelled.
+
+        Only one request is active and one is pending, so at most two are in
+        flight.  A pending request is always replaceable.  The active request
+        is cancelled only when the time window or land policy makes its field
+        fundamentally different; a pan keeps it so a 30 Hz input stream cannot
+        starve preparation.
+        """
         key = self._request_key(camera)
         self._desired_key = key
         if self._active is not None and self._active[2] == key:
-            self._pending = None
-            self._speculative = False
+            if self._pending is not None and self._pending[2] != key:
+                self._pending[1].set()
+                self.counters["cancelled"] += 1
+                self._pending = None
             return
         if self._pending is not None:
             if self._pending[2] == key:
                 return
             self._pending[1].set()
             self.counters["cancelled"] += 1
+            self._pending = None
         if self._active is not None:
             old, active_cancel, _key = self._active
             if self._time_key(old.stamp()) != self._time_key(camera.stamp()) or (
@@ -308,6 +382,22 @@ class GribViewportModel:
             self._thread = Thread(target=self._run, name="grib-viewport", daemon=True)
             self._thread.start()
         self._condition.notify_all()
+
+    def observations(self):
+        """Preparation spans and publication-rejection evidence for the gate."""
+        with self._condition:
+            return {
+                "preparation_spans": tuple(self._preparation_spans),
+                "published_generations": tuple(sorted(self._published_generations)),
+                "rejected_generations": tuple(sorted(self._rejected_generations)),
+                "published_demands": tuple(sorted(self._published_demands, key=repr)),
+                "rejected_demands": tuple(sorted(self._rejected_demands, key=repr)),
+                "generation_rejected": self.counters["generation_rejected"],
+                "superseded_rejected": self.counters["stale_rejected"],
+                "slot_handoffs": self.counters["slot_handoffs"],
+                "slots_filled": sum(resource is not None for resource in self._slots),
+                "front_slot": self._front_index,
+            }
 
     def _run(self):
         sources = []
@@ -360,67 +450,66 @@ class GribViewportModel:
                 with self._condition:
                     if self._closed:
                         return
-                    request = self._pending
-                    self._speculative = request is None
-                    if request is None:
-                        request = self._prefetch_request()
-                    if request is None:
+                    while self._pending is None and not self._closed:
                         self._condition.wait()
-                        continue
-                    self._pending = None
+                    if self._closed:
+                        return
+                    request, self._pending = self._pending, None
                     self._active = request
                 camera, cancel, key = request
+                began = time.perf_counter()
                 error = ""
                 try:
                     field = self._prepare(camera, cancel)
                 except Exception as exc:
                     field, error = None, str(exc)
+                ended = time.perf_counter()
                 with self._condition:
                     self._active = None
                     if self._closed:
                         return
-                    current = (
-                        not cancel.is_set()
-                        and self._camera is not None
-                        and (
-                            _covers(field, self._camera)
-                            if field is not None
-                            else key == self._desired_key
-                        )
-                    )
+                    self._preparation_spans.append((began, ended))
+                    if len(self._preparation_spans) > 1024:
+                        del self._preparation_spans[
+                            : len(self._preparation_spans) - 1024
+                        ]
                     notify = False
-                    if (
-                        current
-                        and field is not None
-                        and not (
-                            self._field is not None
-                            and _covers(self._field, self._camera)
+                    if field is None:
+                        if cancel.is_set() or key != self._desired_key:
+                            self.counters["stale_rejected"] += 1
+                            self._rejected_demands.add(key)
+                        elif error:
+                            self._failed_key, self._error = key, error
+                            self._state = "unavailable"
+                            notify = True
+                    else:
+                        resource = PreparedResource(
+                            field=field,
+                            generation=_generation_key(field),
+                            demand=key,
+                            slot=-1,
+                            span=(began, ended),
                         )
-                    ):
-                        self._field = field
-                        self._store.protect(field.identity)
-                        self._failed_key = None
-                        self._error = ""
-                        self._state = "ready"
-                        if self._pending is not None and _covers(
-                            field, self._pending[0]
-                        ):
-                            self._pending = None
-                        notify = True
-                    elif self._speculative:
-                        self.counters[
-                            (
-                                "prefetch_completed"
-                                if field is not None
-                                else "prefetch_rejected"
-                            )
-                        ] += 1
-                    elif current and error:
-                        self._failed_key, self._error = key, error
-                        self._state = "unavailable"
-                        notify = True
-                    elif not current:
-                        self.counters["stale_rejected"] += 1
+                        if cancel.is_set():
+                            # The request was superseded: it may never publish.
+                            self.counters["stale_rejected"] += 1
+                            self._rejected_generations.add(resource.generation)
+                            self._rejected_demands.add(key)
+                        elif self._generation_rejection(resource) is not None:
+                            self.counters["generation_rejected"] += 1
+                            self._rejected_generations.add(resource.generation)
+                            self._rejected_demands.add(key)
+                        else:
+                            slot = self._back_index()
+                            stored = replace(resource, slot=slot)
+                            self._slots[slot] = stored
+                            if (
+                                self._camera is not None
+                                and self._publication_rejection(stored, self._camera)
+                                is None
+                            ):
+                                self._adopt(stored)
+                                notify = True
                     callback = self.on_change if notify else None
                 if callback is not None:
                     callback()
@@ -526,6 +615,8 @@ class GribViewportModel:
                 self._active[1].set()
                 self.counters["cancelled"] += 1
             self._field = None
+            self._slots = [None, None]
+            self._front_index = None
             self._condition.notify_all()
         # Never join GDAL or close its handles from the GUI thread. The worker
         # releases them in finally, even when it completes after this method.
@@ -578,6 +669,7 @@ def _viewport_widget_class():
             self._camera = None
             self._drag = None
             self._state = "loading"
+            self._presentation_spans = []
             format_ = QSurfaceFormat()
             format_.setSamples(4)
             format_.setAlphaBufferSize(8)
@@ -591,6 +683,7 @@ def _viewport_widget_class():
             if self._weather is None:
                 raise RuntimeError("The GRIB viewport could not load its shader")
             self._published = None
+            self._published_generations = set()
             self._status = QLabel("Wind loading…", self)
             self._status.setStyleSheet(
                 "background: rgba(0,0,0,190); color: white; padding: 6px"
@@ -623,19 +716,35 @@ def _viewport_widget_class():
 
         def set_camera(self, camera):
             """Adopt a camera and publish the portrayal it may show."""
-            self._camera = camera
-            state, field, selection = self._model.update(camera)
-            if state != "ready":
-                # A miss shows the loading state; it never shows stale content.
-                self._weather.setVisible(False)
-                self._show_state(state)
+            began = time.perf_counter()
+            state = "loading"
+            try:
+                self._camera = camera
+                state, field, selection = self._model.update(camera)
+                if state != "ready":
+                    # A miss shows the loading state; it never shows stale content.
+                    self._weather.setVisible(False)
+                    self._show_state(state)
+                    self.cameraChanged.emit(camera)
+                    return state
+                self._publish(field, selection, camera)
+                self._weather.setVisible(True)
+                self._show_state(
+                    "ready" if self._weather.property("ready") else "loading"
+                )
                 self.cameraChanged.emit(camera)
                 return state
-            self._publish(field, selection, camera)
-            self._weather.setVisible(True)
-            self._show_state("ready" if self._weather.property("ready") else "loading")
-            self.cameraChanged.emit(camera)
-            return state
+            finally:
+                self._presentation_spans.append((began, time.perf_counter(), state))
+                if len(self._presentation_spans) > 4096:
+                    del self._presentation_spans[: len(self._presentation_spans) - 4096]
+
+        def observations(self):
+            """Presentation spans and the generations actually published."""
+            return {
+                "presentation_spans": tuple(self._presentation_spans),
+                "published_generations": tuple(sorted(self._published_generations)),
+            }
 
         def _publish(self, field, selection, camera):
             # Reject before publishing either namespace or touching QML sources.
@@ -661,6 +770,7 @@ def _viewport_widget_class():
             self._weather.setProperty("blend", field.staged.weight(camera.stamp()))
             self._weather.setOpacity(1.0)
             self._published = selection.generation
+            self._published_generations.add(selection.generation)
 
         def publication_counters(self):
             """The published traffic, counted apart by kind."""
