@@ -1,0 +1,98 @@
+{
+  "issue": 66,
+  "decision": "revise",
+  "reason": "The two-slot pipeline, supersession rejection and generation-key rejection all hold, but removing the speculative lookahead regressed continuous readiness against the recorded viewport result: pan loading 18/120 (recorded 5/120), time loading 16/18 (recorded 12/18), and pan dispatch p95 6.99 ms (recorded 3.09 ms). The back slot currently fills only on demand, so a 30 Hz sweep outruns preparation.",
+  "fixture_sha256": "1ed1bca1281ad4096713ce20af9c1473e70bd4eb0766a54965849b7ace698a03",
+  "sources_opened": 22,
+  "source_order_preserved": true,
+  "gate": "viewport-interaction",
+  "gate_kind": "correctness",
+  "gate_verdict": "fail",
+  "checks_passed": 10,
+  "checks_failed": 1,
+  "failing_check": "weather remains current during every interaction input",
+  "reference": {
+    "artifact": "viewport-continuous-summary.json",
+    "pan_loading": "5/120",
+    "zoom_loading": "0/24",
+    "time_loading": "12/18",
+    "pan_dispatch_p95_ms": 3.09,
+    "zoom_dispatch_p95_ms": 1.788,
+    "time_dispatch_p95_ms": 1.891,
+    "gate_checks": "6/7"
+  },
+  "observations": {
+    "prepared_while_presenting": 8,
+    "preparation_span_count": 20,
+    "presentation_span_count": 162,
+    "superseded_rejected_observed": 2,
+    "superseded_never_published": true,
+    "generation_mismatch_rejected": true,
+    "slot_handoffs": 12
+  },
+  "phases": [
+    {
+      "name": "sustained-pan",
+      "inputs": 120,
+      "loading_inputs": 18,
+      "dispatch_p95_ms": 6.989,
+      "handler_max_ms": 8.112,
+      "render_observed_revisions": 82,
+      "field_preparations": 7
+    },
+    {
+      "name": "anchored-zoom",
+      "inputs": 24,
+      "loading_inputs": 0,
+      "dispatch_p95_ms": 3.228,
+      "handler_max_ms": 8.551,
+      "render_observed_revisions": 24,
+      "field_preparations": 0
+    },
+    {
+      "name": "time-crossings",
+      "inputs": 18,
+      "loading_inputs": 16,
+      "dispatch_p95_ms": 2.678,
+      "handler_max_ms": 8.5,
+      "render_observed_revisions": 3,
+      "field_preparations": 1
+    }
+  ],
+  "counters": {
+    "field_preparations": 10,
+    "covered_reuses": 162,
+    "misses": 107,
+    "cancelled": 30,
+    "stale_rejected": 6,
+    "generation_rejected": 1,
+    "slot_handoffs": 12
+  },
+  "retained": {
+    "field_bytes": 14935219,
+    "field_entries": 10,
+    "field_evictions": 0,
+    "provider_bytes_respected": true,
+    "cold_ready_seconds": 1.4505859169876203,
+    "close_ms": 15.869708964601159
+  },
+  "native_attempts": 1,
+  "native_attempt_seconds": 11.887,
+  "targeted_validation": {
+    "tests_passed": 90,
+    "warnings": 1,
+    "warning": "GDAL FutureWarning",
+    "changed_python_black_check": "pass (4 files)",
+    "whitespace_check": "pass",
+    "full_suite": "not run"
+  },
+  "endpoint": "QQuickWindow.afterRendering render-callback proxy; not presentation FPS, input-to-present or scanout",
+  "timing_percentile": "nearest rank p95",
+  "visual_fidelity": "failed/user-deferred, not rerun or passed",
+  "limits": [
+    "No claim of continuous weather for hourly time changes at 30 inputs/s",
+    "The removal of speculative scheduling regressed pan and time readiness instead of holding the recorded result",
+    "No direct hardware-upload or presentation-FPS measurement"
+  ],
+  "next_step": "Keep the two-slot pipeline, rejection and generation checks, but have the back slot prepare the next demand or guard window inside the pipeline (not the retired _prefetch_request), then spend a new native attempt. #67 owns resident time windows."
+}
