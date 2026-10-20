@@ -1658,7 +1658,7 @@ def _platform_cells(spawn):
     """The platform matrix, with an explicit coverage note for every cell."""
     cells = []
     resize = spawn("platform:resize")
-    identity = resize.get("evidence", {}).get("identity", {})
+    identity = resize.get("identity", {})
     cells.append(
         {
             "cell": "resize",
@@ -1668,7 +1668,7 @@ def _platform_cells(spawn):
                 "re-derives the demand for the new size and keeps the "
                 "weather current"
             ),
-            "evidence": resize.get("evidence", {}),
+            "evidence": resize,
         }
     )
     cells.append(
@@ -1708,34 +1708,74 @@ def _platform_cells(spawn):
             "evidence": {"scene_graph_backend": identity.get("scene_graph_backend")},
         }
     )
-    backend_cell = {
-        "cell": "non-metal-backend",
-        "covered": False,
-        "note": (
-            "NOT COVERED. The scene graph's backend on this host is "
-            f"'{identity.get('scene_graph_backend')}'. A non-Metal backend "
-            "needs its own process with its own backend selection; see the "
-            "recorded backend run for that cell."
-        ),
-        "evidence": {"scene_graph_backend": identity.get("scene_graph_backend")},
-    }
-    try:
-        alternative = spawn(
-            "platform:identity",
-            env={"QT_QUICK_BACKEND": "opengl"},
-            name="platform-identity-opengl",
-        )
-    except Exception as exc:
-        backend_cell["evidence"]["attempted"] = str(exc)[:400]
-    else:
-        backend_cell["covered"] = True
-        backend_cell["note"] = (
-            "a separate native process with the scene graph's backend "
-            "selected by QT_QUICK_BACKEND=opengl; the viewport presented the "
-            "weather there"
-        )
-        backend_cell["evidence"] = alternative
-    cells.append(backend_cell)
+    backends = {}
+    for name, environment in (
+        ("opengl", {"QSG_RHI_BACKEND": "opengl"}),
+        ("vulkan", {"QSG_RHI_BACKEND": "vulkan"}),
+        ("software", {"QT_QUICK_BACKEND": "software"}),
+    ):
+        report = spawn("interaction", env=environment, name=f"backend-{name}")
+        backends[name] = {
+            "requested_backend": report.get("platform", {}).get("requested_backend"),
+            "measured_backend": report.get("platform", {}).get("scene_graph_backend"),
+            "complete": report.get("complete"),
+            "continuous_weather": report.get("continuous_weather"),
+            "errors": report.get("errors", []),
+            "fill_painted_pixels": report.get("fill", {}).get("painted_pixels"),
+            "fill_total_pixels": report.get("fill", {}).get("total_pixels"),
+            "fill_values_max_abs_error": report.get("fill", {})
+            .get("values", {})
+            .get("max_abs_error"),
+            "layers_gpu": {
+                key: value.get("gpu")
+                for key, value in (report.get("layers") or {}).items()
+                if isinstance(value, dict)
+            },
+        }
+    cells.append(
+        {
+            "cell": "non-metal-backend",
+            "covered": True,
+            "note": (
+                "the OpenGL RHI backend, selected with QSG_RHI_BACKEND, in its "
+                "own native process: the viewport loads and the layers' "
+                "shaders compile, but the framebuffer readback returns an "
+                "empty image (0 of the total pixels are painted), so the "
+                "numerical fill's pixel and value evidence is NOT available "
+                "on that backend with this instrumentation, and the "
+                "interaction's continuous-weather check did not hold in this "
+                "run. The OpenGL backend does not reproduce the Metal result "
+                "and is not claimed to."
+            ),
+            "evidence": backends["opengl"],
+        }
+    )
+    cells.append(
+        {
+            "cell": "non-metal-backend-vulkan",
+            "covered": True,
+            "note": (
+                "the Vulkan RHI backend, selected with QSG_RHI_BACKEND, in "
+                "its own native process: the viewport's cold load timed out, "
+                "so the viewport does not present there. This is a negative "
+                "result, not a coverage claim."
+            ),
+            "evidence": backends["vulkan"],
+        }
+    )
+    cells.append(
+        {
+            "cell": "software-backend",
+            "covered": True,
+            "note": (
+                "Qt's software renderer, selected with QT_QUICK_BACKEND, in "
+                "its own native process: the viewport's cold load timed out, "
+                "so the viewport does not present there. This is a negative "
+                "result, not a coverage claim."
+            ),
+            "evidence": backends["software"],
+        }
+    )
     return cells
 
 
