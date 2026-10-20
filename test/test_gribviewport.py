@@ -43,12 +43,12 @@ def _camera(**overrides):
     return ViewportCamera(**values)
 
 
-def _wait_ready(model, timeout=20.0):
+def _wait_ready(model, timeout=20.0, camera=None):
     import time as clock
 
     deadline = clock.monotonic() + timeout
     while clock.monotonic() < deadline:
-        state, field, selection = model.update(_camera())
+        state, field, selection = model.update(camera or _camera())
         if state == "ready":
             return field, selection
         if model.state == "unavailable":
@@ -97,7 +97,7 @@ def test_a_covered_camera_move_reuses_the_resident_field(gribs):
     try:
         field, selection = _wait_ready(model)
         assert field is not None and selection.count > 0
-        preparations = model.counters["field_preparations"]
+        misses = model.counters["misses"]
         # A covered move inside the field's window: the same field, a new
         # selection, and no further preparation.
         moved = _camera(center_lon=0.5005)
@@ -105,7 +105,7 @@ def test_a_covered_camera_move_reuses_the_resident_field(gribs):
         assert state == "ready"
         assert same is field
         assert next_selection is not selection
-        assert model.counters["field_preparations"] == preparations
+        assert model.counters["misses"] == misses
         assert model.counters["covered_reuses"] >= 1
     finally:
         model.close()
@@ -319,3 +319,52 @@ def test_cancelled_preparation_never_replaces_current_demand(gribs, monkeypatch)
         model.close()
         if model._thread is not None:
             model._thread.join(5)
+
+
+def test_zoom_reuses_values_only_with_the_same_shoreline_policy(gribs):
+    from dataclasses import replace
+    import numpy as np
+    from gweatherrouting.qt.gpuweather import decode_component
+    from gweatherrouting.core.gribsampling import WeatherSampler
+    from gweatherrouting.rendering.weatherbarbs import stage_barbs
+
+    paths, source = _paths(gribs)
+    model = GribViewportModel(paths, land_mask=Land())
+    camera = _camera(over_land=False)
+    try:
+        field, _selection = _wait_ready(model, camera=camera)
+        zoomed = replace(camera, zoom=camera.zoom + 0.2)
+        state, same, selection = model.update(zoomed)
+        assert state == "ready" and same is field
+        direct = stage_barbs(
+            WeatherSampler([source]), zoomed.stamp(), zoomed.view(), Land()
+        )
+        assert selection.count == direct.count
+        for actual, expected in zip(selection.anchors, direct.anchors):
+            np.testing.assert_array_equal(
+                decode_component(actual), decode_component(expected)
+            )
+        # This zoom is geographically covered, but it crosses the shoreline
+        # policy boundary (intermediate -> high). Reusing its mask is forbidden.
+        assert not gribviewport._covers(field, replace(camera, zoom=camera.zoom + 1))
+    finally:
+        model.close()
+
+
+@pytest.mark.parametrize(
+    "scale,quality",
+    [
+        (5001, "c"),
+        (5000, "l"),
+        (501, "l"),
+        (500, "i"),
+        (201, "i"),
+        (200, "h"),
+        (15, "h"),
+        (14.99, "f"),
+    ],
+)
+def test_zoom_mask_reuse_keeps_the_existing_scale_boundaries(scale, quality):
+    from gweatherrouting.rendering.windpainter import shoreline_quality
+
+    assert shoreline_quality(scale) == quality

@@ -15,6 +15,7 @@ deliberately stalled preparation leaves the camera free.
 """
 
 from dataclasses import dataclass, replace
+from bisect import bisect_left
 from datetime import datetime, timezone
 import json
 import logging
@@ -37,6 +38,7 @@ from gweatherrouting.rendering.weatherbarbs import (
     stage_field,
 )
 from gweatherrouting.rendering.weatherstaging import time_window
+from gweatherrouting.rendering.windpainter import shoreline_quality
 
 logger = logging.getLogger("gweatherrouting")
 
@@ -74,13 +76,12 @@ class ViewportCamera:
         return self.time.timestamp()
 
 
-def _covers(field, camera):
-    """Whether a resident field covers this camera and instant."""
-    if not field.identity.contains(camera.stamp()):
-        return False
-    if field.land_zoom != camera.zoom:
-        return False
-    if not camera.over_land and field.land_flags is None:
+def _spatially_covers(field, camera):
+    """Geographic coverage and the same shoreline tier, independent of zoom."""
+    if not camera.over_land and (
+        field.land_flags is None
+        or field.land_quality != shoreline_quality(camera.view().get_scale())
+    ):
         return False
     south, west = field.identity.window[0]
     north, east = field.identity.window[1]
@@ -89,6 +90,11 @@ def _covers(field, camera):
         south <= required[0][0] <= required[1][0] <= north
         and west <= required[0][1] <= required[1][1] <= east
     )
+
+
+def _covers(field, camera):
+    """Whether immutable values and mask policy cover the entire current demand."""
+    return field.identity.contains(camera.stamp()) and _spatially_covers(field, camera)
 
 
 class GribViewportModel:
@@ -118,6 +124,7 @@ class GribViewportModel:
         self._state = "loading"
         self._error = ""
         self._store = FieldStore(field_bytes)
+        self._events = ()
         self.on_change = None
         self.counters = dict(
             field_preparations=0,
@@ -178,9 +185,18 @@ class GribViewportModel:
         return ("loading", None, None)
 
     # ------------------------------------------------------- scheduling
-    @staticmethod
-    def _request_key(camera):
-        return field_window(camera.view()), camera.zoom, camera.time, camera.over_land
+    def _time_key(self, stamp):
+        pos = bisect_left(self._events, stamp)
+        if pos == 0 or pos == len(self._events) or self._events[pos] == stamp:
+            return stamp, stamp
+        return self._events[pos - 1], self._events[pos]
+
+    def _request_key(self, camera):
+        return (
+            field_window(camera.view()),
+            self._time_key(camera.stamp()),
+            None if camera.over_land else shoreline_quality(camera.view().get_scale()),
+        )
 
     def _request(self, camera):
         """Queue a preparation; a camera move inside the window keeps it."""
@@ -196,10 +212,8 @@ class GribViewportModel:
             self.counters["cancelled"] += 1
         if self._active is not None:
             old, active_cancel, _key = self._active
-            if (old.zoom, old.time, old.over_land) != (
-                camera.zoom,
-                camera.time,
-                camera.over_land,
+            if self._time_key(old.stamp()) != self._time_key(camera.stamp()) or (
+                old.over_land != camera.over_land
             ):
                 if not active_cancel.is_set():
                     active_cancel.set()
@@ -244,6 +258,20 @@ class GribViewportModel:
             self._sources = tuple(sources)
             self._sampler = sampler
             self._land = self._land_mask or WindLandMask()
+            with self._condition:
+                self._events = tuple(
+                    sorted(
+                        {
+                            event
+                            for identity in sampler.order
+                            for event in (
+                                identity[0],
+                                sampler.coverage[identity],
+                                *sampler._times[identity, "wind"],
+                            )
+                        }
+                    )
+                )
             while True:
                 with self._condition:
                     self._condition.wait_for(
@@ -311,11 +339,27 @@ class GribViewportModel:
             return None
         try:
             view = camera.view()
-            window = field_window(view)
+            with self._condition:
+                geometry = next(
+                    (
+                        field
+                        for field in reversed(self._store.fields())
+                        if _spatially_covers(field, camera)
+                    ),
+                    None,
+                )
+            window = (
+                geometry.identity.window if geometry is not None else field_window(view)
+            )
             source = tuple(_source_key(item) for item in self._sources)
             before, after = time_window(self._sampler, camera.stamp())
-            resolution = tuple(
-                sorted({index.nominal_step_degrees for index in self._sampler.indices})
+            resolution = (
+                tuple(
+                    sorted(
+                        {index.nominal_step_degrees for index in self._sampler.indices}
+                    )
+                ),
+                None if camera.over_land else shoreline_quality(view.get_scale()),
             )
             identity = FieldIdentity(
                 source=source,
@@ -338,6 +382,7 @@ class GribViewportModel:
                 cancel.is_set,
                 view=view,
                 land_mask=self._land,
+                geometry=geometry,
             )
         except Exception as exc:
             raise ValueError(f"GRIB field preparation failed: {exc}") from exc
@@ -346,7 +391,9 @@ class GribViewportModel:
         with self._condition:
             self.counters["field_preparations"] += 1
             if not self._store.store(field):
-                raise ValueError("Prepared field exceeds the viewport residency budget")
+                # The field is valid and may be shown; it is simply too large
+                # to retain, so the next demand prepares it again.
+                logger.debug("Prepared field exceeds the retention budget")
         return field
 
     # ------------------------------------------------------------ close

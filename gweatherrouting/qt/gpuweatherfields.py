@@ -155,6 +155,7 @@ class GeographicField:
     grids: tuple = ()
     land_flags: object = None
     land_zoom: float | None = None
+    land_quality: str | None = None
 
     @property
     def node_count(self):
@@ -309,6 +310,10 @@ class FieldStore:
             return None
         self.hits += 1
         return field.payload if isinstance(field, ResidentField) else field
+
+    def fields(self):
+        """Immutable snapshot of retained payload references (caller owns locking)."""
+        return self._lru.values()
 
     def store(self, field):
         """Retain ``field``, evicting the least recently used fields.

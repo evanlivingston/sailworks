@@ -15,6 +15,7 @@ from gweatherrouting.rendering.weatherstaging import (
 from gweatherrouting.rendering.windpainter import (
     barb_density_parameters,
     mercator_project_flat,
+    shoreline_quality,
 )
 
 if TYPE_CHECKING:
@@ -185,7 +186,15 @@ def _field_images(staged):
 
 
 def stage_field(
-    sampler, stamp, window, identity, cancel=lambda: False, *, view=None, land_mask=None
+    sampler,
+    stamp,
+    window,
+    identity,
+    cancel=lambda: False,
+    *,
+    view=None,
+    land_mask=None,
+    geometry=None,
 ):
     """Stage the geographic numerical field of one spatial window.
 
@@ -196,7 +205,19 @@ def stage_field(
     """
     from gweatherrouting.qt.gpuweatherfields import GeographicField, NativeGridGeometry
 
-    points = _native_points(sampler, window, cancel)
+    reuse = (
+        geometry is not None
+        and geometry.identity.window == window
+        and (
+            view is None
+            or view.over_land
+            or (
+                geometry.land_flags is not None
+                and geometry.land_quality == shoreline_quality(view.get_scale())
+            )
+        )
+    )
+    points = geometry.points if reuse else _native_points(sampler, window, cancel)
     if points is None:
         return None
     staged = stage_wind(
@@ -208,9 +229,13 @@ def stage_field(
         np.any(np.linalg.norm(a, axis=-1) > 250) for a in (staged.first, staged.second)
     ):
         raise ValueError("Wind exceeds bounded GPU symbol range")
-    index = {_node_key(point): position for position, point in enumerate(points)}
-    land_flags = None
-    if view is not None and not view.over_land:
+    index = (
+        geometry.index
+        if reuse
+        else {_node_key(point): position for position, point in enumerate(points)}
+    )
+    land_flags = geometry.land_flags if reuse else None
+    if view is not None and not view.over_land and land_flags is None:
         land_mask.refresh_source(view.get_scale())
         flags = []
         for point in points:
@@ -238,6 +263,11 @@ def stage_field(
         grids=tuple(grids.values()),
         land_flags=land_flags,
         land_zoom=None if view is None else view._zoom,
+        land_quality=(
+            None
+            if view is None or view.over_land
+            else shoreline_quality(view.get_scale())
+        ),
     )
 
 
@@ -308,7 +338,7 @@ def stage_selection(sampler, field, stamp, view, land_mask, cancel=lambda: False
     if cap is not None and len(chosen) > cap:
         chosen = chosen[np.linspace(0, len(chosen) - 1, cap, dtype=int)]
     if not view.over_land and field.land_flags is not None:
-        if field.land_zoom != view._zoom:
+        if field.land_quality != shoreline_quality(view.get_scale()):
             raise FieldCoverageError("Resident land mask has a different scale")
         chosen = chosen[~field.land_flags[node_ids[ids[chosen]]]]
     elif not view.over_land and sampler is None:
