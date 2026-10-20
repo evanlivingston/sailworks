@@ -315,13 +315,13 @@ class FieldStore:
         """Immutable snapshot of retained payload references (caller owns locking)."""
         return self._lru.values()
 
-    def store(self, field):
+    def store(self, field, *, protect=True):
         """Retain ``field``, evicting the least recently used fields.
 
         A field that does not fit the declared budget is rejected: it is
         published, but it is not retained and it is not counted as resident.
         """
-        self._lru.protected = field.identity
+        self._lru.protected = field.identity if protect else self._protected
         try:
             self._lru.reserve(field.identity, field.nbytes)
         except WeatherBandLimitError:
@@ -329,7 +329,8 @@ class FieldStore:
             self.rejected += 1
             return False
         self._lru.store(field.identity, field)
-        self.protect(field.identity)
+        if protect:
+            self.protect(field.identity)
         return True
 
     def release(self, identity):

@@ -1,0 +1,93 @@
+{
+  "issue": 64,
+  "decision": "Narrow: pan and zoom are continuous on the recorded workload; hourly time changes at the gate's 30 inputs/s still show loading. The continuous-weather acceptance check is not met.",
+  "fixture_sha256": "1ed1bca1281ad4096713ce20af9c1473e70bd4eb0766a54965849b7ace698a03",
+  "sources_opened": 22,
+  "source_order_preserved": true,
+  "gate": "viewport-interaction",
+  "gate_kind": "correctness",
+  "gate_verdict": "fail",
+  "checks_passed": 6,
+  "checks_failed": 1,
+  "failing_check": "weather remains current during every interaction input",
+  "reference": "viewport-tryout-summary.json (pre-follow-up: 49/120 pan, 24/24 zoom, 16/18 time loading)",
+  "native_attempts": 2,
+  "validation": {
+    "targeted_tests_passed": 86,
+    "warnings": 1,
+    "warning": "GDAL FutureWarning",
+    "changed_python_black_check": "pass (9 files)",
+    "whitespace_check": "pass",
+    "full_suite": "not run",
+    "existing_application_native_regression": "not rerun",
+    "gate_runner_self_test": "not rerun for this follow-up"
+  },
+  "endpoint": "QQuickWindow.afterRendering proxy, NOT presentation FPS, scanout, or input-to-present",
+  "timing_percentile": "nearest rank p95",
+  "attempts": [
+    {
+      "name": "follow-up, 32 MiB field store",
+      "cold_weather_ready_seconds": 1.434242167044431,
+      "close_ms": 25.8,
+      "retained_field_bytes": 33476353,
+      "retained_field_limit": 33554432,
+      "counters": {
+        "field_preparations": 33,
+        "covered_reuses": 148,
+        "misses": 25,
+        "cancelled": 10,
+        "stale_rejected": 5,
+        "prefetch_completed": 28,
+        "prefetch_rejected": 4
+      },
+      "phases": [
+        {"name": "sustained-pan", "inputs": 120, "loading_inputs": 9, "field_preparations": 24, "render_observed_revisions": 84, "dispatch_late_p95_ms": 5.25, "handler_max_ms": 16.327},
+        {"name": "anchored-zoom", "inputs": 24, "loading_inputs": 0, "field_preparations": 5, "render_observed_revisions": 24, "dispatch_late_p95_ms": 1.843, "handler_max_ms": 9.45},
+        {"name": "time-crossings", "inputs": 18, "loading_inputs": 12, "field_preparations": 2, "render_observed_revisions": 11, "dispatch_late_p95_ms": 3.005, "handler_max_ms": 9.13}
+      ]
+    },
+    {
+      "name": "follow-up, 128 MiB field store",
+      "cold_weather_ready_seconds": 1.3972136660013348,
+      "close_ms": 29.49,
+      "retained_field_bytes": 58785331,
+      "retained_field_entries": 33,
+      "retained_field_evictions": 0,
+      "retained_field_limit": 134217728,
+      "counters": {
+        "field_preparations": 33,
+        "covered_reuses": 151,
+        "misses": 20,
+        "cancelled": 7,
+        "stale_rejected": 4,
+        "prefetch_completed": 30,
+        "prefetch_rejected": 2
+      },
+      "phases": [
+        {"name": "sustained-pan", "inputs": 120, "loading_inputs": 5, "field_preparations": 25, "render_observed_revisions": 86, "dispatch_late_p95_ms": 3.09, "handler_max_ms": 24.398},
+        {"name": "anchored-zoom", "inputs": 24, "loading_inputs": 0, "field_preparations": 5, "render_observed_revisions": 24, "dispatch_late_p95_ms": 1.788, "handler_max_ms": 10.219},
+        {"name": "time-crossings", "inputs": 18, "loading_inputs": 12, "field_preparations": 1, "render_observed_revisions": 11, "dispatch_late_p95_ms": 1.891, "handler_max_ms": 9.274}
+      ]
+    }
+  ],
+  "pan_loading_runs": "one run of 5 consecutive inputs (21-25) at the 128 MiB setting; the rest of the 120 inputs were ready",
+  "time_loading_pattern": "the second and third inputs of each three-hour block load; exact-event inputs are ready. Each unseen open interval is a full field preparation (~0.2-0.4 s), faster than the gate's 30 inputs/s sweep.",
+  "store_finding": "33 prepared fields were resident in 58.8 MB with no evictions, so the 32 MiB store was not the time-phase cause; it was replaced with the 128 MiB decoded-band ceiling to retain the working set.",
+  "stalled_camera_responsive": true,
+  "honest_loading": true,
+  "worker_stopped": true,
+  "visual_fidelity": {
+    "status": "failed/user-deferred, not rerun or passed",
+    "prior_mismatched_channel_elements": 2818,
+    "prior_compared_channel_elements": 4915200
+  },
+  "limits": [
+    "No claim of continuous weather for hourly time changes at 30 inputs/s",
+    "Pan loading improved from 49 to 5 and zoom from 24 to 0 against the recorded reference; not a matched speedup claim",
+    "No direct hardware-upload or presentation-FPS measurement",
+    "No chart, fill, contour or routing integration",
+    "No new source-priority, interpolation or missing-data policy",
+    "Issue 64 original residency and fidelity acceptance is not discharged"
+  ],
+  "next_step": "Instrument prefetch target attempts/coverage in the gate output and prefer time-window prefetch once the camera is stationary, then rerun one native attempt. Do not extend the recorded budget silently."
+}

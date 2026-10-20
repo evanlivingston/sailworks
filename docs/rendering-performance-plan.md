@@ -25,6 +25,41 @@ For the wider documentation map, see [the documentation index](README.md).
 
 ## Current checkpoint
 
+- **Continuous-weather follow-up (user authorized, PR #72 / #64):** stay in the
+  independent viewport. Prepare a padded geographic window before the camera
+  reaches its edge; reuse numerical fields across zooms only when the existing
+  shoreline-resolution policy is identical; prepare bounded nearby exact times
+  and open time intervals on the same worker. Retain exact source/mask semantics,
+  current-view node selection and honest loading for genuinely unprepared demand.
+  No charts, routing, native-float transport, CPU fallback or default-app changes.
+  Reference is the recorded `viewport-tryout-summary.json` (49/120 pan, 24/24 zoom,
+  16/18 time loading inputs), not another baseline run. Reuse the identical
+  `viewport-interaction` workload, with an explicit continuous-weather check;
+  report input/render proxies separately from weather availability. Success for
+  that bounded workload means zero loading inputs, no stale selections and the
+  existing byte/lifecycle limits respected. Arbitrary jumps beyond prepared
+  coverage may still load. Numerical/source/mask tests remain required; the prior
+  pixel mismatch remains user-deferred, not passed. Budget: 60 minutes, at most
+  three targeted validation rounds and two <=120-second native gate attempts.
+  Stop/report at budget exhaustion or scope expansion; update the decision and
+  evidence before claiming completion. No merge is authorized.
+
+  **Validation state (measured; acceptance not met):** the blocker cleared with
+  a free runner model. Targeted tests passed (86), `black --check` (9 files) and
+  `git diff --check` passed, and two native `viewport-interaction` attempts ran
+  against fixture `1ed1bca1…`. Loading inputs fell from 49/120 to 9/120 pan and
+  from 24/24 to 0/24 zoom; hourly time changes stayed at 12/18 because each
+  unseen open interval is a full field preparation faster than the gate's
+  30 inputs/s sweep. The store retained 33 prepared fields in 58.8 MB with no
+  evictions, so capacity was not the time-phase cause; the declared ceiling is
+  now the 128 MiB decoded-band value. The continuous-weather check still fails,
+  so the gate verdict is **fail** and completion is not claimed. Evidence:
+  [viewport-continuous-summary.json](profiles/rendering/2026-10-19/viewport-continuous-summary.json).
+  Decision: **narrow** — pan and zoom are continuous on this workload; time
+  scrubbing needs prefetch prioritisation or honest loading. The two-attempt
+  budget is exhausted; do not start another native run without recording a new
+  budget first.
+
 - **User-directed pivot — independent GRIB viewport:** replace the GRIB interaction
   subsystem rather than continue adapting `TrackMap._gpu_frame`. The new viewport
   owns camera/time state, asynchronous field demand and GPU portrayal. Reuse the

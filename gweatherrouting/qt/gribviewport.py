@@ -43,8 +43,14 @@ from gweatherrouting.rendering.windpainter import shoreline_quality
 logger = logging.getLogger("gweatherrouting")
 
 # The residency budget of the viewport's field store and of the published
-# images.  Both are declared ceilings, not measured optima.
-FIELD_BYTE_LIMIT = 32 * 1024 * 1024
+# images.  Both are declared ceilings, not measured optima.  On the recorded
+# 900x700 fixture the store held 33 prepared fields in 58.8 MB with no
+# evictions, so the standalone store uses the same 128 MiB ceiling as the
+# decoded-band cache.  It is a CPU payload budget, not VRAM, and larger views
+# retain fewer fields.
+FIELD_BYTE_LIMIT = 128 * 1024 * 1024
+PREPARED_VIEW_FACTOR = 1.5
+REFILL_VIEW_FACTOR = 1.25
 
 
 @dataclass(frozen=True)
@@ -74,6 +80,12 @@ class ViewportCamera:
 
     def stamp(self):
         return self.time.timestamp()
+
+
+def _expanded(camera, factor):
+    return replace(
+        camera, width=round(camera.width * factor), height=round(camera.height * factor)
+    )
 
 
 def _spatially_covers(field, camera):
@@ -125,6 +137,8 @@ class GribViewportModel:
         self._error = ""
         self._store = FieldStore(field_bytes)
         self._events = ()
+        self._prefetch_attempts = set()
+        self._speculative = False
         self.on_change = None
         self.counters = dict(
             field_preparations=0,
@@ -132,6 +146,8 @@ class GribViewportModel:
             misses=0,
             cancelled=0,
             stale_rejected=0,
+            prefetch_completed=0,
+            prefetch_rejected=0,
         )
 
     # ------------------------------------------------------------- state
@@ -161,7 +177,19 @@ class GribViewportModel:
             if self._closed:
                 return ("unavailable", None, None)
             self._camera = camera
-            field = self._field
+            candidates = tuple(
+                field for field in self._store.fields() if _covers(field, camera)
+            )
+            if self._field is not None and _covers(self._field, camera):
+                candidates = (self._field,) + candidates
+            guard = _expanded(camera, REFILL_VIEW_FACTOR)
+            field = next(
+                (item for item in candidates if _covers(item, guard)),
+                candidates[0] if candidates else None,
+            )
+            if field is not None:
+                self._field = field
+                self._store.protect(field.identity)
         if field is not None and _covers(field, camera):
             try:
                 selection = select_resident(
@@ -173,7 +201,13 @@ class GribViewportModel:
             if selection is not None:
                 with self._condition:
                     self.counters["covered_reuses"] += 1
+                    self._field = field
+                    self._store.acquire(field.identity)
+                    self._store.protect(field.identity)
+                    self._pending = None
+                    self._desired_key = self._request_key(camera)
                     self._state = "ready"
+                    self._condition.notify_all()
                 return ("ready", field, selection)
         with self._condition:
             if self._failed_key == self._request_key(camera):
@@ -193,10 +227,59 @@ class GribViewportModel:
 
     def _request_key(self, camera):
         return (
-            field_window(camera.view()),
+            field_window(_expanded(camera, PREPARED_VIEW_FACTOR).view()),
             self._time_key(camera.stamp()),
             None if camera.over_land else shoreline_quality(camera.view().get_scale()),
         )
+
+    def _prefetch_request(self):
+        """At most one speculative task; demand always goes first.
+
+        Keep a finite attempted-plan set so eviction never causes an idle
+        prefetch/re-evict loop. Only the existing byte-budgeted store retains data.
+        """
+        camera, field = self._camera, self._field
+        if camera is None or field is None or not _covers(field, camera):
+            return None
+        guard = _expanded(camera, REFILL_VIEW_FACTOR)
+        spatial = not any(_covers(item, guard) for item in self._store.fields())
+        pos = bisect_left(self._events, camera.stamp())
+        events = self._events[max(0, pos - 4) : pos + 5]
+        # Exact instants retain singleton semantics. Interval midpoint demands
+        # prepare their open intervals; they are never substituted at events.
+        stamps = sorted(
+            events,
+            key=lambda stamp: (abs(stamp - camera.stamp()), stamp < camera.stamp()),
+        )
+        neighbors = self._events[max(0, pos - 1) : pos + 2]
+        stamps += [(a + b) / 2 for a, b in zip(neighbors, neighbors[1:])]
+        zone = camera.time.tzinfo or timezone.utc
+        targets = [
+            replace(camera, time=datetime.fromtimestamp(stamp, tz=zone))
+            for stamp in stamps
+        ]
+        plans = [
+            (
+                "time",
+                field.identity.window,
+                self._time_key(target.stamp()),
+                field.land_quality,
+            )
+            for target in targets
+        ]
+        spatial_key = ("space", self._request_key(camera))
+        self._prefetch_attempts.intersection_update(set(plans) | {spatial_key})
+        if spatial and spatial_key not in self._prefetch_attempts:
+            self._prefetch_attempts.add(spatial_key)
+            return camera, Event(), self._request_key(camera)
+        for target, key in zip(targets, plans):
+            if key in self._prefetch_attempts:
+                continue
+            self._prefetch_attempts.add(key)
+            if any(_covers(item, target) for item in self._store.fields()):
+                continue
+            return target, Event(), self._request_key(target)
+        return None
 
     def _request(self, camera):
         """Queue a preparation; a camera move inside the window keeps it."""
@@ -204,6 +287,7 @@ class GribViewportModel:
         self._desired_key = key
         if self._active is not None and self._active[2] == key:
             self._pending = None
+            self._speculative = False
             return
         if self._pending is not None:
             if self._pending[2] == key:
@@ -274,12 +358,16 @@ class GribViewportModel:
                 )
             while True:
                 with self._condition:
-                    self._condition.wait_for(
-                        lambda: self._closed or self._pending is not None
-                    )
                     if self._closed:
                         return
-                    request, self._pending = self._pending, None
+                    request = self._pending
+                    self._speculative = request is None
+                    if request is None:
+                        request = self._prefetch_request()
+                    if request is None:
+                        self._condition.wait()
+                        continue
+                    self._pending = None
                     self._active = request
                 camera, cancel, key = request
                 error = ""
@@ -300,8 +388,17 @@ class GribViewportModel:
                             else key == self._desired_key
                         )
                     )
-                    if current and field is not None:
+                    notify = False
+                    if (
+                        current
+                        and field is not None
+                        and not (
+                            self._field is not None
+                            and _covers(self._field, self._camera)
+                        )
+                    ):
                         self._field = field
+                        self._store.protect(field.identity)
                         self._failed_key = None
                         self._error = ""
                         self._state = "ready"
@@ -309,12 +406,22 @@ class GribViewportModel:
                             field, self._pending[0]
                         ):
                             self._pending = None
+                        notify = True
+                    elif self._speculative:
+                        self.counters[
+                            (
+                                "prefetch_completed"
+                                if field is not None
+                                else "prefetch_rejected"
+                            )
+                        ] += 1
                     elif current and error:
                         self._failed_key, self._error = key, error
                         self._state = "unavailable"
+                        notify = True
                     elif not current:
                         self.counters["stale_rejected"] += 1
-                    callback = self.on_change
+                    callback = self.on_change if notify else None
                 if callback is not None:
                     callback()
         except Exception as exc:
@@ -344,12 +451,16 @@ class GribViewportModel:
                     (
                         field
                         for field in reversed(self._store.fields())
-                        if _spatially_covers(field, camera)
+                        if _spatially_covers(
+                            field, _expanded(camera, REFILL_VIEW_FACTOR)
+                        )
                     ),
                     None,
                 )
             window = (
-                geometry.identity.window if geometry is not None else field_window(view)
+                geometry.identity.window
+                if geometry is not None
+                else field_window(_expanded(camera, PREPARED_VIEW_FACTOR).view())
             )
             source = tuple(_source_key(item) for item in self._sources)
             before, after = time_window(self._sampler, camera.stamp())
@@ -390,7 +501,9 @@ class GribViewportModel:
             return None
         with self._condition:
             self.counters["field_preparations"] += 1
-            if not self._store.store(field):
+            if self._field is not None:
+                self._store.protect(self._field.identity)
+            if not self._store.store(field, protect=self._field is None):
                 # The field is valid and may be shown; it is simply too large
                 # to retain, so the next demand prepares it again.
                 logger.debug("Prepared field exceeds the retention budget")

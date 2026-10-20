@@ -230,6 +230,8 @@ def run(snapshot):
         )
         stats = model.field_statistics()
         report["retained_field_bytes"] = stats["current_bytes"]
+        report["retained_field_entries"] = stats["retained_entries"]
+        report["retained_field_evictions"] = stats["evictions"]
         report["retained_field_limit"] = model._store.byte_limit
         report["retained_provider_bytes"] = widget._provider.field_bytes()
         report["retained_provider_limit"] = widget._provider.byte_limit
@@ -248,6 +250,10 @@ def run(snapshot):
             model._thread.join(5)
         report["worker_stopped"] = model._thread is None or not model._thread.is_alive()
     report["complete"] = not report["errors"] and len(report["phases"]) == 3
+    report["continuous_weather"] = report["complete"] and all(
+        phase["inputs"] and all(event["state"] == "ready" for event in phase["inputs"])
+        for phase in report["phases"]
+    )
     return report
 
 

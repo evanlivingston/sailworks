@@ -120,6 +120,10 @@ GATES = {
                 ("miss shows loading, not stale weather", "honest_loading"),
                 ("retained payload budgets respected", "retained_budgets_respected"),
                 ("pending close stops worker", "worker_stopped"),
+                (
+                    "weather remains current during every interaction input",
+                    "continuous_weather",
+                ),
             )
         ],
     },

@@ -24,10 +24,12 @@ silently omitted. Loading hides stale weather rather than substituting CPU wind.
 
 The viewport owns its camera, worker and GPU portrayal; it does not use the
 application frame assembler. Covered movement retains the numerical field and
-rebuilds only the current-view selection. CPU retained fields and provider images
-each have 32 MiB limits; decoded-band retention is 128 MiB. These are not a unified
-RSS/VRAM limit or hardware-upload measurements. Preparation/in-flight and Qt
-texture lifetimes are not directly measured.
+rebuilds only the current-view selection. The standalone field store has a
+declared 128 MiB CPU-payload limit, the decoded-band cache 128 MiB, and published
+provider images 32 MiB. On the recorded 900×700 fixture the store retained 33
+prepared fields in 58.8 MB with no evictions; larger views retain fewer. These are
+not a unified RSS/VRAM limit or hardware-upload measurements. Preparation/in-flight
+and Qt texture lifetimes are not directly measured.
 
 The `viewport-interaction` correctness gate runs sustained pan, anchored zoom,
 time changes and pending close through the existing runner:

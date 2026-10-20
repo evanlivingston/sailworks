@@ -105,6 +105,8 @@ def test_a_covered_camera_move_reuses_the_resident_field(gribs):
         assert state == "ready"
         assert same is field
         assert next_selection is not selection
+        # Background prefetch may prepare another time, but this demand does
+        # not miss or wait for it.
         assert model.counters["misses"] == misses
         assert model.counters["covered_reuses"] >= 1
     finally:
@@ -349,6 +351,65 @@ def test_zoom_reuses_values_only_with_the_same_shoreline_policy(gribs):
         assert not gribviewport._covers(field, replace(camera, zoom=camera.zoom + 1))
     finally:
         model.close()
+
+
+def test_exact_future_event_is_prefetched_without_blending_across_it(gribs):
+    import time
+    import numpy as np
+    from gweatherrouting.qt.gpuweather import decode_component
+    from gweatherrouting.core.gribsampling import WeatherSampler
+    from gweatherrouting.rendering.weatherbarbs import stage_barbs
+
+    paths, source = _paths(gribs)
+    model = GribViewportModel(paths, land_mask=Land())
+    future = _camera(time=START + timedelta(hours=3))
+    try:
+        _wait_ready(model)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            with model._condition:
+                warmed = any(
+                    gribviewport._covers(field, future)
+                    for field in model._store.fields()
+                )
+            if warmed:
+                break
+            time.sleep(0.005)
+        assert warmed, "Future exact event was not prepared in the background"
+        misses = model.counters["misses"]
+        state, field, selection = model.update(future)
+        assert state == "ready"
+        assert field.identity.before == field.identity.after == future.stamp()
+        assert model.counters["misses"] == misses
+        direct = stage_barbs(
+            WeatherSampler([source]), future.stamp(), future.view(), Land()
+        )
+        assert selection.count == direct.count
+        for actual, expected in zip(selection.anchors, direct.anchors):
+            np.testing.assert_array_equal(
+                decode_component(actual), decode_component(expected)
+            )
+        ids = selection.node_ids.ravel()
+        used = ids >= 0
+        np.testing.assert_array_equal(
+            field.staged.first[0, ids[used].astype(int)],
+            direct.staged.first.reshape(-1, 2)[used],
+        )
+    finally:
+        model.close()
+
+
+def test_speculative_store_cannot_evict_the_visible_field():
+    from types import SimpleNamespace
+    from gweatherrouting.qt.gpuweatherfields import FieldStore
+
+    store = FieldStore(100)
+    current = SimpleNamespace(identity="visible", nbytes=70)
+    future = SimpleNamespace(identity="speculation", nbytes=70)
+    assert store.store(current)
+    assert not store.store(future, protect=False)
+    assert store.acquire("visible") is current
+    assert store.current_bytes == 70
 
 
 @pytest.mark.parametrize(
