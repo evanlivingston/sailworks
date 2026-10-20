@@ -224,20 +224,50 @@ class GridIndex:
             return np.full(lats.shape + ((2,) if vector else ()), np.nan)
         array = self.array(record)
         value = np.zeros(lats.shape + ((2,) if vector else ()))
-        for xx, yy, weight in (
+        corners = (
             (x0, y0, (1 - dx) * (1 - dy)),
             (x1, y0, dx * (1 - dy)),
             (x0, y1, (1 - dx) * dy),
             (x1, y1, dx * dy),
-        ):
+        )
+        bases = self._corner_basis(record, corners) if vector else None
+        for position, (xx, yy, weight) in enumerate(corners):
             corner = array[yy, xx]
             needed = weight > 1e-12
             inside &= ~needed | np.isfinite(corner)
             contribution = np.where(needed, np.nan_to_num(corner) * weight, 0)
             if vector:
-                contribution = contribution[:, None] * self.basis(record, xx, yy)
+                contribution = contribution[:, None] * bases[position]
             value += contribution
         return np.where(inside[:, None] if vector else inside, value, np.nan)
+
+    def _corner_basis(self, record, corners):
+        """The true east/north basis at a stencil's corners.
+
+        The four corner groups of one stencil share their corners: a raster
+        node is a corner of four neighbouring stencils.  The basis is
+        therefore computed once per *distinct* corner and gathered back, which
+        leaves every value unchanged and removes the repeated geodesic
+        inversions that a second pass over the same window would repeat.
+        """
+        if self.backward is None:
+            return [self.basis(record, xx, yy) for xx, yy, _weight in corners]
+        keys = np.concatenate(
+            [xx.astype(np.int64) * self.height + yy for xx, yy, _weight in corners]
+        )
+        unique, inverse = np.unique(keys, return_inverse=True)
+        basis = self.basis(
+            record,
+            (unique // self.height).astype(int),
+            (unique % self.height).astype(int),
+        )
+        gathered = []
+        offset = 0
+        for xx, _yy, _weight in corners:
+            taken = inverse[offset : offset + len(xx)]
+            offset += len(xx)
+            gathered.append(basis[taken])
+        return gathered
 
     def basis(self, record, xx, yy):
         """True east/north unit vector at each native sample center."""
