@@ -301,6 +301,7 @@ def run(snapshot):
         )
         assert wait_idle(), "Generation probe left work in flight"
         observations = model.observations()
+        report["sampling_memo"] = observations.get("sampling_memo", {})
         presentation = [
             span
             for span in widget.observations()["presentation_spans"]
