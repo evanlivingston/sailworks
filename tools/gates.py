@@ -7,7 +7,7 @@ no GDAL, no Qt and no application import happens at module import time.
 Every gate records
 
 ``milestone``
-    The issue the gate protects (``#64`` .. ``#70``).
+    The issue, or the issues, the gate protects (``#64`` .. ``#70``).
 ``kind``
     ``correctness``, ``fidelity``, ``lifecycle``, ``performance`` or
     ``validation``.  Correctness, lifecycle and performance stay separate
@@ -78,7 +78,10 @@ ENDPOINT_FIDELITY = (
 GATES = {
     "viewport-interaction": {
         "title": "Independent GRIB viewport sustained interaction",
-        "milestone": "#64",
+        # The interaction contract of #64, the structural observations of
+        # #66's overlapped preparation and the continuity of #67's resident
+        # time window.
+        "milestone": "#64/#66/#67",
         "kind": "correctness",
         "tool": "test/qt_gribviewport_checks.py",
         "endpoint": ENDPOINT_PROBE,
@@ -118,8 +121,20 @@ GATES = {
                         "generation_mismatch_rejected",
                     )
                     else (
-                        "docs/rendering-performance-plan.md: Try-out gate "
-                        "contract (behavioral invariant, not a timing threshold)"
+                        "issue #66's overlapped, double-buffered preparation "
+                        "pipeline and issue #67's resident time window "
+                        "(docs/profiles/rendering/2026-10-19/"
+                        "viewport-time-window-summary.json): a covered camera "
+                        "move is served from the resident field and a "
+                        "forecast-time change inside the window is served from "
+                        "the resident store, so every interaction input finds "
+                        "current weather. Behavioral invariant, not a timing "
+                        "threshold."
+                        if metric == "continuous_weather"
+                        else (
+                            "docs/rendering-performance-plan.md: Try-out gate "
+                            "contract (behavioral invariant, not a timing threshold)"
+                        )
                     )
                 ),
             }
@@ -134,7 +149,8 @@ GATES = {
                 ("retained payload budgets respected", "retained_budgets_respected"),
                 ("pending close stops worker", "worker_stopped"),
                 (
-                    "weather remains current during every interaction input",
+                    "weather stays current through the overlapped preparation "
+                    "and the resident time window",
                     "continuous_weather",
                 ),
                 (
