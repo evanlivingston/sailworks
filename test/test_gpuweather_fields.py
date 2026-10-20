@@ -41,12 +41,12 @@ def identity(**overrides):
     return FieldIdentity(**values)
 
 
-def _stage(sampler, view, stamp, store=None, source=None):
+def _stage(sampler, view, stamp, store=None, source=None, grid=False):
     if store is not None:
         from gweatherrouting.rendering.weatherbarbs import _stage_with_field
 
         return _stage_with_field(
-            sampler, stamp, view, Land(), lambda: False, store, source
+            sampler, stamp, view, Land(), lambda: False, store, source, grid
         )
     return stage_barbs(sampler, stamp, view, Land())
 
@@ -83,7 +83,7 @@ def test_the_field_budget_accounts_values_coordinates_and_lookup(gribs):
     source, sampler, signature = _sources(gribs)
     view = BarbView(640, 480, 0.5, 0.5, 9, "standard", False)
     store = FieldStore(1 << 24)
-    atlas = _stage(sampler, view, START.timestamp() + 3600, store, signature)
+    atlas = _stage(sampler, view, START.timestamp() + 3600, store, signature, grid=True)
     field = atlas.field
     assert field.value_bytes == (field.staged.first.nbytes + field.staged.second.nbytes)
     assert field.coordinate_bytes == field.points.nbytes
@@ -130,6 +130,47 @@ def test_allocation_eviction_and_release_are_bounded(gribs):
     store.clear()
     assert store.current_bytes == 0
     assert store.statistics()["retained_entries"] == 0
+
+
+def test_the_gridded_form_samples_once_and_keeps_the_samplers_values(gribs):
+    """The gridded form costs no second sampling pass, and its values are
+    the CPU sampler's values at the lattice's node positions."""
+    from gweatherrouting.rendering import weatherbarbs
+    from gweatherrouting.rendering.weatherbarbs import stage_field
+    from gweatherrouting.rendering.weatherstaging import stage_wind
+
+    source, sampler, signature = _sources(gribs)
+    view = BarbView(640, 480, 0.5, 0.5, 9, "standard", False)
+    window = field_window(view)
+    stamp = START.timestamp() + 3600
+    field_identity = identity(source=signature, window=window)
+
+    calls = []
+    original = weatherbarbs.stage_wind
+
+    def counted(*args, **kwargs):
+        calls.append(len(np.asarray(args[2]).ravel()))
+        return original(*args, **kwargs)
+
+    weatherbarbs.stage_wind = counted
+    try:
+        field = stage_field(
+            sampler, stamp, window, field_identity, lambda: False, grid=True
+        )
+    finally:
+        weatherbarbs.stage_wind = original
+    assert field.grid is not None
+    # One pass: the field's nodes and the lattice's own nodes are sampled
+    # together, so the gridded form adds no second pass over the weather.
+    assert len(calls) == 1
+    assert calls[0] >= len(field.points) + field.grid.lattice.node_count
+    # The values are the sampler's values at the lattice's node positions.
+    lons, lats = field.grid.lattice.nodes()
+    reference = stage_wind(sampler, stamp, lats[None, :], lons[None, :], lambda: False)
+    values = np.asarray(field.grid.staged.first).transpose(1, 0, 2).reshape(-1, 2)
+    np.testing.assert_allclose(
+        values, np.asarray(reference.first[0]), rtol=0, atol=0, equal_nan=True
+    )
 
 
 def test_the_oldest_field_is_evicted_before_the_newest(gribs):
