@@ -196,18 +196,11 @@ class TrackMap(QWidget, MercatorProjection):
         self._weather_presenter.source_changed()
         # Apply the selected forecast's geographic extents and time bounds
         sources = self.controller.display_forecast.sources()
-        print(
-            f"[DIAG] _display_forecast_changed fired: selected_key="
-            f"{self.controller.display_forecast.selected_key!r} "
-            f"n_choices={len(self.controller.display_forecast.choices)} "
-            f"n_sources={len(sources)}",
-            file=sys.stderr,
-            flush=True,
-        )
         if sources:
             self._apply_forecast_extents(sources[0].path)
             self.time_control.set_time(sources[0].start_time)
         self.queue_draw()
+        self.view_changed.emit()
 
     def update(self, *args):
         super().update(*args)
@@ -597,12 +590,6 @@ class TrackMap(QWidget, MercatorProjection):
                 self._zoom = 6.0
             self._finish_zoom_silent()
             self._invalidate_base()
-            print(
-                f"[DIAG] extents: path={path!r} bounds={bounds!r} "
-                f"center=({self._center_lat}, {self._center_lon}) zoom={self._zoom}",
-                file=sys.stderr,
-                flush=True,
-            )
             self.queue_draw()
         except Exception as exc:
             import traceback
