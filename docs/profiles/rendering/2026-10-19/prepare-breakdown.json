@@ -1,0 +1,63 @@
+{
+  "issue": 66,
+  "step": "profile one preparation",
+  "fixture": "rendering-current-fixture-2026-10-19",
+  "fixture_sha256": "1ed1bca1281ad4096713ce20af9c1473e70bd4eb0766a54965849b7ace698a03",
+  "camera": {
+    "center_lat": 48.30887922260005,
+    "center_lon": -123.09473088970692,
+    "zoom": 9.837590787619122,
+    "width": 900,
+    "height": 700,
+    "over_land": false,
+    "density": "very_dense"
+  },
+  "windows": [
+    {
+      "shift_px": 0.0,
+      "total_ms": 792.119,
+      "native_points_ms": 19.963,
+      "stage_wind_ms": 331.028,
+      "land_loop_ms": 263.976,
+      "image_encode_ms": 159.348,
+      "index_build_ms": 17.803,
+      "node_count": 11506,
+      "new_points_vs_previous": null,
+      "reused_points_vs_previous": null,
+      "new_point_fraction": null,
+      "land_contains_calls": 11506,
+      "over_land": false
+    },
+    {
+      "shift_px": 120.0,
+      "total_ms": 159.202,
+      "native_points_ms": 15.193,
+      "stage_wind_ms": 104.353,
+      "land_loop_ms": 9.247,
+      "image_encode_ms": 0.753,
+      "index_build_ms": 29.655,
+      "node_count": 11625,
+      "new_points_vs_previous": 947,
+      "reused_points_vs_previous": 10678,
+      "new_point_fraction": 0.0815,
+      "land_contains_calls": 11625,
+      "over_land": false
+    },
+    {
+      "shift_px": 240.0,
+      "total_ms": 143.415,
+      "native_points_ms": 14.937,
+      "stage_wind_ms": 103.592,
+      "land_loop_ms": 7.498,
+      "image_encode_ms": 0.312,
+      "index_build_ms": 17.076,
+      "node_count": 11594,
+      "new_points_vs_previous": 860,
+      "reused_points_vs_previous": 10734,
+      "new_point_fraction": 0.0742,
+      "land_contains_calls": 11594,
+      "over_land": false
+    }
+  ],
+  "note": "stage_field timings. index_build_ms is the residual after native enumeration, stage_wind, the land loop and image encoding. The shift-120/240 rows show how many nodes a shifted window shares with the previous one; no cache exists yet."
+}
