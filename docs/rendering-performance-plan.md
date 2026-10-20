@@ -48,6 +48,19 @@ claims. Publish a regular fork PR against `dev`, unmerged for human review. Reti
 only authorized, verified redundant branches/worktrees; retain the documentation
 branch until its PR merges and leave unrelated work untouched.
 
+**Executed cleanup:** #68/#69/#71/#73 closed with scoped evidence and remaining
+epic gaps; #66/#67 explicitly retained for their unmet acceptance gates. Removed
+the clean `agent-66-double-buffer` worktree and local/remote
+`feature/async-double-buffered-66` branch after verifying head `502d9a3` is an
+ancestor of `dev` and the primary session had moved away. The clean #64 worktree
+(`36a5712`, ancestor) and spike worktree (`ab89697`, two patch-equivalent commits)
+remain: other-session ownership is unconfirmed. No force removal/deletion. The
+spike's non-ancestor original history must remain reachable if retired later.
+
+**Documentation validation:** configured runner launch blocked by the harness
+subagent-depth limit; zero rounds executed, not a pass. Parent session must delegate
+changed-file whitespace and added local links/anchors before merging the review PR.
+
 ### Earlier consolidation notes (2026-10-20; historical provenance)
 
 The queue/contracts below describe the pre-merge sequence, not current blockers.
