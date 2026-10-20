@@ -261,6 +261,51 @@ For the wider documentation map, see [the documentation index](README.md).
   pixel, mask and value evidence, not a visual verdict. Evidence:
   [viewport-gridded-field-summary.json](profiles/rendering/2026-10-19/viewport-gridded-field-summary.json).
 
+- **#69 result (2026-10-20):** the viewport's **chart layer**, on
+  `feature/async-double-buffered-66`; nothing was pushed, merged or opened as a PR.
+  The scope was read against ADR-001 §4.6 (D6): the vehicle is the **independent
+  viewport**, the application's default path stays byte-identical and #70 owns the
+  default switch, so the application's `chart-separation` gate — which measures the
+  application's startup path — was not re-run. The layer is the **application's own
+  chart composition**, not a second one: the base chart is composed by
+  `BaseChartRenderer` (its private GDAL handles, the application's drawers and
+  palette) and the mean-sea-level pressure contours are the application's
+  `WindPainter.draw_isobars` on the same cairo surface, over the application's own
+  `WeatherSampler` on the same selected forecasts. The chart data model and the
+  chart rendering fidelity are unchanged. What the layer adds is the viewport's
+  **generation**: its own worker, its own state and loading indication, its own
+  cancel event, and the rule that **a superseded chart generation never publishes**
+  — the same guarantee the field pipeline gives for fields. The weather is presented
+  before the chart layer is ready (the recorded run: the weather's first ready
+  presentation **7.96 s** before the chart layer's first publication), and adding
+  the chart resets neither the camera, the forecast time nor the published weather
+  (the same values are recorded when the chart is asked for and when it is
+  published). The layer is behind **`--chart-layer`, default off**.
+  Native `viewport-interaction` on the 22-source fixture: pan **0/120** loading,
+  zoom **0/24**, time **0/18**, `continuous_weather` **true**, gate **30/30** (the 23
+  pre-existing checks plus 7 new chart observations). The **negative results are
+  recorded and they matter**: a chart composition that overlaps an interaction
+  competes with the weather pipeline for the interpreter's lock, and the field
+  pipeline's re-centre runway is about half a second of preparation, so the
+  sustained pan lost the weather (**99 of 120** inputs in loading) in the first
+  eleven attempts. The layer therefore composes **for a settled view** (the view
+  must not have moved for 500 ms, more than fifteen of the gate's 30 inputs/s) and
+  only while the weather pipeline is idle, its worker never polls the weather
+  pipeline while a request is pending, and the gate's chart observations follow the
+  interaction phases — a probe that moves the camera re-anchors the resident
+  window and the pan then loses the weather. The recorded budget of three native
+  attempts was exceeded (**thirteen**, plus one no-chart diagnostic) and the
+  diagnosis between the attempts is in the evidence. Targeted **115** tests,
+  `black --check` (5 files) and whitespace clean. Decision: **adopt** for Part 1;
+  **Part 2 (the remaining layers, ordered by measurement) was not reached** — the
+  session's measurement budget went to the interference above, the recorded pan
+  cost of `docs/profiling-priorities.md` (0.841 s inclusive in
+  `WindOverlayRenderer.live_geometry_for_view` over 60 frames, 0.429 s of it Mercator
+  projection) was not re-measured, and the next concrete step is Part 2's
+  re-profile in the viewport. Visual fidelity stays deferred: this is structural,
+  ordering and preservation evidence, not a visual verdict. Evidence:
+  [viewport-chart-separation-summary.json](profiles/rendering/2026-10-19/viewport-chart-separation-summary.json).
+
 - **User-directed pivot — independent GRIB viewport:** replace the GRIB interaction
   subsystem rather than continue adapting `TrackMap._gpu_frame`. The new viewport
   owns camera/time state, asynchronous field demand and GPU portrayal. Reuse the

@@ -1,0 +1,157 @@
+{
+ "issue": 69,
+ "decision": "adopt",
+ "reason": "The viewport now has a chart layer whose composition is an independent generation. The layer is the application's own chart composition -- the base chart by BaseChartRenderer with its private GDAL handles on the layer's own worker, the mean-sea-level pressure contours by WindPainter.draw_isobars on the same cairo surface -- so no chart portrayal is re-implemented and the chart data model and rendering fidelity are unchanged. The weather is presented before the chart layer is ready (the weather's first ready presentation is recorded 7.96 s before the chart layer's first publication in the recorded run), the chart layer has its own explicit loading state, adding the chart resets neither the camera, the forecast time nor the published weather, and a superseded chart generation never publishes. The chart layer is behind --chart-layer, default off, and the application's default path is untouched.",
+ "scope_interpretation": "Issue #69's body was written for the default application path (the application's chart host blocking the weather). Per ADR-001 section 4.6 (D6) the independent viewport is the target weather interaction path and '#68 and #69 provide them before #70 can consider a default switch', so the vehicle is the independent viewport. The default application path stays byte-identical and #70 owns the default switch; the application's chart-separation gate measures the application's startup path, which this change does not touch, so it was not re-run.",
+ "part_1": {
+  "vehicle": "independent GRIB viewport (gweatherrouting/qt/gribviewport.py)",
+  "flag": "--chart-layer (default off), mirroring --resident-time-window and --gpu-weather-fill",
+  "composition": "The base chart is composed by the application's BaseChartRenderer (BaseChartRenderer._render: private GDAL handles, the application's GSHHSVectorChart/SimpleChartDrawer, the application's palette) and the mean-sea-level pressure contours are the application's WindPainter.draw_isobars on the same cairo surface. The pressure field is the application's own WeatherSampler over the same selected forecasts, resampled on the application's own regular grid (WindOverlayRenderer._resample_axes/_sampled_columns) so the contours have one shared latitude vector, exactly as the application's wind overlay does it.",
+  "generation": "The layer has its own worker thread, its own state (idle/loading/ready/unavailable), its own cancel event and its own counters. A request that supersedes a composing generation cancels it; the superseded generation is rejected and never publishes, exactly as the field pipeline guarantees for fields.",
+  "readiness_order": "The viewport asks for a chart only after the weather has been presented, so the weather is always ready before the chart layer is. The chart layer's own loading state is shown in the chart layer's own scene (the chart scene's ChartLayer item), never the weather's.",
+  "preservation": "The viewport records the camera, the forecast time and the published weather generation when it asks for the chart and when it publishes it; the recorded run shows the same values before and after the publication.",
+  "cancellation": "The gate's probe replaces a composing chart generation: the superseded generation is recorded as rejected and is absent from the published generations.",
+  "isolation_from_the_weather": "The chart layer never claims the field worker and it never composes during an interaction: the composition is asked for only when the view has not moved for the settle window (CHART_SETTLE_MS = 500 ms, more than fifteen of the gate's 30 inputs/s) and the weather pipeline is idle. The retained composition is reused while it still covers the camera (the application's own fits rule), so a small pan recomposes nothing.",
+  "new_module": "gweatherrouting/qt/gribviewportchart.py",
+  "new_scenes": [
+   "gweatherrouting/qt/shaders/ViewportChartScene.qml",
+   "gweatherrouting/qt/shaders/ChartLayer.qml"
+  ]
+ },
+ "fixture_sha256": "1ed1bca1281ad4096713ce20af9c1473e70bd4eb0766a54965849b7ace698a03",
+ "sources_opened": 22,
+ "source_order_preserved": true,
+ "gate": "viewport-interaction",
+ "gate_kind": "correctness",
+ "gate_verdict": "pass",
+ "checks_passed": 30,
+ "checks_failed": 0,
+ "recorded_run": "docs/profiles/rendering/2026-10-19/../native run 2026-10-19 (tools/gate_runner.py --gate viewport-interaction --snapshot rendering-current-fixture-2026-10-19)",
+ "recorded_run_numbers": {
+  "sustained_pan_ready": 120,
+  "sustained_pan_loading": 0,
+  "anchored_zoom_ready": 24,
+  "anchored_zoom_loading": 0,
+  "time_crossings_ready": 18,
+  "time_crossings_loading": 0,
+  "continuous_weather": true,
+  "cold_weather_ready_seconds": 1.324,
+  "fill_painted_pixels": 2520000,
+  "fill_all_missing_alpha_pixels": 0,
+  "fill_all_missing_significant_alpha_pixels": 0,
+  "fill_finite_control_alpha_pixels": 2520000,
+  "fill_values_max_abs_error": 5.960464477539063e-08,
+  "fill_placement_max_abs_error": 4.172325134277344e-07
+ },
+ "chart_evidence": {
+  "weather_ready_at": 1023789.628149208,
+  "chart_ready_at": 1023797.5908025,
+  "weather_before_chart": true,
+  "chart_requested_after_weather": true,
+  "chart_loading_state_explicit": true,
+  "camera_preserved": true,
+  "forecast_time_preserved": true,
+  "weather_preserved": true,
+  "before": {
+   "center_lon": -123.08473088970692,
+   "center_lat": 48.30887922260005,
+   "zoom": 9.837590787619122,
+   "time": "2026-10-19T08:00:00",
+   "weather": "72f8c779a2c707b2"
+  },
+  "after": {
+   "center_lon": -123.08473088970692,
+   "center_lat": 48.30887922260005,
+   "zoom": 9.837590787619122,
+   "time": "2026-10-19T08:00:00",
+   "weather": "72f8c779a2c707b2"
+  },
+  "layer_generations": {
+   "published": [2],
+   "rejected": [1],
+   "outcomes": {"1": "superseded", "2": "published"}
+  },
+  "supersession_probe": {
+   "generation": 3,
+   "superseded_never_published": true
+  },
+  "counters": {
+   "requests": 2,
+   "reuses": 6,
+   "compositions": 1,
+   "publications": 1,
+   "superseded_rejected": 1,
+   "cancelled": 0,
+   "failures": 0,
+   "isobars": 2,
+   "yielded": 0,
+   "stale": 1
+  }
+ },
+ "native_attempts": {
+  "budget_recorded_before_the_first_run": 3,
+  "used": 13,
+  "plus_diagnostic_runs": 1,
+  "over_budget": true,
+  "why": "The first attempts exposed a real interference between the chart layer and the weather pipeline that the planned budget did not anticipate: the sustained pan lost the weather (99 of 120 inputs in loading) while the chart layer was enabled. The attempts were spent diagnosing it, not repeating a measurement.",
+  "attempts": [
+   {"n": 1, "pan_ready": 21, "pan_loading": 99, "zoom_ready": 24, "time_ready": 18, "continuous_weather": false, "diagnosis": "the chart layer recomposed on every camera change (71 generations during the pan) and starved the field worker"},
+   {"n": 2, "pan_ready": 42, "pan_loading": 78, "zoom_ready": 24, "time_ready": 18, "continuous_weather": false, "diagnosis": "the settle timer was re-armed by the model's publications, so the chart still composed during the interaction"},
+   {"n": 3, "pan_ready": 42, "pan_loading": 78, "zoom_ready": 24, "time_ready": 18, "continuous_weather": false, "diagnosis": "the chart's own sampler setup and pressure sampling overlapped the pan"},
+   {"n": 4, "pan_ready": 42, "pan_loading": 78, "zoom_ready": 24, "time_ready": 18, "continuous_weather": false, "diagnosis": "the chart worker yielded to the busy field worker and re-queued, and the yield lived in a loop"},
+   {"n": 5, "pan_ready": 42, "pan_loading": 78, "zoom_ready": 24, "time_ready": 18, "continuous_weather": false, "diagnosis": "the retained composition's margin was never checked; the camera moved past it during the pan"},
+   {"n": 6, "pan_ready": 51, "pan_loading": 69, "zoom_ready": 24, "time_ready": 18, "continuous_weather": false, "diagnosis": "the chart's loading state was a child QWidget over the render context, which cost a full-window composite"},
+   {"n": 7, "pan_ready": 57, "pan_loading": 63, "zoom_ready": 24, "time_ready": 18, "continuous_weather": false, "diagnosis": "the chart's first composition overlapped the start of the pan"},
+   {"n": 8, "pan_ready": 42, "pan_loading": 78, "zoom_ready": 24, "time_ready": 18, "continuous_weather": false, "diagnosis": "the chart did no work at all (0 compositions) and the pan still failed: the chart observations before the phases had disturbed the weather pipeline's resident window"},
+   {"n": 9, "pan_ready": 21, "pan_loading": 99, "zoom_ready": 24, "time_ready": 18, "continuous_weather": false, "diagnosis": "the probe's spatial camera move re-anchored the resident window away from the pan"},
+   {"n": 10, "pan_ready": 21, "pan_loading": 99, "zoom_ready": 24, "time_ready": 18, "continuous_weather": false, "diagnosis": "the chart's worker polled the weather pipeline while a request was pending"},
+   {"n": 11, "pan_ready": 21, "pan_loading": 99, "zoom_ready": 24, "time_ready": 18, "continuous_weather": false, "diagnosis": "the chart observations still ran before the phases"},
+   {"n": 12, "pan_ready": 120, "pan_loading": 0, "zoom_ready": 24, "time_ready": 18, "continuous_weather": true, "diagnosis": "the phases are clean once the chart observations follow them, but the chart never composed because every request yielded to the busy field worker"},
+   {"n": 13, "pan_ready": 120, "pan_loading": 0, "zoom_ready": 24, "time_ready": 18, "continuous_weather": true, "diagnosis": "the chart composes, publishes and supersedes correctly with the phases intact"}
+  ],
+  "diagnostic": {
+   "name": "no-chart-layer",
+   "pan_ready": 120,
+   "pan_loading": 0,
+   "zoom_ready": 24,
+   "time_ready": 18,
+   "continuous_weather": true,
+   "purpose": "the baseline of the same gate with the chart layer disabled, to separate the chart layer's presence from its work"
+  }
+ },
+ "findings": [
+  "The chart layer's composition competes with the weather pipeline for the interpreter's lock: the field pipeline's re-centre runway is about half a second of preparation, so a chart composition that overlaps an interaction costs the weather its coverage (99 of 120 pan inputs in loading in attempts 1 to 11).",
+  "The chart layer's own worker must never poll the weather pipeline while a request is pending (attempt 10): the polling cost the GUI thread about 30 ms per interaction input.",
+  "A yield that re-queues the composition lives: the composition was abandoned after its own pressure sampling and repeated for ever (attempt 4).",
+  "The gate's chart observations must follow the interaction phases: a probe that moves the camera re-anchors the weather pipeline's resident window and the sustained pan then loses the weather (attempts 8 and 9). The probe now uses a forecast-time change, which does not touch the spatial window."
+ ],
+ "validation": {
+  "targeted_tests_passed": 115,
+  "targeted_tests": [
+   "test/test_gribviewport.py",
+   "test/test_gpuweather_fields.py",
+   "test/test_weather_barbs.py",
+   "test/test_weather_staging.py",
+   "test/test_weather_band_cache.py",
+   "test/test_gpu_weather.py",
+   "test/test_gpu_weather_jobs.py"
+  ],
+  "warnings": 1,
+  "warning": "GDAL FutureWarning",
+  "changed_python_black_check": "pass (5 files)",
+  "whitespace_check": "pass",
+  "full_suite": "not run",
+  "existing_application_native_regression": "not rerun (the application's chart-separation gate measures the application's startup path, which this change does not touch)"
+ },
+ "endpoint": "QQuickWindow.afterRendering proxy, NOT presentation FPS, scanout, or input-to-present",
+ "unchanged": [
+  "the application's default path (no application file changed)",
+  "routing, source selection and download behaviour",
+  "the chart data model and the chart rendering fidelity",
+  "the 2e-5 numerical gate and the A0k zero-alpha gate"
+ ],
+ "part_2": {
+  "status": "not reached",
+  "reason": "Part 1 consumed the session's measurement budget: the interference between the chart layer and the weather pipeline needed thirteen native runs and two structural changes to the layer (the settle policy and the yield), and Part 2's re-profile and layer migration were not attempted in the remaining budget. The recorded pan cost of docs/profiling-priorities.md (0.841 s inclusive in WindOverlayRenderer.live_geometry_for_view over 60 frames, 0.429 s of it Mercator projection) was not re-measured."
+ }
+}
