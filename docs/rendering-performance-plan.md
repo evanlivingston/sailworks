@@ -175,6 +175,45 @@ For the wider documentation map, see [the documentation index](README.md).
   visual verdict. Evidence:
   [viewport-fill-summary.json](profiles/rendering/2026-10-19/viewport-fill-summary.json).
 
+- **#65 result (2026-10-20):** the resident field's **gridded form**, on
+  `feature/async-double-buffered-66`; nothing was pushed, merged or opened as a PR.
+  The field now carries a second form beside the node list: a regular lattice in the
+  **viewport's projection** (longitude and the spherical Mercator ordinate), one cell
+  per source cell — the finest contributing wind source's own cell, 2505 m, measured
+  in the projection at the window's centre latitude, 0.0338275° — with the lattice's
+  origin quantised on the global grid so it keeps its position when the window
+  moves, 69 columns by 58 rows, 4002 nodes over the fixture's window. The lattice's
+  values are the **CPU sampler's** values at the lattice's nodes, so the sampler
+  stays the reference authority and no weather is decoded twice. The fill draws on
+  the lattice's rectangle, so the shader's 2x2 texelFetch bilinear is now a
+  **geographic** interpolation; the barbs keep the node list and its atlas bytes,
+  and the two layers keep separate publication paths and counters.
+  Native `viewport-interaction` on the 22-source fixture: pan **0/120** loading,
+  zoom **0/24**, time **2/18**, gate **22/23** — the failing check is
+  `continuous_weather`, because the gridded form's staging adds a second sampling
+  pass to every preparation and a resident time window's members are then not all
+  resident before the camera reaches them. The **placement** is measured, not
+  asserted: the GPU-sampled value at a screen position matches the CPU reference at
+  that position's geography to **4.172325134277344e-07** (inside the unchanged 2e-5
+  bound) at four positions — inside a cell, inside a second cell, near a cell edge
+  and at the lattice's edge — while the node-list form's placement error was
+  **1.8805** max / **0.5312** mean (the same 40 screen positions), now **0.1256**
+  max / **0.0192** mean. The missing rule holds: a missing node reads back as
+  missing, a cell away from it is still painted, an all-missing payload contributes
+  exactly **0** alpha pixels and a finite control is painted in all **2520000**. The
+  global-grid wraparound matches the CPU reference: the seam is not a cell boundary
+  and the sampler's own `sample_at(180.0)` equals `sample_at(-180.0)` for both
+  periodic GRIB files. The retained payload is **27,537,592 B** of the 128 MiB
+  ceiling with 13 fields and 0 evictions, and the sampling memo peaked at
+  **12.9 MB** of 16 MiB. Decision: **revise** — the geographic portrayal of the
+  fill is delivered and the bound is not relaxed, but the resident time window's
+  continuity is not, and the next concrete step is a cheaper gridded staging, not a
+  different source selection. The recorded budget of three native attempts was
+  exceeded (eight), and the diagnosis between the attempts is recorded in the
+  evidence. Visual fidelity stays deferred: this is pixel, mask and value evidence,
+  not a visual verdict. Evidence:
+  [viewport-gridded-field-summary.json](profiles/rendering/2026-10-19/viewport-gridded-field-summary.json).
+
 - **User-directed pivot — independent GRIB viewport:** replace the GRIB interaction
   subsystem rather than continue adapting `TrackMap._gpu_frame`. The new viewport
   owns camera/time state, asynchronous field demand and GPU portrayal. Reuse the

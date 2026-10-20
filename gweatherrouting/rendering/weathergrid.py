@@ -44,7 +44,9 @@ def mercator_y(lat):
 
 def mercator_lat(y):
     """The latitude of a Mercator ordinate, in degrees."""
-    return np.degrees(2.0 * np.arctan(np.exp(np.radians(np.asarray(y, dtype=float)))) - math.pi / 2.0)
+    return np.degrees(
+        2.0 * np.arctan(np.exp(np.radians(np.asarray(y, dtype=float)))) - math.pi / 2.0
+    )
 
 
 def unwrap_bounds(bounds):

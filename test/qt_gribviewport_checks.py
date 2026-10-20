@@ -243,9 +243,7 @@ def _lattice_probes(lattice, view):
     """
     import numpy as np
 
-    fx, fy = lattice.cells(
-        np.array([view._center_lon]), np.array([view._center_lat])
-    )
+    fx, fy = lattice.cells(np.array([view._center_lon]), np.array([view._center_lat]))
     base_x, base_y = float(fx[0]), float(fy[0])
     return (
         ("inside_cell", base_x + 0.3, base_y + 0.3),
@@ -329,6 +327,8 @@ def _placement_observations(field, camera, blend):
         float(max(payload_errors)) if payload_errors else None
     )
     return outcome
+
+
 def fill_observations(widget, model, camera, pump):
     """The fill layer's pixel, mask, value, placement and independence evidence."""
     import numpy as np
@@ -483,9 +483,7 @@ def _missing_neighbour_observations(widget, field, camera, blend, pump):
     planes = [decode_component(image) for image in field.grid.images]
     # The node nearest the viewport's centre: the four cells that touch it
     # must lose every fragment.
-    fx, fy = lattice.cells(
-        np.array([view._center_lon]), np.array([view._center_lat])
-    )
+    fx, fy = lattice.cells(np.array([view._center_lon]), np.array([view._center_lat]))
     index_x = int(np.clip(np.floor(fx[0]), 0, lattice.cols - 1))
     index_y = int(np.clip(np.floor(fy[0]), 0, lattice.rows - 1))
     original = float(planes[0][index_y, index_x])
@@ -527,24 +525,16 @@ def _missing_neighbour_observations(widget, field, camera, blend, pump):
     pixels = _grab(widget)
     alpha = pixels[..., 3]
     near = alpha[
-        max(0, int(round(screen_y - span_y / 2))) : int(
-            round(screen_y + span_y / 2)
-        )
+        max(0, int(round(screen_y - span_y / 2))) : int(round(screen_y + span_y / 2))
         + 1,
-        max(0, int(round(screen_x - span_x / 2))) : int(
-            round(screen_x + span_x / 2)
-        )
+        max(0, int(round(screen_x - span_x / 2))) : int(round(screen_x + span_x / 2))
         + 1,
     ]
     far = alpha.copy()
     far[
-        max(0, int(round(screen_y - span_y / 2))) : int(
-            round(screen_y + span_y / 2)
-        )
+        max(0, int(round(screen_y - span_y / 2))) : int(round(screen_y + span_y / 2))
         + 1,
-        max(0, int(round(screen_x - span_x / 2))) : int(
-            round(screen_x + span_x / 2)
-        )
+        max(0, int(round(screen_x - span_x / 2))) : int(round(screen_x + span_x / 2))
         + 1,
     ] = 0
     outcome = {
@@ -566,6 +556,8 @@ def _missing_neighbour_observations(widget, field, camera, blend, pump):
     }
     widget._barbs.setVisible(True)
     return outcome
+
+
 def run(snapshot):
     from PySide6.QtCore import QEvent, QEventLoop, QPointF, Qt, QTimer
     from PySide6.QtGui import QMouseEvent

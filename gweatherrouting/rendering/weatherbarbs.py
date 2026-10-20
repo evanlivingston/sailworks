@@ -362,7 +362,11 @@ def stage_field(
         if any(record.element in ("UGRD", "VGRD") for record in grid.records):
             geometry = NativeGridGeometry.from_index(grid)
             grids.setdefault(geometry.key(), geometry)
-    grid_field = stage_grid(sampler, stamp, window, identity, cancel, memo=memo) if grid else None
+    grid_field = (
+        stage_grid(sampler, stamp, window, identity, cancel, memo=memo)
+        if grid
+        else None
+    )
     return GeographicField(
         identity=identity,
         points=points,
