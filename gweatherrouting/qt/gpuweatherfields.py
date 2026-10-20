@@ -24,6 +24,7 @@ becomes eight bytes of texture.
 
 from dataclasses import dataclass
 import hashlib
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -32,6 +33,14 @@ from gweatherrouting.rendering.weathercache import (
     ByteAccountedLRU,
     WeatherBandLimitError,
 )
+
+if TYPE_CHECKING:
+    from PySide6.QtGui import QImage
+    from pyproj import Transformer
+
+    from gweatherrouting.rendering.weatherbarbs import BarbAtlas
+    from gweatherrouting.rendering.weathergrid import GriddedField
+    from gweatherrouting.rendering.weatherstaging import StagedWind
 
 # Two opaque RGBA8888 texels carry one float32: eight bytes of texture for
 # four bytes of value.
@@ -60,8 +69,8 @@ class NativeGridGeometry:
     height: int
     transform: tuple
     inverse: tuple
-    forward: object
-    backward: object
+    forward: "Transformer | None"
+    backward: "Transformer | None"
     periodic: bool
 
     nodes = GridIndex.nodes
@@ -150,16 +159,16 @@ class GeographicField:
     """
 
     identity: FieldIdentity
-    points: object
-    staged: object
+    points: np.ndarray
+    staged: "StagedWind"
     index: dict
     images: tuple
     generation: str
     grids: tuple = ()
-    land_flags: object = None
+    land_flags: np.ndarray | None = None
     land_zoom: float | None = None
     land_quality: str | None = None
-    grid: object = None
+    grid: "GriddedField | None" = None
 
     @property
     def node_count(self):
@@ -222,11 +231,11 @@ class BarbSelection:
     """
 
     generation: str
-    node_ids: object
+    node_ids: np.ndarray
     anchors: tuple
     count: int
-    field: object
-    node_image: object = None
+    field: GeographicField
+    node_image: "QImage | None" = None
 
     @property
     def images(self):
@@ -253,7 +262,7 @@ class ResidentField:
     """Compatibility payload for the existing exact-view atlas cache."""
 
     identity: FieldIdentity
-    payload: object
+    payload: "BarbAtlas"
     values: tuple = ()
 
     @property

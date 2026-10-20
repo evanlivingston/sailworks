@@ -25,11 +25,13 @@ from pathlib import Path
 import sys
 from threading import Condition, Event, Thread
 import time
+from typing import Any, cast
 
 from gweatherrouting.qt.gpuweatherfields import (
     FIELD_COLUMNS,
     FieldIdentity,
     FieldStore,
+    GeographicField,
     validate_binding,
 )
 from gweatherrouting.rendering.weatherbarbs import (
@@ -217,7 +219,7 @@ class PreparedResource:
     overlap with presentation.
     """
 
-    field: object
+    field: GeographicField
     generation: tuple
     demand: tuple
     slot: int
@@ -285,8 +287,8 @@ class GribViewportModel:
         self._desired_key = None
         self._failed_key = None
         self._field = None
-        self._sources = ()
-        self._sampler = None
+        self._sources: tuple[Any, ...] = ()
+        self._sampler: Any = None
         self._memo = None
         self._land = None
         self._thread = None
@@ -295,7 +297,7 @@ class GribViewportModel:
         self._state = "loading"
         self._error = ""
         self._store = FieldStore(field_bytes)
-        self._events = ()
+        self._events: tuple[float, ...] = ()
         # The resident time window is opt-in: the default viewport behaviour
         # is the one-interval lookahead of the previous issue.
         self._resident_window = bool(resident_time_window)
@@ -308,7 +310,7 @@ class GribViewportModel:
         # present, the back slot is what the worker fills.  At most two requests
         # are in flight (one active, one pending); a replaced request is
         # cancelled and can never publish.
-        self._slots = [None, None]
+        self._slots: list[PreparedResource | None] = [None, None]
         self._front_index = None
         self._preparation_spans = []
         self._published_generations = set()
@@ -383,7 +385,7 @@ class GribViewportModel:
             )
 
     # ----------------------------------------------------------- camera
-    def update(self, camera):
+    def update(self, camera):  # noqa: C901 - atomic coverage/generation transition
         """Adopt a camera and return the portrayal that may be shown.
 
         Returns ``(state, field, selection)``.  ``state`` is ``ready`` only
@@ -864,8 +866,8 @@ class GribViewportModel:
                 "sampling_memo": memo,
             }
 
-    def _run(self):
-        sources = []
+    def _run(self):  # noqa: C901 - keep worker cleanup and request state together
+        sources: list[Any] = []
         try:
             from gweatherrouting.core.grib import Grib
             from gweatherrouting.core.gribsampling import WeatherSampler
@@ -927,7 +929,8 @@ class GribViewportModel:
                         self._condition.wait()
                     if self._closed:
                         return
-                    request, self._pending = self._pending, None
+                    request = cast(tuple, self._pending)
+                    self._pending = None
                     self._active = request
                     self._prepare_target = request[3] if len(request) > 3 else None
                 camera, cancel, key = request[0], request[1], request[2]
@@ -1018,7 +1021,7 @@ class GribViewportModel:
                 self._store.clear()
                 self._condition.notify_all()
 
-    def _prepare(self, camera, cancel):
+    def _prepare(self, camera, cancel):  # noqa: C901 - bounded field/window staging
         """Prepare the geographic field of the camera's window.
 
         A resident time window member is prepared over the presented field's
@@ -1167,7 +1170,7 @@ def _grid_rect(view, lattice):
     that is nearest the camera, so a window across the antimeridian is drawn
     once and not split.
     """
-    from PySide6.QtCore import QRectF  # noqa: F401  (the rect type of the QML property)
+    from PySide6.QtCore import QRectF
 
     (south, west), (north, east) = lattice.bounds()
     shift = 360.0 * round((view._center_lon - west) / 360.0)
@@ -1182,12 +1185,12 @@ def _grid_rect(view, lattice):
     return QRectF(x, y, (east - west) * span, span_y)
 
 
-def _viewport_widget_class():
+def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event methods
     """Build the render-context widget class on demand.
 
     Qt is imported lazily so the model and the tests stay usable headless.
     """
-    from PySide6.QtCore import QObject, QRectF, QTimer, QUrl, Qt, Signal
+    from PySide6.QtCore import QObject, QTimer, QUrl, Qt, Signal
     from PySide6.QtGui import QSurfaceFormat
     from PySide6.QtQuickWidgets import QQuickWidget
     from PySide6.QtWidgets import QLabel
@@ -1222,10 +1225,10 @@ def _viewport_widget_class():
         """
 
         prepared = Signal()
-        cameraChanged = Signal(object)
-        stateChanged = Signal(str)
-        chartPublished = Signal(object)
-        chartStateChanged = Signal(str)
+        cameraChanged = Signal(object)  # noqa: N815 - Qt signal name
+        stateChanged = Signal(str)  # noqa: N815 - Qt signal name
+        chartPublished = Signal(object)  # noqa: N815 - Qt signal name
+        chartStateChanged = Signal(str)  # noqa: N815 - Qt signal name
 
         def __init__(
             self,
@@ -1247,7 +1250,7 @@ def _viewport_widget_class():
             format_.setSamples(4)
             format_.setAlphaBufferSize(8)
             self.setFormat(format_)
-            self.setResizeMode(QQuickWidget.SizeRootObjectToView)
+            self.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
             self._provider = WeatherImageProvider()
             self.engine().addImageProvider("weather", self._provider)
             self._chart_provider = None
@@ -1275,14 +1278,17 @@ def _viewport_widget_class():
             else:
                 source = shaders / "WeatherBarbs.qml"
             self.setSource(QUrl.fromLocalFile(str(source)))
-            self._weather = self.rootObject()
+            self._weather: Any = self.rootObject()
             if self._weather is None:
                 raise RuntimeError("The GRIB viewport could not load its shader")
             self._barbs = self._weather
             self._fill = None
             if self._gpu_weather_fill or self._chart_layer:
                 # The layered scenes carry the barbs as their own item.
-                self._barbs = self._weather.findChild(QObject, "weatherBarbs")
+                self._barbs = cast(
+                    Any,
+                    self._weather.findChild(QObject, "weatherBarbs"),
+                )
                 if self._barbs is None:
                     raise RuntimeError(
                         "The GRIB viewport could not load its weather scene"
@@ -1340,13 +1346,16 @@ def _viewport_widget_class():
             self._chart_timer.setInterval(CHART_SETTLE_MS)
             self._chart_timer.timeout.connect(self._request_chart)
             self._chart_timer.start()
-            self.prepared.connect(self._refresh, Qt.QueuedConnection)
-            self.chartPublished.connect(self._publish_chart, Qt.QueuedConnection)
+            self.prepared.connect(self._refresh, Qt.ConnectionType.QueuedConnection)
+            self.chartPublished.connect(
+                self._publish_chart, Qt.ConnectionType.QueuedConnection
+            )
             self.chartStateChanged.connect(
-                self._chart_state_changed, Qt.QueuedConnection
+                self._chart_state_changed, Qt.ConnectionType.QueuedConnection
             )
             self._model.on_change = self.prepared.emit
-            self._barbs.readyChanged.connect(self._readiness_changed)
+            # This signal is declared by QML, not by the QQuickItem Python stub.
+            getattr(self._barbs, "readyChanged").connect(self._readiness_changed)
 
         def _show_state(self, state):
             self._state = state
@@ -1377,8 +1386,8 @@ def _viewport_widget_class():
             """Publish a composed chart image (GUI thread)."""
             generation, image, metadata = payload
             self._chart_viewport = metadata["viewport"]
-            url = self._chart_provider.publish(generation, image)
-            self._chart.setProperty("source", QUrl(url))
+            url = cast(Any, self._chart_provider).publish(generation, image)
+            cast(QObject, self._chart).setProperty("source", QUrl(url))
             self.counters["chart_publications"] += 1
             self._place_chart()
             self._chart_publish_state = self._chart_state_now()
@@ -1654,21 +1663,21 @@ def _viewport_widget_class():
             if self._camera is not None:
                 self.set_camera(replace(self._camera, time=instant))
 
-        def resizeEvent(self, event):
+        def resizeEvent(self, event):  # noqa: N802 - Qt virtual method name
             super().resizeEvent(event)
             if self._camera is not None:
                 self.set_camera(
                     replace(self._camera, width=self.width(), height=self.height())
                 )
 
-        def mousePressEvent(self, event):
-            if event.button() == Qt.LeftButton:
+        def mousePressEvent(self, event):  # noqa: N802 - Qt virtual method name
+            if event.button() == Qt.MouseButton.LeftButton:
                 self._drag = event.position()
                 event.accept()
             else:
                 super().mousePressEvent(event)
 
-        def mouseMoveEvent(self, event):
+        def mouseMoveEvent(self, event):  # noqa: N802 - Qt virtual method name
             if self._drag is not None:
                 position = event.position()
                 delta = position - self._drag
@@ -1678,13 +1687,15 @@ def _viewport_widget_class():
             else:
                 super().mouseMoveEvent(event)
 
-        def mouseReleaseEvent(self, event):
+        def mouseReleaseEvent(self, event):  # noqa: N802 - Qt virtual method name
             self._drag = None
             super().mouseReleaseEvent(event)
 
-        def wheelEvent(self, event):
+        def wheelEvent(self, event):  # noqa: N802 - Qt virtual method name
             pixels = event.pixelDelta()
-            if not pixels.isNull() and not (event.modifiers() & Qt.ControlModifier):
+            if not pixels.isNull() and not (
+                event.modifiers() & Qt.KeyboardModifier.ControlModifier
+            ):
                 self.pan_pixels(pixels.x(), pixels.y())
             else:
                 self.zoom_at(
@@ -1694,7 +1705,7 @@ def _viewport_widget_class():
                 )
             event.accept()
 
-        def closeEvent(self, event):
+        def closeEvent(self, event):  # noqa: N802 - Qt virtual method name
             self._model.close()
             if self._chart_model is not None:
                 self._chart_model.close()
@@ -1824,7 +1835,7 @@ def main(argv=None):
     controls = QHBoxLayout()
     controls.addWidget(QLabel("Forecast UTC"))
     initial = QDateTime(instant)
-    initial.setTimeSpec(Qt.UTC)
+    initial.setTimeSpec(Qt.TimeSpec.UTC)
     clock = QDateTimeEdit(initial)
     clock.setDisplayFormat("yyyy-MM-dd HH:mm 'UTC'")
     clock.setCalendarPopup(True)

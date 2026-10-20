@@ -35,6 +35,15 @@ For the wider documentation map, see [the documentation index](README.md).
   as pre-integration measurement; run full tests only if conflict resolution changes
   shared sampling/routing behavior. Stop/report if scope or budget must expand.
 
+  **Integration checkpoint:** both targeted rounds passed 89 tests (one GDAL
+  warning); the gate runner's synthetic self-test exits 0 while its deliberately
+  violating child exits 1. This is not a native performance rerun. The second round
+  retained the known base lint/optional-identity findings, plus one `PreparedResource`
+  payload type and a Black layout adjustment. Those final annotation/format-only
+  changes are made after the two-round budget; final lint/type/format confirmation
+  is deferred to CI, not claimed locally. No third local round or native attempt
+  was run. Preserve these limits in the follow-up PR; keep it unmerged for review.
+
 - **#70 result (2026-10-20): validation, soak and the rollout decision, on
   `feature/async-double-buffered-66`; nothing was pushed, merged or opened as a
   PR, and **the default application path was not switched**. The scope was read
