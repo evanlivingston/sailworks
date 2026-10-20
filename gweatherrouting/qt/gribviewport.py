@@ -55,6 +55,14 @@ FIELD_BYTE_LIMIT = 128 * 1024 * 1024
 PREPARED_VIEW_FACTOR = 1.5
 REFILL_VIEW_FACTOR = 1.25
 
+# The declared horizon of the resident time window.  The recorded interaction
+# sweep moves the forecast instant over nine hours (camera.time plus
+# ``i % 9`` hours), so the window holds the demand windows of the forecast
+# instants inside that nine-hour span, over one spatial window.  The horizon
+# is a workload property, not a measured threshold: it is derived from the
+# recorded sweep and is bounded by the field store's byte ceiling.
+RESIDENT_TIME_WINDOW_HOURS = 9.0
+
 
 @dataclass(frozen=True)
 class ViewportCamera:
@@ -112,6 +120,26 @@ def _covers(field, camera):
     return field.identity.contains(camera.stamp()) and _spatially_covers(field, camera)
 
 
+def _contains(outer, inner):
+    """Whether the geographic window ``outer`` contains the window ``inner``."""
+    return (
+        outer[0][0] <= inner[0][0]
+        and outer[1][0] >= inner[1][0]
+        and outer[0][1] <= inner[0][1]
+        and outer[1][1] >= inner[1][1]
+    )
+
+
+def _instant(camera, stamp):
+    """The datetime of a timestamp, in the camera's own time convention."""
+    moment = (
+        datetime.fromtimestamp(stamp)
+        if camera.time.tzinfo is None
+        else datetime.fromtimestamp(stamp, timezone.utc)
+    )
+    return moment
+
+
 def _generation_key(field):
     """The content generation of a prepared resource: source/time/coverage/scope.
 
@@ -149,6 +177,38 @@ class PreparedResource:
     span: tuple
 
 
+@dataclass(frozen=True)
+class ResidentTimeWindow:
+    """The declared resident time window of one spatial window.
+
+    ``spatial`` is the geographic window of the presented field, ``anchor``
+    the forecast instant the window starts at and ``members`` the demand
+    windows the window holds, nearest first.  A member is one forecast
+    interval: the singleton at a selection event and the bracket between two
+    events are separate members, because their masks and their interpolation
+    differ.
+    """
+
+    spatial: tuple
+    anchor: float
+    members: tuple
+
+    @property
+    def identity(self):
+        return (self.spatial, self.anchor, self.members)
+
+
+def _spatial_state(camera):
+    """The spatial parameters of a camera: its window without its time."""
+    return (
+        camera.center_lon,
+        camera.center_lat,
+        camera.zoom,
+        camera.width,
+        camera.height,
+    )
+
+
 class GribViewportModel:
     """The viewport's field scheduler and current-selection owner.
 
@@ -158,7 +218,13 @@ class GribViewportModel:
     preparation never stops camera updates.
     """
 
-    def __init__(self, paths, field_bytes=FIELD_BYTE_LIMIT, land_mask=None):
+    def __init__(
+        self,
+        paths,
+        field_bytes=FIELD_BYTE_LIMIT,
+        land_mask=None,
+        resident_time_window=False,
+    ):
         self.paths = tuple(str(path) for path in paths)
         self._land_mask = land_mask
         self._condition = Condition()
@@ -178,6 +244,14 @@ class GribViewportModel:
         self._error = ""
         self._store = FieldStore(field_bytes)
         self._events = ()
+        # The resident time window is opt-in: the default viewport behaviour
+        # is the one-interval lookahead of the previous issue.
+        self._resident_window = bool(resident_time_window)
+        self._window = None
+        self._window_started = False
+        self._prepared_by = {}
+        self._prepare_target = None
+        self._bands = None
         # Two prepared-resource slots: the front slot is what the viewport may
         # present, the back slot is what the worker fills.  At most two requests
         # are in flight (one active, one pending); a replaced request is
@@ -201,6 +275,11 @@ class GribViewportModel:
             proactive_recentres=0,
             time_lookaheads=0,
             superseded_retained=0,
+            time_window_hits=0,
+            time_window_fills=0,
+            time_window_fields=0,
+            time_window_cancelled=0,
+            time_window_blocked=0,
         )
 
     # ------------------------------------------------------------- state
@@ -218,6 +297,29 @@ class GribViewportModel:
     def field_statistics(self):
         with self._condition:
             return self._store.statistics()
+
+    def band_statistics(self):
+        """The decoded-band cache's counters: a decode is a cache miss."""
+        with self._condition:
+            return {} if self._bands is None else self._bands.statistics()
+
+    def window_fields(self):
+        """The resident time window's fields, for the render context.
+
+        The window's images are published once, so a forecast-time change
+        inside the window republishes nothing and re-encodes nothing.
+        """
+        with self._condition:
+            state = self._window
+            if state is None:
+                return ()
+            members = set(state.members)
+            return tuple(
+                field
+                for field in self._store.fields()
+                if field.identity.window == state.spatial
+                and (field.identity.before, field.identity.after) in members
+            )
 
     # ----------------------------------------------------------- camera
     def update(self, camera):
@@ -293,7 +395,14 @@ class GribViewportModel:
                     self._error = ""
                     self._published_generations.add(field.generation)
                     self._published_demands.add(self._request_key(camera))
+                    if previous is None or self._time_key(
+                        previous.stamp()
+                    ) != self._time_key(camera.stamp()):
+                        # A forecast-time change served from a resident field:
+                        # no decode, no re-sample and no re-encode.
+                        self.counters["time_window_hits"] += 1
                     self._recentre_if_needed(camera, previous, field)
+                    self._queue_window_fill(camera, field)
                 return ("ready", field, selection)
         with self._condition:
             if self._failed_key == self._request_key(camera):
@@ -362,6 +471,10 @@ class GribViewportModel:
         single worker, because the completed field is useful to a later demand
         and is retained instead.  Explicit cancellation remains available to
         ``close()`` and to the caller that owns a request's event.
+
+        A speculative resident-window fill is the one exception: an
+        interactive demand takes the worker at once, so the spatial pipeline
+        keeps its priority over the fill.
         """
         key = self._request_key(camera)
         self._desired_key = key
@@ -371,6 +484,10 @@ class GribViewportModel:
                 self.counters["cancelled"] += 1
                 self._pending = None
             return
+        if self._active is not None and len(self._active) > 3:
+            if self._active[3] is not None:
+                self._active[1].set()
+                self.counters["time_window_cancelled"] += 1
         if self._pending is not None:
             if self._pending[2] == key:
                 return
@@ -378,7 +495,7 @@ class GribViewportModel:
             self.counters["cancelled"] += 1
             self._pending = None
         cancel = Event()
-        self._pending = (camera, cancel, key)
+        self._pending = (camera, cancel, key, None)
         if self._thread is None:
             self._thread = Thread(target=self._run, name="grib-viewport", daemon=True)
             self._thread.start()
@@ -434,7 +551,8 @@ class GribViewportModel:
             target = self._recentre_camera(camera, previous)
             if target is None:
                 # Stationary: no spatial window to move to.
-                self._look_ahead_time(camera, field)
+                if not self._resident_window:
+                    self._look_ahead_time(camera, field)
                 return
             if (
                 field_window(_expanded(target, PREPARED_VIEW_FACTOR).view())
@@ -452,7 +570,11 @@ class GribViewportModel:
             self._request(target)
             return
         if self._spatially_stationary(camera, previous):
-            self._look_ahead_time(camera, field)
+            if not self._resident_window:
+                # The resident time window supersedes the single-step
+                # lookahead: it holds every forecast interval of the horizon
+                # over the same spatial window.
+                self._look_ahead_time(camera, field)
 
     @staticmethod
     def _spatially_stationary(camera, previous):
@@ -516,6 +638,132 @@ class GribViewportModel:
         self.counters["time_lookaheads"] += 1
         self._request(target)
 
+    # --------------------------------------------------- resident window
+    def _time_members(self, anchor):
+        """The demand windows of the declared horizon, nearest first.
+
+        The horizon is the recorded nine-hour sweep: the forecast instants
+        from ``anchor`` to ``anchor + RESIDENT_TIME_WINDOW_HOURS``.  An instant
+        at a selection event is served by a singleton field and an instant
+        between two events by the bracket field, so the window holds one
+        member per event instant and one per interval.
+        """
+        events = self._events
+        index = bisect_left(events, anchor)
+        if index >= len(events) or events[index] != anchor:
+            return ((anchor, anchor),)
+        horizon = anchor + RESIDENT_TIME_WINDOW_HOURS * 3600.0
+        members = [(anchor, anchor)]
+        position = index
+        while position + 1 < len(events):
+            following = events[position + 1]
+            if following > horizon:
+                break
+            members.append((events[position], following))
+            position += 1
+            if events[position] < horizon:
+                members.append((events[position], events[position]))
+        return tuple(members)
+
+    def _window_state(self, camera, field):
+        """The resident time window that serves the presented field.
+
+        The window is anchored on the demand's interval start and keeps that
+        anchor while the demand stays inside the declared horizon, so a
+        forecast-time change inside the window does not re-anchor it.  A
+        different spatial window starts a new window.
+        """
+        if not self._resident_window or field is None:
+            return None
+        before, _after = self._time_key(camera.stamp())
+        state = self._window
+        if (
+            state is None
+            or state.spatial != field.identity.window
+            or not state.anchor
+            <= camera.stamp()
+            <= state.anchor + RESIDENT_TIME_WINDOW_HOURS * 3600.0
+        ):
+            state = ResidentTimeWindow(
+                spatial=field.identity.window,
+                anchor=before,
+                members=self._time_members(before),
+            )
+            self._window = state
+            self._window_started = False
+        return state
+
+    def _resident_identity(self, identity):
+        """Whether a field with this identity is already resident."""
+        for resource in self._slots:
+            if resource is not None and resource.field.identity == identity:
+                return True
+        return any(item.identity == identity for item in self._store.fields())
+
+    @staticmethod
+    def _member_moment(before, after):
+        """The instant inside a demand window that selects it."""
+        if after <= before:
+            return before
+        return before + min(1.0, (after - before) / 2.0)
+
+    def _queue_window_fill(self, camera, field):
+        """Queue the next missing member of the resident time window.
+
+        The fill is the lowest-priority work the worker does.  It runs only
+        while the interactive pipeline is idle, and only while the camera is
+        inside the presented field's prepared window, so no spatial
+        preparation is imminent and the pan pipeline keeps its priority.  The
+        fill starts where the presented field was prepared, so a moving
+        camera never claims the worker, and an interactive demand cancels it.
+        """
+        if not self._resident_window:
+            return False
+        if camera is None or field is None:
+            return False
+        if self._active is not None or self._pending is not None:
+            # The interactive pipeline has the worker; the fill waits.
+            return False
+        state = self._window_state(camera, field)
+        if state is None or state.spatial != field.identity.window:
+            return False
+        requirement = field_window(_expanded(camera, PREPARED_VIEW_FACTOR).view())
+        if not _contains(field.identity.window, requirement):
+            self.counters["time_window_blocked"] += 1
+            return False
+        if not self._window_started:
+            # The fill starts where the presented field was prepared: a camera
+            # that moved away from it needs a spatial field first.
+            if self._prepared_by.get(field.identity.key()) != _spatial_state(camera):
+                self.counters["time_window_blocked"] += 1
+                return False
+            self._window_started = True
+        for before, after in state.members:
+            identity = replace(field.identity, before=before, after=after)
+            if self._resident_identity(identity):
+                continue
+            target = {
+                "window": field.identity.window,
+                "geometry": field,
+                "resolution": field.identity.resolution,
+                "member": (before, after),
+            }
+            fill_camera = replace(
+                camera,
+                time=_instant(camera, self._member_moment(before, after)),
+                zoom=(camera.zoom if field.land_zoom is None else field.land_zoom),
+            )
+            key = (
+                target["window"],
+                (before, after),
+                field.identity.resolution[1],
+            )
+            self.counters["time_window_fills"] += 1
+            self._pending = (fill_camera, Event(), key, target)
+            self._condition.notify_all()
+            return True
+        return False
+
     def observations(self):
         """Preparation spans and publication-rejection evidence for the gate."""
         with self._condition:
@@ -530,6 +778,20 @@ class GribViewportModel:
                 "superseded_rejected": self.counters["stale_rejected"],
                 "superseded_retained": self.counters["superseded_retained"],
                 "time_lookaheads": self.counters["time_lookaheads"],
+                "time_window_hits": self.counters["time_window_hits"],
+                "time_window_fills": self.counters["time_window_fills"],
+                "time_window_fields": self.counters["time_window_fields"],
+                "time_window_cancelled": self.counters["time_window_cancelled"],
+                "time_window_blocked": self.counters["time_window_blocked"],
+                "resident_window": (
+                    None
+                    if self._window is None
+                    else {
+                        "spatial": self._window.spatial,
+                        "anchor": self._window.anchor,
+                        "members": self._window.members,
+                    }
+                ),
                 "slot_handoffs": self.counters["slot_handoffs"],
                 "slots_filled": sum(resource is not None for resource in self._slots),
                 "front_slot": self._front_index,
@@ -548,6 +810,8 @@ class GribViewportModel:
             )
 
             bands = DecodedBandCache(128 * 1024 * 1024)
+            with self._condition:
+                self._bands = bands
             for path in self.paths:
                 metadata = Grib.parse_metadata(path)
                 sources.append(
@@ -589,12 +853,19 @@ class GribViewportModel:
                     if self._closed:
                         return
                     while self._pending is None and not self._closed:
+                        # The worker is idle: the resident time window may
+                        # claim it, and it only does so while the camera is
+                        # inside the presented field's window.
+                        if self._queue_window_fill(self._camera, self._field):
+                            break
                         self._condition.wait()
                     if self._closed:
                         return
                     request, self._pending = self._pending, None
                     self._active = request
-                camera, cancel, key = request
+                    self._prepare_target = request[3] if len(request) > 3 else None
+                camera, cancel, key = request[0], request[1], request[2]
+                target = request[3] if len(request) > 3 else None
                 began = time.perf_counter()
                 error = ""
                 try:
@@ -642,6 +913,11 @@ class GribViewportModel:
                             slot = self._back_index()
                             stored = replace(resource, slot=slot)
                             self._slots[slot] = stored
+                            if target is not None:
+                                # A resident time window member: it is retained
+                                # for the forecast-time change that will ask
+                                # for it, and it never publishes by itself.
+                                self.counters["time_window_fields"] += 1
                             if key != self._desired_key:
                                 # A newer demand replaced this one while it was
                                 # preparing.  The field is valid and useful to a
@@ -672,41 +948,61 @@ class GribViewportModel:
             with self._condition:
                 self._sources, self._sampler, self._land = (), None, None
                 self._memo = None
+                self._bands = None
                 self._store.clear()
                 self._condition.notify_all()
 
     def _prepare(self, camera, cancel):
-        """Prepare the geographic field of the camera's window."""
+        """Prepare the geographic field of the camera's window.
+
+        A resident time window member is prepared over the presented field's
+        own spatial window: the target carries that window, that field's
+        geometry and that field's resolution, so the member shares the
+        spatial preparation instead of invalidating it.
+        """
         if cancel.is_set():
             return None
         try:
             view = camera.view()
             with self._condition:
-                geometry = next(
-                    (
-                        field
-                        for field in reversed(self._store.fields())
-                        if _spatially_covers(
-                            field, _expanded(camera, REFILL_VIEW_FACTOR)
+                target = self._prepare_target
+                if target is not None:
+                    geometry = target["geometry"]
+                    window = target["window"]
+                else:
+                    geometry = next(
+                        (
+                            field
+                            for field in reversed(self._store.fields())
+                            if _spatially_covers(
+                                field, _expanded(camera, REFILL_VIEW_FACTOR)
+                            )
+                        ),
+                        None,
+                    )
+                    window = (
+                        geometry.identity.window
+                        if geometry is not None
+                        else field_window(
+                            _expanded(camera, PREPARED_VIEW_FACTOR).view()
                         )
-                    ),
-                    None,
-                )
-            window = (
-                geometry.identity.window
-                if geometry is not None
-                else field_window(_expanded(camera, PREPARED_VIEW_FACTOR).view())
-            )
+                    )
             source = tuple(_source_key(item) for item in self._sources)
             before, after = time_window(self._sampler, camera.stamp())
-            resolution = (
-                tuple(
-                    sorted(
-                        {index.nominal_step_degrees for index in self._sampler.indices}
-                    )
-                ),
-                None if camera.over_land else shoreline_quality(view.get_scale()),
-            )
+            if target is not None:
+                resolution = target["resolution"]
+            else:
+                resolution = (
+                    tuple(
+                        sorted(
+                            {
+                                index.nominal_step_degrees
+                                for index in self._sampler.indices
+                            }
+                        )
+                    ),
+                    None if camera.over_land else shoreline_quality(view.get_scale()),
+                )
             identity = FieldIdentity(
                 source=source,
                 parameter="wind",
@@ -717,6 +1013,10 @@ class GribViewportModel:
             )
             with self._condition:
                 resident = self._store.acquire(identity)
+                if resident is None:
+                    # The camera that prepared this field: the resident time
+                    # window starts its fill where the field was prepared.
+                    self._prepared_by[identity.key()] = _spatial_state(camera)
             if resident is not None:
                 # The field is already resident: no re-decode, no re-sample.
                 return resident
@@ -900,6 +1200,11 @@ def _viewport_widget_class():
             selection_urls = self._provider.publish_selection(
                 selection.images, selection.generation
             )
+            # The resident time window's fields are published once, so a
+            # forecast-time change inside the window publishes nothing and
+            # re-encodes nothing.
+            for resident in self._model.window_fields():
+                self._provider.publish_field(resident.images, resident.generation)
             if self._published != field.generation:
                 for name, url in zip(
                     ("u0Source", "v0Source", "u1Source", "v1Source"), field_urls
@@ -1068,6 +1373,14 @@ def main(argv=None):
     parser.add_argument("--center-lon", type=float, default=-123.09)
     parser.add_argument("--zoom", type=float, default=9.8)
     parser.add_argument("--time", default="", help="forecast instant (ISO 8601)")
+    parser.add_argument(
+        "--resident-time-window",
+        action="store_true",
+        help=(
+            "keep a bounded resident time window of forecast intervals over "
+            "the presented spatial window (default: off)"
+        ),
+    )
     args = parser.parse_args(argv)
     settings = {}
     try:
@@ -1094,7 +1407,7 @@ def main(argv=None):
 
     logging.basicConfig(level=logging.INFO)
     app = QApplication.instance() or QApplication([sys.argv[0]])
-    model = GribViewportModel(paths)
+    model = GribViewportModel(paths, resident_time_window=args.resident_time_window)
     viewport = _viewport_widget_class()(model)
     window = QWidget()
     window.setWindowTitle(f"GRIB viewport — {len(paths)} forecasts")

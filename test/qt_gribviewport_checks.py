@@ -47,7 +47,11 @@ def run(snapshot):
         "errors": [],
     }
     app = QApplication.instance() or QApplication([sys.argv[0]])
-    model = GribViewportModel(paths, land_mask=WindLandMask(snapshot / "data"))
+    model = GribViewportModel(
+        paths,
+        land_mask=WindLandMask(snapshot / "data"),
+        resident_time_window=True,
+    )
     widget = _viewport_widget_class()(model)
     widget.resize(900, 700)
     widget.show()
@@ -123,6 +127,8 @@ def run(snapshot):
         state = {"revision": -1}
         before = widget.publication_counters()
         preparations = model.counters["field_preparations"]
+        bands_before = model.band_statistics()
+        counters_before = dict(model.counters)
         origin = time.perf_counter()
 
         def rendered():
@@ -172,6 +178,25 @@ def run(snapshot):
         phase_report["publication_delta"] = {
             key: value - before[key]
             for key, value in widget.publication_counters().items()
+        }
+        bands_after = model.band_statistics()
+        phase_report["decoded_band_delta"] = {
+            key: bands_after.get(key, 0) - bands_before.get(key, 0)
+            for key in ("hits", "misses", "evictions")
+        }
+        phase_report["counter_delta"] = {
+            key: model.counters[key] - counters_before.get(key, 0)
+            for key in (
+                "covered_reuses",
+                "misses",
+                "time_window_hits",
+                "time_window_fills",
+                "time_window_fields",
+                "time_window_cancelled",
+                "time_window_blocked",
+                "time_lookaheads",
+                "field_preparations",
+            )
         }
         report["phases"].append(phase_report)
         assert phase_report["settled_ready"], f"{name} did not settle: {model.error}"
@@ -306,6 +331,8 @@ def run(snapshot):
         assert wait_idle(), "Generation probe left work in flight"
         observations = model.observations()
         report["sampling_memo"] = observations.get("sampling_memo", {})
+        report["resident_window"] = observations.get("resident_window")
+        report["resident_window_fields"] = len(model.window_fields())
         presentation = [
             span
             for span in widget.observations()["presentation_spans"]

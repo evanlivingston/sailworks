@@ -548,6 +548,7 @@ def test_recentre_if_needed_queues_one_window_only_when_the_guard_fails(monkeypa
     model._condition = Condition()
     model._active = None
     model._pending = None
+    model._resident_window = False
     model.counters = {"proactive_recentres": 0, "time_lookaheads": 0}
     model._events = ()
     queued = []
@@ -695,6 +696,99 @@ def test_speculative_store_cannot_evict_the_visible_field():
     assert not store.store(future, protect=False)
     assert store.acquire("visible") is current
     assert store.current_bytes == 70
+
+
+# ------------------------------------------------------ resident window
+def _settle_window(model, members=1, timeout=20.0):
+    import time as clock
+
+    deadline = clock.monotonic() + timeout
+    while clock.monotonic() < deadline:
+        if model.counters["time_window_fields"] >= members:
+            return True
+        clock.sleep(0.01)
+    return False
+
+
+def test_the_resident_window_is_opt_in(gribs):
+    paths, _source = _paths(gribs)
+    model = GribViewportModel(paths, land_mask=Land())
+    try:
+        assert model._resident_window is False
+        # The default path keeps the single-step lookahead of the previous
+        # issue and prepares no window member.
+        _wait_ready(model, camera=_camera(time=START))
+        assert model.counters["time_window_fields"] == 0
+    finally:
+        model.close()
+
+
+def test_the_resident_window_holds_one_member_per_forecast_interval(gribs):
+    paths, _source = _paths(gribs)
+    model = GribViewportModel(paths, land_mask=Land(), resident_time_window=True)
+    try:
+        _wait_ready(model, camera=_camera(time=START))
+        anchor = START.timestamp()
+        members = model._time_members(anchor)
+        # The anchor is served by a singleton, and every event instant by a
+        # singleton of its own, with the bracket between two events beside it.
+        assert members[0] == (anchor, anchor)
+        assert all(before <= after for before, after in members)
+        assert any(before < after for before, after in members)
+        # Every instant of the horizon is served by one member of the window.
+        for hour in range(4):
+            stamp = anchor + hour * 3600
+            assert model._time_key(stamp) in members
+        # The horizon is bounded: it never reaches past the declared span.
+        assert members[-1][1] <= anchor + 9 * 3600
+    finally:
+        model.close()
+
+
+def test_a_forecast_time_change_inside_the_window_needs_no_preparation(gribs):
+    paths, _source = _paths(gribs)
+    model = GribViewportModel(paths, land_mask=Land(), resident_time_window=True)
+    camera = _camera(time=START)
+    try:
+        field, _selection = _wait_ready(model, camera=camera)
+        assert _settle_window(model, 1)
+        preparations = model.counters["field_preparations"]
+        later = replace(camera, time=START + timedelta(hours=1))
+        state, other, selection = model.update(later)
+        assert state == "ready"
+        assert other is not field
+        assert selection is not None
+        # The resident window served the change: no preparation, no decode.
+        assert model.counters["field_preparations"] == preparations
+        assert model.counters["time_window_hits"] >= 1
+    finally:
+        model.close()
+
+
+def test_the_window_fill_starts_only_where_the_field_was_prepared(gribs):
+    paths, _source = _paths(gribs)
+    model = GribViewportModel(paths, land_mask=Land(), resident_time_window=True)
+    camera = _camera(time=START)
+    try:
+        field, _selection = _wait_ready(model, camera=camera)
+        moved = replace(camera, center_lon=camera.center_lon + 0.5)
+        with model._condition:
+            model._pending = None
+            model._active = None
+            blocked = model.counters["time_window_blocked"]
+            # A camera that left the prepared field does not claim the worker.
+            assert model._queue_window_fill(moved, field) is False
+            assert model.counters["time_window_blocked"] > blocked
+            assert model._pending is None
+            # The camera where the field was prepared is not blocked.
+            blocked = model.counters["time_window_blocked"]
+            model._window_started = False
+            model._queue_window_fill(camera, field)
+            assert model.counters["time_window_blocked"] == blocked
+    finally:
+        model.close()
+        if model._thread is not None:
+            model._thread.join(5)
 
 
 @pytest.mark.parametrize(
