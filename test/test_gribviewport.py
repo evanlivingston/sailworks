@@ -1022,3 +1022,147 @@ def test_the_application_never_imports_the_viewport():
         if path.name == "gribviewport.py":
             continue
         assert "gribviewport" not in path.read_text(), path.name
+
+
+def test_the_chart_layer_is_off_by_default():
+    """The viewport's entry point keeps the chart layer behind a flag."""
+    import ast
+
+    tree = ast.parse(inspect.getsource(gribviewport))
+    flags = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "attr", "") == "add_argument"
+        ):
+            for keyword in node.keywords:
+                if (
+                    keyword.arg == "action"
+                    and getattr(keyword.value, "value", "") == "store_true"
+                ):
+                    flags.append(node.args[0].value)
+    assert "--chart-layer" in flags
+    widget = gribviewport._viewport_widget_class()
+    defaults = {
+        name: argument.default
+        for name, argument in inspect.signature(widget.__init__).parameters.items()
+        if argument.default is not inspect.Parameter.empty
+    }
+    assert defaults["chart_layer"] is False
+    assert defaults["gpu_weather_fill"] is False
+
+
+def test_the_default_path_does_not_load_the_chart_scene():
+    """The chart layer is a separate scene; the barbs' own is unchanged."""
+    import ast
+
+    tree = ast.parse(inspect.getsource(gribviewport))
+    scenes = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if node.value.endswith(".qml"):
+                scenes.append(node.value)
+    assert "ViewportChartScene.qml" in scenes
+    shaders = Path(gribviewport.__file__).parent / "shaders"
+    barbs = (shaders / "WeatherBarbs.qml").read_text()
+    assert "ChartLayer" not in barbs
+    scene = (shaders / "ViewportChartScene.qml").read_text()
+    # The chart scene carries the application's own weather components
+    # unchanged and adds the chart layer behind them.
+    assert "WeatherBarbs" in scene
+    assert "WeatherFill" in scene
+
+
+def test_the_chart_composer_is_the_applications_own():
+    """The chart layer reuses the application's chart composition."""
+    from gweatherrouting.qt.basecharts import BaseChartRenderer
+    from gweatherrouting.qt.gribviewportchart import _ChartComposer
+    from gweatherrouting.rendering.windpainter import WindPainter
+
+    composer = _ChartComposer("cm93", ())
+    assert isinstance(composer._renderer, BaseChartRenderer)
+    assert isinstance(composer.painter(), WindPainter)
+
+
+def _chart_layer(tmp_path, **kwargs):
+    from gweatherrouting.qt.gribviewportchart import ViewportChartLayer
+
+    return ViewportChartLayer(paths=(), data_dir=tmp_path, **kwargs)
+
+
+def _chart_metadata(camera):
+    from gweatherrouting.core.mapviewport import MapViewport
+    from gweatherrouting.qt.gribviewportchart import ChartCamera
+
+    return {
+        "viewport": MapViewport(ChartCamera(camera), 256, lambda: None),
+        "time": camera.stamp(),
+    }
+
+
+def test_a_superseded_chart_generation_never_publishes(tmp_path):
+    """A chart generation that is replaced while composing never publishes."""
+    import time as clock
+    from threading import Event
+
+    published = []
+    layer = _chart_layer(tmp_path, on_publish=published.append)
+    entered = Event()
+    release = Event()
+
+    def compose(camera, cancel):
+        entered.set()
+        release.wait(5)
+        return ("image", _chart_metadata(camera))
+
+    layer._compose = compose
+    camera = _camera()
+    first = layer.request(camera)
+    assert entered.wait(5)
+    second = layer.request(camera, replace=True)
+    release.set()
+    deadline = clock.monotonic() + 5
+    while not published and clock.monotonic() < deadline:
+        clock.sleep(0.01)
+    observations = layer.observations()
+    assert first in observations["rejected_generations"]
+    assert first not in observations["published_generations"]
+    assert observations["published_generations"] == (second,)
+    assert published and published[0][0] == second
+    layer.close()
+
+
+def test_a_retained_chart_composition_is_reused(tmp_path):
+    """The retained composition is reused while it still covers the camera."""
+    import time as clock
+
+    published = []
+    layer = _chart_layer(tmp_path, on_publish=published.append)
+
+    def compose(camera, cancel):
+        return ("image", _chart_metadata(camera))
+
+    layer._compose = compose
+    camera = _camera()
+    layer.request(camera)
+    deadline = clock.monotonic() + 5
+    while not published and clock.monotonic() < deadline:
+        clock.sleep(0.01)
+    assert published
+    generation = layer.observations()["generation"]
+    layer.request(camera)
+    observations = layer.observations()
+    assert observations["generation"] == generation
+    assert observations["counters"]["reuses"] == 1
+    layer.close()
+
+
+def test_the_chart_layer_never_claims_the_weather_worker(tmp_path):
+    """The chart layer's composition yields to the weather pipeline."""
+    layer = _chart_layer(tmp_path)
+    busy = [False]
+    layer._worker_idle = lambda: not busy[0]
+    busy[0] = True
+    assert layer._await_idle(None) is False
+    busy[0] = False
+    assert layer._await_idle(None) is True

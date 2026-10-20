@@ -355,6 +355,15 @@ class GribViewportModel:
         with self._condition:
             return {} if self._bands is None else self._bands.statistics()
 
+    def busy(self):
+        """Whether a field preparation is in flight.
+
+        The chart layer waits for this: it never claims the field worker, so
+        the chart can never delay the weather.
+        """
+        with self._condition:
+            return self._active is not None or self._pending is not None
+
     def window_fields(self):
         """The resident time window's fields, for the render context.
 
@@ -1178,12 +1187,19 @@ def _viewport_widget_class():
 
     Qt is imported lazily so the model and the tests stay usable headless.
     """
-    from PySide6.QtCore import QObject, QRectF, QUrl, Qt, Signal
+    from PySide6.QtCore import QObject, QRectF, QTimer, QUrl, Qt, Signal
     from PySide6.QtGui import QSurfaceFormat
     from PySide6.QtQuickWidgets import QQuickWidget
     from PySide6.QtWidgets import QLabel
 
     from gweatherrouting.qt.gpuweather import WeatherImageProvider
+    from gweatherrouting.qt.gribviewportchart import (
+        CHART_PALETTE,
+        CHART_SETTLE_MS,
+        ViewportChartLayer,
+        chart_image_provider,
+        chart_placement,
+    )
 
     class GribViewport(QQuickWidget):
         """The viewport's render context: the GPU side of the split.
@@ -1197,13 +1213,28 @@ def _viewport_widget_class():
         component and nothing else.  When it is on, the two layers have
         separate inputs, separate publication paths and separate counters, so
         a change to one layer never restages the other.
+
+        The chart layer is an optional third layer behind both.  It is off by
+        default and, when it is on, it is an *independent generation*: it has
+        its own worker, its own state and its own cancel event, it is
+        published after the weather is already presented, and adding it
+        resets neither the weather nor the camera nor the forecast time.
         """
 
         prepared = Signal()
         cameraChanged = Signal(object)
         stateChanged = Signal(str)
+        chartPublished = Signal(object)
+        chartStateChanged = Signal(str)
 
-        def __init__(self, model, parent=None, gpu_weather_fill=False):
+        def __init__(
+            self,
+            model,
+            parent=None,
+            gpu_weather_fill=False,
+            chart_layer=False,
+            chart_data_dir=None,
+        ):
             super().__init__(parent)
             self._model = model
             self._camera = None
@@ -1211,6 +1242,7 @@ def _viewport_widget_class():
             self._state = "loading"
             self._presentation_spans = []
             self._gpu_weather_fill = bool(gpu_weather_fill)
+            self._chart_layer = bool(chart_layer)
             format_ = QSurfaceFormat()
             format_.setSamples(4)
             format_.setAlphaBufferSize(8)
@@ -1218,24 +1250,68 @@ def _viewport_widget_class():
             self.setResizeMode(QQuickWidget.SizeRootObjectToView)
             self._provider = WeatherImageProvider()
             self.engine().addImageProvider("weather", self._provider)
+            self._chart_provider = None
+            self._chart_model = None
+            self._chart = None
+            self._chart_state = "disabled"
+            self._chart_viewport = None
+            self._chart_camera = None
+            self._chart_camera_changed = time.perf_counter()
+            self._chart_ready_at = None
+            self._chart_request_state = None
+            self._chart_publish_state = None
+            self._chart_loading_shown = False
+            self._chart_status_item = None
+            self._weather_ready_at = None
+            self._chart_requested_after_weather = False
+            if self._chart_layer:
+                self._chart_provider = chart_image_provider()
+                self.engine().addImageProvider("chart", self._chart_provider)
             shaders = Path(__file__).parent / "shaders"
-            source = shaders / (
-                "WeatherScene.qml" if self._gpu_weather_fill else "WeatherBarbs.qml"
-            )
+            if self._chart_layer:
+                source = shaders / "ViewportChartScene.qml"
+            elif self._gpu_weather_fill:
+                source = shaders / "WeatherScene.qml"
+            else:
+                source = shaders / "WeatherBarbs.qml"
             self.setSource(QUrl.fromLocalFile(str(source)))
             self._weather = self.rootObject()
             if self._weather is None:
                 raise RuntimeError("The GRIB viewport could not load its shader")
             self._barbs = self._weather
             self._fill = None
-            if self._gpu_weather_fill:
+            if self._gpu_weather_fill or self._chart_layer:
+                # The layered scenes carry the barbs as their own item.
                 self._barbs = self._weather.findChild(QObject, "weatherBarbs")
+                if self._barbs is None:
+                    raise RuntimeError(
+                        "The GRIB viewport could not load its weather scene"
+                    )
+            if self._gpu_weather_fill:
                 self._fill = self._weather.findChild(QObject, "weatherFill")
-                if self._barbs is None or self._fill is None:
+                if self._fill is None:
                     raise RuntimeError(
                         "The GRIB viewport could not load its weather scene"
                     )
                 self._weather.setProperty("fillEnabled", True)
+            if self._chart_layer:
+                self._chart = self._weather.findChild(QObject, "chartLayer")
+                self._chart_status_item = self._weather.findChild(
+                    QObject, "chartStatus"
+                )
+                if self._chart is None or self._chart_status_item is None:
+                    raise RuntimeError(
+                        "The GRIB viewport could not load its chart scene"
+                    )
+                self._chart_model = ViewportChartLayer(
+                    paths=model.paths,
+                    data_dir=chart_data_dir,
+                    palette=CHART_PALETTE,
+                    worker_idle=model.busy,
+                    current_camera=lambda: self._camera,
+                    on_publish=self.chartPublished.emit,
+                    on_state=self.chartStateChanged.emit,
+                )
             self._published = None
             self._published_fill = None
             self._published_generations = set()
@@ -1247,6 +1323,8 @@ def _viewport_widget_class():
                 barbs_field_uploads=0,
                 barbs_selection_publications=0,
                 barbs_selection_uploads=0,
+                chart_publications=0,
+                chart_requests=0,
             )
             self._status = QLabel("Wind loading…", self)
             self._status.setStyleSheet(
@@ -1254,7 +1332,19 @@ def _viewport_widget_class():
             )
             self._status.move(8, 8)
             self._status.adjustSize()
+            # The chart layer composes for a settled view.  The settle timer
+            # spans more than fifteen of the gate's 30 inputs/s, so an
+            # interaction never triggers a composition: the chart can never
+            # compete with the weather pipeline for the worker.
+            self._chart_timer = QTimer(self)
+            self._chart_timer.setInterval(CHART_SETTLE_MS)
+            self._chart_timer.timeout.connect(self._request_chart)
+            self._chart_timer.start()
             self.prepared.connect(self._refresh, Qt.QueuedConnection)
+            self.chartPublished.connect(self._publish_chart, Qt.QueuedConnection)
+            self.chartStateChanged.connect(
+                self._chart_state_changed, Qt.QueuedConnection
+            )
             self._model.on_change = self.prepared.emit
             self._barbs.readyChanged.connect(self._readiness_changed)
 
@@ -1268,7 +1358,82 @@ def _viewport_widget_class():
             self._status.adjustSize()
             self._status.setVisible(state != "ready")
             self._status.raise_()
+            if state == "ready" and self._weather_ready_at is None:
+                # The weather is presented: the chart layer may now be asked
+                # for its own generation.
+                self._weather_ready_at = time.perf_counter()
             self.stateChanged.emit(state)
+
+        def _chart_state_changed(self, state):
+            """The chart layer's own state; it never changes the weather's."""
+            self._chart_state = state
+            if self._chart is not None:
+                self._chart.setProperty("chartLoading", state == "loading")
+                if state == "loading":
+                    # The chart layer's own loading state was shown.
+                    self._chart_loading_shown = True
+
+        def _publish_chart(self, payload):
+            """Publish a composed chart image (GUI thread)."""
+            generation, image, metadata = payload
+            self._chart_viewport = metadata["viewport"]
+            url = self._chart_provider.publish(generation, image)
+            self._chart.setProperty("source", QUrl(url))
+            self.counters["chart_publications"] += 1
+            self._place_chart()
+            self._chart_publish_state = self._chart_state_now()
+            if self._chart_ready_at is None:
+                self._chart_ready_at = time.perf_counter()
+
+        def _place_chart(self):
+            """Place the retained chart image for the current camera."""
+            if self._chart is None or self._chart_viewport is None:
+                return
+            if self._camera is None:
+                return
+            x, y, width, height = chart_placement(self._chart_viewport, self._camera)
+            self._chart.setProperty("imageX", x)
+            self._chart.setProperty("imageY", y)
+            self._chart.setProperty("imageWidth", width)
+            self._chart.setProperty("imageHeight", height)
+
+        def _request_chart(self):
+            """Ask the chart layer for its own generation.
+
+            The chart is composed for a settled view: the view must not have
+            moved for the settle window, the weather must already be
+            presented and the weather pipeline must be idle.  While any of
+            those is untrue the chart asks again, so the chart never delays
+            the weather and never composes during an interaction.
+            """
+            if self._chart_model is None or self._camera is None:
+                return
+            if self._weather_ready_at is None:
+                # The chart is added after the weather is presented.
+                return
+            if (time.perf_counter() - self._chart_camera_changed) * 1000.0 < (
+                CHART_SETTLE_MS
+            ):
+                # The view is still moving: the chart waits for it to settle.
+                return
+            if self._model.busy():
+                # The weather pipeline is working: the chart waits.
+                return
+            self.counters["chart_requests"] += 1
+            self._chart_requested_after_weather = True
+            self._chart_request_state = self._chart_state_now()
+            self._chart_model.request(self._camera)
+
+        def _chart_state_now(self):
+            """The camera, the forecast time and the published weather."""
+            camera = self._camera
+            return {
+                "center_lon": None if camera is None else camera.center_lon,
+                "center_lat": None if camera is None else camera.center_lat,
+                "zoom": None if camera is None else camera.zoom,
+                "time": None if camera is None else camera.time.isoformat(),
+                "weather": self._published,
+            }
 
         def _readiness_changed(self):
             if self._barbs.property("ready") and self._model.state == "ready":
@@ -1284,6 +1449,17 @@ def _viewport_widget_class():
             state = "loading"
             try:
                 self._camera = camera
+                if self._chart_model is not None:
+                    # The chart is composed for a settled view: the settle
+                    # timer only asks for a composition when the view has
+                    # not moved for the settle window, so an interaction
+                    # never triggers a composition and the chart can never
+                    # compete with the weather pipeline.  The retained
+                    # composition is placed for the new camera either way.
+                    if self._chart_camera != camera:
+                        self._chart_camera = camera
+                        self._chart_camera_changed = time.perf_counter()
+                    self._place_chart()
                 state, field, selection = self._model.update(camera)
                 if state != "ready":
                     # A miss shows the loading state; it never shows stale content.
@@ -1308,6 +1484,15 @@ def _viewport_widget_class():
             return {
                 "presentation_spans": tuple(self._presentation_spans),
                 "published_generations": tuple(sorted(self._published_generations)),
+                "weather_ready_at": self._weather_ready_at,
+                "chart_ready_at": self._chart_ready_at,
+                "chart_state": self._chart_state,
+                "chart_requested_after_weather": self._chart_requested_after_weather,
+                "chart_layer": (
+                    None
+                    if self._chart_model is None
+                    else self._chart_model.observations()
+                ),
             }
 
         def _publish(self, field, selection, camera):
@@ -1511,7 +1696,11 @@ def _viewport_widget_class():
 
         def closeEvent(self, event):
             self._model.close()
+            if self._chart_model is not None:
+                self._chart_model.close()
             self._provider.clear()
+            if self._chart_provider is not None:
+                self._chart_provider.clear()
             super().closeEvent(event)
 
     return GribViewport
@@ -1579,6 +1768,14 @@ def main(argv=None):
             "resident field (default: off)"
         ),
     )
+    parser.add_argument(
+        "--chart-layer",
+        action="store_true",
+        help=(
+            "add the chart layer: the application's chart composition as an "
+            "independent generation behind the weather (default: off)"
+        ),
+    )
     args = parser.parse_args(argv)
     settings = {}
     try:
@@ -1610,7 +1807,17 @@ def main(argv=None):
         resident_time_window=args.resident_time_window,
         grid=args.gpu_weather_fill,
     )
-    viewport = _viewport_widget_class()(model, gpu_weather_fill=args.gpu_weather_fill)
+    chart_data_dir = args.data_dir
+    if chart_data_dir is None:
+        from gweatherrouting.core.storage import DATA_DIR
+
+        chart_data_dir = Path(DATA_DIR)
+    viewport = _viewport_widget_class()(
+        model,
+        gpu_weather_fill=args.gpu_weather_fill,
+        chart_layer=args.chart_layer,
+        chart_data_dir=chart_data_dir,
+    )
     window = QWidget()
     window.setWindowTitle(f"GRIB viewport — {len(paths)} forecasts")
     layout = QVBoxLayout(window)
