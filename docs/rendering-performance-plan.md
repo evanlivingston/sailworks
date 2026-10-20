@@ -57,9 +57,11 @@ ancestor of `dev` and the primary session had moved away. The clean #64 worktree
 remain: other-session ownership is unconfirmed. No force removal/deletion. The
 spike's non-ancestor original history must remain reachable if retired later.
 
-**Documentation validation:** configured runner launch blocked by the harness
-subagent-depth limit; zero rounds executed, not a pass. Parent session must delegate
-changed-file whitespace and added local links/anchors before merging the review PR.
+**Documentation validation:** the subagent's initial runner launch was blocked by
+the harness depth limit, with zero commands executed. The parent then delegated
+validation successfully: four documents, eight added local links and seven anchors
+checked with zero failures; changed-file whitespace passed. No runtime tests, Black,
+native measurements or base-CI replication were needed for this documentation PR.
 
 ### Earlier consolidation notes (2026-10-20; historical provenance)
 
