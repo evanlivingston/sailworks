@@ -19,6 +19,7 @@ from bisect import bisect_left
 from datetime import datetime, timezone
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import sys
@@ -33,6 +34,7 @@ from gweatherrouting.qt.gpuweatherfields import (
 )
 from gweatherrouting.rendering.weatherbarbs import (
     BarbView,
+    FIELD_LATTICE_PX,
     field_window,
     _view_bounds,
     select_resident,
@@ -196,6 +198,7 @@ class GribViewportModel:
             stale_rejected=0,
             generation_rejected=0,
             slot_handoffs=0,
+            proactive_recentres=0,
         )
 
     # ------------------------------------------------------------- state
@@ -226,6 +229,7 @@ class GribViewportModel:
         with self._condition:
             if self._closed:
                 return ("unavailable", None, None)
+            previous = self._camera
             self._camera = camera
             for index, resource in enumerate(self._slots):
                 if resource is None:
@@ -287,6 +291,7 @@ class GribViewportModel:
                     self._error = ""
                     self._published_generations.add(field.generation)
                     self._published_demands.add(self._request_key(camera))
+                    self._recentre_if_needed(camera, previous, field)
                 return ("ready", field, selection)
         with self._condition:
             if self._failed_key == self._request_key(camera):
@@ -383,6 +388,67 @@ class GribViewportModel:
             self._thread = Thread(target=self._run, name="grib-viewport", daemon=True)
             self._thread.start()
         self._condition.notify_all()
+
+    def _recentre_camera(self, camera, previous):
+        """The next lattice window ahead of the direction of motion.
+
+        Deterministic: the camera is advanced by one field-lattice step along
+        the sign of its movement since the previous update, so the prepared
+        window is centred ahead of the camera rather than on the current
+        speculative position.  A stationary camera is not re-centred.
+        """
+        if previous is None:
+            return None
+        view = camera.view()
+        dx = view._lon_to_x(camera.center_lon) - view._lon_to_x(previous.center_lon)
+        dy = view._lat_to_y(camera.center_lat) - view._lat_to_y(previous.center_lat)
+        step_x = math.copysign(FIELD_LATTICE_PX, dx) if dx else 0.0
+        step_y = math.copysign(FIELD_LATTICE_PX, dy) if dy else 0.0
+        if not step_x and not step_y:
+            return None
+        center_lon = (
+            view._x_to_lon(view._lon_to_x(camera.center_lon) + step_x)
+            if step_x
+            else camera.center_lon
+        )
+        center_lat = (
+            view._y_to_lat(view._lat_to_y(camera.center_lat) + step_y)
+            if step_y
+            else camera.center_lat
+        )
+        return replace(camera, center_lon=center_lon, center_lat=center_lat)
+
+    def _recentre_if_needed(self, camera, previous, field):
+        """Prepare the next window while the current field is still presented.
+
+        Called with the lock held, only for a ready presentation.  The trigger
+        is the same guard the scheduler prefers (``REFILL_VIEW_FACTOR``): while
+        the presented field still covers the guard, the camera has runway; once
+        it does not, one deterministic re-centred window is queued.  The back
+        slot is filled by the existing two-slot pipeline, so no third slot and
+        no speculative random prefetch is introduced.
+        """
+        if self._active is not None or self._pending is not None:
+            return
+        if _covers(field, _expanded(camera, REFILL_VIEW_FACTOR)):
+            return
+        target = self._recentre_camera(camera, previous)
+        if target is None:
+            return
+        if (
+            field_window(_expanded(target, PREPARED_VIEW_FACTOR).view())
+            == field.identity.window
+        ):
+            return
+        key = self._request_key(target)
+        if key == self._request_key(camera):
+            # The camera has not yet crossed into a new window; nothing to
+            # prepare that its own demand would not already ask for.
+            return
+        if self._active is not None and self._active[2] == key:
+            return
+        self.counters["proactive_recentres"] += 1
+        self._request(target)
 
     def observations(self):
         """Preparation spans and publication-rejection evidence for the gate."""

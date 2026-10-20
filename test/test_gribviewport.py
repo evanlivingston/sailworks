@@ -437,6 +437,66 @@ def test_the_speculative_prefetcher_is_retired():
     assert not hasattr(model, "_speculative")
 
 
+def test_recentre_camera_advances_one_lattice_in_the_direction_of_motion():
+    from gweatherrouting.rendering.weatherbarbs import FIELD_LATTICE_PX
+
+    camera = _camera()
+    moved = replace(camera, center_lon=camera.center_lon + 0.01)
+    target = GribViewportModel._recentre_camera(
+        object.__new__(GribViewportModel), moved, camera
+    )
+    view = moved.view()
+    assert view._lon_to_x(target.center_lon) - view._lon_to_x(
+        moved.center_lon
+    ) == pytest.approx(FIELD_LATTICE_PX)
+    assert target.center_lat == moved.center_lat
+    # A stationary camera is not re-centred.
+    assert (
+        GribViewportModel._recentre_camera(
+            object.__new__(GribViewportModel), camera, camera
+        )
+        is None
+    )
+
+
+def test_recentre_if_needed_queues_one_window_only_when_the_guard_fails(monkeypatch):
+    from threading import Condition, Event
+
+    model = object.__new__(GribViewportModel)
+    model._condition = Condition()
+    model._active = None
+    model._pending = None
+    model.counters = {"proactive_recentres": 0}
+    queued = []
+    monkeypatch.setattr(model, "_request", lambda camera: queued.append(camera))
+    monkeypatch.setattr(
+        model, "_request_key", lambda camera: ("key", camera.center_lon)
+    )
+
+    class FakeIdentity:
+        window = ((-100.0, -100.0), (100.0, 100.0))
+
+    class FakeField:
+        identity = FakeIdentity()
+
+    camera = _camera()
+    previous = replace(camera, center_lon=camera.center_lon - 0.01)
+    monkeypatch.setattr(gribviewport, "_covers", lambda field, cam: True)
+    model._recentre_if_needed(camera, previous, FakeField())
+    assert queued == []
+    monkeypatch.setattr(gribviewport, "_covers", lambda field, cam: False)
+    model._recentre_if_needed(camera, previous, FakeField())
+    assert len(queued) == 1 and model.counters["proactive_recentres"] == 1
+    # A preparation already in flight is not replaced by another re-centre.
+    model._pending = (camera, Event(), "in-flight")
+    model._recentre_if_needed(camera, previous, FakeField())
+    assert len(queued) == 1
+    # A stationary camera queues nothing.
+    model._pending = None
+    model._recentre_if_needed(camera, camera, FakeField())
+    assert len(queued) == 1
+
+
 def test_zoom_reuses_values_only_with_the_same_shoreline_policy(gribs):
     from dataclasses import replace
     import numpy as np
