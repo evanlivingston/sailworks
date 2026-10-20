@@ -137,6 +137,7 @@ class ForecastTimeline(QWidget):
         self.marine.connect("changed", self._marine_changed)
         self.marine.fields.connect("changed", self._marine_changed)
         self.poll_timer.start()
+        self.controller.display_forecast.changed.connect(self.refresh)
         self.pause()
         self.refresh()
 
@@ -167,7 +168,15 @@ class ForecastTimeline(QWidget):
     def refresh(self, *_):
         if self.closed:
             return
-        intervals = forecast_intervals(self.controller.core.grib_manager, self.marine)
+        intervals = tuple(
+            sorted(
+                tuple(
+                    (source.first_valid, source.last_valid)
+                    for source in self.controller.display_forecast.sources()
+                )
+                + forecast_intervals(None, self.marine)
+            )
+        )
         if intervals == self._signature:
             return
         self._signature = intervals
@@ -218,7 +227,7 @@ class ForecastTimeline(QWidget):
             )
         else:
             self.caption.setText(
-                "Load wind or download tides / currents to enable scrubbing"
+                "Choose a display forecast in Weather, or download tides / currents"
             )
         self.caption.setToolTip(self.caption.text())
         self._syncing = False

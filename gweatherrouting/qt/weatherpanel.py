@@ -42,7 +42,7 @@ class WeatherPanel(QWidget):
         controls.addWidget(self.wind)
         self.wind_style = QComboBox()
         self.wind_style.addItem("Barbs", "barbs")
-        self.wind_style.addItem("Streamlines", "streamlines")
+        self.wind_style.addItem("Streamlines (legacy renderer)", "streamlines")
         self.wind_style.setToolTip(
             "Static forecast-flow curves with direction chevrons,"
             " or native-point wind barbs. No particle animation."
@@ -102,6 +102,25 @@ class WeatherPanel(QWidget):
         note.setWordWrap(True)
         controls.addWidget(note)
         controls.addWidget(section_label("GRIB forecasts"))
+        self.display_forecast = QComboBox()
+        self.display_forecast.setToolTip(
+            "Display only: choose one file, production run and member. "
+            "This does not change routing sources or either map clock."
+        )
+        self.display_forecast.currentIndexChanged.connect(self.choose_forecast)
+        controls.addWidget(self.display_forecast)
+        self.forecast_identity = QLabel()
+        self.forecast_identity.setWordWrap(True)
+        controls.addWidget(self.forecast_identity)
+        self.weather_renderer = QComboBox()
+        self.weather_renderer.addItem("Viewport barbs", "viewport")
+        self.weather_renderer.addItem("Legacy weather recovery", "legacy")
+        self.weather_renderer.currentIndexChanged.connect(
+            lambda _index: self.set_preference(
+                "weatherRenderer", self.weather_renderer.currentData()
+            )
+        )
+        controls.addWidget(self.weather_renderer)
         self.open_forecast = QPushButton("Open forecast…")
         self.open_forecast.clicked.connect(open_forecast)
         controls.addWidget(self.open_forecast)
@@ -111,6 +130,38 @@ class WeatherPanel(QWidget):
         controls.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll)
+        controller.display_forecast.changed.connect(self.refresh_forecasts)
+        self.refresh_forecasts()
+        self.refresh()
+
+    def choose_forecast(self, _index):
+        selection = self.controller.display_forecast
+        previous = selection.selected_key
+        try:
+            selection.choose(self.display_forecast.currentData() or "")
+        except OSError as exc:
+            self.controller.settings.__dict__["displayForecast"] = previous
+            dict.__setitem__(self.controller.settings, "displayForecast", previous)
+            QMessageBox.warning(self, "Unable to save display forecast", str(exc))
+            self.refresh_forecasts()
+
+    def refresh_forecasts(self):
+        selection = self.controller.display_forecast
+        self.display_forecast.blockSignals(True)
+        self.display_forecast.clear()
+        self.display_forecast.addItem("None — weather unavailable", "")
+        for choice in selection.choices:
+            self.display_forecast.addItem(choice.label, choice.key)
+        index = self.display_forecast.findData(selection.selected_key)
+        if index < 0:
+            self.display_forecast.addItem(
+                "Selected forecast unavailable", selection.selected_key
+            )
+            index = self.display_forecast.count() - 1
+        self.display_forecast.setCurrentIndex(index)
+        self.display_forecast.blockSignals(False)
+        self.forecast_identity.setText(selection.status)
+        self.forecast_identity.setToolTip(selection.error)
 
     def checkbox(self, label, key):
         widget = QCheckBox(label)
@@ -158,6 +209,16 @@ class WeatherPanel(QWidget):
         )
 
     def refresh(self):
+        self.weather_renderer.blockSignals(True)
+        self.weather_renderer.setCurrentIndex(
+            max(
+                0,
+                self.weather_renderer.findData(
+                    self.controller.settings.get("weatherRenderer", "viewport")
+                ),
+            )
+        )
+        self.weather_renderer.blockSignals(False)
         self.wind_style.blockSignals(True)
         self.wind_style.setCurrentIndex(
             max(0, self.wind_style.findData(self.controller.settings.gribWindStyle))

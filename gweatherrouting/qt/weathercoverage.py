@@ -107,7 +107,12 @@ class WeatherCoverage(QObject):
                 break
             try:
                 stat = Path(source.path).stat()
-                identity = (source.path, stat.st_mtime_ns, stat.st_size)
+                identity = (
+                    source.path,
+                    stat.st_mtime_ns,
+                    stat.st_size,
+                    getattr(source, "display_identity", None),
+                )
                 reader = self.readers.get(identity)
                 if reader is None:
                     reader = DisplayGrib(source)

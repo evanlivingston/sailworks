@@ -88,6 +88,9 @@ class SessionController(QObject):
         self.routing = RoutingController(self)
         self.connection_task = BackgroundTask(self)
         self.data = DataController(self)
+        from .displayforecast import DisplayForecastSelection
+
+        self.display_forecast = DisplayForecastSelection(self)
         self.polars = PolarController(self)
         self.map_data = MapDataController(self)
         self.points = []
@@ -236,6 +239,7 @@ class SessionController(QObject):
         if self.closed:
             return
         self.closed = True
+        self.display_forecast.close()
         if self.chart_startup is not None:
             self.chart_startup.close()
         self.routing.close()

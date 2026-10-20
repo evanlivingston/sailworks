@@ -243,12 +243,17 @@ class DisplayGridIndex(GridIndex):
 
 
 class DisplayWeatherSource(Grib):
-    def __init__(self, *args, band_cache, **kwargs):
+    def __init__(self, *args, band_cache, display_identity=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.band_cache = band_cache
+        self.display_identity = display_identity
 
     @property
     def sampling(self):
         if "_sampling" not in self.__dict__:
-            self._sampling = DisplayGridIndex(self, self.band_cache)
+            from .displayforecast import restrict_index
+
+            self._sampling = restrict_index(
+                DisplayGridIndex(self, self.band_cache), self.display_identity
+            )
         return self._sampling
