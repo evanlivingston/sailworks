@@ -19,8 +19,12 @@ authority and the fallback path; the gridded form costs no extra decode.
 
 from dataclasses import dataclass
 import math
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from gweatherrouting.rendering.weatherstaging import StagedWind
 
 # The Mercator limit of the viewport's projection.
 MERCATOR_MAX_LAT = 85.051129
@@ -203,7 +207,7 @@ class GriddedField:
     """The gridded form of one field: its lattice, values and images."""
 
     lattice: GridLattice
-    staged: object
+    staged: "StagedWind"
     images: tuple
 
     @property

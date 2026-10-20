@@ -25,6 +25,31 @@ For the wider documentation map, see [the documentation index](README.md).
 
 ## Current checkpoint
 
+- **PR #75 CI correction contract (2026-10-20):** final CI on `32a15d1` passed
+  Black but exposed eight type and five lint findings outside the earlier
+  three-file integration selection. Merge is paused. The user authorizes one
+  implementation pass limited to `gribviewportchart.py`, `weathergrid.py`,
+  `weatherstaging.py` and the annotation at `gribsampling.py`'s vector-basis use.
+  Preserve numerical/selection/routing behavior, Qt property names and lazy loading;
+  do not relax checker thresholds or hide new type errors. Keep the confirmed base
+  `stage_barbs` complexity/optional-identity findings out of scope. Budget: one
+  implementation pass and at most two targeted validation rounds, zero native
+  runs, no baseline remeasurement or replication of failing base CI suites. Stop
+  if a behavioral change or broader cleanup is necessary. Primary review and the
+  configured test runner precede publication; source-coherence/fidelity work stays
+  pending, and no default-path switch is authorized.
+
+  **Correction result:** the implementation subagent supplied the four-file patch;
+  primary review corrected forward annotations for older supported Python and
+  retained exact arithmetic. Two targeted rounds ran within budget; the final round
+  passed **118 tests** (one warning), Black/Flake8/mypy on all four files and
+  whitespace on code plus this record. Distinct NumPy-index variable names resolve
+  local NumPy-stub inference without changing indexing or values. Qt config names
+  remain unchanged; complexity exemptions are function-scoped/documented, not
+  threshold changes. No native measurement or full-suite/base-CI replication was
+  performed. Publish the correction and classify fresh full CI before the approved
+  experimental merge; do not infer a full-CI pass from these targeted checks.
+
 - **Consolidation contract (2026-10-20):** PR #72 is merged into `dev` at
   `9d1b384`; integrate that reviewed base into the existing viewport branch with a
   non-rewriting merge. Preserve the later pipeline/time/fill/chart implementation

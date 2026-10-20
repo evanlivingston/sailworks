@@ -11,6 +11,7 @@ from functools import lru_cache
 import math
 import logging
 import re
+from typing import cast
 
 import numpy as np
 from osgeo import gdal
@@ -237,7 +238,9 @@ class GridIndex:
             inside &= ~needed | np.isfinite(corner)
             contribution = np.where(needed, np.nan_to_num(corner) * weight, 0)
             if vector:
-                contribution = contribution[:, None] * bases[position]
+                contribution = (
+                    contribution[:, None] * cast("list[np.ndarray]", bases)[position]
+                )
             value += contribution
         return np.where(inside[:, None] if vector else inside, value, np.nan)
 

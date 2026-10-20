@@ -26,9 +26,13 @@ event:
 from pathlib import Path
 from threading import Condition, Event, Lock, Thread
 import time
+from typing import TYPE_CHECKING, cast
 
 from gweatherrouting.core.mapviewport import MercatorProjection
 from gweatherrouting.rendering.overlayrenderer import MARGIN, RenderJob, fits
+
+if TYPE_CHECKING:
+    from gweatherrouting.rendering.weathercache import DisplayWeatherSource
 
 #: The application's default chart palette.
 CHART_PALETTE = "cm93"
@@ -53,9 +57,9 @@ class ChartSettings:
     palette is the application's own default.
     """
 
-    chartPalette = CHART_PALETTE
-    gribIsobarsVisible = True
-    gribArrowOpacity = 1.0
+    chartPalette = CHART_PALETTE  # noqa: N815 - Qt app config property name
+    gribIsobarsVisible = True  # noqa: N815 - Qt app config property name
+    gribArrowOpacity = 1.0  # noqa: N815 - Qt app config property name
 
     def register_on_change(self, key, callback):
         """The viewport's chart settings do not change while it runs."""
@@ -239,7 +243,7 @@ class ViewportChartLayer:
         self._closed = False
         self._sources = ()
         self._sampler = None
-        self._sampler_sources = ()
+        self._sampler_sources: "tuple[DisplayWeatherSource, ...]" = ()
         self._composer_instance = None
         self._outcome = None
         self._spans = []
@@ -328,7 +332,7 @@ class ViewportChartLayer:
 
     def _reusable(self, camera):
         """Whether the retained composition still serves this camera."""
-        _generation, _image, metadata = self._published
+        _generation, _image, metadata = cast(tuple, self._published)
         if metadata["time"] != camera.stamp():
             # The isobars belong to the forecast instant.
             return False
@@ -356,7 +360,7 @@ class ViewportChartLayer:
         if self._on_publish is not None:
             self._on_publish(payload)
 
-    def _run(self):
+    def _run(self):  # noqa: C901 - keep worker lifecycle and cancellation together
         try:
             while True:
                 with self._condition:
@@ -364,7 +368,7 @@ class ViewportChartLayer:
                         self._condition.wait()
                     if self._closed:
                         return
-                    request, self._pending = self._pending, None
+                    request, self._pending = cast(tuple, self._pending), None
                     self._active = request
                 generation, camera, cancel = request
                 began = time.perf_counter()

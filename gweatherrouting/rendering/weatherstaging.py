@@ -195,26 +195,26 @@ def _exact_snapshot(
         if cancel():
             return None
         values[missing] = sampled
-        for position, name in zip(np.flatnonzero(missing), sampler.point_sources):
-            origins[position] = name
+        for node_index, name in zip(np.flatnonzero(missing), sampler.point_sources):
+            origins[node_index] = name
     if cancel():
         return None
     first = np.array(values.reshape(shape + (2,)), dtype=np.float32)
     first.setflags(write=False)
     if keys is not None:
         flat = first.reshape(-1, 2)
-        for position in np.flatnonzero(np.isfinite(flat).all(axis=1)):
+        for node_index in np.flatnonzero(np.isfinite(flat).all(axis=1)):
             memo.put_sample(
                 memo_namespace,
-                keys[position],
-                flat[position],
-                flat[position],
-                origins[position],
+                keys[node_index],
+                flat[node_index],
+                flat[node_index],
+                origins[node_index],
             )
     return StagedWind(stamp, stamp, first, first, tuple(origins))
 
 
-def stage_wind(
+def stage_wind(  # noqa: C901 - staging, memo reuse and cancellation kept together
     sampler,
     stamp,
     lats,
@@ -300,13 +300,13 @@ def stage_wind(
         finite = np.isfinite(flat_first).all(axis=1) & np.isfinite(flat_second).all(
             axis=1
         )
-        for position in np.flatnonzero(finite):
+        for node_index in np.flatnonzero(finite):
             memo.put_sample(
                 memo_namespace,
-                keys[position],
-                flat_first[position],
-                flat_second[position],
-                origins[position],
+                keys[node_index],
+                flat_first[node_index],
+                flat_second[node_index],
+                origins[node_index],
             )
     return StagedWind(
         before,
