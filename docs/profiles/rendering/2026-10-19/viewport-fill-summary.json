@@ -1,0 +1,193 @@
+{
+ "issue": 68,
+ "decision": "adopt",
+ "reason": "The numerical fill is in the viewport behind --gpu-weather-fill (default off) and runs the corrected weather shader unchanged: the same byte-packed decoder, the same U/V-then-speed arithmetic and the same A0k missing-data policy. It is driven by the resident field's already-published endpoint images, so there is no second decode and no second upload. Native viewport-interaction on the 22-source fixture gives pan 0/120, zoom 0/24 and time 0/18 loading, continuous_weather true, and the gate passes 19/19 (the 10 pre-existing checks plus 9 new fill observations). The fill paints 2515104 of 2520000 framebuffer pixels from the resident field; an all-missing fill contributes exactly 0 alpha pixels and 0 significant alpha pixels; a finite control is painted in all 2520000 pixels; the interpolated wind speed matches the CPU reference to 5.960464477539063e-08, inside the unchanged 2e-5 numerical gate; a fill change re-stages the fill once and the barbs zero times with byte-identical barbs pixels, and a selection change re-stages the barbs once and the fill zero times. Two consecutive native runs gave identical phase numbers. The geographic portrayal of the fill is not delivered and is recorded as the next step: the resident field's endpoint images are a node list, not a geographic raster, and every geographic form of the fill is excluded by this issue's own constraints (no second decode or upload; no change to the barbs' field layout; no coupling of the fill to the selection).",
+ "branch": "feature/async-double-buffered-66",
+ "base_commit": "80818a1",
+ "commits": [
+  "1e1e20b Add the viewport's numerical weather fill layer behind a flag",
+  "3c985a7 Observe the fill's pixels, masks, values and layer independence in the gate"
+ ],
+ "fixture_sha256": "1ed1bca1281ad4096713ce20af9c1473e70bd4eb0766a54965849b7ace698a03",
+ "sources_opened": 22,
+ "source_order_preserved": true,
+ "design": {
+  "layer": "gweatherrouting/qt/shaders/WeatherFill.qml, a sibling of the barbs inside gweatherrouting/qt/shaders/WeatherScene.qml (the viewport's own root; the application's scene is untouched)",
+  "shader": "gweatherrouting/qt/shaders/weather.frag, unchanged and compiled as shipped (weather.frag.qsb). The same byte-packed decoder, the same U/V-then-speed arithmetic (the speed is derived from the interpolated U and V, never interpolated itself) and the same corrected missing-data policy: a missing sample contributes exactly zero alpha and is never replaced by a neighbour's value or by the field minimum.",
+  "input": "the resident field's already-published endpoint images (u0/v0/u1/v1) and the temporal blend. The fill references the same URLs the barbs use, so the same scene graph texture is bound: no second decode, no second upload and no second copy of the payload.",
+  "independence": "the fill and the barbs have separate publication paths (_publish_fill and _publish_barbs), separate inputs and separate counters. The fill never sees the selection; the barbs never see a fill change. The fill's own publication path (publish_fill) stages the fill without touching the barbs' namespace, sources or counters.",
+  "flag": "--gpu-weather-fill, default off. With the flag off the viewport loads WeatherBarbs.qml exactly as before; the application never imports the viewport.",
+  "unchanged": "the barbs' selection, thinning, anchors, colours and atlas bytes; the source selection and routing; the temporal blend; the CPU fill fallback; the application's default path."
+ },
+ "gate": {
+  "gate": "viewport-interaction",
+  "gate_kind": "correctness",
+  "gate_verdict": "pass",
+  "checks_passed": 19,
+  "checks_failed": 0,
+  "pre_existing_checks_passed": 10,
+  "new_fill_observations": 9,
+  "failing_check": null,
+  "native_attempts": 2,
+  "native_attempt_seconds": 13.849,
+  "native_attempt_commit": "3c985a770c7e8780b4831ba79f1745bd10947a90",
+  "native_attempt_dirty": false,
+  "note": "The recorded summaries of #67 and #73 report this gate as 11/11; the registry carried 10 checks and the summaries counted the gate as a whole. The 10 pre-existing checks still pass unchanged and 9 fill observations were added."
+ },
+ "phases": [
+  {
+   "name": "sustained-pan",
+   "inputs": 120,
+   "loading_inputs": 0,
+   "field_preparations": 8,
+   "publication_delta": {
+    "field_publications": 8,
+    "selection_publications": 127,
+    "fill_publications": 7,
+    "fill_uploads": 7,
+    "fill_selection_publications": 0,
+    "barbs_field_publications": 7,
+    "barbs_field_uploads": 7,
+    "barbs_selection_publications": 127,
+    "barbs_selection_uploads": 127
+   }
+  },
+  {
+   "name": "anchored-zoom",
+   "inputs": 24,
+   "loading_inputs": 0,
+   "field_preparations": 3,
+   "publication_delta": {
+    "field_publications": 3,
+    "selection_publications": 24,
+    "fill_publications": 0,
+    "fill_uploads": 0,
+    "fill_selection_publications": 0,
+    "barbs_field_publications": 0,
+    "barbs_field_uploads": 0,
+    "barbs_selection_publications": 24,
+    "barbs_selection_uploads": 24
+   },
+   "note": "24 view changes and 24 selection publications, and not one fill restaging: the resident field did not change."
+  },
+  {
+   "name": "time-crossings",
+   "inputs": 18,
+   "loading_inputs": 0,
+   "field_preparations": 1,
+   "publication_delta": {
+    "field_publications": 1,
+    "selection_publications": 18,
+    "fill_publications": 11,
+    "fill_uploads": 11,
+    "fill_selection_publications": 0,
+    "barbs_field_publications": 11,
+    "barbs_field_uploads": 11,
+    "barbs_selection_publications": 18,
+    "barbs_selection_uploads": 18
+   },
+   "note": "The resident time window's members are different fields, so both layers are restaged for them; the fill's 11 publications are field publications, not selection publications."
+  }
+ ],
+ "reference": {
+  "artifact": "viewport-time-window-summary.json (#67) and viewport-cleanup-summary.json (#73)",
+  "pan_loading": {
+   "viewport_fill": "0/120",
+   "time_window": "0/120",
+   "resident_prototype": "0/120"
+  },
+  "zoom_loading": {
+   "viewport_fill": "0/24",
+   "time_window": "0/24",
+   "resident_prototype": "0/24"
+  },
+  "time_loading": {
+   "viewport_fill": "0/18",
+   "time_window": "0/18",
+   "resident_prototype": "11/18"
+  }
+ },
+ "fill": {
+  "enabled": true,
+  "shader_ready": true,
+  "shader_error": "",
+  "painted_pixels": 2515104,
+  "total_pixels": 2520000,
+  "resident_painted_pixels": 2515731,
+  "paint_note": "The unpainted pixels are the missing (NaN) tail of the resident field's node list; they are transparent, never the field minimum.",
+  "all_missing": {
+   "alpha_pixels": 0,
+   "significant_alpha_pixels": 0,
+   "total_pixels": 2520000
+  },
+  "finite_control": {
+   "alpha_pixels": 2520000,
+   "total_pixels": 2520000
+  },
+  "values": {
+   "limit": 2e-05,
+   "max_abs_error": 5.960464477539063e-08,
+   "compared_positions": 5,
+   "passed": true,
+   "positions": {
+    "0.0700,0.0900": {
+     "gpu_speed": 0.45711180567741394,
+     "cpu_speed": 0.45711180567741394
+    },
+    "0.5000,0.5000": {
+     "gpu_speed": 0.6574282050132751,
+     "cpu_speed": 0.6574282050132751
+    },
+    "0.9300,0.9100": {
+     "gpu_speed": 0.7300642132759094,
+     "cpu_speed": 0.7300642132759094
+    },
+    "0.3100,0.6200": {
+     "gpu_speed": 1.1977221965789795,
+     "cpu_speed": 1.1977221965789795
+    },
+    "0.7200,0.2800": {
+     "gpu_speed": 0.8951314687728882,
+     "cpu_speed": 0.895131528377533
+    }
+   },
+   "method": "The application's own weather.frag is compiled with the #71 probe's byte-exact readback and the float32 it wrote is read back at probe-chosen positions, so the rasteriser's fragment quantisation cannot mask a numerical difference. The CPU reference mirrors the shader's order: the two time endpoints are blended per corner and the spatial weights are accumulated afterwards, and the wind speed is derived from the interpolated U and V."
+  },
+  "independence": {
+   "barbs_pixels_unchanged_by_fill_change": true,
+   "barbs_publications_by_fill_change": 0,
+   "fill_publications_by_fill_change": 1,
+   "fill_publications_by_selection_change": 0,
+   "fill_selection_publications": 0,
+   "barbs_selection_publications_by_selection_change": 1
+  }
+ },
+ "counters": {
+  "fill_publications": 26,
+  "fill_uploads": 26,
+  "fill_selection_publications": 0,
+  "barbs_field_publications": 21,
+  "barbs_field_uploads": 21,
+  "barbs_selection_publications": 176,
+  "barbs_selection_uploads": 176
+ },
+ "retained": {
+  "field_bytes": 24472139,
+  "field_limit": 134217728,
+  "provider_bytes": 2673760,
+  "provider_limit": 33554432
+ },
+ "validation": {
+  "tests_passed": 108,
+  "black_checked_python_files": 4,
+  "whitespace_and_json_checks_passed": true
+ },
+ "endpoint": "QQuickWindow.afterRendering render-callback proxy; the pixel readbacks are framebuffer readbacks (fidelity), not presentation FPS, not input-to-present and not scanout.",
+ "visual_fidelity": "deferred and not evaluated. This artifact reports pixels, masks and values, not a visual verdict.",
+ "limits": [
+  "The fill's geographic portrayal is not delivered. The resident field's endpoint images are a node list (64 columns by rows, longitude-major), not a geographic raster, so the fill's spatial interpolation runs over that node list and the fill is a numerical layer rather than a geographically placed raster. Every geographic form of the fill is excluded by this issue's own constraints: a second raster is a second decode and upload, a new field layout would change the barbs' atlas bytes, and a lattice fill would couple the fill to the selection and break the independence requirement. The next concrete step is a raster form of the resident field in the field store, or the layer separation of #69.",
+  "The readbacks are fidelity measurements. No presentation latency, input-to-present time or frame rate is claimed.",
+  "The value comparison reads the float32 the application's weather shader wrote through a probe-only readback variant of that shader. The application's arithmetic is used verbatim and the probe asserts it (the #71 probe's mechanism); the shipped shader file is unchanged."
+ ],
+ "next_step": "Ratify the geographic form of the fill with the field store (a raster form of the resident field) before the fill is offered as the application's default layer, and keep the legacy fill gate for the application's own path until #70 decides the rollout."
+}

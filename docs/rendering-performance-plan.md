@@ -136,6 +136,45 @@ For the wider documentation map, see [the documentation index](README.md).
   remaining viewport work. Visual fidelity stays failed/user-deferred. Evidence:
   [viewport-cleanup-summary.json](profiles/rendering/2026-10-19/viewport-cleanup-summary.json).
 
+- **#68 result (2026-10-19):** the viewport's numerical weather fill, on
+  `feature/async-double-buffered-66`; nothing was pushed, merged or opened as a PR.
+  The fill is a **sibling layer** of the barbs in the viewport's own scene
+  (`WeatherScene.qml` + `WeatherFill.qml`); the application's scene and the barbs'
+  component are untouched. It runs the **corrected weather shader unchanged**
+  (`weather.frag`): the same byte-packed decoder, the same **U/V-then-speed**
+  arithmetic — the speed is derived from the interpolated U and V, never
+  interpolated itself — and the same **A0k missing-data policy**, so a missing
+  sample contributes exactly zero alpha and is never replaced by a neighbour's
+  value or by the field minimum. It is driven by the **resident field's
+  already-published endpoint images** (the same URLs the barbs use), so there is no
+  second decode, no second upload and no second copy of the payload. The two layers
+  have separate publication paths, separate inputs and separate counters: the fill
+  never sees the selection and the barbs never see a fill change. The fill is behind
+  **`--gpu-weather-fill`, default off**; with the flag off the viewport loads the
+  barbs' own component exactly as before, and the application never imports the
+  viewport. Native `viewport-interaction` on the 22-source fixture: pan **0/120**
+  loading, zoom **0/24**, time **0/18**, `continuous_weather` true, gate **19/19**
+  (the 10 pre-existing checks plus 9 new fill observations); two consecutive native
+  runs gave identical phase numbers. The fill paints **2515104 of 2520000**
+  framebuffer pixels from the resident field; an all-missing fill contributes
+  **exactly 0** alpha pixels and **0** significant alpha pixels; a finite control is
+  painted in **all 2520000** pixels; the interpolated wind speed matches the CPU
+  reference to **5.960464477539063e-08**, inside the unchanged 2e-5 numerical gate
+  (read back as the float32 the application's own shader wrote, at probe-chosen
+  positions). Independence is measured, not asserted: the anchored-zoom phase
+  published **24** selections and **0** fill restagings; a fill-only publication
+  restaged the barbs **0** times with byte-identical barbs pixels, and a selection
+  change restaged the fill **0** times. Targeted 108 tests, `black --check` and
+  whitespace clean. Decision: **adopt**; the **geographic portrayal of the fill is
+  not delivered** — the resident field's endpoint images are a node list, not a
+  geographic raster, and every geographic form of the fill is excluded by this
+  issue's own constraints (no second decode or upload; no change to the barbs'
+  field layout; no coupling of the fill to the selection). The next concrete step is
+  a raster form of the resident field in the field store, or #69's layer separation.
+  Visual fidelity stays deferred: this is pixel, mask and value evidence, not a
+  visual verdict. Evidence:
+  [viewport-fill-summary.json](profiles/rendering/2026-10-19/viewport-fill-summary.json).
+
 - **User-directed pivot — independent GRIB viewport:** replace the GRIB interaction
   subsystem rather than continue adapting `TrackMap._gpu_frame`. The new viewport
   owns camera/time state, asynchronous field demand and GPU portrayal. Reuse the
