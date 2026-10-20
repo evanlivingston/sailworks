@@ -87,7 +87,10 @@ def run(snapshot):
             assert _covers(
                 model._field, widget._camera
             ), "Stale field presented as current"
-            assert widget._published == model._field.generation
+            assert widget._published == model._field.generation, (
+                f"published {widget._published} is not the model field "
+                f"{model._field.generation}"
+            )
         else:
             assert not widget._weather.isVisible(), "Stale weather visible on miss"
 

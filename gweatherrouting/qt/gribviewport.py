@@ -452,8 +452,13 @@ class GribViewportModel:
         return 1
 
     def _adopt(self, resource):
-        """Promote a prepared back-slot resource to the presented front."""
-        self._field = resource.field
+        """Promote a prepared back-slot resource to the presented front.
+
+        The presented field has a single owner: the render context's thread.
+        The worker hands the slot forward and the next camera update adopts
+        it, so the published content and the model's content cannot disagree
+        while a publication is in flight.
+        """
         self._front_index = resource.slot
         self._store.acquire(resource.field.identity)
         self._store.protect(resource.field.identity)
