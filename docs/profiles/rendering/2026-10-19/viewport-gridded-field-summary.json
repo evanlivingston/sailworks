@@ -7,6 +7,57 @@
  "commits": [
   "292e608 Give the resident field a geographic lattice for the GPU's fill"
  ],
+ "second_pass": {
+  "status": "in progress: the budget and the preparation costs are recorded here before the first native attempt of this pass; the gate result is added when the run is finished.",
+  "budget": {
+   "native_attempts_allowed": 3,
+   "recorded_before_the_first_run": true,
+   "first_pass_overrun_disclosed": "The first pass ran eight native viewport-interaction attempts against a recorded budget of three. The overrun stays on the record in this file (gate.native_attempts = 8) and is not hidden or rewritten by this pass."
+  },
+  "preparation_cost": {
+   "method": "One field preparation on the 22-source fixture, the same script for both revisions, a fresh sampler per run and the median of five runs. The 'sampling' rows are the deterministic warm measurements of the sampler's own passes over the field's 11506 native nodes and the lattice's 4002 nodes, in the same process, so they compare the two shapes directly.",
+   "before": {
+    "commit": "f0f11ee",
+    "sampling_field_nodes_ms": 99.7,
+    "sampling_lattice_nodes_ms": 35.7,
+    "sampling_two_passes_ms": 135.4,
+    "sampling_one_merged_pass_ms": 134.0,
+    "cold_preparation_ms": {
+     "without_grid": 413,
+     "with_grid": 414
+    },
+    "recentred_window_ms": {
+     "without_grid": 88,
+     "with_grid": 88
+    }
+   },
+   "after": {
+    "commits": [
+     "ef5c675",
+     "521defa"
+    ],
+    "sampling_field_nodes_ms": 35.1,
+    "sampling_lattice_nodes_ms": 17.3,
+    "sampling_two_passes_ms": 52.2,
+    "sampling_one_merged_pass_ms": 44.2,
+    "cold_preparation_ms": {
+     "without_grid": 311,
+     "with_grid": 324
+    },
+    "recentred_window_ms": {
+     "without_grid": 65,
+     "with_grid": 86
+    }
+   },
+   "what_changed": [
+    "The lattice's nodes are sampled in the field's own pass, so the gridded form adds no second pass over the weather: the field's sampling with the gridded form fell from 135.4 ms to 44.2 ms (a 91 ms saving per field).",
+    "The grid-relative vector rotation needed the true east/north unit vector at every corner of every stencil, and a raster node is the corner of four neighbouring stencils, so the geodesic inverse was repeated four times for the same point. The basis is now computed once per distinct corner and gathered back; every value is unchanged and the field's own sampling fell from 99.7 ms to 35.1 ms.",
+    "The `grid` argument of stage_field was shadowed by the loop over the sources' grids, so the gridded form was staged whether or not it was asked for. The argument is honoured now, which is what the flag has always meant: the independent viewport stages the gridded form only when the numerical fill is enabled."
+   ],
+   "comparison_basis": "These rows measure the viewport's own field preparation on the fixture, not the recorded baselines of docs/profiles/rendering/2026-10-19/prepare-breakdown.json (792 ms cold, 159 ms for a re-centred window), which were taken on a different script: they include the per-node land loop's first-call cost and the first endpoint-image encoding, and they were measured before the sampling and land memos existed. The rows above are the same script before and after this pass, so the difference between the two revisions is the measurement; the difference between a row and the recorded baseline is not.",
+   "fidelity": "No value changed. The lattice's values are the CPU sampler's values at the lattice's node positions, bit for bit: the merged pass samples the same positions with the same sampler, and the corner basis is the same number per point as before."
+  }
+ },
  "fixture_sha256": "1ed1bca1281ad4096713ce20af9c1473e70bd4eb0766a54965849b7ace698a03",
  "sources_opened": 22,
  "source_order_preserved": true,
@@ -37,10 +88,22 @@
   "method": "The CPU mirror of the shader's arithmetic, as recorded by issue #68, applied to the gridded payload and anchored at the geographic position: the screen position is projected into the viewport's projection, the viewport's own rectangle for the lattice maps it to a texture position, and the GPU's value is read back through the #71 byte-exact readback of the application's weather shader.",
   "cpu_reference": "The CPU's own interpolation of the same field at that position, the reference the recorded 2e-5 gate uses (tools/experiment_float_textures.py's bilinear_reference).",
   "positions": {
-   "inside_cell": {"gpu_speed": 0.6836976408958435, "cpu_speed": 0.6836976408958435},
-   "inside_cell_2": {"gpu_speed": 0.711491584777832, "cpu_speed": 0.7114915251731873},
-   "near_cell_edge": {"gpu_speed": 0.7447241544723511, "cpu_speed": 0.7447237372398376},
-   "lattice_edge": {"gpu_speed": 0.9060305953025818, "cpu_speed": 0.906030535697937}
+   "inside_cell": {
+    "gpu_speed": 0.6836976408958435,
+    "cpu_speed": 0.6836976408958435
+   },
+   "inside_cell_2": {
+    "gpu_speed": 0.711491584777832,
+    "cpu_speed": 0.7114915251731873
+   },
+   "near_cell_edge": {
+    "gpu_speed": 0.7447241544723511,
+    "cpu_speed": 0.7447237372398376
+   },
+   "lattice_edge": {
+    "gpu_speed": 0.9060305953025818,
+    "cpu_speed": 0.906030535697937
+   }
   },
   "compared_positions": 4,
   "max_abs_error": 4.172325134277344e-07,
@@ -52,7 +115,10 @@
    "positions": 40,
    "max_abs_error": 1.8805,
    "mean_abs_error": 0.5312,
-   "reference_speeds": [0.123, 1.968],
+   "reference_speeds": [
+    0.123,
+    1.968
+   ],
    "note": "The node list is not a raster: the value the shader painted at a screen position was the node list's interpolation at a texture position, not the field's value at that position's geography."
   },
   "placement_error_after": {
@@ -65,8 +131,15 @@
  },
  "missing": {
   "rule": "A missing sample is never filled from a neighbour and never becomes the field minimum: the shader rejects a NaN or infinite corner and contributes exactly zero alpha (the A0k rule, unchanged).",
-  "all_missing_payload": {"alpha_pixels": 0, "significant_alpha_pixels": 0, "total_pixels": 2520000},
-  "finite_control_payload": {"alpha_pixels": 2520000, "total_pixels": 2520000},
+  "all_missing_payload": {
+   "alpha_pixels": 0,
+   "significant_alpha_pixels": 0,
+   "total_pixels": 2520000
+  },
+  "finite_control_payload": {
+   "alpha_pixels": 2520000,
+   "total_pixels": 2520000
+  },
   "missing_node": {
    "value_before": 0.432359516620636,
    "value_was_finite": true,
@@ -77,9 +150,14 @@
  },
  "wraparound": {
   "rule": "The global-grid wraparound matches the CPU reference: a longitude is taken into the lattice's own branch of the global grid, so a window across the antimeridian is not split between two cells, and a wrapped node carries the sampler's wrapped value.",
-  "seam_lattice": {"origin_longitude": 179.59499557339794, "spacing": 0.03362572469076913, "columns": 25, "rows": 91},
+  "seam_lattice": {
+   "origin_longitude": 179.59499557339794,
+   "spacing": 0.03362572469076913,
+   "columns": 25,
+   "rows": 91
+  },
   "cell_continuity": "the cell index at 179.999 is 11.5147 and at 180.001 is 11.5742: the seam is not a cell boundary and the two sides are the same cells.",
-  "sampler_wrap": "the CPU sampler's own values: sample_at(180.0) equals sample_at(-180.0) for both periodic GRIB files in the fixture (7.30468225479126 and 15.123397827148438), the ±360 wrap the lattice inherits.",
+  "sampler_wrap": "the CPU sampler's own values: sample_at(180.0) equals sample_at(-180.0) for both periodic GRIB files in the fixture (7.30468225479126 and 15.123397827148438), the \u00b1360 wrap the lattice inherits.",
   "coverage": "At the fixture's forecast instant no selected source covers the antimeridian, so the seam's values are missing there and the fill is transparent rather than interpolating across the gap."
  },
  "payload": {
@@ -90,7 +168,15 @@
   "provider_bytes": 3770768,
   "provider_limit": 33554432,
   "grid_bytes_per_field": 256128,
-  "memo": {"limit_bytes": 16777216, "current_bytes": 12903872, "peak_bytes": 12903872, "retained_entries": 121726, "hits": 134386, "misses": 121726, "evictions": 0},
+  "memo": {
+   "limit_bytes": 16777216,
+   "current_bytes": 12903872,
+   "peak_bytes": 12903872,
+   "retained_entries": 121726,
+   "hits": 134386,
+   "misses": 121726,
+   "evictions": 0
+  },
   "note": "The gridded form's values and images are accounted with the field (16 bytes of float32 per node and 32 bytes of RGBA8888 texture per node). The retained payload is 20.5% of the 128 MiB ceiling with 13 resident fields and no eviction. The sampling memo holds 12.9 MB of its 16 MiB ceiling with no eviction."
  },
  "gate": {
