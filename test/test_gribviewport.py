@@ -808,3 +808,198 @@ def test_zoom_mask_reuse_keeps_the_existing_scale_boundaries(scale, quality):
     from gweatherrouting.rendering.windpainter import shoreline_quality
 
     assert shoreline_quality(scale) == quality
+
+
+# ------------------------------------------------------------ the fill layer
+def _fill_scene():
+    """A stand-in for the render context's scene, without a window."""
+    from types import SimpleNamespace
+
+    class Layer:
+        def __init__(self):
+            self.properties = {}
+            self.visible = True
+
+        def setProperty(self, name, value):
+            self.properties[name] = value
+
+    return SimpleNamespace(
+        _fill=Layer(),
+        _barbs=Layer(),
+        _provider=SimpleNamespace(
+            publish_field=lambda images, key: tuple(f"u{index}" for index in range(4)),
+            field_publications=0,
+            selection_publications=0,
+        ),
+        _published=None,
+        _published_fill=None,
+        counters=dict(
+            fill_publications=0,
+            fill_uploads=0,
+            fill_selection_publications=0,
+            barbs_field_publications=0,
+            barbs_field_uploads=0,
+            barbs_selection_publications=0,
+            barbs_selection_uploads=0,
+        ),
+    )
+
+
+def _field():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        generation="field-generation",
+        images=("u0", "v0", "u1", "v1"),
+        staged=SimpleNamespace(weight=lambda stamp: 0.25),
+    )
+
+
+def test_the_fill_is_off_by_default():
+    """The viewport's entry point keeps the numerical fill behind a flag."""
+    import ast
+
+    source = inspect.getsource(gribviewport)
+    tree = ast.parse(source)
+    flags = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "attr", "") == "add_argument"
+        ):
+            for keyword in node.keywords:
+                if (
+                    keyword.arg == "action"
+                    and getattr(keyword.value, "value", "") == "store_true"
+                ):
+                    flags.append(node.args[0].value)
+    assert "--gpu-weather-fill" in flags
+    assert "--resident-time-window" in flags
+    # The flag reaches the render context, and the render context's default
+    # is off: the default viewport path never loads the fill scene.
+    widget = gribviewport._viewport_widget_class()
+    defaults = {
+        name: argument.default
+        for name, argument in inspect.signature(widget.__init__).parameters.items()
+        if argument.default is not inspect.Parameter.empty
+    }
+    assert defaults["gpu_weather_fill"] is False
+
+
+def test_the_default_path_does_not_load_the_fill_scene():
+    """The barbs' own component is the default root; the scene is opt-in."""
+    import ast
+
+    tree = ast.parse(inspect.getsource(gribviewport))
+    scenes = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if node.value.endswith(".qml"):
+                scenes.append(node.value)
+    assert "WeatherBarbs.qml" in scenes
+    assert "WeatherScene.qml" in scenes
+    # The application's own component is unchanged by the fill: the fill is a
+    # separate file, never a part of the barbs.
+    barbs = (
+        Path(gribviewport.__file__).parent / "shaders" / "WeatherBarbs.qml"
+    ).read_text()
+    assert "WeatherFill" not in barbs
+    assert "weather.frag" not in barbs
+
+
+def test_the_fill_runs_the_corrected_weather_shader():
+    """The fill uses the corrected weather shader, unchanged."""
+    shaders = Path(gribviewport.__file__).parent / "shaders"
+    fill = (shaders / "WeatherFill.qml").read_text()
+    assert "fragmentShader: root.fragmentShader" in fill
+    assert 'property string fragmentShader: "weather.frag.qsb"' in fill
+    shader = (shaders / "weather.frag").read_text()
+    # The corrected missing-data policy: a missing sample contributes
+    # exactly zero alpha and is never replaced by a neighbour's value.
+    assert "fragColor = vec4(0);" in shader
+    assert "if (any(isnan(value)) || any(isinf(value)))" in shader
+    # U and V are interpolated first; the wind speed is derived afterwards.
+    assert "float speed = clamp(length(uv) / 32.0" in shader
+    assert shader.index("uv += value * weight;") < shader.index("length(uv)")
+
+
+def test_the_fill_is_a_separate_layer_behind_the_barbs():
+    """The scene keeps the two layers apart, and the fill behind the barbs."""
+    shaders = Path(gribviewport.__file__).parent / "shaders"
+    scene = (shaders / "WeatherScene.qml").read_text()
+    assert scene.index("WeatherFill") < scene.index("WeatherBarbs")
+    assert 'objectName: "weatherFill"' in scene
+    assert 'objectName: "weatherBarbs"' in scene
+    assert "visible: root.fillEnabled" in scene
+
+
+def test_a_selection_change_never_restages_the_fill():
+    """The fill's publication path never touches the selection."""
+    import ast
+    import textwrap
+
+    source = textwrap.dedent(inspect.getsource(gribviewport._viewport_widget_class()))
+    tree = ast.parse(source)
+    functions = {
+        node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+    }
+    fill = functions["_publish_fill"]
+    names = {child.id for child in ast.walk(fill) if isinstance(child, ast.Name)}
+    assert "selection" not in names
+    assert "selection" in {
+        child.id
+        for child in ast.walk(functions["_publish_barbs"])
+        if isinstance(child, ast.Name)
+    }
+    published = functions["_publish"]
+    called = {
+        child.func.attr
+        for child in ast.walk(published)
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
+    }
+    assert "_publish_fill" in called
+    assert "_publish_barbs" in called
+
+
+def test_the_fill_and_the_barbs_count_their_publications_apart():
+    """A fill publication moves the fill's counters and not the barbs'."""
+    scene = _fill_scene()
+    viewport = gribviewport._viewport_widget_class()
+    viewport._publish_fill(scene, _field(), ("u0", "v0", "u1", "v1"), _camera())
+    assert scene.counters["fill_publications"] == 1
+    assert scene.counters["fill_uploads"] == 1
+    assert scene.counters["barbs_field_publications"] == 0
+    assert scene.counters["barbs_selection_publications"] == 0
+    assert scene._barbs.properties == {}
+    assert set(scene._fill.properties) == {
+        "u0Source",
+        "v0Source",
+        "u1Source",
+        "v1Source",
+        "blend",
+    }
+    # A second publication of the same field is not a restaging.
+    viewport._publish_fill(scene, _field(), ("u0", "v0", "u1", "v1"), _camera())
+    assert scene.counters["fill_publications"] == 1
+
+
+def test_a_fill_only_publication_leaves_the_barbs_untouched():
+    """The fill's own publication path never restages the barbs."""
+    scene = _fill_scene()
+    viewport = gribviewport._viewport_widget_class()
+    urls = viewport.publish_fill(scene, ("u0", "v0", "u1", "v1"), "probe-key")
+    assert urls == ("u0", "u1", "u2", "u3")
+    assert scene.counters["fill_publications"] == 1
+    assert scene.counters["fill_uploads"] == 1
+    assert scene.counters["barbs_field_publications"] == 0
+    assert scene.counters["barbs_selection_publications"] == 0
+    assert scene._barbs.properties == {}
+
+
+def test_the_application_never_imports_the_viewport():
+    """The default application path is unchanged by the viewport's fill."""
+    package = Path(gribviewport.__file__).parent
+    for path in sorted(package.glob("*.py")):
+        if path.name == "gribviewport.py":
+            continue
+        assert "gribviewport" not in path.read_text(), path.name

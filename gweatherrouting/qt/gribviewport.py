@@ -1143,7 +1143,7 @@ def _viewport_widget_class():
 
     Qt is imported lazily so the model and the tests stay usable headless.
     """
-    from PySide6.QtCore import QUrl, Qt, Signal
+    from PySide6.QtCore import QObject, QUrl, Qt, Signal
     from PySide6.QtGui import QSurfaceFormat
     from PySide6.QtQuickWidgets import QQuickWidget
     from PySide6.QtWidgets import QLabel
@@ -1156,19 +1156,26 @@ def _viewport_widget_class():
         The field's endpoint images are published once and stay resident; the
         current-view selection is published for every view.  Only a selection
         that belongs to the published field is shown as current.
+
+        The numerical fill is an optional second layer behind the barbs.  It
+        is off by default: the default viewport path loads the barbs' own
+        component and nothing else.  When it is on, the two layers have
+        separate inputs, separate publication paths and separate counters, so
+        a change to one layer never restages the other.
         """
 
         prepared = Signal()
         cameraChanged = Signal(object)
         stateChanged = Signal(str)
 
-        def __init__(self, model, parent=None):
+        def __init__(self, model, parent=None, gpu_weather_fill=False):
             super().__init__(parent)
             self._model = model
             self._camera = None
             self._drag = None
             self._state = "loading"
             self._presentation_spans = []
+            self._gpu_weather_fill = bool(gpu_weather_fill)
             format_ = QSurfaceFormat()
             format_.setSamples(4)
             format_.setAlphaBufferSize(8)
@@ -1176,13 +1183,36 @@ def _viewport_widget_class():
             self.setResizeMode(QQuickWidget.SizeRootObjectToView)
             self._provider = WeatherImageProvider()
             self.engine().addImageProvider("weather", self._provider)
-            source = Path(__file__).parent / "shaders" / "WeatherBarbs.qml"
+            shaders = Path(__file__).parent / "shaders"
+            source = shaders / (
+                "WeatherScene.qml" if self._gpu_weather_fill else "WeatherBarbs.qml"
+            )
             self.setSource(QUrl.fromLocalFile(str(source)))
             self._weather = self.rootObject()
             if self._weather is None:
                 raise RuntimeError("The GRIB viewport could not load its shader")
+            self._barbs = self._weather
+            self._fill = None
+            if self._gpu_weather_fill:
+                self._barbs = self._weather.findChild(QObject, "weatherBarbs")
+                self._fill = self._weather.findChild(QObject, "weatherFill")
+                if self._barbs is None or self._fill is None:
+                    raise RuntimeError(
+                        "The GRIB viewport could not load its weather scene"
+                    )
+                self._weather.setProperty("fillEnabled", True)
             self._published = None
+            self._published_fill = None
             self._published_generations = set()
+            self.counters = dict(
+                fill_publications=0,
+                fill_uploads=0,
+                fill_selection_publications=0,
+                barbs_field_publications=0,
+                barbs_field_uploads=0,
+                barbs_selection_publications=0,
+                barbs_selection_uploads=0,
+            )
             self._status = QLabel("Wind loading…", self)
             self._status.setStyleSheet(
                 "background: rgba(0,0,0,190); color: white; padding: 6px"
@@ -1191,7 +1221,7 @@ def _viewport_widget_class():
             self._status.adjustSize()
             self.prepared.connect(self._refresh, Qt.QueuedConnection)
             self._model.on_change = self.prepared.emit
-            self._weather.readyChanged.connect(self._readiness_changed)
+            self._barbs.readyChanged.connect(self._readiness_changed)
 
         def _show_state(self, state):
             self._state = state
@@ -1206,7 +1236,7 @@ def _viewport_widget_class():
             self.stateChanged.emit(state)
 
         def _readiness_changed(self):
-            if self._weather.property("ready") and self._model.state == "ready":
+            if self._barbs.property("ready") and self._model.state == "ready":
                 self._show_state("ready")
 
         def _refresh(self):
@@ -1229,7 +1259,7 @@ def _viewport_widget_class():
                 self._publish(field, selection, camera)
                 self._weather.setVisible(True)
                 self._show_state(
-                    "ready" if self._weather.property("ready") else "loading"
+                    "ready" if self._barbs.property("ready") else "loading"
                 )
                 self.cameraChanged.emit(camera)
                 return state
@@ -1257,31 +1287,90 @@ def _viewport_widget_class():
             # re-encodes nothing.
             for resident in self._model.window_fields():
                 self._provider.publish_field(resident.images, resident.generation)
+            # The two layers are staged on their own inputs: the fill sees the
+            # resident field and the temporal blend, the barbs see the resident
+            # field and the current-view selection.
+            self._publish_fill(field, field_urls, camera)
+            self._publish_barbs(field, selection, field_urls, selection_urls, camera)
+            self._published = selection.generation
+            self._published_generations.add(selection.generation)
+
+        def _publish_fill(self, field, field_urls, camera):
+            """Stage the fill layer on its own inputs.
+
+            The fill consumes the resident field's endpoint images and the
+            temporal blend.  It never consumes the selection, so a selection
+            change cannot restage it.  The images are the ones the provider
+            already published for the barbs: the same URLs, so the same scene
+            graph texture, and no second decode and no second upload.
+            """
+            if self._fill is None:
+                return
+            if self._published_fill != field.generation:
+                for name, url in zip(
+                    ("u0Source", "v0Source", "u1Source", "v1Source"), field_urls
+                ):
+                    self._fill.setProperty(name, QUrl(url))
+                self._published_fill = field.generation
+                self.counters["fill_publications"] += 1
+                self.counters["fill_uploads"] += 1
+            self._fill.setProperty("blend", field.staged.weight(camera.stamp()))
+
+        def publish_fill(self, images, key):
+            """Publish an image set to the fill layer alone.
+
+            This is the fill layer's own publication path: it stages the fill
+            without touching the barbs' namespace, the barbs' sources or the
+            barbs' counters.  It is how an independent fill source would be
+            published, and how a native probe observes that a fill change does
+            not re-stage the barbs.
+            """
+            if self._fill is None:
+                raise RuntimeError("The viewport has no numerical fill layer")
+            urls = self._provider.publish_field(images, key)
+            for name, url in zip(
+                ("u0Source", "v0Source", "u1Source", "v1Source"), urls
+            ):
+                self._fill.setProperty(name, QUrl(url))
+            self._published_fill = key
+            self.counters["fill_publications"] += 1
+            self.counters["fill_uploads"] += 1
+            return urls
+
+        def _publish_barbs(self, field, selection, field_urls, selection_urls, camera):
+            """Stage the barbs layer on its own inputs.
+
+            The barbs consume the resident field's endpoint images and the
+            current-view selection.  A fill change never reaches this path.
+            """
             if self._published != field.generation:
                 for name, url in zip(
                     ("u0Source", "v0Source", "u1Source", "v1Source"), field_urls
                 ):
-                    self._weather.setProperty(name, QUrl(url))
+                    self._barbs.setProperty(name, QUrl(url))
+                self.counters["barbs_field_publications"] += 1
+                self.counters["barbs_field_uploads"] += 1
             for name, url in zip(
                 ("nodeIdSource", "anchorXSource", "anchorYSource"), selection_urls
             ):
-                self._weather.setProperty(name, QUrl(url))
+                self._barbs.setProperty(name, QUrl(url))
+            self.counters["barbs_selection_publications"] += 1
+            self.counters["barbs_selection_uploads"] += 1
             rows, cols = selection.shape
-            self._weather.setProperty("columns", cols)
-            self._weather.setProperty("rows", rows)
-            self._weather.setProperty("nodeIdIndirection", True)
-            self._weather.setProperty("fieldColumns", FIELD_COLUMNS)
-            self._weather.setProperty("blend", field.staged.weight(camera.stamp()))
-            self._weather.setOpacity(1.0)
-            self._published = selection.generation
-            self._published_generations.add(selection.generation)
+            self._barbs.setProperty("columns", cols)
+            self._barbs.setProperty("rows", rows)
+            self._barbs.setProperty("nodeIdIndirection", True)
+            self._barbs.setProperty("fieldColumns", FIELD_COLUMNS)
+            self._barbs.setProperty("blend", field.staged.weight(camera.stamp()))
+            self._barbs.setOpacity(1.0)
 
         def publication_counters(self):
-            """The published traffic, counted apart by kind."""
+            """The published traffic, counted apart by kind and by layer."""
             return {
                 "field_publications": self._provider.field_publications,
                 "selection_publications": self._provider.selection_publications,
                 "field_bytes": self._provider.field_bytes(),
+                **self.counters,
             }
 
         def pan_pixels(self, dx, dy):
@@ -1433,6 +1522,14 @@ def main(argv=None):
             "the presented spatial window (default: off)"
         ),
     )
+    parser.add_argument(
+        "--gpu-weather-fill",
+        action="store_true",
+        help=(
+            "paint the numerical weather fill behind the wind barbs from the "
+            "resident field (default: off)"
+        ),
+    )
     args = parser.parse_args(argv)
     settings = {}
     try:
@@ -1460,7 +1557,7 @@ def main(argv=None):
     logging.basicConfig(level=logging.INFO)
     app = QApplication.instance() or QApplication([sys.argv[0]])
     model = GribViewportModel(paths, resident_time_window=args.resident_time_window)
-    viewport = _viewport_widget_class()(model)
+    viewport = _viewport_widget_class()(model, gpu_weather_fill=args.gpu_weather_fill)
     window = QWidget()
     window.setWindowTitle(f"GRIB viewport — {len(paths)} forecasts")
     layout = QVBoxLayout(window)
