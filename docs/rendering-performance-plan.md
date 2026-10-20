@@ -214,6 +214,53 @@ For the wider documentation map, see [the documentation index](README.md).
   not a visual verdict. Evidence:
   [viewport-gridded-field-summary.json](profiles/rendering/2026-10-19/viewport-gridded-field-summary.json).
 
+- **#65 result, second pass (2026-10-20):** the gridded form's **staging is now
+  part of the field's own sampling pass**, on `feature/async-double-buffered-66`;
+  nothing was pushed, merged or opened as a PR. The lattice's nodes join the
+  field's native nodes in **one** pass over the weather, and a lattice node that
+  coincides with one of the field's own nodes takes the field's value instead of
+  being sampled again, so the gridded form adds **no second pass** and the CPU
+  sampler stays the reference authority (the lattice's values are bit for bit the
+  sampler's values at the lattice's node positions). The grid-relative vector
+  rotation needed the true east/north unit vector at every corner of every
+  stencil, and a raster node is the corner of four neighbouring stencils, so the
+  geodesic inverse was repeated four times for the same point; the basis is now
+  computed once per distinct corner and gathered back, which leaves every value
+  unchanged. Measured with the same script before and after: the field's sampling
+  with the gridded form fell from **135.4 ms to 44.2 ms** (the field's own nodes
+  99.7 ms → 35.1 ms) and the cold preparation from **414 ms to 324 ms**; the rows
+  state what they compare against, and they are not comparable to the recorded
+  792 ms / 159 ms baselines of `prepare-breakdown.json`, which came from a
+  different script. The `grid` argument of `stage_field` was shadowed by the loop
+  over the sources' grids, so the gridded form was staged whether or not it was
+  asked for; the argument is honoured now, which is what the flag has always
+  meant. Native `viewport-interaction` on the 22-source fixture: pan **0/120**
+  loading, zoom **0/24**, time **0/18**, `continuous_weather` **true**, gate
+  **23/23** on the **first** of the three allowed attempts (the first pass's
+  eight attempts against a budget of three stay on the record). The **placement**
+  is unchanged at **4.172325134277344e-07** against the CPU reference at the
+  position's geography (inside the unchanged 2e-5 bound) and the fill's own
+  arithmetic at **5.960464477539063e-08**; the resampling the gridded form
+  introduces, **0.1256** max / **0.0192** mean against the CPU sampler's own
+  value at the position's geography, is stated with its reference and is not a
+  threshold. The **missing-node disagreement is settled**: the framebuffer
+  measurement was taken in the widget's logical pixels while the framebuffer is
+  in device pixels, so it read a painted region two times too small and away from
+  the hole — the fill's behaviour was never wrong. Measured in the framebuffer's
+  own scale, the missing node's own cell contributes exactly **0** alpha pixels
+  and the hole it leaves is **7744** device pixels, two lattice cells wide in each
+  axis; the gate now reads that measurement. The retained payload is
+  **27,798,091 B** of the 128 MiB ceiling with 13 fields and 0 evictions, and the
+  sampling memo peaked at **12.8 MB** of 16 MiB. Decision: **adopt**; the
+  geographic portrayal of the fill is delivered and the interaction contract is
+  whole, and #68's recorded limit — that the fill's portrayal was not geographic
+  because the resident field's endpoint images are a node list — is lifted by the
+  gridded form, while #68's other recorded state (the A0k zero-alpha rule, the
+  layer independence, the 2e-5 bound, the fill behind its flag and the deferred
+  visual verdict) stands unchanged. Visual fidelity stays deferred: this is
+  pixel, mask and value evidence, not a visual verdict. Evidence:
+  [viewport-gridded-field-summary.json](profiles/rendering/2026-10-19/viewport-gridded-field-summary.json).
+
 - **User-directed pivot — independent GRIB viewport:** replace the GRIB interaction
   subsystem rather than continue adapting `TrackMap._gpu_frame`. The new viewport
   owns camera/time state, asynchronous field demand and GPU portrayal. Reuse the

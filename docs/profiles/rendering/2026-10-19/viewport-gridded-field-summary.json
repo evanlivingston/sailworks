@@ -1,14 +1,18 @@
 {
  "issue": 65,
- "decision": "revise",
- "reason": "The gridded form of the resident field is delivered and measured: the fill now draws on a regular lattice in the viewport's projection, so its raster is geographically placed, and the GPU-sampled value at a screen position matches the CPU reference at that position's geography to 4.17e-07, inside the unchanged 2e-5 bound. The missing rule and the global-grid wraparound match the CPU reference, the fill and the barbs stay independently updatable, and the payload fits the declared ceilings. The revision the gate still asks for is the resident time window's continuity: the lattice's staging adds a second sampling pass to every field preparation, and the fixture's nine forecast instants are then not all resident before the camera reaches them, so the time-crossings phase shows 2 of 18 inputs in the loading state (the pan is 0/120 and the zoom 0/24). The bound is not relaxed and the source selection is not changed; the next step is to make the gridded form's staging cheap enough that a resident time window's members are prepared in the idle time the interactive pipeline leaves.",
+ "decision": "adopt",
+ "reason": "The gridded form of the resident field is delivered and measured. The fill draws on a regular lattice in the viewport's projection, so its raster is geographically placed, and the GPU-sampled value at a screen position matches the CPU reference at that position's geography to 4.17e-07, inside the unchanged 2e-5 bound. The missing rule and the global-grid wraparound match the CPU reference, the fill and the barbs stay independently updatable, and the payload fits the declared ceilings. The interaction contract is whole again: the gridded form's staging is now part of the field's own sampling pass, so a resident time window's members are prepared in the idle time the interactive pipeline leaves, and the native gate is green on every check (pan 0/120, zoom 0/24, time 0/18, continuous_weather true). The disagreement the first pass left open is settled: the framebuffer measurement was taken in the widget's logical pixels while the framebuffer is in device pixels, so it read a painted region two times too small and away from the hole; the fill's behaviour was never wrong. Measured in the framebuffer's own scale, the missing node's own cell contributes exactly zero alpha pixels and the hole it leaves is two lattice cells wide in each axis, and the gate now reads that measurement. The bound is not relaxed, the source selection is not changed, and the visual verdict stays deferred.",
  "branch": "feature/async-double-buffered-66",
  "base_commit": "5a14a0a",
  "commits": [
-  "292e608 Give the resident field a geographic lattice for the GPU's fill"
+  "292e608 Give the resident field a geographic lattice for the GPU's fill",
+  "ef5c675 Compute the sampler's corner basis once per stencil",
+  "521defa Sample the gridded form in the field's own pass",
+  "83a9871 Measure the missing lattice node in the framebuffer's own scale",
+  "8a69a41 Record the second pass's budget and preparation cost"
  ],
  "second_pass": {
-  "status": "in progress: the budget and the preparation costs are recorded here before the first native attempt of this pass; the gate result is added when the run is finished.",
+  "status": "complete: the native gate passed on the first of the three allowed attempts, and the missing-node disagreement is settled.",
   "budget": {
    "native_attempts_allowed": 3,
    "recorded_before_the_first_run": true,
@@ -56,6 +60,32 @@
    ],
    "comparison_basis": "These rows measure the viewport's own field preparation on the fixture, not the recorded baselines of docs/profiles/rendering/2026-10-19/prepare-breakdown.json (792 ms cold, 159 ms for a re-centred window), which were taken on a different script: they include the per-node land loop's first-call cost and the first endpoint-image encoding, and they were measured before the sampling and land memos existed. The rows above are the same script before and after this pass, so the difference between the two revisions is the measurement; the difference between a row and the recorded baseline is not.",
    "fidelity": "No value changed. The lattice's values are the CPU sampler's values at the lattice's node positions, bit for bit: the merged pass samples the same positions with the same sampler, and the corner basis is the same number per point as before."
+  },
+  "commits": [
+   "ef5c675 Compute the sampler's corner basis once per stencil",
+   "521defa Sample the gridded form in the field's own pass",
+   "83a9871 Measure the missing lattice node in the framebuffer's own scale"
+  ],
+  "gate": {
+   "attempt": 1,
+   "allowed": 3,
+   "verdict": "pass",
+   "checks": 23,
+   "pan_loading": 0,
+   "pan_inputs": 120,
+   "zoom_loading": 0,
+   "zoom_inputs": 24,
+   "time_loading": 0,
+   "time_inputs": 18,
+   "continuous_weather": true,
+   "seconds": 15.902
+  },
+  "missing_node": {
+   "settled": "The fill's behaviour was correct; the probe measured in the wrong coordinate space.",
+   "cause": "The probe counted the alpha of a neighbourhood around the missing node using the view's logical pixels, while the framebuffer it read is in device pixels (the fixture's display is 2x, so the framebuffer is 1800x1400 for a 900x700 widget). The neighbourhood was therefore read at half the size and half the offset of the hole, in a region the fill had painted: 529 painted pixels. The probe also used the camera the check was handed, not the camera the widget was showing after the independence observation had moved it by 0.01 degrees.",
+   "corrected_measurement": "Measured in the framebuffer's own scale and against the camera the widget is showing, the missing node's own cell (2025 device pixels, 45x45) contributes exactly 0 alpha pixels and 0 significant alpha pixels; the hole the missing node leaves is 7744 device pixels, a box of rows 652-739 and columns 816-903, which is 44x44 logical pixels: two lattice cells wide in each axis, because the shader's 2x2 bilinear reads the missing corner over two cells. The rest of the frame is painted: 2512256 of 2520000 pixels.",
+   "gate": "The viewport-interaction gate now reads the corrected measurement: the missing node's own cell must contribute exactly zero alpha pixels, and it does.",
+   "unchanged": "The byte-exact readback agreed with the shader all along: the cell that touches the missing node reads back as missing and a cell away from it is still painted. No behaviour changed to settle this."
   }
  },
  "fixture_sha256": "1ed1bca1281ad4096713ce20af9c1473e70bd4eb0766a54965849b7ace698a03",
@@ -145,7 +175,9 @@
    "value_was_finite": true,
    "touching_cell_missing": true,
    "other_cell_missing": false,
-   "note": "The gridded payload with one missing node: the cell that touches the node reads back as missing and a cell away from it is still painted."
+   "node_cell_alpha_pixels": 0,
+   "hole_device_pixels": 7744,
+   "note": "The gridded payload with one missing node: the cell that touches the node reads back as missing and contributes no alpha at all in the framebuffer, a cell away from it is still painted, and the hole is two lattice cells wide in each axis."
   }
  },
  "wraparound": {
@@ -161,36 +193,55 @@
   "coverage": "At the fixture's forecast instant no selected source covers the antimeridian, so the seam's values are missing there and the fill is transparent rather than interpolating across the gap."
  },
  "payload": {
-  "field_bytes": 27537592,
+  "field_bytes": 27798091,
   "field_limit": 134217728,
   "field_entries": 13,
   "field_evictions": 0,
-  "provider_bytes": 3770768,
+  "provider_bytes": 3793392,
   "provider_limit": 33554432,
   "grid_bytes_per_field": 256128,
   "memo": {
    "limit_bytes": 16777216,
-   "current_bytes": 12903872,
-   "peak_bytes": 12903872,
-   "retained_entries": 121726,
-   "hits": 134386,
-   "misses": 121726,
+   "current_bytes": 12833416,
+   "peak_bytes": 12833416,
+   "retained_entries": 120998,
+   "hits": 137894,
+   "misses": 120998,
    "evictions": 0
   },
-  "note": "The gridded form's values and images are accounted with the field (16 bytes of float32 per node and 32 bytes of RGBA8888 texture per node). The retained payload is 20.5% of the 128 MiB ceiling with 13 resident fields and no eviction. The sampling memo holds 12.9 MB of its 16 MiB ceiling with no eviction."
+  "note": "The gridded form's values and images are accounted with the field (16 bytes of float32 per node and 32 bytes of RGBA8888 texture per node). The retained payload is 20.7% of the 128 MiB ceiling with 13 fields and no eviction. The sampling memo holds 12.8 MB of its 16 MiB ceiling with no eviction."
  },
  "gate": {
   "gate": "viewport-interaction",
   "gate_kind": "correctness",
-  "gate_verdict": "fail",
-  "checks_passed": 22,
-  "checks_failed": 1,
-  "failing_check": "weather stays current through the overlapped preparation and the resident time window (continuous_weather): the time-crossings phase has 2 of 18 inputs in the loading state",
-  "native_attempts": 8,
-  "native_attempt_seconds": 15.63,
-  "native_attempt_commit": "292e608",
+  "gate_verdict": "pass",
+  "checks_passed": 23,
+  "checks_failed": 0,
+  "failing_check": null,
+  "native_attempts": 1,
+  "native_attempt_seconds": 15.902,
+  "native_attempt_commit": "8a69a41",
   "native_attempt_dirty": false,
-  "note": "The attempts were spent on the measurement, not on luck: attempt 1 crashed on a defect in the probe's image provider, attempts 2 to 4 located a row-order mismatch between the lattice and the texture, attempt 5 and 6 the preparation cost of the gridded form, attempt 7 and 8 the QML rectangle that carries the lattice onto the screen. The recorded budget of three attempts was exceeded; the diagnosis between the attempts is listed here so the cost is not hidden."
+  "phases": {
+   "sustained-pan": "0 of 120 inputs in the loading state",
+   "anchored-zoom": "0 of 24 inputs in the loading state",
+   "time-crossings": "0 of 18 inputs in the loading state"
+  },
+  "continuous_weather": true,
+  "note": "The first attempt of this pass was green on every check. The run is the 22-source fixture's native gate with the numerical fill enabled.",
+  "first_pass_gate": {
+   "gate": "viewport-interaction",
+   "gate_kind": "correctness",
+   "gate_verdict": "fail",
+   "checks_passed": 22,
+   "checks_failed": 1,
+   "failing_check": "weather stays current through the overlapped preparation and the resident time window (continuous_weather): the time-crossings phase has 2 of 18 inputs in the loading state",
+   "native_attempts": 8,
+   "native_attempt_seconds": 15.63,
+   "native_attempt_commit": "292e608",
+   "native_attempt_dirty": false,
+   "note": "The attempts were spent on the measurement, not on luck: attempt 1 crashed on a defect in the probe's image provider, attempts 2 to 4 located a row-order mismatch between the lattice and the texture, attempt 5 and 6 the preparation cost of the gridded form, attempt 7 and 8 the QML rectangle that carries the lattice onto the screen. The recorded budget of three attempts was exceeded; the diagnosis between the attempts is listed here so the cost is not hidden."
+  }
  },
  "phases": [
   {
@@ -288,11 +339,18 @@
  "endpoint": "QQuickWindow.afterRendering render-callback proxy; the pixel readbacks are framebuffer readbacks (fidelity), not presentation FPS, not input-to-present and not scanout.",
  "visual_fidelity": "deferred and not evaluated. This artifact reports pixels, masks and values, not a visual verdict.",
  "limits": [
-  "The gate's continuity check fails: 2 of the 18 forecast-time inputs find the resident time window's member still being prepared. The gridded form's staging is a second sampling pass over the lattice's nodes; the interactive pipeline's priority is unchanged and the bound is unchanged, so the next step is a cheaper gridded staging (for example carrying the lattice's values from the node list's own samples) rather than a different source selection.",
-  "The gridded form is a resampling: the field is carried at the source's cell size, so the fill's value at a position differs from the CPU sampler's own interpolation there by up to 0.126 m/s (mean 0.019 m/s) over the fixture's window. The GPU's arithmetic reproduces the CPU's interpolation of the same field to 4.17e-07.",
+  "The gridded form is a resampling: the field is carried at the source's cell size, so the fill's value at a position differs from the CPU sampler's own interpolation there by up to 0.126 m/s (mean 0.019 m/s) over the fixture's window. The GPU's arithmetic reproduces the CPU's interpolation of the same field to 4.17e-07. The resampling figure compares against the sampler's own value at the position's geography; it is not a gate threshold.",
   "The lattice's spacing is derived at the window's centre latitude, so a window at another latitude gets a lattice at that latitude's scale; the lattice's origin is quantised on the global grid, so the fill's raster shifts by at most a cell when the window moves.",
   "The fixture's resident field at the gate's camera is single-source (the HRDPS 20261018 00z run covers the whole window), so the gate's positions do not cover a source boundary; the sources' provenance was measured over the window (576 positions, all HRDPS) and at the antimeridian (no coverage at the fixture's instant).",
-  "The readbacks are fidelity measurements. No presentation latency, input-to-present time or frame rate is claimed."
+  "The readbacks are fidelity measurements. No presentation latency, input-to-present time or frame rate is claimed.",
+  "The visual verdict stays deferred: this artifact reports pixels, masks and values, not a visual verdict."
  ],
- "next_step": "Make the gridded form's staging cheap enough for a resident time window's members to be prepared in the idle time the interactive pipeline leaves, then re-run the viewport-interaction gate and ratify the fill's geographic portrayal."
+ "next_step": "The geographic portrayal of the fill is delivered and the interaction contract is whole. The next concrete step is the visual ratification of the fill's portrayal (the deferred visual verdict), not another change to the gridded form.",
+ "figures": {
+  "fill.placement.max_abs_error": "4.172325134277344e-07: the GPU's wind speed at a screen position against the CPU's own interpolation of the *same payload* at that position's *geography* (four positions: inside a cell, inside a second cell, near a cell edge and at the lattice's edge). The unchanged 2e-5 bound applies to this figure.",
+  "fill.placement.payload_max_abs_error": "5.960464477539063e-08: the GPU's value at a screen position against the CPU mirror of the shader's arithmetic on the *same* payload at the *same texture position*. This is the payload's own arithmetic, not a geographic reference.",
+  "fill.values.max_abs_error": "5.960464477539063e-08: the GPU's wind speed at five probe-chosen texture positions against the CPU mirror of the shader's arithmetic on the same payload. It is not a geographic reference and it does not say anything about the fill's placement.",
+  "placement_error_after": "0.1256 max and 0.0192 mean over 40 screen positions: the value the fill paints at a screen position against the CPU *sampler's* own value at that position's geography. It is the resampling the gridded form introduces: the lattice carries the field at the source's cell size, and the sampler's interpolation inside a source cell is not linear, so the lattice's own bilinear differs from the sampler's. It is a property of the gridded form, not of the GPU's arithmetic, and it is not a gate threshold.",
+  "placement_error_before": "1.8805 max and 0.5312 mean over the same 40 screen positions: the node-list form's value at a screen position against the CPU sampler's own value at that position's geography. The node list is not a raster, so the value the shader painted at a screen position was the node list's interpolation at a texture position, not the field's value at that position's geography."
+ }
 }
