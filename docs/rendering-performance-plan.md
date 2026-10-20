@@ -26,13 +26,24 @@ For the wider documentation map, see [the documentation index](README.md).
 ## Current checkpoint
 
 **2026-10-20 integrated state:** PR #72 merged at `9d1b384`; PR #75 merged at
-`bbbeac0`. The viewport remains standalone, experimental and default OFF. Neither
-merge approves D7, default-on rollout, routing changes or #51 closure.
+`bbbeac0`. The code currently remains standalone and default OFF. During review of
+PR #76, the user **rejected continuing standalone-only use** and directed us to start
+using the viewport in the application, with **forecast selection controlled by the
+user in the Weather panel**. This is the accepted next direction (ADR D7), not a
+claim that integration or open fidelity/performance gates are complete. No routing
+change or #51 closure is authorized.
 
-**One next task after documentation review:** implement the accepted display-only
-file/run/member boundary and one representative-view fidelity checkpoint under the
-[bounded contract](#forecast-display-coherence). Record its budget before starting;
-do not expand into broad performance or rollout work.
+**Priority now:** integrate the viewport into the normal application and add the
+explicit Weather-panel file/run/member selector, preserving navigation/interaction
+contracts, selected-source consistency and legacy renderer recovery. Further branch
+cleanup is secondary. Trace integration boundaries and record an implementation
+budget before coding; use the [coherence/fidelity contract](#forecast-display-coherence)
+to validate what is displayed, not to postpone application use indefinitely.
+
+**Decision-revision scope:** update PR #76's existing documentation only, plus a
+bounded read-only integration trace; one changed-file documentation validation round,
+zero native attempts or new performance claims. Runtime implementation belongs on a
+focused branch from integrated `dev`, not inside this documentation PR.
 
 **Issue reconciliation:** #68 (scoped fill), #69 (explicitly rescoped viewport
 Part 1/2), #71 (bounded transport answer) and #73 (precursor cleanup) have merged
@@ -748,7 +759,9 @@ scope before closing issues, not marked done merely because code merged.
 
 ## Forecast display coherence
 
-**Accepted user policy, 2026-10-20; implementation pending.** This is a display-policy
+**Accepted user policy, 2026-10-20; implementation pending.** The user chooses the
+forecast in the Weather panel; the application must not silently pick a different
+file/run/member while the user pans or changes forecast time. This is a display-policy
 amendment, not a routing change or complete the reference application equivalence claim. The
 [static trace](reference-architecture-analysis.md#2026-10-20-follow-up-file-selection-and-interpolation-boundary)
 supports a selected-file evaluator, but does not prove whole-map pinning or the
@@ -757,7 +770,10 @@ explicitly stricter.
 
 ### Policy
 
-- Pin the chosen file, model, production/reference time, ensemble member and field/
+- Add an explicit Weather-panel selector, distinct from loading/enabling forecast
+  files in the data library. Show which file, model run and member are selected;
+  unavailable data must remain visible as unavailable, not trigger substitution.
+- Pin the user-chosen file, model, production/reference time, ensemble member and field/
   level. Requested forecast **valid time** is distinct from production time. Fields,
   barbs, contours, display point queries and labels must agree on selection.
 - Spatial interpolation, same-file temporal interpolation and explicitly identified
