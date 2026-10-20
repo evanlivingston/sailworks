@@ -6,12 +6,293 @@ from datetime import datetime, timedelta
 import json
 import importlib.util
 from pathlib import Path
+import shutil
 import sys
 from threading import Event
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+# The recorded #71 probe positions: the same places the float-transport probe
+# reads the application's weather shader at.
+PROBE_POSITIONS = ((0.07, 0.09), (0.5, 0.5), (0.93, 0.91), (0.31, 0.62), (0.72, 0.28))
+
+# The application's unchanged numerical gate.
+NUMERICAL_LIMIT = 2e-5
+
+
+def _load_tool(name, path):
+    """Load a repository tool by path, as the runner loads its registry."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _grab(widget):
+    """The scene graph's framebuffer as an RGBA array."""
+    import numpy as np
+
+    image = widget.grabFramebuffer()
+    if image.isNull():
+        raise RuntimeError("framebuffer readback failed")
+    return (
+        np.frombuffer(image.constBits(), np.uint8)
+        .reshape(image.height(), image.bytesPerLine())[:, : image.width() * 4]
+        .reshape(image.height(), image.width(), 4)
+        .copy()
+    )
+
+
+def _vector_at(u0, v0, u1, v1, blend, position):
+    """The CPU mirror of the shader's per-corner arithmetic.
+
+    The shader blends the two time endpoints per corner and only then
+    accumulates the spatial weights, and it derives the wind speed from the
+    interpolated U and V.  The mirror keeps that order: the speed is never
+    interpolated.
+    """
+    import numpy as np
+
+    rows, cols = u0.shape
+    point_x = np.float32(position[0]) * np.float32(cols) - np.float32(0.5)
+    point_y = np.float32(position[1]) * np.float32(rows) - np.float32(0.5)
+    point_x = min(max(point_x, np.float32(0.0)), np.float32(cols - 1))
+    point_y = min(max(point_y, np.float32(0.0)), np.float32(rows - 1))
+    base_x = int(np.floor(point_x))
+    base_y = int(np.floor(point_y))
+    delta_x = np.float32(point_x - base_x)
+    delta_y = np.float32(point_y - base_y)
+    total = np.zeros(2, dtype=np.float32)
+    for step_y in (0, 1):
+        for step_x in (0, 1):
+            weight = np.float32(
+                (delta_x if step_x else np.float32(1.0) - delta_x)
+                * (delta_y if step_y else np.float32(1.0) - delta_y)
+            )
+            if weight <= np.float32(1e-12):
+                continue
+            cell_y = min(base_y + step_y, rows - 1)
+            cell_x = min(base_x + step_x, cols - 1)
+            first = np.array([u0[cell_y, cell_x], v0[cell_y, cell_x]], dtype=np.float32)
+            second = np.array(
+                [u1[cell_y, cell_x], v1[cell_y, cell_x]], dtype=np.float32
+            )
+            if blend <= 0.0:
+                value = first
+            elif blend >= 1.0:
+                value = second
+            else:
+                value = first + (second - first) * np.float32(blend)
+            total = (total + value * weight).astype(np.float32)
+    return total
+
+
+def _speed_comparison(field, blend):
+    """The fill's interpolated wind speed against the CPU reference.
+
+    The application's own weather shader is compiled with the #71 probe's
+    byte-exact readback, so the float32 the shader wrote can be read back and
+    compared with the CPU reference at probe-chosen positions.  The readback
+    is a fidelity measurement; it is not a timing measurement.
+    """
+    import numpy as np
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QImage
+    from PySide6.QtQuick import QQuickImageProvider
+
+    from gweatherrouting.qt.gpuweather import decode_component
+
+    tool = _load_tool(
+        "float_transport_probe", ROOT / "tools/experiment_float_transport_qsg.py"
+    )
+    source = (ROOT / "gweatherrouting/qt/shaders/weather.frag").read_text()
+    variant = tool.shader_variant(source, float_transport=False)
+    # The probe reads the interpolated U; the fill's value is the wind speed,
+    # which the shader derives from the interpolated U and V.
+    if "floatBitsToUint(uv.x)" not in variant:
+        raise RuntimeError("The probe readback mode changed")
+    variant = variant.replace("floatBitsToUint(uv.x)", "floatBitsToUint(length(uv))")
+    directory = Path(tool.tempfile.mkdtemp(prefix="viewport-fill-"))
+    tool.compile_shader(directory, variant, "fillspeed.frag")
+    # The probe's default shader name is the application's own; keep the
+    # scene's first load valid.
+    shutil.copy(
+        ROOT / "gweatherrouting/qt/shaders/weather.frag.qsb",
+        directory / "weather.frag.qsb",
+    )
+    probe = tool.Probe(directory)
+    outcome = {"limit": NUMERICAL_LIMIT}
+
+    images = {
+        "u0": field.images[0],
+        "v0": field.images[1],
+        "u1": field.images[2],
+        "v1": field.images[3],
+    }
+
+    class Provider(QQuickImageProvider):
+        def __init__(self):
+            super().__init__(QQuickImageProvider.ImageType.Image)
+            self.requests = 0
+
+        def requestImage(self, identifier, size, requested_size):  # noqa: N802
+            self.requests += 1
+            image = QImage(images[identifier])
+            if size is not None:
+                size.setWidth(image.width())
+                size.setHeight(image.height())
+            return image
+
+    try:
+        provider = Provider()
+        probe.quick.engine().addImageProvider("fillprobe", provider)
+        for name in ("u0Source", "v0Source", "u1Source", "v1Source"):
+            probe.root.setProperty(name, QUrl(f"image://fillprobe/{name[0]}{name[1]}"))
+        probe.settle(0.3)
+        if not probe.set_shader("fillspeed.frag.qsb"):
+            raise RuntimeError("The fill's probe shader did not compile")
+        probe.root.setProperty("blend", float(blend))
+        planes = [decode_component(image) for image in field.images]
+        sampled = {}
+        errors = []
+        for position in PROBE_POSITIONS:
+            probe.root.setProperty("uPointX", float(position[0]))
+            probe.root.setProperty("uPointY", float(position[1]))
+            low = probe.render(-2)
+            high = probe.render(-3)
+            values = tool.reconstruct_float(low, high)
+            alpha = low[..., 3]
+            centre = values[values.shape[0] // 2, values.shape[1] // 2]
+            reference = _vector_at(*planes, blend, position)
+            expected = float(np.hypot(reference[0], reference[1]))
+            key = f"{position[0]:.4f},{position[1]:.4f}"
+            missing = bool(alpha[alpha.shape[0] // 2, alpha.shape[1] // 2] == 0)
+            sampled[key] = {
+                "gpu_speed": float(centre),
+                "cpu_speed": expected,
+                "missing": missing,
+            }
+            if missing or not np.isfinite(expected):
+                continue
+            errors.append(abs(float(centre) - expected))
+        outcome["positions"] = sampled
+        outcome["compared_positions"] = len(errors)
+        outcome["max_abs_error"] = float(max(errors)) if errors else None
+        outcome["passed"] = bool(errors and max(errors) <= NUMERICAL_LIMIT)
+    finally:
+        probe.quick.close()
+    return outcome
+
+
+def fill_observations(widget, model, camera, pump):
+    """The fill layer's pixel, mask, value and independence evidence."""
+    import numpy as np
+    from PySide6.QtGui import QColor
+
+    from gweatherrouting.qt.gpuweather import encode_component
+
+    out = {"enabled": widget._fill is not None}
+    if widget._fill is None:
+        return out
+    field = model._field
+    blend = float(field.staged.weight(camera.stamp()))
+
+    # The fill is measured alone against a transparent background, so the
+    # alpha it contributes is observable: the A0k rule is about that alpha.
+    widget.setClearColor(QColor(0, 0, 0, 0))
+    widget._barbs.setVisible(False)
+    pump(150)
+    pixels = _grab(widget)
+    out["shader_ready"] = bool(widget._fill.property("ready"))
+    out["shader_error"] = str(widget._fill.property("shaderError"))
+    out["painted_pixels"] = int((pixels[..., 3] > 0).sum())
+    out["total_pixels"] = int(pixels[..., 3].size)
+
+    # The all-missing control: exactly zero alpha, never the field minimum.
+    missing = tuple(
+        encode_component(np.full((2, 2), np.nan, dtype=np.float32)) for _ in range(4)
+    )
+    widget.publish_fill(missing, "probe-all-missing")
+    pump(250)
+    pixels = _grab(widget)
+    out["all_missing"] = {
+        "alpha_pixels": int((pixels[..., 3] > 0).sum()),
+        "significant_alpha_pixels": int((pixels[..., 3] > 25).sum()),
+        "total_pixels": int(pixels[..., 3].size),
+    }
+
+    # The finite control: painted everywhere.
+    finite = tuple(
+        encode_component(np.full((2, 2), 5.0, dtype=np.float32)) for _ in range(4)
+    )
+    widget.publish_fill(finite, "probe-finite-control")
+    pump(250)
+    pixels = _grab(widget)
+    out["finite_control"] = {
+        "alpha_pixels": int((pixels[..., 3] > 0).sum()),
+        "total_pixels": int(pixels[..., 3].size),
+    }
+
+    # Independence.  A fill change must not re-stage the barbs: the barbs'
+    # pixels and counters are compared across a fill-only publication.
+    widget._fill.setVisible(False)
+    widget._barbs.setVisible(True)
+    pump(150)
+    before = dict(widget.counters)
+    barbs_before = _grab(widget)
+    widget.publish_fill(finite, "probe-finite-control-again")
+    pump(250)
+    after = dict(widget.counters)
+    barbs_after = _grab(widget)
+    out["independence"] = {
+        "barbs_pixels_unchanged_by_fill_change": bool(
+            np.array_equal(barbs_before, barbs_after)
+        ),
+        "barbs_publications_by_fill_change": (
+            after["barbs_field_publications"]
+            - before["barbs_field_publications"]
+            + after["barbs_selection_publications"]
+            - before["barbs_selection_publications"]
+        ),
+        "fill_publications_by_fill_change": (
+            after["fill_publications"] - before["fill_publications"]
+        ),
+    }
+
+    # A selection change must not re-stage the fill: a new view publishes a
+    # new selection, and the resident field is unchanged.  The fill is put
+    # back on the resident field first, so the probe's own publication is not
+    # counted as a restaging.
+    widget._fill.setVisible(True)
+    widget.publish_fill(field.images, field.generation)
+    pump(250)
+    before = dict(widget.counters)
+    widget.set_camera(replace(camera, center_lon=camera.center_lon + 0.01))
+    pump(250)
+    after = dict(widget.counters)
+    out["independence"].update(
+        {
+            "fill_publications_by_selection_change": (
+                after["fill_publications"] - before["fill_publications"]
+            ),
+            "fill_selection_publications": after["fill_selection_publications"],
+            "barbs_selection_publications_by_selection_change": (
+                after["barbs_selection_publications"]
+                - before["barbs_selection_publications"]
+            ),
+        }
+    )
+
+    # The resident field's own values, through the application's shader.
+    widget.publish_fill(field.images, field.generation)
+    pump(250)
+    pixels = _grab(widget)
+    out["resident_painted_pixels"] = int((pixels[..., 3] > 0).sum())
+    out["values"] = _speed_comparison(field, blend)
+    out["counters"] = dict(widget.counters)
+    return out
 
 
 def run(snapshot):
@@ -52,7 +333,8 @@ def run(snapshot):
         land_mask=WindLandMask(snapshot / "data"),
         resident_time_window=True,
     )
-    widget = _viewport_widget_class()(model)
+    # The numerical fill is behind its own flag; the gate harness enables it.
+    widget = _viewport_widget_class()(model, gpu_weather_fill=True)
     widget.resize(900, 700)
     widget.show()
     camera = ViewportCamera(
@@ -103,6 +385,11 @@ def run(snapshot):
             QTimer.singleShot(10, loop.quit)
             loop.exec()
         return model._active is None and model._pending is None
+
+    def pump(milliseconds=150):
+        loop = QEventLoop()
+        QTimer.singleShot(milliseconds, loop.quit)
+        loop.exec()
 
     def mouse(kind, x, button, buttons):
         point = QPointF(x, 350)
@@ -326,6 +613,10 @@ def run(snapshot):
         model._prepare = real_prepare
         widget.set_camera(camera)
         assert settle(), "Generation probe did not return to ready"
+        # The numerical fill layer: its pixels, its validity mask, its values
+        # against the CPU reference, and the independence of the two layers.
+        report["fill"] = fill_observations(widget, model, camera, pump)
+        assert wait_idle(), "Fill probe left work in flight"
         report["generation_mismatch_rejected"] = (
             mismatch_state == "loading"
             and model.counters["generation_rejected"] > generation_before

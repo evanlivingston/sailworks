@@ -79,9 +79,9 @@ GATES = {
     "viewport-interaction": {
         "title": "Independent GRIB viewport sustained interaction",
         # The interaction contract of #64, the structural observations of
-        # #66's overlapped preparation and the continuity of #67's resident
-        # time window.
-        "milestone": "#64/#66/#67",
+        # #66's overlapped preparation, the continuity of #67's resident time
+        # window and #68's numerical fill layer.
+        "milestone": "#64/#66/#67/#68",
         "kind": "correctness",
         "tool": "test/qt_gribviewport_checks.py",
         "endpoint": ENDPOINT_PROBE,
@@ -166,6 +166,129 @@ GATES = {
                     "generation_mismatch_rejected",
                 ),
             )
+        ]
+        + [
+            {
+                "label": "the numerical fill's shader is ready",
+                "metric": "fill.shader_ready",
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "issue #68: the fill renders from the resident numerical "
+                    "field (docs/profiles/rendering/2026-10-19/"
+                    "a0k-shader-safety-summary.json #initial_selected_symbols="
+                    "1053 with the numerical shader active). A behavioural "
+                    "invariant, not a timing threshold."
+                ),
+            },
+            {
+                "label": "the numerical fill paints the resident field",
+                "metric": "fill.painted_pixels",
+                "aggregate": "max",
+                "op": ">",
+                "value": 0,
+                "source": (
+                    "issue #68: the fill renders from the resident numerical "
+                    "field. Presence of painted pixels, not a threshold; the "
+                    "recorded A0k rule is that a finite control is painted "
+                    "everywhere (docs/profiles/rendering/2026-10-19/"
+                    "a0k-shader-safety-summary.json "
+                    "#finite_control_pixels_unchanged=true)."
+                ),
+            },
+            {
+                "label": "an all-missing fill contributes exactly zero alpha pixels",
+                "metric": "fill.all_missing.alpha_pixels",
+                "aggregate": "max",
+                "op": "==",
+                "value": 0,
+                "source": (
+                    "docs/profiles/rendering/2026-10-19/a0k-shader-safety-summary.json"
+                    "#missing_only_layers_exactly_transparent=true; "
+                    "docs/history/rendering-a0k-shader-safety.md (missing-only "
+                    "controls require exactly zero alpha pixels, not a low "
+                    "fraction of errors)"
+                ),
+            },
+            {
+                "label": "an all-missing fill contributes no significant ink",
+                "metric": "fill.all_missing.significant_alpha_pixels",
+                "aggregate": "max",
+                "op": "==",
+                "value": 0,
+                "source": (
+                    "docs/profiles/rendering/2026-10-19/a0k-shader-safety-summary.json"
+                    "#significant_alpha_threshold=25 (the recorded A0k "
+                    "significance rule; the corrected run reports zero)"
+                ),
+            },
+            {
+                "label": "the finite control field is painted everywhere",
+                "metric": "fill.finite_control.alpha_pixels",
+                "aggregate": "max",
+                "op": "==",
+                "value": {
+                    "metric": "fill.finite_control.total_pixels",
+                    "aggregate": "max",
+                },
+                "source": (
+                    "docs/profiles/rendering/2026-10-19/a0k-shader-safety-summary.json"
+                    "#finite_control_pixels_unchanged=true (the finite control "
+                    "must be painted, not discarded)"
+                ),
+            },
+            {
+                "label": "the fill's wind speed matches the CPU reference",
+                "metric": "fill.values.max_abs_error",
+                "aggregate": "max",
+                "op": "<=",
+                "value": 2e-05,
+                "source": (
+                    "docs/history/rendering-m0-float-textures.md (unchanged 2e-5 "
+                    "gate; E1b measured 2.384185791015625e-7 with explicit "
+                    "texelFetch arithmetic and E1 hardware filtering measured "
+                    "0.002604166666666824 and failed). The comparison reads "
+                    "the float32 the application's own weather shader wrote, "
+                    "at probe-chosen positions, against the CPU reference."
+                ),
+            },
+            {
+                "label": "a fill change does not re-stage the barbs",
+                "metric": "fill.independence.barbs_publications_by_fill_change",
+                "aggregate": "max",
+                "op": "==",
+                "value": 0,
+                "source": (
+                    "issue #68: fill and barbs must be independently updatable "
+                    "- changing one does not re-stage the other (measured: no "
+                    "additional uploads attributable to the unchanged layer). "
+                    "An exact count, not a performance threshold."
+                ),
+            },
+            {
+                "label": "a fill change does not change the barbs' pixels",
+                "metric": ("fill.independence.barbs_pixels_unchanged_by_fill_change"),
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "issue #68: the barbs' selection, thinning, anchors, "
+                    "colours and atlas bytes are unchanged by a fill change. "
+                    "A behavioural invariant, not a timing threshold."
+                ),
+            },
+            {
+                "label": "a selection change does not re-stage the fill",
+                "metric": "fill.independence.fill_publications_by_selection_change",
+                "aggregate": "max",
+                "op": "==",
+                "value": 0,
+                "source": (
+                    "issue #68: fill and barbs must be independently updatable "
+                    "- changing one does not re-stage the other (measured: no "
+                    "additional uploads attributable to the unchanged layer). "
+                    "An exact count, not a performance threshold."
+                ),
+            },
         ],
     },
     # ------------------------------------------------------------------ #64
