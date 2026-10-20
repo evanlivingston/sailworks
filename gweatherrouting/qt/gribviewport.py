@@ -38,7 +38,7 @@ from gweatherrouting.rendering.weatherbarbs import (
     select_resident,
     stage_field,
 )
-from gweatherrouting.rendering.weatherstaging import time_window
+from gweatherrouting.rendering.weatherstaging import NodeSampleMemo, time_window
 from gweatherrouting.rendering.windpainter import shoreline_quality
 
 logger = logging.getLogger("gweatherrouting")
@@ -167,6 +167,7 @@ class GribViewportModel:
         self._field = None
         self._sources = ()
         self._sampler = None
+        self._memo = None
         self._land = None
         self._thread = None
         self._closed = False
@@ -386,6 +387,7 @@ class GribViewportModel:
     def observations(self):
         """Preparation spans and publication-rejection evidence for the gate."""
         with self._condition:
+            memo = {} if self._memo is None else self._memo.statistics()
             return {
                 "preparation_spans": tuple(self._preparation_spans),
                 "published_generations": tuple(sorted(self._published_generations)),
@@ -397,6 +399,7 @@ class GribViewportModel:
                 "slot_handoffs": self.counters["slot_handoffs"],
                 "slots_filled": sum(resource is not None for resource in self._slots),
                 "front_slot": self._front_index,
+                "sampling_memo": memo,
             }
 
     def _run(self):
@@ -431,6 +434,7 @@ class GribViewportModel:
                 raise ValueError("A selected forecast is unavailable")
             self._sources = tuple(sources)
             self._sampler = sampler
+            self._memo = NodeSampleMemo()
             self._land = self._land_mask or WindLandMask()
             with self._condition:
                 self._events = tuple(
@@ -526,6 +530,7 @@ class GribViewportModel:
                 source.close()
             with self._condition:
                 self._sources, self._sampler, self._land = (), None, None
+                self._memo = None
                 self._store.clear()
                 self._condition.notify_all()
 
@@ -583,6 +588,7 @@ class GribViewportModel:
                 view=view,
                 land_mask=self._land,
                 geometry=geometry,
+                memo=self._memo,
             )
         except Exception as exc:
             raise ValueError(f"GRIB field preparation failed: {exc}") from exc

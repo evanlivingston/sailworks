@@ -195,6 +195,7 @@ def stage_field(
     view=None,
     land_mask=None,
     geometry=None,
+    memo=None,
 ):
     """Stage the geographic numerical field of one spatial window.
 
@@ -202,6 +203,11 @@ def stage_field(
     the wind parameter at those nodes.  It does not depend on the exact
     view, so a covered camera move reuses it without decoding weather or
     sampling it again.
+
+    A supplied ``memo`` (a :class:`~gweatherrouting.rendering.weatherstaging.
+    NodeSampleMemo`) lets a re-centred window reuse the per-node endpoints and
+    land decisions of the window it overlaps.  The memo is a pure function of
+    the same inputs, so the staged field is bit-identical to a cold staging.
     """
     from gweatherrouting.qt.gpuweatherfields import GeographicField, NativeGridGeometry
 
@@ -221,7 +227,14 @@ def stage_field(
     if points is None:
         return None
     staged = stage_wind(
-        sampler, stamp, points[:, 0][None, :], points[:, 1][None, :], cancel
+        sampler,
+        stamp,
+        points[:, 0][None, :],
+        points[:, 1][None, :],
+        cancel,
+        memo=memo,
+        memo_namespace=(identity.source, identity.before, identity.after),
+        node_key=_node_key,
     )
     if staged is None:
         return None
@@ -236,12 +249,21 @@ def stage_field(
     )
     land_flags = geometry.land_flags if reuse else None
     if view is not None and not view.over_land and land_flags is None:
+        quality = shoreline_quality(view.get_scale())
         land_mask.refresh_source(view.get_scale())
         flags = []
         for point in points:
             if cancel():
                 return None
-            flags.append(land_mask.contains(*point))
+            key = _node_key(point)
+            cached = memo.get_land(key, quality) if memo is not None else None
+            if cached is not None:
+                flags.append(cached)
+                continue
+            over_land = land_mask.contains(*point)
+            flags.append(over_land)
+            if memo is not None:
+                memo.put_land(key, quality, over_land)
         land_flags = np.asarray(flags, dtype=bool)
         land_flags.setflags(write=False)
     points.setflags(write=False)
