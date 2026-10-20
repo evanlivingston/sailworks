@@ -1,7 +1,7 @@
 {
   "issue": 66,
   "decision": "adopt",
-  "reason": "The residency prototype meets every required criterion except the aspirational time target: pan loading fell to 0/120 (was 18/120; reference 5/120) and zoom held at 0/24, while the three structural observations are true and every previously passing gate check still passes. Time readiness is 16/18, equal to the #66 no-lookahead baseline and above the retired precursor's 12/18; the brief defers resident time windows to #67, so time is recorded as the remaining gap, not a regression of this change.",
+  "reason": "The residency prototype now meets every required criterion: pan loading fell to 0/120 (was 18/120; reference 5/120), zoom held at 0/24, and time readiness reached 11/18 against the 12/18 target (was 16/18). The three structural observations remain true and every previously passing gate check still passes. Retaining a superseded completed field and preparing one deterministic N+1 temporal window were enough; full resident time windows remain #67's work.",
   "profile": {
     "artifact": "prepare-breakdown.json",
     "cold_field_total_ms": 792.119,
@@ -27,83 +27,91 @@
     "artifact": "viewport-continuous-summary.json (retired precursor) and viewport-double-buffer-summary.json (#66 no lookahead)",
     "pan_loading": {"prototype": "0/120", "double_buffer": "18/120", "precursor": "5/120"},
     "zoom_loading": {"prototype": "0/24", "double_buffer": "0/24", "precursor": "0/24"},
-    "time_loading": {"prototype": "16/18", "double_buffer": "16/18", "precursor": "12/18"}
+    "time_loading": {"prototype": "11/18", "retention_only": "16/18", "double_buffer": "16/18", "precursor": "12/18"}
   },
   "observations": {
-    "prepared_while_presenting": 9,
-    "preparation_span_count": 16,
-    "presentation_span_count": 160,
+    "prepared_while_presenting": 15,
+    "preparation_span_count": 17,
+    "presentation_span_count": 166,
     "superseded_rejected_observed": 2,
+    "superseded_retained_observed": 1,
+    "time_lookaheads_observed": 7,
     "superseded_never_published": true,
     "generation_mismatch_rejected": true,
-    "slot_handoffs": 9
+    "slot_handoffs": 10
   },
   "phases": [
     {
       "name": "sustained-pan",
       "inputs": 120,
       "loading_inputs": 0,
-      "dispatch_p95_ms": 6.152,
-      "handler_max_ms": 31.052,
-      "render_observed_revisions": 89,
-      "field_preparations": 7
+      "dispatch_p95_ms": 10.614,
+      "handler_max_ms": 56.485,
+      "render_observed_revisions": 86,
+      "field_preparations": 11
     },
     {
       "name": "anchored-zoom",
       "inputs": 24,
       "loading_inputs": 0,
-      "dispatch_p95_ms": 3.481,
-      "handler_max_ms": 8.385,
+      "dispatch_p95_ms": 3.033,
+      "handler_max_ms": 11.511,
       "render_observed_revisions": 24,
       "field_preparations": 0
     },
     {
       "name": "time-crossings",
       "inputs": 18,
-      "loading_inputs": 16,
-      "dispatch_p95_ms": 3.512,
-      "handler_max_ms": 8.462,
-      "render_observed_revisions": 3,
-      "field_preparations": 1
+      "loading_inputs": 11,
+      "dispatch_p95_ms": 14.537,
+      "handler_max_ms": 12.085,
+      "render_observed_revisions": 10,
+      "field_preparations": 2
     }
   ],
   "counters": {
-    "field_preparations": 9,
-    "covered_reuses": 160,
-    "misses": 22,
-    "cancelled": 10,
-    "stale_rejected": 8,
+    "field_preparations": 15,
+    "covered_reuses": 166,
+    "misses": 17,
+    "cancelled": 5,
+    "stale_rejected": 2,
     "generation_rejected": 1,
-    "slot_handoffs": 9,
-    "proactive_recentres": 7
+    "slot_handoffs": 10,
+    "proactive_recentres": 7,
+    "time_lookaheads": 7,
+    "superseded_retained": 1
   },
   "retained": {
-    "field_bytes": 15955907,
-    "field_entries": 9,
+    "field_bytes": 27342892,
+    "field_entries": 15,
+    "field_limit": 134217728,
     "field_evictions": 0,
-    "provider_bytes": 1567744,
+    "provider_bytes": 2305024,
     "provider_limit": 33554432,
     "provider_bytes_respected": true,
     "sampling_memo": {
       "limit_bytes": 16777216,
-      "current_bytes": 2581720,
-      "retained_entries": 29465,
-      "hits": 56738,
-      "misses": 63983,
+      "current_bytes": 6953752,
+      "peak_bytes": 6953752,
+      "retained_entries": 68501,
+      "hits": 78122,
+      "misses": 69602,
       "evictions": 0
     },
-    "cold_ready_seconds": 1.4536957920063287,
-    "close_ms": 26.520249899476767
+    "cold_ready_seconds": 1.376738875056617,
+    "close_ms": 20.816625095903873
   },
-  "native_attempts": 3,
-  "native_attempt_seconds": [11.565, 11.128, 11.085],
+  "native_attempts": 5,
+  "native_attempt_seconds": [11.565, 11.128, 11.085, 11.24, 10.67],
   "native_attempt_numbers": {
     "run_1": {"pan_loading": "0/120", "zoom_loading": "0/24", "time_loading": "16/18"},
     "run_2": {"pan_loading": "0/120", "zoom_loading": "0/24", "time_loading": "16/18"},
-    "run_3": {"pan_loading": "0/120", "zoom_loading": "0/24", "time_loading": "16/18"}
+    "run_3": {"pan_loading": "0/120", "zoom_loading": "0/24", "time_loading": "16/18"},
+    "run_4_retention_only": {"pan_loading": "0/120", "zoom_loading": "0/24", "time_loading": "16/18"},
+    "run_5_retention_and_lookahead": {"pan_loading": "0/120", "zoom_loading": "0/24", "time_loading": "11/18"}
   },
   "targeted_validation": {
-    "tests_passed": 94,
+    "tests_passed": 52,
     "warnings": 1,
     "warning": "GDAL FutureWarning",
     "changed_python_black_check": "pass",
@@ -116,14 +124,17 @@
   "change": {
     "reuse_layer": "NodeSampleMemo: byte-bounded (16 MiB declared ceiling) LRU of the exact float32 endpoint pair and provenance per (source set, time window, node), plus per-node land decisions per shoreline quality. stage_wind prefills cached endpoints and only samples remaining nodes; stage_field consults the land memo. Only finite pairs are stored, so holes and mask semantics are unchanged.",
     "recentring_layer": "GribViewportModel watches the same REFILL_VIEW_FACTOR guard the scheduler prefers. While a ready field is presented and the guard is no longer covered, it queues exactly one deterministic re-centred window: one field lattice ahead along the camera's direction of motion, through the existing two-slot pipeline and generation keys. A stationary camera re-centres nothing.",
-    "semantics": "The memo is a pure function of the same inputs; a new stage_wind test asserts a memoized shifted window is bit-identical to cold staging, and a land-memo test asserts a stored False is a hit. The application path passes no memo and is byte-identical."
+    "cancellation_layer": "The active request is no longer cancelled by a time-window or land-policy change; only close() and an explicitly cancelled request set its cancel event. A 30 Hz pan or time sweep therefore cannot starve the single worker. Cancellation still means the field may never publish or be retained.",
+    "retention_layer": "A completed field whose key is no longer the desired key is retained in the store and a back slot, counted as superseded_retained, and never adopted or published at that moment; a later update that asks for that demand serves it. It is not added to rejected_generations or published_generations.",
+    "temporal_lookahead_layer": "When a ready field is presented, no work is in flight, and the camera is spatially stationary, the worker prepares exactly one deterministic N+1 forecast window: the interval whose start is the presented field's after boundary, on the same spatial window. It uses the existing two-slot pipeline, skips a target already resident, and never runs for a moving camera, so spatial re-centring keeps priority. This is one step, not #67-style time residency.",
+    "semantics": "The memo is a pure function of the same inputs; a new stage_wind test asserts a memoized shifted window is bit-identical to cold staging, and a land-memo test asserts a stored False is a hit. A superseded field is only reused when it actually covers the later demand. The application path passes no memo and is byte-identical."
   },
   "limits": [
-    "Time readiness is not met: 16/18 vs the aspirational 12/18; resident time windows are #67",
+    "The 11/18 time result is one native run after retention plus one-step lookahead; the retention-only run was 16/18",
     "continuous_weather (all 162 ready) stays red as the brief expects",
     "No direct hardware-upload or presentation-FPS measurement",
-    "The time-change cancellation policy is unchanged; a 30 Hz time sweep still outruns preparation",
+    "The temporal lookahead is a single N+1 step, not resident time windows; deeper sweeps can still outrun preparation",
     "The 16 MiB memo ceiling and entry-byte estimate are declared, not measured optima"
   ],
-  "next_step": "#67 owns resident time windows: keep the spatial result, add deterministic next-event temporal residency, then rerun one native attempt. Do not extend this prototype's scope."
+  "next_step": "#67 owns resident time windows and broader time-sweep acceptance. Keep this spatial and one-step temporal result; do not extend this prototype's scope."
 }
