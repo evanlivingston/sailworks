@@ -157,6 +157,63 @@ def time_window(sampler, stamp):
     return events[pos - 1], events[pos]
 
 
+def _exact_snapshot(
+    sampler,
+    stamp,
+    lats,
+    lons,
+    shape,
+    cancel,
+    memo=None,
+    memo_namespace=None,
+    node_key=None,
+):
+    """The snapshot of one exact instant, with the memo's endpoints reused.
+
+    The memo holds the exact float32 pair of the nodes it has already
+    sampled for the same ``(source set, time window)``, so a re-centred
+    window only samples the nodes it does not have.  A restored node is
+    bit-identical to sampling it again.
+    """
+    lat, lon = lats.ravel(), lons.ravel()
+    values = np.full((len(lat), 2), np.nan)
+    origins = np.full(len(lat), "", dtype=object)
+    keys = None
+    if memo is not None and memo_namespace is not None and node_key is not None:
+        keys = [node_key((float(a), float(b))) for a, b in zip(lat, lon)]
+        for position, key in enumerate(keys):
+            entry = memo.get_sample(memo_namespace, key)
+            if entry is None:
+                continue
+            values[position] = entry[0:2]
+            origins[position] = entry[4]
+    missing = ~np.isfinite(values).all(axis=1)
+    if missing.any():
+        sampled = sampler.sample_timestamps(
+            "wind", stamp, lat[missing], lon[missing], cancel
+        )
+        if cancel():
+            return None
+        values[missing] = sampled
+        for position, name in zip(np.flatnonzero(missing), sampler.point_sources):
+            origins[position] = name
+    if cancel():
+        return None
+    first = np.array(values.reshape(shape + (2,)), dtype=np.float32)
+    first.setflags(write=False)
+    if keys is not None:
+        flat = first.reshape(-1, 2)
+        for position in np.flatnonzero(np.isfinite(flat).all(axis=1)):
+            memo.put_sample(
+                memo_namespace,
+                keys[position],
+                flat[position],
+                flat[position],
+                origins[position],
+            )
+    return StagedWind(stamp, stamp, first, first, tuple(origins))
+
+
 def stage_wind(
     sampler,
     stamp,
@@ -192,12 +249,9 @@ def stage_wind(
         raise ValueError("Invalid forecast time")
     before, after = time_window(sampler, stamp)
     if before == after:
-        values = sampler.sample_timestamps("wind", stamp, lats, lons, cancel)
-        if cancel():
-            return None
-        first = np.array(values.reshape(shape + (2,)), dtype=np.float32)
-        first.setflags(write=False)
-        return StagedWind(stamp, stamp, first, first, tuple(sampler.point_sources))
+        return _exact_snapshot(
+            sampler, stamp, lats, lons, shape, cancel, memo, memo_namespace, node_key
+        )
     # Use the requested interior instant, not a rounded hour or midpoint.
     lat, lon = lats.ravel(), lons.ravel()
     first = np.full((len(lat), 2), np.nan)

@@ -271,9 +271,14 @@ class GribViewportModel:
         field_bytes=FIELD_BYTE_LIMIT,
         land_mask=None,
         resident_time_window=False,
+        grid=False,
     ):
         self.paths = tuple(str(path) for path in paths)
         self._land_mask = land_mask
+        # The gridded form of the field is staged only when the numerical
+        # fill needs it.  The default path stages the node list alone, so
+        # the fill's payload costs the default path nothing.
+        self._grid = bool(grid)
         self._condition = Condition()
         self._pending = None
         self._active = None
@@ -1054,6 +1059,7 @@ class GribViewportModel:
                         )
                     ),
                     None if camera.over_land else shoreline_quality(view.get_scale()),
+                    self._grid,
                 )
             identity = FieldIdentity(
                 source=source,
@@ -1082,6 +1088,7 @@ class GribViewportModel:
                 land_mask=self._land,
                 geometry=geometry,
                 memo=self._memo,
+                grid=self._grid,
             )
         except Exception as exc:
             raise ValueError(f"GRIB field preparation failed: {exc}") from exc
@@ -1138,12 +1145,40 @@ def _source_key(source):
     )
 
 
+def _grid_rect(view, lattice):
+    """The gridded field's rectangle in the scene's pixels.
+
+    The fill's shader interpolates its texture linearly across the item it
+    draws on, so the item *is* the lattice's rectangle: the texture
+    coordinate of a fragment is then the fragment's position in the
+    viewport's projection, and the shader's bilinear is a geographic
+    interpolation of the lattice.
+
+    The lattice's longitudes are taken into the branch of the global grid
+    that is nearest the camera, so a window across the antimeridian is drawn
+    once and not split.
+    """
+    from PySide6.QtCore import QRectF  # noqa: F401  (the rect type of the QML property)
+
+    (south, west), (north, east) = lattice.bounds()
+    shift = 360.0 * round((view._center_lon - west) / 360.0)
+    west += shift
+    east += shift
+    width = view.get_allocated_width()
+    height = view.get_allocated_height()
+    x = view._lon_to_x(west) - view._lon_to_x(view._center_lon) + width / 2.0
+    y = view._lat_to_y(north) - view._lat_to_y(view._center_lat) + height / 2.0
+    span = view._lon_to_x(west + 1.0) - view._lon_to_x(west)
+    span_y = view._lat_to_y(south) - view._lat_to_y(north)
+    return QRectF(x, y, (east - west) * span, span_y)
+
+
 def _viewport_widget_class():
     """Build the render-context widget class on demand.
 
     Qt is imported lazily so the model and the tests stay usable headless.
     """
-    from PySide6.QtCore import QObject, QUrl, Qt, Signal
+    from PySide6.QtCore import QObject, QRectF, QUrl, Qt, Signal
     from PySide6.QtGui import QSurfaceFormat
     from PySide6.QtQuickWidgets import QQuickWidget
     from PySide6.QtWidgets import QLabel
@@ -1298,23 +1333,37 @@ def _viewport_widget_class():
         def _publish_fill(self, field, field_urls, camera):
             """Stage the fill layer on its own inputs.
 
-            The fill consumes the resident field's endpoint images and the
-            temporal blend.  It never consumes the selection, so a selection
-            change cannot restage it.  The images are the ones the provider
-            already published for the barbs: the same URLs, so the same scene
-            graph texture, and no second decode and no second upload.
+            The fill consumes the field's *gridded form* and the temporal
+            blend.  It never consumes the selection, so a selection change
+            cannot restage it.  The gridded images are published under their
+            own key, so they are the fill's own GPU resource and the barbs'
+            node form is untouched.
             """
             if self._fill is None:
                 return
-            if self._published_fill != field.generation:
+            grid = field.grid
+            if grid is None:
+                return
+            key = f"{field.generation}/grid"
+            if self._published_fill != key:
+                urls = self._provider.publish_field(grid.images, key)
                 for name, url in zip(
-                    ("u0Source", "v0Source", "u1Source", "v1Source"), field_urls
+                    ("u0Source", "v0Source", "u1Source", "v1Source"), urls
                 ):
                     self._fill.setProperty(name, QUrl(url))
-                self._published_fill = field.generation
+                self._published_fill = key
                 self.counters["fill_publications"] += 1
                 self.counters["fill_uploads"] += 1
             self._fill.setProperty("blend", field.staged.weight(camera.stamp()))
+            rect = _grid_rect(camera.view(), grid.lattice)
+            for name, value in (
+                ("gridX", rect.x()),
+                ("gridY", rect.y()),
+                ("gridWidth", rect.width()),
+                ("gridHeight", rect.height()),
+            ):
+                if self._fill.setProperty(name, value) is False:
+                    logger.warning("The numerical fill rejected %s", name)
 
         def publish_fill(self, images, key):
             """Publish an image set to the fill layer alone.
@@ -1556,7 +1605,11 @@ def main(argv=None):
 
     logging.basicConfig(level=logging.INFO)
     app = QApplication.instance() or QApplication([sys.argv[0]])
-    model = GribViewportModel(paths, resident_time_window=args.resident_time_window)
+    model = GribViewportModel(
+        paths,
+        resident_time_window=args.resident_time_window,
+        grid=args.gpu_weather_fill,
+    )
     viewport = _viewport_widget_class()(model, gpu_weather_fill=args.gpu_weather_fill)
     window = QWidget()
     window.setWindowTitle(f"GRIB viewport — {len(paths)} forecasts")

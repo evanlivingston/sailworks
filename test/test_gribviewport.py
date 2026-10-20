@@ -822,6 +822,7 @@ def _fill_scene():
 
         def setProperty(self, name, value):
             self.properties[name] = value
+            return True
 
     return SimpleNamespace(
         _fill=Layer(),
@@ -848,10 +849,24 @@ def _fill_scene():
 def _field():
     from types import SimpleNamespace
 
+    from gweatherrouting.rendering.weathergrid import GridLattice
+
+    lattice = GridLattice(
+        origin_lon=0.0,
+        origin_merc=0.0,
+        spacing=0.25,
+        cols=4,
+        rows=4,
+        window=((0.0, 0.0), (1.0, 1.0)),
+    )
     return SimpleNamespace(
         generation="field-generation",
         images=("u0", "v0", "u1", "v1"),
         staged=SimpleNamespace(weight=lambda stamp: 0.25),
+        grid=SimpleNamespace(
+            images=("u0", "v0", "u1", "v1"),
+            lattice=lattice,
+        ),
     )
 
 
@@ -977,6 +992,10 @@ def test_the_fill_and_the_barbs_count_their_publications_apart():
         "u1Source",
         "v1Source",
         "blend",
+        "gridX",
+        "gridY",
+        "gridWidth",
+        "gridHeight",
     }
     # A second publication of the same field is not a restaging.
     viewport._publish_fill(scene, _field(), ("u0", "v0", "u1", "v1"), _camera())

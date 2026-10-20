@@ -289,6 +289,49 @@ GATES = {
                     "An exact count, not a performance threshold."
                 ),
             },
+            {
+                "label": (
+                    "the fill's value at a screen position matches the CPU "
+                    "reference at that position's geography"
+                ),
+                "metric": "fill.placement.max_abs_error",
+                "aggregate": "max",
+                "op": "<=",
+                "value": 2e-05,
+                "source": (
+                    "docs/history/rendering-m0-float-textures.md (unchanged 2e-5 "
+                    "gate) and tools/experiment_float_textures.py's "
+                    "bilinear_reference: the CPU reference is the CPU's own "
+                    "interpolation of the same field. Issue #65 anchors that "
+                    "comparison at the geographic position of the fragment, so "
+                    "the fill's raster is proved to be placed on the map."
+                ),
+            },
+            {
+                "label": "a missing lattice node is not filled from a neighbour",
+                "metric": "fill.missing_neighbour.touching_cell_missing",
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "docs/profiles/rendering/2026-10-19/a0k-shader-safety-summary.json"
+                    "#missing_only_layers_exactly_transparent=true; "
+                    "docs/history/rendering-a0k-shader-safety.md (a missing "
+                    "sample is never filled from a neighbour; it contributes "
+                    "exactly zero alpha)"
+                ),
+            },
+            {
+                "label": "the fill away from a missing node is still painted",
+                "metric": "fill.missing_neighbour.other_cell_missing",
+                "aggregate": "max",
+                "op": "==",
+                "value": False,
+                "source": (
+                    "issue #65: the missing rule is local. A cell away from "
+                    "the missing node is still painted, so the observation is "
+                    "the locality of the rule, not a performance threshold."
+                ),
+            },
         ],
     },
     # ------------------------------------------------------------------ #64

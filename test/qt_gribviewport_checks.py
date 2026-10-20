@@ -89,20 +89,17 @@ def _vector_at(u0, v0, u1, v1, blend, position):
     return total
 
 
-def _speed_comparison(field, blend):
-    """The fill's interpolated wind speed against the CPU reference.
+def _readback(images, blend, positions):
+    """The GPU's interpolated wind speed at the given texture positions.
 
     The application's own weather shader is compiled with the #71 probe's
-    byte-exact readback, so the float32 the shader wrote can be read back and
-    compared with the CPU reference at probe-chosen positions.  The readback
-    is a fidelity measurement; it is not a timing measurement.
+    byte-exact readback, so the float32 the shader wrote can be read back.
+    The readback is a fidelity measurement; it is not a timing measurement.
     """
     import numpy as np
     from PySide6.QtCore import QUrl
     from PySide6.QtGui import QImage
     from PySide6.QtQuick import QQuickImageProvider
-
-    from gweatherrouting.qt.gpuweather import decode_component
 
     tool = _load_tool(
         "float_transport_probe", ROOT / "tools/experiment_float_transport_qsg.py"
@@ -123,13 +120,12 @@ def _speed_comparison(field, blend):
         directory / "weather.frag.qsb",
     )
     probe = tool.Probe(directory)
-    outcome = {"limit": NUMERICAL_LIMIT}
-
-    images = {
-        "u0": field.images[0],
-        "v0": field.images[1],
-        "u1": field.images[2],
-        "v1": field.images[3],
+    sampled = {}
+    served = {
+        "u0": images[0],
+        "v0": images[1],
+        "u1": images[2],
+        "v1": images[3],
     }
 
     class Provider(QQuickImageProvider):
@@ -139,7 +135,7 @@ def _speed_comparison(field, blend):
 
         def requestImage(self, identifier, size, requested_size):  # noqa: N802
             self.requests += 1
-            image = QImage(images[identifier])
+            image = QImage(served[identifier])
             if size is not None:
                 size.setWidth(image.width())
                 size.setHeight(image.height())
@@ -154,10 +150,7 @@ def _speed_comparison(field, blend):
         if not probe.set_shader("fillspeed.frag.qsb"):
             raise RuntimeError("The fill's probe shader did not compile")
         probe.root.setProperty("blend", float(blend))
-        planes = [decode_component(image) for image in field.images]
-        sampled = {}
-        errors = []
-        for position in PROBE_POSITIONS:
+        for position in positions:
             probe.root.setProperty("uPointX", float(position[0]))
             probe.root.setProperty("uPointY", float(position[1]))
             low = probe.render(-2)
@@ -165,29 +158,179 @@ def _speed_comparison(field, blend):
             values = tool.reconstruct_float(low, high)
             alpha = low[..., 3]
             centre = values[values.shape[0] // 2, values.shape[1] // 2]
-            reference = _vector_at(*planes, blend, position)
-            expected = float(np.hypot(reference[0], reference[1]))
-            key = f"{position[0]:.4f},{position[1]:.4f}"
-            missing = bool(alpha[alpha.shape[0] // 2, alpha.shape[1] // 2] == 0)
-            sampled[key] = {
-                "gpu_speed": float(centre),
-                "cpu_speed": expected,
-                "missing": missing,
+            sampled[f"{position[0]:.6f},{position[1]:.6f}"] = {
+                "speed": float(centre),
+                "missing": bool(alpha[alpha.shape[0] // 2, alpha.shape[1] // 2] == 0),
             }
-            if missing or not np.isfinite(expected):
-                continue
-            errors.append(abs(float(centre) - expected))
-        outcome["positions"] = sampled
-        outcome["compared_positions"] = len(errors)
-        outcome["max_abs_error"] = float(max(errors)) if errors else None
-        outcome["passed"] = bool(errors and max(errors) <= NUMERICAL_LIMIT)
     finally:
         probe.quick.close()
+    return sampled
+
+
+def _speed_comparison(images, blend, positions, reference):
+    """The fill's interpolated wind speed against the CPU reference.
+
+    The reference is called with a texture position and the payload's planes,
+    so the same comparison serves the payload's arithmetic and the
+    geographic placement.
+    """
+    import numpy as np
+
+    from gweatherrouting.qt.gpuweather import decode_component
+
+    outcome = {"limit": NUMERICAL_LIMIT}
+    planes = [decode_component(image) for image in images]
+    sampled = _readback(images, blend, positions)
+    errors = []
+    for position in positions:
+        key = f"{position[0]:.6f},{position[1]:.6f}"
+        observed = sampled[key]
+        expected = reference(position, planes)
+        value = float(np.hypot(expected[0], expected[1]))
+        sampled[key].update({"cpu_speed": value})
+        if observed["missing"] or not np.isfinite(value):
+            continue
+        errors.append(abs(observed["speed"] - value))
+    outcome["positions"] = sampled
+    outcome["compared_positions"] = len(errors)
+    outcome["max_abs_error"] = float(max(errors)) if errors else None
+    outcome["passed"] = bool(errors and max(errors) <= NUMERICAL_LIMIT)
     return outcome
 
 
+def _lattice_reference(lattice, planes, blend, lat, lon):
+    """The CPU's interpolation of the payload at a geographic position.
+
+    The cell and the weights come from the lattice's own geography, so this
+    is the CPU reference *at the position*, not at a texture coordinate.
+    """
+    import numpy as np
+
+    fx, fy = lattice.cells(np.array([lon]), np.array([lat]))
+    index_x = int(np.clip(np.floor(fx[0]), 0, lattice.cols - 1))
+    index_y = int(np.clip(np.floor(fy[0]), 0, lattice.rows - 1))
+    delta_x = float(fx[0] - index_x)
+    delta_y = float(fy[0] - index_y)
+    next_x = min(index_x + 1, lattice.cols - 1)
+    next_y = min(index_y + 1, lattice.rows - 1)
+    u0, v0, u1, v1 = planes
+    total = np.zeros(2, dtype=np.float32)
+    corners = (
+        (index_x, index_y, (1 - delta_x) * (1 - delta_y)),
+        (next_x, index_y, delta_x * (1 - delta_y)),
+        (index_x, next_y, (1 - delta_x) * delta_y),
+        (next_x, next_y, delta_x * delta_y),
+    )
+    for cell_x, cell_y, weight in corners:
+        first = np.array([u0[cell_y, cell_x], v0[cell_y, cell_x]], dtype=np.float32)
+        second = np.array([u1[cell_y, cell_x], v1[cell_y, cell_x]], dtype=np.float32)
+        if blend <= 0.0:
+            value = first
+        elif blend >= 1.0:
+            value = second
+        else:
+            value = first + (second - first) * np.float32(blend)
+        total = (total + value * np.float32(weight)).astype(np.float32)
+    return total
+
+
+def _lattice_probes(lattice, view):
+    """Probe positions in the lattice's own cell coordinates.
+
+    The positions are inside a cell, near a cell edge and at the lattice's
+    border, so the comparison covers the interpolation's interior, its edge
+    and its border.
+    """
+    import numpy as np
+
+    fx, fy = lattice.cells(
+        np.array([view._center_lon]), np.array([view._center_lat])
+    )
+    base_x, base_y = float(fx[0]), float(fy[0])
+    return (
+        ("inside_cell", base_x + 0.3, base_y + 0.3),
+        ("inside_cell_2", base_x + 0.7, base_y + 0.7),
+        ("near_cell_edge", base_x + 0.98, base_y + 0.02),
+        ("lattice_edge", 0.5, float(lattice.rows - 1) + 0.5),
+    )
+
+
+def _placement_observations(field, camera, blend):
+    """The fill's placement against the CPU reference.
+
+    The screen position of a probe is projected into the viewport's
+    projection, and the viewport's own rectangle for the lattice maps it to
+    a texture position.  The GPU's value there is compared with the CPU
+    reference at the *geographic* position, so a rectangle that did not
+    project the lattice onto the map would fail the comparison.
+    """
+    import numpy as np
+
+    from gweatherrouting.qt.gribviewport import _grid_rect
+    from gweatherrouting.qt.gpuweather import decode_component
+    from gweatherrouting.rendering.weathergrid import mercator_lat
+
+    lattice = field.grid.lattice
+    view = camera.view()
+    rect = _grid_rect(view, lattice)
+    planes = [decode_component(image) for image in field.grid.images]
+    positions = []
+    for name, cell_x, cell_y in _lattice_probes(lattice, view):
+        lon = lattice.origin_lon + (cell_x + 0.5) * lattice.spacing
+        merc = lattice.origin_merc - (cell_y + 0.5) * lattice.spacing
+        lat = float(mercator_lat(merc))
+        screen_x = (
+            view._lon_to_x(lon)
+            - view._lon_to_x(view._center_lon)
+            + view.get_allocated_width() / 2
+        )
+        screen_y = (
+            view._lat_to_y(lat)
+            - view._lat_to_y(view._center_lat)
+            + view.get_allocated_height() / 2
+        )
+        texture = (
+            (screen_x - rect.x()) / rect.width(),
+            (screen_y - rect.y()) / rect.height(),
+        )
+        positions.append((name, lat, lon, texture))
+    sampled = _readback(field.grid.images, blend, [item[3] for item in positions])
+    outcome = {
+        "limit": NUMERICAL_LIMIT,
+        "rect": [rect.x(), rect.y(), rect.width(), rect.height()],
+        "positions": {},
+    }
+    errors = []
+    payload_errors = []
+    for name, lat, lon, texture in positions:
+        key = f"{texture[0]:.6f},{texture[1]:.6f}"
+        observed = sampled[key]
+        expected = _lattice_reference(lattice, planes, blend, lat, lon)
+        value = float(np.hypot(expected[0], expected[1]))
+        mirror = _vector_at(*planes, blend, texture)
+        outcome["positions"][name] = {
+            "lat": lat,
+            "lon": lon,
+            "texture": [texture[0], texture[1]],
+            "gpu_speed": observed["speed"],
+            "cpu_speed": value,
+            "missing": observed["missing"],
+        }
+        if observed["missing"] or not np.isfinite(value):
+            continue
+        errors.append(abs(observed["speed"] - value))
+        payload_errors.append(
+            abs(observed["speed"] - float(np.hypot(mirror[0], mirror[1])))
+        )
+    outcome["compared_positions"] = len(errors)
+    outcome["max_abs_error"] = float(max(errors)) if errors else None
+    outcome["passed"] = bool(errors and max(errors) <= NUMERICAL_LIMIT)
+    outcome["payload_max_abs_error"] = (
+        float(max(payload_errors)) if payload_errors else None
+    )
+    return outcome
 def fill_observations(widget, model, camera, pump):
-    """The fill layer's pixel, mask, value and independence evidence."""
+    """The fill layer's pixel, mask, value, placement and independence evidence."""
     import numpy as np
     from PySide6.QtGui import QColor
 
@@ -198,6 +341,20 @@ def fill_observations(widget, model, camera, pump):
         return out
     field = model._field
     blend = float(field.staged.weight(camera.stamp()))
+    grid = field.grid
+    out["grid"] = {
+        "ready": grid is not None,
+        "origin_lon": None if grid is None else grid.lattice.origin_lon,
+        "origin_mercator": None if grid is None else grid.lattice.origin_merc,
+        "spacing": None if grid is None else grid.lattice.spacing,
+        "columns": None if grid is None else grid.lattice.cols,
+        "rows": None if grid is None else grid.lattice.rows,
+        "nodes": None if grid is None else grid.lattice.node_count,
+        "bytes": None if grid is None else grid.nbytes,
+    }
+    if grid is None:
+        return out
+    images = grid.images
 
     # The fill is measured alone against a transparent background, so the
     # alpha it contributes is observable: the A0k rule is about that alpha.
@@ -266,7 +423,7 @@ def fill_observations(widget, model, camera, pump):
     # back on the resident field first, so the probe's own publication is not
     # counted as a restaging.
     widget._fill.setVisible(True)
-    widget.publish_fill(field.images, field.generation)
+    widget.publish_fill(images, f"{field.generation}/grid")
     pump(250)
     before = dict(widget.counters)
     widget.set_camera(replace(camera, center_lon=camera.center_lon + 0.01))
@@ -286,15 +443,129 @@ def fill_observations(widget, model, camera, pump):
     )
 
     # The resident field's own values, through the application's shader.
-    widget.publish_fill(field.images, field.generation)
+    widget.publish_fill(images, f"{field.generation}/grid")
     pump(250)
     pixels = _grab(widget)
     out["resident_painted_pixels"] = int((pixels[..., 3] > 0).sum())
-    out["values"] = _speed_comparison(field, blend)
+    out["values"] = _speed_comparison(
+        images,
+        blend,
+        PROBE_POSITIONS,
+        lambda position, planes: _vector_at(*planes, blend, position),
+    )
+    # The placement: the GPU's value at a screen position against the CPU
+    # reference at that position's geography.
+    out["placement"] = _placement_observations(field, camera, blend)
+    out["missing_neighbour"] = _missing_neighbour_observations(
+        widget, field, camera, blend, pump
+    )
     out["counters"] = dict(widget.counters)
     return out
 
 
+def _missing_neighbour_observations(widget, field, camera, blend, pump):
+    """A missing node is never filled from a neighbour.
+
+    The gridded payload with one missing node is published.  The cell that
+    touches the node must read back as missing -- the shader's missing rule
+    contributes exactly zero alpha and never a neighbour's value -- and the
+    cells away from it must still be painted.
+    """
+    import numpy as np
+
+    from gweatherrouting.qt.gpuweather import decode_component, encode_component
+    from gweatherrouting.qt.gribviewport import _grid_rect
+    from gweatherrouting.rendering.weathergrid import mercator_lat
+
+    lattice = field.grid.lattice
+    view = camera.view()
+    rect = _grid_rect(view, lattice)
+    planes = [decode_component(image) for image in field.grid.images]
+    # The node nearest the viewport's centre: the four cells that touch it
+    # must lose every fragment.
+    fx, fy = lattice.cells(
+        np.array([view._center_lon]), np.array([view._center_lat])
+    )
+    index_x = int(np.clip(np.floor(fx[0]), 0, lattice.cols - 1))
+    index_y = int(np.clip(np.floor(fy[0]), 0, lattice.rows - 1))
+    original = float(planes[0][index_y, index_x])
+    planes = list(planes)
+    planes[0] = planes[0].copy()
+    planes[0][index_y, index_x] = np.nan
+    images = tuple(encode_component(plane) for plane in planes)
+    widget._barbs.setVisible(False)
+    widget.publish_fill(images, "probe-missing-neighbour")
+    pump(250)
+
+    # The byte-exact readback of the cells that touch the missing node and of
+    # a cell away from it.
+    lon = lattice.origin_lon + (index_x + 0.5) * lattice.spacing
+    merc = lattice.origin_merc - (index_y + 0.5) * lattice.spacing
+    lat = float(mercator_lat(merc))
+    screen_x = (
+        view._lon_to_x(lon)
+        - view._lon_to_x(view._center_lon)
+        + view.get_allocated_width() / 2
+    )
+    screen_y = (
+        view._lat_to_y(lat)
+        - view._lat_to_y(view._center_lat)
+        + view.get_allocated_height() / 2
+    )
+    span_x = (rect.width() / lattice.cols) if lattice.cols else 1.0
+    span_y = (rect.height() / lattice.rows) if lattice.rows else 1.0
+    touching = (
+        (screen_x + span_x / 2 - rect.x()) / rect.width(),
+        (screen_y + span_y / 2 - rect.y()) / rect.height(),
+    )
+    away = (
+        (screen_x - span_x * 2 - rect.x()) / rect.width(),
+        (screen_y - span_y * 2 - rect.y()) / rect.height(),
+    )
+    readback = _readback(images, blend, [touching, away])
+    keys = list(readback)
+    pixels = _grab(widget)
+    alpha = pixels[..., 3]
+    near = alpha[
+        max(0, int(round(screen_y - span_y / 2))) : int(
+            round(screen_y + span_y / 2)
+        )
+        + 1,
+        max(0, int(round(screen_x - span_x / 2))) : int(
+            round(screen_x + span_x / 2)
+        )
+        + 1,
+    ]
+    far = alpha.copy()
+    far[
+        max(0, int(round(screen_y - span_y / 2))) : int(
+            round(screen_y + span_y / 2)
+        )
+        + 1,
+        max(0, int(round(screen_x - span_x / 2))) : int(
+            round(screen_x + span_x / 2)
+        )
+        + 1,
+    ] = 0
+    outcome = {
+        "missing_node": [lat, lon],
+        "node_value_before": original,
+        "node_value_was_finite": bool(np.isfinite(original)),
+        "touching_cell_missing": bool(readback[keys[0]]["missing"]),
+        "other_cell_missing": bool(readback[keys[1]]["missing"]),
+        "node_cell_pixels": int(near.size),
+        "node_cell_alpha_pixels": int((near > 0).sum()),
+        "node_cell_significant_alpha_pixels": int((near > 25).sum()),
+        "other_alpha_pixels": int((far > 0).sum()),
+        "total_pixels": int(alpha.size),
+        "rect": [rect.x(), rect.y(), rect.width(), rect.height()],
+        "fill_blend": float(widget._fill.property("blend")),
+        "fill_grid_width": float(widget._fill.property("gridWidth")),
+        "fill_grid_x": float(widget._fill.property("gridX")),
+        "fill_grid_y": float(widget._fill.property("gridY")),
+    }
+    widget._barbs.setVisible(True)
+    return outcome
 def run(snapshot):
     from PySide6.QtCore import QEvent, QEventLoop, QPointF, Qt, QTimer
     from PySide6.QtGui import QMouseEvent
@@ -332,6 +603,7 @@ def run(snapshot):
         paths,
         land_mask=WindLandMask(snapshot / "data"),
         resident_time_window=True,
+        grid=True,
     )
     # The numerical fill is behind its own flag; the gate harness enables it.
     widget = _viewport_widget_class()(model, gpu_weather_fill=True)

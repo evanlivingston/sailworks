@@ -94,12 +94,18 @@ def test_the_field_budget_accounts_values_coordinates_and_lookup(gribs):
         + field.mask_bytes
         + field.lookup_bytes
         + field.texture_bytes
+        + field.grid_bytes
     )
     # The packed transport charges eight bytes of texture per float32.
     assert field.texture_bytes == len(field.images) * (
         field.images[0].width() * field.images[0].height() * 4
     )
     assert TEXTURE_BYTES_PER_FLOAT32 == 8
+    # The gridded form is accounted with the field: its values and its own
+    # published images.
+    assert field.grid is not None
+    assert field.grid_bytes == field.grid.value_bytes + field.grid.texture_bytes
+    assert field.grid_bytes > 0
 
 
 def test_allocation_eviction_and_release_are_bounded(gribs):

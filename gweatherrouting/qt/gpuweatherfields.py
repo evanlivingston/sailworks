@@ -144,6 +144,9 @@ class GeographicField:
     The payload is immutable once staged.  ``index`` maps a native node to
     its node id; it is the metadata the current-view selection needs to bind
     a view's nodes to the field, and it is accounted for as an estimate.
+    ``grid`` is the field's *gridded form*: the same values on a regular
+    geographic lattice, which is what the GPU's fill interpolates.  The node
+    list stays the barbs' form.
     """
 
     identity: FieldIdentity
@@ -156,6 +159,7 @@ class GeographicField:
     land_flags: object = None
     land_zoom: float | None = None
     land_quality: str | None = None
+    grid: object = None
 
     @property
     def node_count(self):
@@ -187,6 +191,11 @@ class GeographicField:
         return sum(image.sizeInBytes() for image in self.images)
 
     @property
+    def grid_bytes(self):
+        """The gridded form's values and its published images."""
+        return 0 if self.grid is None else self.grid.nbytes
+
+    @property
     def nbytes(self):
         """The accounted cost of the retained payload."""
         return (
@@ -195,6 +204,7 @@ class GeographicField:
             + self.mask_bytes
             + self.lookup_bytes
             + self.texture_bytes
+            + self.grid_bytes
         )
 
     def sources(self, node_ids):

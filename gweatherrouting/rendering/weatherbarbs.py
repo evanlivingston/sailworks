@@ -185,6 +185,92 @@ def _field_images(staged):
     return tuple(images)
 
 
+def stage_grid(sampler, stamp, window, identity, cancel=lambda: False, memo=None):
+    """Stage the gridded form of one field.
+
+    The gridded form is the field's values on a regular lattice in the
+    viewport's projection, so the GPU's 2x2 texelFetch bilinear becomes a
+    geographic interpolation.  The values come from the CPU sampler, which
+    stays the reference authority; no weather is decoded a second time.
+
+    The lattice's nodes are the CPU reference's values at the lattice's node
+    positions, and a missing node stays missing, so the shader's missing
+    policy is unchanged.
+
+    The lattice's origin is quantised on the global grid, so its nodes keep
+    their positions when the window moves: the memo's entries for them stay
+    valid and a re-centred window only samples the nodes it does not have.
+    """
+    from gweatherrouting.qt.gpuweather import encode_component
+    from gweatherrouting.rendering.weathergrid import (
+        GriddedField,
+        build_lattice,
+        lattice_spacing,
+    )
+
+    spacing = lattice_spacing(sampler, window)
+    if not spacing:
+        return None
+    lattice = build_lattice(window, spacing)
+    lons, lats = lattice.nodes()
+    namespace = (identity.source, identity.before, identity.after)
+    values = np.full((len(lons), 2), np.nan)
+    second = np.full_like(values, np.nan)
+    origins = np.full(len(lons), "", dtype=object)
+    keys = [_node_key((float(a), float(b))) for a, b in zip(lats, lons)]
+    missing = np.ones(len(lons), dtype=bool)
+    if memo is not None:
+        for position, key in enumerate(keys):
+            entry = memo.get_sample(namespace, key)
+            if entry is None:
+                continue
+            values[position] = entry[0:2]
+            second[position] = entry[2:4]
+            origins[position] = entry[4]
+            missing[position] = False
+    if missing.any():
+        staged = stage_wind(
+            sampler,
+            stamp,
+            lats[missing][None, :],
+            lons[missing][None, :],
+            cancel,
+        )
+        if staged is None:
+            return None
+        values[missing] = np.asarray(staged.first[0])
+        second[missing] = np.asarray(staged.second[0])
+        names = list(staged.sources)
+        for position, name in zip(np.flatnonzero(missing), names):
+            origins[position] = name
+    if cancel():
+        return None
+    finite = np.isfinite(values).all(axis=1) & np.isfinite(second).all(axis=1)
+    if memo is not None:
+        for position in np.flatnonzero(finite):
+            memo.put_sample(
+                namespace,
+                keys[position],
+                values[position],
+                second[position],
+                origins[position],
+            )
+    rows, cols = lattice.shape
+    grid = np.asarray(values).reshape(cols, rows, 2).transpose(1, 0, 2)
+    other = np.asarray(second).reshape(cols, rows, 2).transpose(1, 0, 2)
+    images = tuple(
+        encode_component(plane)
+        for plane in (
+            grid[:, :, 0],
+            grid[:, :, 1],
+            other[:, :, 0],
+            other[:, :, 1],
+        )
+    )
+    staged = StagedWind(identity.before, identity.after, grid, other, tuple(origins))
+    return GriddedField(lattice=lattice, staged=staged, images=images)
+
+
 def stage_field(
     sampler,
     stamp,
@@ -196,6 +282,7 @@ def stage_field(
     land_mask=None,
     geometry=None,
     memo=None,
+    grid=False,
 ):
     """Stage the geographic numerical field of one spatial window.
 
@@ -275,6 +362,7 @@ def stage_field(
         if any(record.element in ("UGRD", "VGRD") for record in grid.records):
             geometry = NativeGridGeometry.from_index(grid)
             grids.setdefault(geometry.key(), geometry)
+    grid_field = stage_grid(sampler, stamp, window, identity, cancel, memo=memo) if grid else None
     return GeographicField(
         identity=identity,
         points=points,
@@ -290,6 +378,7 @@ def stage_field(
             if view is None or view.over_land
             else shoreline_quality(view.get_scale())
         ),
+        grid=grid_field,
     )
 
 

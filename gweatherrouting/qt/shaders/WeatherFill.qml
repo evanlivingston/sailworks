@@ -24,6 +24,15 @@ Item {
     property real blend: 0
     property real outputMode: 0
     property string fragmentShader: "weather.frag.qsb"
+    // The gridded field's rectangle in the scene's pixels.  The shader
+    // interpolates its texture linearly across the item it draws on, so the
+    // item is the lattice: a fragment's texture coordinate is its position
+    // in the viewport's projection, and the 2x2 bilinear is a geographic
+    // interpolation of the lattice.
+    property real gridX: 0
+    property real gridY: 0
+    property real gridWidth: 0
+    property real gridHeight: 0
     property bool imagesReady: imageU0.status === Image.Ready && imageV0.status === Image.Ready
                          && imageU1.status === Image.Ready && imageV1.status === Image.Ready
     property bool ready: imagesReady && effect.status === ShaderEffect.Compiled
@@ -34,7 +43,10 @@ Item {
     Image { id: imageV1; visible: false; smooth: false; cache: false }
     ShaderEffect {
         id: effect
-        anchors.fill: parent
+        x: root.gridWidth > 0 ? root.gridX : 0
+        y: root.gridWidth > 0 ? root.gridY : 0
+        width: root.gridWidth > 0 ? root.gridWidth : root.width
+        height: root.gridWidth > 0 ? root.gridHeight : root.height
         visible: root.imagesReady
         property variant u0: imageU0
         property variant v0: imageV0
