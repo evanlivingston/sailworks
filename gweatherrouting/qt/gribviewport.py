@@ -45,15 +45,62 @@ from gweatherrouting.rendering.windpainter import shoreline_quality
 
 logger = logging.getLogger("gweatherrouting")
 
-# The residency budget of the viewport's field store and of the published
-# images.  Both are declared ceilings, not measured optima.  On the recorded
-# 900x700 fixture the store held 33 prepared fields in 58.8 MB with no
-# evictions, so the standalone store uses the same 128 MiB ceiling as the
-# decoded-band cache.  It is a CPU payload budget, not VRAM, and larger views
-# retain fewer fields.
+# The residency budget of the viewport's field store.  This is a declared
+# ceiling, not a measured optimum, and it was re-derived on 2026-10-19
+# (issue #73) against the recorded runs:
+#
+#   * the #64 follow-up held 33 fields in 58,785,331 B (56.05 MiB) with 0
+#     evictions -- the observed worst case
+#     (docs/profiles/rendering/2026-10-19/viewport-continuous-summary.json);
+#   * #67's resident time window holds 13 fields in 24,472,139 B (23.34 MiB)
+#     with 0 evictions (docs/profiles/rendering/2026-10-19/
+#     viewport-time-window-summary.json);
+#   * the sampling memo declares 16 MiB and the image provider 32 MiB.  Both
+#     are separate budgets; neither is drawn from this store.
+#
+# The ceiling was raised to 128 MiB during the precursor experiment, so it
+# was never derived from a residency requirement.  It is kept because it is
+# a declared cap, the observed worst case is 43.8% of it (a 2.28x margin),
+# the resident time window adds members over the same spatial window rather
+# than replacing fields, and no eviction has ever been observed.  Lowering it
+# would trade against an unmeasured workload -- a longer time horizon, a
+# larger view -- that no recorded run covers.  It is a CPU payload budget,
+# not VRAM, and larger views retain fewer fields.
 FIELD_BYTE_LIMIT = 128 * 1024 * 1024
-PREPARED_VIEW_FACTOR = 1.5
-REFILL_VIEW_FACTOR = 1.25
+
+# The viewport's spatial window and refill-guard policy.  These two factors
+# are the window/guard policy named by #66 (overlapped, double-buffered
+# preparation) and #67 (resident time window); they replace the precursor's
+# unexplained tuning factors.  The values are unchanged.
+#
+# RESIDENT_WINDOW_FACTOR (1.5): a resident field's spatial window covers
+# 1.5x the camera viewport, so a covered camera move reuses the resident
+# field instead of preparing a new one.  On the recorded fixture camera
+# (a 900x700 view with the 32 px symbol margin) the 1.5x window is
+# 1350x1050 px against the camera's own 964x764 px demand, so the surplus
+# is 193 px per side in x (675 - 450 - 32) and 143 px per side in y
+# (525 - 350 - 32): about 0.53 s of pan at the recorded 12 px per input and
+# 30 inputs/s (360 px/s).  The 64 px field lattice quantises the window
+# outward, so the real runway is never smaller than this.
+#
+# REFILL_GUARD_FACTOR (1.25): the refill guard is the viewport expanded by
+# 1.25x.  The re-centring trigger fires when the resident field stops
+# covering the guard, which is (1.25 - 1) / 2 * 900 = 112.5 px -- about
+# 0.31 s of pan -- before the camera's own demand leaves the resident
+# window: the re-centre starts while the camera still has runway, so #66's
+# overlapped pipeline can publish the re-centred field before coverage is
+# lost.
+#
+# Sufficiency is recorded, not assumed.  During the recorded sustained pan
+# (120 inputs at 30 Hz, 4.0 s) the #66 prototype completed 11 field
+# preparations, one per 0.36 s, and the #67 run completed the same pan with
+# 0/120 loading inputs (docs/profiles/rendering/2026-10-19/
+# viewport-time-window-summary.json).  The measured cost of the re-centred
+# window itself -- one field-lattice step (64 px) away -- is 159 ms, against
+# 792 ms for a cold window (docs/profiles/rendering/2026-10-19/
+# prepare-breakdown.json).
+RESIDENT_WINDOW_FACTOR = 1.5
+REFILL_GUARD_FACTOR = 1.25
 
 # The declared horizon of the resident time window.  The recorded interaction
 # sweep moves the forecast instant over nine hours (camera.time plus
@@ -364,7 +411,7 @@ class GribViewportModel:
             for field in self._store.fields():
                 if _covers(field, camera):
                     add_candidate(field)
-            guard = _expanded(camera, REFILL_VIEW_FACTOR)
+            guard = _expanded(camera, REFILL_GUARD_FACTOR)
             field = next(
                 (item for item in candidates if _covers(item, guard)),
                 candidates[0] if candidates else None,
@@ -422,7 +469,7 @@ class GribViewportModel:
 
     def _request_key(self, camera):
         return (
-            field_window(_expanded(camera, PREPARED_VIEW_FACTOR).view()),
+            field_window(_expanded(camera, RESIDENT_WINDOW_FACTOR).view()),
             self._time_key(camera.stamp()),
             None if camera.over_land else shoreline_quality(camera.view().get_scale()),
         )
@@ -477,7 +524,7 @@ class GribViewportModel:
         and is retained instead.  Explicit cancellation remains available to
         ``close()`` and to the caller that owns a request's event.
 
-        A speculative resident-window fill is the one exception: an
+        The resident time window's fill is the one exception: an
         interactive demand takes the worker at once, so the spatial pipeline
         keeps its priority over the fill.
         """
@@ -512,7 +559,7 @@ class GribViewportModel:
         Deterministic: the camera is advanced by one field-lattice step along
         the sign of its movement since the previous update, so the prepared
         window is centred ahead of the camera rather than on the current
-        speculative position.  A stationary camera is not re-centred.
+        position.  A stationary camera is not re-centred.
         """
         if previous is None:
             return None
@@ -539,7 +586,7 @@ class GribViewportModel:
         """Prepare the next window while the current field is still presented.
 
         Called with the lock held, only for a ready presentation.  The trigger
-        is the same guard the scheduler prefers (``REFILL_VIEW_FACTOR``): while
+        is the same guard the scheduler prefers (``REFILL_GUARD_FACTOR``): while
         the presented field still covers the guard, the camera has runway; once
         it does not, one deterministic re-centred window is queued.  The back
         slot is filled by the existing two-slot pipeline, so no third slot and
@@ -552,7 +599,7 @@ class GribViewportModel:
         """
         if self._active is not None or self._pending is not None:
             return
-        if not _covers(field, _expanded(camera, REFILL_VIEW_FACTOR)):
+        if not _covers(field, _expanded(camera, REFILL_GUARD_FACTOR)):
             target = self._recentre_camera(camera, previous)
             if target is None:
                 # Stationary: no spatial window to move to.
@@ -560,7 +607,7 @@ class GribViewportModel:
                     self._look_ahead_time(camera, field)
                 return
             if (
-                field_window(_expanded(target, PREPARED_VIEW_FACTOR).view())
+                field_window(_expanded(target, RESIDENT_WINDOW_FACTOR).view())
                 == field.identity.window
             ):
                 return
@@ -732,7 +779,7 @@ class GribViewportModel:
         state = self._window_state(camera, field)
         if state is None or state.spatial != field.identity.window:
             return False
-        requirement = field_window(_expanded(camera, PREPARED_VIEW_FACTOR).view())
+        requirement = field_window(_expanded(camera, RESIDENT_WINDOW_FACTOR).view())
         if not _contains(field.identity.window, requirement):
             self.counters["time_window_blocked"] += 1
             return False
@@ -980,7 +1027,7 @@ class GribViewportModel:
                             field
                             for field in reversed(self._store.fields())
                             if _spatially_covers(
-                                field, _expanded(camera, REFILL_VIEW_FACTOR)
+                                field, _expanded(camera, REFILL_GUARD_FACTOR)
                             )
                         ),
                         None,
@@ -989,7 +1036,7 @@ class GribViewportModel:
                         geometry.identity.window
                         if geometry is not None
                         else field_window(
-                            _expanded(camera, PREPARED_VIEW_FACTOR).view()
+                            _expanded(camera, RESIDENT_WINDOW_FACTOR).view()
                         )
                     )
             source = tuple(_source_key(item) for item in self._sources)
