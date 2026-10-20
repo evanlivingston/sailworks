@@ -568,8 +568,8 @@ class TrackMap(QWidget, MercatorProjection):
 
             meta = Grib.parse_metadata(str(path or ""))
             bounds = meta.bounds
-            # bounds is expected [south, west, north, east] or similar
-            south, west, north, east = (
+            # bounds from parse_metadata: [west, south, east, north]
+            west, south, east, north = (
                 (float(bounds[0]), float(bounds[1]), float(bounds[2]), float(bounds[3]))
                 if len(bounds) >= 4
                 else (0, 0, 0, 0)

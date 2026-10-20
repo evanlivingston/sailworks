@@ -160,6 +160,9 @@ class DataLibrary(QDialog):
         self.import_forecast_button = self.button(
             heading, "Import…", self.import_forecast
         )
+        self.remove_all_forecasts_button = self.button(
+            heading, "Remove all…", self.remove_all_forecasts
+        )
         files.addLayout(heading)
         self.forecasts = table(["Used / file", "Model", "Model run", "Forecast hours"])
         self.forecasts.setColumnWidth(0, 300)
@@ -437,6 +440,23 @@ class DataLibrary(QDialog):
         remove = menu.addAction("Remove from library…")
         if menu.exec(self.forecasts.viewport().mapToGlobal(position)) is remove:
             self.remove_forecast(metadata)
+
+    def remove_all_forecasts(self):
+        """Remove all cached forecast files from the library with confirmation."""
+        if not self.data.local_forecasts:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Remove all forecasts",
+            "Delete all cached forecast files from the library?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            # Work on a copy to avoid modification during iteration
+            for metadata in self.data.local_forecasts.copy():
+                self.data.remove_forecast(metadata)
 
     def _options_changed(self):
         self.attempt(lambda: self.data.set_selection(self.forecast_options.selection()))
