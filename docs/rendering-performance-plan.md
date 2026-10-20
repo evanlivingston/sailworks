@@ -25,6 +25,43 @@ For the wider documentation map, see [the documentation index](README.md).
 
 ## Current checkpoint
 
+- **User-directed pivot — independent GRIB viewport:** replace the GRIB interaction
+  subsystem rather than continue adapting `TrackMap._gpu_frame`. The new viewport
+  owns camera/time state, asynchronous field demand and GPU portrayal. Reuse the
+  existing decoder, weather/source semantics and corrected field/selection shaders,
+  but do not depend on legacy map-frame assembly, chart readiness or CPU-symbol
+  fallback for camera motion. Continue on the existing #64 branch; no default-app
+  replacement or merge until the independent vertical path is reviewed. Earlier
+  integration attempts remain evidence, not proof of a finished foundation.
+  The independent path launches with `python -m gweatherrouting.qt.gribviewport`:
+  no paths means the saved ordered forecast selection (read only); `--data-dir`
+  points at another saved selection, and `--time` freezes the forecast UTC clock.
+  Drag pans, wheel zooms, trackpad pans; the time control and ±1-hour buttons
+  change forecast demand. This is a wind-barb viewport, not charts/fill/contours.
+  The default application and its opt-in exact-view atlas path remain unchanged.
+
+  **Try-out gate contract:** use the existing gate runner's `viewport-interaction`
+  gate with the recorded 22-source fixture. Exercise 120 sustained 12-pixel pan
+  inputs, return, anchored zoom and forecast-time crossings; wait for matching
+  content after each phase. Check source order, current-only content, loading on
+  misses, cancellation/close, and declared retained-byte limits. Record dispatch,
+  handler and render-callback proxy counts; do not invent a presentation-FPS or
+  speedup acceptance threshold. Numerical-field publications and selection
+  publications are separate, neither is a hardware-upload measurement. Visual
+  fidelity remains failed/deferred, not passed. Budget: two targeted test rounds
+  and one <=120-second native gate attempt, no baseline rerun. Stop and report at
+  budget exhaustion; keep work for review, not merge.
+  Harness setup exception: the first gate invocation failed on a shadowed
+  `tools` import before Qt or the workload started. Load the existing fixture
+  verifier by path, as the gate runner does its registry; retain that
+  NOT-EVALUATED log separately. One actual native attempt remains in budget.
+  **Result/decision:** one actual native run passed all six correctness checks
+  with the 22 saved sources; 75 targeted tests and changed-file checks passed.
+  Continue as a review-only standalone try-out, not finished #64: loading
+  occurred on 49/120 pan, 24/24 zoom and 16/18 time inputs. Selection/preparation
+  is still the weather-availability bottleneck even though input dispatch was
+  responsive. No later milestone or integration is started by this result.
+  Evidence: [`viewport-tryout-summary.json`](profiles/rendering/2026-10-19/viewport-tryout-summary.json).
 - **Architecture decided:** [`adr-001-grib-rendering-architecture.md`](adr-001-grib-rendering-architecture.md).
   Read it first. It reconciles the R0-R5 architecture in
   `docs/rendering-implementation-plan.md` with the 2026-10-19 current-state and

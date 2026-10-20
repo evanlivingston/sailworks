@@ -108,8 +108,16 @@ class WeatherImageProvider(QQuickImageProvider):
         self._lock = Lock()
         self._generation = 0
         self._images = {}
+        # The resident field's images are retained under their field identity
+        # and outlive the per-view selection. Stable URLs allow the current
+        # QML images to retain textures; this is not hardware-upload telemetry.
+        self._fields = {}
+        self._field_urls = {}
+        self._field_bytes = 0
         self.requests = 0
         self.publishes = 0
+        self.field_publications = 0
+        self.selection_publications = 0
 
     def publish(self, pair, key=None):
         """Publish ``pair`` and return the URLs of its images.
@@ -136,14 +144,80 @@ class WeatherImageProvider(QQuickImageProvider):
             }
             return tuple(f"image://weather/{name}" for name in names)
 
+    def publish_field(self, images, key):
+        """Publish a resident field's endpoint images under its identity.
+
+        The URLs are derived from the bytes they serve and the field's
+        identity, so republishing the same field keeps its URLs. Qt owns
+        texture lifetimes; a return after switching fields may upload again.
+        A field that does not fit the budget is
+        rejected: it is not published and not retained.
+        """
+        size = sum(image.sizeInBytes() for image in images)
+        if size > self.byte_limit:
+            raise ValueError("Resident field exceeds the staging memory budget")
+        with self._lock:
+            existing = self._field_urls.get(key)
+            if existing is not None:
+                # This CPU publication already exists. Returning stable URLs
+                # does not prove that Qt retained an inactive GPU texture.
+                return existing
+            self.field_publications += 1
+            names = [f"f/{key}/{_digest(image)}" for image in images]
+            for name, image in zip(names, images):
+                if name not in self._fields:
+                    self._field_bytes += image.sizeInBytes()
+                self._fields[name] = QImage(image)
+            urls = tuple(f"image://weather/{name}" for name in names)
+            self._field_urls[key] = urls
+            self._trim_fields()
+            return urls
+
+    def publish_selection(self, images, key):
+        """Publish the current-view selection; its URLs change with the view."""
+        size = sum(image.sizeInBytes() for image in images)
+        if size > self.byte_limit:
+            raise ValueError("Selection exceeds the staging memory budget")
+        with self._lock:
+            self.selection_publications += 1
+            names = [f"s/{key}/{_digest(image)}" for image in images]
+            self._images = {name: QImage(image) for name, image in zip(names, images)}
+            return tuple(f"image://weather/{name}" for name in names)
+
+    def _trim_fields(self):
+        """Release the oldest retained field when over the budget.
+
+        A field is released as a whole: its images are one GPU resource and
+        must not be released one by one.
+        """
+        while self._field_bytes > self.byte_limit and len(self._field_urls) > 1:
+            oldest = next(iter(self._field_urls))
+            self._field_urls.pop(oldest, None)
+            for name in [
+                name for name in self._fields if name.startswith(f"f/{oldest}/")
+            ]:
+                image = self._fields.pop(name)
+                self._field_bytes -= image.sizeInBytes()
+
+    def field_bytes(self):
+        with self._lock:
+            return self._field_bytes
+
     def clear(self):
         with self._lock:
             self._images.clear()
+            self._fields.clear()
+            self._field_urls.clear()
+            self._field_bytes = 0
 
     def requestImage(self, identifier, size, requested_size):  # noqa: N802
         with self._lock:
             self.requests += 1
-            image = QImage(self._images.get(identifier, QImage()))
+            # The resident field's images outlive the current selection, so
+            # both namespaces are served.
+            image = QImage(
+                self._fields.get(identifier, self._images.get(identifier, QImage()))
+            )
         if size is not None:
             size.setWidth(image.width())
             size.setHeight(image.height())

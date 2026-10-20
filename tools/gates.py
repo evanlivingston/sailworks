@@ -76,6 +76,53 @@ ENDPOINT_FIDELITY = (
 )
 
 GATES = {
+    "viewport-interaction": {
+        "title": "Independent GRIB viewport sustained interaction",
+        "milestone": "#64",
+        "kind": "correctness",
+        "tool": "test/qt_gribviewport_checks.py",
+        "endpoint": ENDPOINT_PROBE,
+        "requires": ["snapshot"],
+        "dependencies": ["PySide6", "numpy", "osgeo.gdal"],
+        "timeout_s": 110,
+        "env": {},
+        "command": [
+            "{python}",
+            "{tool}",
+            "--snapshot",
+            "{snapshot}",
+            "--output",
+            "{tool_output}",
+        ],
+        "defaults": {"scenarios": ["pan-zoom-time"], "frames": 120, "repeats": 1},
+        "full": {"scenarios": ["pan-zoom-time"], "frames": 120, "repeats": 1},
+        "tool_output": "{outdir}/{gate}.tool.json",
+        "result": "{outdir}/{gate}.tool.json",
+        "reference": {
+            "kind": "recorded-evidence",
+            "source": "docs/rendering-performance-plan.md: Try-out gate contract",
+        },
+        "checks": [
+            {
+                "label": label,
+                "metric": metric,
+                "aggregate": "all",
+                "op": "is_true",
+                "source": "docs/rendering-performance-plan.md: Try-out gate contract (behavioral invariant, not a timing threshold)",
+            }
+            for label, metric in (
+                ("pan, zoom and time settle without stale content", "complete"),
+                ("selected forecast order preserved", "source_order_preserved"),
+                (
+                    "camera accepts input during stalled preparation",
+                    "stalled_camera_responsive",
+                ),
+                ("miss shows loading, not stale weather", "honest_loading"),
+                ("retained payload budgets respected", "retained_budgets_respected"),
+                ("pending close stops worker", "worker_stopped"),
+            )
+        ],
+    },
     # ------------------------------------------------------------------ #64
     "residency": {
         "title": "GPU-resident numerical field cache",
