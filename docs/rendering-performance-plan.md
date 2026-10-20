@@ -25,6 +25,80 @@ For the wider documentation map, see [the documentation index](README.md).
 
 ## Current checkpoint
 
+- **#70 result (2026-10-20): validation, soak and the rollout decision, on
+  `feature/async-double-buffered-66`; nothing was pushed, merged or opened as a
+  PR, and **the default application path was not switched**. The scope was read
+  against ADR-001 §4.6 (D6): the vehicle is the independent viewport, so the
+  application's `validation` gate was run before and after the change to show
+  that the app path is unchanged, and the viewport's own `viewport-interaction`
+  gate carries the new observations. The `validation` gate's `--full` profile
+  is the app-side matrix, but the runner's timeout is capped at 120 s and that
+  profile needs more: the `--full` attempt was killed at 110 s after two of
+  its thirty runs (the tool's own checkpoint records them), so the matrix was
+  run directly with the same tool, the same fixture and the gate's own
+  environment — **all ten scenarios, 0 CPU symbol batches, 0 CPU raster
+  symbols, 0 overlay warnings, GPU: Metal**. **Repetitions:** six matched,
+  interleaved
+  repetitions, each a whole native process with its own worker thread, field
+  store, sampling memo and staging provider, on the 22-source fixture
+  `1ed1bca1…` (5693 files, verified before every run). Every repetition
+  recorded **0/120** pan, **0/24** zoom and **0/18** time loading inputs,
+  `continuous_weather` **true**, the fill's value error **5.96e-08** and its
+  placement error **4.17e-07** — the same numbers in all six. The cold ready
+  time is **1421.5–1547.7 ms** (median 1435.1); the retained field store is
+  **27.7–30.1 MB** of its 128 MiB ceiling with **0** evictions; the sampling
+  memo is **12.8–13.8 MB** of its 16 MiB ceiling. The endpoint is the
+  `afterRendering` **render-callback proxy**: presentation latency and
+  input-to-present latency are **unmeasured**, and no grab or readback timing
+  is renamed as either. **Soak:** two sessions of repeated travel,
+  forecast-time and zoom changes, with the criterion and the caps stated
+  before the runs (a plateau is the three thirds of the curve agreeing within
+  2% of the last third's median, with no declared budget exceeded; the caps
+  were 20,000 steps / 660 s for the interleaved session and 40,000 steps /
+  900 s for the long session). The curve **plateaus** in both: over
+  **21,216 steps and 900.0 s** the field store settles at
+  **29,610,216 B** of its 128 MiB ceiling with 12 fields and 0 evictions, the
+  sampling memo at **15,627,216 B** of its 16 MiB ceiling, the staging
+  provider at **4,617,072 B** of its 32 MiB ceiling, the three thirds agree
+  within **0.0%**, and not one of the 21,216 steps failed to reach the ready
+  state. The 2% tolerance is this issue's own declared criterion, so it is
+  **unratified**. **Separate limits, each on its own:** the
+  cold load **1429.9 ms**; the coverage miss (the camera 1.5° beyond the
+  resident window) shows the loading state in **22.1 ms** with the stale
+  weather hidden and recovers in **265.2 ms**; the interval crossing (+12 h,
+  beyond the resident time window) shows the loading state in **31.3 ms** and
+  recovers in **172.9 ms**. None of the three has a recorded acceptance bound,
+  so all three are reported as **unratified**. **Per-layer state:** the fill,
+  the barbs and the chart each report the GPU path, an explicit loading state
+  and **no** fallback; the retained CPU fallback is the application's own CPU
+  map renderer, and it is **proven to work** — 24 of 24 frames with a current
+  prepared wind view on the same fixture, with no overlay error. **Matrices:**
+  the workload matrix covers overlapping sources, a source change, missing
+  fields and the `over_land=False` shoreline tier; **marine-heavy and the
+  application's two-map view are NOT covered** — the vehicle has no marine
+  layer and is a single view. The platform matrix covers the resize and the
+  host identity; a **DPR change and a Metal device loss are NOT covered**
+  (this host's DPR is fixed at 2.0 and a device loss cannot be induced); the
+  **OpenGL backend does not reproduce the Metal result** (its framebuffer
+  readback is empty, so the fill's pixel and value evidence is unavailable
+  there), and the **Vulkan and software backends do not present the viewport
+  at all** (the cold load times out). Native `viewport-interaction` after the
+  change: **45 checks — 42 pass, 3 unratified**; the app's `validation` gate:
+  **8 pass, 1 unratified, 1 skipped**. **Negative results preserved:** the
+  OpenGL, Vulkan and software backend results, the pan's dispatch-lateness p95
+  of **48.7 ms** (max **78.7 ms**) against a p50 of **3.4 ms**, the pre-existing
+  failure of `test_startup_rendering_benchmark.py::test_hardware_status_does_not_imply_numerical_symbols_active`
+  (it fails on the base commit `5917c3a` too), and the two disclosed budget
+  overruns (#65: 8 attempts against 3; #69: 13 against 3). Decision:
+  **keep-experimental** — the interaction contract survived the scrutiny, and
+  the default path is still not switched: visual fidelity is failed/deferred,
+  the endpoint is a proxy, two workload cells and three platform conditions are
+  gaps rather than closed, and the plateau and limit bounds are unratified.
+  The proposal is recorded as an ADR amendment in
+  [adr-001-grib-rendering-architecture.md §4.7](adr-001-grib-rendering-architecture.md)
+  and **awaits the user's decision**. Evidence:
+  [viewport-validation-summary.json](profiles/rendering/2026-10-20/viewport-validation-summary.json).
+
 - **Continuous-weather follow-up (user authorized, PR #72 / #64):** stay in the
   independent viewport. Prepare a padded geographic window before the camera
   reaches its edge; reuse numerical fields across zooms only when the existing

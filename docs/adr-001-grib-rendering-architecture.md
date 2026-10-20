@@ -2,7 +2,9 @@
 
 - **Status:** Accepted. D2 was decided on 2026-10-19 in favour of option (a); the
   amendment is applied in §6. D6 (target interaction path) was decided on
-  2026-10-19 in §4.6.
+  2026-10-19 in §4.6. **§4.7 is a proposed amendment** (the #70 rollout
+  decision, keep-experimental); it records what the evidence says and it awaits
+  the user's decision — no default path is switched by it.
 - **Date:** 2026-10-19
 - **Supersedes:** nothing. **Amends:** [`rendering-implementation-plan.md`](rendering-implementation-plan.md)
   (the R0–R5 sequence and the invariants at lines 43–70), as recorded in §6.
@@ -264,6 +266,59 @@ Consequences:
 **Issues:** [#64](https://github.com/evanlivingston/gweatherrouting/issues/64)–[#70](https://github.com/evanlivingston/gweatherrouting/issues/70);
 review vehicle [#72](https://github.com/evanlivingston/gweatherrouting/pull/72).
 
+### 4.7 D7 — Rollout decision (proposed 2026-10-20, awaiting the user)
+
+**Proposal.** Keep the independent viewport **experimental**. Do **not** switch the
+application's default weather interaction path to it on the evidence recorded by
+[#70](https://github.com/evanlivingston/gweatherrouting/issues/70).
+
+This is an **amendment proposal**, not a decision: D6 named the independent
+viewport as the *target* interaction path, and D6's own consequence was that
+"the default application path stays unchanged until #70 makes an explicit
+rollout decision". The rollout decision is the user's; this section records
+what the evidence now says and what it does not.
+
+**What the evidence says (measured, 2026-10-20, fixture `1ed1bca1…`).**
+
+| Question | Answer | Where |
+| --- | --- | --- |
+| Does the interaction contract survive run-to-run variance? | Yes, in six matched interleaved repetitions: 0 loading inputs in every phase of every repetition, `continuous_weather` true in all six, the fill's value error 5.96e-08 and its placement error 4.17e-07 in all six. | [viewport-validation-summary.json](profiles/rendering/2026-10-20/viewport-validation-summary.json) |
+| Is there a memory plateau, not a high-water mark? | Yes: over 21,216 soak steps and 900.0 s the field store settles at 29,610,216 B of its 128 MiB ceiling with 12 fields and no eviction, and the sampling memo at 15,627,216 B of its 16 MiB ceiling; the three thirds of the curve agree within 0.0%. | the same summary |
+| Are the cold load, the coverage miss and the interval crossing separate? | Yes: 1,429.9 ms cold load, 265.2 ms coverage-miss recovery (22.1 ms to the honest loading state), 172.9 ms interval-crossing recovery (31.3 ms to the honest loading state). | the same summary |
+| Does every layer report its own GPU / loading / fallback state? | Yes: the fill, the barbs and the chart each report the GPU path, an explicit loading state and no fallback. | the same summary |
+| Does the retained CPU fallback work? | Yes: 24 of 24 frames current on the application's own CPU renderer on the same fixture. | the same summary |
+| Is the platform matrix complete? | **No.** A device-pixel-ratio change and a Metal device loss cannot be exercised on this host; the OpenGL backend does not reproduce the Metal result (its framebuffer readback is empty); the Vulkan and software backends do not present the viewport at all. | the same summary |
+| Is the workload matrix complete? | **No.** A marine-heavy workload and the application's two-map view are not in the vehicle at all. | the same summary |
+
+**Why the proposal is *keep-experimental* and not *adopt*.** The interaction
+contract is the strongest result this program has produced, and it is not
+enough to switch a default: visual fidelity is still failed and deferred, the
+measurement endpoint is a render-callback proxy (presentation latency and
+input-to-present latency are **unmeasured**), two workload cells and three
+platform conditions are reported as gaps rather than closed, and the soak's
+plateau criterion and the three separate limits are **unratified** — the
+numbers are reported, but no recorded acceptance bound backs them.
+
+**What the proposal does not cover.** Visual fidelity. Presentation or
+input-to-present latency. A device-pixel-ratio change. A Metal device loss.
+Marine layers. The application's two-map layout. The default application's own
+start-up and draw path.
+
+**Consequences if the user accepts it.**
+
+- The application's default weather interaction path stays as it is; the
+  viewport stays behind its standalone entry point and its runtime flags.
+- The legacy frame assembler is **not** retired by this proposal; D6's
+  retirement step waits for a later, user-approved rollout.
+- The next concrete steps are listed in the #70 summary's
+  `recommendation.next_concrete_steps`: ratify or deliberately leave unratified
+  the plateau and limit bounds, measure the presentation endpoint with an
+  instrument that can see the compositor, close or permanently record the
+  marine and two-map cells, and decide the OpenGL backend.
+
+**Issues:** [#70](https://github.com/evanlivingston/gweatherrouting/issues/70),
+[#51](https://github.com/evanlivingston/gweatherrouting/issues/51).
+
 ---
 
 ## 5. Relationship to the existing sequences
@@ -298,6 +353,7 @@ remains the single roadmap.
 | Line 103 (`ContentKey`) | "Forecast instant/bracket" becomes a resident time window over multiple instants. (D4) |
 | Lines 212–215 (R3 reuse) | Reuse extends from spatial to temporal. (D4) |
 | §4.6 (program target) | The independent viewport is the target weather interaction path; issues #64–#68 are re-pointed to it and the frame assembler is retired at #69/#70. (D6) |
+| §4.7 (rollout, proposed 2026-10-20) | **PROPOSED, awaiting the user:** the default application path is *not* switched to the independent viewport on the #70 evidence; the viewport stays experimental behind its own flags. Records what the evidence shows (six matched interleaved repetitions, a memory plateau, the three separate limits, per-layer state, the proven CPU fallback) and what it does not cover (visual fidelity, presentation latency, DPR change, device loss, marine, two maps). (D7) |
 
 **Deferred and not amended:** R1 (host), R0.3/R0.4 (resource envelope, platform matrix),
 R5 (retention hardening, rollout). R0.2 is discharged by

@@ -828,13 +828,19 @@ def _platform_identity(widget):
         backend = ""
     if not backend:
         backend = str(os.environ.get("QT_QUICK_BACKEND", "") or "")
+    requested = (
+        os.environ.get("QSG_RHI_BACKEND")
+        or os.environ.get("QT_QUICK_BACKEND")
+        or "default"
+    )
     return {
         "platform": platform.platform(),
         "machine": platform.machine(),
         "python": platform.python_version(),
         "qt": PySide6.__version__,
         "scene_graph_backend": backend,
-        "requested_backend": os.environ.get("QT_QUICK_BACKEND", "") or "default",
+        "requested_backend": requested,
+        "quick_backend": os.environ.get("QT_QUICK_BACKEND", "") or "default",
         "device_pixel_ratio": float(quick.devicePixelRatio()),
         "logical_size": [widget.width(), widget.height()],
         "device_size": [
@@ -1742,10 +1748,10 @@ def _platform_cells(spawn):
                 "shaders compile, but the framebuffer readback returns an "
                 "empty image (0 of the total pixels are painted), so the "
                 "numerical fill's pixel and value evidence is NOT available "
-                "on that backend with this instrumentation, and the "
-                "interaction's continuous-weather check did not hold in this "
-                "run. The OpenGL backend does not reproduce the Metal result "
-                "and is not claimed to."
+                "on that backend with this instrumentation. The interaction's "
+                "continuous-weather check held in one run of this cell and "
+                "did not hold in another, so the OpenGL backend is not "
+                "claimed to reproduce the Metal result."
             ),
             "evidence": backends["opengl"],
         }
