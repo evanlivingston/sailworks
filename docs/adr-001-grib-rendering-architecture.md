@@ -1,7 +1,10 @@
 # ADR-001: GRIB rendering architecture — reconciliation and decisions
 
 - **Status:** Accepted. D2 was decided on 2026-10-19 in favour of option (a); the
-  amendment is applied in §6.
+  amendment is applied in §6. D6 (target interaction path) was decided on
+  2026-10-19 in §4.6. **§4.7 is a proposed amendment** (the #70 rollout
+  decision, keep-experimental); it records what the evidence says and it awaits
+  the user's decision — no default path is switched by it.
 - **Date:** 2026-10-19
 - **Supersedes:** nothing. **Amends:** [`rendering-implementation-plan.md`](rendering-implementation-plan.md)
   (the R0–R5 sequence and the invariants at lines 43–70), as recorded in §6.
@@ -31,8 +34,9 @@ executable issues. It deliberately does **not** restate the specification; it li
   and in the canonical plan's decision log; the M0 mechanism probes in the
   `rendering-m0-*.md` records; machine-readable evidence under
   `docs/profiles/rendering/`.
-- **Status:** D1–D5 are all settled. No decision in this ADR is awaiting a user
-  decision, and no A0 slice may be started from this document.
+- **Status:** D1–D6 are settled; §10 records accepted display policy with
+  implementation pending. D7 remains a proposal awaiting the user. PRs #72/#75
+  merged experimental code, not default-on rollout. No new A0 slice is authorized.
 - **Wider documentation map:** [the documentation index](README.md).
 
 ---
@@ -237,6 +241,85 @@ dependency than the residency work, and would change the numerical values produc
 **Revisit when:** D1 and D2 are landed and the remaining decode cost is re-profiled
 against the new baseline. It is a separate decision, not a silent omission.
 
+### 4.6 D6 — Independent viewport is the target weather interaction path
+
+**Decision (2026-10-19).** The independent GRIB viewport
+(`gweatherrouting/qt/gribviewport.py`) is the target weather interaction path.
+The existing weather frame path (`TrackMap._gpu_frame` / MapFrame / MapScene /
+WeatherStager / ContentKey) is legacy and is retired once #69 and #70 complete the
+layer migration. The viewport owns camera/time state, field demand and
+field/selection portrayal, and reuses the existing decoder, sampler, source
+semantics and shaders.
+
+Consequences:
+
+- D1–D4 apply to the viewport's field store, preparation pipeline and time
+  windows. Issues #64–#68 are re-pointed to that vehicle.
+- The default application path stays unchanged until #70 makes an explicit
+  rollout decision. Viewport work stays behind its standalone entry point and
+  runtime flags.
+- Charts, fill, contours and routing are not yet in the viewport. #68 and #69
+  provide them before #70 can consider a default switch.
+- Numerical, mask, source-order and selection gates are unchanged. Visual
+  fidelity remains a separate, currently deferred gate.
+
+**Revises:** the program target implied by §4.1–§4.4 and the issue mapping in §3.
+**Issues:** [#64](https://github.com/evanlivingston/gweatherrouting/issues/64)–[#70](https://github.com/evanlivingston/gweatherrouting/issues/70);
+review vehicle [#72](https://github.com/evanlivingston/gweatherrouting/pull/72).
+
+### 4.7 D7 — Rollout decision (proposed 2026-10-20, awaiting the user)
+
+**Proposal.** Keep the independent viewport **experimental**. Do **not** switch the
+application's default weather interaction path to it on the evidence recorded by
+[#70](https://github.com/evanlivingston/gweatherrouting/issues/70).
+
+This is an **amendment proposal**, not a decision: D6 named the independent
+viewport as the *target* interaction path, and D6's own consequence was that
+"the default application path stays unchanged until #70 makes an explicit
+rollout decision". The rollout decision is the user's; this section records
+what the evidence now says and what it does not.
+
+**What the evidence says (measured, 2026-10-20, fixture `1ed1bca1…`).**
+
+| Question | Answer | Where |
+| --- | --- | --- |
+| Does candidate availability survive run-to-run variance? | Six candidate-only repetitions, three before and three after the soak: 0 loading inputs in every phase, `continuous_weather` true in all six, same-payload value error 5.96e-08 and same-lattice placement error 4.17e-07. These are not alternating baseline/candidate pairs and do not prove comparative improvement or original-sampler fidelity. | [viewport-validation-summary.json](profiles/rendering/2026-10-20/viewport-validation-summary.json) |
+| Is there an accounted-payload plateau, not a high-water mark? | Over 21,216 steps/900.0 s the store settles at 29,610,216 B of 128 MiB, 12 fields/no eviction; the memo at 15,627,216 B of 16 MiB; thirds agree within 0.0%. This is not RSS/VRAM or eviction-stress acceptance. | the same summary |
+| Are the cold load, the coverage miss and the interval crossing separate? | Yes: 1,429.9 ms cold load, 265.2 ms coverage-miss recovery (22.1 ms to the honest loading state), 172.9 ms interval-crossing recovery (31.3 ms to the honest loading state). | the same summary |
+| Does every layer report its own GPU / loading / fallback state? | Yes: the fill, the barbs and the chart each report the GPU path, an explicit loading state and no fallback. | the same summary |
+| Does the retained CPU fallback work? | Yes: 24 of 24 frames current on the application's own CPU renderer on the same fixture. | the same summary |
+| Is the platform matrix complete? | **No.** A device-pixel-ratio change and a Metal device loss cannot be exercised on this host; the OpenGL backend does not reproduce the Metal result (its framebuffer readback is empty); the Vulkan and software backends do not present the viewport at all. | the same summary |
+| Is the workload matrix complete? | **No.** A marine-heavy workload and the application's two-map view are not in the vehicle at all. | the same summary |
+
+**Why the proposal is *keep-experimental* and not *adopt*.** The interaction
+contract is the strongest result this program has produced, and it is not
+enough to switch a default: visual fidelity is still failed and deferred, the
+measurement endpoint is a render-callback proxy (presentation latency and
+input-to-present latency are **unmeasured**), two workload cells and three
+platform conditions are reported as gaps rather than closed, and the soak's
+plateau criterion and the three separate limits are **unratified** — the
+numbers are reported, but no recorded acceptance bound backs them.
+
+**What the proposal does not cover.** Visual fidelity. Presentation or
+input-to-present latency. A device-pixel-ratio change. A Metal device loss.
+Marine layers. The application's two-map layout. The default application's own
+start-up and draw path.
+
+**Consequences if the user accepts it.**
+
+- The application's default weather interaction path stays as it is; the
+  viewport stays behind its standalone entry point and its runtime flags.
+- The legacy frame assembler is **not** retired by this proposal; D6's
+  retirement step waits for a later, user-approved rollout.
+- The next concrete steps are listed in the #70 summary's
+  `recommendation.next_concrete_steps`: ratify or deliberately leave unratified
+  the plateau and limit bounds, measure the presentation endpoint with an
+  instrument that can see the compositor, close or permanently record the
+  marine and two-map cells, and decide the OpenGL backend.
+
+**Issues:** [#70](https://github.com/evanlivingston/gweatherrouting/issues/70),
+[#51](https://github.com/evanlivingston/gweatherrouting/issues/51).
+
 ---
 
 ## 5. Relationship to the existing sequences
@@ -270,6 +353,8 @@ remains the single roadmap.
 | Lines 77–93 (pipeline) | Add explicit N/N+1 overlap, ≤2 in flight, and generation-key publication rejection. (D3) |
 | Line 103 (`ContentKey`) | "Forecast instant/bracket" becomes a resident time window over multiple instants. (D4) |
 | Lines 212–215 (R3 reuse) | Reuse extends from spatial to temporal. (D4) |
+| §4.6 (program target) | The independent viewport is the target weather interaction path; issues #64–#68 are re-pointed to it and the frame assembler is retired at #69/#70. (D6) |
+| §4.7 (rollout, proposed 2026-10-20) | **PROPOSED, awaiting the user:** default unchanged; viewport experimental. Six candidate-only repetitions, accounted-cache payload plateau, separate unratified limits and per-layer state are recorded; the retained application CPU renderer works. No baseline/candidate comparison, RSS/VRAM plateau, visual/presentation acceptance, DPR/device-loss, marine or two-map acceptance is claimed. (D7) |
 
 **Deferred and not amended:** R1 (host), R0.3/R0.4 (resource envelope, platform matrix),
 R5 (retention hardening, rollout). R0.2 is discharged by
@@ -300,7 +385,9 @@ R5 (retention hardening, rollout). R0.2 is discharged by
 
 ## 8. Open questions
 
-None. Q1 (D2) was decided on 2026-10-19 in favour of option (a). Q2 (ADR naming
+D7 awaits user decision; §10 implementation and the fidelity/acceptance ledger
+remain open. Earlier architecture questions are settled: Q1 (D2) was decided on
+2026-10-19 in favour of option (a). Q2 (ADR naming
 convention) resolved: ADRs live flat in `docs/` as `adr-NNN-slug.md`. Q3 (whether the
 R-sequence's "Immediate implementation order" was still authoritative) resolved: R0.1
 and R0.2 are discharged, and the live sequence is now the issue program. Q4 (whether

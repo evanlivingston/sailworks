@@ -363,6 +363,7 @@ def build_command(gate, gate_id, settings, outdir, snapshot):
         "scenarios": ",".join(settings["scenarios"]),
         "frames": str(settings["frames"]),
         "repeats": str(settings["repeats"]),
+        "sections": str(settings.get("sections", "")),
     }
     output = Path(gate["tool_output"].format(**substitutions))
     result = Path(gate["result"].format(**substitutions))
@@ -551,6 +552,7 @@ def run_gate(gate_id, args):
         "scenario": settings["scenarios"],
         "frames": settings["frames"],
         "repeats": settings["repeats"],
+        "sections": settings.get("sections", ""),
         "full": bool(args.full),
         "endpoint": gate["endpoint"],
         "reference": gate["reference"],

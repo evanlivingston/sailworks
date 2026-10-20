@@ -94,6 +94,14 @@ class ByteAccountedLRU:
         self._entries.move_to_end(key)
         return value
 
+    def values(self):
+        """Read-only snapshot of retained values, least to most recently used.
+
+        Callers sharing a store between threads must hold their own lock; the
+        tuple is a snapshot of the entries, not a copy of the values.
+        """
+        return tuple(self._entries.values())
+
     def discard(self, key):
         """Remove one entry and release its bytes."""
         value = self._entries.pop(key)

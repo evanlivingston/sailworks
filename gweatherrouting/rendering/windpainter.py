@@ -27,6 +27,20 @@ try:
 except ImportError:  # pragma: no cover - matplotlib pulls contourpy in practice
     contour_generator = None  # type: ignore[assignment]
 
+
+def shoreline_quality(scale):
+    """The existing shoreline resolution policy, shared by mask reuse and I/O."""
+    if scale > 5000:
+        return "c"
+    if scale > 500:
+        return "l"
+    if scale > 200:
+        return "i"
+    if scale >= 15:
+        return "h"
+    return "f"
+
+
 #: Isobar spacing in hPa; levels snap to multiples of this interval.
 ISOBAR_INTERVAL_HPA = 4.0
 

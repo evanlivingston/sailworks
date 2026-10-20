@@ -1,5 +1,51 @@
 # Numerical GPU weather interpolation: implementation status
 
+## Independent GRIB viewport (review path)
+
+From the repository, using the project virtualenv:
+
+```sh
+python -m gweatherrouting.qt.gribviewport
+```
+
+No paths means **all saved selected forecasts, in saved order**. Nothing is
+downloaded or saved. To use another saved data directory or freeze the clock:
+
+```sh
+python -m gweatherrouting.qt.gribviewport --data-dir /path/to/app-data --time 2026-10-19T08:00:00
+```
+
+Explicit GRIB paths may also be supplied. Drag to pan, wheel to zoom at the
+pointer, trackpad to pan. Use the UTC time editor or ±1-hour buttons to scrub.
+The saved barb density and land visibility are respected. This standalone
+wind-barb window has no charts, scalar fill, contours or routing overlays; it
+does not replace the normal app yet. Missing selection files are errors, never
+silently omitted. Loading hides stale weather rather than substituting CPU wind.
+
+The viewport owns its camera, worker and GPU portrayal; it does not use the
+application frame assembler. Covered movement retains the numerical field and
+rebuilds only the current-view selection. The standalone field store has a
+declared 128 MiB CPU-payload limit, the decoded-band cache 128 MiB, and published
+provider images 32 MiB. On the recorded 900×700 fixture the store retained 33
+prepared fields in 58.8 MB with no evictions; larger views retain fewer. These are
+not a unified RSS/VRAM limit or hardware-upload measurements. Preparation/in-flight
+and Qt texture lifetimes are not directly measured.
+
+The `viewport-interaction` correctness gate runs sustained pan, anchored zoom,
+time changes and pending close through the existing runner:
+
+```sh
+python tools/gate_runner.py --gate viewport-interaction --snapshot /path/to/snapshot --output /path/to/results
+```
+
+The recorded 22-source run settled all phases, but weather was loading on 49/120
+pan inputs, all 24 zoom inputs and 16/18 time inputs. This is **not** smooth-weather
+performance acceptance or a presentation-FPS result. The earlier native pixel
+comparison failed and its investigation remains user-deferred, not passed.
+See the [try-out evidence](profiles/rendering/2026-10-19/viewport-tryout-summary.json).
+
+## Existing application path (unchanged)
+
 The experimental map path now draws **numerically interpolated wind barbs**.
 Enable it only with the existing GPU presenter:
 
