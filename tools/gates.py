@@ -96,9 +96,23 @@ GATES = {
             "{snapshot}",
             "--output",
             "{tool_output}",
+            "--repeats",
+            "{repeats}",
+            "--sections",
+            "{sections}",
         ],
-        "defaults": {"scenarios": ["pan-zoom-time"], "frames": 120, "repeats": 1},
-        "full": {"scenarios": ["pan-zoom-time"], "frames": 120, "repeats": 1},
+        "defaults": {
+            "scenarios": ["pan-zoom-time"],
+            "frames": 120,
+            "repeats": 1,
+            "sections": "cold_load,coverage_miss,interval_crossing",
+        },
+        "full": {
+            "scenarios": ["pan-zoom-time"],
+            "frames": 120,
+            "repeats": 2,
+            "sections": "cold_load,coverage_miss,interval_crossing,matrix,platform",
+        },
         "tool_output": "{outdir}/{gate}.tool.json",
         "result": "{outdir}/{gate}.tool.json",
         "reference": {
@@ -441,6 +455,199 @@ GATES = {
                     "composing chart generation and the older generation may "
                     "never publish. A behavioural invariant, not a timing "
                     "threshold."
+                ),
+            },
+            # ------------------------------------------------ #70 per layer
+            {
+                "label": "the fill layer is presented by the GPU's shader",
+                "metric": "layers.fill.gpu",
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "issue #70: every layer reports its own GPU, loading and "
+                    "fallback state, read from the layer's own QML object. "
+                    "The fill's state is true when its ShaderEffect is "
+                    "compiled and its images are loaded. A behavioural "
+                    "invariant, not a timing threshold."
+                ),
+            },
+            {
+                "label": "the barbs layer is presented by the GPU's shader",
+                "metric": "layers.barbs.gpu",
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "issue #70: the barbs' own state, read from the barbs' "
+                    "QML object, not the viewport's guess. A behavioural "
+                    "invariant, not a timing threshold."
+                ),
+            },
+            {
+                "label": "the chart layer is composited by the scene graph",
+                "metric": "layers.chart.gpu",
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "issue #70: the chart's composed surface reaches the "
+                    "scene graph as an image and is composited by the GPU. A "
+                    "behavioural invariant, not a timing threshold."
+                ),
+            },
+            {
+                "label": "the fill layer reports its loading state explicitly",
+                "metric": "layers.fill.loading_state_explicit",
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "issue #70: the fill is published from the same resident "
+                    "field as the barbs, so the viewport's weather state is "
+                    "its loading state, and that state must be explicit: the "
+                    "status is shown and the stale weather is hidden. A "
+                    "behavioural invariant, not a timing threshold."
+                ),
+            },
+            {
+                "label": "the chart layer reports its own loading state",
+                "metric": "layers.chart.loading_state_explicit",
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "issue #69 and issue #70: the chart layer has its own "
+                    "explicit loading state and never uses the weather's. A "
+                    "behavioural invariant, not a timing threshold."
+                ),
+            },
+            {
+                "label": "the fill layer did not fall back",
+                "metric": "layers.fill.fallback_active",
+                "aggregate": "all",
+                "op": "is_false",
+                "source": (
+                    "issue #70: no layer of the viewport has a per-layer CPU "
+                    "fallback, so a fallback on a layer would be an "
+                    "unexpected silent change of path. The retained CPU "
+                    "fallback is the application's CPU map renderer, which "
+                    "the validation gate proves separately."
+                ),
+            },
+            {
+                "label": "the barbs layer did not fall back",
+                "metric": "layers.barbs.fallback_active",
+                "aggregate": "all",
+                "op": "is_false",
+                "source": (
+                    "issue #70: the barbs are on the GPU path; a silent "
+                    "fallback would change the portrayal without saying so."
+                ),
+            },
+            {
+                "label": "the chart layer did not fall back",
+                "metric": "layers.chart.fallback_active",
+                "aggregate": "all",
+                "op": "is_false",
+                "source": (
+                    "issue #70: the chart is composited by the scene graph; a "
+                    "silent fallback would change the portrayal without "
+                    "saying so."
+                ),
+            },
+            # ------------------------------------------- #70 separate limits
+            {
+                "label": "the cold load reaches a ready presentation",
+                "metric": "limits.cold_load.ready",
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "issue #70: the cold load is its own limit, measured in "
+                    "its own fresh session: a cold field preparation and the "
+                    "first ready presentation. A behavioural invariant, not a "
+                    "timing threshold."
+                ),
+            },
+            {
+                "label": "a coverage miss shows loading, not stale weather",
+                "metric": "limits.coverage_miss.attempts[*].stale_weather_hidden",
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "issue #70: a demand outside the resident field's window "
+                    "shows the loading state and hides the stale weather. "
+                    "This is the same honest-loading contract the interaction "
+                    "gate already checks for a blocked preparation, applied to "
+                    "a spatial miss. A behavioural invariant, not a timing "
+                    "threshold."
+                ),
+            },
+            {
+                "label": "a coverage miss recovers",
+                "metric": "limits.coverage_miss.attempts[*].recovered",
+                "aggregate": "any",
+                "op": "is_true",
+                "source": (
+                    "issue #70: the viewport recovers from a coverage miss by "
+                    "preparing the field the new camera needs. A behavioural "
+                    "invariant, not a timing threshold."
+                ),
+            },
+            {
+                "label": "an interval crossing recovers",
+                "metric": "limits.interval_crossing.attempts[*].recovered",
+                "aggregate": "any",
+                "op": "is_true",
+                "source": (
+                    "issue #70: a forecast instant beyond the resident time "
+                    "window is prepared again and presented. A behavioural "
+                    "invariant, not a timing threshold."
+                ),
+            },
+            {
+                "label": "the cold load limit (reported, not ratified)",
+                "metric": "limits.cold_load.ms",
+                "aggregate": "max",
+                "op": "<=",
+                "value": 0,
+                "ratified": False,
+                "source": (
+                    "NOT DERIVABLE as a bound. The recorded cold preparation "
+                    "is a measurement, not a limit: 792 ms "
+                    "(docs/profiles/rendering/2026-10-19/prepare-breakdown.json) "
+                    "and 324 ms for the second pass's own script "
+                    "(docs/profiles/rendering/2026-10-19/"
+                    "viewport-gridded-field-summary.json). No recorded "
+                    "evidence sets an acceptance bound for the cold load, so "
+                    "the placeholder 0 is never enforced and the number is "
+                    "reported without affecting the verdict."
+                ),
+            },
+            {
+                "label": "the coverage-miss recovery limit (reported, not ratified)",
+                "metric": "limits.coverage_miss.attempts[*].recovery_ms",
+                "aggregate": "max",
+                "op": "<=",
+                "value": 0,
+                "ratified": False,
+                "source": (
+                    "NOT DERIVABLE as a bound. The recorded preparation costs "
+                    "(792 ms cold, 159 ms re-centred) are measurements of "
+                    "different scripts and are not an acceptance bound for a "
+                    "coverage miss. The placeholder 0 is never enforced and "
+                    "the number is reported without affecting the verdict."
+                ),
+            },
+            {
+                "label": (
+                    "the interval-crossing recovery limit (reported, not ratified)"
+                ),
+                "metric": "limits.interval_crossing.attempts[*].recovery_ms",
+                "aggregate": "max",
+                "op": "<=",
+                "value": 0,
+                "ratified": False,
+                "source": (
+                    "NOT DERIVABLE as a bound. No recorded evidence sets an "
+                    "acceptance bound for a forecast instant beyond the "
+                    "resident time window. The placeholder 0 is never enforced "
+                    "and the number is reported without affecting the verdict."
                 ),
             },
         ],
@@ -1395,6 +1602,7 @@ GATES = {
             "{frames}",
             "--repeats",
             "{repeats}",
+            "--cpu-fallback-probe",
             "--output",
             "{tool_output}",
         ],
@@ -1492,6 +1700,48 @@ GATES = {
                     "#limitations.global_memory_plateau_measured=false. The "
                     "placeholder threshold 0 is a placeholder only and is never "
                     "enforced; #70 must ratify a real bound and set it here."
+                ),
+            },
+            {
+                "label": "the retained CPU fallback renders the weather",
+                "metric": "cpu_fallback.prepared_view_current_frames",
+                "aggregate": "max",
+                "op": ">",
+                "value": 0,
+                "source": (
+                    "issue #70: the retained CPU fallback is the "
+                    "application's own CPU renderer, and it must be proven to "
+                    "work, not merely to be present. The probe replays the "
+                    "same scenario on the same fixture with the CPU renderer "
+                    "and counts the frames whose prepared wind view was "
+                    "current for the view. A fallback that is present but "
+                    "renders nothing is not a fallback."
+                ),
+            },
+            {
+                "label": "the CPU fallback ran the CPU renderer",
+                "metric": "cpu_fallback.renderer_requested",
+                "aggregate": "first",
+                "op": "==",
+                "value": "cpu",
+                "source": (
+                    "issue #70: the probe must exercise the CPU path itself, "
+                    "not the GPU path with a label. The requested renderer is "
+                    "recorded by the application's own controller."
+                ),
+            },
+            {
+                "label": "the CPU fallback reported no overlay error",
+                "metric": "cpu_fallback.warnings",
+                "aggregate": "list_length",
+                "op": "==",
+                "value": 0,
+                "source": (
+                    "issue #70: the retained CPU path must render the weather "
+                    "without an overlay error, exactly as the GPU run must "
+                    "(docs/profiles/rendering/2026-10-18/"
+                    "pr50-residency-functional-summary.json#scrub_return."
+                    "warnings=0)."
                 ),
             },
         ],

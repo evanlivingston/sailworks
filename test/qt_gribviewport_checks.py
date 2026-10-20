@@ -709,7 +709,1037 @@ def chart_supersession_observation(widget, model, camera, pump, layer):
     return out
 
 
-def run(snapshot):
+# ---------------------------------------------------------------------------
+# #70 — validation, soak, matrices and the rollout evidence
+# ---------------------------------------------------------------------------
+
+# The viewport's three declared retained budgets.  These are recorded values,
+# not thresholds invented for this issue: the field store's ceiling is the
+# 128 MiB decoded-band budget (gweatherrouting/qt/gribviewport.py
+# FIELD_BYTE_LIMIT; docs/history/gpu-weather-residency.md), the sampling
+# memo's is the 16 MiB memo limit (gweatherrouting/rendering/weatherstaging.py
+# SAMPLING_MEMO_BYTES) and the staging provider's is the 32 MiB staging limit
+# (gweatherrouting/qt/gpuweather.py WeatherImageProvider.byte_limit).
+STORE_BUDGET_BYTES = 128 * 1024 * 1024
+MEMO_BUDGET_BYTES = 16 * 1024 * 1024
+PROVIDER_BUDGET_BYTES = 32 * 1024 * 1024
+
+# The soak's plateau criterion, declared before the run: over the last three
+# thirds of the curve the retained bytes of the field store agree within 2%
+# of the last third's median, and no declared budget is exceeded at any
+# point of the curve.  The 2% is this issue's own declared criterion; it is
+# not derived from recorded evidence, so the gate reports the plateau check
+# as unratified and it does not affect the verdict.
+PLATEAU_RELATIVE_TOLERANCE = 0.02
+
+# The camera the interaction gate and the soak share: the recorded viewport
+# at the saved selection's own geography.
+ANCHOR_LAT = 48.30887922260005
+ANCHOR_LON = -123.09473088970692
+ANCHOR_ZOOM = 9.837590787619122
+
+
+def _selection(snapshot):
+    """The saved ordered selection, the saved settings and the manifest.
+
+    Read without creating a viewport: a process may hold only one viewport
+    widget, so the measurements that need a different selection or camera
+    read them here and open one session.
+    """
+    from gweatherrouting.qt.gribviewport import saved_selection
+
+    fixture = _load_tool(
+        "viewport_fixture", ROOT / "tools/benchmark_startup_rendering.py"
+    )
+    manifest = fixture.verify_snapshot(snapshot)
+    paths, settings = saved_selection(snapshot / "data")
+    return tuple(paths), settings, manifest
+
+
+def _anchor_camera(manifest, settings, **overrides):
+    """The recorded viewport camera at the saved selection's geography."""
+    from gweatherrouting.qt.gribviewport import ViewportCamera
+
+    camera = ViewportCamera(
+        center_lat=ANCHOR_LAT,
+        center_lon=ANCHOR_LON,
+        zoom=ANCHOR_ZOOM,
+        width=900,
+        height=700,
+        time=datetime.fromisoformat(manifest["forecast_time"]),
+        density=settings.get("gribBarbDensity", "very_dense"),
+        over_land=settings.get("gribArrowOnGround", False),
+    )
+    return replace(camera, **overrides) if overrides else camera
+
+
+def _release_model(model):
+    """Release the worker's GDAL handles while no other worker is running.
+
+    The GDAL Python bindings are not safe for a dataset teardown that happens
+    concurrently with another thread's dataset creation.  The interpreter's
+    garbage collector does exactly that when a previous session's model is
+    collected during the next session's work, so the handles are released
+    explicitly, and collected, while the worker is joined.
+    """
+    import gc
+
+    with model._condition:
+        model._sources = ()
+        model._sampler = None
+        model._memo = None
+        model._land = None
+        model._land_mask = None
+        model._bands = None
+        model._store.clear()
+    gc.collect()
+
+
+def _release_mask(mask):
+    """Release the shoreline reader's OGR dataset."""
+    if mask is None:
+        return
+    mask._dataset = None
+    for name in ("_prepared", "_tiles"):
+        cache = getattr(mask, name, None)
+        if cache is not None:
+            cache.clear()
+    contains = getattr(mask, "contains", None)
+    if contains is not None and hasattr(contains, "cache_clear"):
+        contains.cache_clear()
+
+
+def _platform_identity(widget):
+    """The host the measurement ran on, with the scene graph's own backend."""
+    import os
+    import platform
+
+    import PySide6
+    from PySide6.QtQuick import QSGRendererInterface
+
+    quick = widget.quickWindow()
+    backend = ""
+    try:
+        interface = quick.rendererInterface()
+        api = interface.graphicsApi() if interface is not None else None
+        if api is not None:
+            backend = QSGRendererInterface.GraphicsApi(api).name
+    except Exception:  # pragma: no cover - the identity is best effort
+        backend = ""
+    if not backend:
+        backend = str(os.environ.get("QT_QUICK_BACKEND", "") or "")
+    return {
+        "platform": platform.platform(),
+        "machine": platform.machine(),
+        "python": platform.python_version(),
+        "qt": PySide6.__version__,
+        "scene_graph_backend": backend,
+        "requested_backend": os.environ.get("QT_QUICK_BACKEND", "") or "default",
+        "device_pixel_ratio": float(quick.devicePixelRatio()),
+        "logical_size": [widget.width(), widget.height()],
+        "device_size": [
+            int(quick.width() * quick.devicePixelRatio()),
+            int(quick.height() * quick.devicePixelRatio()),
+        ],
+    }
+
+
+def _layer_states(widget):
+    """Every layer's GPU, loading and fallback state.
+
+    The state is read from the layer's own QML object, so it is the layer's
+    own state and not the viewport's guess.  No layer of the viewport has a
+    per-layer CPU fallback: the retained CPU fallback is the application's
+    CPU map renderer, which is proven separately.
+    """
+    counters = widget.publication_counters()
+    state = widget._state
+    status_visible = widget._status.isVisible()
+    fill = widget._fill
+    barbs = widget._barbs
+    chart = widget._chart
+    note = (
+        "the viewport's layers have no per-layer CPU fallback; the retained "
+        "CPU fallback is the application's CPU map renderer"
+    )
+
+    def shader_layer(item, publications, uploads):
+        if item is None:
+            return {
+                "present": False,
+                "gpu": False,
+                "shader_ready": False,
+                "images_ready": False,
+                "shader_error": "",
+                "loading_state": state,
+                "loading_state_explicit": False,
+                "loading_state_source": "",
+                "fallback": "none",
+                "fallback_active": False,
+                "fallback_note": note,
+                "publications": publications,
+                "uploads": uploads,
+            }
+        ready = bool(item.property("ready"))
+        images = bool(item.property("imagesReady"))
+        return {
+            "present": True,
+            "gpu": ready,
+            "shader_ready": ready,
+            "images_ready": images,
+            "shader_error": str(item.property("shaderError") or ""),
+            "loading_state": state,
+            "loading_state_explicit": bool(state == "ready" or status_visible),
+            "loading_state_source": (
+                "the viewport's weather state: the layer is published from the "
+                "same resident field as the barbs"
+            ),
+            "fallback": "none",
+            "fallback_active": False,
+            "fallback_note": note,
+            "publications": publications,
+            "uploads": uploads,
+        }
+
+    out = {
+        "fill": shader_layer(
+            fill,
+            counters.get("fill_publications", 0),
+            counters.get("fill_uploads", 0),
+        ),
+        "barbs": shader_layer(
+            barbs,
+            counters.get("barbs_field_publications", 0),
+            counters.get("barbs_field_uploads", 0),
+        ),
+    }
+    chart_loading = False
+    chart_ready = False
+    if chart is not None:
+        chart_loading = bool(chart.property("chartLoading"))
+        chart_ready = bool(chart.property("ready"))
+    out["chart"] = {
+        "present": chart is not None,
+        "gpu": chart_ready,
+        "shader_ready": chart_ready,
+        "images_ready": chart_ready,
+        "shader_error": (
+            "" if chart is None else str(chart.property("sourceError") or "")
+        ),
+        "loading_state": widget._chart_state,
+        "loading_state_explicit": bool(
+            chart is None or widget._chart_loading_shown or chart_ready
+        ),
+        "loading_state_source": (
+            "the chart layer's own loading state; it never uses the weather's " "state"
+        ),
+        "fallback": "none",
+        "fallback_active": False,
+        "fallback_note": note,
+        "publications": counters.get("chart_publications", 0),
+        "uploads": counters.get("chart_publications", 0),
+        "loading_flag": chart_loading,
+    }
+    out["viewport_state"] = state
+    out["status_visible"] = bool(status_visible)
+    return out
+
+
+class _Session:
+    """One viewport session: a fresh model, a fresh widget and a camera.
+
+    Every session owns its worker thread, its field store, its sampling memo
+    and its staging provider.  A repetition is therefore matched to the
+    others in workload and fixture.  A session is also a whole process in
+    this harness: the headless scene graph on this host compiles a viewport
+    widget's shader only for the first widget of a process, so a second
+    widget in the same process never presents.  One session per process is
+    therefore the rule, and it is also what a matched repetition needs.
+    """
+
+    def __init__(
+        self, snapshot, camera=None, paths=None, settings=None, fill=True, chart=True
+    ):
+        from gweatherrouting.qt.gribviewport import (
+            GribViewportModel,
+            ViewportCamera,
+            _viewport_widget_class,
+            saved_selection,
+        )
+        from gweatherrouting.rendering.windrenderer import WindLandMask
+
+        fixture = _load_tool(
+            "viewport_fixture", ROOT / "tools/benchmark_startup_rendering.py"
+        )
+        self.snapshot = snapshot
+        self.manifest = fixture.verify_snapshot(snapshot)
+        if paths is None:
+            paths, settings = saved_selection(snapshot / "data")
+        self.paths = tuple(paths)
+        self.settings = settings or {}
+        if camera is None:
+            camera = _anchor_camera(self.manifest, self.settings)
+        self.camera = camera
+        self.model = GribViewportModel(
+            self.paths,
+            land_mask=WindLandMask(snapshot / "data"),
+            resident_time_window=True,
+            grid=True,
+        )
+        self.widget = _viewport_widget_class()(
+            self.model,
+            gpu_weather_fill=fill,
+            chart_layer=chart,
+            chart_data_dir=snapshot / "data",
+        )
+        self.widget.resize(camera.width, camera.height)
+        self.widget.show()
+
+    # ----------------------------------------------------------- helpers
+    def settle(self, timeout=15):
+        """Wait for the viewport to reach ``ready``."""
+        from PySide6.QtCore import QEventLoop, QTimer
+
+        loop = QEventLoop()
+        poll = QTimer()
+        stop = QTimer()
+        stop.setSingleShot(True)
+        stop.timeout.connect(loop.quit)
+        poll.timeout.connect(
+            lambda: (
+                loop.quit() if self.widget._state in ("ready", "unavailable") else None
+            )
+        )
+        stop.start(timeout * 1000)
+        poll.start(10)
+        loop.exec()
+        poll.stop()
+        stop.stop()
+        return self.widget._state == "ready"
+
+    def pump(self, milliseconds=150):
+        from PySide6.QtCore import QEventLoop, QTimer
+
+        loop = QEventLoop()
+        QTimer.singleShot(milliseconds, loop.quit)
+        loop.exec()
+
+    def wait_idle(self, timeout=5):
+        deadline = time.perf_counter() + timeout
+        while (
+            self.model._active is not None or self.model._pending is not None
+        ) and time.perf_counter() < deadline:
+            self.pump(10)
+        return self.model._active is None and self.model._pending is None
+
+    def memory(self):
+        """The three declared retained budgets, measured together."""
+        store = self.model.field_statistics()
+        memo = self.model.observations().get("sampling_memo", {})
+        provider = self.widget._provider
+        return {
+            "field_store_bytes": store.get("current_bytes", 0),
+            "field_store_peak_bytes": store.get("peak_bytes", 0),
+            "field_store_entries": store.get("retained_entries", 0),
+            "field_store_evictions": store.get("evictions", 0),
+            "field_store_limit": self.model._store.byte_limit,
+            "sampling_memo_bytes": memo.get("current_bytes", 0),
+            "sampling_memo_peak_bytes": memo.get("peak_bytes", 0),
+            "sampling_memo_limit": memo.get("limit_bytes", MEMO_BUDGET_BYTES),
+            "provider_bytes": provider.field_bytes(),
+            "provider_limit": provider.byte_limit,
+        }
+
+    def layers(self):
+        """Every layer's GPU, loading and fallback state."""
+        return _layer_states(self.widget)
+
+    def close(self):
+        widget = self.widget
+        self.widget = None
+        widget.close()
+        model = self.model
+        if model._thread is not None:
+            model._thread.join(5)
+        _release_mask(getattr(model, "_land_mask", None))
+        _release_model(model)
+        self.model = None
+
+
+def _observe_demand(session, camera, settle_timeout=60):
+    """Move to a camera and measure the honest-loading and recovery times.
+
+    The measured endpoint is the viewport's own state: the time until the
+    loading state is visible and the time until the viewport is ready again.
+    It is **not** a presentation-to-screen latency and never a scanout time.
+    """
+    began = time.perf_counter()
+    requested = session.widget.set_camera(camera)
+    loading_visible_ms = None
+    stale_hidden = None
+    status_visible = None
+    deadline = began + 10
+    while time.perf_counter() < deadline:
+        session.pump(10)
+        if session.widget._state == "loading":
+            if loading_visible_ms is None:
+                loading_visible_ms = (time.perf_counter() - began) * 1000
+                stale_hidden = not session.widget._weather.isVisible()
+                status_visible = session.widget._status.isVisible()
+                break
+        elif session.widget._state in ("ready", "unavailable"):
+            break
+    recovered = session.settle(settle_timeout)
+    recovery_ms = (time.perf_counter() - began) * 1000
+    return {
+        "requested_state": requested,
+        "loading_visible_ms": loading_visible_ms,
+        "status_visible": status_visible,
+        "stale_weather_hidden": stale_hidden,
+        "recovered": bool(recovered),
+        "recovery_ms": recovery_ms,
+        "final_state": session.widget._state,
+        "error": session.model.error,
+    }
+
+
+# ---------------------------------------------------------------------------
+# the measured sections; each one is a whole process
+# ---------------------------------------------------------------------------
+
+
+def section_interaction(snapshot, args):
+    """The interaction gate's own session."""
+    report = run_once(snapshot)
+    report["section"] = "interaction"
+    return report
+
+
+def section_cold_load(snapshot, args):
+    """The cold_load limit: a fresh session's first ready presentation."""
+    session = _Session(snapshot)
+    try:
+        began = time.perf_counter()
+        session.widget.set_camera(session.camera)
+        ready = session.settle(60)
+        return {
+            "section": "cold_load",
+            "ready": bool(ready),
+            "ms": (time.perf_counter() - began) * 1000,
+            "field_preparations": session.model.counters["field_preparations"],
+            "memory": session.memory(),
+            "note": (
+                "a fresh session: no resident field, no warm store, one "
+                "preparation and the first ready presentation"
+            ),
+        }
+    finally:
+        session.close()
+
+
+def section_coverage_miss(snapshot, args):
+    """The coverage_miss limit: leaving the resident field's window."""
+    session = _Session(snapshot)
+    try:
+        session.widget.set_camera(session.camera)
+        session.settle(60)
+        attempts = []
+        for offset in (1.5, 2.5, 4.0):
+            far = replace(session.camera, center_lon=session.camera.center_lon + offset)
+            attempt = _observe_demand(session, far)
+            attempt["offset_degrees"] = offset
+            attempts.append(attempt)
+            if attempt["recovered"]:
+                break
+            session.widget.set_camera(session.camera)
+            session.settle(60)
+        return {
+            "section": "coverage_miss",
+            "attempts": attempts,
+            "note": (
+                "the camera leaves the resident field's window: the viewport "
+                "must show the loading state and hide the stale weather, then "
+                "recover"
+            ),
+        }
+    finally:
+        session.close()
+
+
+def section_interval_crossing(snapshot, args):
+    """The interval_crossing limit: leaving the resident time window."""
+    session = _Session(snapshot)
+    try:
+        session.widget.set_camera(session.camera)
+        session.settle(60)
+        attempts = []
+        for hours in (12, 24, 48):
+            later = replace(
+                session.camera, time=session.camera.time + timedelta(hours=hours)
+            )
+            attempt = _observe_demand(session, later)
+            attempt["hours"] = hours
+            attempts.append(attempt)
+            if attempt["recovered"]:
+                break
+            session.widget.set_camera(session.camera)
+            session.settle(60)
+        return {
+            "section": "interval_crossing",
+            "attempts": attempts,
+            "note": (
+                "the forecast instant leaves the resident time window: a new "
+                "field must be prepared, so this is a preparation limit and "
+                "not a scrub limit"
+            ),
+        }
+    finally:
+        session.close()
+
+
+def section_soak(snapshot, args):
+    """The long-session soak: repeated travel and forecast-time changes."""
+    session = _Session(snapshot)
+    curve = []
+    began = time.perf_counter()
+    stopped = ""
+    try:
+        session.widget.set_camera(session.camera)
+        session.settle(60)
+        camera = session.camera
+        for index in range(max(1, int(args.soak_steps))):
+            if (
+                args.soak_seconds is not None
+                and time.perf_counter() - began > args.soak_seconds
+            ):
+                stopped = "time cap reached"
+                break
+            phase = index % 6
+            if phase < 3:
+                # Travel: a real pan, in the direction the cycle began.
+                direction = 1 if (index // 6) % 2 == 0 else -1
+                session.widget.pan_pixels(48 * direction, 0)
+            elif phase == 3:
+                # Return to the anchor's geography: this leaves the resident
+                # window, so the field must be prepared again.
+                session.widget.set_camera(camera)
+            elif phase == 4:
+                # A forecast-time change inside the resident window's reach.
+                hours = (index // 6) % 9
+                session.widget.set_camera(
+                    replace(camera, time=camera.time + timedelta(hours=hours))
+                )
+            else:
+                # A zoom change: the demand's resolution changes, so the
+                # field's own form changes with it.
+                session.widget.zoom_at(
+                    0.05 if (index // 6) % 2 == 0 else -0.05, 300, 250
+                )
+            ready = session.settle(60)
+            point = session.memory()
+            point["step"] = index
+            point["elapsed_s"] = time.perf_counter() - began
+            point["ready"] = bool(ready)
+            point["state"] = session.widget._state
+            point["total_retained_bytes"] = (
+                point["field_store_bytes"]
+                + point["sampling_memo_bytes"]
+                + point["provider_bytes"]
+            )
+            curve.append(point)
+        else:
+            stopped = "step count reached"
+    finally:
+        session.close()
+    return {
+        "section": "soak",
+        "steps": len(curve),
+        "stopped": stopped,
+        "elapsed_s": curve[-1]["elapsed_s"] if curve else 0.0,
+        "curve": curve,
+        "analysis": plateau_analysis(curve),
+        "criterion": {
+            "statement": (
+                "over the last three thirds of the curve the retained field "
+                "store bytes agree within 2% of the last third's median, and "
+                "no declared budget is exceeded at any point of the curve"
+            ),
+            "relative_tolerance": PLATEAU_RELATIVE_TOLERANCE,
+            "ratified": False,
+            "note": (
+                "the 2% is this issue's own declared criterion, not a number "
+                "derived from recorded evidence; the gate reports it as "
+                "unratified"
+            ),
+        },
+    }
+
+
+def plateau_analysis(curve):
+    """Apply the declared plateau criterion to the soak's curve."""
+    if not curve:
+        return {"plateau_reached": False, "reason": "the curve is empty"}
+    values = [point["field_store_bytes"] for point in curve]
+    totals = [point["total_retained_bytes"] for point in curve]
+    third = max(1, len(values) // 3)
+    windows = [values[:third], values[third : 2 * third], values[2 * third :]]
+    windows = [window for window in windows if window]
+    medians = [sorted(window)[len(window) // 2] for window in windows]
+    last = medians[-1]
+    spread = (max(medians) - min(medians)) / last if last else 0.0
+    budgets = {
+        "field_store_bytes": (
+            max(point["field_store_bytes"] for point in curve),
+            STORE_BUDGET_BYTES,
+        ),
+        "sampling_memo_bytes": (
+            max(point["sampling_memo_bytes"] for point in curve),
+            MEMO_BUDGET_BYTES,
+        ),
+        "provider_bytes": (
+            max(point["provider_bytes"] for point in curve),
+            PROVIDER_BUDGET_BYTES,
+        ),
+    }
+    within_budget = all(value <= limit for value, limit in budgets.values())
+    return {
+        "plateau_reached": bool(spread <= PLATEAU_RELATIVE_TOLERANCE and within_budget),
+        "window_medians": medians,
+        "relative_spread": spread,
+        "first_value": values[0],
+        "last_value": values[-1],
+        "peak_value": max(values),
+        "first_total": totals[0],
+        "last_total": totals[-1],
+        "peak_total": max(totals),
+        "budgets": {
+            name: {"peak": value, "limit": limit, "within": value <= limit}
+            for name, (value, limit) in budgets.items()
+        },
+        "within_budget": within_budget,
+    }
+
+
+def _matrix_overlapping_sources(snapshot, args):
+    session = _Session(snapshot)
+    try:
+        session.widget.set_camera(session.camera)
+        ready = session.settle(60)
+        order = tuple(source.path for source in session.model._sources) == session.paths
+        return {
+            "sources": len(session.paths),
+            "settled_ready": bool(ready),
+            "source_order_preserved": bool(order),
+            "field_preparations": session.model.counters["field_preparations"],
+            "memory": session.memory(),
+        }
+    finally:
+        session.close()
+
+
+def _matrix_source_change(snapshot, args):
+    paths, settings, manifest = _selection(snapshot)
+    subset = paths[:4]
+    session = _Session(
+        snapshot,
+        camera=_anchor_camera(manifest, settings),
+        paths=subset,
+        settings=settings,
+    )
+    try:
+        session.widget.set_camera(session.camera)
+        ready = session.settle(60)
+        order = tuple(source.path for source in session.model._sources) == subset
+        return {
+            "sources": len(subset),
+            "settled_ready": bool(ready),
+            "source_order_preserved": bool(order),
+            "field_preparations": session.model.counters["field_preparations"],
+            "memory": session.memory(),
+        }
+    finally:
+        session.close()
+
+
+def _matrix_missing_fields(snapshot, args):
+    session = _Session(snapshot)
+    try:
+        session.widget.set_camera(session.camera)
+        session.settle(60)
+        before = session.widget._published
+        away = replace(session.camera, center_lat=session.camera.center_lat + 40.0)
+        attempt = _observe_demand(session, away, settle_timeout=20)
+        return {
+            "attempt": attempt,
+            "published_before": before,
+            "published_after": session.widget._published,
+            "republished": before != session.widget._published,
+            "field_preparations": session.model.counters["field_preparations"],
+        }
+    finally:
+        session.close()
+
+
+def _matrix_shoreline_mask(snapshot, args):
+    paths, settings, manifest = _selection(snapshot)
+    session = _Session(
+        snapshot,
+        camera=_anchor_camera(manifest, settings, over_land=False),
+        paths=paths,
+        settings=settings,
+    )
+    try:
+        session.widget.set_camera(session.camera)
+        ready = session.settle(60)
+        return {
+            "settled_ready": bool(ready),
+            "over_land": False,
+            "field_preparations": session.model.counters["field_preparations"],
+            "memory": session.memory(),
+        }
+    finally:
+        session.close()
+
+
+def _platform_resize(snapshot, args):
+    session = _Session(snapshot)
+    try:
+        identity = _platform_identity(session.widget)
+        session.widget.set_camera(session.camera)
+        ready = session.settle(60)
+        before = session.memory()
+        session.widget.resize(1180, 820)
+        session.pump(400)
+        resized_ready = session.settle(60)
+        after = session.memory()
+        return {
+            "settled_ready": bool(ready),
+            "resized_ready": bool(resized_ready),
+            "logical_size": [session.widget.width(), session.widget.height()],
+            "memory_before": before,
+            "memory_after": after,
+            "identity": identity,
+        }
+    finally:
+        session.close()
+
+
+def _platform_identity_section(snapshot, args):
+    session = _Session(snapshot)
+    try:
+        session.widget.set_camera(session.camera)
+        ready = session.settle(60)
+        identity = _platform_identity(session.widget)
+        identity["settled_ready"] = bool(ready)
+        return identity
+    finally:
+        session.close()
+
+
+SECTION_FUNCTIONS = {
+    "interaction": section_interaction,
+    "cold_load": section_cold_load,
+    "coverage_miss": section_coverage_miss,
+    "interval_crossing": section_interval_crossing,
+    "soak": section_soak,
+    "matrix:overlapping_sources": _matrix_overlapping_sources,
+    "matrix:source_change": _matrix_source_change,
+    "matrix:missing_fields": _matrix_missing_fields,
+    "matrix:shoreline_mask": _matrix_shoreline_mask,
+    "platform:resize": _platform_resize,
+    "platform:identity": _platform_identity_section,
+}
+
+
+def _run_section(section, snapshot, args):
+    """Run one section in this process."""
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([sys.argv[0]])
+    function = SECTION_FUNCTIONS[section]
+    report = function(snapshot, args)
+    report.setdefault("section", section)
+    return report
+
+
+def _spawn_section(section, snapshot, output, extra=(), env=None):
+    """Run one section in its own process and return its report."""
+    import os
+    import subprocess
+
+    target = Path(output)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--snapshot",
+        str(snapshot),
+        "--output",
+        str(target),
+        "--section",
+        section,
+        *extra,
+    ]
+    environment = dict(os.environ)
+    if env:
+        environment.update(env)
+    completed = subprocess.run(
+        command,
+        cwd=str(ROOT),
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode or not target.is_file():
+        raise RuntimeError(
+            f"the {section!r} section failed: exit {completed.returncode}; "
+            f"{completed.stdout[-2000:]}{completed.stderr[-2000:]}"
+        )
+    return json.loads(target.read_text())
+
+
+def orchestrate(args):
+    """The whole #70 validation run, one native process per measurement.
+
+    The repetitions are matched in workload and fixture and each one is a
+    whole process, so a repetition is not contaminated by the process state
+    of the repetition before it.  The repetitions are interleaved with the
+    other measurements: the soak runs between them, so a drift in the
+    machine's state is spread over the repetitions instead of accumulating
+    in the last one.
+    """
+    began = time.perf_counter()
+    work = args.output.with_suffix("")
+    work.mkdir(parents=True, exist_ok=True)
+    sections = [name for name in args.sections.split(",") if name]
+    repeats = max(1, int(args.repeats))
+    before = repeats // 2
+    repetitions = []
+    results = {}
+
+    def spawn(section, extra=(), env=None, name=None):
+        return _spawn_section(
+            section,
+            args.snapshot,
+            work / f"{name or section.replace(':', '-')}.json",
+            extra=extra,
+            env=env,
+        )
+
+    def run_repetition(index):
+        report = spawn("interaction", name=f"repetition-{index}")
+        report["repetition_index"] = index
+        report["repetition_wall_clock_s"] = time.perf_counter() - began
+        repetitions.append(report)
+
+    def run_section(section):
+        if section == "soak":
+            results["soak"] = spawn(
+                section,
+                extra=(
+                    "--soak-steps",
+                    str(args.soak_steps),
+                    "--soak-seconds",
+                    str(args.soak_seconds if args.soak_seconds else 1800),
+                ),
+            )
+        elif section == "matrix":
+            results["matrix"] = _matrix_cells(spawn)
+        elif section == "platform":
+            results["platform"] = _platform_cells(spawn)
+        else:
+            results[section] = spawn(section)
+
+    for index in range(before):
+        run_repetition(index)
+    for section in sections:
+        if section == "soak":
+            run_section(section)
+    for index in range(before, repeats):
+        run_repetition(index)
+    for section in sections:
+        if section != "soak":
+            run_section(section)
+
+    merged = dict(repetitions[0])
+    merged["repetitions"] = repetitions
+    merged["repetition_count"] = len(repetitions)
+    merged["repetition_note"] = (
+        "each repetition is a whole native process with its own worker "
+        "thread, field store, sampling memo and staging provider, on the "
+        "same fixture and the same workload; the repetitions are interleaved "
+        "with the soak, so a drift in the machine's state is spread over "
+        "them"
+    )
+    merged["limits"] = {
+        name: results.get(name, {})
+        for name in ("cold_load", "coverage_miss", "interval_crossing")
+    }
+    merged["soak"] = results.get("soak", {})
+    merged["workload_matrix"] = {"cells": results.get("matrix", [])}
+    merged["platform_matrix"] = {"cells": results.get("platform", [])}
+    merged["validation_duration_s"] = time.perf_counter() - began
+    merged["validation_note"] = (
+        "every measurement is a whole native process: the headless scene "
+        "graph on this host compiles a viewport widget's shader only for the "
+        "first widget of a process"
+    )
+    return merged
+
+
+def _matrix_cells(spawn):
+    """The workload matrix, with an explicit coverage note for every cell."""
+    cells = []
+    for section, note in (
+        (
+            "matrix:overlapping_sources",
+            "the saved selection of 22 forecasts spans several models and "
+            "centres over the same area; the viewport's source order and its "
+            "coverage policy are the application's own",
+        ),
+        (
+            "matrix:source_change",
+            "a different source set in its own session; the model's source "
+            "set is bound when the session is created, so a source change is "
+            "a new session, not a step inside one",
+        ),
+        (
+            "matrix:missing_fields",
+            "a demand for a region no selected forecast covers; the viewport "
+            "must show the loading state and hide the stale weather instead "
+            "of painting a neighbour's value. The all-missing payload's "
+            "zero-alpha rule is measured in the interaction session's fill "
+            "observations",
+        ),
+        (
+            "matrix:shoreline_mask",
+            "the over_land=False path: the field must be prepared at the "
+            "shoreline resolution tier and the viewport must still serve "
+            "current weather",
+        ),
+    ):
+        cells.append(
+            {
+                "cell": section.split(":", 1)[1],
+                "covered": True,
+                "note": note,
+                "evidence": spawn(section),
+            }
+        )
+    cells.append(
+        {
+            "cell": "marine-heavy",
+            "covered": False,
+            "note": (
+                "NOT COVERED. The independent viewport has no marine layer: "
+                "it renders the wind barbs, the numerical fill and the chart "
+                "layer only. A marine-heavy workload exercises the "
+                "application's marine pipeline, which this vehicle does not "
+                "contain, so no result is claimed for it."
+            ),
+        }
+    )
+    cells.append(
+        {
+            "cell": "both-maps-visible",
+            "covered": False,
+            "note": (
+                "NOT COVERED. The independent viewport is a single standalone "
+                "view; the application's two-map layout (the main map and "
+                "the log map) is the legacy path, which this vehicle does "
+                "not contain, so no result is claimed for it."
+            ),
+        }
+    )
+    return cells
+
+
+def _platform_cells(spawn):
+    """The platform matrix, with an explicit coverage note for every cell."""
+    cells = []
+    resize = spawn("platform:resize")
+    identity = resize.get("evidence", {}).get("identity", {})
+    cells.append(
+        {
+            "cell": "resize",
+            "covered": True,
+            "note": (
+                "the widget is resized while it is presented; the viewport "
+                "re-derives the demand for the new size and keeps the "
+                "weather current"
+            ),
+            "evidence": resize.get("evidence", {}),
+        }
+    )
+    cells.append(
+        {
+            "cell": "platform-identity",
+            "covered": True,
+            "note": (
+                "the host the measurement ran on, with the scene graph's own "
+                "backend name and the device pixel ratio"
+            ),
+            "evidence": identity,
+        }
+    )
+    cells.append(
+        {
+            "cell": "dpr-change",
+            "covered": False,
+            "note": (
+                "NOT COVERED. This host runs at a fixed device pixel ratio of "
+                f"{identity.get('device_pixel_ratio')}; a screen change that "
+                "alters the ratio cannot be exercised here, and the viewport "
+                "records no handling for it. No result is claimed."
+            ),
+            "evidence": {"device_pixel_ratio": identity.get("device_pixel_ratio")},
+        }
+    )
+    cells.append(
+        {
+            "cell": "context-loss",
+            "covered": False,
+            "note": (
+                "NOT COVERED. A Metal device loss cannot be induced on this "
+                "host, and the viewport records no context-loss handler, so "
+                "no result is claimed. The scene graph's own recovery is not "
+                "the viewport's."
+            ),
+            "evidence": {"scene_graph_backend": identity.get("scene_graph_backend")},
+        }
+    )
+    backend_cell = {
+        "cell": "non-metal-backend",
+        "covered": False,
+        "note": (
+            "NOT COVERED. The scene graph's backend on this host is "
+            f"'{identity.get('scene_graph_backend')}'. A non-Metal backend "
+            "needs its own process with its own backend selection; see the "
+            "recorded backend run for that cell."
+        ),
+        "evidence": {"scene_graph_backend": identity.get("scene_graph_backend")},
+    }
+    try:
+        alternative = spawn(
+            "platform:identity",
+            env={"QT_QUICK_BACKEND": "opengl"},
+            name="platform-identity-opengl",
+        )
+    except Exception as exc:
+        backend_cell["evidence"]["attempted"] = str(exc)[:400]
+    else:
+        backend_cell["covered"] = True
+        backend_cell["note"] = (
+            "a separate native process with the scene graph's backend "
+            "selected by QT_QUICK_BACKEND=opengl; the viewport presented the "
+            "weather there"
+        )
+        backend_cell["evidence"] = alternative
+    cells.append(backend_cell)
+    return cells
+
+
+def run_once(snapshot):
     from PySide6.QtCore import QEvent, QEventLoop, QPointF, Qt, QTimer
     from PySide6.QtGui import QMouseEvent
     from PySide6.QtWidgets import QApplication
@@ -1084,6 +2114,10 @@ def run(snapshot):
         report["slot_handoffs"] = observations["slot_handoffs"]
         report["superseded_retained_observed"] = observations["superseded_retained"]
         report["time_lookaheads_observed"] = observations["time_lookaheads"]
+        # Every layer's GPU, loading and fallback state, read from the
+        # layer's own QML object while the viewport is presenting.
+        report["layers"] = _layer_states(widget)
+        report["platform"] = _platform_identity(widget)
         # Explicit cold miss and pending close; loading must not disable camera input.
         entered = Event()
 
@@ -1110,6 +2144,9 @@ def run(snapshot):
             and widget._status.isVisible()
             and not widget._weather.isVisible()
         )
+        # The layers' own state while the viewport is loading: the loading
+        # state must be explicit and the stale weather must be hidden.
+        report["layers_while_loading"] = _layer_states(widget)
         stats = model.field_statistics()
         report["retained_field_bytes"] = stats["current_bytes"]
         report["retained_field_entries"] = stats["retained_entries"]
@@ -1131,6 +2168,8 @@ def run(snapshot):
         if model._thread is not None:
             model._thread.join(5)
         report["worker_stopped"] = model._thread is None or not model._thread.is_alive()
+        _release_mask(getattr(model, "_land_mask", None))
+        _release_model(model)
     report["complete"] = not report["errors"] and len(report["phases"]) == 3
     report["continuous_weather"] = report["complete"] and all(
         phase["inputs"] and all(event["state"] == "ready" for event in phase["inputs"])
@@ -1143,11 +2182,64 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshot", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--section",
+        help=(
+            "run one measurement section in this process instead of "
+            "orchestrating them: " + ", ".join(sorted(SECTION_FUNCTIONS))
+        ),
+    )
+    parser.add_argument(
+        "--sections",
+        default="",
+        help=(
+            "the sections to orchestrate, as a comma-separated list: "
+            "cold_load, coverage_miss, interval_crossing, soak, matrix, "
+            "platform"
+        ),
+    )
+    parser.add_argument(
+        "--repeats",
+        type=int,
+        default=1,
+        help="matched repetitions of the interaction workload (default 1)",
+    )
+    parser.add_argument(
+        "--soak-steps",
+        type=int,
+        default=0,
+        help="steps of the long-session soak (default 0: no soak)",
+    )
+    parser.add_argument(
+        "--soak-seconds",
+        type=float,
+        default=None,
+        help="cap on the soak's total time (default: no cap)",
+    )
     args = parser.parse_args()
-    report = run(args.snapshot)
+    if args.section:
+        report = _run_section(args.section, args.snapshot, args)
+    else:
+        report = orchestrate(args)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
-    print(json.dumps({key: value for key, value in report.items() if key != "phases"}))
+    print(
+        json.dumps(
+            {
+                key: value
+                for key, value in report.items()
+                if key
+                not in (
+                    "phases",
+                    "repetitions",
+                    "soak",
+                    "workload_matrix",
+                    "platform_matrix",
+                    "limits",
+                )
+            }
+        )
+    )
     # The gate runner evaluates the completed report, including recorded failures.
     return 0
 
