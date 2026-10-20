@@ -358,8 +358,12 @@ def fill_observations(widget, model, camera, pump):
 
     # The fill is measured alone against a transparent background, so the
     # alpha it contributes is observable: the A0k rule is about that alpha.
+    # The chart layer is hidden for the same reason: it is not the fill's
+    # alpha.
     widget.setClearColor(QColor(0, 0, 0, 0))
     widget._barbs.setVisible(False)
+    if widget._chart is not None:
+        widget._chart.setVisible(False)
     pump(150)
     pixels = _grab(widget)
     out["shader_ready"] = bool(widget._fill.property("ready"))
@@ -459,6 +463,8 @@ def fill_observations(widget, model, camera, pump):
     out["missing_neighbour"] = _missing_neighbour_observations(
         widget, field, camera, blend, pump
     )
+    if widget._chart is not None:
+        widget._chart.setVisible(True)
     out["counters"] = dict(widget.counters)
     return out
 
@@ -587,6 +593,122 @@ def _missing_neighbour_observations(widget, field, camera, blend, pump):
     return outcome
 
 
+def _camera_state(widget):
+    """The viewport's camera, forecast time and published weather."""
+    camera = widget._camera
+    return {
+        "center_lon": None if camera is None else camera.center_lon,
+        "center_lat": None if camera is None else camera.center_lat,
+        "zoom": None if camera is None else camera.zoom,
+        "time": None if camera is None else camera.time.isoformat(),
+        "weather": widget._published,
+    }
+
+
+def chart_observations(widget, model, camera, pump, layer):
+    """The chart layer's ordering and preservation evidence.
+
+    The chart layer is an independent generation: the weather is presented
+    before the chart is ready, and the camera, the forecast time and the
+    weather survive the chart's publication.  The states are the ones the
+    viewport recorded when it asked for the chart and when it published it,
+    so the check spans the publication itself.
+    """
+    out = {"enabled": layer is not None}
+    if layer is None:
+        return out
+
+    deadline = time.perf_counter() + 60
+    while widget._chart_ready_at is None and time.perf_counter() < deadline:
+        pump(100)
+    out["weather_ready_at"] = widget._weather_ready_at
+    out["chart_ready_at"] = widget._chart_ready_at
+    out["weather_before_chart"] = bool(
+        widget._weather_ready_at is not None
+        and widget._chart_ready_at is not None
+        and widget._weather_ready_at < widget._chart_ready_at
+    )
+    out["chart_requested_after_weather"] = widget._chart_requested_after_weather
+    out["chart_state_while_composing"] = layer.state
+    out["chart_loading_state_explicit"] = bool(widget._chart_loading_shown)
+    before = widget._chart_request_state
+    after = widget._chart_publish_state
+    out["before"] = before
+    out["after"] = after
+    out["camera_preserved"] = bool(
+        before
+        and after
+        and before["center_lon"] == after["center_lon"]
+        and before["center_lat"] == after["center_lat"]
+        and before["zoom"] == after["zoom"]
+    )
+    out["forecast_time_preserved"] = bool(
+        before and after and before["time"] == after["time"]
+    )
+    out["weather_preserved"] = bool(
+        before and after and before["weather"] == after["weather"]
+    )
+    out["layer"] = {
+        key: value
+        for key, value in layer.observations().items()
+        if key not in ("spans",)
+    }
+    return out
+
+
+def chart_supersession_observation(widget, model, camera, pump, layer):
+    """The chart layer's cancellation evidence.
+
+    A chart generation that is superseded while it is still composing may
+    never publish: the layer replaces it with a newer generation and
+    rejects the older one.
+    """
+    out = {"enabled": layer is not None}
+    if layer is None:
+        return out
+    superseded_entered = Event()
+    superseded_release = Event()
+    real_compose = layer._compose
+
+    def blocking(camera_, cancel):
+        superseded_entered.set()
+        superseded_release.wait(20)
+        return real_compose(camera_, cancel)
+
+    layer._compose = blocking
+    try:
+        # The supersession is provoked with a forecast-time change: the
+        # chart's isobars belong to the forecast instant, so the new instant
+        # is a new chart generation, and the weather pipeline's spatial
+        # window is untouched.
+        probe_camera = replace(camera, time=camera.time + timedelta(hours=1))
+        widget.set_camera(probe_camera)
+        deadline = time.perf_counter() + 20
+        while not superseded_entered.is_set() and time.perf_counter() < deadline:
+            pump(50)
+        generation = layer.observations()["generation"]
+        # A newer generation replaces the one that is still composing.
+        layer.request(probe_camera, replace=True)
+        superseded_release.set()
+        deadline = time.perf_counter() + 20
+        while (
+            layer.observations()["state"] != "ready" and time.perf_counter() < deadline
+        ):
+            pump(100)
+    finally:
+        layer._compose = real_compose
+    observations = layer.observations()
+    out["superseded_generation"] = generation
+    out["superseded_never_published"] = bool(
+        generation in observations["rejected_generations"]
+        and generation not in observations["published_generations"]
+    )
+    out["layer"] = {
+        key: value for key, value in observations.items() if key not in ("spans",)
+    }
+    return out
+
+
 def run(snapshot):
     from PySide6.QtCore import QEvent, QEventLoop, QPointF, Qt, QTimer
     from PySide6.QtGui import QMouseEvent
@@ -627,7 +749,12 @@ def run(snapshot):
         grid=True,
     )
     # The numerical fill is behind its own flag; the gate harness enables it.
-    widget = _viewport_widget_class()(model, gpu_weather_fill=True)
+    widget = _viewport_widget_class()(
+        model,
+        gpu_weather_fill=True,
+        chart_layer=True,
+        chart_data_dir=snapshot / "data",
+    )
     widget.resize(900, 700)
     widget.show()
     camera = ViewportCamera(
@@ -910,6 +1037,25 @@ def run(snapshot):
         # against the CPU reference, and the independence of the two layers.
         report["fill"] = fill_observations(widget, model, camera, pump)
         assert wait_idle(), "Fill probe left work in flight"
+        # The chart layer: the weather is presented before the chart is
+        # ready, and the camera, the forecast time and the weather survive
+        # the chart's publication.  The observation follows the interaction
+        # phases, so the phases measure the weather pipeline alone.
+        report["chart"] = chart_observations(
+            widget,
+            model,
+            camera,
+            pump,
+            widget._chart_model,
+        )
+        # The cancellation: a superseded chart generation never publishes.
+        report["chart_supersession"] = chart_supersession_observation(
+            widget,
+            model,
+            camera,
+            pump,
+            widget._chart_model,
+        )
         report["generation_mismatch_rejected"] = (
             mismatch_state == "loading"
             and model.counters["generation_rejected"] > generation_before

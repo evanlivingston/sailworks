@@ -80,8 +80,8 @@ GATES = {
         "title": "Independent GRIB viewport sustained interaction",
         # The interaction contract of #64, the structural observations of
         # #66's overlapped preparation, the continuity of #67's resident time
-        # window and #68's numerical fill layer.
-        "milestone": "#64/#66/#67/#68",
+        # window, #68's numerical fill layer and #69's chart layer.
+        "milestone": "#64/#66/#67/#68/#69",
         "kind": "correctness",
         "tool": "test/qt_gribviewport_checks.py",
         "endpoint": ENDPOINT_PROBE,
@@ -350,6 +350,97 @@ GATES = {
                     "(docs/profiles/rendering/2026-10-19/"
                     "a0k-shader-safety-summary.json "
                     "#missing_only_layers_exactly_transparent=true)."
+                ),
+            },
+            {
+                "label": "the weather is presented before the chart layer is ready",
+                "metric": "chart.weather_before_chart",
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "issue #69: chart readiness is not a prerequisite for "
+                    "weather presentation. The observation compares the "
+                    "viewport's own record of the weather's first ready "
+                    "presentation with the chart layer's first publication: "
+                    "the weather is presented first. A behavioural invariant, "
+                    "not a timing threshold."
+                ),
+            },
+            {
+                "label": "the chart is requested only after the weather is presented",
+                "metric": "chart.chart_requested_after_weather",
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "issue #69: the chart layer is an independent generation "
+                    "and it never waits for the weather. A behavioural "
+                    "invariant, not a timing threshold."
+                ),
+            },
+            {
+                "label": "the chart layer has its own explicit loading state",
+                "metric": "chart.chart_loading_state_explicit",
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "issue #69: the chart layer needs its own explicit "
+                    "loading state, as the viewport already has one for the "
+                    "weather. A behavioural invariant, not a timing threshold."
+                ),
+            },
+            {
+                "label": "the camera survives the chart's publication",
+                "metric": "chart.camera_preserved",
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "issue #69 and docs/history/rendering-a0j-early-display.md "
+                    "(adding charts preserved the field and camera): the "
+                    "camera is recorded when the chart is requested and when "
+                    "it is published, and it is the same. A behavioural "
+                    "invariant, not a timing threshold."
+                ),
+            },
+            {
+                "label": "the forecast time survives the chart's publication",
+                "metric": "chart.forecast_time_preserved",
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "issue #69 and docs/history/rendering-a0j-early-display.md "
+                    "(adding charts preserved the field and camera): the "
+                    "forecast time is recorded when the chart is requested "
+                    "and when it is published, and it is the same. A "
+                    "behavioural invariant, not a timing threshold."
+                ),
+            },
+            {
+                "label": "the weather survives the chart's publication",
+                "metric": "chart.weather_preserved",
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "issue #69 and docs/history/rendering-a0j-early-display.md "
+                    "(adding charts preserved the field and camera): the "
+                    "published weather generation is the same before and "
+                    "after the chart's publication. A behavioural invariant, "
+                    "not a timing threshold."
+                ),
+            },
+            {
+                "label": "a superseded chart generation never publishes",
+                "metric": "chart_supersession.superseded_never_published",
+                "aggregate": "all",
+                "op": "is_true",
+                "source": (
+                    "issue #69: chart composition and weather generation are "
+                    "independently cancellable and replaceable, exactly as "
+                    "the field pipeline guarantees for fields (the same "
+                    "contract as this gate's superseded_never_published "
+                    "observation for the field). The probe replaces a "
+                    "composing chart generation and the older generation may "
+                    "never publish. A behavioural invariant, not a timing "
+                    "threshold."
                 ),
             },
         ],
