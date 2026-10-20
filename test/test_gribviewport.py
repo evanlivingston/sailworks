@@ -179,15 +179,32 @@ def test_close_releases_a_pending_preparation(gribs):
     assert field is None and selection is None
 
 
-def test_a_new_time_replaces_the_pending_preparation(gribs):
+def test_a_new_time_does_not_cancel_the_active_preparation(gribs, monkeypatch):
+    from threading import Event
+
     paths, _source = _paths(gribs)
     model = GribViewportModel(paths, land_mask=Land())
+    entered, release = Event(), Event()
+
+    def blocked(camera, cancel):
+        entered.set()
+        release.wait(5)
+        return None
+
+    monkeypatch.setattr(model, "_prepare", blocked)
     try:
         model.update(_camera())
+        assert entered.wait(5)
         model.update(_camera(time=START + timedelta(hours=2)))
-        assert model.counters["cancelled"] >= 1
+        # A time-window change queues the new demand; it does not abort the
+        # active preparation, so a 30 Hz sweep cannot starve the one worker.
+        assert not model._active[1].is_set()
+        assert model._pending is not None
     finally:
+        release.set()
         model.close()
+        if model._thread is not None:
+            model._thread.join(5)
 
 
 def test_the_viewport_module_lives_beside_the_qt_host():
@@ -309,13 +326,20 @@ def test_cancelled_preparation_never_replaces_current_demand(gribs, monkeypatch)
     try:
         model.update(_camera())
         assert entered.wait(5)
-        model.update(_camera(time=START + timedelta(hours=4)))
-        assert model._active[1].is_set()
+        # Explicit cancellation, not a time change, is what forbids publication.
+        with model._condition:
+            model._active[1].set()
         release.set()
         deadline = time.monotonic() + 5
         while model.counters["stale_rejected"] == 0 and time.monotonic() < deadline:
             time.sleep(0.005)
         assert model.counters["stale_rejected"] > 0
+        observations = model.observations()
+        assert (
+            gribviewport._generation_key(old_field)
+            in observations["rejected_generations"]
+        )
+        assert old_field.generation not in observations["published_generations"]
         assert model._field is None
     finally:
         release.set()
@@ -366,7 +390,7 @@ def test_a_prepared_back_slot_is_handed_forward_while_the_front_is_presented(
             model._thread.join(5)
 
 
-def test_a_superseded_request_never_publishes(gribs, monkeypatch):
+def test_a_cancelled_request_never_publishes(gribs, monkeypatch):
     from threading import Event
     import time
 
@@ -388,9 +412,9 @@ def test_a_superseded_request_never_publishes(gribs, monkeypatch):
     try:
         model.update(_camera())
         assert entered.wait(5)
-        # A different forecast bracket supersedes the active request.
-        model.update(_camera(time=START + timedelta(hours=5)))
-        assert model._active[1].is_set()
+        # Explicit cancellation, not a time change, forbids publication.
+        with model._condition:
+            model._active[1].set()
         release.set()
         deadline = time.monotonic() + 5
         while model.counters["stale_rejected"] == 0 and time.monotonic() < deadline:
@@ -399,6 +423,64 @@ def test_a_superseded_request_never_publishes(gribs, monkeypatch):
         assert observations["superseded_rejected"] >= 1
         assert old_field.generation not in observations["published_generations"]
         assert model._field is None
+    finally:
+        release.set()
+        model.close()
+        if model._thread is not None:
+            model._thread.join(5)
+
+
+def test_a_superseded_completed_field_is_retained_not_published(gribs, monkeypatch):
+    from threading import Event
+    import time
+
+    paths, _source = _paths(gribs)
+    reference = GribViewportModel(paths, land_mask=Land())
+    try:
+        old_field, _selection = _wait_ready(reference)
+    finally:
+        reference.close()
+    model = GribViewportModel(paths, land_mask=Land())
+    real_prepare = model._prepare
+    entered, release = Event(), Event()
+
+    def delayed(camera, cancel):
+        entered.set()
+        release.wait(5)
+        return old_field
+
+    monkeypatch.setattr(model, "_prepare", delayed)
+    try:
+        model.update(_camera())
+        assert entered.wait(5)
+        # A newer demand replaces the active request; the older field is valid
+        # but must not be published as current.  It is retained for later.
+        far = _camera(center_lon=3.5)
+        assert model.update(far)[0] == "loading"
+        release.set()
+        deadline = time.monotonic() + 5
+        while (
+            model.counters["superseded_retained"] == 0 and time.monotonic() < deadline
+        ):
+            time.sleep(0.005)
+        assert model.counters["superseded_retained"] >= 1
+        observations = model.observations()
+        assert old_field.generation not in observations["published_generations"]
+        assert (
+            gribviewport._generation_key(old_field)
+            not in observations["rejected_generations"]
+        )
+        assert model._field is None
+        # Stop the replaced demand; the retained field still serves its own
+        # window when the camera returns.
+        model._prepare = real_prepare
+        with model._condition:
+            for request in (model._pending, model._active):
+                if request is not None:
+                    request[1].set()
+            model._pending = None
+        state, field, _selection = model.update(_camera())
+        assert state == "ready" and field is old_field
     finally:
         release.set()
         model.close()

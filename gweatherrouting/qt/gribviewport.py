@@ -199,6 +199,7 @@ class GribViewportModel:
             generation_rejected=0,
             slot_handoffs=0,
             proactive_recentres=0,
+            superseded_retained=0,
         )
 
     # ------------------------------------------------------------- state
@@ -352,13 +353,14 @@ class GribViewportModel:
         self.counters["slot_handoffs"] += 1
 
     def _request(self, camera):
-        """Queue the latest demand; a replaced request is cancelled.
+        """Queue the latest demand; only a replaced pending request is cancelled.
 
         Only one request is active and one is pending, so at most two are in
         flight.  A pending request is always replaceable.  The active request
-        is cancelled only when the time window or land policy makes its field
-        fundamentally different; a pan keeps it so a 30 Hz input stream cannot
-        starve preparation.
+        is never cancelled here: a 30 Hz pan or time sweep must not starve the
+        single worker, because the completed field is useful to a later demand
+        and is retained instead.  Explicit cancellation remains available to
+        ``close()`` and to the caller that owns a request's event.
         """
         key = self._request_key(camera)
         self._desired_key = key
@@ -374,14 +376,6 @@ class GribViewportModel:
             self._pending[1].set()
             self.counters["cancelled"] += 1
             self._pending = None
-        if self._active is not None:
-            old, active_cancel, _key = self._active
-            if self._time_key(old.stamp()) != self._time_key(camera.stamp()) or (
-                old.over_land != camera.over_land
-            ):
-                if not active_cancel.is_set():
-                    active_cancel.set()
-                    self.counters["cancelled"] += 1
         cancel = Event()
         self._pending = (camera, cancel, key)
         if self._thread is None:
@@ -462,6 +456,7 @@ class GribViewportModel:
                 "rejected_demands": tuple(sorted(self._rejected_demands, key=repr)),
                 "generation_rejected": self.counters["generation_rejected"],
                 "superseded_rejected": self.counters["stale_rejected"],
+                "superseded_retained": self.counters["superseded_retained"],
                 "slot_handoffs": self.counters["slot_handoffs"],
                 "slots_filled": sum(resource is not None for resource in self._slots),
                 "front_slot": self._front_index,
@@ -561,7 +556,8 @@ class GribViewportModel:
                             span=(began, ended),
                         )
                         if cancel.is_set():
-                            # The request was superseded: it may never publish.
+                            # Explicitly cancelled: it may never publish or be
+                            # retained as if it were merely superseded.
                             self.counters["stale_rejected"] += 1
                             self._rejected_generations.add(resource.generation)
                             self._rejected_demands.add(key)
@@ -573,7 +569,13 @@ class GribViewportModel:
                             slot = self._back_index()
                             stored = replace(resource, slot=slot)
                             self._slots[slot] = stored
-                            if (
+                            if key != self._desired_key:
+                                # A newer demand replaced this one while it was
+                                # preparing.  The field is valid and useful to a
+                                # later update: retain it in the back slot and
+                                # the store, but never adopt or publish it now.
+                                self.counters["superseded_retained"] += 1
+                            elif (
                                 self._camera is not None
                                 and self._publication_rejection(stored, self._camera)
                                 is None

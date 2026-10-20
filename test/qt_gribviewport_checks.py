@@ -215,7 +215,8 @@ def run(snapshot):
         widget.set_camera(camera)
         assert settle(), "Time return failed"
         # Structural observation: a preparation completed after its request was
-        # superseded must be rejected, never published.
+        # cancelled must be rejected, never published.  The cancellation is
+        # explicit: a time change alone no longer cancels active work.
         real_prepare = model._prepare
         superseded_entered = Event()
         held = model._field
@@ -231,6 +232,9 @@ def run(snapshot):
         model._prepare = superseded
         widget.set_camera(replace(camera, time=camera.time + timedelta(days=90)))
         superseded_entered.wait(5)
+        with model._condition:
+            if model._active is not None:
+                model._active[1].set()
         widget.set_camera(replace(camera, time=camera.time + timedelta(days=91)))
         deadline = time.perf_counter() + 5
         while (
@@ -318,6 +322,7 @@ def run(snapshot):
             )
         )
         report["slot_handoffs"] = observations["slot_handoffs"]
+        report["superseded_retained_observed"] = observations["superseded_retained"]
         # Explicit cold miss and pending close; loading must not disable camera input.
         entered = Event()
 
