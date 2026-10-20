@@ -25,6 +25,16 @@ For the wider documentation map, see [the documentation index](README.md).
 
 ## Current checkpoint
 
+- **Consolidation contract (2026-10-20):** PR #72 is merged into `dev` at
+  `9d1b384`; integrate that reviewed base into the existing viewport branch with a
+  non-rewriting merge. Preserve the later pipeline/time/fill/chart implementation
+  while carrying forward correction `36a5712`. Scope is integration and one regular
+  follow-up PR against `dev`, not default-on rollout, new rendering techniques or
+  issue closure. Budget: at most two targeted validation rounds, zero native runs
+  and no baseline remeasurement. Reuse the versioned #70 evidence, identifying it
+  as pre-integration measurement; run full tests only if conflict resolution changes
+  shared sampling/routing behavior. Stop/report if scope or budget must expand.
+
 - **#70 result (2026-10-20): validation, soak and the rollout decision, on
   `feature/async-double-buffered-66`; nothing was pushed, merged or opened as a
   PR, and **the default application path was not switched**. The scope was read
