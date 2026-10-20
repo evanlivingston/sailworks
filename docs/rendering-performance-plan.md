@@ -25,6 +25,178 @@ For the wider documentation map, see [the documentation index](README.md).
 
 ## Current checkpoint
 
+**2026-10-20 integrated state:** PR #72 merged at `9d1b384`; PR #75 merged at
+`bbbeac0`. The code currently remains standalone and default OFF. During review of
+PR #76, the user **rejected continuing standalone-only use** and directed us to start
+using the viewport in the application, with **forecast selection controlled by the
+user in the Weather panel**. This is the accepted next direction (ADR D7), not a
+claim that integration or open fidelity/performance gates are complete. No routing
+change or #51 closure is authorized.
+
+**Priority now:** integrate the viewport into the normal application and add the
+explicit Weather-panel file/run/member selector, preserving navigation/interaction
+contracts, selected-source consistency and legacy renderer recovery. Further branch
+cleanup is secondary. Trace integration boundaries and record an implementation
+budget before coding; use the [coherence/fidelity contract](#forecast-display-coherence)
+to validate what is displayed, not to postpone application use indefinitely.
+
+**Decision-revision scope:** update PR #76's existing documentation only, plus a
+bounded read-only integration trace; one changed-file documentation validation round,
+zero native attempts or new performance claims. Runtime implementation belongs on a
+focused branch from integrated `dev`, not inside this documentation PR.
+
+**Issue reconciliation:** #68 (scoped fill), #69 (explicitly rescoped viewport
+Part 1/2), #71 (bounded transport answer) and #73 (precursor cleanup) have merged
+implementation/evidence. #66 stays open for matched comparative dispatch evidence;
+#67 stays open for actual upload/presentation acceptance, which provider counters
+and render callbacks do not prove. #64 retains original residency/eviction/lifecycle
+acceptance; #65 retains original-sampler resampling/fidelity acceptance; #70 retains
+matrix/rollout gaps. #51 remains open. No criteria are removed to obtain closure.
+
+**Documentation consolidation contract:** four existing Markdown files only;
+at most two changed-file validation rounds, zero native runs or new performance
+claims. Publish a regular fork PR against `dev`, unmerged for human review. Retire
+only authorized, verified redundant branches/worktrees; retain the documentation
+branch until its PR merges and leave unrelated work untouched.
+
+**Executed cleanup:** #68/#69/#71/#73 closed with scoped evidence and remaining
+epic gaps; #66/#67 explicitly retained for their unmet acceptance gates. Removed
+the clean `agent-66-double-buffer` worktree and local/remote
+`feature/async-double-buffered-66` branch after verifying head `502d9a3` is an
+ancestor of `dev` and the primary session had moved away. The clean #64 worktree
+(`36a5712`, ancestor) and spike worktree (`ab89697`, two patch-equivalent commits)
+remain: other-session ownership is unconfirmed. No force removal/deletion. The
+spike's non-ancestor original history must remain reachable if retired later.
+
+**Documentation validation:** the subagent's initial runner launch was blocked by
+the harness depth limit, with zero commands executed. The parent then delegated
+validation successfully: four documents, eight added local links and seven anchors
+checked with zero failures; changed-file whitespace passed. No runtime tests, Black,
+native measurements or base-CI replication were needed for this documentation PR.
+
+### Earlier consolidation notes (2026-10-20; historical provenance)
+
+The queue/contracts below describe the pre-merge sequence, not current blockers.
+PRs #72/#75 and their corrections are now merged. Final PR #75 checks passed 118
+targeted tests and changed-file Black/Flake8/mypy; CI run `39482098900` retained
+only known base lint/type findings, while Ubuntu GIS `resolute` PPA 404s prevented
+tests/build execution. No full-suite success or post-integration native result is
+claimed. Preserve earlier budgets, failures and stop/continuation decisions.
+
+- **Current milestone:** consolidate the experimental viewport work, not another
+  renderer feature. Review PR #72, resolve integration blockers, then review the
+  remaining stacked viewport program. Human approval is required before merging;
+  experimental integration does not authorize switching the application default.
+- **#70 checkpoint (2026-10-20):** repeated candidate availability and accounted
+  resource soak are recorded; **keep-experimental** is proposed, not user-approved
+  rollout. See [epic acceptance](#epic-51-acceptance-checkpoint).
+- **Next after consolidation:** one representative-view fidelity checkpoint with
+  [coherent forecast selection](#forecast-display-coherence). That policy is accepted
+  but unimplemented. Mixing has not been established as the cause of resampling or
+  visual differences. Routing stays unchanged.
+- **Consolidation contract:** documentation-only local cleanup, two changed-file
+  validation rounds maximum, zero native attempts. Preserve negative results and
+  profiles. Stop before runtime removal, remote publication, merge, issue closure or
+  branch/worktree deletion without the applicable review/authorization.
+
+### Consolidation queue (2026-10-20)
+
+**One active task:** review PR #72's published correction and fresh CI results. **Next:**
+review the remaining viewport stack as one experimental follow-up PR. Fidelity
+implementation waits for a consolidated base; no new rendering technique is queued.
+
+| Work | Verified relationship | Disposition |
+| --- | --- | --- |
+| PR #72, `feature/resident-weather-fields` at `36a5712` | Four foundation commits through `6407727`, plus the review-correction commit. The full viewport branch contains the foundation but not yet this correction. | Review fresh CI and the correction, then merge only with user approval. |
+| `feature/async-double-buffered-66` at `dc52123` | 39 commits after `dev`, of which 35 follow PR #72. | Review one follow-up PR after the foundation; keep experimental/default-off. Do not rewrite shared history or silently expand #72 to the full stack. |
+| `feature/float-transport-71` at `ab89697` | `git cherry` finds `d591905` equivalent to `5b37dc7` and `ab89697` equivalent to `9e50a10` in the viewport stack. PR #74 is closed, unmerged. | No second spike integration. Retain original head until equivalent work is accepted; retire its branch/worktree only with authorization and confirmed ownership. |
+| This local documentation branch | Four existing documents modified; the two initially added standalone summaries have been folded into this roadmap. | Review as a small documentation follow-up to the integrated state. Do not leave parallel acceptance/implementation roadmaps. |
+| Chart quilting and unrelated feature branches | Separate workstreams; clean worktrees are not proof that their work is obsolete. | Leave untouched; require a separate ownership/ancestry review before removal. |
+
+**PR #72 CI triage:** PR CI run `39370012177` and Qt run `39370012116` were
+compared to base `1c7fa88` CI run `39342228025` and Qt run `39342228063`.
+The Qt workflow failures and the Python 3.13 failures in `test_isolated_qt_frontend`
+and `test_hardware_status_does_not_imply_numerical_symbols_active` have matching
+base failures. Do not replicate those failing suites locally. Base lint/typecheck
+also fail, but the PR adds lint findings in `gribviewport.py`/`weatherbarbs.py` and
+type errors in `gpuweatherfields.py`, `gribviewport.py` and `weatherbarbs.py`
+(20 reported errors versus one on base). Those added findings are merge blockers,
+not excused by a red baseline. Other cancelled test jobs provide no passing result.
+Use targeted validation of fixes and changed-file Black/whitespace checks; retain
+CI links/status rather than claim a whole-suite pass.
+
+**Focused PR #72 correction contract:** local corrections in its existing clean
+worktree, limited to newly introduced lint/type findings in the three files above.
+Preserve lazy Qt loading, event override names, source/portrayal semantics and
+existing baseline failures; no shared sampling/routing change or broad refactor.
+Allow at most two targeted validation rounds, zero native runs, no full-suite/base
+CI replication, commits, pushes or merge. Stop if runtime behavior or scope must
+change. Keep these corrections separate from this documentation cleanup and from
+the later 35-commit viewport review.
+
+**Local correction checkpoint:** two targeted rounds completed in the PR #72
+worktree, with no native runs or shared-sampler changes. Latest results: 55 targeted
+tests passed (one warning), Black passed on three files, whitespace passed. Changed-
+file lint retains only the known base `stage_barbs` complexity finding. Targeted
+mypy retains the known base optional-identity error and one additional local Qt-stub
+error: `QQuickItem` has no declared `readyChanged` signal at `gribviewport.py:603`.
+The QML signal is dynamic; the new attribute annotation alone did not resolve it.
+**Decision: narrow/stop at this budget**, not merge-ready. Next smallest correction
+is to represent that dynamic QML signal access explicitly, followed by a separately
+authorized bounded type-check round; do not weaken checker thresholds. Corrections
+remain uncommitted in the three allowed files, and the 35-commit follow-up branch is
+untouched. This is not a whole-repository CI pass or fresh performance evidence.
+
+**User-directed continuation:** one final corrective pass is authorized after the
+stop above: represent the dynamic QML signal access explicitly, then run one targeted
+validation round (changed modules, Black, whitespace and focused lint/type checks),
+zero native runs and no scope expansion. Preserve base failures. On success, publish
+the focused PR #72 correction for review; merging still requires explicit user
+approval. The old two-round budget remains recorded, not retroactively extended.
+
+**Continuation result:** correction `36a5712` is committed and pushed to PR #72;
+its worktree is clean. The final targeted round passed 55 tests, Black on three
+files and whitespace; lint/typecheck retain only their confirmed base findings.
+Fresh full CI run `39475133947` likewise reports only the base `stage_barbs`
+complexity and optional-identity errors in the code-check jobs. The Python 3.13
+build and Python 3.12 tests failed before execution because the Ubuntu GIS PPA
+has no `resolute` Release file (apt exit 100); cancelled jobs provide no result.
+Do not broaden this correction into CI infrastructure or claim a full-suite pass.
+[PR review note](https://github.com/evanlivingston/gweatherrouting/pull/72#issuecomment-6298180755).
+Merge approval remains pending. Incorporate the accepted correction into the later
+viewport stack without rewriting shared history, resolving/validating any conflicts;
+do not assume the old stacked HEAD already includes it.
+
+**Issue reconciliation after accepted integration:** #66/#67/#68/#71/#73 are
+candidates for scoped closure only after checking each implemented contract and
+recording remaining epic-level limitations. #73 is currently **open**, with cleanup
+recorded locally; implementation is not tracker closure. #64's original residency
+acceptance remains open; #65 retains end-to-end resampling/fidelity questions;
+#69 needs its standalone/default-path rescope reconciled explicitly. #70 has a
+keep-experimental proposal awaiting the user, not default-on acceptance. If its
+bounded validation/decision task is closed, unresolved acceptance must remain
+explicitly owned and linked from #51. Do not silently delete criteria to close it.
+Keep #51 open until its outcome is satisfied or explicitly revised by the user.
+
+**Cleanup boundary:** no runtime/probe code was proven safely removable in this
+audit. Active gate imports, compatibility accounting, CPU fallback, historical
+experiments and machine-readable negative evidence stay. Remove a specific symbol
+only after caller coverage and appropriate focused validation, not because it is
+labelled legacy. No branch, worktree or remote issue has been removed/closed by this
+documentation checkpoint.
+
+### Earlier checkpoint notes (historical; not the current work queue)
+
+The original baseline/experiment status below is retained as provenance. In
+particular, its M0 and "not completed" wording must not override the accepted ADR
+or the dated implementation/acceptance checkpoint above.
+
+### Runtime integration and experiment record (historical; not a live queue)
+
+"Not pushed/merged" and pending merge instructions below describe the dated
+measurement/review state. PR #75 subsequently integrated this runtime program;
+measurements remain pre-integration evidence, not fresh merged-base runs.
+
 - **PR #75 CI correction contract (2026-10-20):** final CI on `32a15d1` passed
   Black but exposed eight type and five lint findings outside the earlier
   three-file integration selection. Merge is paused. The user authorizes one
@@ -544,6 +716,128 @@ For the wider documentation map, see [the documentation index](README.md).
   mechanism probes and functional activation checks passed.
 - **Scope:** Qt display pipeline only. No routing changes, GTK migration,
   automatic downloads, unrelated persistence fixes, or default-on GPU change.
+
+## Epic #51 acceptance checkpoint
+
+**2026-10-20 decision:** substantial implementation progress, incomplete whole-epic
+acceptance. The objective remains fluid **complete map/weather** interaction on the
+user's forecast selection, not merely a green standalone mechanism gate.
+
+**Evidence identity:** integrated `dev` is `bbbeac0` (PRs #72 and #75 merged).
+The pre-integration viewport record was reviewed at `dc52123`. Its
+`docs/profiles/rendering/2026-10-20/viewport-validation-summary.json` records
+`commit=a008bbb46f9279f29738c64d7a43711fae4962d7`, campaign
+`351eaa12c17e58f0ccb1438a27cec2cee333e072` and platform measurements
+`b27d33ed1598a4b0d8b0dfc32a61ba8158501dfa`; do not attribute every measurement to
+the later HEAD. Fixture hash:
+`1ed1bca1281ad4096713ce20af9c1473e70bd4eb0766a54965849b7ace698a03`
+(5,693 files; saved 22-source selection). Those candidate artifacts are now merged,
+but not remeasured on the integrated base. Public record:
+[#70 result](https://github.com/evanlivingston/gweatherrouting/issues/70#issuecomment-6296980259).
+This checkpoint reuses evidence; it is not a fresh validation run.
+
+| Acceptance area | Supported progress | Still open |
+| --- | --- | --- |
+| Architecture (M0) | ADR and gate runner; retained fields, async preparation, time windows and independent chart generation implemented in the candidate. | Whole-application acceptance is not implied. |
+| Interaction (M1/M2) | Six candidate repetitions: each 0/120 pan, 0/24 zoom, 0/18 time inputs loading; three before and three after a soak. | These are not alternating baseline/candidate pairs. Availability is not cadence or latency; comparative improvement remains open. |
+| Presentation | Viewport `afterRendering` proxy; app grab/readback diagnostic. | Presentation/input-to-present and refresh-budget frame times unmeasured; endpoints are not interchangeable. |
+| Resources (M1/M4) | 21,216 steps/900 s plus 20,000-step soak; flat accounted store/memo/provider payloads. | Not RSS/VRAM or global resource stability. Plateau tolerance is unratified; zero evictions do not stress eviction. A fresh source-subset session is not in-session source churn. |
+| Loading transitions | Cold ready 1,429.9 ms; coverage recovery 265.2 ms; interval recovery 172.9 ms, with explicit loading and hidden stale weather. | No ratified limits; a +12 h interval miss is not exhaustive model-run-boundary coverage. |
+| Selection | Shared sampler separates model/member identities and direct cross-run temporal blending. | Accepted one-file/run/member display policy below is unimplemented; cross-file pairing and pointwise fallback remain permitted. Actual fixture mixing is unmeasured. |
+| Numerical/mask fidelity | GPU agrees tightly with CPU interpolation of the same staged lattice. | Original-sampler resampling differences need reproducible U/V, speed, mask and provenance measurements; same-lattice arithmetic does not approve the approximation. |
+| Portrayal/layers (M2/M3) | Fill/barb/chart controls, ordering and camera/time/weather preservation; measured chart publication improvement. | Visual verdict failed/deferred; glyphs, density, labels, masks and composition not accepted. Streamlines absent from this viewport. |
+| Full workload | Saved overlapping sources and limited source-change/missing-region controls. | Marine-heavy and both-map candidate workloads not covered. |
+| Platform/lifecycle | Metal/DPR 2 and resize; negative/non-equivalent OpenGL, Vulkan and software observations. | DPR change/device loss untested; resize is not complete docking/lifecycle coverage. |
+| Layer state/fallback | Independent layer state; retained application's CPU renderer current in 24/24 frames. | Not automatic fallback/recovery inside the standalone viewport, which has no such fallback. |
+| Rollout (M4) | #70 proposes keep-experimental; default application unchanged. | User approval required; no merge/default-on/epic closure follows automatically. |
+
+Preserve negative evidence: pan dispatch lateness p95 48.7 ms/max 78.7 ms (not
+presentation latency), unsupported backends, unratified bounds, deferred fidelity,
+and #65/#69 attempt-budget overruns. No completion percentage substitutes for these
+gates. GitHub's older opening status/checklists must be reconciled with delivered
+scope before closing issues, not marked done merely because code merged.
+
+## Forecast display coherence
+
+**Accepted user policy, 2026-10-20; implementation pending.** The user chooses the
+forecast in the Weather panel; the application must not silently pick a different
+file/run/member while the user pans or changes forecast time. This is a display-policy
+amendment, not a routing change or complete the reference application equivalence claim. The
+[static trace](reference-architecture-analysis.md#2026-10-20-follow-up-file-selection-and-interpolation-boundary)
+supports a selected-file evaluator, but does not prove whole-map pinning or the
+handling of multiple production runs in one container. Our whole-display rule is
+explicitly stricter.
+
+### Policy
+
+- Add an explicit Weather-panel selector, distinct from loading/enabling forecast
+  files in the data library. Show which file, model run and member are selected;
+  unavailable data must remain visible as unavailable, not trigger substitution.
+- Pin the user-chosen file, model, production/reference time, ensemble member and field/
+  level. Requested forecast **valid time** is distinct from production time. Fields,
+  barbs, contours, display point queries and labels must agree on selection.
+- Spatial interpolation, same-file temporal interpolation and explicitly identified
+  same-source single-endpoint holding remain allowed within declared coverage.
+  A multi-run/member container must still respect the chosen identity.
+- Do not implicitly borrow U/V components, time endpoints, fields or masked regions
+  from another file/run/model. Missing remains unavailable. Shared model/run metadata
+  alone does not authorize split-file pairing or temporal interpolation.
+- Multiple files require explicit geographic stitching: region ownership, overlap
+  priority and allowed model/run/member compatibility. Until specified and tested,
+  stitching is unsupported. Do not spatially blend different forecast owners.
+- Ensemble members stay separate; an explicitly selected mean/statistical product
+  is different from silently combining enabled forecasts.
+
+### Why this is separate from the pixel/value differences
+
+The viewport's `viewport-gridded-field-summary.json` reports 0.1256 m/s maximum and
+0.0192 m/s mean wind-speed difference against the original sampler at 40 positions.
+The approximately 4.17e-7 m/s GPU placement/arithmetic check compares interpolation
+of the **same staged lattice**, not the original sampler. Neither proves a general
+resampling bound. The logical/device-pixel missing-node probe defect is separately
+recorded as corrected; visual fidelity is still deferred.
+
+**No inspected result establishes forecast mixing as the cause of any reported
+resampling or visual mismatch.** Reproduce differences with coherent selection before
+assigning a cause; preserve the old evidence instead of overwriting it.
+
+### Code evidence and follow-up contract
+
+Source audit of the viewport branch (initial inspected HEAD `b27d33e`):
+
+- `core/gribsampling.py`, `GridIndex._records` groups by reference/model/level, not
+  file. `WeatherSampler._wind_pairs` prefers complete same-file pairs but permits
+  cross-file components; `_side`/`_blend` allow different files' temporal endpoints
+  within one identity. Distinct identities/runs are not directly time-blended.
+- `sample_timestamps` fills missing points from later eligible identities, including
+  older runs. `rendering/weatherstaging.py` retains these rules. This policy predates
+  the viewport; existing cross-file/fallback tests are intentional, not defective.
+- `qt/shaders/weather.frag` receives values without file/run ownership and cannot
+  reject cross-owner spatial blending. Generation rejection/source signatures ensure
+  freshness, not coherence. Permitted mechanisms are not proof of actual fixture mixing.
+
+**Implementation boundary:** select a display file/run before staging; constrain
+components/endpoints; carry structured identity through publication/cache keys and
+invalidate on switches. Do not globally change `WeatherSampler` or routing. Use
+the integrated viewport base; #70's old measurements remain valid only for its
+old candidate/policy, not a changed workload.
+
+**Focused tests:** preserve same-source interpolation, exact-time masks and allowed
+holding; reject unauthorized split-file components/endpoints, older-run gap fill and
+mixed runs/members in one file; test pan/scrub pinning, transitions, provenance/cache
+identity and stale-publication rejection across all displayed weather layers. Keep
+stitching disabled until its boundary policy is explicit. Preserve routing tests.
+
+**One-view fidelity gate:** freeze a representative view, chosen file/run/member,
+timestamps and geographic probe coordinates. Compare direct sampler and staged-lattice
+U/V, speed and validity with pointwise provenance, including gradients and missing/
+coverage edges; assess matched fill/barb/chart captures separately from timed runs.
+The reported 40-point summary lacks checked-in pointwise reproduction, so retain
+coordinates/results and denominators. Existing numerical/mask/selection gates stay;
+no new approximation tolerance is approved. Record an implementation/measurement
+budget before starting, stop at an explicit pass/revise/blocked fidelity verdict,
+and leave broad performance/rollout gates open. No native work is authorized by the
+documentation-only consolidation phase.
 
 ## Reference workload and acceptance
 

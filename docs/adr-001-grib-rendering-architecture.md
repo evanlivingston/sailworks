@@ -34,8 +34,10 @@ executable issues. It deliberately does **not** restate the specification; it li
   and in the canonical plan's decision log; the M0 mechanism probes in the
   `rendering-m0-*.md` records; machine-readable evidence under
   `docs/profiles/rendering/`.
-- **Status:** D1–D6 are all settled. No decision in this ADR is awaiting a user
-  decision, and no A0 slice may be started from this document.
+- **Status:** D1–D6 are settled. D7 records the user's direction to start using the
+  viewport in the application; integration is pending, not already delivered by
+  PRs #72/#75. §10 requires explicit user forecast selection in the Weather panel.
+  Fidelity/performance acceptance remains incomplete. No new A0 slice is authorized.
 - **Wider documentation map:** [the documentation index](README.md).
 
 ---
@@ -266,31 +268,42 @@ Consequences:
 **Issues:** [#64](https://github.com/evanlivingston/gweatherrouting/issues/64)–[#70](https://github.com/evanlivingston/gweatherrouting/issues/70);
 review vehicle [#72](https://github.com/evanlivingston/gweatherrouting/pull/72).
 
-### 4.7 D7 — Rollout decision (proposed 2026-10-20, awaiting the user)
+### 4.7 D7 — User-directed application use (2026-10-20; implementation pending)
 
-**Proposal.** Keep the independent viewport **experimental**. Do **not** switch the
+**User decision after reviewing the proposal:** start using the new viewport in the
+normal application, and add explicit forecast selection to the **Weather panel**.
+Prioritize these two implementation tasks over further issue/branch cleanup. The
+choice of forecast belongs to the user, not an automatic multi-file fallback policy.
+
+This authorizes the integration/default-use direction despite the recorded open
+checks; it does **not** claim that those checks passed or that integration already
+exists. Preserve the legacy renderer as a recovery path, without silently changing
+the user's forecast selection. Routing calculations remain unchanged. No supported
+map layer or interaction may silently disappear during integration; unsupported
+states must be explicit and recoverable.
+
+**Original #70 recommendation, retained as evidence rather than the current usage
+decision:** keep the independent viewport **experimental**. Do **not** switch the
 application's default weather interaction path to it on the evidence recorded by
 [#70](https://github.com/evanlivingston/gweatherrouting/issues/70).
 
-This is an **amendment proposal**, not a decision: D6 named the independent
-viewport as the *target* interaction path, and D6's own consequence was that
-"the default application path stays unchanged until #70 makes an explicit
-rollout decision". The rollout decision is the user's; this section records
-what the evidence now says and what it does not.
+D6 named the viewport as the target interaction path and reserved the usage decision
+for the user. That decision is now recorded above; the evidence and limitations
+below are unchanged by the decision to begin using it.
 
 **What the evidence says (measured, 2026-10-20, fixture `1ed1bca1…`).**
 
 | Question | Answer | Where |
 | --- | --- | --- |
-| Does the interaction contract survive run-to-run variance? | Yes, in six matched interleaved repetitions: 0 loading inputs in every phase of every repetition, `continuous_weather` true in all six, the fill's value error 5.96e-08 and its placement error 4.17e-07 in all six. | [viewport-validation-summary.json](profiles/rendering/2026-10-20/viewport-validation-summary.json) |
-| Is there a memory plateau, not a high-water mark? | Yes: over 21,216 soak steps and 900.0 s the field store settles at 29,610,216 B of its 128 MiB ceiling with 12 fields and no eviction, and the sampling memo at 15,627,216 B of its 16 MiB ceiling; the three thirds of the curve agree within 0.0%. | the same summary |
+| Does candidate availability survive run-to-run variance? | Six candidate-only repetitions, three before and three after the soak: 0 loading inputs in every phase, `continuous_weather` true in all six, same-payload value error 5.96e-08 and same-lattice placement error 4.17e-07. These are not alternating baseline/candidate pairs and do not prove comparative improvement or original-sampler fidelity. | [viewport-validation-summary.json](profiles/rendering/2026-10-20/viewport-validation-summary.json) |
+| Is there an accounted-payload plateau, not a high-water mark? | Over 21,216 steps/900.0 s the store settles at 29,610,216 B of 128 MiB, 12 fields/no eviction; the memo at 15,627,216 B of 16 MiB; thirds agree within 0.0%. This is not RSS/VRAM or eviction-stress acceptance. | the same summary |
 | Are the cold load, the coverage miss and the interval crossing separate? | Yes: 1,429.9 ms cold load, 265.2 ms coverage-miss recovery (22.1 ms to the honest loading state), 172.9 ms interval-crossing recovery (31.3 ms to the honest loading state). | the same summary |
 | Does every layer report its own GPU / loading / fallback state? | Yes: the fill, the barbs and the chart each report the GPU path, an explicit loading state and no fallback. | the same summary |
 | Does the retained CPU fallback work? | Yes: 24 of 24 frames current on the application's own CPU renderer on the same fixture. | the same summary |
 | Is the platform matrix complete? | **No.** A device-pixel-ratio change and a Metal device loss cannot be exercised on this host; the OpenGL backend does not reproduce the Metal result (its framebuffer readback is empty); the Vulkan and software backends do not present the viewport at all. | the same summary |
 | Is the workload matrix complete? | **No.** A marine-heavy workload and the application's two-map view are not in the vehicle at all. | the same summary |
 
-**Why the proposal is *keep-experimental* and not *adopt*.** The interaction
+**Why #70 recommended *keep-experimental*, not evidence-based acceptance.** The interaction
 contract is the strongest result this program has produced, and it is not
 enough to switch a default: visual fidelity is still failed and deferred, the
 measurement endpoint is a render-callback proxy (presentation latency and
@@ -304,7 +317,7 @@ input-to-present latency. A device-pixel-ratio change. A Metal device loss.
 Marine layers. The application's two-map layout. The default application's own
 start-up and draw path.
 
-**Consequences if the user accepts it.**
+**Original proposal's consequences (not the user's chosen implementation priority).**
 
 - The application's default weather interaction path stays as it is; the
   viewport stays behind its standalone entry point and its runtime flags.
@@ -353,7 +366,7 @@ remains the single roadmap.
 | Line 103 (`ContentKey`) | "Forecast instant/bracket" becomes a resident time window over multiple instants. (D4) |
 | Lines 212–215 (R3 reuse) | Reuse extends from spatial to temporal. (D4) |
 | §4.6 (program target) | The independent viewport is the target weather interaction path; issues #64–#68 are re-pointed to it and the frame assembler is retired at #69/#70. (D6) |
-| §4.7 (rollout, proposed 2026-10-20) | **PROPOSED, awaiting the user:** the default application path is *not* switched to the independent viewport on the #70 evidence; the viewport stays experimental behind its own flags. Records what the evidence shows (six matched interleaved repetitions, a memory plateau, the three separate limits, per-layer state, the proven CPU fallback) and what it does not cover (visual fidelity, presentation latency, DPR change, device loss, marine, two maps). (D7) |
+| §4.7 (user direction, 2026-10-20) | **ACCEPTED DIRECTION, implementation pending:** use the new viewport in the application with a user-controlled Weather-panel forecast selector and retained renderer recovery. The original #70 keep-experimental recommendation and its open fidelity/performance/platform checks remain evidence, not retroactively passed gates. (D7) |
 
 **Deferred and not amended:** R1 (host), R0.3/R0.4 (resource envelope, platform matrix),
 R5 (retention hardening, rollout). R0.2 is discharged by
@@ -384,7 +397,10 @@ R5 (retention hardening, rollout). R0.2 is discharged by
 
 ## 8. Open questions
 
-None. Q1 (D2) was decided on 2026-10-19 in favour of option (a). Q2 (ADR naming
+D7 application integration, §10 Weather-panel selection and the fidelity/acceptance
+ledger remain implementation work. The user has decided the usage direction, not
+passed the open gates. Earlier architecture questions are settled: Q1 (D2) was decided on
+2026-10-19 in favour of option (a). Q2 (ADR naming
 convention) resolved: ADRs live flat in `docs/` as `adr-NNN-slug.md`. Q3 (whether the
 R-sequence's "Immediate implementation order" was still authoritative) resolved: R0.1
 and R0.2 are discharged, and the live sequence is now the issue program. Q4 (whether
@@ -407,3 +423,25 @@ Standing constraints carried by every implementing issue:
 3. Negative results are preserved with their reasons.
 4. Render callbacks are proxies, not presentation. Readback is fidelity, not timing.
 5. Every change is feature-flagged, default OFF, with the default path byte-identical.
+
+## 10. Display forecast coherence — accepted policy, implementation pending
+
+The 2026-10-20 user review of epic #51 requires the **user** to choose the forecast
+in the **Weather panel**: one chosen file and coherent model run/member for the
+weather display, except explicitly defined geographic
+stitching. Spatial/time interpolation within that selection is allowed; implicit
+cross-file components, temporal endpoints, older-run gap filling and spatial blending
+across forecast ownership are not. A file containing multiple runs/members must still
+respect the chosen identity. Ensemble statistics are explicit products, not fallback.
+
+The control must identify the selected file and its run/member, retain that choice
+through camera/time changes, and report unavailable data instead of silently choosing
+another forecast. Loading/enabling files in the data library is not the same action
+as choosing the forecast to display. Geographic stitching is a separate explicit mode,
+not automatic overlap blending.
+
+This is a display-policy amendment, not a change to routing selection or a claim of
+complete the reference application parity. Implementation is pending in a focused follow-up; #70's
+current measured candidate remains unchanged. See
+[forecast display coherence](rendering-performance-plan.md#forecast-display-coherence) for the source audit,
+acceptance contract, separate resampling question and #51 progress checkpoint.
