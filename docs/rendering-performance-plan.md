@@ -660,6 +660,29 @@ measurements remain pre-integration evidence, not fresh merged-base runs.
   is still the weather-availability bottleneck even though input dispatch was
   responsive. No later milestone or integration is started by this result.
   Evidence: [`viewport-tryout-summary.json`](profiles/rendering/2026-10-19/viewport-tryout-summary.json).
+- **#64 acceptance contract (open, not started on native):** branch
+  `feature/resident-field-acceptance-64` from `dev` (`c3a6f3a`).
+  1. *Question:* does a covered camera move or a forecast-time change inside the
+     resident window cost zero field preparations, zero decodes and zero loading
+     inputs, and does an uncovered demand show honest loading rather than a stale
+     field?
+  2. *Scope:* re-specify the `residency` gate against the independent viewport's
+     covered workload. Retain the scrub upload check as a separate, recorded
+     failing observation; do not relax it. No change to the field encoding (#71),
+     the field store (merged), routing or the default application path.
+  3. *Baseline/workload:* the recorded `viewport-continuous-summary.json` (pan
+     9/120 and 5/120 loading, time 12/18 loading, 33 preparations, 0 evictions at
+     128 MiB). Measured per phase: covered inputs (window already holds the field)
+     and window-leaving inputs, reported separately.
+  4. *Gates:* zero `field_preparations`, zero `loading_inputs` on covered inputs
+     and in-window time changes (issue #64 acceptance); eviction then reload gives
+     identical field values; numerical parity and the A0k missing-data gate stay
+     unchanged; decoded bytes <= 128 MiB.
+  5. *Budget:* two targeted-test rounds and one native attempt of <=120 s on the
+     22-source fixture (`1ed1bca1...`), delegated to the test runner. No baseline
+     re-run beyond that recorded evidence.
+  6. *Stop:* budget exhausted, or a window-leaving input can only be fixed by a
+     policy change, which is out of scope.
 - **Architecture decided:** [`adr-001-grib-rendering-architecture.md`](adr-001-grib-rendering-architecture.md).
   Read it first. It reconciles the R0-R5 architecture in
   `docs/rendering-implementation-plan.md` with the 2026-10-19 current-state and
