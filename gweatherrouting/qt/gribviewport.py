@@ -1196,7 +1196,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
 
     Qt is imported lazily so the model and the tests stay usable headless.
     """
-    from PySide6.QtCore import QObject, QTimer, QUrl, Qt, Signal
+    from PySide6.QtCore import QEvent, QObject, QTimer, QUrl, Qt, Signal
     from PySide6.QtGui import QSurfaceFormat
     from PySide6.QtQuickWidgets import QQuickWidget
     from PySide6.QtWidgets import QLabel
@@ -1247,6 +1247,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             chart_data_dir=None,
             native_weather_fields=None,
             native_weather_budget=None,
+            enc_chart_layer=False,
+            chart_palette=CHART_PALETTE,
         ):
             super().__init__(parent)
             self._model = model
@@ -1268,6 +1270,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._native_contexts = {}
             self._native_bindings = {}
             self._native_error = ""
+            # The ENC cells are an experimental addition to the chart layer.
+            # They are off by default, and they never turn on by themselves.
+            self._enc_chart_layer = bool(enc_chart_layer) and self._chart_layer
+            self._chart_palette = chart_palette
             format_ = QSurfaceFormat()
             format_.setSamples(4)
             format_.setAlphaBufferSize(8)
@@ -1335,11 +1341,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._chart_model = ViewportChartLayer(
                     paths=model.paths,
                     data_dir=chart_data_dir,
-                    palette=CHART_PALETTE,
+                    palette=self._chart_palette,
                     worker_idle=model.busy,
                     current_camera=lambda: self._camera,
                     on_publish=self.chartPublished.emit,
                     on_state=self.chartStateChanged.emit,
+                    enc_enabled=self._enc_chart_layer,
+                    dpr=self.devicePixelRatio(),
                 )
             self._published = None
             self._published_fill = None
@@ -1445,18 +1453,62 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 if state == "loading":
                     # The chart layer's own loading state was shown.
                     self._chart_loading_shown = True
+                if state == "unavailable" and self._enc_chart_layer:
+                    # A failed composition never leaves the previous ENC on
+                    # screen: it is not current, and it is not presented as
+                    # if it were.
+                    cast(QObject, self._chart).setProperty("source", QUrl(""))
+            self._update_enc_status()
 
         def _publish_chart(self, payload):
             """Publish a composed chart image (GUI thread)."""
             generation, image, metadata = payload
+            if self._disposed:
+                # A disposed viewport never shows a composition.
+                return
             self._chart_viewport = metadata["viewport"]
             url = cast(Any, self._chart_provider).publish(generation, image)
             cast(QObject, self._chart).setProperty("source", QUrl(url))
             self.counters["chart_publications"] += 1
             self._place_chart()
             self._chart_publish_state = self._chart_state_now()
+            self._update_enc_status()
             if self._chart_ready_at is None:
                 self._chart_ready_at = time.perf_counter()
+
+        def _update_enc_status(self):
+            """The ENC source's own state, in the scene's own status.
+
+            The ENC state never changes the weather's state and never
+            changes the chart's own: it is reported beside them.
+            """
+            model = getattr(self, "_chart_model", None)
+            scene = getattr(self, "_weather", None)
+            if model is None or scene is None:
+                return
+            if not getattr(self, "_enc_chart_layer", False):
+                return
+            status = model.enc_status()
+            scene.setProperty("encStatus", status)
+
+        def _adopt_device_pixel_ratio(self):
+            """The GUI's device pixel ratio, given to the chart worker.
+
+            A composition made at another ratio is not current and may not
+            be resampled, so it is withdrawn and composed again.
+            """
+            model = getattr(self, "_chart_model", None)
+            if model is None:
+                return
+            if not model.set_device_pixel_ratio(self.devicePixelRatio()):
+                return
+            chart = getattr(self, "_chart", None)
+            if chart is not None:
+                cast(QObject, chart).setProperty("source", QUrl(""))
+            self._update_enc_status()
+            camera = getattr(self, "_camera", None)
+            if camera is not None and not getattr(self, "_disposed", False):
+                model.request(camera, replace=True)
 
         def _place_chart(self):
             """Place the retained chart image for the current camera."""
@@ -1481,7 +1533,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             """
             if self._chart_model is None or self._camera is None:
                 return
-            if self._weather_ready_at is None:
+            if self._weather_ready_at is None and not (
+                self._enc_chart_layer and self._model.state == "unavailable"
+            ):
                 # The chart is added after the weather is presented.
                 return
             if (time.perf_counter() - self._chart_camera_changed) * 1000.0 < (
@@ -1539,7 +1593,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 return
             if status.get("error"):
                 self._native_error = status["error"]
-                self._weather.setVisible(False)
+                self._set_weather_visible(False)
                 self._show_state("unavailable")
                 self.nativeError.emit(self._native_error)
                 return
@@ -1561,7 +1615,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             )
             if error:
                 self._native_error = error
-                self._weather.setVisible(False)
+                self._set_weather_visible(False)
                 self._show_state("unavailable")
                 self.nativeError.emit(error)
             elif self._model.state == "ready" and all(
@@ -1684,6 +1738,16 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             if self._camera is not None:
                 self.set_camera(self._camera)
 
+        def _set_weather_visible(self, visible):
+            """An ENC chart remains visible even when weather has no data."""
+            if self._enc_chart_layer:
+                self._weather.setVisible(True)
+                self._barbs.setVisible(visible)
+                if self._fill is not None:
+                    self._fill.setVisible(visible)
+            else:
+                self._weather.setVisible(visible)
+
         def set_camera(self, camera):
             """Adopt a camera and publish the portrayal it may show."""
             if self._disposed:
@@ -1702,17 +1766,25 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     if self._chart_camera != camera:
                         self._chart_camera = camera
                         self._chart_camera_changed = time.perf_counter()
+                    if (
+                        self._enc_chart_layer
+                        and self._chart_model._published is not None
+                        and not self._chart_model._reusable(camera)
+                    ):
+                        # Withdraw old-scale/time ENC immediately, not after
+                        # the settle timer or the replacement worker finishes.
+                        cast(QObject, self._chart).setProperty("source", QUrl(""))
                     self._place_chart()
                 state, field, selection = self._model.update(camera)
                 if state != "ready":
                     # A miss shows the loading state; it never shows stale content.
-                    self._weather.setVisible(False)
+                    self._set_weather_visible(False)
                     self._show_state(state)
                     self.cameraChanged.emit(camera)
                     return state
                 if self._publish(field, selection, camera) is False:
                     return "unavailable"
-                self._weather.setVisible(True)
+                self._set_weather_visible(True)
                 if self._native_weather_fields:
                     self._update_native_state()
                 else:
@@ -1755,7 +1827,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     self._native_error = (
                         "Current weather layers exceed native texture budget"
                     )
-                    self._weather.setVisible(False)
+                    self._set_weather_visible(False)
                     self._show_state("unavailable")
                     self.nativeError.emit(self._native_error)
                     return False
@@ -1928,6 +2000,22 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             if self._camera is not None:
                 self.set_camera(replace(self._camera, time=instant))
 
+        def showEvent(self, event):  # noqa: N802 - Qt virtual method name
+            super().showEvent(event)
+            # The display's own ratio is only known once the widget is on a
+            # screen: the chart composition is made at that ratio.
+            self._adopt_device_pixel_ratio()
+
+        def event(self, event):
+            result = super().event(event)
+            if event.type() == QEvent.Type.DevicePixelRatioChange:
+                # The display's ratio changed: the composition was made at
+                # the old one and may not be resampled, so it is composed
+                # again at the new one.  The base class has already adopted
+                # the new ratio by the time the ratio is read here.
+                self._adopt_device_pixel_ratio()
+            return result
+
         def resizeEvent(self, event):  # noqa: N802 - Qt virtual method name
             super().resizeEvent(event)
             if self._camera is not None:
@@ -1997,6 +2085,27 @@ def saved_selection(data_dir):
     return tuple(paths), settings
 
 
+def saved_chart_palette(data_dir, settings=None):
+    """The user's own chart palette, read without creating or modifying data.
+
+    The palette is the application's own: an unknown name falls back to the
+    application's default rather than failing the composition.
+    """
+    from gweatherrouting.qt.gribviewportchart import CHART_PALETTE
+    from gweatherrouting.rendering.style import Style
+
+    if not settings:
+        path = Path(data_dir).expanduser() / "settings.json"
+        try:
+            settings = json.loads(path.read_text())
+        except (OSError, ValueError):
+            settings = {}
+    palette = settings.get("chartPalette") if isinstance(settings, dict) else None
+    if palette in Style.chart_palettes:
+        return palette
+    return CHART_PALETTE
+
+
 def main(argv=None):
     """Launch a read-only standalone viewport; no paths means saved selection."""
     import argparse
@@ -2053,6 +2162,15 @@ def main(argv=None):
             "independent generation behind the weather (default: off)"
         ),
     )
+    parser.add_argument(
+        "--enc-chart-layer",
+        action="store_true",
+        help=(
+            "add the installed and enabled ENC cells to the chart layer, "
+            "drawn by the application's own ENC renderer (default: off; "
+            "implies the chart layer)"
+        ),
+    )
     args = parser.parse_args(argv)
     settings = {}
     try:
@@ -2089,12 +2207,16 @@ def main(argv=None):
         from gweatherrouting.core.storage import DATA_DIR
 
         chart_data_dir = Path(DATA_DIR)
+    # The chart composition uses the user's own palette where it is exposed.
+    chart_palette = saved_chart_palette(chart_data_dir, settings)
     viewport = _viewport_widget_class()(
         model,
         gpu_weather_fill=args.gpu_weather_fill,
-        chart_layer=args.chart_layer,
+        chart_layer=args.chart_layer or args.enc_chart_layer,
         chart_data_dir=chart_data_dir,
         native_weather_fields=args.native_weather_fields,
+        enc_chart_layer=args.enc_chart_layer,
+        chart_palette=chart_palette,
     )
     window = QWidget()
     window.setWindowTitle(f"GRIB viewport — {len(paths)} forecasts")

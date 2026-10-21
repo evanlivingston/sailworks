@@ -1,0 +1,43 @@
+{
+  "gate": "enc-viewport-functional",
+  "decision": "pass narrowed functional scope; stop and offer review",
+  "snapshot_sha256": "1ed1bca1281ad4096713ce20af9c1473e70bd4eb0766a54965849b7ace698a03",
+  "raw_artifact_directory": "/private/var/folders/w7/hb5wv1x1715821rqd1_3xf4r0000gn/T/opencode/enc-viewport-functional-1",
+  "functional_gate_checks": {"passed": 13, "failed": 0},
+  "complete": true,
+  "platform": {"backend": "Metal", "dpr": 2, "logical_size": [710, 743]},
+  "scenario_orders": [
+    ["san-francisco", "puget", "multi-cell"],
+    ["multi-cell", "puget", "san-francisco"]
+  ],
+  "images": {
+    "comparisons": 6,
+    "maximum_mae_255": 0.0,
+    "maximum_p99_255": 0.0,
+    "minimum_annotation_matching_fraction": 1.0,
+    "source_and_clipped_region_identity_match": true,
+    "strict_fidelity_gate_rerun": false,
+    "note": "Pixel acceptance was deferred by the user; exact matches observed for these views do not imply catalogue/platform acceptance."
+  },
+  "behavior": {
+    "stalled_state": "loading",
+    "camera_moved": true,
+    "weather_advanced": true,
+    "stale_chart_hidden": true,
+    "latest_generation_only": true,
+    "history_entries": 10,
+    "resources_released": true
+  },
+  "targeted_tests": {
+    "passed": 102,
+    "known_base_failures": 1,
+    "known_base_failure": "test/test_gribviewport.py::test_the_application_never_imports_the_viewport",
+    "new_failures": 0,
+    "black": "pass",
+    "tool_and_helper_flake8": "pass",
+    "scoped_diff_check": "pass"
+  },
+  "process_wall_seconds": 39.98,
+  "timing_meaning": "Whole gate process wall time, not presentation FPS or GPU time",
+  "default_rollout_enabled": false
+}

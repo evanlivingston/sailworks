@@ -46,6 +46,23 @@ does not constitute #64 acceptance or closure.
 See the N1 completion checkpoint and evidence below.
 #64 is not complete. Earlier default-OFF decisions below are historical checkpoints.
 
+**#78 user-revised functional and combined-experience acceptance passed.** The
+experimental viewport now composes enabled ENC with the original source ranking,
+multi-cell clipping and Cairo portrayal, asynchronously and off by default.
+The user deferred strict visual acceptance in favor of functional display and
+lifecycle completion. `enc-viewport-functional` passed 13/13 checks on the verified
+fixture: SF, Puget and a real multi-cell boundary, twice in reversed order;
+blocked-chart weather responsiveness, stale-image hiding, cancellation and cleanup.
+All six observed readbacks also matched exactly, without claiming catalogue or
+platform acceptance. Targeted checks: 102 passed, one known base failure.
+Subsequent user-authorized combined-experience gate passed 14/14: charts, fill and
+barbs together; fractional zoom and fixed-size soundings; resize; rapid reversals;
+coverage miss/recovery; blocked-chart responsiveness and cleanup. That round had
+104 targeted passes and the same known base failure. No legacy pixel comparison
+was required. See the [contract and evidence](enc-viewport-integration.md).
+Default rollout, full catalogue/platform coverage, RSS/VRAM and presentation
+performance remain separate #70 work; these functional results are not FPS.
+
 **2026-10-20 integrated state:** PR #72 merged at `9d1b384`; PR #75 merged at
 `bbbeac0`. The code currently remains standalone and default OFF. During review of
 PR #76, the user **rejected continuing standalone-only use** and directed us to start
