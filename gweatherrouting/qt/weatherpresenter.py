@@ -190,7 +190,7 @@ class WeatherPresenter(QObject):
                             self.canvas.height(),
                             self.canvas.time_control.time,
                             self.canvas.controller.settings.gribBarbDensity,
-                            self.canvas.controller.settings.gribArrowOnGround,
+                            True,
                         )
                     )
                     if not self._rendered and not self.deadline.isActive():

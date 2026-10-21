@@ -472,6 +472,10 @@ def stage_selection(sampler, field, stamp, view, land_mask, cancel=lambda: False
         chosen = chosen[~field.land_flags[node_ids[ids[chosen]]]]
     elif not view.over_land and sampler is None:
         raise FieldCoverageError("Resident land decisions are unavailable")
+    elif view.over_land:
+        # Shoreline containment is disabled: keep every barb on land as well
+        # as offshore.
+        pass
     else:
         chosen = _off_land(chosen, ids, points, view, land_mask, cancel)
     if chosen is None:

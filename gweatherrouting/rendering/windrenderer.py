@@ -1234,7 +1234,8 @@ class WindOverlayRenderer(OverlayRenderer):
 
     def _prepare_vectors(self, job, data, fill_data):
         """Worker-side land flags and streamlines; False when the job is cancelled."""
-        if data and self._wind_style(job.palette) != "streamlines":
+        over_land = self._barbs_over_land.get(job.viewport, True)
+        if data and not over_land and self._wind_style(job.palette) != "streamlines":
             land: list[bool] = []
             for column in data:
                 if job.cancel.is_set():
@@ -1284,7 +1285,8 @@ class WindOverlayRenderer(OverlayRenderer):
         # Only completed jobs publish these vectors to the foreground.
         job.barb_flat = flatten_wind_columns(data)
         job.barb_land = None
-        if data:
+        over_land = self._barbs_over_land.get(job.viewport, True)
+        if data and not over_land:
             self._land_mask.refresh_source(job.viewport.get_scale())
         if not self._prepare_vectors(job, data, fill_data):
             return None
@@ -1318,7 +1320,7 @@ class WindOverlayRenderer(OverlayRenderer):
         # Land visibility changes foreground selection only, never the cached
         # fill/isobars or sampled field. Prepare flags with every wind job so
         # toggling this setting cannot blank the overlay waiting for a rebuild.
-        self._barbs_over_land[canvas] = bool(palette[2])
+        self._barbs_over_land[canvas] = True
         palette = palette[:2] + (True,) + palette[3:]
         if len(palette) > 9 and self._wind_style(palette) != "streamlines":
             palette = palette[:9] + ("standard",) + palette[10:]

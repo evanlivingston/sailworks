@@ -303,9 +303,7 @@ class WindPainter:
         if opacity is None:
             opacity = getattr(self.settings_manager, "gribArrowOpacity", 0.8)
         if hide_on_ground is None:
-            hide_on_ground = not getattr(
-                self.settings_manager, "gribArrowOnGround", True
-            )
+            hide_on_ground = False
         if on_ground is None:
             on_ground = self._on_ground
         step, max_count = barb_density_parameters(
@@ -647,9 +645,6 @@ class WindPainter:
             lon, lats, dirs, speeds = column[0], column[1], column[2], column[3]
             for j in range(0, len(lats), scale):
                 lat = float(lats[j])
-                if not self.settings_manager.gribArrowOnGround:
-                    if self._on_ground(lat, float(lon)):
-                        continue
                 points.append((dirs[j], speeds[j], (lat, float(lon))))
         return points
 

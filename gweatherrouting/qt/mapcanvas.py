@@ -440,7 +440,6 @@ class TrackMap(QWidget, MercatorProjection):
         return (
             self.time_control.time,
             settings.gribArrowOpacity,
-            settings.gribArrowOnGround,
             getattr(settings, "gribIsobarsVisible", True),
             self.wind_visible,
             getattr(settings, "gribIsobarInterval", 4.0),
@@ -593,8 +592,11 @@ class TrackMap(QWidget, MercatorProjection):
             self.queue_draw()
         except Exception as exc:
             import traceback
+
             traceback.print_exc()
-            sys.stderr.write(f"_apply_forecast_extents failed for path={path!r}: {exc}\n")
+            sys.stderr.write(
+                f"_apply_forecast_extents failed for path={path!r}: {exc}\n"
+            )
 
     def _zoom_preview_target(self, cached_lat, cached_lon, cached_zoom, size):
         """Target rect that stretches a cached layer through the zoom anchor."""
@@ -2129,7 +2131,6 @@ class TrackMap(QWidget, MercatorProjection):
         style = (
             self.time_control.time,
             settings.gribArrowOpacity,
-            settings.gribArrowOnGround,
             getattr(settings, "gribIsobarsVisible", True),
             self.wind_visible,
             getattr(settings, "gribIsobarInterval", 4.0),

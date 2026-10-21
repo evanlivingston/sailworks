@@ -56,8 +56,6 @@ class WeatherPanel(QWidget):
             )
         )
         controls.addWidget(self.wind_style)
-        self.on_ground = self.checkbox("Show wind over land", "gribArrowOnGround")
-        controls.addWidget(self.on_ground)
         form = QFormLayout()
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.wind_opacity = self.percent("gribArrowOpacity")
@@ -230,7 +228,6 @@ class WeatherPanel(QWidget):
         self.refresh_density_labels()
         for widget, value in (
             (self.wind, self.active_map().wind_visible),
-            (self.on_ground, self.controller.settings.gribArrowOnGround),
             (self.wind_opacity, round(self.controller.settings.gribArrowOpacity * 100)),
             (self.isobars, self.controller.settings.gribIsobarsVisible),
             (self.interval, self.controller.settings.gribIsobarInterval),
