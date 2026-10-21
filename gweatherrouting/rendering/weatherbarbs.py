@@ -415,6 +415,8 @@ def _geographic_cells(points, xx, yy, view, step, margin, cols, rows):
     slots are one-to-one.  A cell whose centre falls outside the mesh is
     dropped, which affects only the map's edge.
     """
+    if len(points) == 0:
+        return np.empty(0, dtype=int), np.empty(0, dtype=int)
     world_x, world_y = mercator_project_nodes(points[:, 0], points[:, 1], view._zoom)
     cell_x = np.floor(world_x / step).astype(int)
     cell_y = np.floor(world_y / step).astype(int)
