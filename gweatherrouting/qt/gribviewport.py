@@ -125,6 +125,7 @@ class ViewportCamera:
     time: datetime = datetime(2026, 1, 1, tzinfo=timezone.utc)
     density: str = "standard"
     over_land: bool = True
+    geographic: bool = False
 
     def view(self):
         """The staging view of this camera."""
@@ -136,6 +137,7 @@ class ViewportCamera:
             self.zoom,
             self.density,
             self.over_land,
+            geographic=self.geographic,
         )
 
     def stamp(self):
@@ -2147,6 +2149,14 @@ def main(argv=None):
         help="Retain native field textures (default: on); --no-native-weather-fields restores Image sources",
     )
     parser.add_argument(
+        "--geographic-barbs",
+        action="store_true",
+        help=(
+            "lay the barbs out on a fixed geographic grid, so they pan with the "
+            "map instead of being re-placed per view (default: off)"
+        ),
+    )
+    parser.add_argument(
         "--gpu-weather-fill",
         action="store_true",
         help=(
@@ -2252,6 +2262,7 @@ def main(argv=None):
         time=instant,
         density=settings.get("gribBarbDensity", "standard"),
         over_land=settings.get("gribArrowOnGround", False),
+        geographic=args.geographic_barbs,
     )
     viewport.set_camera(camera)
     clock.dateTimeChanged.connect(
