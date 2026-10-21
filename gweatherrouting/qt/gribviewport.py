@@ -1597,7 +1597,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     ):
                         # Withdraw old-scale/time ENC immediately, not after
                         # the settle timer or the replacement worker finishes.
-                        self._chart.setProperty("source", QUrl(""))
+                        cast(QObject, self._chart).setProperty("source", QUrl(""))
                     self._place_chart()
                 state, field, selection = self._model.update(camera)
                 if state != "ready":
