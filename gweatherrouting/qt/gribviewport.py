@@ -1201,6 +1201,18 @@ def _grid_rect(view, lattice):
     return QRectF(x, y, (east - west) * span, span_y)
 
 
+def chart_withdrawn_on_camera_change(previous, camera, published):
+    """Whether a camera change must hide the retained chart image.
+
+    Only a zoom or forecast-time change makes the image wrong content; a pan
+    keeps the same scale and instant, so the image is shown at its shifted
+    position until its replacement is composed.
+    """
+    if not published or previous is None:
+        return False
+    return previous.zoom != camera.zoom or previous.stamp() != camera.stamp()
+
+
 def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event methods
     """Build the render-context widget class on demand.
 
@@ -1627,13 +1639,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     # never triggers a composition and the chart can never
                     # compete with the weather pipeline.  The retained
                     # composition is placed for the new camera either way.
+                    previous_chart_camera = self._chart_camera
                     if self._chart_camera != camera:
                         self._chart_camera = camera
                         self._chart_camera_changed = time.perf_counter()
-                    if (
-                        self._enc_chart_layer
-                        and self._chart_model._published is not None
-                        and not self._chart_model._reusable(camera)
+                    if self._enc_chart_layer and chart_withdrawn_on_camera_change(
+                        previous_chart_camera,
+                        camera,
+                        self._chart_model._published is not None,
                     ):
                         # Withdraw old-scale/time ENC immediately, not after
                         # the settle timer or the replacement worker finishes.

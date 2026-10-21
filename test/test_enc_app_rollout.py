@@ -90,6 +90,28 @@ def test_chart_split_does_not_double_draw_enc_or_mbtiles():
     charts._mbtiles_renderer.draw.assert_called_once()
 
 
+def test_panning_keeps_the_retained_chart_while_zoom_or_time_clear_it():
+    from datetime import datetime as _datetime
+
+    from gweatherrouting.qt.gribviewport import (
+        ViewportCamera,
+        chart_withdrawn_on_camera_change,
+    )
+
+    clock = _datetime(2026, 10, 21, 9)
+
+    def view(lon=-124.3, zoom=9.38, time=clock):
+        return ViewportCamera(48.45, lon, zoom, 710, 743, time, "very_dense", False)
+
+    base = view()
+    assert not chart_withdrawn_on_camera_change(base, view(lon=-124.1), True)
+    assert chart_withdrawn_on_camera_change(base, view(zoom=10.0), True)
+    assert chart_withdrawn_on_camera_change(
+        base, view(time=_datetime(2026, 10, 21, 10)), True
+    )
+    assert not chart_withdrawn_on_camera_change(base, view(zoom=10.0), False)
+
+
 def test_app_image_provider_namespace_matches_its_registration(presenter):
     from gweatherrouting.qt.gribviewportchart import chart_image_provider
 
