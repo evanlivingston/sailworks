@@ -125,6 +125,7 @@ class ViewportCamera:
     time: datetime = datetime(2026, 1, 1, tzinfo=timezone.utc)
     density: str = "standard"
     over_land: bool = True
+    geographic: bool = True
 
     def view(self):
         """The staging view of this camera."""
@@ -136,6 +137,7 @@ class ViewportCamera:
             self.zoom,
             self.density,
             self.over_land,
+            geographic=self.geographic,
         )
 
     def stamp(self):
@@ -1200,6 +1202,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
     from PySide6.QtGui import QSurfaceFormat
     from PySide6.QtQuickWidgets import QQuickWidget
     from PySide6.QtWidgets import QLabel
+    import shiboken6
 
     from gweatherrouting.qt.gpuweather import WeatherImageProvider
     from gweatherrouting.qt.gribviewportchart import (
@@ -1235,6 +1238,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
         stateChanged = Signal(str)  # noqa: N815 - Qt signal name
         chartPublished = Signal(object)  # noqa: N815 - Qt signal name
         chartStateChanged = Signal(str)  # noqa: N815 - Qt signal name
+        nativeError = Signal(str)  # noqa: N815 - Qt signal name
 
         def __init__(
             self,
@@ -1243,6 +1247,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             gpu_weather_fill=False,
             chart_layer=False,
             chart_data_dir=None,
+            native_weather_fields=None,
+            native_weather_budget=None,
             enc_chart_layer=False,
             chart_palette=CHART_PALETTE,
         ):
@@ -1257,6 +1263,15 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._presentation_spans = []
             self._gpu_weather_fill = bool(gpu_weather_fill)
             self._chart_layer = bool(chart_layer)
+            from .gpuweathertextures import native_weather_fields_enabled
+
+            self._native_weather_fields = native_weather_fields_enabled(
+                native_weather_fields
+            )
+            self._native_budget = native_weather_budget
+            self._native_contexts = {}
+            self._native_bindings = {}
+            self._native_error = ""
             # The ENC cells are an experimental addition to the chart layer.
             # They are off by default, and they never turn on by themselves.
             self._enc_chart_layer = bool(enc_chart_layer) and self._chart_layer
@@ -1349,7 +1364,46 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 barbs_selection_uploads=0,
                 chart_publications=0,
                 chart_requests=0,
+                native_field_requests=0,
             )
+            if self._native_weather_fields:
+                from .gpuweathertextures import (
+                    NativeWeatherBudget,
+                    native_texture_context,
+                )
+
+                if self._native_budget is None:
+                    self._native_budget = NativeWeatherBudget()
+                for role, item in (("barbs", self._barbs), ("fill", self._fill)):
+                    if item is None:
+                        continue
+                    context = native_texture_context(
+                        self.quickWindow(), self._weather, self._native_budget
+                    )
+                    self._native_contexts[role] = context
+                    item.setProperty("nativeFields", True)
+                    for name, source_item in zip(
+                        ("nativeU0", "nativeV0", "nativeU1", "nativeV1"),
+                        context.sources,
+                    ):
+                        item.setProperty(name, source_item)
+                    context.stateChanged.connect(
+                        lambda status, layer=role: self._native_status(layer, status)
+                    )
+                    if role == "fill":
+                        getattr(item, "readyChanged").connect(self._readiness_changed)
+                    getattr(item, "shaderErrorChanged").connect(self._readiness_changed)
+
+                def release_native_owners(
+                    _obj=None, owners=tuple(self._native_contexts.values())
+                ):
+                    # QQuickWidget's scene graph has invalidated before QObject
+                    # destruction. Keep GUI receivers alive until that boundary.
+                    for owner in owners:
+                        owner.close()
+                        owner.deleteLater()
+
+                self.destroyed.connect(release_native_owners)
             self._status = QLabel("Wind loading…", self)
             self._status.setStyleSheet(
                 "background: rgba(0,0,0,190); color: white; padding: 6px"
@@ -1382,7 +1436,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._status.setText(
                 "Wind loading…"
                 if state == "loading"
-                else (self._model.error or "Wind unavailable")
+                else (self._model.error or self._native_error or "Wind unavailable")
             )
             self._status.adjustSize()
             self._status.setVisible(state != "ready")
@@ -1511,8 +1565,97 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             }
 
         def _readiness_changed(self):
+            if self._native_weather_fields:
+                self._update_native_state()
+                return
             if self._barbs.property("ready") and self._model.state == "ready":
                 self._show_state("ready")
+
+        def _native_status(self, role, status):
+            if self._disposed:
+                return
+            item = self._barbs if role == "barbs" else self._fill
+            if item is None or not shiboken6.isValid(item):
+                return
+            if status.get("invalidated"):
+                self._native_bindings.pop(role, None)
+                item.setProperty("nativeReady", False)
+                item.setProperty("nativeFrameObserved", False)
+                if self._camera is not None:
+                    QTimer.singleShot(
+                        0,
+                        lambda: (
+                            self.set_camera(self._camera)
+                            if not self._disposed and self.isVisible()
+                            else None
+                        ),
+                    )
+                return
+            if status["key"].identity != self._native_bindings.get(role):
+                return
+            if status.get("error"):
+                self._native_error = status["error"]
+                self._set_weather_visible(False)
+                self._show_state("unavailable")
+                self.nativeError.emit(self._native_error)
+                return
+            item.setProperty("nativeReady", status["ready"])
+            item.setProperty("nativeFrameObserved", bool(status.get("frame_observed")))
+            self._update_native_state()
+
+        def _update_native_state(self):
+            if self._disposed or self._camera is None:
+                return
+            items = [self._barbs] + ([self._fill] if self._fill is not None else [])
+            error = next(
+                (
+                    str(item.property("shaderError"))
+                    for item in items
+                    if item.property("shaderError")
+                ),
+                "",
+            )
+            if error:
+                self._native_error = error
+                self._set_weather_visible(False)
+                self._show_state("unavailable")
+                self.nativeError.emit(error)
+            elif self._model.state == "ready" and all(
+                item.property("ready") for item in items
+            ):
+                if self._state != "ready":
+                    self._show_state("ready")
+            elif self._model.state == "ready" and self._state != "loading":
+                self._show_state("loading")
+
+        def _bind_native_layer(self, role, identity, images):
+            item = self._barbs if role == "barbs" else self._fill
+            context = self._native_contexts[role]
+            if self._native_bindings.get(role) == identity and context.ready:
+                return
+            self._native_bindings[role] = identity
+            self._native_error = ""
+            item.setProperty("nativeFrameObserved", False)
+            warm = context.request(
+                identity, images, "nodes" if role == "barbs" else "grid"
+            )
+            item.setProperty("nativeReady", warm)
+            self.counters["native_field_requests"] += 1
+
+        def native_observations(self):
+            return {
+                "enabled": self._native_weather_fields,
+                "layers": {
+                    role: context.snapshot()
+                    for role, context in self._native_contexts.items()
+                },
+                "budget": (
+                    {}
+                    if self._native_budget is None
+                    else self._native_budget.statistics()
+                ),
+                "error": self._native_error,
+            }
 
         def _attach_model(self):
             generation = self._source_generation
@@ -1523,6 +1666,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             if self._chart_model is not None:
                 raise ValueError("Replace chart-enabled viewports as a whole")
             self._weather.setVisible(False)
+            self._clear_weather_sources()
+            for context in self._native_contexts.values():
+                context.clear()
+            self._native_bindings.clear()
+            self._native_error = ""
             old = self._model
             old.on_change = None
             self._source_generation += 1
@@ -1546,15 +1694,45 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 return
             self._disposed = True
             self._source_generation += 1
+            for context in self._native_contexts.values():
+                context.close()
+            self._clear_weather_sources()
             self._model.on_change = None
             self._model.close()
-            self._chart_timer.stop()
+            if shiboken6.isValid(self._chart_timer):
+                self._chart_timer.stop()
             if self._chart_model is not None:
                 self._chart_model.close()
             self._provider.clear()
             if self._chart_provider is not None:
                 self._chart_provider.clear()
-            self._weather.setVisible(False)
+            if shiboken6.isValid(self._weather):
+                self._weather.setVisible(False)
+
+        def _clear_weather_sources(self):
+            # Clearing the CPU provider alone leaves QML Images holding the
+            # previous source's native textures. Retire both ownership layers.
+            for item, names in (
+                (
+                    self._barbs,
+                    (
+                        "u0Source",
+                        "v0Source",
+                        "u1Source",
+                        "v1Source",
+                        "nodeIdSource",
+                        "anchorXSource",
+                        "anchorYSource",
+                    ),
+                ),
+                (self._fill, ("u0Source", "v0Source", "u1Source", "v1Source")),
+            ):
+                if item is not None and shiboken6.isValid(item):
+                    for name in names:
+                        item.setProperty(name, QUrl())
+                    if self._native_weather_fields:
+                        item.setProperty("nativeReady", False)
+                        item.setProperty("nativeFrameObserved", False)
 
         def _refresh(self, generation):
             if generation != self._source_generation or self._disposed:
@@ -1606,11 +1784,15 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     self._show_state(state)
                     self.cameraChanged.emit(camera)
                     return state
-                self._publish(field, selection, camera)
+                if self._publish(field, selection, camera) is False:
+                    return "unavailable"
                 self._set_weather_visible(True)
-                self._show_state(
-                    "ready" if self._barbs.property("ready") else "loading"
-                )
+                if self._native_weather_fields:
+                    self._update_native_state()
+                else:
+                    self._show_state(
+                        "ready" if self._barbs.property("ready") else "loading"
+                    )
                 self.cameraChanged.emit(camera)
                 return state
             finally:
@@ -1637,15 +1819,34 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
         def _publish(self, field, selection, camera):
             # Reject before publishing either namespace or touching QML sources.
             validate_binding(field, selection)
-            field_urls = self._provider.publish_field(field.images, field.generation)
+            if self._native_weather_fields:
+                required = field.texture_bytes + (
+                    0
+                    if self._fill is None or field.grid is None
+                    else sum(image.sizeInBytes() for image in field.grid.images)
+                )
+                if required > self._native_budget.byte_limit:
+                    self._native_error = (
+                        "Current weather layers exceed native texture budget"
+                    )
+                    self._set_weather_visible(False)
+                    self._show_state("unavailable")
+                    self.nativeError.emit(self._native_error)
+                    return False
+                field_urls = ()
+            else:
+                field_urls = self._provider.publish_field(
+                    field.images, field.generation
+                )
             selection_urls = self._provider.publish_selection(
                 selection.images, selection.generation
             )
             # The resident time window's fields are published once, so a
             # forecast-time change inside the window publishes nothing and
             # re-encodes nothing.
-            for resident in self._model.window_fields():
-                self._provider.publish_field(resident.images, resident.generation)
+            if not self._native_weather_fields:
+                for resident in self._model.window_fields():
+                    self._provider.publish_field(resident.images, resident.generation)
             # The two layers are staged on their own inputs: the fill sees the
             # resident field and the temporal blend, the barbs see the resident
             # field and the current-view selection.
@@ -1669,7 +1870,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             if grid is None:
                 return
             key = f"{field.generation}/grid"
-            if self._published_fill != key:
+            if self._native_weather_fields:
+                self._bind_native_layer("fill", field.identity, grid.images)
+                self._published_fill = key
+            elif self._published_fill != key:
                 urls = self._provider.publish_field(grid.images, key)
                 for name, url in zip(
                     ("u0Source", "v0Source", "u1Source", "v1Source"), urls
@@ -1700,6 +1904,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             """
             if self._fill is None:
                 raise RuntimeError("The viewport has no numerical fill layer")
+            if self._native_weather_fields:
+                self._bind_native_layer("fill", ("manual", key), images)
+                return ()
             urls = self._provider.publish_field(images, key)
             for name, url in zip(
                 ("u0Source", "v0Source", "u1Source", "v1Source"), urls
@@ -1716,7 +1923,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             The barbs consume the resident field's endpoint images and the
             current-view selection.  A fill change never reaches this path.
             """
-            if self._published != field.generation:
+            if self._native_weather_fields:
+                self._bind_native_layer("barbs", field.identity, field.images)
+            elif self._published != field.generation:
                 for name, url in zip(
                     ("u0Source", "v0Source", "u1Source", "v1Source"), field_urls
                 ):
@@ -1934,6 +2143,20 @@ def main(argv=None):
         ),
     )
     parser.add_argument(
+        "--native-weather-fields",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Retain native field textures (default: on); --no-native-weather-fields restores Image sources",
+    )
+    parser.add_argument(
+        "--screen-barbs",
+        action="store_true",
+        help=(
+            "restore the previous screen-anchored barb layout, which re-places "
+            "barbs on every pan (default: geographic layout)"
+        ),
+    )
+    parser.add_argument(
         "--gpu-weather-fill",
         action="store_true",
         help=(
@@ -2001,6 +2224,7 @@ def main(argv=None):
         gpu_weather_fill=args.gpu_weather_fill,
         chart_layer=args.chart_layer or args.enc_chart_layer,
         chart_data_dir=chart_data_dir,
+        native_weather_fields=args.native_weather_fields,
         enc_chart_layer=args.enc_chart_layer,
         chart_palette=chart_palette,
     )
@@ -2038,6 +2262,7 @@ def main(argv=None):
         time=instant,
         density=settings.get("gribBarbDensity", "standard"),
         over_land=settings.get("gribArrowOnGround", False),
+        geographic=not args.screen_barbs,
     )
     viewport.set_camera(camera)
     clock.dateTimeChanged.connect(
