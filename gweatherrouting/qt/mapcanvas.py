@@ -81,6 +81,7 @@ class TrackMap(QWidget, MercatorProjection):
         self._dash_cache = None  # (key, QImage)
         self._gpu = None
         self._weather_presenter = None
+        self._environment_cache = None
         self._gpu_sequence = 0
         self._gpu_geometry = None
         self._gpu_batches = ()
@@ -419,6 +420,7 @@ class TrackMap(QWidget, MercatorProjection):
 
     def _invalidate_base(self):
         self._base_cache = None
+        self._environment_cache = None
         self.background = None
 
     def invalidate_navigation(self):
@@ -480,6 +482,7 @@ class TrackMap(QWidget, MercatorProjection):
             self.controller.settings.chartPalette,
             self._wind_style_key(),
             self._marine_key(),
+            bool(self._weather_presenter and self._weather_presenter.enc_active),
         )
 
     @staticmethod
@@ -593,8 +596,11 @@ class TrackMap(QWidget, MercatorProjection):
             self.queue_draw()
         except Exception as exc:
             import traceback
+
             traceback.print_exc()
-            sys.stderr.write(f"_apply_forecast_extents failed for path={path!r}: {exc}\n")
+            sys.stderr.write(
+                f"_apply_forecast_extents failed for path={path!r}: {exc}\n"
+            )
 
     def _zoom_preview_target(self, cached_lat, cached_lon, cached_zoom, size):
         """Target rect that stretches a cached layer through the zoom anchor."""
@@ -2109,11 +2115,39 @@ class TrackMap(QWidget, MercatorProjection):
         cr = cairo.Context(surface)
         Style.chart_palettes[self.controller.settings.chartPalette].sea.apply(cr)
         cr.paint()
-        self.charts.do_draw(self, cr)
+        delegated = bool(self._weather_presenter and self._weather_presenter.enc_active)
+        if delegated:
+            self.charts.do_draw(self, cr, include_enc=False, include_mbtiles=False)
+        else:
+            self.charts.do_draw(self, cr)
+            self._draw_weather_background(cr)
+            self.marine.do_draw(self, cr)
+        surface.flush()
+        # copy() transfers ownership; Cairo's buffer can then be released.
+        image = QImage(
+            surface.get_data(),
+            surface.get_width(),
+            surface.get_height(),
+            surface.get_stride(),
+            QImage.Format.Format_ARGB32_Premultiplied,
+        ).copy()
+        image.setDevicePixelRatio(factor)
+        return image
+
+    def _environment_image(self):
+        """Existing above-ENC layers, retained between ENC and viewport barbs."""
+        factor = self.get_scale_factor()
+        surface = cairo.ImageSurface(
+            cairo.FORMAT_ARGB32,
+            math.ceil(self.get_allocated_width() * factor),
+            math.ceil(self.get_allocated_height() * factor),
+        )
+        surface.set_device_scale(factor, factor)
+        cr = cairo.Context(surface)
+        self.charts.draw_above_enc(self, cr)
         self._draw_weather_background(cr)
         self.marine.do_draw(self, cr)
         surface.flush()
-        # copy() transfers ownership; Cairo's buffer can then be released.
         image = QImage(
             surface.get_data(),
             surface.get_width(),

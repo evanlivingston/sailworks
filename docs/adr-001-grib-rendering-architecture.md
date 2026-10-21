@@ -19,6 +19,17 @@ executable issues. It deliberately does **not** restate the specification; it li
 
 ## Current checkpoint
 
+**ENC application rollout direction (after #80):** the user authorized enabling
+the completed ENC worker in the normal application viewport, retaining legacy
+recovery, without a pixel-for-pixel legacy matching requirement. The bounded
+implementation/acceptance contract is [enc-default-rollout.md](enc-default-rollout.md).
+This revises the default-off direction for this ENC slice only, subject to its
+application-level functional gate. That gate subsequently passed 13/13 on the
+verified fixture (current pan/zoom/resize/time views and legacy recovery), with
+140 targeted passes and one known base failure; see the rollout evidence.
+It does not declare the #70 platform/soak or
+presentation-latency program complete and does not change numerical sampling.
+
 - **Canonical roadmap and decision ledger:**
   [`rendering-performance-plan.md`](rendering-performance-plan.md) — start at its
   "Current checkpoint". This ADR is the decision input to that roadmap.

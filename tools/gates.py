@@ -56,7 +56,13 @@ FIXTURES = {
     ),
     "1ed1bca1281ad4096713ce20af9c1473e70bd4eb0766a54965849b7ace698a03": (
         "A0j/A0k current fixture, 2026-10-19 08:00, 5693 files (22 sources). "
-        "Recorded under docs/profiles/rendering/2026-10-19/."
+        "Recorded under docs/profiles/rendering/2026-10-19/. Lost 5190 of its "
+        "files and no longer verifiable."
+    ),
+    "410b88ada69dd5a22fc18765a0f26b016e9d15df22bcfeaa954b8b4b62da2346": (
+        "Replacement application fixture, 2026-10-21 09:00, 5654 files, captured "
+        "from the same application data with the user's approval. Recorded under "
+        "docs/profiles/rendering/2026-10-21/."
     ),
 }
 
@@ -2255,7 +2261,82 @@ GATES["enc-viewport-experience"] = {
 }
 
 # Gates whose enforced thresholds are not yet derived from recorded evidence.
+GATES["enc-app-rollout"] = {
+    **GATES["enc-viewport-functional"],
+    "title": "Default ENC through the application TrackMap and Weather panel",
+    "tool": "tools/check_enc_app_rollout.py",
+    "command": [
+        "{python}",
+        "{tool}",
+        "--snapshot",
+        "{snapshot}",
+        "--output",
+        "{tool_output}",
+    ],
+    "defaults": {"scenarios": ["app-rollout"], "frames": 1, "repeats": 1},
+    "checks": [
+        {
+            "label": name.replace("_", " "),
+            "metric": "checks." + name,
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "docs/enc-default-rollout.md; user-authorized default application rollout",
+        }
+        for name in (
+            "charts_without_forecast",
+            "no_implicit_forecast",
+            "selected_forecast_with_enc",
+            "enc_only_no_duplicate_legacy",
+            "app_layer_order_preserved",
+            "app_pan_zoom",
+            "app_resize",
+            "app_time_change",
+            "charts_with_wind_hidden",
+            "chart_switch_off",
+            "chart_switch_on",
+            "source_clear_keeps_charts",
+            "legacy_recovery",
+        )
+    ],
+    "open_requirements": [
+        "No full #70 soak/platform/presentation or RSS/VRAM acceptance."
+    ],
+}
+
+# Gates whose enforced thresholds are not yet derived from recorded evidence.
 # They still run and still enforce every ratified check.
+GATES["wind-all-points"] = {
+    **GATES["enc-app-rollout"],
+    "title": "All forecast points: explicit uncapped legacy wind presentation",
+    "milestone": "#79 under #51",
+    "tool": "tools/check_all_points_wind.py",
+    "defaults": {"scenarios": ["all-thinned-all"], "frames": 1, "repeats": 1},
+    "checks": [
+        {
+            "label": name.replace("_", " "),
+            "metric": "checks." + name,
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "docs/wind-all-points.md; issue #79 no thinning or cap",
+        }
+        for name in (
+            "all_points_nonblank_membership",
+            "dense_uncapped",
+            "explicit_legacy_not_loading",
+            "charts_navigation_retained",
+            "shoreline_membership",
+            "density_roundtrip_no_duplicate",
+            "zero_opacity_hides_wind",
+            "visibility_hides_wind",
+            "visible_wind_recovers",
+            "dense_camera_input",
+        )
+    ],
+    "open_requirements": [
+        "CPU all-points presentation; no GPU all-points, FPS or RSS/VRAM claim."
+    ],
+}
+
 GATES_NEEDING_RATIFICATION = tuple(
     sorted(
         gate_id
