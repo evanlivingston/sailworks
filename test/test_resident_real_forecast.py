@@ -73,3 +73,46 @@ def test_a_downloaded_hrrr_forecast_is_current_wind_in_the_viewport(hrrr_grib):
         assert selection is not None and selection.count > 0
     finally:
         model.close()
+
+
+def test_the_viewport_draws_the_real_forecast_as_barbs(hrrr_grib):
+    from PySide6.QtWidgets import QApplication
+
+    from gweatherrouting.qt.gribviewport import (
+        GribViewportModel,
+        ViewportCamera,
+        _viewport_widget_class,
+    )
+    from test.qt_gribviewport_checks import _grab, _layer_states
+
+    app = QApplication.instance() or QApplication([])
+    model = GribViewportModel([hrrr_grib.path], land_mask=Land())
+    widget = _viewport_widget_class()(model, gpu_weather_fill=False, chart_layer=False)
+    try:
+        widget.resize(640, 480)
+        widget.show()
+        widget.set_camera(
+            ViewportCamera(
+                center_lat=(BOUNDS[0] + BOUNDS[2]) / 2,
+                center_lon=(BOUNDS[1] + BOUNDS[3]) / 2,
+                zoom=9,
+                width=640,
+                height=480,
+                time=hrrr_grib.start_time + timedelta(hours=1),
+            )
+        )
+        deadline = clock.monotonic() + 60
+        while widget._state != "ready" and clock.monotonic() < deadline:
+            app.processEvents()
+            clock.sleep(0.02)
+        assert widget._state == "ready", model.error
+        for _ in range(10):
+            app.processEvents()
+            clock.sleep(0.05)
+        barbs = _layer_states(widget)["barbs"]
+        assert barbs["present"] and barbs["gpu"]
+        pixels = _grab(widget)
+        assert int((pixels[..., 3] > 25).sum()) > 0, "the real forecast drew no barbs"
+    finally:
+        widget.close()
+        model.close()
