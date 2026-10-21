@@ -442,7 +442,6 @@ class TrackMap(QWidget, MercatorProjection):
         return (
             self.time_control.time,
             settings.gribArrowOpacity,
-            settings.gribArrowOnGround,
             getattr(settings, "gribIsobarsVisible", True),
             self.wind_visible,
             getattr(settings, "gribIsobarInterval", 4.0),
@@ -2163,7 +2162,6 @@ class TrackMap(QWidget, MercatorProjection):
         style = (
             self.time_control.time,
             settings.gribArrowOpacity,
-            settings.gribArrowOnGround,
             getattr(settings, "gribIsobarsVisible", True),
             self.wind_visible,
             getattr(settings, "gribIsobarInterval", 4.0),

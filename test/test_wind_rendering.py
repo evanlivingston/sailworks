@@ -304,10 +304,9 @@ class TestWindOverlay(unittest.TestCase):
             self.assertIs(self.renderer.live_geometry_for_view(*args)[0], shown)
             self.settings.gribArrowOnGround = False
             self.draw()
-            hidden, _ = self.renderer.live_geometry_for_view(*args)
-            self.assertTrue(hidden)
-            self.assertLess(
-                sum(len(v[0]) for v in hidden.values()),
+            unchanged, _ = self.renderer.live_geometry_for_view(*args)
+            self.assertEqual(
+                sum(len(v[0]) for v in unchanged.values()),
                 sum(len(v[0]) for v in shown.values()),
             )
             self.wind_visible = False
@@ -408,7 +407,7 @@ class TestWindOverlay(unittest.TestCase):
         self.renderer.forget(self.canvas)
         self.assertNotIn(self.canvas, self.renderer._hidden_wind_frames)
 
-    def test_land_toggle_keeps_offshore_barbs_without_worker_or_field_reload(self):
+    def test_wind_over_land_is_never_masked(self):
         self.renderer._load_wind.return_value = [
             (-122.4, np.array([47.6]), np.array([0.0]), np.array([10.0])),
             (-122.41, np.array([47.61]), np.array([0.0]), np.array([10.0])),
@@ -419,7 +418,6 @@ class TestWindOverlay(unittest.TestCase):
         self.renderer._load_pressure = Mock(return_value=[])
         self.draw()
         self.drain()
-        original = self.renderer._states[self.canvas].frame
 
         def geometry():
             return self.renderer.live_geometry_for_view(
@@ -428,25 +426,11 @@ class TestWindOverlay(unittest.TestCase):
 
         all_barbs = geometry()
         self.assertEqual(len(all_barbs[5][0]), 6)  # two shafts + four feathers
-        with patch.object(
-            self.renderer, "_render", wraps=self.renderer._render
-        ) as render:
-            self.settings.gribArrowOnGround = False
-            self.draw()
-            offshore = geometry()
-            self.assertEqual(len(offshore[5][0]), 3)
-            self.assertTrue(set(offshore[5][0]) < set(all_barbs[5][0]))
-            self.assertIs(self.renderer._states[self.canvas].frame, original)
-            self.settings.gribArrowOnGround = True
-            self.draw()
-            self.assertEqual(geometry(), all_barbs)
-            self.assertFalse(self.renderer._running)
-            render.assert_not_called()
+        self.settings.gribArrowOnGround = False
+        self.draw()
+        self.assertEqual(geometry(), all_barbs)
         self.renderer._load_wind.assert_called_once()
-        self.renderer._land_mask.contains.assert_has_calls(
-            [call(47.6, -122.4), call(47.61, -122.41)]
-        )
-        self.assertEqual(self.renderer._land_mask.contains.call_count, 2)
+        self.renderer._land_mask.contains.assert_not_called()
 
     def test_slow_grib_load_never_blocks_ui_and_uses_one_worker(self):
         started, release = Event(), Event()
@@ -519,27 +503,19 @@ class TestWindOverlay(unittest.TestCase):
             self.assertEqual(bounds, initial)
         self.renderer._load_wind.assert_called_once()
 
-    def test_land_filter_runs_on_worker_and_preserves_sample_selection(self):
-        self.settings.gribArrowOnGround = False
+    def test_land_filter_is_disabled_by_default(self):
         self.renderer._load_wind.return_value = [
             (-122.4, np.array([47.6]), np.array([0.0]), np.array([10.0])),
             (-122.41, np.array([47.61]), np.array([0.0]), np.array([10.0])),
         ]
         self.renderer._load_pressure = Mock(return_value=[])
-        ui_thread = get_ident()
-
-        def on_ground(lat, lon):
-            self.assertNotEqual(get_ident(), ui_thread)
-            return lat == 47.6
-
-        self.renderer._land_mask.contains = Mock(side_effect=on_ground)
+        self.renderer._land_mask.contains = Mock()
         self.draw()
         self.drain()
         job, _ = self.renderer._states[self.canvas].frame
         np.testing.assert_array_equal(job.barb_flat[2], [47.6, 47.61])
-        np.testing.assert_array_equal(job.barb_land, [True, False])
-        self.draw()
-        self.assertEqual(self.renderer._land_mask.contains.call_count, 2)
+        self.assertIsNone(job.barb_land)
+        self.assertEqual(self.renderer._land_mask.contains.call_count, 0)
 
     def test_stationary_repaints_reuse_geometry_but_zoom_reprojects(self):
         self.draw()

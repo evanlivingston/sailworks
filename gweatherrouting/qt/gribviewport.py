@@ -2317,7 +2317,7 @@ def main(argv=None):
         height=viewport.height(),
         time=instant,
         density=settings.get("gribBarbDensity", "standard"),
-        over_land=settings.get("gribArrowOnGround", False),
+        over_land=True,
         geographic=not args.screen_barbs,
     )
     viewport.set_camera(camera)

@@ -179,7 +179,7 @@ class WeatherStager(QObject):
             canvas._center_lon,
             canvas._zoom,
             getattr(settings, "gribBarbDensity", "standard"),
-            bool(settings.gribArrowOnGround),
+            True,
         )
         signature = tuple(source_key(s) for s in sources)
         key = (view, signature)
