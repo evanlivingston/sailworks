@@ -297,6 +297,7 @@ class GribViewportModel:
         self._land = None
         self._thread = None
         self._closed = False
+        self._initialization_failed = False
         self._camera = None
         self._state = "loading"
         self._error = ""
@@ -399,6 +400,9 @@ class GribViewportModel:
         """
         with self._condition:
             if self._closed:
+                return ("unavailable", None, None)
+            if self._initialization_failed:
+                self._camera = camera
                 return ("unavailable", None, None)
             previous = self._camera
             self._camera = camera
@@ -1013,6 +1017,12 @@ class GribViewportModel:
                 self._error = str(exc)
                 self._failed_key = self._desired_key
                 self._state = "unavailable"
+                # Opening an empty/missing source can fail before the request
+                # loop consumes its first item. It must not remain "busy"
+                # forever and prevent an independent chart from preparing.
+                self._active = None
+                self._pending = None
+                self._initialization_failed = True
                 callback = None if self._closed else self.on_change
             if callback is not None:
                 callback()
@@ -1245,6 +1255,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             chart_data_dir=None,
             enc_chart_layer=False,
             chart_palette=CHART_PALETTE,
+            enc_only=False,
         ):
             super().__init__(parent)
             self._model = model
@@ -1261,6 +1272,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             # They are off by default, and they never turn on by themselves.
             self._enc_chart_layer = bool(enc_chart_layer) and self._chart_layer
             self._chart_palette = chart_palette
+            self._environment_provider = None
+            self._environment = None
+            self._environment_key = None
             format_ = QSurfaceFormat()
             format_.setSamples(4)
             format_.setAlphaBufferSize(8)
@@ -1335,7 +1349,16 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     on_state=self.chartStateChanged.emit,
                     enc_enabled=self._enc_chart_layer,
                     dpr=self.devicePixelRatio(),
+                    enc_only=enc_only,
                 )
+                if enc_only:
+                    self._environment_provider = chart_image_provider("environment")
+                    self.engine().addImageProvider(
+                        "environment", self._environment_provider
+                    )
+                    self._environment = self._weather.findChild(
+                        QObject, "environmentLayer"
+                    )
             self._published = None
             self._published_fill = None
             self._published_generations = set()
@@ -1470,6 +1493,21 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._chart.setProperty("imageWidth", width)
             self._chart.setProperty("imageHeight", height)
 
+        def set_environment(self, image, target):
+            """Present the app's retained above-ENC layers without changing order."""
+            if self._environment is None or self._environment_provider is None:
+                return
+            key = image.cacheKey()
+            if key != self._environment_key:
+                url = self._environment_provider.publish(key, image)
+                self._environment.setProperty("source", QUrl(url))
+                self._environment_key = key
+            for name, value in zip(
+                ("imageX", "imageY", "imageWidth", "imageHeight"),
+                (target.x(), target.y(), target.width(), target.height()),
+            ):
+                self._environment.setProperty(name, value)
+
         def _request_chart(self):
             """Ask the chart layer for its own generation.
 
@@ -1520,7 +1558,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
 
         def replace_model(self, model):
             """Retire a source immediately; queued old callbacks cannot republish."""
-            if self._chart_model is not None:
+            if self._chart_model is not None and not self._chart_model._enc_only:
                 raise ValueError("Replace chart-enabled viewports as a whole")
             self._weather.setVisible(False)
             old = self._model
@@ -1554,6 +1592,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._provider.clear()
             if self._chart_provider is not None:
                 self._chart_provider.clear()
+            if self._environment_provider is not None:
+                self._environment_provider.clear()
             self._weather.setVisible(False)
 
         def _refresh(self, generation):

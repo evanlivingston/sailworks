@@ -1954,6 +1954,49 @@ GATES["enc-viewport-experience"] = {
 }
 
 # Gates whose enforced thresholds are not yet derived from recorded evidence.
+GATES["enc-app-rollout"] = {
+    **GATES["enc-viewport-functional"],
+    "title": "Default ENC through the application TrackMap and Weather panel",
+    "tool": "tools/check_enc_app_rollout.py",
+    "command": [
+        "{python}",
+        "{tool}",
+        "--snapshot",
+        "{snapshot}",
+        "--output",
+        "{tool_output}",
+    ],
+    "defaults": {"scenarios": ["app-rollout"], "frames": 1, "repeats": 1},
+    "checks": [
+        {
+            "label": name.replace("_", " "),
+            "metric": "checks." + name,
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "docs/enc-default-rollout.md; user-authorized default application rollout",
+        }
+        for name in (
+            "charts_without_forecast",
+            "no_implicit_forecast",
+            "selected_forecast_with_enc",
+            "enc_only_no_duplicate_legacy",
+            "app_layer_order_preserved",
+            "app_pan_zoom",
+            "app_resize",
+            "app_time_change",
+            "charts_with_wind_hidden",
+            "chart_switch_off",
+            "chart_switch_on",
+            "source_clear_keeps_charts",
+            "legacy_recovery",
+        )
+    ],
+    "open_requirements": [
+        "No full #70 soak/platform/presentation or RSS/VRAM acceptance."
+    ],
+}
+
+# Gates whose enforced thresholds are not yet derived from recorded evidence.
 # They still run and still enforce every ratified check.
 GATES_NEEDING_RATIFICATION = tuple(
     sorted(

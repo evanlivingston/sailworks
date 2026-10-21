@@ -270,6 +270,7 @@ class ViewportChartLayer:
         on_state=None,
         enc_enabled=False,
         dpr=1,
+        enc_only=False,
     ):
         self._paths = tuple(str(path) for path in paths)
         self._data_dir = Path(data_dir)
@@ -304,6 +305,7 @@ class ViewportChartLayer:
         # The ENC source is off by default and composed by this layer's own
         # worker, with the worker's own handles.
         self._enc_enabled = bool(enc_enabled)
+        self._enc_only = bool(enc_only)
         self._enc_source = None
         self._enc_state = "disabled" if not self._enc_enabled else "idle"
         self._enc_metadata = {}
@@ -734,7 +736,7 @@ class ViewportChartLayer:
                 self.counters["stale"] += 1
             self._outcome = "stale"
             return None, None
-        columns = self._isobar_columns(job, camera, cancel)
+        columns = None if self._enc_only else self._isobar_columns(job, camera, cancel)
         if columns:
             with self._condition:
                 self.counters["isobars"] += 1
@@ -778,6 +780,8 @@ class ViewportChartLayer:
         return self._enc_source
 
     def _base_sources(self):
+        if self._enc_only:
+            return ()
         if not self._sources:
             self._sources = base_sources(self._data_dir)
         return self._sources
@@ -907,7 +911,7 @@ def _surface_image(surface, dpr=1):
     return image
 
 
-def chart_image_provider():
+def chart_image_provider(name="chart"):
     """The provider that serves the composed chart image.
 
     It is created here so the module stays importable without Qt: the
@@ -930,7 +934,7 @@ def chart_image_provider():
             with self._lock:
                 self.publishes += 1
                 self._images = {str(generation): image}
-            return f"image://chart/{generation}"
+            return f"image://{name}/{generation}"
 
         def requestImage(self, identifier, size, requested_size):  # noqa: N802
             with self._lock:

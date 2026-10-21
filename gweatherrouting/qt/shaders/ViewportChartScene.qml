@@ -25,6 +25,12 @@ Item {
         objectName: "chartLayer"
         anchors.fill: parent
     }
+    // Application-owned MBTiles/weather background/marine stay above ENC,
+    // below wind barbs. Standalone use leaves this image empty.
+    ChartLayer {
+        objectName: "environmentLayer"
+        anchors.fill: parent
+    }
     WeatherFill {
         id: fill
         objectName: "weatherFill"
