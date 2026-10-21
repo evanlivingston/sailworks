@@ -111,8 +111,13 @@ class WeatherPanel(QWidget):
         self.forecast_identity.setWordWrap(True)
         controls.addWidget(self.forecast_identity)
         self.weather_renderer = QComboBox()
-        self.weather_renderer.addItem("Viewport barbs", "viewport")
-        self.weather_renderer.addItem("Legacy weather recovery", "legacy")
+        self.weather_renderer.addItem("Viewport ENC + barbs", "viewport")
+        self.weather_renderer.addItem("Legacy chart/weather recovery", "legacy")
+        self.weather_renderer.setToolTip(
+            "Viewport ENC is the default. Legacy recovery restores chart and weather "
+            "presentation without changing forecast selection or routing. "
+            "All forecast points uses the unthinned legacy renderer automatically."
+        )
         self.weather_renderer.currentIndexChanged.connect(
             lambda _index: self.set_preference(
                 "weatherRenderer", self.weather_renderer.currentData()

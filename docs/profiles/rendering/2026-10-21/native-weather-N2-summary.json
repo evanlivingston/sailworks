@@ -1,0 +1,72 @@
+{
+  "issue": 64,
+  "milestone": "N2 default-off application and layer integration",
+  "decision": "adopt local opt-in integration; stop before separately authorized N3 acceptance/review",
+  "N2_native_gate_complete": true,
+  "issue_complete": false,
+  "flag": "--native-weather-fields",
+  "environment_opt_in": "GWR_NATIVE_WEATHER_FIELDS=1",
+  "default_enabled": false,
+  "budget": {
+    "targeted_rounds_allowed": 3,
+    "targeted_rounds_used": 3,
+    "targeted_final_round_pending": false,
+    "native_processes_allowed": 4,
+    "native_processes_used": 4,
+    "native_limit_seconds": 120,
+    "native_payload_limit_bytes": 33554432
+  },
+  "fixture": {
+    "file": "hrrr_20261021_01z_18h_fee795dc.grib2",
+    "sha256": "16e21c3cf2747a364f028a2aae0aaa0640d3a84051e9f6ef6c737c990698a6a3",
+    "mode": "existing real HRRR forecast read-only; no new network download"
+  },
+  "attempts": [
+    {"process": 1, "gate": "fail", "checks_passed": 8, "checks_failed": 7, "seconds": 34.145, "cause": "Harness model omitted grid=True for the fill comparison; presenter barbs and lifecycle checks passed. Unexecuted checks remain failed, not waived."},
+    {"process": 2, "gate": "pass", "checks_passed": 15, "seconds": 22.16, "scope": "real presenter plus shipped barb/fill shaders and covered reuse"},
+    {"process": 3, "gate": "pass", "checks_passed": 15, "seconds": 23.108, "scope": "also two actual application maps sharing one ledger"},
+    {"process": 4, "gate": "pass", "checks_passed": 18, "checks_failed": 0, "seconds": 22.838, "scope": "also distinct real forecast brackets A to B to A"}
+  ],
+  "final_native": {
+    "gate": "native-weather-integration",
+    "native_exit": {"exited": true, "exit_code": 0},
+    "field_upload_submissions": {"cold": 8, "covered": 0, "interval_B": 8, "return_A": 0},
+    "finite_pixel_difference_bytes": 0,
+    "missing_alpha_pixels": 0,
+    "covered_band_cache_misses_before_after": [6, 6],
+    "covered_band_cache_hits_before_after": [10, 10],
+    "return_band_cache_misses_before_after": [6, 6],
+    "two_application_maps_live_groups": 2,
+    "two_application_maps_live_bytes": 92160,
+    "two_layer_control_peak_bytes": 571200,
+    "two_layer_creations": [12, 12],
+    "two_layer_destructions": [12, 12],
+    "final_bytes": 0,
+    "final_groups": 0,
+    "final_contexts": 0,
+    "native_context_errors": [[], []],
+    "presenter_suspend_resume_source_clear": "passed",
+    "stale_retired_host_callback": "rejected",
+    "normal_atlas_settings": true,
+    "shipped_shader_arithmetic_changed": false
+  },
+  "validation": {
+    "round_1": {"passed": 73, "deselected": 1, "seconds": 7.46},
+    "round_2": {"passed": 82, "failed": 2, "deselected": 1, "seconds": 7.67, "cause": "New tests imported tools as a package; corrected to use existing explicit module loader", "black_files_passed": 11, "whitespace": "pass"},
+    "round_3": {"passed": 4, "failed": 0, "seconds": 0.63, "scope": "affected native integration test module", "black_files_passed": 11, "whitespace": "pass before final evidence-only update"},
+    "unique_targeted_tests_with_passing_results": 84,
+    "full_suite": "not run",
+    "preexisting_exclusion": "test_the_application_never_imports_the_viewport is obsolete after separate #77 integration and remains unchanged"
+  },
+  "artifacts_root": "/private/var/folders/w7/hb5wv1x1715821rqd1_3xf4r0000gn/T/opencode",
+  "final_artifacts_directory": "native-weather-N2-4",
+  "host": {"platform": "cocoa", "graphics_api": "Metal", "qt_version": "6.12.0", "device_pixel_ratio": 2},
+  "limits": [
+    "N3 broader eviction/reload, numerical/provenance oracle, independent clock and scene recreation acceptance remains unstarted",
+    "GPU residency is demand-admitted, not eager upload of the CPU forecast window",
+    "QRhi upload submissions are not hardware completion; readback is not presentation timing",
+    "32 MiB is a trial native payload cap, not physical VRAM or a ratified working-set bound",
+    "No default switch, issue closure, chart migration or all-points density change",
+    "All changes remain local and uncommitted"
+  ]
+}

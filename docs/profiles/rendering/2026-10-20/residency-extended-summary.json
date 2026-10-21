@@ -1,0 +1,121 @@
+{
+  "issue": 64,
+  "decision": "adopt focused source-retirement fix and diagnostic controls; narrow/stop before claiming full GPU residency acceptance",
+  "issue_complete": false,
+  "budget": {
+    "user_approved_extension": true,
+    "targeted_rounds_allowed": 3,
+    "targeted_rounds_used": 3,
+    "native_attempts_allowed": 4,
+    "native_attempts_used": 4,
+    "native_attempt_limit_seconds": 120
+  },
+  "forecast_sha256": "5d4437398a6dd87ae800c01eee3e2078437684268f7deb5d8ab353217fc14ec9",
+  "forecast": "Downloaded HRRR run 2026-10-21 01:00 UTC, 18-hour forecast; local file reused read-only",
+  "workload": {
+    "density": "standard",
+    "center_lat": 48.5,
+    "center_lon": -123.25,
+    "zoom": 9,
+    "camera_size": [640, 480],
+    "initial_time": "run +1h15m (inside a bracket, not an exact forecast event)",
+    "inputs": ["longitude +0.001 degrees", "longitude -0.001 degrees", "time +15 minutes", "time +30 minutes"],
+    "shoreline_filtering": false,
+    "speculative_recentering_and_lookahead": "disabled after warmup to isolate covered demand",
+    "chart_layer": false
+  },
+  "attempts": [
+    {
+      "number": 1,
+      "gate": "residency-reuse",
+      "tool_exit": 0,
+      "verdict": "pass",
+      "duration_seconds": 2.343,
+      "checks_passed": 11,
+      "checks_failed": 0,
+      "note": "Default atlas-enabled path: no new native field textures, no preparations or decoded-band access. No upload trace or cleanup assertions in this initial version."
+    },
+    {
+      "number": 2,
+      "gate": "residency-reuse with debugger tracing",
+      "tool_exit": 1,
+      "verdict": "not-evaluated",
+      "duration_seconds": 5.763,
+      "note": "LLDB stopped at Python launcher exec before workload. Fixed stop-on-exec setting; no upload result inferred."
+    },
+    {
+      "number": 3,
+      "gate": "residency-upload (initial atlas-enabled diagnostic)",
+      "tool_exit": 0,
+      "verdict": "fail",
+      "duration_seconds": 19.011,
+      "checks_passed": 22,
+      "checks_failed": 2,
+      "note": "Field/selection textures shared one backing atlas, so field resources were not separately identifiable. Debugger monotonic timestamps were process-relative while target timestamps were uptime-relative: phase counts from this attempt are INVALID and must not be used as upload evidence. Default-path source-retirement and teardown controls passed."
+    },
+    {
+      "number": 4,
+      "gate": "residency-upload (explicit atlas-disabled control)",
+      "tool_exit": 0,
+      "verdict": "pass",
+      "duration_seconds": 19.016,
+      "checks_passed": 24,
+      "checks_failed": 0,
+      "note": "QSG_ATLAS_SIZE_LIMIT=1 separates image resources for attribution. Unix wall clock aligns phases between debugger and target. This is not evidence that the default atlas-enabled path has separately measured field uploads."
+    }
+  ],
+  "final_host": {
+    "platform": "cocoa",
+    "graphics_api": "Metal",
+    "qt_version": "6.12.0",
+    "device_pixel_ratio": 2.0
+  },
+  "final_control": {
+    "endpoint": "QRhiResourceUpdateBatch::uploadTexture canonical description-overload calls; upload submission, NOT GPU completion",
+    "atlas_size_limit": 1,
+    "warm_field_submissions": 4,
+    "covered_input_field_submissions": 0,
+    "covered_input_all_submissions": 9,
+    "field_preparations": 0,
+    "misses": 0,
+    "decoded_band_accesses": 0,
+    "field_publications": 0,
+    "selection_publications": 4,
+    "new_field_textures": 0,
+    "all_four_inputs_covered_ready_same_field": true,
+    "retained_field_payload_bytes": 1197808,
+    "declared_field_payload_limit_bytes": 134217728,
+    "source_retirement_old_weather_hidden": true,
+    "source_retirement_provider_bytes": 0,
+    "source_retirement_live_observed_textures": 0,
+    "source_reload_ready": true,
+    "teardown_workers_stopped": true,
+    "teardown_retained_field_bytes": 0,
+    "teardown_live_observed_textures": 0,
+    "teardown_observed_texture_destructions": 23,
+    "texture_probe_errors": [],
+    "hardware_completion_measured": false,
+    "physical_vram_measured": false,
+    "presentation_latency_measured": false
+  },
+  "runtime_fix": "Clear the barbs/fill QML image source bindings on model replacement and disposal, not just CPU provider dictionaries. This allows Qt-owned old textures to be destroyed while old content is hidden.",
+  "final_validation": {
+    "passed": 93,
+    "skipped": 2,
+    "deselected": 1,
+    "skip_reason": "Occasional real-download tests are opt-in; native control reused the already downloaded real forecast",
+    "deselected_test": "test_the_application_never_imports_the_viewport (pre-existing obsolete assertion after #77; not fixed in #64)",
+    "black_files_passed": 8,
+    "whitespace": "pass",
+    "warning": "GDAL FutureWarning",
+    "full_suite": "not run",
+    "legacy_residency_gate": "unchanged; not remeasured"
+  },
+  "remaining_acceptance": [
+    "Default atlas-enabled field upload attribution, including possible atlas extraction/copy paths",
+    "Native retained-field GPU budget and eviction/reload across distinct field identities, not just CPU payload accounting",
+    "Cross-field resident-window switches: same-bracket control does not prove them upload-free",
+    "Original-sampler and A0k missing-data rendering acceptance are unchanged, not newly established by this run"
+  ],
+  "next_decision": "Budget exhausted: retain the cleanup fix and controls for review, keep #64 open. The next bounded task must choose atlas-region upload attribution and actual native field-residency ownership; do not simply increase test repetitions or relabel CPU/published bytes as GPU residency."
+}

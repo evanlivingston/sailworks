@@ -1,0 +1,52 @@
+{
+  "issue": 64,
+  "milestone": "N3 forced GPU eviction and reload, real forecast",
+  "tool": "tools/check_native_weather_stress.py",
+  "fixture": {
+    "file": "hrrr_20261021_01z_18h_fee795dc.grib2",
+    "sha256": "16e21c3cf2747a364f028a2aae0aaa0640d3a84051e9f6ef6c737c990698a6a3"
+  },
+  "native_run": {
+    "process": 1,
+    "exit_code": 0,
+    "platform": "cocoa",
+    "graphics_api": "Metal",
+    "qt": "6.12.0"
+  },
+  "budget": {
+    "one_time_bytes": 190400,
+    "limit_bytes": 199920,
+    "peak_bytes": 190400,
+    "evictions": 6
+  },
+  "sequence": [
+    "A1 hour1 cold",
+    "B1 hour3",
+    "A2 hour1 reload after eviction",
+    "B2 hour3 reload after eviction"
+  ],
+  "upload_submissions_per_time": {
+    "A1": 8,
+    "B1": 8,
+    "A2": 8,
+    "B2": 8
+  },
+  "checks": {
+    "budget_held_one_time": true,
+    "pressure_evicted": true,
+    "reload_uploaded": true,
+    "reload_pixels_identical": true,
+    "budget_never_exceeded": true,
+    "resources_released": true,
+    "clean_native_exit": true
+  },
+  "final_bytes": 0,
+  "final_contexts": 0,
+  "first_run_note": "Attempt 1 failed in setup (missing output folder), before any native app started. Attempt 2 ran the native check; the parent script then failed to import the integration module, so its own checks were recomputed from the saved trace by the same classifier.",
+  "limits": [
+    "Upload counts are QRhi submissions, not GPU completion",
+    "Byte figures are texture payload, not physical VRAM",
+    "Synthetic test budget chosen from a measured single-time footprint",
+    "No presentation FPS or latency claim"
+  ]
+}

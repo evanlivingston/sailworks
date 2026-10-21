@@ -1,0 +1,32 @@
+{
+  "issue": 64,
+  "milestone": "N3 independent clocks and source swap",
+  "tool": "tools/check_native_weather_clocks.py",
+  "native_run": {
+    "process": 2,
+    "exit_code": 0,
+    "platform": "cocoa",
+    "graphics_api": "Metal"
+  },
+  "checks": {
+    "views_independent": true,
+    "other_view_undisturbed": true,
+    "source_swap_reproduces": true,
+    "shared_budget_used": true,
+    "resources_released": true,
+    "clean_native_exit": true
+  },
+  "correction": "The first run reported shared_budget_used=false only because the check expected 2 contexts. Each view has barbs and fill layers, so two views hold 4 contexts; the saved numbers (4 groups, 380800 B peak, 4 contexts) satisfy the corrected expectation. The tool now expects 4. The verdict was recomputed from saved output; no native rerun.",
+  "budget": {
+    "peak_bytes": 380800,
+    "limit_bytes": 33554432,
+    "evictions": 0,
+    "final_bytes": 0,
+    "final_contexts": 0
+  },
+  "limits": [
+    "Budget is not under pressure in this run; eviction is covered by the stress summary",
+    "Upload counts not attributed in this run",
+    "QRhi submissions are not GPU completion; no presentation or FPS claim"
+  ]
+}

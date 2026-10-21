@@ -56,7 +56,13 @@ FIXTURES = {
     ),
     "1ed1bca1281ad4096713ce20af9c1473e70bd4eb0766a54965849b7ace698a03": (
         "A0j/A0k current fixture, 2026-10-19 08:00, 5693 files (22 sources). "
-        "Recorded under docs/profiles/rendering/2026-10-19/."
+        "Recorded under docs/profiles/rendering/2026-10-19/. Lost 5190 of its "
+        "files and no longer verifiable."
+    ),
+    "410b88ada69dd5a22fc18765a0f26b016e9d15df22bcfeaa954b8b4b62da2346": (
+        "Replacement application fixture, 2026-10-21 09:00, 5654 files, captured "
+        "from the same application data with the user's approval. Recorded under "
+        "docs/profiles/rendering/2026-10-21/."
     ),
 }
 
@@ -939,6 +945,87 @@ GATES = {
                 "same-workload timing comparison."
             ),
         },
+    },
+    "residency-reuse": {
+        "title": "Viewport covered-demand reuse mechanism (not GPU residency acceptance)",
+        "milestone": "#64",
+        "kind": "correctness",
+        "tool": "tools/check_resident_field_reuse.py",
+        "endpoint": ENDPOINT_PROBE,
+        "requires": [],
+        "dependencies": ["PySide6", "numpy", "osgeo.gdal"],
+        "timeout_s": 110,
+        "env": {},
+        "command": ["{python}", "{tool}", "--output", "{tool_output}"],
+        "defaults": {"scenarios": ["covered-pan-time"], "frames": 4, "repeats": 1},
+        "tool_output": "{outdir}/{gate}.tool.json",
+        "result": "{outdir}/{gate}.tool.json",
+        "reference": {
+            "kind": "acceptance-contract",
+            "source": "issue #64 covered-pan/in-window reuse requirement; ADR-001 D1/D4",
+            "note": "New real-HRRR mechanism workload; not comparable to the historical scrub.",
+        },
+        "open_requirements": [
+            "Actual GPU field-upload and resource-release instrumentation",
+            "Cross-field resident-window switching, eviction/reload and fidelity acceptance",
+        ],
+        "checks": [
+            {
+                "label": "all four planned inputs were exercised",
+                "metric": "selection_publications",
+                "aggregate": "max",
+                "op": ">=",
+                "value": 4,
+                "source": "Fixed four-input workload in tools/check_resident_field_reuse.py",
+            },
+            *[
+                {
+                    "label": metric,
+                    "metric": metric,
+                    "aggregate": "all",
+                    "op": "is_true",
+                    "source": "Issue #64: covered demand uses current resident values",
+                }
+                for metric in (
+                    "inputs[*].covered_before_input",
+                    "inputs[*].ready",
+                    "inputs[*].same_field",
+                    "texture_probe_ok",
+                    "source_retirement.old_weather_hidden",
+                    "source_reload_ready",
+                    "teardown.workers_stopped",
+                )
+            ],
+            *[
+                {
+                    "label": metric,
+                    "metric": metric,
+                    "aggregate": "max",
+                    "op": "<=",
+                    "value": 0,
+                    "source": "Issue #64 covered-demand guarantee (mechanism, not GPU-upload evidence)",
+                }
+                for metric in (
+                    "field_preparations",
+                    "misses",
+                    "decoded_band_accesses",
+                    "field_publications",
+                    "new_field_textures",
+                    "source_retirement.provider_bytes",
+                    "source_retirement.live_textures",
+                    "teardown.textures.live_textures",
+                    "teardown.retained_field_bytes",
+                )
+            ],
+            {
+                "label": "retained field payload respects the declared 128 MiB limit",
+                "metric": "retained_bytes",
+                "aggregate": "max",
+                "op": "<=",
+                "value": 134217728,
+                "source": "gribviewport.FIELD_BYTE_LIMIT; viewport-validation-summary.json (2026-10-20)",
+            },
+        ],
     },
     # ------------------------------------------------------------------ #71
     "float-transport": {
@@ -1894,6 +1981,226 @@ GATES = {
     },
 }
 
+GATES["native-field-store"] = {
+    "title": "Production native field store: two contexts, admission, eviction and ownership",
+    "milestone": "#64 N1",
+    "kind": "correctness",
+    "tool": "tools/check_native_weather_store.py",
+    "endpoint": ENDPOINT_PROBE,
+    "requires": [],
+    "dependencies": ["PySide6", "numpy"],
+    "timeout_s": 110,
+    "env": {},
+    "command": ["{python}", "{tool}", "--output", "{tool_output}"],
+    "defaults": {
+        "scenarios": ["two-map-reuse-pressure-reload"],
+        "frames": 7,
+        "repeats": 1,
+    },
+    "tool_output": "{outdir}/{gate}.tool.json",
+    "result": "{outdir}/{gate}.tool.json",
+    "reference": {
+        "kind": "acceptance-contract",
+        "source": "docs/rendering-performance-plan.md: N1 explicit native ownership and accounting",
+    },
+    "open_requirements": [
+        "N2 product presenter and actual weather-shader binding",
+        "N3 real forecast/fidelity/lifecycle acceptance and review",
+    ],
+    "checks": [
+        {
+            "label": name,
+            "metric": f"checks.{name}",
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "#64 authorized N1 ownership/admission/eviction contract",
+        }
+        for name in (
+            "normal_global_atlas_settings",
+            "two_maps_draw",
+            "context_handles_separate",
+            "warm_A_reused",
+            "inactive_B_evicted",
+            "evicted_B_reloaded",
+            "missing_zero_alpha",
+            "sibling_stays_current",
+            "budget_respected",
+            "non_atlased_fields",
+            "resources_released",
+            "budget_empty",
+            "clean_native_exit",
+            "warm_upload_positive",
+            "warm_return_zero_upload",
+            "reload_upload_positive",
+        )
+    ],
+}
+
+GATES["native-weather-integration"] = {
+    "title": "N2 opt-in application presenter and shipped native weather layers",
+    "milestone": "#64 N2",
+    "kind": "correctness",
+    "tool": "tools/check_native_weather_integration.py",
+    "endpoint": ENDPOINT_GRAB,
+    "requires": [],
+    "dependencies": ["PySide6", "numpy", "osgeo.gdal", "cairo"],
+    "timeout_s": 120,
+    "env": {},
+    "command": ["{python}", "{tool}", "--output", "{tool_output}"],
+    "defaults": {
+        "scenarios": ["presenter-real-shaders-lifecycle"],
+        "frames": 2,
+        "repeats": 1,
+    },
+    "tool_output": "{outdir}/{gate}.tool.json",
+    "result": "{outdir}/{gate}.tool.json",
+    "reference": {
+        "kind": "acceptance-contract",
+        "source": "docs/rendering-performance-plan.md: N2 opt-in application and layer binding",
+    },
+    "open_requirements": [
+        "N3 broader numerical, lifecycle and real-workload acceptance; no rollout decision"
+    ],
+    "checks": [
+        {
+            "label": name,
+            "metric": f"checks.{name}",
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "#64 authorized N2 default-off real-forecast layer/lifecycle contract",
+        }
+        for name in (
+            "presenter_real_barbs",
+            "session_budget_shared",
+            "presenter_suspend_released",
+            "presenter_resume",
+            "source_clear_released",
+            "stale_callback_rejected",
+            "native_layers_draw",
+            "finite_pixels_identical",
+            "all_missing_zero_alpha",
+            "covered_reuse",
+            "budget_respected",
+            "resources_released",
+            "warm_upload_positive",
+            "covered_zero_upload",
+            "resident_return_reused",
+            "new_interval_upload_positive",
+            "resident_return_zero_upload",
+            "clean_native_exit",
+        )
+    ],
+}
+
+GATES["native-field-item"] = {
+    "title": "Python QQuickItem packed-field ownership/retention compatibility probe",
+    "milestone": "#64",
+    "kind": "correctness",
+    "tool": "tools/experiment_resident_texture_item.py",
+    "endpoint": ENDPOINT_PROBE,
+    "requires": [],
+    "dependencies": ["PySide6", "numpy"],
+    "timeout_s": 110,
+    "env": {},
+    "command": ["{python}", "{tool}", "--output", "{tool_output}"],
+    "defaults": {
+        "scenarios": ["A-B-A-missing-A-retire-invalidate"],
+        "frames": 5,
+        "repeats": 1,
+    },
+    "tool_output": "{outdir}/{gate}.tool.json",
+    "result": "{outdir}/{gate}.tool.json",
+    "reference": {
+        "kind": "compatibility-contract",
+        "source": "docs/rendering-performance-plan.md: Native residency follow-up scope (#64)",
+        "note": "Synthetic packed scalar fields; not app integration, sampler fidelity or performance acceptance.",
+    },
+    "open_requirements": [
+        "Product native field store, byte budget, eviction, multi-map and lifecycle integration",
+        "Existing #64/#65 numerical/missing-data application gates and rollout review",
+    ],
+    "checks": [
+        {
+            "label": name,
+            "metric": f"checks.{name}",
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "User-approved #64 QQuickItem compatibility/ownership probe contract",
+        }
+        for name in (
+            "shader_compiled",
+            "normal_global_atlas_settings",
+            "provider_dispatch",
+            "complete_sequence",
+            "pixel_controls",
+            "non_atlased",
+            "same_A_identity",
+            "same_A_pixels",
+            "no_recreation_on_return",
+            "detached_resources_released",
+            "reload_after_detach",
+            "scene_invalidated",
+            "all_native_resources_released",
+            "callback_threads_and_ownership",
+            "explicit_wrapper_ownership",
+            "valid_at_retirement",
+            "clean_native_exit",
+            "upload_trace_positive",
+            "no_field_upload_on_return",
+        )
+    ],
+}
+
+GATES["residency-upload"] = {
+    **GATES["residency-reuse"],
+    "title": "Qt weather upload submission/lifecycle control (atlas disabled)",
+    "env": {"GWR_QRHI_TRACE": "1", "QSG_ATLAS_SIZE_LIMIT": "1"},
+    "open_requirements": [
+        "Default atlas-enabled path upload attribution is not established by this control",
+        "Cross-field GPU retention/eviction, cross-window reload and fidelity acceptance",
+    ],
+    "checks": GATES["residency-reuse"]["checks"]
+    + [
+        {
+            "label": metric,
+            "metric": metric,
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "Direct stock-path QRhi upload trace must be active and attributable",
+        }
+        for metric in (
+            "upload_trace.configured",
+            "upload_trace.field_resources_identifiable",
+        )
+    ]
+    + [
+        {
+            "label": "positive-control warm weather uploads were observed",
+            "metric": "upload_trace.warm_field_submissions",
+            "aggregate": "max",
+            "op": ">=",
+            "value": 4,
+            "source": "Four weather endpoint textures must be uploaded before covered inputs",
+        },
+        {
+            "label": "covered inputs submit no field uploads",
+            "metric": "upload_trace.input_field_submissions",
+            "aggregate": "max",
+            "op": "<=",
+            "value": 0,
+            "source": "Issue #64 zero field-upload acceptance, observed at QRhi submission",
+        },
+        {
+            "label": "positive-control selection uploads remain visible during input",
+            "metric": "upload_trace.input_all_submissions",
+            "aggregate": "max",
+            "op": ">=",
+            "value": 1,
+            "source": "Per-view selection changes; trace must not be silently inactive during input",
+        },
+    ],
+}
+
 # Functional acceptance is separate from the unchanged strict fidelity gate.
 # The user explicitly deferred pixel matching; it must not be reported as passed.
 GATES["enc-viewport-functional"] = {
@@ -1954,7 +2261,82 @@ GATES["enc-viewport-experience"] = {
 }
 
 # Gates whose enforced thresholds are not yet derived from recorded evidence.
+GATES["enc-app-rollout"] = {
+    **GATES["enc-viewport-functional"],
+    "title": "Default ENC through the application TrackMap and Weather panel",
+    "tool": "tools/check_enc_app_rollout.py",
+    "command": [
+        "{python}",
+        "{tool}",
+        "--snapshot",
+        "{snapshot}",
+        "--output",
+        "{tool_output}",
+    ],
+    "defaults": {"scenarios": ["app-rollout"], "frames": 1, "repeats": 1},
+    "checks": [
+        {
+            "label": name.replace("_", " "),
+            "metric": "checks." + name,
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "docs/enc-default-rollout.md; user-authorized default application rollout",
+        }
+        for name in (
+            "charts_without_forecast",
+            "no_implicit_forecast",
+            "selected_forecast_with_enc",
+            "enc_only_no_duplicate_legacy",
+            "app_layer_order_preserved",
+            "app_pan_zoom",
+            "app_resize",
+            "app_time_change",
+            "charts_with_wind_hidden",
+            "chart_switch_off",
+            "chart_switch_on",
+            "source_clear_keeps_charts",
+            "legacy_recovery",
+        )
+    ],
+    "open_requirements": [
+        "No full #70 soak/platform/presentation or RSS/VRAM acceptance."
+    ],
+}
+
+# Gates whose enforced thresholds are not yet derived from recorded evidence.
 # They still run and still enforce every ratified check.
+GATES["wind-all-points"] = {
+    **GATES["enc-app-rollout"],
+    "title": "All forecast points: explicit uncapped legacy wind presentation",
+    "milestone": "#79 under #51",
+    "tool": "tools/check_all_points_wind.py",
+    "defaults": {"scenarios": ["all-thinned-all"], "frames": 1, "repeats": 1},
+    "checks": [
+        {
+            "label": name.replace("_", " "),
+            "metric": "checks." + name,
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "docs/wind-all-points.md; issue #79 no thinning or cap",
+        }
+        for name in (
+            "all_points_nonblank_membership",
+            "dense_uncapped",
+            "explicit_legacy_not_loading",
+            "charts_navigation_retained",
+            "shoreline_membership",
+            "density_roundtrip_no_duplicate",
+            "zero_opacity_hides_wind",
+            "visibility_hides_wind",
+            "visible_wind_recovers",
+            "dense_camera_input",
+        )
+    ],
+    "open_requirements": [
+        "CPU all-points presentation; no GPU all-points, FPS or RSS/VRAM claim."
+    ],
+}
+
 GATES_NEEDING_RATIFICATION = tuple(
     sorted(
         gate_id

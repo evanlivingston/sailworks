@@ -1,0 +1,60 @@
+{
+  "change": "viewport ENC prepared-geometry cache",
+  "issue": 78,
+  "decision": "adopt; redraw cost halved with byte-identical output",
+  "branch": "feature/enc-default-rollout",
+  "measurement": {
+    "harness": "tools/profile_enc_composition.py",
+    "view": {"lat": 48.45003186114848, "lon": -124.28875762043288, "zoom": 9.380182039882325},
+    "canvas_logical": [1000, 680],
+    "device_pixel_ratio": 2,
+    "composed_surface_device_px": [3024, 2384],
+    "cells_drawn": ["US2PACWY", "US3WA1ED", "US3WA1EE", "US3WA1DD", "US3WA1EF", "US1GLBDD"],
+    "before": {"cold_s": 2.4386, "repeat_s": [2.224, 2.2467]},
+    "after": {"cold_s": 2.4549, "repeat_s": [1.0416, 1.0399]},
+    "snapshot_sha256": "410b88ada69dd5a22fc18765a0f26b016e9d15df22bcfeaa954b8b4b62da2346",
+    "meaning": "CPU wall time of the ENC composition only; not FPS, presentation latency or GPU time; no speed threshold asserted"
+  },
+  "why_the_old_caches_did_not_help": [
+    "The drawer's feature cache lives on the chart handle, and the renderer keeps only 8 handles; a view touching about 14 cells evicts and reopens the cells that draw.",
+    "The drawer's cache is capped at 4096 entries while the largest visible cell holds 7474 features, and the scan order makes the FIFO eviction drop the entry the scan reaches next, so that cell never hits."
+  ],
+  "change": [
+    "Prepared geometry is kept in a cache owned by the ENC renderer, so it outlives the chart handles.",
+    "The cache key is the cell path, the tolerance, the layer and the feature id, so a reopened cell finds its prepared geometry.",
+    "The cache is bounded by accounted retained bytes (limit 64 MiB), with least-recently-used eviction; an entry larger than the limit is never kept.",
+    "The legacy application path keeps its own per-drawer cache, the same key and the same 4096-entry cap: the change in the shared drawer file is a pure extraction."
+  ],
+  "accounted_cache_bytes_at_measured_view": 30508144,
+  "fidelity": "byte-identical output verified against the reference ENCOverlayRenderer on the real cells (28836864 bytes compared byte for byte); the enc-viewport-functional and enc-app-rollout gates are re-run against the replacement snapshot",
+  "fixture_change": {
+    "reason": "the recorded 2026-10-19 snapshot lost 5190 of its files and can no longer be verified",
+    "previous_sha256": "1ed1bca1281ad4096713ce20af9c1473e70bd4eb0766a54965849b7ace698a03",
+    "replacement_sha256": "410b88ada69dd5a22fc18765a0f26b016e9d15df22bcfeaa954b8b4b62da2346",
+    "authorized_by": "the user, after being told 43 old forecast files are unrecoverable",
+    "comparable_to_old_performance_baseline": false
+  },
+  "not_claimed": [
+    "presentation FPS or input-to-present latency",
+    "RSS or VRAM",
+    "a speed threshold",
+    "the first draw being fast: it is still about 2.4 s"
+  ],
+  "gates_after_the_change": {
+    "enc-viewport-functional": "pass",
+    "enc-app-rollout": "pass",
+    "enc-viewport-experience": "pass (14/14)",
+    "wind-all-points": "pass",
+    "targeted_tests": "113 passed, 0 failed",
+    "black": "pass",
+    "scoped_flake8": "pass",
+    "scoped_diff_check": "pass"
+  },
+  "harness_corrections_made_alongside": [
+    "The ENC acceptance tools now accept the replacement snapshot, and the forecast instant comes from the snapshot's own manifest instead of a hard-coded one.",
+    "The tools' base view is anchored inside the recorded forecast's coverage, and their sandbox copy states the switches the gate exercises; the user's own settings are untouched.",
+    "The combined-experience gate now binds its readiness to the requested camera, so the previous view's ready image cannot satisfy a new view."
+  ],
+  "default_rollout_enabled": false,
+  "merged": false
+}

@@ -38,9 +38,14 @@ from osgeo import ogr
 
 from gweatherrouting.core.enccharts import chart_scale_rank, chart_scale_visible
 from gweatherrouting.core.scheduling import schedule_idle
+from gweatherrouting.qt.encgeometrycache import (
+    PreparedFeatureCache,
+    ViewportS57ChartDrawer,
+)
 from gweatherrouting.rendering.chartlayer import ChartLayer
 from gweatherrouting.rendering.encrenderer import ENCOverlayRenderer
 from gweatherrouting.rendering.gdalvectorchart import GDALVectorChart
+from gweatherrouting.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
 
 #: The settings key the application's installed chart entries live under.
 CHART_ENTRIES_KEY = "vectorCharts"
@@ -309,19 +314,58 @@ class ViewportEncRenderer(ENCOverlayRenderer):
     ranked, filtered, clipped and drawn exactly as the application draws
     them.  The subclass records the *identity* of the composition -- the
     cells that were selected and the coverage region each one ended up with
-    -- which the reference does not report.
+    -- which the reference does not report, and it keeps the prepared
+    geometry of the cells in a cache of its own, so that the eviction of a
+    chart handle does not make the cells be prepared again.
     """
 
-    def __init__(self, schedule=schedule_idle):
+    def __init__(self, schedule=schedule_idle, feature_cache=None):
         super().__init__(schedule)
         self._coverages = {}
         self._regions = ()
+        # The prepared geometry is the renderer's own: it outlives the chart
+        # handles, which are evicted, and it is keyed by the cell's own path,
+        # so the same cell reopened finds the geometry already prepared.
+        self._feature_cache = (
+            feature_cache if feature_cache is not None else PreparedFeatureCache()
+        )
+
+    @property
+    def feature_cache(self):
+        """The renderer's own cache of prepared features."""
+        return self._feature_cache
+
+    @property
+    def cache_bytes(self):
+        """The bytes the prepared geometry cache retains."""
+        return self._feature_cache.bytes
 
     def _worker_chart(self, path, native_scale, palette):
         chart = super()._worker_chart(path, native_scale, palette)
         # The reference's own coverage, recorded for the identity report.
         self._coverages.setdefault(path, tuple(chart._coverage))
+        self._install_drawer(chart, path, palette)
         return chart
+
+    def _install_drawer(self, chart, path, palette):
+        """The viewport's own drawer, on the renderer's own cache.
+
+        The drawer is the reference's own drawer: the same features, the same
+        tolerance, the same order, the same styles and the same clipping.
+        Only the place the prepared geometry is kept changes, and the cell's
+        path becomes the cell's identity, so the same cell reopened hits the
+        entries that were prepared for it.
+
+        A chart that is not drawn by the ENC drawer is left exactly as it
+        is: it has no prepared geometry to keep.
+        """
+        drawer = getattr(chart, "drawer", None)
+        if not isinstance(drawer, S57ChartDrawer):
+            return
+        if not isinstance(drawer, ViewportS57ChartDrawer):
+            drawer = ViewportS57ChartDrawer()
+            chart.drawer = drawer
+        drawer.bind(path, self._feature_cache, palette)
 
     def _render(self, job):
         self._coverages = {}
@@ -335,7 +379,23 @@ class ViewportEncRenderer(ENCOverlayRenderer):
         return self._regions
 
     def release(self):
-        """Release the worker's own chart handles."""
+        """Release the worker's own chart handles and the prepared geometry.
+
+        The prepared geometry describes the cells as they were read: a cell
+        that was replaced or switched off must never be drawn from what was
+        prepared for the cell that was there before it.
+        """
+        self.release_handles()
+        self._feature_cache.clear()
+
+    def release_handles(self):
+        """Release the worker's own chart handles, and keep the geometry.
+
+        The prepared geometry outlives the handle it was prepared for: the
+        handles are the renderer's own and are released when the worker is
+        done with them, while the geometry is kept for the next draw of the
+        same cells.
+        """
         self._charts.clear()
         self._coverages = {}
         self._regions = ()
@@ -470,6 +530,12 @@ class ViewportEncSource:
     def state(self):
         return self._state
 
+    @property
+    def cache_bytes(self):
+        """The bytes the worker's own prepared geometry cache retains."""
+        renderer = self._renderer
+        return 0 if renderer is None else renderer.cache_bytes
+
     def compose(self, job, surface):
         """Compose the ENC cells onto the chart surface.
 
@@ -566,7 +632,8 @@ class ViewportEncSource:
 
         The manifest's generation covers the installed cells, their enabled
         state and their files' identity, so a chart that was installed,
-        replaced or switched off releases the metadata that described it.
+        replaced or switched off releases the metadata that described it --
+        and the geometry that was prepared for it.
         """
         generation = self._catalog.manifest.generation
         if generation == self._generation:
@@ -576,12 +643,14 @@ class ViewportEncSource:
             self._renderer.release()
 
     def release(self):
-        """Release the worker's own chart handles."""
+        """Release the worker's own chart handles.
+
+        The prepared geometry is kept: it describes the cells as they were
+        read, and the cells themselves decide when it must be dropped -- a
+        cell that changed releases it, through the generation.
+        """
         if self._renderer is not None:
-            self._renderer.release()
-            self._renderer = None
-        self._catalog = EncCatalog(self._data_dir)
-        self._generation = None
+            self._renderer.release_handles()
 
     def _renderer_instance(self):
         if self._renderer is None:

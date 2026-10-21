@@ -15,6 +15,7 @@ from gweatherrouting.rendering.weatherstaging import (
 from gweatherrouting.rendering.windpainter import (
     barb_density_parameters,
     mercator_project_flat,
+    mercator_project_nodes,
     shoreline_quality,
 )
 
@@ -37,6 +38,8 @@ class BarbView(MercatorProjection):
     _zoom: float
     density: str
     over_land: bool
+    # Opt-in: barbs are laid out on a world grid, so they pan with the map.
+    geographic: bool = False
 
     def get_allocated_width(self):
         return self.width
@@ -403,6 +406,30 @@ def stage_field(  # noqa: C901 - native/gridded forms share one sampling pass
     )
 
 
+def _geographic_cells(points, xx, yy, view, step, margin, cols, rows):
+    """Barb cells anchored to the world, so the layout moves with the map.
+
+    Membership is the first node of each world cell, which depends only on
+    geography and zoom.  A world cell's mesh slot is the screen cell of its
+    centre; world cells form a square lattice of the mesh's own step, so the
+    slots are one-to-one.  A cell whose centre falls outside the mesh is
+    dropped, which affects only the map's edge.
+    """
+    if len(points) == 0:
+        return np.empty(0, dtype=int), np.empty(0, dtype=int)
+    world_x, world_y = mercator_project_nodes(points[:, 0], points[:, 1], view._zoom)
+    cell_x = np.floor(world_x / step).astype(int)
+    cell_y = np.floor(world_y / step).astype(int)
+    _, first = np.unique(np.stack((cell_y, cell_x), axis=1), axis=0, return_index=True)
+    offset_x = float(np.median(world_x - xx))
+    offset_y = float(np.median(world_y - yy))
+    slot_x = np.floor(((cell_x + 0.5) * step - offset_x + margin) / step).astype(int)
+    slot_y = np.floor(((cell_y + 0.5) * step - offset_y + margin) / step).astype(int)
+    valid = (slot_x >= 0) & (slot_x < cols) & (slot_y >= 0) & (slot_y < rows)
+    cells = np.where(valid, slot_y * cols + slot_x, -1)
+    return cells, np.sort(first[valid[first]])
+
+
 def stage_selection(sampler, field, stamp, view, land_mask, cancel=lambda: False):
     """The exact current-view selection of a resident field.
 
@@ -461,11 +488,16 @@ def stage_selection(sampler, field, stamp, view, land_mask, cancel=lambda: False
         & np.isfinite(yy)
     )
     ids = np.flatnonzero(visible)
-    cell_x = np.floor((xx[ids] + margin) / step).astype(int)
-    cell_y = np.floor((yy[ids] + margin) / step).astype(int)
-    cells = cell_y * cols + cell_x
-    _, first_cell = np.unique(cells, return_index=True)
-    chosen = np.sort(first_cell)
+    if getattr(view, "geographic", False):
+        cells, chosen = _geographic_cells(
+            points[ids], xx[ids], yy[ids], view, step, margin, cols, rows
+        )
+    else:
+        cell_x = np.floor((xx[ids] + margin) / step).astype(int)
+        cell_y = np.floor((yy[ids] + margin) / step).astype(int)
+        cells = cell_y * cols + cell_x
+        _, first_cell = np.unique(cells, return_index=True)
+        chosen = np.sort(first_cell)
     chosen = _cap_selection(chosen, cap)
     if not view.over_land and field.land_flags is not None:
         _require_land_quality(field, view)
@@ -598,11 +630,16 @@ def stage_barbs(
         & np.isfinite(yy)
     )
     ids = np.flatnonzero(visible)
-    cell_x = np.floor((xx[ids] + margin) / step).astype(int)
-    cell_y = np.floor((yy[ids] + margin) / step).astype(int)
-    cells = cell_y * cols + cell_x
-    _, first = np.unique(cells, return_index=True)
-    chosen = np.sort(first)
+    if getattr(view, "geographic", False):
+        cells, chosen = _geographic_cells(
+            points[ids], xx[ids], yy[ids], view, step, margin, cols, rows
+        )
+    else:
+        cell_x = np.floor((xx[ids] + margin) / step).astype(int)
+        cell_y = np.floor((yy[ids] + margin) / step).astype(int)
+        cells = cell_y * cols + cell_x
+        _, first = np.unique(cells, return_index=True)
+        chosen = np.sort(first)
     if cap is not None and len(chosen) > cap:
         chosen = chosen[np.linspace(0, len(chosen) - 1, cap, dtype=int)]
     chosen = _off_land(chosen, ids, points, view, land_mask, cancel)

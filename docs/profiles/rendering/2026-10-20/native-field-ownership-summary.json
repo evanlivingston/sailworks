@@ -1,0 +1,117 @@
+{
+  "issue": 64,
+  "scope": "User-authorized narrow investigation of invalid texture wrappers at scene teardown",
+  "decision": "adopt the public wrapper-adoption and explicit render-thread-retirement mechanism for the proposed product design on the measured host",
+  "issue_complete": false,
+  "product_integration_started": false,
+  "budget": {
+    "targeted_rounds_allowed": 2,
+    "native_attempts_allowed": 2,
+    "native_attempts_used": 2,
+    "native_limit_seconds": 120
+  },
+  "root_cause_evidence": {
+    "binding_version": "PySide6 / Shiboken 6.12.0",
+    "installed_binary": "PySide6/QtQuick.abi3.so (arm64)",
+    "generated_wrapper": "Sbk_QQuickWindowFunc_createTextureFromImage",
+    "disassembly_observation": "Both overload paths call Shiboken::Object::setParent(window_wrapper, returned_texture_wrapper) after pointerToPython",
+    "call_sites": ["0x52cf8", "0x52de0"],
+    "binding_header": "shiboken6/include/shiboken6/basewrapper.h: setParent documents descendant-wrapper invalidation on parent death; removeParent defaults giveOwnershipBack=true",
+    "public_api_binding": "PySide6/typesystems/typesystem_core_common.xml: QObject.setParent(QObject*) updates the wrapper parent association",
+    "native_parent_observation": "Actual texture QObject.parent() is None before AND after adoption",
+    "wrapper_parent_observation": "Before adoption, Shiboken.dump shows a QQuickWindow parent association, hasOwnership=0; after texture.setParent(None), that association is absent and hasOwnership=1",
+    "interpretation": "Window-associated wrapper lifetime prevented the bank from using the wrapper at scene invalidation. Python references alone did not prevent that invalidation. This was not established as physical GPU leakage or proof that Qt owned/deleted the underlying texture."
+  },
+  "fix_under_test": {
+    "location": "tools/experiment_resident_texture_item.py: adopt_texture",
+    "operation": "Call public texture.setParent(None) immediately after render-thread createTextureFromImage, verify valid/Python-owned/native-parent-null, retain in bank, and explicitly delete on the owning render callback thread",
+    "retirement": "Queued request consumed afterSynchronizing after unbinding; guard refuses deletion of a still-bound texture. Actual sceneGraphInvalidated releases remaining entries/provider.",
+    "no_private_binding_calls_or_pointer_resurrection": true,
+    "no_product_renderer_changes_in_this_investigation": true
+  },
+  "protocol": {
+    "synthetic_scalar_values": {"A": 8, "B": 4, "missing": "NaN"},
+    "phase_sequence": ["A", "B", "A", "missing", "A"],
+    "field_dimensions": [2, 2],
+    "view_dimensions": [64, 48],
+    "transport": "existing opaque packed float32 RGBA8888 convention, nearest filtering",
+    "global_atlas_override": false,
+    "additional_lifecycle": "detach all fields, explicitly retire three textures, reload A as a fourth texture, destroy widget with a live field and observe actual scene invalidation",
+    "trace_endpoint": "QRhiResourceUpdateBatch::uploadTexture canonical description-overload submission",
+    "native_exit_status_persisted": true
+  },
+  "native_attempts": [
+    {
+      "number": 1,
+      "duration_seconds": 18.903,
+      "tool_exit": 0,
+      "native_exit": {"exited": true, "exit_code": 0},
+      "gate_verdict": "pass",
+      "checks_passed": 19,
+      "checks_failed": 0,
+      "phase_upload_submissions": [1, 1, 0, 1, 0],
+      "warm_upload_positive": true,
+      "return_A_identity_and_pixels_unchanged": true,
+      "created_textures": 4,
+      "observed_destructions": 4,
+      "detach_creations_and_destructions": [3, 3],
+      "reload_token": 4,
+      "actual_scene_invalidations": 1,
+      "all_four_wrappers_valid_and_Python_owned_before_explicit_deletion": true,
+      "errors": []
+    },
+    {
+      "number": 2,
+      "duration_seconds": 17.014,
+      "tool_exit": 0,
+      "native_exit": {"exited": true, "exit_code": 0},
+      "gate_verdict": "pass",
+      "checks_passed": 19,
+      "checks_failed": 0,
+      "phase_upload_submissions": [1, 1, 0, 1, 0],
+      "warm_upload_positive": true,
+      "return_A_identity_and_pixels_unchanged": true,
+      "created_textures": 4,
+      "observed_destructions": 4,
+      "detach_creations_and_destructions": [3, 3],
+      "reload_token": 4,
+      "actual_scene_invalidations": 1,
+      "all_four_wrappers_valid_and_Python_owned_before_explicit_deletion": true,
+      "errors": []
+    }
+  ],
+  "host": {
+    "platform": "cocoa",
+    "graphics_api": "Metal",
+    "qt_version": "6.12.0",
+    "device_pixel_ratio": 2.0,
+    "observed_render_callback_thread_equals_GUI_thread": true,
+    "limitation": "QQuickWidget/basic-offscreen rendering path only; separate threaded render-loop and other backend/platform ownership are not established"
+  },
+  "correctness_controls_both_runs": {
+    "A_center_RGBA": [255, 64, 128, 255],
+    "B_center_RGBA": [128, 64, 128, 255],
+    "missing_alpha_pixels": 0,
+    "finite_alpha_pixels": 12288,
+    "A_return_frame_byte_identical": true,
+    "all_phase_textures_non_atlased": true
+  },
+  "validation": {
+    "targeted_headless_passed": 23,
+    "headless_failed": 0,
+    "headless_skipped": 0,
+    "Black_changed_Python_files_passed": 3,
+    "whitespace": "passed before evidence/decision update",
+    "new_headless_controls": ["public adoption survives former QObject parent deletion until explicit release", "adoption refuses already-invalid wrappers"],
+    "full_suite": "not run",
+    "diagnostic_warnings": ["Qt reported an unassigned provider during intentional null-source detach", "macOS intents/linkd service warnings"]
+  },
+  "preserved_negative_evidence": "native-field-item-summary.json retains both pre-adoption probe failures and their original decisions; these successful runs do not rewrite them",
+  "not_established": [
+    "Native product field store, application-wide byte budget, eviction/admission and multi-map ownership",
+    "Original-sampler fidelity or complete application missing-data certification",
+    "Physical VRAM, GPU completion, presentation latency or performance improvement",
+    "Default-on rollout approval"
+  ],
+  "next_decision": "Compatibility obstacle resolved for the measured host. Seek approval for the already scoped opt-in product-native-store slice (three targeted rounds/four native attempts); do not start it automatically. No C++ bridge is justified by the resolved wrapper-parenting defect."
+}

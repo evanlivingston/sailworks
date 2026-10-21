@@ -1,0 +1,43 @@
+{
+  "issue": 79,
+  "gate": "wind-all-points",
+  "decision": "adopt explicit unthinned legacy chart/weather presentation for All",
+  "native_verdict": "pass",
+  "checks_passed": 10,
+  "checks_failed": 0,
+  "complete": true,
+  "snapshot_sha256": "410b88ada69dd5a22fc18765a0f26b016e9d15df22bcfeaa954b8b4b62da2346",
+  "snapshot_file_count": 5654,
+  "fixture_replacement_explicitly_authorized": true,
+  "workload_comparable_to_old_performance_baseline": false,
+  "raw_artifact_directory": "/private/var/folders/w7/hb5wv1x1715821rqd1_3xf4r0000gn/T/opencode/wind-all-points-2",
+  "observations": {
+    "all_initial": {"eligible_nodes": 1488, "drawn_nodes": 1488, "wind_pixels": 28987, "cpu_selection_and_paint_s": 0.0085},
+    "all_shoreline": {"eligible_nodes": 521, "drawn_nodes": 521, "wind_pixels": 10536, "cpu_selection_and_paint_s": 0.0028},
+    "all_return": {"eligible_nodes": 521, "drawn_nodes": 521, "wind_pixels": 10536, "cpu_selection_and_paint_s": 0.0029},
+    "all_visible_again": {"eligible_nodes": 521, "drawn_nodes": 521, "wind_pixels": 10536, "cpu_selection_and_paint_s": 0.0025},
+    "all_panned": {"eligible_nodes": 516, "drawn_nodes": 516, "wind_pixels": 10406, "cpu_selection_and_paint_s": 0.0032}
+  },
+  "all_node_memberships_exact": true,
+  "all_source_run_member_identities_exact": true,
+  "density_roundtrip_no_duplicate": true,
+  "charts_navigation_retained": true,
+  "zero_opacity_hides_wind": true,
+  "visibility_hide_and_recovery": true,
+  "dense_camera_input": true,
+  "accounted_native_array_bytes": 655644,
+  "targeted_tests_passed": 20,
+  "targeted_tests_failed": 0,
+  "synthetic_eligible_nodes": 4898,
+  "black": "pass",
+  "scoped_flake8": "pass",
+  "scoped_diff_check": "pass",
+  "process_wall_s": 19.156,
+  "timing_note": "Process and CPU paint wall spans, not presentation FPS or input-to-present latency",
+  "unmeasured": ["RSS", "VRAM", "long-session plateau"],
+  "previous_attempt": {
+    "verdict": "not-evaluated",
+    "reason": "Old fixture missing 5190 files; verification stopped before application rendering",
+    "old_fixture_sha256": "1ed1bca1281ad4096713ce20af9c1473e70bd4eb0766a54965849b7ace698a03"
+  }
+}

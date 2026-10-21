@@ -1,0 +1,36 @@
+{
+  "gate": "enc-app-rollout",
+  "decision": "adopt application wiring; corrected native transition check passed",
+  "base": "d56dbc62fca1a241bb632ac0bdeefe115e69b7d8",
+  "branch": "feature/enc-default-rollout",
+  "snapshot_sha256": "1ed1bca1281ad4096713ce20af9c1473e70bd4eb0766a54965849b7ace698a03",
+  "raw_artifacts": [
+    "/private/var/folders/w7/hb5wv1x1715821rqd1_3xf4r0000gn/T/opencode/enc-app-rollout-1",
+    "/private/var/folders/w7/hb5wv1x1715821rqd1_3xf4r0000gn/T/opencode/enc-app-rollout-2",
+    "/private/var/folders/w7/hb5wv1x1715821rqd1_3xf4r0000gn/T/opencode/enc-app-rollout-3"
+  ],
+  "native_attempts": [
+    {"run": 1, "reported_verdict": "fail", "wall_s": 99.023,
+     "cause": "wrong environment provider namespace and failed forecast initialization remaining busy"},
+    {"run": 2, "reported_verdict": "pass", "reported_checks_passed": 13, "wall_s": 15.193,
+     "accepted_as_complete_transition_evidence": false,
+     "reason": "Readiness could return before coalesced app camera changes applied"},
+    {"run": 3, "reported_verdict": "pass", "reported_checks_passed": 13, "wall_s": 18.143,
+     "accepted_as_complete_transition_evidence": true,
+     "complete": true,
+     "errors": [],
+     "chart_requests": {"forecast": 6, "pan_zoom": 7, "resize": 8, "time": 9, "enc_on": 11, "source_clear": 12}}
+  ],
+  "final_targeted_tests": {"passed": 140, "known_base_failures": 1, "new_failures": 0},
+  "black": "pass",
+  "scoped_flake8": "pass",
+  "scoped_diff_check": "pass",
+  "final_guard_and_terminal_failure_fix_native_validated": true,
+  "native_processes_spent": 3,
+  "additional_native_run_explicitly_authorized": true,
+  "targeted_rounds_spent": 3,
+  "legacy_pixel_comparison": false,
+  "merged": false,
+  "normal_dev_app_changed": false,
+  "timing_note": "Whole process wall time, not FPS or presentation latency"
+}

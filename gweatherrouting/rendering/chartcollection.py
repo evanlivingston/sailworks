@@ -286,7 +286,7 @@ class ChartCollection:
         self.charts.append(chart)
         return chart
 
-    def do_draw(self, gpsmap, cr):
+    def do_draw(self, gpsmap, cr, include_enc=True, include_mbtiles=True):
         base, enc, mbtiles = [], [], []
         for chart in self.charts:
             if not chart_class_enabled(self.settings_manager, chart):
@@ -309,8 +309,23 @@ class ChartCollection:
         ):
             self._draw_base(gpsmap, cr, base)
         self._chs_renderer.draw(gpsmap, cr)
-        self._enc_renderer.draw(gpsmap, cr, tuple(enc), self._palette)
-        self._mbtiles_renderer.draw(gpsmap, cr, tuple(mbtiles), self._palette)
+        if include_enc:
+            self._enc_renderer.draw(gpsmap, cr, tuple(enc), self._palette)
+        else:
+            self._enc_renderer.forget(gpsmap)
+        if include_mbtiles:
+            self._mbtiles_renderer.draw(gpsmap, cr, tuple(mbtiles), self._palette)
+
+    def draw_above_enc(self, gpsmap, cr):
+        """Retain the app's MBTiles-above-ENC ordering when ENC is a Quick image."""
+        charts = tuple(
+            (chart.info,)
+            for chart in self.charts
+            if isinstance(chart, MBTilesChart)
+            and chart.enabled
+            and chart_class_enabled(self.settings_manager, chart)
+        )
+        self._mbtiles_renderer.draw(gpsmap, cr, charts, self._palette)
 
     def _draw_base(self, gpsmap, cr, charts):
         # Chart pixels are static while instruments, weather and routes repaint.

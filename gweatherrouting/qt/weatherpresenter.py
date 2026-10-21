@@ -1,4 +1,4 @@
-"""Weather-only Quick child; TrackMap retains composition and all input."""
+"""ENC/weather Quick child; TrackMap retains source policy and all input."""
 
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, QTimer, Qt, Signal
 from PySide6.QtGui import QGuiApplication, QPainter
@@ -26,6 +26,8 @@ class WeatherForeground(QWidget):
 class WeatherPresenter(QObject):
     failed = Signal(str)
     rendered = Signal()
+    _nativeRendered = Signal(int)  # noqa: N815 - Qt signal naming
+    _nativeFailed = Signal(int, str)  # noqa: N815 - Qt signal naming
 
     def __init__(self, canvas):
         super().__init__(canvas)
@@ -37,6 +39,7 @@ class WeatherPresenter(QObject):
         self._source = None
         self._state = "unavailable"
         self._rendered = False
+        self._host_generation = 0
         self.status = QLabel(canvas)
         self.status.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.status.setStyleSheet(
@@ -54,6 +57,8 @@ class WeatherPresenter(QObject):
         )
         self.failed.connect(self.fail)
         self.rendered.connect(self._frame_rendered)
+        self._nativeRendered.connect(self._native_frame_rendered)
+        self._nativeFailed.connect(self._native_failed)
         canvas.destroyed.connect(self.close)
 
     @property
@@ -64,11 +69,46 @@ class WeatherPresenter(QObject):
             and not self.reason
             and settings.get("weatherRenderer", "viewport") == "viewport"
             and settings.gribWindStyle == "barbs"
+            and getattr(settings, "gribBarbDensity", "standard") != "all"
         )
+
+    @property
+    def enc_active(self):
+        return self.active and self.widget is not None and self.widget._enc_chart_layer
 
     def request(self):
         if not self.closed and not self.timer.isActive():
             self.timer.start(0)
+
+    @property
+    def native_fields(self):
+        return bool(getattr(self.canvas.controller, "native_weather_fields", False))
+
+    def _native_frame_rendered(self, generation):
+        if generation == self._host_generation:
+            self._frame_rendered()
+
+    def _native_failed(self, generation, reason):
+        if generation == self._host_generation:
+            self.fail(reason)
+
+    def _retire_native_widget(self):
+        self.deadline.stop()
+        widget, self.widget = self.widget, None
+        foreground, self.foreground = self.foreground, None
+        self._host_generation += 1
+        self._source = None
+        self._rendered = False
+        if widget is not None:
+            widget.dispose()
+            widget.hide()
+            # A hidden QQuickWidget need not render another synchronization.
+            # Destruction delivers actual invalidation and native retirement.
+            widget.deleteLater()
+        if foreground is not None:
+            foreground.hide()
+            foreground.deleteLater()
+        self.canvas._invalidate_base()
 
     def _create(self, source):
         if QGuiApplication.platformName() in ("offscreen", "minimal"):
@@ -76,22 +116,64 @@ class WeatherPresenter(QObject):
         widget = None
         model = self._model(source)
         try:
-            widget = _viewport_widget_class()(model, self.canvas)
+            self._host_generation += 1
+            generation = self._host_generation
+            from gweatherrouting.core.storage import DATA_DIR
+
+            kwargs = dict(
+                chart_layer=True,
+                enc_chart_layer=True,
+                enc_only=True,
+                chart_data_dir=DATA_DIR,
+                chart_palette=self.canvas.controller.settings.chartPalette,
+            )
+            if self.native_fields:
+                kwargs["native_weather_fields"] = True
+                kwargs["native_weather_budget"] = (
+                    self.canvas.controller.native_weather_budget
+                )
+            widget = _viewport_widget_class()(model, self.canvas, **kwargs)
             widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             widget.installEventFilter(self)
             widget._status.hide()
-            widget.stateChanged.connect(self._state_changed)
-            widget.sceneGraphError.connect(
-                lambda _code, reason: self.failed.emit(reason)
-            )
-            widget.statusChanged.connect(self._qml_status)
-            widget.quickWindow().afterRendering.connect(self.rendered.emit)
+            if self.native_fields:
+                widget.stateChanged.connect(
+                    lambda state: (
+                        self._state_changed(state)
+                        if generation == self._host_generation
+                        else None
+                    )
+                )
+                widget.sceneGraphError.connect(
+                    lambda _code, reason: self._nativeFailed.emit(generation, reason)
+                )
+                widget.nativeError.connect(
+                    lambda reason: self._nativeFailed.emit(generation, reason)
+                )
+                widget.statusChanged.connect(
+                    lambda status: (
+                        self._qml_status(status)
+                        if generation == self._host_generation
+                        else None
+                    )
+                )
+                widget.quickWindow().afterRendering.connect(
+                    lambda: self._nativeRendered.emit(generation)
+                )
+            else:
+                widget.stateChanged.connect(self._state_changed)
+                widget.sceneGraphError.connect(
+                    lambda _code, reason: self.failed.emit(reason)
+                )
+                widget.statusChanged.connect(self._qml_status)
+                widget.quickWindow().afterRendering.connect(self.rendered.emit)
             self.widget = widget
             self.foreground = WeatherForeground(self.canvas)
             self.foreground.installEventFilter(self)
             # Parent teardown closes the current (possibly replaced) model.
             self.canvas.destroyed.connect(widget.dispose)
+            self.canvas._invalidate_base()
         except Exception:
             model.close()
             if widget is not None:
@@ -151,6 +233,11 @@ class WeatherPresenter(QObject):
             mode = "Legacy weather recovery"
         elif not self.canvas.wind_visible:
             mode = "Wind hidden"
+        elif (
+            getattr(self.canvas.controller.settings, "gribBarbDensity", "standard")
+            == "all"
+        ):
+            mode = "All forecast points — legacy chart/weather renderer (unthinned)"
         else:
             mode = "Viewport wind: " + self._state
         self.status.setText(selection.status + "\n" + mode)
@@ -161,6 +248,72 @@ class WeatherPresenter(QObject):
         self.status.show()
         self.status.raise_()
 
+    def _drop_widget(self):
+        """Chart-enabled children own their source; replace them as a whole."""
+        if self.native_fields and self.widget is not None:
+            self._retire_native_widget()
+            return
+        widget, self.widget = self.widget, None
+        foreground, self.foreground = self.foreground, None
+        self.deadline.stop()
+        self._rendered = False
+        self._source = None
+        if widget is not None:
+            widget.hide()
+            widget.dispose()
+            widget.deleteLater()
+        if foreground is not None:
+            foreground.hide()
+            foreground.deleteLater()
+        self.canvas._invalidate_base()
+
+    def _sync_active(self, source):
+        if self.widget is not None and (
+            self.widget._chart_palette != self.canvas.controller.settings.chartPalette
+        ):
+            self._drop_widget()
+        if self.widget is None:
+            self._create(source)
+            self._source = source
+        elif source is not self._source:
+            self.widget.replace_model(self._model(source))
+            self._source = source
+        widget, foreground = self.widget, self.foreground
+        if widget is None or foreground is None:
+            raise RuntimeError("ENC/weather viewport initialization failed")
+        widget.setGeometry(self.canvas.rect())
+        foreground.setGeometry(self.canvas.rect())
+        widget.set_wind_opacity(
+            self.canvas.controller.settings.gribArrowOpacity
+            if self.canvas.wind_visible
+            else 0
+        )
+        widget.show()
+        widget.set_camera(
+            ViewportCamera(
+                self.canvas._center_lat,
+                self.canvas._center_lon,
+                self.canvas._zoom,
+                self.canvas.width(),
+                self.canvas.height(),
+                self.canvas.time_control.time,
+                self.canvas.controller.settings.gribBarbDensity,
+                True,
+            )
+        )
+        cache, target = self.canvas._resolve_reusable_layer(
+            self.canvas._environment_cache,
+            self.canvas._base_key(),
+            self.canvas._environment_image,
+        )
+        self.canvas._environment_cache = cache
+        widget.set_environment(cache[4], target)
+        if not self._rendered and not self.deadline.isActive():
+            self.deadline.start()
+        foreground.show()
+        foreground.raise_()
+        foreground.update()
+
     def sync(self):
         if self.closed or self.canvas.disposed or not self.canvas.isVisible():
             return
@@ -168,49 +321,24 @@ class WeatherPresenter(QObject):
         source = sources[0] if sources else None
         if self.active:
             try:
-                if self.widget is None:
-                    self._create(source)
-                    self._source = source
-                elif source is not self._source:
-                    self.widget.replace_model(self._model(source))
-                    self._source = source
-                self.widget.setGeometry(self.canvas.rect())
-                self.foreground.setGeometry(self.canvas.rect())
-                self.widget.set_wind_opacity(
-                    self.canvas.controller.settings.gribArrowOpacity
-                )
-                if source is not None and self.canvas.wind_visible:
-                    self.widget.show()
-                    self.widget.set_camera(
-                        ViewportCamera(
-                            self.canvas._center_lat,
-                            self.canvas._center_lon,
-                            self.canvas._zoom,
-                            self.canvas.width(),
-                            self.canvas.height(),
-                            self.canvas.time_control.time,
-                            self.canvas.controller.settings.gribBarbDensity,
-                            True,
-                        )
-                    )
-                    if not self._rendered and not self.deadline.isActive():
-                        self.deadline.start()
-                else:
-                    self.widget.hide()
-                    self._state = "unavailable" if source is None else "hidden"
-                self.foreground.show()
-                self.foreground.raise_()
-                self.foreground.update()
+                self._sync_active(source)
             except (ImportError, RuntimeError, OSError, ValueError) as exc:
                 self.fail(str(exc))
-        elif self.widget is not None:
-            self.widget.hide()
-            self.foreground.hide()
-            # No inactive worker keeps decoding a previous source/style.
-            if self._source is not None:
-                self.widget.replace_model(self._model(None))
-                self._source = None
+        elif self.widget is not None and self.native_fields:
+            self._retire_native_widget()
+            self._state = "unavailable" if source is None else "hidden"
             self.deadline.stop()
+        elif self.widget is not None:
+            self._drop_widget()
+        if (
+            getattr(self.canvas.controller.settings, "gribBarbDensity", "standard")
+            == "all"
+        ):
+            self.canvas.controller.set_renderer_status(
+                self.canvas,
+                "cpu",
+                reason="All forecast points: unthinned legacy renderer",
+            )
         self._label()
         # Existing interactive widgets must remain above both presentation children.
         self.canvas.coverage_notice.raise_()
@@ -220,20 +348,21 @@ class WeatherPresenter(QObject):
 
     def source_changed(self):
         # Hide old weather synchronously, before the coalesced GUI refresh.
-        if self.widget is not None:
-            self.widget.hide()
+        if self.widget is not None and self.native_fields:
+            self._retire_native_widget()
+        elif self.widget is not None:
             self.widget.replace_model(self._model(None))
             self._source = None
+            self.canvas._invalidate_base()
         self.request()
 
     def suspend(self):
         self.timer.stop()
         self.deadline.stop()
-        if self.widget is not None:
-            self.widget.hide()
-            self.widget.replace_model(self._model(None))
-            self._source = None
-            self.foreground.hide()
+        if self.widget is not None and self.native_fields:
+            self._retire_native_widget()
+        elif self.widget is not None:
+            self._drop_widget()
 
     def fail(self, reason):
         if self.closed or self.reason:
@@ -262,5 +391,7 @@ class WeatherPresenter(QObject):
         self.closed = True
         self.timer.stop()
         self.deadline.stop()
-        if self.widget is not None:
+        if self.widget is not None and self.native_fields:
+            self._retire_native_widget()
+        elif self.widget is not None:
             self.widget.dispose()
