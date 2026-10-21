@@ -34,6 +34,11 @@ class S57ChartDrawer(CM93ChartDrawer):
     }
     ATTRIBUTE_FIELDS = {"DEPARE": ("DRVAL1", "DRVAL2"), "BOYLAT": ("COLOUR",)}
 
+    #: The drawer's own feature cache, in entries.  The cache belongs to the
+    #: drawer: it lives and dies with it, and the entry count is what bounds
+    #: it.
+    FEATURE_CACHE_ENTRIES = 4096
+
     def draw(self, gpsmap, cr, vector_file, bounding):
         palette = Style.chart_palettes[self.palette]
         cancelled = getattr(gpsmap, "render_cancelled", lambda: False)
@@ -47,8 +52,7 @@ class S57ChartDrawer(CM93ChartDrawer):
         )
         # Quantize downward so cached geometry never exceeds half-pixel error.
         tolerance = 2 ** math.floor(math.log2(tolerance)) if tolerance > 0 else 0
-        if not hasattr(self, "_feature_cache"):
-            self._feature_cache = OrderedDict()
+        self._ensure_feature_cache()
         collected = self._collect_layers(vector_file, bounding, tolerance, cancelled)
         if collected is None:
             return
@@ -94,16 +98,61 @@ class S57ChartDrawer(CM93ChartDrawer):
                     target.extend(features)
         return collected
 
+    def _ensure_feature_cache(self):
+        """The drawer's own feature cache, created on the first draw.
+
+        The cache is the drawer's own: it is keyed by the open handle, so it
+        is only ever consulted for the handle it was filled from.
+        """
+        if not hasattr(self, "_feature_cache"):
+            self._feature_cache = OrderedDict()
+
     def _prepare_feature(self, vector_file, name, feature, field_indexes, tolerance):
-        cache_key = (id(vector_file), tolerance, name, feature.GetFID())
-        cached = self._feature_cache.get(cache_key)
+        cache_key = self._feature_cache_key(vector_file, tolerance, name, feature)
+        cached = self._feature_cache_get(cache_key)
         if cached is not None:
-            self._feature_cache.move_to_end(cache_key)
+            self._feature_cache_touch(cache_key)
             return cached
-        collected: CollectedFeatures = ([], [], [])
+        collected = self._compute_feature(name, feature, field_indexes, tolerance)
+        if collected is None:
+            # A feature without a geometry is never prepared and never kept.
+            return ([], [], [])
+        self._feature_cache_put(cache_key, collected)
+        return collected
+
+    def _feature_cache_key(self, vector_file, tolerance, name, feature):
+        """The key of one prepared feature.
+
+        The key is the open handle, the tolerance of the view, the layer and
+        the feature's own id: the four things the prepared geometry depends
+        on.
+        """
+        return (id(vector_file), tolerance, name, feature.GetFID())
+
+    def _feature_cache_get(self, cache_key):
+        """The prepared feature, if the drawer's own cache holds it."""
+        return self._feature_cache.get(cache_key)
+
+    def _feature_cache_touch(self, cache_key):
+        """The entry is the most recently used one."""
+        self._feature_cache.move_to_end(cache_key)
+
+    def _feature_cache_put(self, cache_key, collected):
+        """Keep the prepared feature, and drop the oldest one when full."""
+        self._feature_cache[cache_key] = collected
+        if len(self._feature_cache) > self.FEATURE_CACHE_ENTRIES:
+            self._feature_cache.popitem(last=False)
+
+    def _compute_feature(self, name, feature, field_indexes, tolerance):
+        """The feature's own geometry, prepared for drawing.
+
+        ``None`` means the feature has no geometry: there is nothing to
+        prepare and nothing to keep.
+        """
         geom = feature.GetGeometryRef()
         if geom is None:
-            return collected
+            return None
+        collected: CollectedFeatures = ([], [], [])
         attributes = {
             key: feature.GetField(index) for key, index in field_indexes if index >= 0
         }
@@ -116,9 +165,6 @@ class S57ChartDrawer(CM93ChartDrawer):
         ):
             geom = geom.SimplifyPreserveTopology(tolerance)
         self._collect(name, attributes, geom, *collected)
-        self._feature_cache[cache_key] = collected
-        if len(self._feature_cache) > 4096:
-            self._feature_cache.popitem(last=False)
         return collected
 
     def _collect(self, name, attributes, geom, areas, lines, points):

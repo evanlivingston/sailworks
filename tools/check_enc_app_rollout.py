@@ -59,6 +59,18 @@ def run(snapshot, output, application=None):
     root = Path(tempfile.mkdtemp(prefix="enc-app-rollout-"))
     try:
         data = fixture.prepare_sandbox(snapshot, root)
+        # The application gate exercises the viewport path: the cells are
+        # enabled and the density is one the viewport serves.  The "All
+        # forecast points" path has its own gate.
+        settings_path = data / "settings.json"
+        sandbox_settings = json.loads(settings_path.read_text())
+        sandbox_settings["chartENCVisible"] = True
+        sandbox_settings["gribBarbDensity"] = "very_dense"
+        settings_path.write_text(json.dumps(sandbox_settings))
+        report["notes"] = [
+            "Sandbox copy: chartENCVisible and gribBarbDensity set for the "
+            "viewport path; the user's own settings are untouched."
+        ]
         os.environ["HOME"] = str(root / "home")
         os.environ["XDG_DATA_HOME"] = str(root / "xdg-data")
         os.environ["XDG_CONFIG_HOME"] = str(root / "config")
@@ -134,6 +146,20 @@ def _application(report, data, output, deadline):  # noqa: C901 - one native app
         report["stages"][name] = {
             "ready": ok,
             "fallback_reason": presenter.reason,
+            "presenter": {
+                "active": presenter.active,
+                "closed": presenter.closed,
+                "reason": presenter.reason,
+                "timer_active": presenter.timer.isActive(),
+                "widget_is_none": widget is None,
+                "canvas_visible": canvas.isVisible(),
+                "canvas_disposed": canvas.disposed,
+                "weather_renderer": presenter.canvas.controller.settings.get(
+                    "weatherRenderer", "viewport"
+                ),
+                "wind_style": presenter.canvas.controller.settings.gribWindStyle,
+                "chart_palette": presenter.canvas.controller.settings.chartPalette,
+            },
             "enc": None if widget is None else widget._chart_model.enc_metadata,
             "weather": None if widget is None else widget._state,
             "chart_loading": None if widget is None else widget._chart_model.state,

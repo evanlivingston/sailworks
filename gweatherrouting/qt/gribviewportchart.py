@@ -702,9 +702,13 @@ class ViewportChartLayer:
             self._composer_instance = None
         if self._enc_source is not None:
             # The worker's own ENC handles are released here, on the worker
-            # thread, and never on the GUI thread.
+            # thread, and never on the GUI thread.  The source itself is
+            # kept while the worker lives: the prepared geometry it holds
+            # survives the redraw, and the cells themselves decide when it
+            # must be dropped.  A closed worker drops it with the worker.
             self._enc_source.release()
-            self._enc_source = None
+            if self._closed:
+                self._enc_source = None
 
     # --------------------------------------------------------- composition
     def _compose(self, camera, cancel):

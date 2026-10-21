@@ -56,7 +56,13 @@ FIXTURES = {
     ),
     "1ed1bca1281ad4096713ce20af9c1473e70bd4eb0766a54965849b7ace698a03": (
         "A0j/A0k current fixture, 2026-10-19 08:00, 5693 files (22 sources). "
-        "Recorded under docs/profiles/rendering/2026-10-19/."
+        "Recorded under docs/profiles/rendering/2026-10-19/. Lost 5190 of its "
+        "files and no longer verifiable."
+    ),
+    "410b88ada69dd5a22fc18765a0f26b016e9d15df22bcfeaa954b8b4b62da2346": (
+        "Replacement application fixture, 2026-10-21 09:00, 5654 files, captured "
+        "from the same application data with the user's approval. Recorded under "
+        "docs/profiles/rendering/2026-10-21/."
     ),
 }
 
