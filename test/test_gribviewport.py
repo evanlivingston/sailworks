@@ -825,6 +825,7 @@ def _fill_scene():
             return True
 
     return SimpleNamespace(
+        _native_weather_fields=False,
         _fill=Layer(),
         _barbs=Layer(),
         _provider=SimpleNamespace(

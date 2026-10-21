@@ -1,7 +1,7 @@
 ---
 description: Lightweight test runner. Runs exact validation commands and returns concise results without fixing code.
 mode: subagent
-model: openai/gpt-6-luna#none
+model: kilo/kilo-auto/free
 steps: 8
 permissions:
   - action: "*"

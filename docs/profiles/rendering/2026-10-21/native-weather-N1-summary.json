@@ -1,0 +1,92 @@
+{
+  "issue": 64,
+  "milestone": "N1 native ownership and shared reservations",
+  "decision": "narrow/stop before N2: isolate second-widget shader readiness; do not bypass two-map acceptance",
+  "issue_complete": false,
+  "implementation": {
+    "module": "gweatherrouting/qt/gpuweathertextures.py",
+    "status": "local candidate foundation, not wired into normal application",
+    "policy": "Headless session-wide reservation broker, visible leases, inactive LRU retirement requests, pending-retirement accounting and atomic endpoint allocation rollback",
+    "native_adapter": "Explicit per-window Qt texture items, four packed endpoint textures per group, public wrapper adoption and render-callback destruction",
+    "default_native_payload_limit": 33554432,
+    "native_gate_test_limit": 384,
+    "test_group_bytes": 128,
+    "application_native_flag_and_integration": "N2, not implemented"
+  },
+  "budget": {
+    "targeted_rounds_allowed": 3,
+    "targeted_rounds_used": 2,
+    "native_processes_allowed": 4,
+    "native_processes_used": 2,
+    "native_limit_seconds": 120,
+    "stop_reason": "Milestone gate failure, not exhaustion; a broader host/controller rewrite is not authorized"
+  },
+  "validation": {
+    "round_1": {"headless_passed": 36, "failed": 0, "Black_files_passed": 4, "whitespace": "pass"},
+    "round_2": {"new_gate_oracle_tests_passed": 3, "failed": 0, "Black_files_passed": 2, "whitespace": "pass before final evidence update"},
+    "policy_coverage": [
+      "Two contexts share one byte cap without sharing resource handles",
+      "Warm A/B/A reuses the complete four-endpoint group and balances leases",
+      "Pending retirements remain charged until confirmed disposal",
+      "Visible sibling context remains pinned during pressure",
+      "Forced eviction/reload and all four partial-allocation rollback points",
+      "Oversized fields, outstanding-resource unregister rejection and stale lease cancellation",
+      "Source/scene/representation identities stay distinct",
+      "Cross-context eviction request never deletes on the requesting owner's thread"
+    ],
+    "gate_oracle_coverage": ["warm/reload positive upload controls", "return upload detection", "second-map failure cannot become cache acceptance"],
+    "full_suite": "not run"
+  },
+  "native_attempts": [
+    {
+      "number": 1,
+      "gate": "native-field-store",
+      "duration_seconds": 26.146,
+      "tool_exit": 0,
+      "native_exit": {"exited": true, "exit_code": 0},
+      "gate_verdict": "fail",
+      "first_map": {"known_pixels_correct": true, "field_upload_submissions": 4},
+      "second_map": {"drawable_readiness_reached": false, "field_upload_submissions": 0},
+      "correction_for_next_attempt": "Force framebuffer generation before waiting for uploaded native handles; add GUI/QML/shader readiness diagnostics. No transport or host rewrite."
+    },
+    {
+      "number": 2,
+      "gate": "native-field-store",
+      "duration_seconds": 24.478,
+      "tool_exit": 0,
+      "native_exit": {"exited": true, "exit_code": 0},
+      "gate_verdict": "fail",
+      "first_map": {"native_ready": true, "qml_field_ready": true, "shader_compiled": true, "known_pixels_correct": true, "field_upload_submissions": 4},
+      "second_map": {"native_ready": true, "qml_field_ready": true, "shader_compiled": false, "known_pixels_correct": false, "field_upload_submissions": 0},
+      "interpretation": "Explicit readback did not fix the second-widget readiness failure. No initiating exception was reported. Native object allocation and GUI readiness alone do not establish drawable shader state. The cause remains unclassified."
+    }
+  ],
+  "cleanup_both_attempts": {
+    "per_context_created_native_objects": [4, 4],
+    "per_context_observed_native_destructions": [4, 4],
+    "per_context_actual_scene_invalidations": [1, 1],
+    "context_errors": [[], []],
+    "shared_peak_payload_bytes": 256,
+    "shared_limit_bytes": 384,
+    "final_reserved_bytes": 0,
+    "final_live_bytes": 0,
+    "final_retiring_bytes": 0,
+    "final_registered_contexts": 0
+  },
+  "not_exercised_natively": [
+    "A/B/A cache-return upload acceptance",
+    "Pressure, native eviction and GPU reload correctness",
+    "Independent current weather in both contexts",
+    "Synthetic missing-data rendering in this production-store gate",
+    "Product presenter, actual barb/fill shaders and real forecast integration"
+  ],
+  "historical_context": "test/qt_gribviewport_checks.py:_Session already records a first-widget-only shader limitation. This run reproduces a second-widget readiness symptom but does not identify a host rewrite as necessary or prove that the normal application's two-map view has the same failure.",
+  "limitations": {
+    "host_details": "Not captured in early-exit path; do not fill them from an earlier probe",
+    "presentation_latency_measured": false,
+    "physical_vram_measured": false,
+    "performance_improvement_claimed": false
+  },
+  "next_smallest_step": "Read-only source/lifecycle investigation and a separately scoped minimal two-QQuickWidget ShaderEffect control, with root geometry, shader status/errors and provider dispatch observed. Determine harness versus Qt lifecycle before authorizing a host change. Keep N2/N3 stopped; do not replace two widgets in one process with separate native processes or discard this failure.",
+  "later_correction": "See native-weather-N1-completion-summary.json: the second widget actually rendered correct pixels while cached shader status remained Uncompiled. The earlier zero upload count was unattributable (the readiness guard returned no group), not proof of zero native submissions. Preserve these original failed verdicts; do not treat their missing/zero counters as measured cache behavior."
+}

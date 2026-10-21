@@ -4,6 +4,20 @@ User authorized enabling ENC in the normal application viewport, retaining legac
 recovery. Baseline: dev d56dbc6, #78 functional and combined-experience evidence.
 This is not closure of the #70 soak/platform/presentation program.
 
+## Integration with current dev (2026-10-21)
+
+The user approved merging PR #81 before starting the retained-chart port.
+Integration preserves native resident weather (#82/#83) in the same host as
+ENC-only charts, including no-forecast/wind-hidden chart display. Native host
+retirement continues to invalidate queued signal generations and release its
+resources; non-native weather replacement occurs once.
+
+Targeted integration validation: 104 passed; native `enc-app-rollout` passed
+all 13 checks on the approved replacement snapshot. This is functional
+integration evidence, not acceptable pan/zoom latency or #70 completion.
+The user rejected the current ENC interaction performance, which the subsequent
+architecture port addresses. No live settings or app launch was used here.
+
 ## Contract before implementation/runs
 
 - Move only ENC presentation into the existing Quick child. Preserve world,

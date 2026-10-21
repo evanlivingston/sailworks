@@ -21,6 +21,13 @@ Item {
     property alias v0Source: imageV0.source
     property alias u1Source: imageU1.source
     property alias v1Source: imageV1.source
+    property bool nativeFields: false
+    property bool nativeReady: false
+    property bool nativeFrameObserved: false
+    property var nativeU0: null
+    property var nativeV0: null
+    property var nativeU1: null
+    property var nativeV1: null
     property real blend: 0
     property real outputMode: 0
     property string fragmentShader: "weather.frag.qsb"
@@ -33,9 +40,12 @@ Item {
     property real gridY: 0
     property real gridWidth: 0
     property real gridHeight: 0
-    property bool imagesReady: imageU0.status === Image.Ready && imageV0.status === Image.Ready
+    property bool imagesReady: nativeFields ? nativeReady
+                         : imageU0.status === Image.Ready && imageV0.status === Image.Ready
                          && imageU1.status === Image.Ready && imageV1.status === Image.Ready
-    property bool ready: imagesReady && effect.status === ShaderEffect.Compiled
+    property bool ready: imagesReady && (nativeFields
+                         ? nativeFrameObserved && effect.status !== ShaderEffect.Error
+                         : effect.status === ShaderEffect.Compiled)
     property string shaderError: effect.status === ShaderEffect.Error ? effect.log : ""
     Image { id: imageU0; visible: false; smooth: false; cache: false }
     Image { id: imageV0; visible: false; smooth: false; cache: false }
@@ -48,10 +58,10 @@ Item {
         width: root.gridWidth > 0 ? root.gridWidth : root.width
         height: root.gridWidth > 0 ? root.gridHeight : root.height
         visible: root.imagesReady
-        property variant u0: imageU0
-        property variant v0: imageV0
-        property variant u1: imageU1
-        property variant v1: imageV1
+        property variant u0: root.nativeFields ? root.nativeU0 : imageU0
+        property variant v0: root.nativeFields ? root.nativeV0 : imageV0
+        property variant u1: root.nativeFields ? root.nativeU1 : imageU1
+        property variant v1: root.nativeFields ? root.nativeV1 : imageV1
         property real blend: root.blend
         property real outputMode: root.outputMode
         fragmentShader: root.fragmentShader
