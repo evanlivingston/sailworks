@@ -25,6 +25,18 @@ For the wider documentation map, see [the documentation index](README.md).
 
 ## Current checkpoint
 
+**#78 functional slice accepted; broader acceptance remains open.** The
+experimental viewport now composes enabled ENC with the original source ranking,
+multi-cell clipping and Cairo portrayal, asynchronously and off by default.
+The user deferred strict visual acceptance in favor of functional display and
+lifecycle completion. `enc-viewport-functional` passed 13/13 checks on the verified
+fixture: SF, Puget and a real multi-cell boundary, twice in reversed order;
+blocked-chart weather responsiveness, stale-image hiding, cancellation and cleanup.
+All six observed readbacks also matched exactly, without claiming catalogue or
+platform acceptance. Targeted checks: 102 passed, one known base failure.
+See the [contract and evidence](enc-viewport-integration.md). No default switch,
+whole-experience performance acceptance or Phase 2 completion is implied.
+
 **2026-10-20 integrated state:** PR #72 merged at `9d1b384`; PR #75 merged at
 `bbbeac0`. The code currently remains standalone and default OFF. During review of
 PR #76, the user **rejected continuing standalone-only use** and directed us to start
