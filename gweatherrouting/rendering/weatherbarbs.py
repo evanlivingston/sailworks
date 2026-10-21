@@ -626,11 +626,16 @@ def stage_barbs(
         & np.isfinite(yy)
     )
     ids = np.flatnonzero(visible)
-    cell_x = np.floor((xx[ids] + margin) / step).astype(int)
-    cell_y = np.floor((yy[ids] + margin) / step).astype(int)
-    cells = cell_y * cols + cell_x
-    _, first = np.unique(cells, return_index=True)
-    chosen = np.sort(first)
+    if getattr(view, "geographic", False):
+        cells, chosen = _geographic_cells(
+            points[ids], xx[ids], yy[ids], view, step, margin, cols, rows
+        )
+    else:
+        cell_x = np.floor((xx[ids] + margin) / step).astype(int)
+        cell_y = np.floor((yy[ids] + margin) / step).astype(int)
+        cells = cell_y * cols + cell_x
+        _, first = np.unique(cells, return_index=True)
+        chosen = np.sort(first)
     if cap is not None and len(chosen) > cap:
         chosen = chosen[np.linspace(0, len(chosen) - 1, cap, dtype=int)]
     chosen = _off_land(chosen, ids, points, view, land_mask, cancel)
