@@ -112,6 +112,10 @@ REFILL_GUARD_FACTOR = 1.25
 # recorded sweep and is bounded by the field store's byte ceiling.
 RESIDENT_TIME_WINDOW_HOURS = 9.0
 
+# Lookahead: the window re-anchors once the forecast instant is within this many
+# hours of its horizon, so the next intervals are prepared before they are needed.
+RESIDENT_TIME_LOOKAHEAD_HOURS = 2.0
+
 
 @dataclass(frozen=True)
 class ViewportCamera:
@@ -751,12 +755,11 @@ class GribViewportModel:
             return None
         before, _after = self._time_key(camera.stamp())
         state = self._window
+        horizon = RESIDENT_TIME_WINDOW_HOURS - RESIDENT_TIME_LOOKAHEAD_HOURS
         if (
             state is None
             or state.spatial != field.identity.window
-            or not state.anchor
-            <= camera.stamp()
-            <= state.anchor + RESIDENT_TIME_WINDOW_HOURS * 3600.0
+            or not state.anchor <= camera.stamp() <= state.anchor + horizon * 3600.0
         ):
             state = ResidentTimeWindow(
                 spatial=field.identity.window,
