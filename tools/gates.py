@@ -1998,6 +1998,38 @@ GATES["enc-app-rollout"] = {
 
 # Gates whose enforced thresholds are not yet derived from recorded evidence.
 # They still run and still enforce every ratified check.
+GATES["wind-all-points"] = {
+    **GATES["enc-app-rollout"],
+    "title": "All forecast points: explicit uncapped legacy wind presentation",
+    "milestone": "#79 under #51",
+    "tool": "tools/check_all_points_wind.py",
+    "defaults": {"scenarios": ["all-thinned-all"], "frames": 1, "repeats": 1},
+    "checks": [
+        {
+            "label": name.replace("_", " "),
+            "metric": "checks." + name,
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "docs/wind-all-points.md; issue #79 no thinning or cap",
+        }
+        for name in (
+            "all_points_nonblank_membership",
+            "dense_uncapped",
+            "explicit_legacy_not_loading",
+            "charts_navigation_retained",
+            "shoreline_membership",
+            "density_roundtrip_no_duplicate",
+            "zero_opacity_hides_wind",
+            "visibility_hides_wind",
+            "visible_wind_recovers",
+            "dense_camera_input",
+        )
+    ],
+    "open_requirements": [
+        "CPU all-points presentation; no GPU all-points, FPS or RSS/VRAM claim."
+    ],
+}
+
 GATES_NEEDING_RATIFICATION = tuple(
     sorted(
         gate_id

@@ -64,6 +64,7 @@ class WeatherPresenter(QObject):
             and not self.reason
             and settings.get("weatherRenderer", "viewport") == "viewport"
             and settings.gribWindStyle == "barbs"
+            and getattr(settings, "gribBarbDensity", "standard") != "all"
         )
 
     @property
@@ -166,6 +167,11 @@ class WeatherPresenter(QObject):
             mode = "Legacy weather recovery"
         elif not self.canvas.wind_visible:
             mode = "Wind hidden"
+        elif (
+            getattr(self.canvas.controller.settings, "gribBarbDensity", "standard")
+            == "all"
+        ):
+            mode = "All forecast points — legacy chart/weather renderer (unthinned)"
         else:
             mode = "Viewport wind: " + self._state
         self.status.setText(selection.status + "\n" + mode)
@@ -251,6 +257,15 @@ class WeatherPresenter(QObject):
                 self.fail(str(exc))
         elif self.widget is not None:
             self._drop_widget()
+        if (
+            getattr(self.canvas.controller.settings, "gribBarbDensity", "standard")
+            == "all"
+        ):
+            self.canvas.controller.set_renderer_status(
+                self.canvas,
+                "cpu",
+                reason="All forecast points: unthinned legacy renderer",
+            )
         self._label()
         # Existing interactive widgets must remain above both presentation children.
         self.canvas.coverage_notice.raise_()

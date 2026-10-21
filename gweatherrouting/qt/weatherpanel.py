@@ -117,7 +117,8 @@ class WeatherPanel(QWidget):
         self.weather_renderer.addItem("Legacy chart/weather recovery", "legacy")
         self.weather_renderer.setToolTip(
             "Viewport ENC is the default. Legacy recovery restores chart and weather "
-            "presentation without changing forecast selection or routing."
+            "presentation without changing forecast selection or routing. "
+            "All forecast points uses the unthinned legacy renderer automatically."
         )
         self.weather_renderer.currentIndexChanged.connect(
             lambda _index: self.set_preference(

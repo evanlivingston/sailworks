@@ -48,7 +48,7 @@ def current_application_view(canvas, widget):
     return cache is not None and widget._environment_key == cache[4].cacheKey()
 
 
-def run(snapshot, output):
+def run(snapshot, output, application=None):
     began = time.perf_counter()
     report = {"checks": {}, "stages": {}, "complete": False}
     fixture = _load_tool(
@@ -68,7 +68,7 @@ def run(snapshot, output):
 
         socket.socket.connect = no_network
         socket.socket.connect_ex = no_network
-        _application(report, data, output, began + 95)
+        (application or _application)(report, data, output, began + 95)
     except Exception as exc:
         import traceback
 

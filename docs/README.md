@@ -50,6 +50,7 @@ evidence for a decision that has already been made.
 | Where the chart controls live in the UI | [`chart-layers.md`](chart-layers.md) |
 | Experimental complete ENC integration into the independent viewport (#78) | [`enc-viewport-integration.md`](enc-viewport-integration.md) — contract and evidence; not a default rollout |
 | Default application ENC viewport rollout (#70 slice) | [`enc-default-rollout.md`](enc-default-rollout.md) — bounded rollout contract and fallback |
+| All forecast points wind support (#79) | [`wind-all-points.md`](wind-all-points.md) — explicit unthinned legacy presentation and validation |
 | The the reference application-style chart quilting design | [`chart-quilting-plan.md`](chart-quilting-plan.md) |
 | Tides and currents: the plan, the manager UI, and CHS direction semantics | [`tides-currents-plan.md`](tides-currents-plan.md), [`tides-currents-manager.md`](tides-currents-manager.md), [`chs-current-directions.md`](chs-current-directions.md) |
 | Marine data: availability, validation and WCOFS currents | [`marine-data-validation.md`](marine-data-validation.md), [`wcofs-currents.md`](wcofs-currents.md) |
