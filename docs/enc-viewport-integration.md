@@ -78,6 +78,53 @@ earlier draft wording, so nothing was discarded or re-measured by this amendment
 
 ## Current state
 
+### Combined-experience acceptance authorized (before runs)
+
+The user explicitly reviewed the functional result and requested the remaining
+zoom/resize/coverage/lifecycle and combined-weather acceptance, without requiring
+pixel-for-pixel matching to the old viewport. This is Phase 2 entry, with that
+visual requirement revised by the user. Scope: native chart+barbs+weather-fill
+display through fractional zoom, resize, rapid reversals, coverage miss/recovery,
+fixed screen-space sounding size, blocked chart preparation, and close. Preserve
+source/coverage semantics, no missing detail, no stale content; do not enforce
+legacy pixel values. Default rollout, full catalogue/platform matrix, RSS/VRAM,
+presentation latency and weather/routing changes remain non-goals.
+
+Budget: two focused validation/fix rounds, two native processes <=110 seconds.
+Use the existing fixture, Metal/DPR 2, Puget weather-covered camera and an ocean
+coverage-miss camera; original six static views are recorded evidence and are not
+remeasured. New one-command gate: `enc-viewport-experience`. Report preparation
+and accounted bytes as diagnostics, never FPS or RSS. Stop and report if the
+second round still fails, rather than widening scope. PR #80 scope expands only
+by this user-authorized acceptance slice; merge remains pending these results.
+
+### Combined-experience outcome — PASS; adopt experimental integration
+
+First round: `enc-viewport-experience` **14/14 PASS**, complete, 37.9 seconds
+process wall time (not FPS). No legacy pixel comparison was performed.
+Charts, fill and barbs stayed visible together; fractional zoom and resize to
+850x620 logical / 1700x1240 physical recovered; 49 shared sounding strings kept
+the same physical extents across zoom. Rapid reversals settled. The ocean view
+reported coverage miss without previous ENC, then returned successfully to the
+covered Puget view. Blocking chart preparation did not stop camera/weather;
+stale hiding, supersession and cleanup passed.
+
+The close check exposed and fixed retained-image/base-handle cleanup: close now
+withdraws the payload and the worker releases base-chart handles as well as ENC
+handles. Initial/resized payloads were 24,537,760 / 24,668,544 bytes, bounded by
+one margin-inclusive ARGB32 image at the current dimensions/DPR, with at most one
+provider image. These are accounted bytes, not measured RSS/VRAM.
+
+Targeted checks: 104 passed and the same known base failure; changed-file Black,
+tool/helper flake8 and scoped whitespace checks passed. Evidence:
+`profiles/rendering/2026-10-20/enc-viewport-experience-summary.json`; raw artifacts
+in `enc-viewport-experience-1/` under the approved OpenCode temporary directory.
+Decision: **adopt**, and stop measurement after the first passing round. Together
+with the earlier real-cell identity/coverage/detail checks this completes #78's
+user-revised acceptance, without pixel parity. Ready for merge/review, not a
+default switch. Catalogue/platform breadth, presentation endpoint, RSS/VRAM and
+rollout remain the explicitly separate #70 work; no new campaign is implied.
+
 ### Functional scope revision authorized by the user
 
 The user deferred exact visual matching in favor of charts displaying reliably

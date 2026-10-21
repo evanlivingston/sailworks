@@ -78,3 +78,47 @@ def test_initial_weather_miss_does_not_block_enc_request():
     widget._model.busy = lambda: True
     method(widget)
     assert requests == ["camera"]
+
+
+def test_text_size_observer_forwards_the_actual_draw(monkeypatch):
+    from gweatherrouting.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
+
+    drawn = []
+
+    def original(drawer, gpsmap, context, feature):
+        return context.show_text("12.3")
+
+    monkeypatch.setattr(S57ChartDrawer, "_render_soundings", original)
+    context = SimpleNamespace(
+        text_extents=lambda text: (0, 0, 20, 11, 20, 0),
+        user_to_device_distance=lambda width, height: (width * 2, height * 2),
+        show_text=drawn.append,
+    )
+    observer = tool()._TextSizes()
+    restore = observer.install()
+    try:
+        observer.stage = "zoom"
+        S57ChartDrawer.__new__(S57ChartDrawer)._render_soundings(None, context, None)
+        assert drawn == ["12.3"]
+        assert observer.sizes["zoom"]["12.3"] == (40, 22)
+    finally:
+        restore()
+    assert S57ChartDrawer._render_soundings is original
+
+
+def test_close_withdraws_retained_image_and_worker_releases_base_handles(tmp_path):
+    from gweatherrouting.qt.gribviewportchart import ViewportChartLayer
+
+    layer = ViewportChartLayer((), tmp_path)
+    layer._published = (1, object(), {})
+    layer._payload_bytes = 4096
+    released = []
+    layer._composer_instance = SimpleNamespace(
+        _renderer=SimpleNamespace(_release_resources=lambda: released.append(True))
+    )
+    layer.close()
+    assert layer._published is None
+    assert layer.observations()["payload_bytes"] == 0
+    layer._release()
+    assert released == [True]
+    assert layer._composer_instance is None

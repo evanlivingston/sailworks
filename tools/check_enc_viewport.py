@@ -467,7 +467,7 @@ def _scenario_camera(base_camera, spec):
     )
 
 
-def run(snapshot, output, scenarios, repeats, frames):
+def run(snapshot, output, scenarios, repeats, frames, experience=False):
     started = time.perf_counter()
     deadline = started + BUDGET_S
     report = {
@@ -510,7 +510,9 @@ def run(snapshot, output, scenarios, repeats, frames):
     sandbox_root = Path(tempfile.mkdtemp(prefix="enc-viewport-"))
     try:
         data_dir = fixture.prepare_sandbox(snapshot, sandbox_root)
-        _measure(report, snapshot, data_dir, scenarios, repeats, frames, deadline)
+        _measure(
+            report, snapshot, data_dir, scenarios, repeats, frames, deadline, experience
+        )
     except Exception as exc:  # the report must still say what happened
         report["error"] = f"{type(exc).__name__}: {exc}"
     finally:
@@ -519,7 +521,9 @@ def run(snapshot, output, scenarios, repeats, frames):
     return report
 
 
-def _measure(report, snapshot, data_dir, scenarios, repeats, frames, deadline):
+def _measure(
+    report, snapshot, data_dir, scenarios, repeats, frames, deadline, experience=False
+):
     from PySide6.QtWidgets import QApplication
     from gweatherrouting.qt.gribviewport import (
         GribViewportModel,
@@ -563,7 +567,7 @@ def _measure(report, snapshot, data_dir, scenarios, repeats, frames, deadline):
     )
     widget = _viewport_widget_class()(
         model,
-        gpu_weather_fill=False,
+        gpu_weather_fill=experience,
         chart_layer=True,
         chart_data_dir=data_dir,
         enc_chart_layer=True,
@@ -572,6 +576,9 @@ def _measure(report, snapshot, data_dir, scenarios, repeats, frames, deadline):
     widget.resize(WIDGET_WIDTH, WIDGET_HEIGHT)
     widget.show()
     try:
+        if experience:
+            _experience(report, widget, base_camera, deadline)
+            return
         _run_session(
             report,
             widget,
@@ -806,6 +813,208 @@ def _coverage_selection(descriptors, camera, dpr, palette):
     return tuple(row["name"] for row in identities), identities
 
 
+class _TextSizes:
+    """Observe actual sounding text extents at two zooms, without an old renderer."""
+
+    def __init__(self):
+        self.stage = ""
+        self.sizes = {}
+
+    def install(self):
+        from gweatherrouting.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
+
+        original = S57ChartDrawer._render_soundings
+        observer = self
+
+        class Context:
+            def __init__(self, context):
+                self.context = context
+
+            def __getattr__(self, name):
+                return getattr(self.context, name)
+
+            def show_text(self, text):
+                extents = self.context.text_extents(text)
+                dimensions = self.context.user_to_device_distance(
+                    extents[2], extents[3]
+                )
+                observer.sizes.setdefault(observer.stage, {})[text] = tuple(dimensions)
+                return self.context.show_text(text)
+
+        def draw(drawer, gpsmap, context, feature):
+            return original(drawer, gpsmap, Context(context), feature)
+
+        S57ChartDrawer._render_soundings = draw
+        return lambda: setattr(S57ChartDrawer, "_render_soundings", original)
+
+
+def _experience(report, widget, base_camera, deadline):  # noqa: C901
+    """Combined scene acceptance, not pixel parity with a legacy viewport."""
+    import numpy as np
+
+    names = (
+        "combined_layers_visible",
+        "fractional_zoom_recovers",
+        "screen_space_labels",
+        "resize_recovers",
+        "rapid_reversals_settle",
+        "coverage_miss_explicit",
+        "coverage_recovery",
+        "payload_bounded",
+        "camera_weather_advance_while_chart_stalled",
+        "stale_chart_hidden",
+        "latest_generation_only",
+        "resources_bounded_and_released",
+    )
+    report["checks"] = {name: False for name in names}
+    report["checks"]["fixture_verified"] = True
+    report["notes"] = [
+        "Chart, fill and barbs are visible together; no legacy pixel comparison.",
+        "Stage wall spans include readiness waits, not FPS or presentation latency.",
+    ]
+    report["experience"] = {}
+    payload_bounds = []
+    layer = widget._chart_model
+    platform = _platform(widget)
+    report["identity"]["platform"] = platform
+    report["checks"]["native_metal_dpr2"] = (
+        "metal" in platform["scene_graph_backend"].lower()
+        and platform["device_pixel_ratio"] == 2
+    )
+
+    def source():
+        return widget._chart.property("source").toString()
+
+    def wait(predicate, timeout=12):
+        return _wait(predicate, max(0, min(timeout, deadline - time.perf_counter())))
+
+    def ready():
+        return (
+            layer.state == "ready"
+            and bool(widget._chart.property("ready"))
+            and bool(source())
+            and widget._weather.isVisible()
+        )
+
+    def settle(name, camera=None, weather=True):
+        began = time.perf_counter()
+        if camera is not None:
+            widget.set_camera(camera)
+        ok = wait(lambda: ready() and (not weather or widget._state == "ready"))
+        _pump(80)
+        meta = layer.enc_metadata
+        camera_now = widget._camera
+        from gweatherrouting.rendering.overlayrenderer import MARGIN
+
+        byte_bound = (
+            (camera_now.width + 2 * MARGIN)
+            * (camera_now.height + 2 * MARGIN)
+            * int(round(widget.devicePixelRatio())) ** 2
+            * 4
+        )
+        payload_bounds.append(
+            layer.observations()["payload_bytes"] <= byte_bound
+            and len(widget._chart_provider._images) <= 1
+        )
+        report["experience"][name] = {
+            "ready": ok,
+            "weather_state": widget._state,
+            "enc_state": meta.get("state"),
+            "selected": list(meta.get("selected", ())),
+            "wall_s": round(time.perf_counter() - began, 3),
+            "accounted_payload_bytes": layer.observations()["payload_bytes"],
+            "single_image_bound_bytes": byte_bound,
+        }
+        return ok
+
+    camera = _scenario_camera(base_camera, FIDELITY["puget"])
+    sizes = _TextSizes()
+    restore = sizes.install()
+    try:
+        sizes.stage = "initial"
+        startup = settle("initial", camera)
+        layers = (widget._chart, widget._barbs, widget._fill)
+        frame = _grab(widget)
+        report["checks"]["combined_layers_visible"] = bool(
+            startup
+            and all(item is not None and item.isVisible() for item in layers)
+            and all(bool(item.property("ready")) for item in layers)
+            and (frame[:, :, 3] > 0).any()
+        )
+
+        sizes.stage = "zoom"
+        widget.zoom_at(0.375)
+        zoom_hidden = not source()
+        zoomed = settle("fractional_zoom")
+        report["checks"]["fractional_zoom_recovers"] = bool(
+            zoom_hidden and zoomed and layer.enc_metadata.get("selected")
+        )
+        first = sizes.sizes.get("initial", {})
+        second = sizes.sizes.get("zoom", {})
+        common = first.keys() & second.keys()
+        report["checks"]["screen_space_labels"] = bool(common) and all(
+            np.allclose(first[text], second[text], rtol=0, atol=1e-6) for text in common
+        )
+        report["experience"]["labels"] = {
+            "common_soundings": len(common),
+            "initial_texts": len(first),
+            "zoom_texts": len(second),
+            "example": next(iter(common), None),
+        }
+
+        widget.resize(850, 620)
+        resized = settle("resize")
+        shape = _grab(widget).shape
+        report["checks"]["resize_recovers"] = bool(
+            resized
+            and widget._camera.width == 850
+            and widget._camera.height == 620
+            and shape[:2] == (1240, 1700)
+        )
+        for amount in (100, -200, 150, -50):
+            widget.pan_pixels(amount, 0)
+        # A zoom invalidates retained scale and exercises replacement after reversal.
+        widget.zoom_at(-0.125)
+        reversed_ok = settle("rapid_reversals")
+        report["checks"]["rapid_reversals_settle"] = bool(
+            reversed_ok and layer.enc_metadata.get("selected")
+        )
+
+        covered = widget._camera
+        ocean = replace(covered, center_lat=30, center_lon=-150)
+        widget.set_camera(ocean)
+        hidden = not source()
+        missing = settle("coverage_miss", weather=False)
+        report["checks"]["coverage_miss_explicit"] = bool(
+            hidden
+            and missing
+            and layer.enc_state == "coverage_miss"
+            and not layer.enc_metadata.get("selected")
+            and widget._weather.property("encStatus")
+        )
+        recovered = settle("coverage_recovery", covered)
+        report["checks"]["coverage_recovery"] = bool(
+            recovered
+            and layer.enc_state == "ready"
+            and layer.enc_metadata.get("selected")
+        )
+        report["complete"] = all(report["checks"][key] for key in names[:7])
+        report["checks"]["payload_bounded"] = bool(payload_bounds) and all(
+            payload_bounds
+        )
+        if report["complete"]:
+            _behavior(report, widget, layer, deadline)
+            widget.close()
+            _pump(50)
+            report["checks"]["resources_bounded_and_released"] &= (
+                layer.observations()["payload_bytes"] == 0
+                and layer._composer_instance is None
+                and not widget._chart_provider._images
+            )
+    finally:
+        restore()
+
+
 def _behavior(report, widget, layer, deadline):  # noqa: C901 - four runtime checks
     """Stall, supersession and release.  Each check reads the layer's own records."""
     from gweatherrouting.qt.gribviewportchart import HISTORY_LIMIT
@@ -970,6 +1179,7 @@ def main(argv=None):
     parser.add_argument("--scenarios", default=",".join(DEFAULT_SCENARIOS))
     parser.add_argument("--repeats", type=int, default=2)
     parser.add_argument("--frames", type=int, default=10)
+    parser.add_argument("--experience-only", action="store_true")
     args = parser.parse_args(argv)
     report = run(
         args.snapshot,
@@ -977,6 +1187,7 @@ def main(argv=None):
         tuple(name for name in args.scenarios.split(",") if name),
         args.repeats,
         args.frames,
+        args.experience_only,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, default=str))

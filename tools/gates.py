@@ -1918,6 +1918,41 @@ GATES["enc-viewport-functional"] = {
     ],
 }
 
+GATES["enc-viewport-experience"] = {
+    **GATES["enc-viewport-functional"],
+    "title": "Combined ENC and weather zoom, resize and lifecycle acceptance",
+    "command": GATES["enc-viewport"]["command"] + ["--experience-only"],
+    "defaults": {"scenarios": ["combined-experience"], "frames": 1, "repeats": 1},
+    "checks": [
+        {
+            "label": name.replace("_", " "),
+            "metric": "checks." + name,
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "User-authorized Phase 2 functional acceptance; no legacy pixel parity",
+        }
+        for name in (
+            "fixture_verified",
+            "native_metal_dpr2",
+            "combined_layers_visible",
+            "fractional_zoom_recovers",
+            "screen_space_labels",
+            "resize_recovers",
+            "rapid_reversals_settle",
+            "coverage_miss_explicit",
+            "coverage_recovery",
+            "payload_bounded",
+            "camera_weather_advance_while_chart_stalled",
+            "stale_chart_hidden",
+            "latest_generation_only",
+            "resources_bounded_and_released",
+        )
+    ],
+    "open_requirements": [
+        "No full catalogue/platform matrix, RSS/VRAM or presentation-latency acceptance; default OFF."
+    ],
+}
+
 # Gates whose enforced thresholds are not yet derived from recorded evidence.
 # They still run and still enforce every ratified check.
 GATES_NEEDING_RATIFICATION = tuple(

@@ -530,6 +530,8 @@ class ViewportChartLayer:
             if self._closed:
                 return
             self._closed = True
+            self._published = None
+            self._payload_bytes = 0
             for request in (self._pending, self._active):
                 if request is not None:
                     request[2].set()
@@ -693,6 +695,9 @@ class ViewportChartLayer:
                 pass
         self._sampler_sources = ()
         self._sampler = None
+        if self._composer_instance is not None:
+            self._composer_instance._renderer._release_resources()
+            self._composer_instance = None
         if self._enc_source is not None:
             # The worker's own ENC handles are released here, on the worker
             # thread, and never on the GUI thread.
