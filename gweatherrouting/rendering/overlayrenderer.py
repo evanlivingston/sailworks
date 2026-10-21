@@ -456,6 +456,7 @@ class OverlayRenderer:
             try:
                 surface = self._render(job)
             except Exception as exc:
+                logger.exception("Map overlay render failed")
                 error = str(exc)
             job.finished_at = time.monotonic()
             self._schedule_event("finish", job)
