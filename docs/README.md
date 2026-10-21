@@ -48,6 +48,7 @@ evidence for a decision that has already been made.
 | The routing safety limits (wind cap, motoring fallback, speed reduction) | [`routing-safety.md`](routing-safety.md) |
 | How weather is selected, decoded, interpolated and time-blended | [`weather-sampling.md`](weather-sampling.md) |
 | Where the chart controls live in the UI | [`chart-layers.md`](chart-layers.md) |
+| Experimental complete ENC integration into the independent viewport (#78) | [`enc-viewport-integration.md`](enc-viewport-integration.md) — contract and evidence; not a default rollout |
 | The the reference application-style chart quilting design | [`chart-quilting-plan.md`](chart-quilting-plan.md) |
 | Tides and currents: the plan, the manager UI, and CHS direction semantics | [`tides-currents-plan.md`](tides-currents-plan.md), [`tides-currents-manager.md`](tides-currents-manager.md), [`chs-current-directions.md`](chs-current-directions.md) |
 | Marine data: availability, validation and WCOFS currents | [`marine-data-validation.md`](marine-data-validation.md), [`wcofs-currents.md`](wcofs-currents.md) |

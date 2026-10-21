@@ -76,6 +76,113 @@ ENDPOINT_FIDELITY = (
 )
 
 GATES = {
+    "enc-viewport": {
+        "title": "Complete faithful ENC charts in the experimental viewport",
+        "milestone": "#78 under #51 M3",
+        "kind": "fidelity",
+        "tool": "tools/check_enc_viewport.py",
+        "endpoint": ENDPOINT_PROBE,
+        "requires": ["snapshot"],
+        "dependencies": ["cairo", "numpy", "osgeo.gdal", "PySide6"],
+        "timeout_s": 110,
+        "env": {"QT_QPA_PLATFORM": "cocoa", "QSG_RHI_BACKEND": "metal"},
+        "command": [
+            "{python}",
+            "{tool}",
+            "--snapshot",
+            "{snapshot}",
+            "--output",
+            "{tool_output}",
+        ],
+        "defaults": {
+            "scenarios": ["san-francisco", "puget", "multi-cell"],
+            "frames": 10,
+            "repeats": 2,
+        },
+        "tool_output": "{outdir}/{gate}.tool.json",
+        "result": "{outdir}/{gate}.tool.json",
+        "reference": {
+            "kind": "recorded-evidence",
+            "source": "docs/enc-viewport-integration.md; issue #78; R0.1",
+        },
+        "checks": [
+            {
+                "label": name.replace("_", " "),
+                "metric": "checks." + name,
+                "aggregate": "all",
+                "op": "is_true",
+                "source": "docs/enc-viewport-integration.md; issue #78",
+            }
+            for name in (
+                "fixture_verified",
+                "detailed_enc_present",
+                "source_selection_exact",
+                "multi_cell_coverage_exercised",
+                "zero_alpha_preserved",
+                "annotations_faithful",
+                "native_metal_dpr2",
+                "native_chart_nonblank",
+                "stale_chart_hidden",
+                "camera_weather_advance_while_chart_stalled",
+                "latest_generation_only",
+                "resources_bounded_and_released",
+            )
+        ]
+        + [
+            {
+                "label": label,
+                "metric": "fidelity[*]." + metric,
+                "aggregate": aggregate,
+                "op": op,
+                **({"value": value} if value is not None else {}),
+                "source": "docs/rendering-implementation-plan.md R0.1; issue #78",
+            }
+            for label, metric, aggregate, op, value in (
+                ("ENC image MAE <=1/255", "mae_255", "max", "<=", 1.0),
+                ("ENC image p99 <=8/255", "p99_255", "max", "<=", 8.0),
+                ("ENC readback is nonblank", "nonblank", "all", "is_true", None),
+                (
+                    "ENC silhouette precision >=99%",
+                    "precision",
+                    "min",
+                    ">=",
+                    0.99,
+                ),
+                ("ENC silhouette recall >=99%", "recall", "min", ">=", 0.99),
+                (
+                    "ENC alpha coverage >=95%",
+                    "coverage",
+                    "min",
+                    ">=",
+                    0.95,
+                ),
+                (
+                    "ENC alpha coverage <=105%",
+                    "coverage",
+                    "max",
+                    "<=",
+                    1.05,
+                ),
+                (
+                    "annotation coverage >=95%",
+                    "annotations.coverage",
+                    "min",
+                    ">=",
+                    0.95,
+                ),
+                (
+                    "annotation coverage <=105%",
+                    "annotations.coverage",
+                    "max",
+                    "<=",
+                    1.05,
+                ),
+            )
+        ],
+        "open_requirements": [
+            "Experimental integration is not a default rollout; presentation, platform matrix, RSS/VRAM and complete catalogue coverage remain separate."
+        ],
+    },
     "viewport-interaction": {
         "title": "Independent GRIB viewport sustained interaction",
         # The interaction contract of #64, the structural observations of
@@ -1785,6 +1892,65 @@ GATES = {
             },
         ],
     },
+}
+
+# Functional acceptance is separate from the unchanged strict fidelity gate.
+# The user explicitly deferred pixel matching; it must not be reported as passed.
+GATES["enc-viewport-functional"] = {
+    **GATES["enc-viewport"],
+    "title": "Experimental ENC display and independent weather lifecycle",
+    "checks": [
+        check
+        for check in GATES["enc-viewport"]["checks"]
+        if check["metric"].startswith("checks.")
+    ]
+    + [
+        {
+            "label": "all requested chart views completed",
+            "metric": "complete",
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "User-authorized functional acceptance; visual matching deferred",
+        }
+    ],
+    "open_requirements": [
+        "Exact pixel matching is deferred, not accepted; default rollout remains disabled."
+    ],
+}
+
+GATES["enc-viewport-experience"] = {
+    **GATES["enc-viewport-functional"],
+    "title": "Combined ENC and weather zoom, resize and lifecycle acceptance",
+    "command": GATES["enc-viewport"]["command"] + ["--experience-only"],
+    "defaults": {"scenarios": ["combined-experience"], "frames": 1, "repeats": 1},
+    "checks": [
+        {
+            "label": name.replace("_", " "),
+            "metric": "checks." + name,
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "User-authorized Phase 2 functional acceptance; no legacy pixel parity",
+        }
+        for name in (
+            "fixture_verified",
+            "native_metal_dpr2",
+            "combined_layers_visible",
+            "fractional_zoom_recovers",
+            "screen_space_labels",
+            "resize_recovers",
+            "rapid_reversals_settle",
+            "coverage_miss_explicit",
+            "coverage_recovery",
+            "payload_bounded",
+            "camera_weather_advance_while_chart_stalled",
+            "stale_chart_hidden",
+            "latest_generation_only",
+            "resources_bounded_and_released",
+        )
+    ],
+    "open_requirements": [
+        "No full catalogue/platform matrix, RSS/VRAM or presentation-latency acceptance; default OFF."
+    ],
 }
 
 # Gates whose enforced thresholds are not yet derived from recorded evidence.
