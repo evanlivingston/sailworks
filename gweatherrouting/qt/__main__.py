@@ -31,6 +31,12 @@ def main(argv=None):
             "presenter under a stable identity, with an explicit budget"
         ),
     )
+    parser.add_argument(
+        "--native-weather-fields",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Use the native weather texture cache (default: on); --no-native-weather-fields restores Image sources",
+    )
     args = parser.parse_args(argv)
     try:
         from PySide6.QtWidgets import QApplication
@@ -51,6 +57,7 @@ def main(argv=None):
         map_renderer=args.map_renderer,
         early_weather=args.early_weather,
         gpu_resident_fields=args.gpu_resident_fields,
+        native_weather_fields=args.native_weather_fields,
     )
     window = PreviewWindow(controller)
     app.aboutToQuit.connect(window.workspace.close)

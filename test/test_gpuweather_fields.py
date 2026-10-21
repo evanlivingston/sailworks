@@ -173,6 +173,33 @@ def test_the_gridded_form_samples_once_and_keeps_the_samplers_values(gribs):
     )
 
 
+def test_eviction_then_reload_preserves_values_masks_and_provenance(gribs):
+    source, sampler, signature = _sources(gribs)
+    here = BarbView(640, 480, 0.5, 0.5, 9, "standard", False)
+    there = BarbView(640, 480, 0.6, 0.6, 9, "standard", False)
+    stamp = START.timestamp() + 3600
+    first = _stage(sampler, here, stamp, FieldStore(1 << 24), signature).field
+    second = _stage(sampler, there, stamp, FieldStore(1 << 24), signature).field
+    # Fits either field, never both. Eviction must really occur, not merely
+    # insertion into a generously sized cache.
+    store = FieldStore(max(first.nbytes, second.nbytes))
+    assert store.store(first)
+    assert store.store(second)
+    assert store.acquire(first.identity) is None
+    assert store.statistics()["evictions"] >= 1
+    reloaded = _stage(sampler, here, stamp, store, signature).field
+    assert reloaded is not first
+    assert reloaded.identity == first.identity
+    np.testing.assert_array_equal(reloaded.staged.first, first.staged.first)
+    np.testing.assert_array_equal(reloaded.staged.second, first.staged.second)
+    assert reloaded.staged.sources == first.staged.sources
+    np.testing.assert_array_equal(reloaded.land_flags, first.land_flags)
+    assert store.current_bytes <= store.byte_limit
+    store.clear()
+    assert store.current_bytes == 0
+    assert not store.fields()
+
+
 def test_the_oldest_field_is_evicted_before_the_newest(gribs):
     source, sampler, signature = _sources(gribs)
     here = BarbView(640, 480, 0.5, 0.5, 9, "standard", False)

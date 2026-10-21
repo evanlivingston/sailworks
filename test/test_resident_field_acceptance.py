@@ -17,6 +17,35 @@ PAN_STEPS = 20
 PAN_STEP_DEGREES = 0.0005
 
 
+def test_source_retirement_clears_barb_and_fill_qml_bindings():
+    from types import SimpleNamespace
+
+    from gweatherrouting.qt.gribviewport import _viewport_widget_class
+
+    class Item:
+        def __init__(self):
+            self.values = {}
+
+        def setProperty(self, name, value):
+            self.values[name] = value
+
+    barbs, fill = Item(), Item()
+    _viewport_widget_class()._clear_weather_sources(
+        SimpleNamespace(_barbs=barbs, _fill=fill, _native_weather_fields=False)
+    )
+    assert set(barbs.values) == {
+        "u0Source",
+        "v0Source",
+        "u1Source",
+        "v1Source",
+        "nodeIdSource",
+        "anchorXSource",
+        "anchorYSource",
+    }
+    assert set(fill.values) == {"u0Source", "v0Source", "u1Source", "v1Source"}
+    assert all(url.isEmpty() for url in (*barbs.values.values(), *fill.values.values()))
+
+
 def _resident_fields(model):
     fields = [slot.field for slot in model._slots if slot is not None]
     if model._field is not None:

@@ -38,6 +38,7 @@ class SessionController(QObject):
         map_renderer=None,
         early_weather=False,
         gpu_resident_fields=False,
+        native_weather_fields=None,
     ):
         super().__init__(parent)
         if map_renderer not in (None, "cpu", "gpu"):
@@ -46,6 +47,16 @@ class SessionController(QObject):
         self.load_charts = load_charts
         self.early_weather = early_weather
         self.gpu_resident_fields = gpu_resident_fields
+        from .gpuweathertextures import native_weather_fields_enabled
+
+        self.native_weather_fields = native_weather_fields_enabled(
+            native_weather_fields
+        )
+        self.native_weather_budget = None
+        if self.native_weather_fields:
+            from .gpuweathertextures import NativeWeatherBudget
+
+            self.native_weather_budget = NativeWeatherBudget()
         self.scheduler = UiScheduler(self)
         self.core = Core(
             schedule=self.scheduler.submit,

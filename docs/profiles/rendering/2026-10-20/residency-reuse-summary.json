@@ -1,0 +1,52 @@
+{
+  "issue": 64,
+  "decision": "narrow/stop: correct temporal workload design before another native attempt; acceptance remains open",
+  "native_attempts": 1,
+  "native_budget_exhausted": true,
+  "gate": "residency-reuse",
+  "gate_verdict": "fail",
+  "checks_passed": 6,
+  "checks_failed": 3,
+  "duration_seconds": 13.564,
+  "forecast_sha256": "9edeeb3dee53030bffa0367592dcafc3cbf748bbbb52c1864d67477435ac2903",
+  "forecast_run": "HRRR 2026-10-21 02:00 UTC, hourly 12-hour forecast",
+  "workload": {
+    "density": "standard",
+    "shoreline_filtering": false,
+    "speculative_scheduling_disabled_after_warmup": true,
+    "inputs": [
+      {"kind": "pan", "covered_before_input": true, "ready": true, "same_field": true},
+      {"kind": "pan", "covered_before_input": true, "ready": true, "same_field": true},
+      {"kind": "time +15 minutes", "covered_before_input": false, "ready": true, "same_field": false},
+      {"kind": "time +30 minutes", "covered_before_input": false, "ready": true, "same_field": false}
+    ]
+  },
+  "observations": {
+    "field_preparations": 0,
+    "misses": 0,
+    "decoded_band_accesses": 0,
+    "field_publications": 1,
+    "selection_publications": 4,
+    "retained_bytes": 1545616,
+    "field_byte_limit": 134217728,
+    "hardware_uploads_measured": false,
+    "presentation_latency_measured": false
+  },
+  "validation": {
+    "targeted_passed": 31,
+    "opt_in_network_tests_skipped_in_headless_round": 2,
+    "black_files_passed": 4,
+    "whitespace": "pass",
+    "warning": "GDAL FutureWarning",
+    "full_suite": "not run"
+  },
+  "root_cause": "The harness started at an exact hourly event, which has a singleton field identity. +15/+30 minutes require a distinct interpolation-bracket field. This is not the claimed same-field workload. The later field was already prepared, so there were no decoding/preparation misses, but switching it caused a field publication.",
+  "next_smallest_experiment": "After explicit budget review, warm at +1h15m and exercise only timestamps strictly inside the same hourly bracket. Assert pre-input coverage before measuring. Separately retain this event-to-bracket switch as cross-field evidence, not same-field reuse.",
+  "remaining_gaps": [
+    "Valid native same-field temporal reuse measurement",
+    "Actual GPU field-upload and resource lifetime accounting",
+    "GPU eviction/reload; headless CPU-payload eviction parity passed only",
+    "Original-sampler and missing-data rendering acceptance are unchanged and not established here",
+    "No chart or application presenter acceptance claim"
+  ]
+}

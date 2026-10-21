@@ -25,6 +25,27 @@ For the wider documentation map, see [the documentation index](README.md).
 
 ## Current checkpoint
 
+**#64 next decision:** scoping and the subsequent user-authorized compatibility/
+ownership investigation are complete. Proper Python texture-item sources with
+explicit public wrapper adoption passed 19/19 checks in two fresh native processes
+on Cocoa/Metal/Qt 6.12. Preserve the CPU field store; the proposed next slice adds
+explicitly owned render-thread field textures. See
+[Native residency follow-up scope](#native-residency-follow-up-scope-64).
+The user authorized that bounded product implementation on 2026-10-21. N1's
+shared native store passed 16/16 native checks, including two widgets, forced
+eviction/reload and full cleanup; 45 targeted checks passed. The shader-readiness
+blocker was an overstrict cached-status guard in the harness, not a host rewrite.
+N1 and N2 are complete locally. **The user subsequently authorized making native
+weather fields the default on 2026-10-21**; the application and standalone viewport
+now enable them without a flag. `--no-native-weather-fields` or
+`GWR_NATIVE_WEATHER_FIELDS=0` restores Image sources (an explicit CLI choice wins).
+N2's real-HRRR application/layer gate passed 18/18 checks, including two
+application maps on one budget and real A → B → A native reuse. Its bounded budget
+is consumed; N3 acceptance/review remains unstarted. This authorized default switch
+does not constitute #64 acceptance or closure.
+See the N1 completion checkpoint and evidence below.
+#64 is not complete. Earlier default-OFF decisions below are historical checkpoints.
+
 **2026-10-20 integrated state:** PR #72 merged at `9d1b384`; PR #75 merged at
 `bbbeac0`. The code currently remains standalone and default OFF. During review of
 PR #76, the user **rejected continuing standalone-only use** and directed us to start
@@ -660,7 +681,7 @@ measurements remain pre-integration evidence, not fresh merged-base runs.
   is still the weather-availability bottleneck even though input dispatch was
   responsive. No later milestone or integration is started by this result.
   Evidence: [`viewport-tryout-summary.json`](profiles/rendering/2026-10-19/viewport-tryout-summary.json).
-- **#64 acceptance contract (open, not started on native):** branch
+- **#64 acceptance contract (open; acceptance not established):** branch
   `feature/resident-field-acceptance-64` from `dev` (`c3a6f3a`).
   1. *Question:* does a covered camera move or a forecast-time change inside the
      resident window cost zero field preparations, zero decodes and zero loading
@@ -683,6 +704,80 @@ measurements remain pre-integration evidence, not fresh merged-base runs.
      re-run beyond that recorded evidence.
   6. *Stop:* budget exhausted, or a window-leaving input can only be fixed by a
      policy change, which is out of scope.
+  **2026-10-20 continuation after user review:** the user approved an occasional
+  real-download test, which now supplies HRRR data without the historical private
+  snapshot. Earlier exploratory download/render checks passed, but they did not
+  measure reuse. The all-points density defect is separate issue #79.
+  Next bounded slice: one targeted headless check round and **one <=110 s native
+  `residency-reuse` gate attempt**, with standard density. Warm one field, quiesce
+  preparation and disable speculative recenter/lookahead in the harness; exercise
+  two small covered pans and two within-bracket time changes. Block decoded-band
+  access and measure field preparation/miss/publication deltas. Record forecast
+  checksum, workload and limitations. This is a mechanism control, not a scheduler
+  performance comparison or actual GPU-upload measurement. The historical
+  `residency` gate stays unchanged; GPU upload/release, cross-field switching,
+  eviction/reload and fidelity acceptance remain open. Stop/report after this
+  attempt rather than extending the budget to implement GPU instrumentation.
+  **Result/review:** 31 targeted checks passed, 2 opt-in network checks skipped
+  in the headless selection; Black passed on four changed Python files and
+  whitespace passed. The one permitted native attempt completed in 13.564 s:
+  **6 checks passed, 3 failed**. Covered pans were ready, with no preparation or
+  decoded-band access. Both time inputs instead selected a different resident
+  field, causing one field publication. The harness mistakenly warmed at an exact
+  hourly forecast event (singleton identity), then called +15/+30 minutes the
+  same field. Those instants belong to a different interpolation bracket.
+  **Decision: narrow/stop, native budget consumed.** This is a workload-design
+  failure, not evidence that same-field temporal reuse fails or that GPU residency
+  passes. Next smallest experiment, requiring budget review: warm strictly inside
+  an interval (+1h15m), verify pre-input coverage, then stay inside that interval.
+  Actual GPU upload/lifecycle acceptance remains open. The new headless eviction
+  test actually forces eviction and verifies endpoint arrays (including NaNs),
+  provenance and land flags on reload; it is CPU-payload evidence, not GPU eviction.
+  Evidence: [residency-reuse-summary.json](profiles/rendering/2026-10-20/residency-reuse-summary.json).
+  **Blocker report:** Expected: four same-field covered inputs with no field
+  publication. Observed: the pans reused the field; time changes switched to a
+  different preloaded field and published it once. Root cause: the harness chose
+  an exact forecast event rather than the interior of its interpolation interval.
+  Next concrete step: approve one corrected-interval attempt; keep this negative
+  result and do not weaken the gate. #64 remains open.
+  **Budget extension, explicitly approved by the user (2026-10-20):** three
+  implementation/targeted-validation rounds and four native gate attempts, each
+  <=120 seconds. Fix the interval control, instrument actual Qt texture creation
+  and destruction separately from image publication, exercise resource pressure,
+  reload and teardown, and retain numerical/missing-data controls. Reuse a downloaded
+  forecast when available and record its checksum. No chart migration, #79 fix,
+  routing change or renderer rewrite. Stop on exhausted budget or if measurement
+  requires a broader renderer change. Native texture creation/upload submission is
+  not GPU completion, physical VRAM accounting or presentation latency. Record
+  diagnostic-path differences explicitly; do not claim the stock Image-provider
+  path is measured when only a replacement Texture-provider path was exercised.
+  **Extension result — narrow/stop:** all three targeted rounds and all four native
+  attempts are consumed. Final targeted selection: **93 passed, 2 skipped,
+  1 deselected** (the known obsolete #77 import-isolation assertion); Black eight
+  files and whitespace passed. The final native control passed **24/24** checks:
+  four warm field upload submissions, zero field upload submissions during four
+  covered inputs, nine changing-selection submissions, zero preparation/decoded-band
+  access. The tracing boundary is Qt's actual `QRhiResourceUpdateBatch::uploadTexture`
+  call, not image publication; it does not measure GPU completion or presentation.
+  **Important control difference:** `residency-upload` explicitly disables Qt's
+  atlas (`QSG_ATLAS_SIZE_LIMIT=1`) so field and selection resources are identifiable.
+  It does not establish default atlas-enabled upload acceptance. The preceding
+  atlas-enabled attempt failed attribution; its debugger/target monotonic clocks
+  also differed, invalidating those phase counts. Both negative results are kept.
+  Adopt the focused cleanup correction: source replacement/disposal now clears QML
+  barbs/fill image bindings in addition to the CPU provider. Source-retirement,
+  reload and teardown passed on the atlas-enabled and atlas-disabled paths; the
+  final run ended with zero observed live QSG textures, zero retained field bytes
+  and stopped workers. These are resource-lifetime checks, **not physical VRAM**.
+  **Reevaluation:** covered-demand CPU reuse and controlled native upload behavior
+  are supported. No real-workload performance improvement is claimed. The remaining
+  bottleneck in acceptance is resource ownership/measurement, not more timing runs:
+  `FieldStore` owns CPU payloads, whereas Qt owns texture/atlas lifetimes. A true
+  native residency/eviction budget and cross-field resident-window acceptance remain
+  open. Do not mark #64 complete or relax the historical `residency` gate (unchanged).
+  Next decision needs a separately bounded design for atlas-region attribution and
+  native field-residency ownership, not another retry of the same test.
+  Evidence: [residency-extended-summary.json](profiles/rendering/2026-10-20/residency-extended-summary.json).
 - **Architecture decided:** [`adr-001-grib-rendering-architecture.md`](adr-001-grib-rendering-architecture.md).
   Read it first. It reconciles the R0-R5 architecture in
   `docs/rendering-implementation-plan.md` with the 2026-10-19 current-state and
@@ -1920,3 +2015,590 @@ is issues [#62–#70](milestones.md).
   per-view selection payload and atomic CPU/GPU symbol mode. Keep chart/weather
   invalidation and GUI costs visible. Do not add this broader work to #50 under
   the previous residency-only approval, or silently extend exhausted experiments.
+
+## Native residency follow-up scope (#64)
+
+**Status: proposed after user-authorized scoping, 2026-10-20.** One source/API
+investigation pass; zero renderer edits, tests of rendering, or native attempts
+in this scoping pass. Existing uncommitted acceptance work is retained unchanged.
+The previous four-attempt extension is exhausted, not renewed by this proposal.
+
+### Findings and ownership boundary
+
+| Current owner | Source evidence | Consequence |
+| --- | --- | --- |
+| Numerical worker | `gribviewport.py: GribViewportModel`, `window_fields`; `gpuweatherfields.py: GeographicField`, `FieldStore` | Retains NumPy arrays, provenance, masks, packed QImages and lookup metadata. Its 128 MiB limit is accounted **CPU payload**, not native texture residency. Keep this implementation. |
+| GUI image provider | `gpuweather.py: WeatherImageProvider.publish_field`, `_trim_fields`, `requestImage` | Retains QImages under stable URLs with a separate 32 MiB staging limit. Returning an existing URL does not allocate or pin a GPU texture. Its trimming is publication-order based, not the worker's LRU. |
+| QML image slots | `WeatherBarbs.qml` and `WeatherFill.qml`, four `Image` objects with `cache: false`; `gribviewport.py: _publish_barbs`, `_publish_fill` | Bind the current field. Publishing nearby window fields to the provider does not bind them to separate native textures. Inactive fields have no explicit GPU-residency owner in product code. |
+| Qt scene graph | `gpuscene.py: ImageItem.updatePaintNode`; prior `residency-extended-summary.json` | Qt creates/releases native resources and may atlas images. The existing map-image path shows the render-thread creation pattern, but does not implement a weather field store. A global atlas-disable diagnostic is not proof of default-path attribution. |
+
+The installed `PySide6/QtQuick.pyi` exposes `QQuickItem.isTextureProvider`,
+`textureProvider`, `updatePaintNode`, `releaseResources`, `QSGTextureProvider.texture`
+and `textureChanged`, `QQuickWindow.createTextureFromImage`, `scheduleRenderJob`
+and `sceneGraphInvalidated`. **Exposed signatures are not proof that Python
+overrides and lifetime/ownership transfers work through ShaderEffect.**
+
+Prior #71 evidence must not be mistaken for that proof:
+`tools/experiment_float_transport_qsg.py: bind_texture_provider` passed a bare
+QSGTextureProvider object, not a QQuickItem texture source; the recorded
+`float_through_texture_provider` result failed. Its texture-factory experiment
+also preconstructed textures and returned a shared pointer from factories, so it
+does not establish safe production thread ownership or a byte-bounded native LRU.
+Do not repeat the bare-provider approach or copy experiment tooling into product code.
+
+### Recommended approach (conditional on probe)
+
+**Add a render-thread-owned `NativeFieldStore`, rather than replacing `FieldStore`
+or changing the weather calculations.** Use one store per QQuickWindow/scene-graph
+generation, with explicit application-wide reservations for weather payloads.
+
+- Key a native entry by source epoch + existing field identity + representation
+  (barb nodes versus fill grid) + scene-graph generation. Never share GPU pointers
+  between windows/devices. Independent map clocks bind independent entries.
+- Retain the current RGBA8888 packed images, opaque channels, nearest sampling,
+  shader byte decoder and interpolation/missing-data logic. Native float transport
+  and original-sampler resampling are not reopened in #64.
+- Create numerical field textures with `createTextureFromImage` on the render
+  thread, without requesting atlas placement. Expose borrowed current textures
+  through proper QQuickItem/QSGTextureProvider sources to the existing shaders.
+  Keep per-view selection images separate. **Only numerical fields** bypass the
+  atlas: no global `QSG_ATLAS_SIZE_LIMIT` change to weather selections or charts.
+- Admission reserves a whole endpoint group before allocation; partial allocation
+  rolls back. LRU evicts only unpinned native entries. Pin current/front/back
+  consumers; speculation loses priority. CPU readiness alone must not be labelled
+  GPU-current: source epoch, field, selection and GPU-ready state commit together.
+- Proposed trial native-weather payload cap: **32 MiB application-wide**, including
+  both maps and node/grid representations. This is a conservative configurable
+  allocation choice, **not an empirically ratified working-set bound** and not
+  the existing provider's CPU ledger. Count texture dimensions × four bytes with
+  no mipmaps; include reserved, live and pending-retirement payloads without
+  double-counting shared leases. Keep CPU decoded/memo/staging ledgers separate.
+  `GpuPresenter.GPU_LIMIT` is a legacy presenter estimate; it does not currently
+  enforce a shared viewport cap. Claim no whole-app VRAM/RSS bound.
+- A reservation broker must never delete another window's resources on its own
+  thread. Request retirement on that owner's render thread; do not admit a new
+  allocation on credit for an unconfirmed release. If visible pins cannot fit,
+  reject/defer explicitly; never silently thin, increase the limit, or present
+  old weather as current. Oversized single fields report a recoverable budget
+  failure rather than loading forever.
+- Field eviction, source replacement, window destruction and scene-graph
+  invalidation detach consumers and release native handles on the owning render
+  thread. Invalidation clears the native epoch; CPU payloads may rehydrate it.
+  GUI methods enqueue releases, never join workers or delete native textures.
+  Track Qt native object lifetime separately from driver-deferred physical frees.
+
+**Why not the simpler alternatives?** Stable URLs/`cache: true` and a retained pool
+of QML Images still delegate eviction to Qt and provide no demonstrated native
+quota. A QQuickTextureFactory supplies textures but does not, by itself, establish
+safe shared ownership across changing Image consumers. Tracing atlas subregions
+alone would improve measurement without implementing native residency. A native
+C++ bridge may be needed, but adding its build/package pipeline is an explicit
+scope decision, not an automatic fallback if the Python-item probe fails.
+
+### Next step: compatibility probe, not renderer implementation
+
+**Question:** can the installed Python bindings expose render-thread-owned packed
+textures through a proper QQuickItem to ShaderEffect, retain A and B, and bind
+**A → B → A** without recreating/re-uploading A or transferring its ownership to Qt?
+
+**Probe authorized by the user (2026-10-20):** two small implementation/targeted-check
+iterations and **two native processes, each <=120 s**. Synthetic packed fields,
+no download, charts, sampler, worker scheduler or app-default change. Reuse #71's
+recorded negative results, not its unsafe ownership shortcuts.
+
+The probe lives only under `tools/` and targeted test files; it changes no product
+renderer code. Use the installed shader baker, one QQuickWidget per native run,
+and the existing explicit LLDB QRhi submission trace. Keep normal global atlas
+settings. Known constant packed fields A=8 m/s, B=4 m/s and all-missing supply
+independent finite/nonblank and zero-alpha controls. Observe native texture
+destruction, not just Python references, on detach and actual scene invalidation.
+Stop after the two attempts or on an unresolved ownership/dispatch failure; the
+later implementation budget remains unapproved. Gate: `native-field-item` in the
+existing runner. No presentation/physical-VRAM claim.
+
+**Probe iteration 1:** 21 headless checks and Black on three files passed; native
+attempt 1 completed cleanly but failed 2/16 gate checks (detach/reload). Proper
+item/provider virtual dispatch, finite/missing pixels, non-atlased A/B/A identity
+and upload controls passed: field submissions `[1, 1, 0, 1, 0]` for A/B/A/missing/A.
+The scheduled AfterRendering retirement job did not run during the detached empty
+frame; it ran after the next bind, invalidating the intended reload. Final scene
+invalidation released all three observed textures, but that did not make detach
+correct. Revise only the retirement handoff: consume a request in a direct
+afterSynchronizing callback, after consumer detachment, with a guard against
+deleting a bound texture. One targeted round and one native attempt remain.
+
+**Final probe result — stop/defer adoption:** both authorized iterations/native
+attempts are consumed. Headless selection: **21 passed**; final Black four files
+and changed-document/tracked-tool whitespace passed. Attempt 2 exited cleanly
+with persisted native exit status 0, but the gate failed **2/17** checks: native
+resource release and ownership. Rendering, proper item/provider virtual dispatch,
+normal global atlas settings, non-atlased textures, known finite/missing pixels,
+byte-identical A return, native identity reuse and zero return upload all passed
+in both runs. QRhi submissions were `[1, 1, 0, 1, 0]` for A/B/A/missing/A.
+
+The afterSynchronizing handoff fixed detach: three textures were explicitly
+destroyed after unbinding, and a new fourth texture reloaded A correctly. At actual
+widget/scene invalidation, that fourth texture's Python wrapper was already
+invalid before the owning bank could retire it, and its destruction callback was
+not observed. Four creations versus three observed destructions **does not prove
+a physical GPU leak**, nor does it identify Qt versus binding ownership as the
+cause. It does mean the safe-lifetime contract is unestablished. Do not suppress
+the check or infer ownership from a clean process exit. Callback operations all
+ran on the same GUI/render-callback thread on this QQuickWidget host, not a
+separately exercised threaded render loop.
+
+**Next decision:** authorize a narrowly scoped investigation of Qt/Shiboken return
+ownership and wrapper invalidation at the scene teardown boundary, or select a
+different bridge design explicitly. The product implementation slice below is
+**not started or authorized** by these partial mechanism results. A C++ bridge
+and a further native retry need review; neither is an automatic next step.
+Evidence: [native-field-item-summary.json](profiles/rendering/2026-10-20/native-field-item-summary.json).
+
+**Ownership investigation authorized by the user:** read-only audit first, then
+at most two targeted validation/fix rounds and two native processes <=120 s if a
+concrete fix is identified. Still experiment-only; no product integration/C++ bridge.
+The installed PySide 6.12 `QtQuick.abi3.so` generated
+`Sbk_QQuickWindowFunc_createTextureFromImage` calls `Shiboken::Object::setParent`
+with the window wrapper and returned texture wrapper (both overloads; arm64 call
+sites 0x52cf8 and 0x52de0). `shiboken6/include/shiboken6/basewrapper.h` documents
+recursive child-wrapper invalidation on parent death. Installed
+`typesystem_core_common.xml: QObject.setParent(QObject*)` explicitly updates the
+wrapper's parent association. This is a concrete binding-lifetime hypothesis,
+not proof that Qt deleted or leaked the native fourth texture.
+
+Test the public `texture.setParent(None)` immediately after render-thread creation,
+retain bank ownership, and keep all existing release checks. Record native parent,
+Python ownership, wrapper dump before/after adoption, validity at retirement and
+actual destruction callbacks. Require warm-positive/zero-return uploads, pixel
+controls, explicit detach/reload and real scene invalidation to pass unchanged.
+Stop at the budget or if public adoption cannot establish safe ownership. Do not
+use private binding calls, pointer resurrection or waive the missing destruction.
+
+**Ownership result — adopt the compatibility mechanism on this host:** the audit
+and runtime metadata agree. The factory-return binding associated wrappers with
+the window even though the actual QObject parent was null. Public
+`texture.setParent(None)` removed the wrapper association and changed Python
+ownership false → true without changing the native parent. Strong bank references
+then survived window-wrapper invalidation, allowing explicit render-thread
+destruction at scene invalidation. Keep that adoption invariant separate from
+QObject parenting and from the application's source/scene-generation keys.
+
+Two fresh native processes passed **19/19 checks each** (18.903 s and 17.014 s).
+Each observed four creations, all four actual destruction callbacks, valid and
+Python-owned wrappers at every explicit deletion, successful detach/reload, one
+actual scene invalidation and persisted native exit 0. Existing finite/missing,
+identity/byte-equality and warm-positive/zero-return upload checks passed unchanged:
+QRhi submissions `[1, 1, 0, 1, 0]` for A/B/A/missing/A. Headless validation:
+**23 passed**, Black three changed Python files and whitespace passed before this
+evidence update. No product renderer was changed by this investigation, no
+full suite or unchanged-baseline benchmark was run, and no physical VRAM,
+presentation or general threaded-render-loop acceptance is inferred.
+
+**Decision:** the specific wrapper-lifetime obstacle is resolved for the installed
+Qt 6.12 Cocoa/Metal QQuickWidget path. Adopt this mechanism for the implementation
+design; do not add a C++ bridge to fix a defect now resolved through the public
+API. Both native slots are consumed. The older failed probes remain preserved in
+their own evidence. The next separately authorized step is the bounded opt-in
+native store below, including budget/eviction/two-map and generation/lifecycle
+integration. **It is not started by this investigation.**
+Evidence: [native-field-ownership-summary.json](profiles/rendering/2026-10-20/native-field-ownership-summary.json).
+
+Probe success requires: independently identifiable non-atlased field resources
+with the normal global atlas settings; correct known finite/missing pixels;
+unchanged field native identities and zero field upload submissions on return
+to A after warmup; a working creation/upload positive control; and render-thread
+cleanup on detach plus scene invalidation without crashes, double deletion or
+leaked handles. Retained wrapper references are not ownership evidence. Record
+whether each callback actually runs on the expected thread.
+
+**Stop/review immediately** if virtual dispatch, ownership or safe render-thread
+destruction cannot be established. Do not spend the next milestone's budget on
+debugging this probe, switch to C++, or reopen float transport without approval.
+
+### Production implementation plan (authorized 2026-10-21; N1 complete, budget consumed)
+
+Planning pass requested 2026-10-21: documentation only, one changed-document
+validation round, zero renderer changes or native runs. The subsequent user
+instruction to get started authorizes the implementation and budget below.
+
+**Authorized budget:** three targeted implementation/validation rounds and four
+native application processes <=120 s each, including retries and subprocesses
+launched by a gate. Four gate invocations that each launch several native children
+would exceed this budget. The compatibility/ownership mechanism is adopted for
+this measured host. This new budget starts at zero native attempts/targeted rounds;
+the previous probe/investigation attempts remain recorded separately. N1 uses
+headless lease/rollback controls and an early two-widget native gate, preserving
+packed values, normal global atlas settings and known finite/missing pixels.
+Use earlier ownership evidence as reference, not another unchanged baseline.
+Stop on the stated scope conditions or exhausted budget.
+
+**Outcome:** an opt-in native cache retains multiple prepared weather fields,
+including inactive fields, and binds them without re-upload until explicit
+eviction. Preserve the existing CPU store, selected file/run/member, independent
+map clocks, shader arithmetic and per-view selection. No new renderer technology,
+native-float format, chart work, default switch or changes to routing/#79.
+
+Work in three coherent slices on the #64 feature branch; keep prior probe/cleanup
+work distinguishable from the product change. Coordinate with #78 only at shared
+viewport/QML binding sites; never include its chart migration. Do not merge or
+push unrelated work or claim the earlier partial gates close #64.
+
+#### N1 — Explicit native ownership and accounting
+
+- Add a production-only module, not an import from `tools/`. Separate a headless
+  reservation/LRU policy from render-context objects so accounting can be tested
+  without a GPU. GUI/worker code hands off immutable image payloads and epochs;
+  native texture creation, adoption and destruction remain render-thread-only.
+- Create **one weather reservation owner for the application/session**, injected
+  into both map presenters and their per-window stores. Do not independently give
+  each map a full 32 MiB allocation. A standalone viewport owns a single equivalent
+  session budget. Native texture pointers never cross contexts.
+- Use exact field identity plus source/scene epoch and node/grid representation
+  as the cache key. Current selection/view revision is a binding token, not the
+  field's residency key. Atomically reserve/create all four endpoint textures or
+  roll back; use the tested public `setParent(None)` adoption and validate ownership.
+- Track reserved/live/pending-retirement payloads; transfer each byte between
+  categories once. Pin visible and in-flight consumers. Evict inactive local LRU
+  entries before refusing visible demand; request another context's unpinned
+  retirement only through that context, and wait for acknowledgement before
+  counting its bytes as available. Denied speculation must not disturb current
+  content. A too-large field must fail explicitly, not wait forever.
+- Reuse the tested afterSynchronizing retirement handoff and actual invalidation
+  cleanup; do not assume AfterRenderingStage jobs run during an empty QQuickWidget
+  frame. Hidden/no-next-frame retirement needs a tested disposal/invalidation path,
+  not GUI-thread deletion or credit for a release that has not happened.
+
+**Gate N1:** headless admission/rollback/pinning/cross-context accounting tests,
+then an early native synthetic control using **two QQuickWidgets in one process**:
+known pixels, separate native identities, a shared enforced cap and safe teardown.
+The old `_Session` documentation in `test/qt_gribviewport_checks.py` reports a
+second-widget rendering limitation. Exercise it directly; two independent
+processes are not a substitute for proving two maps in the same application.
+If that limitation appears and requires a host/controller rewrite, stop before N2.
+
+**N1 checkpoint, iteration 1:** new production headless reservation/store policy
+and explicit Qt adapter implemented locally; not yet wired into the default app.
+36 targeted policy/control checks passed, Black four files and whitespace passed.
+Native process 1 completed cleanly, but failed the early two-widget known-pixel
+check: the first widget uploaded four endpoints and drew correctly; the second
+allocated four native objects but never met the harness's uploaded-handle/shader
+readiness predicate. Both contexts destroyed all four objects and the shared
+ledger ended empty. Pressure/reload cases were not run, so native eviction is
+not accepted. Diagnose harness paint/readiness ordering before attributing this
+to the host. The correction forces framebuffer generation before waiting for
+uploaded handles (fidelity only, not FPS), and records both GUI/native readiness
+and shader state. N2 remains unstarted. Next run debits process 2 of 4 and
+targeted round 2 of 3; do not silently bypass the two-widget check.
+
+**N1 iteration 2 — narrow/stop:** three new headless gate-oracle tests, Black two
+files and changed-document whitespace passed. Explicit framebuffer generation
+did not resolve the early gate failure. Native process 2 exited 0, but the second
+widget reported native-ready/QML-field-ready **true** and shader-compiled **false**,
+with zero field upload submissions; the first widget drew known pixels and
+uploaded all four endpoints. No initiating exception or ownership error appeared.
+Both contexts observed four creations/four destructions and one actual scene
+invalidation; the shared ledger ended with zero reserved/live/retiring bytes and
+zero registered contexts. Native pressure/reuse/reload cases were not exercised.
+
+The new headless policy and explicit native context adapter are local candidates,
+not app integration. The symptom resembles the old harness's recorded
+first-widget-only shader limitation; its root cause is still unclassified, not
+proof that a host rewrite is required. **Stop before N2/N3.** Two of four native
+processes and two of three targeted rounds are used; the stop is the milestone
+gate/scope boundary, not exhausted budget. Next smallest decision: isolate a
+minimal two-widget shader-readiness control with geometry/status/provider
+observations and determine whether this is harness or Qt lifecycle. Do not
+substitute two processes for the requirement or spend the remaining budget on
+broader renderer/controller changes without review.
+Evidence: [native-weather-N1-summary.json](profiles/rendering/2026-10-21/native-weather-N1-summary.json).
+
+**User-authorized continuation of N1 diagnosis (2026-10-21):** use the remaining
+one targeted round and at most two native processes (3/4 and 4/4 overall), not a
+new budget. Native process 3 is diagnostic only: capture widget/root/effect
+geometry, visibility, raw shader status/log and provider dispatch. Independently
+try explicit root geometry, a known-color non-shader rectangle, reactivation of
+the original shader URL, and identical QSB bytes at a distinct URL, in the same
+two-widget process. Preserve the original gate failure even if a diagnostic
+intervention works. No host rewrite, backend/atlas change or separate-process
+substitution. Only a concrete narrow correction identified by those controls may
+be applied/tested in process 4. Otherwise stop with the remaining cause unclassified.
+
+**Process 3 diagnostic result:** original second-widget geometry was already
+64×48 with visible root/effect, empty shader log, four dispatched providers and
+actual native texture handles. It drew the correct A pixel `[255,64,128,255]`
+while reporting `ShaderEffect.Uncompiled`. Explicit geometry and reactivating the
+original URL did not change that metadata. A known-color Rectangle independently
+rendered correctly. Identical QSB bytes at a distinct URL changed the shader
+status to Compiled but did not change the already-correct pixel result. The
+original gate remains FAIL: its status-only readiness condition was overstrict,
+not evidence of an unrenderable second widget.
+
+**Final allowed correction:** keep the original shared shader URL and normal
+global atlas settings. Readback readiness requires native endpoint handles and
+no explicit shader error; independent known-pixel/field-upload gates remain
+mandatory. Add headless controls for cached Uncompiled metadata versus errors or
+missing resources. The synthetic missing control uses the existing A0k integer
+exponent rejection before float arithmetic. Process 4 must exercise the full N1
+reuse/pressure/reload matrix, not diagnostic substitutions. Targeted round 3 and
+native process 4 exhaust the current implementation budget; no N2 start follows
+automatically even if this milestone passes.
+
+**N1 completion — adopt foundation, stop before N2:** process 4 passed **16/16**
+checks in 17.002 s with persisted native exit 0, original shared shader URLs and
+normal global atlas settings. Both widgets drew independently. Four-endpoint
+field upload submissions were `[4,4,4,0,4,4,4]` for left A, right A, left B,
+resident return A, pressure C, evicted B reload and all-missing. Native reservation
+serials `[1,2,3,1,4,5,6]` separately prove reuse versus reload even when allocator
+addresses are reused. The sibling's pinned A retained its handles/pixels while
+the left store evicted inactive fields. Shared payload peak was exactly the
+384-byte test cap (three 128-byte groups), with three evictions. All 24 native
+objects were destroyed (20 left/4 right), both contexts invalidated, and the
+ledger ended with zero reserved/live/retiring bytes and registered contexts.
+Final targeted validation: **45 passed**, Black five files and whitespace passed.
+
+**Correction to prior failed-run interpretation:** an empty mapped handle set
+produced the earlier reported zero upload count when the compiled-status guard
+returned no group. That was unattributable, **not a measured zero**. The diagnostic
+proved real second-widget rendering despite stale Uncompiled metadata; no engine,
+global atlas, shader URL or host-architecture workaround is needed for N1.
+Older failed verdicts remain preserved, with this correction linked. Do not use
+the old generic "second widget never presents" hypothesis as a plan. N2 must
+handle cached status honestly instead of labelling a valid native frame loading
+solely because `ShaderEffect.status` did not transition to Compiled.
+
+**Reevaluation:** the production component's native reuse, admission/pressure,
+two-context isolation and ownership mechanism are supported for this synthetic
+workload. This is not full application/barb/fill/sampler fidelity or performance
+acceptance. All three targeted rounds and all four native processes are used.
+N2/N3 remain unstarted; request their next bounded integration budget rather
+than starting them provisionally. No product default or rollout change.
+Evidence: [native-weather-N1-completion-summary.json](profiles/rendering/2026-10-21/native-weather-N1-completion-summary.json).
+
+#### N2 — Opt-in application and layer binding
+
+**Authorized 2026-10-21:** three targeted validation/fix rounds and four native
+application processes <=120 s each, including retries. No default switch, #79
+change, chart migration or routing/sampler policy change. Use the existing local
+real HRRR download read-only, with checksum recorded, and synthetic missing-data
+controls separately. Gate the actual viewport/presenter layers, not just scalar
+probe shaders. Baselines unchanged by N2 are not rerun. Stop at the budget or
+scope expansion. N2 cache consumers are separate node/grid binding owners on
+the same render window sharing one session ledger; never duplicate the cap for
+layers or maps. Keep admission, native frame observation and publication counts
+separate, and do not gate valid cached frames solely on Compiled status.
+
+- Add a distinct `--native-weather-fields` option (and matching explicit environment
+  opt-in), default OFF, to the Qt/standalone entry points. Do not reinterpret the
+  existing `--gpu-resident-fields` legacy-frame flag. The normal default remains
+  its current viewport/Image path, with legacy recovery retained.
+- Pass the shared budget and native option through controller → WeatherPresenter
+  → viewport. Add endpoint texture-item bindings to existing barb/fill QML behind
+  the option; keep the Image bindings intact when it is off. Do not enable the
+  standalone numerical fill in the normal app as a side effect of this work.
+- Introduce an immutable native binding request: source/scene epochs, exact field
+  identity, endpoint group, selection generation and current demand. Stage/lease
+  native endpoints before committing the selection. Show current only when all
+  required native textures are admitted and the matching selection is ready;
+  reject stale native completions just as stale worker completions are rejected.
+- GPU-resident windows are an **admitted set**, not every field returned by the
+  CPU `window_fields()` accessor. Warm eligible fields in bounded order, then
+  expose readiness/observations for that set. A CPU hit whose GPU entry was evicted
+  requires a counted GPU reload, not a false zero-upload claim or GRIB re-decode.
+- Field changes bind retained endpoints; camera/time-uniform updates do not
+  recreate them. Node/barb and grid/fill representations share the same ledger
+  while remaining separate texture groups. Selection image updates retain normal
+  atlas behavior and remain outside field-upload counters.
+- Wire source replacement, suspension, hide/show, widget teardown and scene-epoch
+  invalidation to the native owner. Hide obsolete weather immediately, detach
+  consumers, retire safely, and ignore queued old acknowledgements. No GUI join.
+  Carry explicit allocation/backend failure through existing honest recovery.
+
+**Gate N2:** targeted presenter/model/QML regression tests plus real-HRRR native
+checks of covered pan, within-bracket interpolation and resident A → B → A.
+Require positive cold uploads, zero warm field uploads/re-decodes, correct
+source identity and independent fill/barb bindings; keep chart rendering unchanged.
+
+**N2 completion — adopt opt-in integration, stop before N3 (2026-10-21):**
+
+- `--native-weather-fields` / `GWR_NATIVE_WEATHER_FIELDS=1` now propagate through
+  the controller/presenter to the viewport. One controller-owned 32 MiB native
+  payload cap is shared across application maps. The standalone fill remains
+  standalone; neither default behavior nor packed shader arithmetic changes.
+- Native requests retain immutable source/scene epoch + exact field identity
+  keys and sequence rejection. Selection publication is synchronous on the GUI
+  thread; queued native acknowledgements update readiness only and cannot publish
+  an old selection. Readiness separates admission from observed native handles
+  and rejects explicit shader errors without relying solely on Compiled metadata.
+- Admission is demand-driven: CPU `window_fields()` does not imply GPU residency
+  and is not eagerly uploaded. Separate node/grid consumers share one ledger;
+  active and retained native groups are exposed by `native_observations()`.
+- Source removal/replacement, suspension and hidden weather retire the native
+  widget asynchronously. Widget destruction supplies the scene invalidation
+  boundary even when a hidden widget cannot synchronize. Presenter generations
+  reject delayed callbacks from retired hosts; existing legacy recovery remains.
+- Native processes 1–4 used the existing local HRRR file read-only, SHA-256
+  `16e21c3cf2747a364f028a2aae0aaa0640d3a84051e9f6ef6c737c990698a6a3`.
+  Process 1 passed presenter checks but failed the layer harness because its model
+  omitted `grid=True`; it remains FAIL. Process 2 passed 15/15, process 3 passed
+  15/15 with two real application maps, and process 4 passed the expanded 18/18
+  including distinct real forecast brackets A → B → A in 22.838 s; native exit 0.
+- Final field upload submissions were **8 cold, 0 covered time/pan, 8 new bracket,
+  0 return to A**. Decoded-band counters stayed unchanged during covered and return
+  phases. Finite framebuffer difference was **0 bytes**, and all-missing alpha was
+  **0 pixels**, using the shipped barb/fill shaders. Selection traffic is excluded
+  from field attribution; missing current native handles yield unavailable counts,
+  not numeric zero.
+- Two live application map groups shared 92,160 B. The separate two-layer
+  comparison/control workload peaked at 571,200 B under the same declared 32 MiB
+  cap and released all 24 textures, ending at zero bytes/groups/contexts.
+  This is payload accounting and upload submission/readback evidence, not physical
+  VRAM, presentation FPS, end-to-end latency or a demonstrated workload-fit bound.
+- Targeted round 1 passed 73 tests. Round 2 passed 82 but failed two new harness
+  tests on tool-module imports; the fix uses the repository's existing explicit
+  module loader. Round 3 passed all four affected integration tests (0.63 s),
+  Black on 11 files and changed-file whitespace checks. This leaves 84 unique
+  targeted tests supported by passing results (82 unchanged round-2 results plus
+  the two repaired tests). No fourth round or fifth native process is authorized.
+- Evidence: `docs/profiles/rendering/2026-10-21/native-weather-N2-summary.json`;
+  full failed/passing artifacts remain under the approved temp directory in
+  `native-weather-N2-1/` through `native-weather-N2-4/`.
+
+**Decision: continue only to separately authorized N3 acceptance/review.** The
+product opt-in is usable; the broader forced eviction/reload, source/provenance,
+numerical oracle and scene-recreation matrix below remains open. No commit, push,
+PR, merge, default switch, chart migration or #79 change was made by N2.
+
+Reproduce N2 on Cocoa/Metal with the installed LLDB trace support:
+
+```sh
+PYTHONPATH=. GWR_NATIVE_WEATHER_GRIB=/path/to/forecast.grib2 \
+  python tools/gate_runner.py --gate native-weather-integration --output /path/to/results
+```
+
+#### User-authorized default switch (2026-10-21, after N2)
+
+The user explicitly requested the native-cache viewport as the default, rather
+than requiring a flag. Both launcher entry points and direct controller/viewport
+construction now resolve an unspecified native option to enabled. An explicit
+False/`--no-native-weather-fields` overrides the environment; otherwise
+`GWR_NATIVE_WEATHER_FIELDS=0` provides Image-path recovery. The positive option
+remains accepted for compatibility, but is no longer required. Existing legacy
+weather recovery and the CPU renderer remain available; numerical fill/chart
+flags and calculations are unchanged.
+
+Scope: default selection and recovery precedence only. Validation budget: one
+targeted headless round plus Black/whitespace on changed files; **zero new native
+processes**, relying on N2's passing current-renderer evidence, not remeasuring it.
+N3 remains open, and no expanded fidelity/performance acceptance is claimed.
+Record this later rollout choice separately from the preserved default-OFF N2
+evidence; no commit/push/merge is authorized by it.
+
+Validation passed: **95 targeted tests**, one unchanged pre-existing #77 test
+deselected, Black on six changed Python files, and changed-file whitespace checks.
+The round took 7.29 s; no native rendering process or baseline was rerun. Native
+rendering evidence remains N2's 18/18 gate. N3 acceptance is still unstarted.
+
+#### N3 — Acceptance and review, not rollout
+
+**Authorized 2026-10-21 after the default switch:** three targeted validation/fix
+rounds and four native application processes, each <=120 s including retries.
+Scope is the remaining #64 acceptance matrix and NaN overlay triage; #78/#79 and
+sampler/source policy fixes are non-goals. Use the saved N2 HRRR checksum and small
+synthetic missing/pressure controls. Preserve N1/N2 results instead of remeasuring
+unchanged baselines. First integrate current `dev` chart changes into this feature
+branch without changing chart behavior. Require attributable positive/zero QRhi
+uploads, CPU payload/mask/provenance/selection equality, pressure-derived budget,
+honest misses, independent clocks, replacement/scene-epoch rejection and complete
+cleanup. Retain the 2e-5 numerical bound and disclose the pre-existing #65 oracle
+dependency. Stop on budget exhaustion or any required unrelated policy rewrite.
+At the gate record adopt/revise/reject and continue/narrow/pivot/stop. The user
+authorized coherent commits, push and a normal fork PR to `dev` after acceptance;
+**merging remains unapproved**. The default-on choice is already user-authorized,
+superseding the original default-OFF scoping text below, not a new N3 change.
+
+- Extend the gate runner with a final `residency-native` acceptance gate. Separate
+  native field allocations/binds/releases and actual QRhi upload submissions from
+  the existing publication-based counters. Positive trace controls must fail
+  closed if the debugger/instrument is unavailable or attribution is ambiguous.
+- Exercise forced eviction/reload with a test budget derived from actual field
+  sizes, source replacement with stale completions, honest geographic/time misses,
+  independent clocks, hidden/suspended views, actual scene invalidation and final
+  destruction. Include zero-alpha all-missing and unchanged finite controls using
+  the production packed shader paths, not just the scalar compatibility shader.
+- Compare cached/reloaded fields with the unchanged CPU reference: endpoint bits,
+  missing masks, provenance, native point membership and selection anchors/counts.
+  Preserve the existing 2e-5 gate wherever GPU numerical comparison applies.
+  This change must not introduce or hide the separate original-sampler resampling
+  discrepancy tracked in #65; record any acceptance dependency rather than waiving it.
+- Record native payload high-water and final zero outstanding reservations/handles
+  for both maps. Do not label that physical VRAM, FPS or an end-to-end speedup.
+  Retain the current default/legacy recovery and publish a focused review PR only
+  when authorized; no merge or default-on rollout as part of acceptance.
+
+**Finish line:** one gate-runner command over the final native path, with all
+required workload cases/current-code evidence and explicit native process counts.
+Planned command **after the new gate is implemented**:
+
+```sh
+GWR_RESIDENCY_FORECAST=/path/to/forecast.grib2 \
+  python tools/gate_runner.py --gate residency-native --output /path/to/results
+```
+
+Retain usable matching evidence for unchanged modules rather than remeasuring
+their baselines; rerun affected cases after a fix. The fourth native slot is the
+maximum retry allowance, not permission to exceed the total when a case launches
+multiple children. If required cases cannot all be validated inside the budget,
+stop and report the unclosed cells. Only passing the complete agreed acceptance
+below makes #64 eligible for closure; a compatibility gate or partial native
+control is not sufficient. Before closing, reconcile the issue's older
+chart-inclusive `residency` command with the new gate explicitly, preserving its
+original failing evidence and thresholds, not silently swapping the definition.
+
+Likely file boundaries (new names are proposals):
+
+| Files | Change |
+| --- | --- |
+| New `gweatherrouting/qt/gpuweathertextures.py` | Native store, reservation broker, render-thread provider items and resource telemetry. No GDAL or sampler handles. |
+| `gweatherrouting/qt/gribviewport.py` | Immutable resource demands/leases, readiness, source/scene epochs, invalidate/teardown; retain worker and existing CPU store. |
+| `WeatherBarbs.qml`, `WeatherFill.qml` | Opt-in texture-source bindings; preserve shader arithmetic, selection membership and existing default Image path. |
+| `gpuweather.py`, `gpuweatherfields.py` | Minimal identity/accounting handoff if needed; preserve encoder and CPU payload semantics. |
+| `weatherpresenter.py` | Flag propagation and replacement/hide/show cleanup only if the existing lifecycle API cannot carry leases. No controller rewrite. |
+| `qt/controller.py`, `qt/__main__.py`, viewport standalone entry point | Shared session budget injection and the distinct opt-in native-fields option; preserve old flag meaning and independent clocks. |
+| `tools/gates.py`, residency tools, targeted tests | Final field-specific upload/lifetime/eviction gate and evidence. Keep old failing historical gate evidence; no threshold relaxation. |
+
+New native path remains **opt-in/default OFF** until human review; retain explicit
+legacy recovery. No routing, source/run/member policy, forecast acquisition,
+portrayal density (#79), glyph redesign, new fill technique or chart migration.
+
+Acceptance must separately establish:
+
+1. Cold A/B admission records expected positive uploads. Covered pan, same-bracket
+   time change and resident A → B → A record zero **field** uploads/re-decodes;
+   selection uploads remain separately visible. Do not call a CPU-window member
+   GPU-resident until its native admission has completed.
+2. Force the native budget to hold A+B but not A+B+C; pin visible A, evict inactive
+   B, load C, and return to B. Verify the expected reload, unchanged endpoint bits,
+   masks/provenance and original reference values; live+reserved+retiring accounting
+   stays within the declared cap. CPU decode-cache hits and GPU reloads are distinct.
+3. All-missing native rendering contributes exactly zero alpha; finite controls
+   stay byte-identical; existing 2e-5/original-sampler and selection gates remain
+   unchanged. Record pre-existing #65 fidelity gaps separately, not as passes.
+4. Source generation rejection, outside-window honest loading, two independent
+   map clocks/contexts, repeated replacement, hide/show, teardown and exercisable
+   scene invalidation pass. Unexercisable device loss remains an explicit gap.
+5. With **normal global atlas settings**, each new numerical texture is non-atlased
+   by design, identified at the QRhi upload boundary, and trace positive controls
+   pass. Counters at creation/destruction remain distinct from measured upload
+   submissions. Byte accounting is payload/estimated storage, not physical VRAM.
+
+Use one final gate-runner command for the new native path, with cached real-HRRR
+identity/checksum recorded; reserve small synthetic controls for forced pressure
+and missing data. Do not remeasure the unchanged chart-inclusive scrub baseline
+or run the full suite. Stop at budget exhaustion and record adopt/revise/reject
+before any rollout decision. **#64 remains open throughout scoping/probing.**
+
+**Implementation stop conditions:** a C++ extension/build pipeline, sampler or
+source-policy change, global atlas disabling, widening #78/#79, a controller/host
+rewrite to make two maps render, unsafe ownership on another callback path, or
+budget exhaustion. Report the smallest concrete next decision; do not substitute
+two separate processes for the two-map requirement or silently raise memory caps.
