@@ -240,7 +240,10 @@ class WeatherPresenter(QObject):
             mode = "All forecast points — legacy chart/weather renderer (unthinned)"
         else:
             mode = "Viewport wind: " + self._state
-        self.status.setText(selection.status + "\n" + mode)
+        basemap = self.canvas.charts.basemap_status(self.canvas)
+        self.status.setText(
+            "\n".join(text for text in (selection.status, mode, basemap) if text)
+        )
         self.status.setToolTip(selection.error)
         self.status.setFixedWidth(max(80, min(530, self.canvas.width() - 16)))
         self.status.adjustSize()
@@ -301,6 +304,13 @@ class WeatherPresenter(QObject):
                 True,
             )
         )
+        cache, target = self.canvas._resolve_reusable_layer(
+            self.canvas._base_cache,
+            self.canvas._base_key(),
+            self.canvas._base_image,
+        )
+        self.canvas._base_cache = cache
+        widget.set_base(cache[4], target)
         cache, target = self.canvas._resolve_reusable_layer(
             self.canvas._environment_cache,
             self.canvas._base_key(),

@@ -2305,6 +2305,39 @@ GATES["enc-app-rollout"] = {
 
 # Gates whose enforced thresholds are not yet derived from recorded evidence.
 # They still run and still enforce every ratified check.
+GATES["desktop-basemap"] = {
+    **GATES["enc-app-rollout"],
+    "title": "Full desktop window with world basemap and new viewport",
+    "milestone": "#88",
+    "tool": "tools/check_desktop_basemap.py",
+    "timeout_s": 120,
+    "endpoint": "Full-window content readback; not FPS or presentation latency",
+    "checks": [
+        {
+            "label": name.replace("_", " "),
+            "metric": "checks." + name,
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "docs/desktop-viewport-basemap.md; issue #88",
+        }
+        for name in (
+            "full_window_without_forecast",
+            "pan_basemap",
+            "fractional_zoom_basemap",
+            "resize_basemap",
+            "weather_panel_forecast",
+            "hidden_wind_basemap",
+            "source_clear_basemap",
+            "route_overlay_alignment",
+            "missing_coastline_fallback",
+            "loading_failure_visible",
+        )
+    ],
+    "open_requirements": [
+        "No #70 platform/soak/performance acceptance.",
+    ],
+}
+
 GATES["wind-all-points"] = {
     **GATES["enc-app-rollout"],
     "title": "All forecast points: explicit uncapped legacy wind presentation",
