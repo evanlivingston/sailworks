@@ -59,6 +59,7 @@ class BaseChartRenderer(OverlayRenderer):
         super().__init__(schedule)
         self._charts = OrderedDict()
         self._failed_key = None
+        self.last_error = ""
         self.diagnostics = {}
 
     def forget(self, canvas):
@@ -117,6 +118,9 @@ class BaseChartRenderer(OverlayRenderer):
         demanded = canvas in self._states
         if error and demanded:
             self._failed_key = job.key
+            self.last_error = str(error)
+        elif surface is not None and demanded:
+            self.last_error = ""
         result = super()._completed(canvas, job, surface, error)
         self._release_if_idle()
         if error and demanded:

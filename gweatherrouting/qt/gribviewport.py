@@ -1305,6 +1305,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._environment_provider = None
             self._environment = None
             self._environment_key = None
+            self._base_provider = None
+            self._base = None
+            self._base_key = None
             format_ = QSurfaceFormat()
             format_.setSamples(4)
             format_.setAlphaBufferSize(8)
@@ -1382,6 +1385,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     enc_only=enc_only,
                 )
                 if enc_only:
+                    self._base_provider = chart_image_provider("base")
+                    self.engine().addImageProvider("base", self._base_provider)
+                    self._base = self._weather.findChild(QObject, "baseLayer")
                     self._environment_provider = chart_image_provider("environment")
                     self.engine().addImageProvider(
                         "environment", self._environment_provider
@@ -1561,6 +1567,21 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._chart.setProperty("imageY", y)
             self._chart.setProperty("imageWidth", width)
             self._chart.setProperty("imageHeight", height)
+
+        def set_base(self, image, target):
+            """Compose the app's basemap inside Quick, below ENC and weather."""
+            if self._base is None or self._base_provider is None:
+                return
+            key = image.cacheKey()
+            if key != self._base_key:
+                url = self._base_provider.publish(key, image)
+                self._base.setProperty("source", QUrl(url))
+                self._base_key = key
+            for name, value in zip(
+                ("imageX", "imageY", "imageWidth", "imageHeight"),
+                (target.x(), target.y(), target.width(), target.height()),
+            ):
+                self._base.setProperty(name, value)
 
         def set_environment(self, image, target):
             """Present the app's retained above-ENC layers without changing order."""
@@ -1761,6 +1782,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._chart_provider.clear()
             if self._environment_provider is not None:
                 self._environment_provider.clear()
+            if self._base_provider is not None:
+                self._base_provider.clear()
             if shiboken6.isValid(self._weather):
                 self._weather.setVisible(False)
 

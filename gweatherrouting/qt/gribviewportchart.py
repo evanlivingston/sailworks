@@ -511,7 +511,7 @@ class ViewportChartLayer:
     def enc_status(self):
         """The ENC source's own status text, for the scene."""
         with self._condition:
-            if not self._enc_enabled:
+            if not self._enc_enabled or self._enc_state == "disabled":
                 return ""
             published = self._enc_metadata or {}
             if self._enc_state == "loading":
@@ -520,7 +520,7 @@ class ViewportChartLayer:
                     if published.get("state") == "ready"
                     else "ENC loading…"
                 )
-            if self._enc_state in ("coverage_miss", "disabled"):
+            if self._enc_state == "coverage_miss":
                 return published.get("reason") or "No ENC coverage here"
             if self._enc_state == "unavailable":
                 return "ENC unavailable"

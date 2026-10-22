@@ -20,6 +20,12 @@ Item {
     // The ENC source's own state, in the scene's own words.  An empty
     // string means there is nothing to report.
     property string encStatus: ""
+    // Embedded use supplies the world/raster base here. It must not depend
+    // on QWidget parent pixels showing through the Quick host.
+    ChartLayer {
+        objectName: "baseLayer"
+        anchors.fill: parent
+    }
     ChartLayer {
         id: chart
         objectName: "chartLayer"

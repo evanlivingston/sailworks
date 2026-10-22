@@ -61,6 +61,33 @@ def test_chart_child_is_disposed_not_weather_only_replaced(presenter):
     presenter.canvas._invalidate_base.assert_called_once()
 
 
+def test_app_supplies_basemap_inside_quick_before_weather(presenter):
+    canvas = presenter.canvas
+    settings = canvas.controller.settings
+    settings.gribBarbDensity, settings.gribArrowOpacity = "standard", 1
+    canvas._center_lat, canvas._center_lon, canvas._zoom = 48.4, -123.4, 9
+    canvas.time_control = SimpleNamespace(time=datetime(2026, 10, 22))
+    canvas.wind_visible = True
+    canvas._base_key = Mock(return_value="base")
+    canvas._base_cache = canvas._environment_cache = None
+    canvas._base_image, canvas._environment_image = Mock(), Mock()
+    base, environment = object(), object()
+    base_target, environment_target = object(), object()
+    base_cache, environment_cache = (None,) * 4 + (base,), (None,) * 4 + (environment,)
+    canvas._resolve_reusable_layer = Mock(
+        side_effect=[(base_cache, base_target), (environment_cache, environment_target)]
+    )
+    widget = Mock(_chart_palette="dark")
+    presenter.widget, presenter.foreground = widget, Mock()
+    presenter._sync_active(None)
+    widget.set_base.assert_called_once_with(base, base_target)
+    widget.set_environment.assert_called_once_with(environment, environment_target)
+    assert canvas._base_cache is base_cache
+    assert canvas._environment_cache is environment_cache
+    calls = [entry[0] for entry in widget.mock_calls]
+    assert calls.index("set_base") < calls.index("set_environment")
+
+
 def test_legacy_recovery_disables_both_viewport_weather_and_enc(presenter):
     presenter.widget = Mock()
     presenter.canvas.controller.settings.get = lambda key, default=None: "legacy"

@@ -50,6 +50,7 @@ class ChartCollection:
         self.charts: List[ChartLayer] = []
         self.gshhsLayer: Optional[GSHHSVectorChart] = None
         self.osmLayer: Optional[GDALVectorChart] = None
+        self.basemap_error = ""
         self.settings_manager: SettingsManager = settings_manager
         self.maps: List = []
         self._chart_surfaces: WeakKeyDictionary[
@@ -109,7 +110,10 @@ class ChartCollection:
             m.map_redraw_idle()
 
     def _load_base_gshhs(self):
-        if self.gshhsLayer is not None or not os.path.exists(DATA_DIR + "/gshhs"):
+        if self.gshhsLayer is not None:
+            return
+        if not os.path.exists(DATA_DIR + "/gshhs"):
+            self.basemap_error = "World coastlines not installed"
             return
         try:
             chart = GSHHSVectorChart(DATA_DIR + "/gshhs", self.settings_manager)
@@ -117,7 +121,9 @@ class ChartCollection:
                 raise ValueError("Installed coastline data is incomplete")
             self.gshhsLayer = chart
             self.charts.insert(0, chart)
+            self.basemap_error = ""
         except Exception as error:
+            self.basemap_error = "Unable to load world coastlines: " + str(error)
             logger.warning("Unable to load base coastlines: %s", error)
 
     def _load_base_osm(self):
@@ -136,7 +142,43 @@ class ChartCollection:
         self._load_base_osm()
         fallback = resource_path("gweatherrouting", "data/countries.geojson")
         if self.gshhsLayer is None and not any(c.path == fallback for c in self.charts):
-            self.charts.insert(0, GDALVectorChart(fallback, self.settings_manager))
+            try:
+                self.charts.insert(0, GDALVectorChart(fallback, self.settings_manager))
+            except Exception as error:
+                self.basemap_error += "; bundled world map unavailable: " + str(error)
+                logger.warning("Unable to load bundled world map: %s", error)
+
+    def basemap_status(self, canvas):
+        """Explain missing data and worker recovery in the application's map UI."""
+        if not self.settings_manager.get("chartWorldVisible", True):
+            return "World basemap hidden"
+        if self.basemap_error:
+            fallback = resource_path("gweatherrouting", "data/countries.geojson")
+            detail = (
+                " — using bundled low-detail map"
+                if any(c.path == fallback and c.enabled for c in self.charts)
+                else " — world basemap unavailable"
+            )
+            return (
+                self.basemap_error
+                + detail
+                + ". See Data Library → Charts → Downloads & base maps."
+            )
+        renderer = getattr(canvas, "_base_chart_renderer", None)
+        if renderer is not None:
+            if renderer.last_error:
+                return (
+                    "World basemap worker failed; legacy recovery: "
+                    + renderer.last_error
+                )
+            state = renderer._states.get(canvas)
+            if (
+                state is not None
+                and state.frame is None
+                and state.requested is not None
+            ):
+                return "World basemap loading…"
+        return ""
 
     def reload_base_chart(self):
         """Attach newly installed base data without replacing existing chart objects."""
