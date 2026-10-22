@@ -1,9 +1,12 @@
 """Small, headless regression checks for the native acceptance helpers."""
 
 import importlib.util
+import math
 from pathlib import Path
+from unittest.mock import Mock
 
 import numpy as np
+from PySide6.QtCore import QPoint, QPointF, Qt
 from types import SimpleNamespace
 
 from gweatherrouting.qt.gribviewport import _viewport_widget_class
@@ -60,6 +63,180 @@ def test_default_viewport_still_hides_weather_scene_on_miss():
     assert not scene.visible
 
 
+def test_desktop_native_pinch_zooms_the_viewport_at_the_gesture_anchor():
+    method = _viewport_widget_class()._native_gesture_event
+    widget = SimpleNamespace(_native_gesture_active=False, zoom_at=Mock())
+
+    class Gesture:
+        def gestureType(self):
+            return Qt.NativeGestureType.ZoomNativeGesture
+
+        def value(self):
+            return 0.3
+
+        def position(self):
+            return QPointF(123, 234)
+
+        def accept(self):
+            self.accepted = True
+
+    event = Gesture()
+    assert method(widget, event)
+    assert widget._native_gesture_active
+    widget.zoom_at.assert_called_once_with(math.log2(1.3), 123, 234)
+    assert event.accepted
+
+
+def test_desktop_native_gesture_end_clears_viewport_gesture_state():
+    method = _viewport_widget_class()._native_gesture_event
+    widget = SimpleNamespace(_native_gesture_active=True)
+
+    class Gesture:
+        def gestureType(self):
+            return Qt.NativeGestureType.EndNativeGesture
+
+        def accept(self):
+            self.accepted = True
+
+    event = Gesture()
+    assert method(widget, event)
+    assert not widget._native_gesture_active
+    assert event.accepted
+
+
+def test_desktop_precise_scroll_pans_the_viewport_camera():
+    method = _viewport_widget_class()._handle_desktop_wheel
+    widget = SimpleNamespace(
+        _native_gesture_active=False,
+        _wheel_zoom_tick=Mock(),
+        _wheel_zoom_settle=Mock(),
+        _wheel_scroll_settle=Mock(),
+        _wheel_zoom_target=9.0,
+        _wheel_zoom_anchor=(10, 10, 1, 2),
+        _wheel_trackpad_panning=False,
+        pan_pixels=Mock(),
+    )
+
+    class Scroll:
+        def phase(self):
+            return Qt.ScrollPhase.ScrollUpdate
+
+        def pixelDelta(self):
+            return QPoint(12, -7)
+
+        def modifiers(self):
+            return Qt.KeyboardModifier.NoModifier
+
+        def accept(self):
+            self.accepted = True
+
+    event = Scroll()
+    method(widget, event)
+
+    widget.pan_pixels.assert_called_once_with(12, -7)
+    assert widget._wheel_trackpad_panning
+    assert widget._wheel_zoom_target is None
+    assert widget._wheel_zoom_anchor is None
+    assert event.accepted
+
+
+def test_desktop_mouse_wheel_zoom_keeps_the_pointer_anchor():
+    from datetime import datetime
+
+    from gweatherrouting.qt.gribviewport import ViewportCamera
+
+    method = _viewport_widget_class()._handle_desktop_wheel
+    camera = ViewportCamera(48.45, -124.29, 9.0, 710, 743, datetime(2026, 10, 22))
+    zoom_tick = Mock()
+    zoom_tick.isActive.return_value = False
+    widget = SimpleNamespace(
+        _camera=camera,
+        _native_gesture_active=False,
+        _wheel_zoom_tick=zoom_tick,
+        _wheel_zoom_settle=Mock(),
+        _wheel_scroll_settle=Mock(),
+        _wheel_zoom_target=None,
+        _wheel_zoom_anchor=None,
+        _wheel_trackpad_panning=False,
+        _smooth_zoom=False,
+        set_camera=Mock(),
+    )
+    widget._set_zoom_around = lambda zoom, x, y, anchor=None: (
+        _viewport_widget_class()._set_zoom_around(widget, zoom, x, y, anchor)
+    )
+    widget._finish_wheel_zoom = lambda: _viewport_widget_class()._finish_wheel_zoom(
+        widget
+    )
+
+    class Wheel:
+        def phase(self):
+            return Qt.ScrollPhase.NoScrollPhase
+
+        def pixelDelta(self):
+            return QPoint()
+
+        def angleDelta(self):
+            return QPoint(0, 120)
+
+        def modifiers(self):
+            return Qt.KeyboardModifier.NoModifier
+
+        def position(self):
+            return QPointF(123, 234)
+
+        def accept(self):
+            self.accepted = True
+
+    event = Wheel()
+    view = camera.view()
+    anchor = (
+        view._y_to_lat(view._lat_to_y(camera.center_lat) + 234 - camera.height / 2),
+        view._x_to_lon(view._lon_to_x(camera.center_lon) + 123 - camera.width / 2),
+    )
+    method(widget, event)
+
+    updated = widget.set_camera.call_args.args[0]
+    updated_view = updated.view()
+    assert updated.zoom == camera.zoom + 0.25
+    assert (
+        abs(
+            updated_view._lat_to_y(anchor[0])
+            - updated_view._lat_to_y(updated.center_lat)
+            - 234
+            + camera.height / 2
+        )
+        < 1e-8
+    )
+    assert (
+        abs(
+            updated_view._lon_to_x(anchor[1])
+            - updated_view._lon_to_x(updated.center_lon)
+            - 123
+            + camera.width / 2
+        )
+        < 1e-8
+    )
+    assert event.accepted
+
+
+def test_world_chart_scene_stays_visible_when_weather_is_unavailable():
+    scene = SimpleNamespace(visible=True)
+    scene.setVisible = lambda visible: setattr(scene, "visible", visible)
+    barbs = SimpleNamespace(visible=True)
+    barbs.setVisible = lambda visible: setattr(barbs, "visible", visible)
+    widget = SimpleNamespace(
+        _chart_layer=True,
+        _weather=scene,
+        _barbs=barbs,
+        _fill=None,
+    )
+
+    _viewport_widget_class()._set_weather_visible(widget, False)
+
+    assert scene.visible
+    assert not barbs.visible
+
+
 def test_initial_weather_miss_does_not_block_enc_request():
     requests = []
     widget = SimpleNamespace(
@@ -77,6 +254,25 @@ def test_initial_weather_miss_does_not_block_enc_request():
     assert requests == ["camera"]
     widget._model.busy = lambda: True
     method(widget)
+    assert requests == ["camera"]
+
+
+def test_world_basemap_request_does_not_wait_for_weather():
+    requests = []
+    widget = SimpleNamespace(
+        _chart_model=SimpleNamespace(request=requests.append),
+        _camera="camera",
+        _weather_ready_at=None,
+        _chart_without_weather=True,
+        _enc_chart_layer=False,
+        _model=SimpleNamespace(state="loading", busy=lambda: False),
+        _chart_camera_changed=0,
+        counters={"chart_requests": 0},
+        _chart_state_now=lambda: {},
+    )
+
+    _viewport_widget_class()._request_chart(widget)
+
     assert requests == ["camera"]
 
 

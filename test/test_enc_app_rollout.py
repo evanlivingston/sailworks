@@ -1,7 +1,7 @@
 """Application wiring regressions; native presentation is gated separately."""
 
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 from datetime import datetime
 from threading import Event
 from threading import Condition
@@ -47,6 +47,24 @@ def test_app_constructs_enc_only_viewport_by_default(presenter, monkeypatch):
     assert kwargs["chart_layer"] and kwargs["enc_chart_layer"] and kwargs["enc_only"]
     assert kwargs["chart_palette"] == "dark"
     assert presenter.enc_active
+
+
+def test_desktop_map_uses_world_chart_layer_without_enc(presenter, monkeypatch):
+    presenter.canvas._desktop_viewport = True
+    factory = Mock()
+    widget = Mock()
+    widget.quickWindow.return_value.afterRendering = Mock()
+    monkeypatch.setattr(weatherpresenter, "_viewport_widget_class", lambda: factory)
+    monkeypatch.setattr(weatherpresenter, "WeatherForeground", Mock())
+    monkeypatch.setattr(presenter, "_model", lambda _source: Mock())
+
+    presenter._create(None)
+
+    kwargs = factory.call_args.kwargs
+    assert kwargs["chart_layer"]
+    assert not kwargs["enc_chart_layer"]
+    assert kwargs["chart_without_weather"]
+    assert not kwargs["enc_only"]
 
 
 def test_chart_child_is_disposed_not_weather_only_replaced(presenter):
@@ -139,6 +157,38 @@ def test_panning_keeps_the_retained_chart_while_zoom_or_time_clear_it():
     assert not chart_withdrawn_on_camera_change(base, view(zoom=10.0), False)
 
 
+def test_chart_placement_scales_the_retained_zoom_preview_about_its_center():
+    from datetime import datetime as _datetime
+
+    from gweatherrouting.core.mapviewport import MapViewport
+    from gweatherrouting.qt.gribviewport import ViewportCamera
+    from gweatherrouting.qt.gribviewportchart import (
+        CHART_SETTLE_MS,
+        ChartCamera,
+        chart_placement,
+    )
+    from gweatherrouting.rendering.overlayrenderer import MARGIN
+
+    camera = ViewportCamera(48.45, -124.29, 9.38, 710, 743, _datetime(2026, 10, 22))
+    composed = MapViewport(ChartCamera(camera), MARGIN, lambda: None)
+    zoomed = ViewportCamera(
+        camera.center_lat,
+        camera.center_lon,
+        camera.zoom + 1,
+        camera.width,
+        camera.height,
+        camera.time,
+    )
+
+    x, y, width, height = chart_placement(composed, zoomed)
+
+    assert CHART_SETTLE_MS == 500
+    assert width == composed.width * 2
+    assert height == composed.height * 2
+    assert x + width / 2 == camera.width / 2
+    assert y + height / 2 == camera.height / 2
+
+
 def test_app_image_provider_namespace_matches_its_registration(presenter):
     from gweatherrouting.qt.gribviewportchart import chart_image_provider
 
@@ -210,3 +260,255 @@ def test_rollout_readiness_rejects_a_previous_application_camera():
     canvas._zoom = 14
     widget._environment_key = 6
     assert not module.current_application_view(canvas, widget)
+
+
+def test_basemap_gate_checks_the_displayed_chart_not_legacy_cache():
+    import sys
+
+    from PySide6.QtCore import QUrl
+    from gweatherrouting.qt.gribviewport import ViewportCamera
+    from gweatherrouting.qt.gribviewportchart import chart_placement, ChartCamera
+    from gweatherrouting.core.mapviewport import MapViewport
+    from gweatherrouting.rendering.overlayrenderer import MARGIN
+
+    path = Path(__file__).resolve().parents[1] / "tools/check_desktop_basemap.py"
+    sys.path.insert(0, str(path.parent))
+    try:
+        spec = importlib.util.spec_from_file_location("basemap_gate", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.pop(0)
+    clock = datetime(2026, 10, 22)
+    camera = ViewportCamera(48.45, -124.29, 9.38, 710, 743, clock)
+    viewport = MapViewport(ChartCamera(camera), MARGIN, lambda: None)
+    properties = dict(
+        zip(
+            ("imageX", "imageY", "imageWidth", "imageHeight"),
+            chart_placement(viewport, camera),
+        )
+    )
+    properties.update(ready=True, source=QUrl("image://chart/3"))
+    widget = SimpleNamespace(
+        _camera=camera,
+        _chart_viewport=viewport,
+        _chart=SimpleNamespace(isVisible=lambda: True, property=properties.get),
+        _chart_model=SimpleNamespace(
+            state="ready",
+            _published=(3, None, {"viewport": viewport}),
+            _reusable=lambda camera: True,
+        ),
+    )
+    canvas = SimpleNamespace(
+        _center_lat=48.45,
+        _center_lon=-124.29,
+        _zoom=9.38,
+        width=lambda: 710,
+        height=lambda: 743,
+        time_control=SimpleNamespace(time=clock),
+        _weather_presenter=SimpleNamespace(widget=widget, _rendered=True),
+    )
+    # No legacy cache/renderer exists in this fixture.
+    assert module.current_chart(canvas)
+    canvas._zoom += 0.25
+    assert not module.current_chart(canvas)
+    canvas._zoom = camera.zoom
+    properties["source"] = QUrl("image://chart/2")
+    assert not module.current_chart(canvas)
+    properties["source"] = QUrl("image://chart/3")
+    properties["imageWidth"] += 1
+    assert not module.current_chart(canvas)
+    properties["imageWidth"] -= 1
+    widget._chart_model._reusable = lambda camera: False
+    assert not module.current_chart(canvas)
+
+
+def test_viewport_camera_handoff_is_encapsulated_by_the_map_host():
+    from gweatherrouting.qt.viewportmap import ViewportMap
+
+    changed = Mock()
+    foreground = SimpleNamespace(update=Mock())
+    host = SimpleNamespace(
+        _center_lat=48.0,
+        _center_lon=-123.0,
+        _zoom=8.0,
+        _cancel_cursor=Mock(),
+        invalidate_navigation=Mock(),
+        view_changed=SimpleNamespace(emit=changed),
+        _weather_presenter=SimpleNamespace(foreground=foreground),
+    )
+    camera = SimpleNamespace(center_lat=48.45, center_lon=-124.29, zoom=9.38)
+
+    assert ViewportMap.adopt_viewport_camera(host, camera)
+    assert (host._center_lat, host._center_lon, host._zoom) == (
+        camera.center_lat,
+        camera.center_lon,
+        camera.zoom,
+    )
+    host._cancel_cursor.assert_called_once_with()
+    host.invalidate_navigation.assert_called_once_with()
+    changed.assert_called_once_with()
+    foreground.update.assert_called_once_with()
+
+    assert not ViewportMap.adopt_viewport_camera(host, camera)
+    assert changed.call_count == 1
+
+
+def test_map_host_translates_app_state_to_the_viewport_camera_contract():
+    from gweatherrouting.qt.gribviewport import ViewportCamera
+    from gweatherrouting.qt.viewportmap import ViewportMap
+
+    instant = datetime(2026, 10, 22, 12)
+    host = SimpleNamespace(
+        _center_lat=48.45,
+        _center_lon=-124.29,
+        _zoom=9.38,
+        width=lambda: 710,
+        height=lambda: 743,
+        time_control=SimpleNamespace(time=instant),
+        controller=SimpleNamespace(settings=SimpleNamespace(gribBarbDensity="dense")),
+    )
+
+    assert ViewportMap.requested_viewport_camera(host) == ViewportCamera(
+        48.45,
+        -124.29,
+        9.38,
+        710,
+        743,
+        instant,
+        "dense",
+        True,
+    )
+
+
+def test_map_host_publishes_existing_routes_to_the_viewport_overlay_layer():
+    from gweatherrouting.qt.viewportmap import ViewportMap
+
+    class Route:
+        visible = True
+        points = ((48.4, -124.3), (48.5, -124.2))
+
+        def __len__(self):
+            return len(self.points)
+
+    active_route = Route()
+    host = SimpleNamespace(
+        controller=SimpleNamespace(
+            chart_errors=(),
+            core=SimpleNamespace(
+                routingManager=SimpleNamespace(get_by_name=lambda name: active_route)
+            ),
+        ),
+        navigation=SimpleNamespace(hl_routing="selected route"),
+        selected_route_point=1,
+        route_plan=((48.1, -124.1), (48.2, -124.0)),
+        route_preview=((48.3, -124.3), (48.4, -124.2)),
+        points=(
+            SimpleNamespace(lat=48.0, lon=-124.0),
+            SimpleNamespace(lat=48.1, lon=-124.1),
+            SimpleNamespace(lat=48.2, lon=-124.2),
+        ),
+        offsets=(0, 10, 20),
+        position=15,
+        _MAX_TRACK_POLYLINE=1500,
+        move_callback=None,
+        dashboard_visible=True,
+    )
+
+    assert ViewportMap.viewport_route_overlay(host) == {
+        "route_plan": [[48.1, -124.1], [48.2, -124.0]],
+        "route_preview": [[48.3, -124.3], [48.4, -124.2]],
+        "selected_point": [48.5, -124.2],
+        "track_points": [[48.0, -124.0], [48.1, -124.1], [48.2, -124.2]],
+        "track_position": [48.1, -124.1],
+        "caption": "",
+        "dashboard_visible": True,
+    }
+
+
+def test_route_overlay_is_drawn_above_weather_in_the_viewport_scene():
+    import gweatherrouting.qt.gribviewport as viewport_module
+
+    scene = (
+        Path(viewport_module.__file__).parent / "shaders" / "ViewportChartScene.qml"
+    ).read_text()
+    assert scene.index('objectName: "weatherBarbs"') < scene.index(
+        'objectName: "navigationOverlay"'
+    )
+    assert scene.index('objectName: "navigationOverlay"') < scene.index(
+        'objectName: "routeOverlay"'
+    )
+    assert scene.index('objectName: "routeOverlay"') < scene.index(
+        'objectName: "dashboardOverlay"'
+    )
+    assert "drawRoute(context, routePlan" in scene
+    assert "drawRoute(context, routePreview" in scene
+    assert "trackPoints" in scene
+    assert "trackPosition" in scene
+
+
+def test_viewport_publishes_retained_navigation_images_without_reupload():
+    from PySide6.QtCore import QRectF, QUrl
+    from PySide6.QtGui import QImage
+    from gweatherrouting.qt.gribviewport import _viewport_widget_class
+
+    provider = SimpleNamespace(publish=Mock(return_value="image://navigation/4"))
+    item = SimpleNamespace(setProperty=Mock())
+    viewport = SimpleNamespace(
+        _navigation_overlay=item,
+        _navigation_provider=provider,
+        _navigation_key=None,
+    )
+    image = QImage(20, 10, QImage.Format.Format_ARGB32_Premultiplied)
+    target = QRectF(-5, -7, 30, 24)
+    method = _viewport_widget_class().set_navigation_overlay
+
+    method(viewport, image, target)
+    provider.publish.assert_called_once_with(image.cacheKey(), image)
+    assert item.setProperty.call_args_list[0].args == (
+        "source",
+        QUrl("image://navigation/4"),
+    )
+    assert item.setProperty.call_args_list[-4:] == [
+        call("imageX", target.x()),
+        call("imageY", target.y()),
+        call("imageWidth", target.width()),
+        call("imageHeight", target.height()),
+    ]
+
+    method(viewport, image, target)
+    assert provider.publish.call_count == 1
+
+
+def test_viewport_dashboard_layer_publishes_and_clears_the_cached_image():
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QImage
+    from gweatherrouting.qt.gribviewport import _viewport_widget_class
+
+    provider = SimpleNamespace(publish=Mock(return_value="image://dashboard/9"))
+    item = SimpleNamespace(setProperty=Mock())
+    viewport = SimpleNamespace(
+        _dashboard_overlay=item,
+        _dashboard_provider=provider,
+        _dashboard_key=None,
+        width=lambda: 800,
+        height=lambda: 600,
+    )
+    image = QImage(800, 600, QImage.Format.Format_ARGB32_Premultiplied)
+    method = _viewport_widget_class().set_dashboard_overlay
+
+    method(viewport, image)
+    provider.publish.assert_called_once_with(image.cacheKey(), image)
+    assert item.setProperty.call_args_list[0] == call(
+        "source", QUrl("image://dashboard/9")
+    )
+    assert item.setProperty.call_args_list[-4:] == [
+        call("imageX", 0),
+        call("imageY", 0),
+        call("imageWidth", 800),
+        call("imageHeight", 600),
+    ]
+
+    method(viewport, None)
+    assert item.setProperty.call_args == call("source", QUrl(""))
+    assert viewport._dashboard_key is None
