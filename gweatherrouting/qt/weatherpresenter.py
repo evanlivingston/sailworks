@@ -246,7 +246,7 @@ class WeatherPresenter(QObject):
             return
         self._label()
 
-    def _label(self):
+    def _label(self):  # noqa: C901 - status composition spans independent fallbacks
         if self.closed:
             return
         selection = self.canvas.controller.display_forecast
@@ -306,7 +306,7 @@ class WeatherPresenter(QObject):
             foreground.deleteLater()
         self.canvas._invalidate_base()
 
-    def _sync_active(self, source):
+    def _sync_active(self, source):  # noqa: C901 - host configuration is explicit
         if self.widget is not None and (
             self.widget._chart_palette != self.canvas.controller.settings.chartPalette
         ):

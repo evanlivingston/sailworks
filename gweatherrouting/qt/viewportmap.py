@@ -43,7 +43,7 @@ class ViewportMap(TrackMap):
         presenter = self._weather_presenter
         if presenter is not None and presenter.foreground is not None:
             presenter.foreground.update()
-        if presenter is not None and getattr(presenter, "widget", None) is not None:
+        if presenter is not None and presenter.widget is not None:
             presenter.widget.set_route_overlay(self.viewport_route_overlay())
         return True
 

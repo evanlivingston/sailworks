@@ -1803,6 +1803,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
 
         def _bind_native_layer(self, role, identity, images):
             item = self._barbs if role == "barbs" else self._fill
+            if item is None:
+                raise RuntimeError(f"Viewport has no native {role} layer")
             context = self._native_contexts[role]
             if self._native_bindings.get(role) == identity and context.ready:
                 return
@@ -2213,7 +2215,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 if abs(remaining) < 0.004
                 else self._camera.zoom + remaining * fraction
             )
-            x, y, anchor_lat, anchor_lon = self._wheel_zoom_anchor
+            anchor = self._wheel_zoom_anchor
+            if anchor is None:
+                self._wheel_zoom_tick.stop()
+                return
+            x, y, anchor_lat, anchor_lon = anchor
             self._set_zoom_around(zoom, x, y, (anchor_lat, anchor_lon))
             if zoom == self._wheel_zoom_target:
                 self._wheel_zoom_tick.stop()
@@ -2483,7 +2489,10 @@ def main(argv=None):
         "--native-weather-fields",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Retain native field textures (default: on); --no-native-weather-fields restores Image sources",
+        help=(
+            "Retain native field textures (default: on); "
+            "--no-native-weather-fields restores Image sources"
+        ),
     )
     parser.add_argument(
         "--screen-barbs",

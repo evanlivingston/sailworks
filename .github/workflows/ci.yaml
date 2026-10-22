@@ -34,7 +34,7 @@ jobs:
       run: pip install .
 
   build-latest:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     strategy:
       matrix:
@@ -58,7 +58,7 @@ jobs:
       run: pip install .
 
   linters:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
     - name: Checkout
@@ -76,7 +76,7 @@ jobs:
       run: tox -e linters
 
   typecheck:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
     - name: Checkout
@@ -94,7 +94,7 @@ jobs:
       run: tox -e typecheck
 
   tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     strategy:
       matrix:

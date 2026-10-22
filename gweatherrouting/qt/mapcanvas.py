@@ -194,7 +194,8 @@ class TrackMap(QWidget, MercatorProjection):
         self.wind.forget(self)
         self._base_cache = None
         self.weather_coverage.key = None
-        self._weather_presenter.source_changed()
+        if self._weather_presenter is not None:
+            self._weather_presenter.source_changed()
         # Apply the selected forecast's geographic extents and time bounds
         sources = self.controller.display_forecast.sources()
         if sources:
@@ -1307,7 +1308,10 @@ class TrackMap(QWidget, MercatorProjection):
                 self._base_cache[4],
             )
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        if not self._weather_presenter.active:
+        if (
+            self._weather_presenter is None
+            or not self._weather_presenter.active
+        ):
             self._paint_wind_barbs(painter)
             self._paint_foreground(painter)
         painter.end()
@@ -1321,7 +1325,7 @@ class TrackMap(QWidget, MercatorProjection):
             and presenter is not None
             and presenter.active
         )
-        if viewport_overlay and presenter.widget is not None:
+        if viewport_overlay and presenter is not None and presenter.widget is not None:
             self._nav_cache, target = self._resolve_reusable_layer(
                 self._nav_cache, self._nav_key(), self._navigation_image
             )
