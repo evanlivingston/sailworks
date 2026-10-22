@@ -5,7 +5,7 @@
 > [ADR-001](../adr-001-grib-rendering-architecture.md) D1-D3 and issues #64-#66.
 > Evidence, not a plan.
 
-2026-10-18; [plan entry](../rendering-performance-plan.md#e2d-contract-disposable-full-app-persistent-field--atomic-symbol-control).
+2026-10-18; [plan entry](rendering-experiment-records.md#e2d-contract-disposable-full-app-persistent-field--atomic-symbol-control).
 
 ## Decision: promising interaction evidence, lifecycle gate failed
 

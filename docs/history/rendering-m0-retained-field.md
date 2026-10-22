@@ -4,7 +4,7 @@
 > Superseded by [ADR-001](../adr-001-grib-rendering-architecture.md) D1-D3 and issues
 > #64-#66. Evidence, not a plan.
 
-2026-10-18; [plan experiment index](../rendering-performance-plan.md#experiment-contracts-and-results-b1-e1-e3),
+2026-10-18; [plan experiment index](rendering-experiment-records.md#experiment-contracts-and-results-b1-e1-e3),
 [epic #51](https://github.com/evanlivingston/gweatherrouting/issues/51).
 
 ## Review decision
