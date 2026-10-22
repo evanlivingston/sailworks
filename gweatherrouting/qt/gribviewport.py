@@ -1275,6 +1275,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             native_weather_fields=None,
             native_weather_budget=None,
             enc_chart_layer=False,
+            chart_without_weather=False,
             chart_palette=CHART_PALETTE,
             enc_only=False,
         ):
@@ -1285,10 +1286,27 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._wind_opacity = 1.0
             self._camera = None
             self._drag = None
+            self._wheel_zoom_target = None
+            self._wheel_zoom_anchor = None
+            self._wheel_zoom_last_tick = None
+            self._wheel_trackpad_panning = False
+            self._smooth_zoom = True
+            self._wheel_zoom_tick = QTimer(self)
+            self._wheel_zoom_tick.setInterval(16)
+            self._wheel_zoom_tick.timeout.connect(self._advance_wheel_zoom)
+            self._wheel_zoom_settle = QTimer(self)
+            self._wheel_zoom_settle.setSingleShot(True)
+            self._wheel_zoom_settle.timeout.connect(self._finish_wheel_zoom)
+            self._wheel_scroll_settle = QTimer(self)
+            self._wheel_scroll_settle.setSingleShot(True)
+            self._wheel_scroll_settle.timeout.connect(
+                lambda: setattr(self, "_wheel_trackpad_panning", False)
+            )
             self._state = "loading"
             self._presentation_spans = []
             self._gpu_weather_fill = bool(gpu_weather_fill)
             self._chart_layer = bool(chart_layer)
+            self._chart_without_weather = bool(chart_without_weather)
             from .gpuweathertextures import native_weather_fields_enabled
 
             self._native_weather_fields = native_weather_fields_enabled(
@@ -1317,8 +1335,15 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._provider = WeatherImageProvider()
             self.engine().addImageProvider("weather", self._provider)
             self._chart_provider = None
+            self._navigation_provider = None
+            self._dashboard_provider = None
             self._chart_model = None
             self._chart = None
+            self._route_overlay = None
+            self._navigation_overlay = None
+            self._navigation_key = None
+            self._dashboard_overlay = None
+            self._dashboard_key = None
             self._chart_state = "disabled"
             self._chart_viewport = None
             self._chart_camera = None
@@ -1333,6 +1358,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             if self._chart_layer:
                 self._chart_provider = chart_image_provider()
                 self.engine().addImageProvider("chart", self._chart_provider)
+                self._navigation_provider = chart_image_provider("navigation")
+                self.engine().addImageProvider("navigation", self._navigation_provider)
+                self._dashboard_provider = chart_image_provider("dashboard")
+                self.engine().addImageProvider("dashboard", self._dashboard_provider)
             shaders = Path(__file__).parent / "shaders"
             if self._chart_layer:
                 source = shaders / "ViewportChartScene.qml"
@@ -1384,10 +1413,18 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     dpr=self.devicePixelRatio(),
                     enc_only=enc_only,
                 )
+                self._route_overlay = self._weather.findChild(QObject, "routeOverlay")
+                self._navigation_overlay = self._weather.findChild(
+                    QObject, "navigationOverlay"
+                )
+                self._dashboard_overlay = self._weather.findChild(
+                    QObject, "dashboardOverlay"
+                )
                 if enc_only:
                     self._base_provider = chart_image_provider("base")
                     self.engine().addImageProvider("base", self._base_provider)
                     self._base = self._weather.findChild(QObject, "baseLayer")
+                if self._chart_layer:
                     self._environment_provider = chart_image_provider("environment")
                     self.engine().addImageProvider(
                         "environment", self._environment_provider
@@ -1598,6 +1635,66 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             ):
                 self._environment.setProperty(name, value)
 
+        def set_route_overlay(self, overlay):
+            """Present app route/preview geometry in the viewport scene."""
+            item = self._route_overlay
+            camera = self._camera
+            if item is None or camera is None:
+                return
+            for name, value in (
+                ("routePlan", overlay["route_plan"]),
+                ("routePreview", overlay["route_preview"]),
+                ("selectedPoint", overlay["selected_point"]),
+                ("trackPoints", overlay["track_points"]),
+                ("trackPosition", overlay["track_position"]),
+                ("captionText", overlay["caption"]),
+                ("dashboardVisible", overlay["dashboard_visible"]),
+                ("centerLatitude", camera.center_lat),
+                ("centerLongitude", camera.center_lon),
+                ("zoom", camera.zoom),
+            ):
+                item.setProperty(name, value)
+
+        def set_navigation_overlay(self, image, target):
+            """Present retained application navigation imagery in Quick."""
+            item = self._navigation_overlay
+            provider = self._navigation_provider
+            if item is None or provider is None:
+                return
+            key = image.cacheKey()
+            if key != self._navigation_key:
+                url = provider.publish(key, image)
+                item.setProperty("source", QUrl(url))
+                self._navigation_key = key
+            for name, value in zip(
+                ("imageX", "imageY", "imageWidth", "imageHeight"),
+                (target.x(), target.y(), target.width(), target.height()),
+            ):
+                item.setProperty(name, value)
+
+        def set_dashboard_overlay(self, image):
+            """Present the app's retained instrument dashboard in Quick."""
+            item = self._dashboard_overlay
+            provider = self._dashboard_provider
+            if item is None or provider is None:
+                return
+            if image is None:
+                item.setProperty("source", QUrl(""))
+                self._dashboard_key = None
+                return
+            key = image.cacheKey()
+            if key != self._dashboard_key:
+                url = provider.publish(key, image)
+                item.setProperty("source", QUrl(url))
+                self._dashboard_key = key
+            for name, value in (
+                ("imageX", 0),
+                ("imageY", 0),
+                ("imageWidth", self.width()),
+                ("imageHeight", self.height()),
+            ):
+                item.setProperty(name, value)
+
         def _request_chart(self):
             """Ask the chart layer for its own generation.
 
@@ -1609,8 +1706,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             """
             if self._chart_model is None or self._camera is None:
                 return
-            if self._weather_ready_at is None and not (
-                self._enc_chart_layer and self._model.state == "unavailable"
+            if (
+                self._weather_ready_at is None
+                and not getattr(self, "_chart_without_weather", False)
+                and not (self._enc_chart_layer and self._model.state == "unavailable")
             ):
                 # The chart is added after the weather is presented.
                 return
@@ -1704,6 +1803,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
 
         def _bind_native_layer(self, role, identity, images):
             item = self._barbs if role == "barbs" else self._fill
+            if item is None:
+                raise RuntimeError(f"Viewport has no native {role} layer")
             context = self._native_contexts[role]
             if self._native_bindings.get(role) == identity and context.ready:
                 return
@@ -1768,6 +1869,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 return
             self._disposed = True
             self._source_generation += 1
+            self._wheel_zoom_tick.stop()
+            self._wheel_zoom_settle.stop()
+            self._wheel_scroll_settle.stop()
             for context in self._native_contexts.values():
                 context.close()
             self._clear_weather_sources()
@@ -1780,6 +1884,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._provider.clear()
             if self._chart_provider is not None:
                 self._chart_provider.clear()
+            if self._navigation_provider is not None:
+                self._navigation_provider.clear()
+            if self._dashboard_provider is not None:
+                self._dashboard_provider.clear()
             if self._environment_provider is not None:
                 self._environment_provider.clear()
             if self._base_provider is not None:
@@ -1819,8 +1927,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self.set_camera(self._camera)
 
         def _set_weather_visible(self, visible):
-            """An ENC chart remains visible even when weather has no data."""
-            if self._enc_chart_layer:
+            """Chart scenes remain visible even when weather has no data."""
+            if getattr(self, "_chart_layer", False) or getattr(
+                self, "_enc_chart_layer", False
+            ):
                 self._weather.setVisible(True)
                 self._barbs.setVisible(visible)
                 if self._fill is not None:
@@ -1847,6 +1957,16 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     if self._chart_camera != camera:
                         self._chart_camera = camera
                         self._chart_camera_changed = time.perf_counter()
+                    if (
+                        not self._enc_chart_layer
+                        and previous_chart_camera is not None
+                        and previous_chart_camera.zoom != camera.zoom
+                        and self._chart_model._published is not None
+                    ):
+                        # Show the retained image as a scaled preview while
+                        # the new native-scale composition waits for the view
+                        # to settle. The QML status makes the preview explicit.
+                        cast(QObject, self._chart).setProperty("chartLoading", True)
                     if self._enc_chart_layer and chart_withdrawn_on_camera_change(
                         previous_chart_camera,
                         camera,
@@ -2050,6 +2170,123 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 )
             )
 
+        def _set_zoom_around(self, zoom, x, y, anchor=None):
+            camera = self._camera
+            if camera is None:
+                return
+            if anchor is None:
+                view = camera.view()
+                anchor = (
+                    view._y_to_lat(
+                        view._lat_to_y(camera.center_lat) + y - camera.height / 2
+                    ),
+                    view._x_to_lon(
+                        view._lon_to_x(camera.center_lon) + x - camera.width / 2
+                    ),
+                )
+            lat, lon = anchor
+            zoomed = replace(camera, zoom=max(1.0, min(20.0, zoom)))
+            target = zoomed.view()
+            self.set_camera(
+                replace(
+                    zoomed,
+                    center_lon=target._x_to_lon(
+                        target._lon_to_x(lon) - x + camera.width / 2
+                    ),
+                    center_lat=target._y_to_lat(
+                        target._lat_to_y(lat) - y + camera.height / 2
+                    ),
+                )
+            )
+
+        def _advance_wheel_zoom(self):
+            if self._camera is None or self._wheel_zoom_target is None:
+                self._wheel_zoom_tick.stop()
+                return
+            now = time.perf_counter()
+            elapsed = min(
+                0.05, max(1.0 / 120.0, now - (self._wheel_zoom_last_tick or now))
+            )
+            self._wheel_zoom_last_tick = now
+            remaining = self._wheel_zoom_target - self._camera.zoom
+            fraction = 1.0 - math.exp(-14.0 * elapsed)
+            zoom = (
+                self._wheel_zoom_target
+                if abs(remaining) < 0.004
+                else self._camera.zoom + remaining * fraction
+            )
+            anchor = self._wheel_zoom_anchor
+            if anchor is None:
+                self._wheel_zoom_tick.stop()
+                return
+            x, y, anchor_lat, anchor_lon = anchor
+            self._set_zoom_around(zoom, x, y, (anchor_lat, anchor_lon))
+            if zoom == self._wheel_zoom_target:
+                self._wheel_zoom_tick.stop()
+                self._wheel_zoom_last_tick = None
+
+        def _finish_wheel_zoom(self):
+            if self._wheel_zoom_tick.isActive():
+                self._wheel_zoom_settle.start(250)
+                return
+            self._wheel_zoom_target = None
+            self._wheel_zoom_anchor = None
+            self._wheel_zoom_last_tick = None
+
+        def _handle_desktop_wheel(self, event):
+            if getattr(self, "_native_gesture_active", False):
+                event.accept()
+                return
+            phase = event.phase()
+            pixels = event.pixelDelta()
+            modifiers = event.modifiers()
+            if not pixels.isNull() and not modifiers & (
+                Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier
+            ):
+                self._wheel_zoom_tick.stop()
+                self._wheel_zoom_settle.stop()
+                self._wheel_zoom_target = None
+                self._wheel_zoom_anchor = None
+                self._wheel_trackpad_panning = True
+                self.pan_pixels(pixels.x(), pixels.y())
+                if phase == Qt.ScrollPhase.ScrollEnd:
+                    self._wheel_trackpad_panning = False
+                    self._wheel_scroll_settle.stop()
+                elif phase == Qt.ScrollPhase.NoScrollPhase:
+                    self._wheel_scroll_settle.start(250)
+                event.accept()
+                return
+            delta = event.angleDelta().y() / 120 or pixels.y() / 60
+            if not delta or self._camera is None:
+                event.accept()
+                return
+            position = event.position()
+            x, y = position.x(), position.y()
+            view = self._camera.view()
+            anchor = (
+                view._y_to_lat(
+                    view._lat_to_y(self._camera.center_lat)
+                    + y
+                    - self._camera.height / 2
+                ),
+                view._x_to_lon(
+                    view._lon_to_x(self._camera.center_lon) + x - self._camera.width / 2
+                ),
+            )
+            target = self._wheel_zoom_target or self._camera.zoom
+            self._wheel_zoom_target = max(1.0, min(20.0, target + delta * 0.25))
+            self._wheel_zoom_anchor = (x, y, *anchor)
+            if not self._smooth_zoom:
+                self._set_zoom_around(self._wheel_zoom_target, x, y, anchor)
+                self._finish_wheel_zoom()
+            else:
+                self._wheel_zoom_last_tick = (
+                    self._wheel_zoom_last_tick or time.perf_counter()
+                )
+                self._wheel_zoom_tick.start()
+                self._wheel_zoom_settle.start(250)
+            event.accept()
+
         def zoom_at(self, steps, x=None, y=None):
             if self._camera is None:
                 return
@@ -2088,6 +2325,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._adopt_device_pixel_ratio()
 
         def event(self, event):
+            if (
+                getattr(self, "_chart_without_weather", False)
+                and event.type() == QEvent.Type.NativeGesture
+            ):
+                return self._native_gesture_event(event)
             result = super().event(event)
             if event.type() == QEvent.Type.DevicePixelRatioChange:
                 # The display's ratio changed: the composition was made at
@@ -2096,6 +2338,25 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 # the new ratio by the time the ratio is read here.
                 self._adopt_device_pixel_ratio()
             return result
+
+        def _native_gesture_event(self, event):
+            """Own desktop trackpad pinch and update the viewport camera directly."""
+            kind = event.gestureType()
+            if kind == Qt.NativeGestureType.BeginNativeGesture:
+                self._native_gesture_active = True
+            elif kind == Qt.NativeGestureType.EndNativeGesture:
+                self._native_gesture_active = False
+            elif kind == Qt.NativeGestureType.ZoomNativeGesture:
+                scale = 1.0 + event.value()
+                if math.isfinite(scale) and scale > 0:
+                    self._native_gesture_active = True
+                    position = event.position()
+                    self.zoom_at(math.log2(scale), position.x(), position.y())
+            else:
+                # Keep the map north-up; rotation has no viewport behavior.
+                return bool(getattr(self, "_native_gesture_active", False))
+            event.accept()
+            return True
 
         def resizeEvent(self, event):  # noqa: N802 - Qt virtual method name
             super().resizeEvent(event)
@@ -2126,6 +2387,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             super().mouseReleaseEvent(event)
 
         def wheelEvent(self, event):  # noqa: N802 - Qt virtual method name
+            if self._chart_without_weather:
+                self._handle_desktop_wheel(event)
+                return
             pixels = event.pixelDelta()
             if not pixels.isNull() and not (
                 event.modifiers() & Qt.KeyboardModifier.ControlModifier
@@ -2225,7 +2489,10 @@ def main(argv=None):
         "--native-weather-fields",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Retain native field textures (default: on); --no-native-weather-fields restores Image sources",
+        help=(
+            "Retain native field textures (default: on); "
+            "--no-native-weather-fields restores Image sources"
+        ),
     )
     parser.add_argument(
         "--screen-barbs",

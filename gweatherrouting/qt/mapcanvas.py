@@ -194,7 +194,8 @@ class TrackMap(QWidget, MercatorProjection):
         self.wind.forget(self)
         self._base_cache = None
         self.weather_coverage.key = None
-        self._weather_presenter.source_changed()
+        if self._weather_presenter is not None:
+            self._weather_presenter.source_changed()
         # Apply the selected forecast's geographic extents and time bounds
         sources = self.controller.display_forecast.sources()
         if sources:
@@ -1048,6 +1049,9 @@ class TrackMap(QWidget, MercatorProjection):
         if self.disposed:
             return
         self._smooth_zoom = bool(enabled)
+        presenter = self._weather_presenter
+        if presenter is not None and presenter.widget is not None:
+            presenter.widget._smooth_zoom = self._smooth_zoom
         if not enabled and self._zoom_target is not None:
             self._zoom = self._zoom_target
             self._recenter_on_anchor()
@@ -1273,6 +1277,18 @@ class TrackMap(QWidget, MercatorProjection):
         # Expanded images must also stay inside this widget during native
         # QWidget render/grab redirection into an ancestor surface.
         painter.setClipRect(self.rect())
+        presenter = self._weather_presenter
+        if (
+            getattr(self, "_desktop_viewport", False)
+            and presenter is not None
+            and presenter.active
+        ):
+            # The independent viewport owns the visible base/weather scene.
+            # Its transparent foreground sibling paints app overlays above it;
+            # do not also bake the old map beneath the Quick scene.
+            painter.end()
+            self._check_weather_coverage()
+            return
         # Water is the fallback for unavailable chart/overlay source coverage.
         painter.fillRect(0, 0, self.width(), self.height(), self._sea_color())
         previous_base = self._base_cache
@@ -1292,7 +1308,7 @@ class TrackMap(QWidget, MercatorProjection):
                 self._base_cache[4],
             )
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        if not self._weather_presenter.active:
+        if self._weather_presenter is None or not self._weather_presenter.active:
             self._paint_wind_barbs(painter)
             self._paint_foreground(painter)
         painter.end()
@@ -1300,14 +1316,28 @@ class TrackMap(QWidget, MercatorProjection):
 
     def _paint_foreground(self, painter):
         """Complete navigation/AIS/isochrones and dynamic overlays above weather."""
-        self._nav_cache = self._draw_reusable_layer(
-            painter, self._nav_cache, self._nav_key(), self._navigation_image
+        presenter = self._weather_presenter
+        viewport_overlay = (
+            getattr(self, "_desktop_viewport", False)
+            and presenter is not None
+            and presenter.active
         )
+        if viewport_overlay and presenter is not None and presenter.widget is not None:
+            self._nav_cache, target = self._resolve_reusable_layer(
+                self._nav_cache, self._nav_key(), self._navigation_image
+            )
+            presenter.widget.set_navigation_overlay(self._nav_cache[4], target)
+        elif not viewport_overlay:
+            self._nav_cache = self._draw_reusable_layer(
+                painter, self._nav_cache, self._nav_key(), self._navigation_image
+            )
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self._paint_route_overlay(painter)
-        self._paint_track_overlay(painter)
+        if not viewport_overlay:
+            self._paint_route_overlay(painter)
+            self._paint_track_overlay(painter)
         self._paint_dashboard(painter)
-        self._paint_caption(painter)
+        if not viewport_overlay:
+            self._paint_caption(painter)
 
     def _paint_wind_barbs(self, painter):
         """Crisp fixed-size foreground barbs over the scaled base image."""
@@ -1887,10 +1917,27 @@ class TrackMap(QWidget, MercatorProjection):
 
     def _paint_dashboard(self, painter):
         if not self.dashboard_visible:
+            presenter = self._weather_presenter
+            if (
+                getattr(self, "_desktop_viewport", False)
+                and presenter is not None
+                and presenter.active
+                and presenter.widget is not None
+            ):
+                presenter.widget.set_dashboard_overlay(None)
             return
         key = self._dash_key()
         if self._dash_cache is None or self._dash_cache[0] != key:
             self._dash_cache = (key, self._dashboard_image())
+        presenter = self._weather_presenter
+        if (
+            getattr(self, "_desktop_viewport", False)
+            and presenter is not None
+            and presenter.active
+            and presenter.widget is not None
+        ):
+            presenter.widget.set_dashboard_overlay(self._dash_cache[1])
+            return
         painter.drawImage(QPointF(0, 0), self._dash_cache[1])
 
     def _paint_caption(self, painter):
@@ -2144,7 +2191,8 @@ class TrackMap(QWidget, MercatorProjection):
         surface.set_device_scale(factor, factor)
         cr = cairo.Context(surface)
         self.charts.draw_above_enc(self, cr)
-        self._draw_weather_background(cr)
+        if not getattr(self, "_desktop_viewport", False):
+            self._draw_weather_background(cr)
         self.marine.do_draw(self, cr)
         surface.flush()
         image = QImage(

@@ -34,7 +34,7 @@ from gweatherrouting.core.timecontrol import TimeControl, naive_wall_time
 from gweatherrouting.common import resource_path
 from .theme import section_label, symbol_icon, transport_icon
 from .dockchrome import style_dock, style_scrollarea
-from .mapcanvas import TrackMap
+from .viewportmap import ViewportMap
 from .routingpanel import RoutingPanel
 from .settingsdialog import SettingsDialog
 from .datalibrary import DataLibrary, FORECAST_FILTER
@@ -77,7 +77,7 @@ class PreviewWindow(QMainWindow):
         self.resize(1200, 800)
         if sys.platform == "darwin":
             self.setUnifiedTitleAndToolBarOnMac(True)
-        self.map = TrackMap(controller, self)
+        self.map = ViewportMap(controller, self)
         header = QToolBar("Workspaces", self)
         header.setObjectName("workspaces")
         self.workspace_toolbar = header
@@ -113,7 +113,7 @@ class PreviewWindow(QMainWindow):
         self.addToolBar(self.forecast_toolbar)
         self.plots = self._build_plots(controller)
         self.log_time = TimeControl()
-        self.log_map = TrackMap(controller, self, time_control=self.log_time)
+        self.log_map = ViewportMap(controller, self, time_control=self.log_time)
         self.logs_view = QSplitter(Qt.Orientation.Vertical)
         self.logs_view.addWidget(self.log_map)
         self.logs_view.addWidget(self.plots)

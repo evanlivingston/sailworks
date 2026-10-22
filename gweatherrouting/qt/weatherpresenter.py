@@ -120,10 +120,14 @@ class WeatherPresenter(QObject):
             generation = self._host_generation
             from gweatherrouting.core.storage import DATA_DIR
 
+            desktop_map = getattr(self.canvas, "_desktop_viewport", False)
             kwargs = dict(
                 chart_layer=True,
-                enc_chart_layer=True,
-                enc_only=True,
+                # The desktop map uses the viewport's world chart composition.
+                # Other TrackMap callers retain their existing ENC-only host.
+                enc_chart_layer=not desktop_map,
+                chart_without_weather=desktop_map,
+                enc_only=not desktop_map,
                 chart_data_dir=DATA_DIR,
                 chart_palette=self.canvas.controller.settings.chartPalette,
             )
@@ -133,8 +137,18 @@ class WeatherPresenter(QObject):
                     self.canvas.controller.native_weather_budget
                 )
             widget = _viewport_widget_class()(model, self.canvas, **kwargs)
-            widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            # The viewport owns pan/zoom input. The transparent foreground
+            # sibling keeps the application's navigation/route drawing above it.
+            widget.setMouseTracking(True)
+            if desktop_map:
+                widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+                widget.cameraChanged.connect(self._camera_changed)
+                widget.chartStateChanged.connect(
+                    lambda state: self._chart_state_changed(generation, state)
+                )
+            else:
+                widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+                widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             widget.installEventFilter(self)
             widget._status.hide()
             if self.native_fields:
@@ -218,7 +232,21 @@ class WeatherPresenter(QObject):
             self.widget._status.hide()
         self._label()
 
-    def _label(self):
+    def _chart_state_changed(self, generation, state):
+        if generation != self._host_generation or self.widget is None:
+            return
+        if state == "unavailable" and getattr(self.canvas, "_desktop_viewport", False):
+            chart = self.widget._chart_model
+            reason = (
+                getattr(chart, "error", "")
+                or getattr(chart, "get_basemap_status", lambda: "")()
+                or "world basemap unavailable"
+            )
+            self.fail(reason)
+            return
+        self._label()
+
+    def _label(self):  # noqa: C901 - status composition spans independent fallbacks
         if self.closed:
             return
         selection = self.canvas.controller.display_forecast
@@ -241,6 +269,14 @@ class WeatherPresenter(QObject):
         else:
             mode = "Viewport wind: " + self._state
         basemap = self.canvas.charts.basemap_status(self.canvas)
+        if getattr(self.canvas, "_desktop_viewport", False) and self.widget:
+            chart = self.widget._chart_model
+            if chart is not None:
+                basemap = chart.get_basemap_status()
+                if chart.state == "unavailable":
+                    basemap = chart.error or basemap or "World basemap unavailable"
+                elif chart.state == "loading" and not basemap:
+                    basemap = "World basemap loading…"
         self.status.setText(
             "\n".join(text for text in (selection.status, mode, basemap) if text)
         )
@@ -270,7 +306,7 @@ class WeatherPresenter(QObject):
             foreground.deleteLater()
         self.canvas._invalidate_base()
 
-    def _sync_active(self, source):
+    def _sync_active(self, source):  # noqa: C901 - host configuration is explicit
         if self.widget is not None and (
             self.widget._chart_palette != self.canvas.controller.settings.chartPalette
         ):
@@ -279,21 +315,33 @@ class WeatherPresenter(QObject):
             self._create(source)
             self._source = source
         elif source is not self._source:
-            self.widget.replace_model(self._model(source))
+            chart_model = self.widget._chart_model
+            if chart_model is not None and not chart_model._enc_only:
+                # A chart-enabled viewport binds chart/isobar composition to
+                # its forecast model. Replace it atomically on a display-source
+                # change rather than keeping a chart worker bound to old data.
+                self._drop_widget()
+                self._create(source)
+            else:
+                self.widget.replace_model(self._model(source))
             self._source = source
         widget, foreground = self.widget, self.foreground
         if widget is None or foreground is None:
             raise RuntimeError("ENC/weather viewport initialization failed")
         widget.setGeometry(self.canvas.rect())
         foreground.setGeometry(self.canvas.rect())
+        widget._smooth_zoom = getattr(self.canvas, "_smooth_zoom", True)
         widget.set_wind_opacity(
             self.canvas.controller.settings.gribArrowOpacity
             if self.canvas.wind_visible
             else 0
         )
         widget.show()
-        widget.set_camera(
-            ViewportCamera(
+        camera_request = getattr(self.canvas, "requested_viewport_camera", None)
+        camera = (
+            camera_request()
+            if camera_request is not None
+            else ViewportCamera(
                 self.canvas._center_lat,
                 self.canvas._center_lon,
                 self.canvas._zoom,
@@ -304,20 +352,27 @@ class WeatherPresenter(QObject):
                 True,
             )
         )
-        cache, target = self.canvas._resolve_reusable_layer(
-            self.canvas._base_cache,
-            self.canvas._base_key(),
-            self.canvas._base_image,
-        )
-        self.canvas._base_cache = cache
-        widget.set_base(cache[4], target)
-        cache, target = self.canvas._resolve_reusable_layer(
-            self.canvas._environment_cache,
-            self.canvas._base_key(),
-            self.canvas._environment_image,
-        )
-        self.canvas._environment_cache = cache
-        widget.set_environment(cache[4], target)
+        if widget._camera != camera:
+            widget.set_camera(camera)
+        route_overlay = getattr(self.canvas, "viewport_route_overlay", None)
+        if route_overlay is not None:
+            widget.set_route_overlay(route_overlay())
+        if not getattr(self.canvas, "_desktop_viewport", False):
+            cache, target = self.canvas._resolve_reusable_layer(
+                self.canvas._base_cache,
+                self.canvas._base_key(),
+                self.canvas._base_image,
+            )
+            self.canvas._base_cache = cache
+            widget.set_base(cache[4], target)
+        if widget._environment is not None:
+            cache, target = self.canvas._resolve_reusable_layer(
+                self.canvas._environment_cache,
+                self.canvas._base_key(),
+                self.canvas._environment_image,
+            )
+            self.canvas._environment_cache = cache
+            widget.set_environment(cache[4], target)
         if not self._rendered and not self.deadline.isActive():
             self.deadline.start()
         foreground.show()
@@ -384,16 +439,61 @@ class WeatherPresenter(QObject):
         self._label()
 
     def eventFilter(self, watched, event):  # noqa: N802
+        if watched is self.widget and event.type() == QEvent.Type.MouseMove:
+            self.canvas._hover(event.position())
+        if (
+            watched is self.widget
+            and event.type() == QEvent.Type.MouseButtonPress
+            and event.button() == Qt.MouseButton.LeftButton
+            and self.canvas.move_callback is not None
+        ):
+            position = self.canvas.convert_screen_to_geographic(
+                event.position().x(), event.position().y()
+            )
+            callback = self.canvas.move_callback
+            self.canvas.cancel_move()
+            callback(position.get_degrees())
+            return True
+        if (
+            watched is self.widget
+            and getattr(self.canvas, "_desktop_viewport", False)
+            and event.type() in (QEvent.Type.NativeGesture, QEvent.Type.Wheel)
+        ):
+            # The desktop viewport owns camera gestures. Legacy map input
+            # remains the compatibility path for its navigation overlays only.
+            return False
         if event.type() in (
             QEvent.Type.NativeGesture,
-            QEvent.Type.Wheel,
             QEvent.Type.ContextMenu,
             QEvent.Type.KeyPress,
-            QEvent.Type.KeyRelease,
         ):
             QCoreApplication.sendEvent(self.canvas, event)
             return True
         return super().eventFilter(watched, event)
+
+    def _camera_changed(self, camera):
+        """Mirror the viewport-owned camera for existing overlays and app APIs."""
+        canvas = self.canvas
+        if self.closed or canvas.disposed:
+            return
+        adopt_camera = getattr(canvas, "adopt_viewport_camera", None)
+        if adopt_camera is not None:
+            adopt_camera(camera)
+            return
+        state = (
+            camera.center_lat,
+            camera.center_lon,
+            camera.zoom,
+        )
+        previous = (canvas._center_lat, canvas._center_lon, canvas._zoom)
+        if state == previous:
+            return
+        canvas._center_lat, canvas._center_lon, canvas._zoom = state
+        canvas._cancel_cursor()
+        canvas.invalidate_navigation()
+        canvas.view_changed.emit()
+        if self.foreground is not None:
+            self.foreground.update()
 
     def close(self, *_):
         if self.closed:

@@ -149,20 +149,35 @@ def base_sources(data_dir):
 
     The description is the application's own ``BaseSource``: the worker opens
     the datasets privately and draws them with the application's drawers.
+    Includes a bundled low-detail fallback when GSHHS is absent.
     """
     from gweatherrouting.qt.basecharts import BaseSource
+    from gweatherrouting.common import resource_path
 
     path = Path(data_dir) / "gshhs"
-    if not path.is_dir():
+    if path.is_dir():
+        return (
+            BaseSource(
+                "gshhs",
+                str(path),
+                False,
+                _countries(),
+                _INITIAL_TIMES,
+                id(path),
+            ),
+        )
+    # Fallback to bundled low-detail map when GSHHS is absent
+    fallback_path = Path(resource_path("gweatherrouting", "data/countries.geojson"))
+    if not fallback_path.is_file():
         return ()
     return (
         BaseSource(
-            "gshhs",
-            str(path),
+            "simple",
+            str(fallback_path),
             False,
-            _countries(),
+            (),  # No countries for simple vector chart
             _INITIAL_TIMES,
-            id(path),
+            id(fallback_path),
         ),
     )
 
@@ -171,15 +186,25 @@ def chart_placement(viewport, camera):
     """Where the composed chart image sits for the current camera.
 
     The composition covers the camera's window with the application's own
-    margin, so a retained composition is placed by the same offset the
-    application paints it with.
+    margin. While a zoomed view is settling, scale the retained image around
+    its geographic centre as an explicitly marked preview; the settled view
+    is recomposed at native scale and replaces it.
     """
     view = camera.view()
-    x = view._lon_to_x(viewport._center_lon) - view._lon_to_x(camera.center_lon)
-    y = view._lat_to_y(viewport._center_lat) - view._lat_to_y(camera.center_lat)
-    x += camera.width / 2.0 - viewport.width / 2.0
-    y += camera.height / 2.0 - viewport.height / 2.0
-    return (x, y, viewport.width, viewport.height)
+    scale = 2.0 ** (camera.zoom - viewport._zoom)
+    center_x = (
+        view._lon_to_x(viewport._center_lon)
+        - view._lon_to_x(camera.center_lon)
+        + camera.width / 2.0
+    )
+    center_y = (
+        view._lat_to_y(viewport._center_lat)
+        - view._lat_to_y(camera.center_lat)
+        + camera.height / 2.0
+    )
+    width = viewport.width * scale
+    height = viewport.height * scale
+    return (center_x - width / 2.0, center_y - height / 2.0, width, height)
 
 
 class _ChartComposer:
@@ -331,6 +356,12 @@ class ViewportChartLayer:
             enc_cells=0,
             enc_failures=0,
         )
+        # Basemap tracking for independent usability
+        self._has_gshhs = False
+        self._has_fallback = False
+        self._basemap_available = False
+        self._basemap_error = ""
+        self._check_basemap_sources(data_dir)
 
     # ------------------------------------------------------------- state
     @property
@@ -356,6 +387,40 @@ class ViewportChartLayer:
         with self._condition:
             return dict(self._enc_metadata)
 
+    def get_basemap_status(self):
+        """Get the basemap status text for the scene.
+
+        Returns a descriptive status message about the basemap availability
+        and state, for explicit visibility when no usable basemap source loads.
+        """
+        with self._condition:
+            if not self._basemap_available:
+                return "World basemap unavailable"
+            if not self._has_gshhs and self._has_fallback:
+                return "World basemap: bundled low-detail map"
+            return ""  # Normal case: GSHHS is available
+
+    def _check_basemap_sources(self, data_dir):
+        """Check which basemap sources are available at the given data directory."""
+        from gweatherrouting.common import resource_path
+
+        gshhs_available = (Path(data_dir) / "gshhs").is_dir()
+        fallback_available = Path(
+            resource_path("gweatherrouting", "data/countries.geojson")
+        ).is_file()
+        with self._condition:
+            self._has_gshhs = gshhs_available
+            self._has_fallback = bool(fallback_available)
+            self._basemap_available = gshhs_available or bool(fallback_available)
+            if not self._basemap_available:
+                self._basemap_error = (
+                    "World coastlines not installed and fallback unavailable"
+                )
+            elif not gshhs_available and fallback_available:
+                self._basemap_error = (
+                    "Using bundled low-detail map (GSHHS not installed)"
+                )
+
     def observations(self):
         """The layer's generation evidence, for the gate."""
         with self._condition:
@@ -376,6 +441,12 @@ class ViewportChartLayer:
                 },
                 "payload_bytes": self._payload_bytes,
                 "factor": self._dpr,
+                "basemap": {
+                    "has_gshhs": self._has_gshhs,
+                    "has_fallback": self._has_fallback,
+                    "available": self._basemap_available,
+                    "error": self._basemap_error,
+                },
             }
 
     # ----------------------------------------------------------- requests
@@ -398,6 +469,11 @@ class ViewportChartLayer:
                 self._published = None
                 self._payload_bytes = 0
                 self._enc_stale = False
+            if self._basemap_sources_changed():
+                # The basemap sources changed: the retained composition
+                # may no longer be valid, so it is withdrawn.
+                self._published = None
+                self._payload_bytes = 0
             reused = self._reuse(camera, replace)
             if reused is not None:
                 return reused
@@ -491,6 +567,24 @@ class ViewportChartLayer:
         self._manifest_stamp = stamp
         return True
 
+    def _basemap_sources_changed(self):
+        """Whether the basemap sources have changed since the last request."""
+        from gweatherrouting.common import resource_path
+
+        current_gshhs = (self._data_dir / "gshhs").is_dir()
+        current_fallback = Path(
+            resource_path("gweatherrouting", "data/countries.geojson")
+        ).is_file()
+
+        with self._condition:
+            if (
+                current_gshhs == self._has_gshhs
+                and current_fallback == self._has_fallback
+            ):
+                return False
+            self._check_basemap_sources(self._data_dir)
+            return True
+
     def invalidate_sources(self):
         """Drop the worker's source metadata (GUI thread).
 
@@ -507,6 +601,8 @@ class ViewportChartLayer:
                 # The ENC that was published is not the user's ENC any more.
                 self._enc_state = "loading"
                 self._enc_metadata = {}
+            # Also recheck basemap sources
+            self._check_basemap_sources(self._data_dir)
 
     def enc_status(self):
         """The ENC source's own status text, for the scene."""

@@ -48,6 +48,142 @@ Item {
         objectName: "weatherBarbs"
         anchors.fill: parent
     }
+    ChartLayer {
+        objectName: "navigationOverlay"
+        anchors.fill: parent
+    }
+    Canvas {
+        id: routes
+        objectName: "routeOverlay"
+        anchors.fill: parent
+        property var routePlan: []
+        property var routePreview: []
+        property var selectedPoint: []
+        property var trackPoints: []
+        property var trackPosition: []
+        property string captionText: ""
+        property bool dashboardVisible: true
+        property real centerLatitude: 0
+        property real centerLongitude: 0
+        property real zoom: 1
+
+        function screenPoint(point) {
+            const world = 256 * Math.pow(2, zoom)
+            const latitude = Math.max(-85.05112878, Math.min(85.05112878, point[0]))
+            let dx = (point[1] - centerLongitude) * world / 360
+            dx -= Math.round(dx / world) * world
+            const radians = latitude * Math.PI / 180
+            const y = world * (1 - Math.asinh(Math.tan(radians)) / Math.PI) / 2
+            const centerRadians = centerLatitude * Math.PI / 180
+            const centerY = world * (1 - Math.asinh(Math.tan(centerRadians)) / Math.PI) / 2
+            return Qt.point(width / 2 + dx, height / 2 + y - centerY)
+        }
+
+        function drawRoute(context, points, color) {
+            if (!points || points.length < 2)
+                return
+            context.beginPath()
+            const first = screenPoint(points[0])
+            context.moveTo(first.x, first.y)
+            for (let i = 1; i < points.length; ++i) {
+                const point = screenPoint(points[i])
+                context.lineTo(point.x, point.y)
+            }
+            context.lineWidth = 2
+            context.strokeStyle = color
+            context.setLineDash([6, 4])
+            context.stroke()
+            context.setLineDash([])
+        }
+
+        onPaint: {
+            const context = getContext("2d")
+            context.clearRect(0, 0, width, height)
+            drawRoute(context, routePlan, "#5295d2")
+            drawRoute(context, routePreview, "#ef5a8c")
+            if (trackPoints && trackPoints.length > 1) {
+                context.beginPath()
+                const firstTrackPoint = screenPoint(trackPoints[0])
+                context.moveTo(firstTrackPoint.x, firstTrackPoint.y)
+                for (let i = 1; i < trackPoints.length; ++i) {
+                    const point = screenPoint(trackPoints[i])
+                    context.lineTo(point.x, point.y)
+                }
+                context.lineWidth = 1
+                context.strokeStyle = "#008080"
+                context.globalAlpha = 0.5
+                context.setLineDash([])
+                context.stroke()
+                context.globalAlpha = 1
+            }
+            if (routePlan && routePlan.length) {
+                const labels = ["Start", "Destination"]
+                for (let i = 0; i < Math.min(2, routePlan.length); ++i) {
+                    const point = screenPoint(routePlan[i])
+                    context.beginPath()
+                    context.arc(point.x, point.y, 3, 0, Math.PI * 2)
+                    context.fillStyle = "#5295d2"
+                    context.fill()
+                    context.font = "12px sans-serif"
+                    context.fillStyle = "#5295d2"
+                    context.fillText(labels[i], Math.max(5, Math.min(point.x + 5, width - 75)),
+                                     Math.max(15, Math.min(point.y - 5, height - 5)))
+                }
+            }
+            if (selectedPoint && selectedPoint.length === 2) {
+                const point = screenPoint(selectedPoint)
+                context.beginPath()
+                context.arc(point.x, point.y, 5, 0, Math.PI * 2)
+                context.fillStyle = "white"
+                context.fill()
+                context.lineWidth = 2
+                context.strokeStyle = "#5295d2"
+                context.stroke()
+            }
+            if (trackPosition && trackPosition.length === 2) {
+                const point = screenPoint(trackPosition)
+                context.beginPath()
+                context.arc(point.x, point.y, 5, 0, Math.PI * 2)
+                context.fillStyle = "white"
+                context.fill()
+                context.lineWidth = 2
+                context.strokeStyle = "#d8851b"
+                context.stroke()
+            }
+        }
+        onRoutePlanChanged: requestPaint()
+        onRoutePreviewChanged: requestPaint()
+        onSelectedPointChanged: requestPaint()
+        onTrackPointsChanged: requestPaint()
+        onTrackPositionChanged: requestPaint()
+        onCenterLatitudeChanged: requestPaint()
+        onCenterLongitudeChanged: requestPaint()
+        onZoomChanged: requestPaint()
+    }
+    ChartLayer {
+        objectName: "dashboardOverlay"
+        anchors.fill: parent
+    }
+    Rectangle {
+        objectName: "mapCaption"
+        visible: routes.captionText !== ""
+        x: 8
+        y: routes.dashboardVisible ? 8 : parent.height - 34
+        width: Math.min(captionText.implicitWidth + 16, parent.width - 16)
+        height: 26
+        radius: 4
+        color: "#9b000000"
+        Text {
+            id: captionText
+            anchors.fill: parent
+            anchors.margins: 8
+            verticalAlignment: Text.AlignVCenter
+            color: "#eeeeec"
+            font.pixelSize: 12
+            elide: Text.ElideRight
+            text: routes.captionText
+        }
+    }
     // The ENC source's own status.  It is drawn last, so it stays readable
     // over the weather layers, and it never shows the weather's state.
     Rectangle {

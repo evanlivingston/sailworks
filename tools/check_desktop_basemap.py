@@ -12,6 +12,46 @@ from check_enc_app_rollout import run
 from check_enc_viewport import _wait
 
 
+def current_chart(canvas):
+    """Require the displayed viewport publication, not the retired base cache."""
+    from gweatherrouting.qt.gribviewportchart import chart_placement
+
+    presenter = canvas._weather_presenter
+    widget = presenter.widget
+    if widget is None or not presenter._rendered or widget._camera is None:
+        return False
+    camera = widget._camera
+    model = widget._chart_model
+    if model is None or model.state != "ready" or model._published is None:
+        return False
+    generation, _image, metadata = model._published
+    chart = widget._chart
+    return bool(
+        (camera.center_lat, camera.center_lon, camera.zoom, camera.width, camera.height)
+        == (
+            canvas._center_lat,
+            canvas._center_lon,
+            canvas._zoom,
+            canvas.width(),
+            canvas.height(),
+        )
+        and camera.time == canvas.time_control.time
+        and model._reusable(camera)
+        and widget._chart_viewport is metadata["viewport"]
+        and chart is not None
+        and chart.isVisible()
+        and chart.property("ready")
+        and chart.property("source").toString() == f"image://chart/{generation}"
+        and all(
+            abs(chart.property(name) - value) < 0.01
+            for name, value in zip(
+                ("imageX", "imageY", "imageWidth", "imageHeight"),
+                chart_placement(metadata["viewport"], camera),
+            )
+        )
+    )
+
+
 def application(report, data, output, deadline):
     import numpy as np
     from PySide6.QtGui import QImage
@@ -21,6 +61,7 @@ def application(report, data, output, deadline):
     from gweatherrouting.qt.window import PreviewWindow
     from gweatherrouting.qt.theme import apply_theme
     from gweatherrouting.core.mapviewport import MapPoint
+    from gweatherrouting.rendering.style import Style
 
     SystemCredentialStore.load = lambda _self: None
     app = QApplication.instance() or QApplication([])
@@ -54,72 +95,50 @@ def application(report, data, output, deadline):
         canvas.update()
 
     def current():
-        presenter = canvas._weather_presenter
-        widget = presenter.widget
-        cache = canvas._base_cache
-        renderer = canvas._base_chart_renderer
-        state = renderer._states.get(canvas)
-        return bool(
-            widget is not None
-            and presenter._rendered
-            and widget._camera is not None
-            and (
-                widget._camera.center_lat,
-                widget._camera.center_lon,
-                widget._camera.zoom,
-                widget._camera.width,
-                widget._camera.height,
-            )
-            == (
-                canvas._center_lat,
-                canvas._center_lon,
-                canvas._zoom,
-                canvas.width(),
-                canvas.height(),
-            )
-            and cache is not None
-            and cache[0] == canvas._base_key()
-            and widget._base is not None
-            and widget._base.property("ready")
-            and widget._base_key == cache[4].cacheKey()
-            and state is not None
-            and state.frame is not None
-            and state.requested is None
-            and not renderer._running
-        )
+        return current_chart(canvas)
 
     def stage(name):
         ready = wait(current)
-        image = canvas._base_image().convertToFormat(QImage.Format.Format_RGBA8888)
+        presenter = canvas._weather_presenter
+        widget = presenter.widget
+        image = widget.grabFramebuffer().convertToFormat(QImage.Format.Format_RGBA8888)
         pixels = (
             np.frombuffer(image.constBits(), np.uint8)
             .reshape(image.height(), image.bytesPerLine())[:, : image.width() * 4]
             .reshape(-1, 4)
         )
-        sea = canvas._sea_color().getRgb()
-        nonsea = int(np.any(pixels[:, :3] != sea[:3], axis=1).sum())
-        presenter = canvas._weather_presenter
-        renderer = canvas._base_chart_renderer
-        state = renderer._states.get(canvas)
+        palette = Style.chart_palettes[settings.chartPalette]
+
+        def color_pixels(color):
+            rgb = np.array([round(c * 255) for c in color[:3]])
+            return int((np.abs(pixels[:, :3].astype(int) - rgb).max(axis=1) <= 2).sum())
+
+        land = color_pixels(palette.land_fill.color)
+        sea = color_pixels(palette.sea.color)
+        model = widget._chart_model
+        published = model._published
+        viewport = None if published is None else published[2]["viewport"]
         report["stages"][name] = {
             "ready": ready,
-            "non_sea_pixels": nonsea,
+            "land_pixels": land,
+            "sea_pixels": sea,
             "camera": [canvas._center_lat, canvas._center_lon, canvas._zoom],
             "fallback": presenter.reason,
-            "base_diagnostics": renderer.diagnostics,
+            "chart_observations": model.observations(),
+            "chart_source": widget._chart.property("source").toString(),
             "worker_camera": (
                 [
-                    state.frame[0].viewport._center_lat,
-                    state.frame[0].viewport._center_lon,
-                    state.frame[0].viewport._zoom,
+                    viewport._center_lat,
+                    viewport._center_lon,
+                    viewport._zoom,
                 ]
-                if state is not None and state.frame is not None
+                if viewport is not None
                 else None
             ),
         }
         window.grab().save(str(output.with_name(name + ".png")))
         image.save(str(output.with_name(name + "-base.png")))
-        return ready and nonsea > 0 and not presenter.reason
+        return ready and land > 0 and sea > 0 and not presenter.reason
 
     def route_aligned():
         image = canvas.grab().toImage()
@@ -178,39 +197,32 @@ def application(report, data, output, deadline):
         report["checks"]["hidden_wind_basemap"] = stage("wind-hidden")
         panel.display_forecast.setCurrentIndex(panel.display_forecast.findData(""))
         report["checks"]["source_clear_basemap"] = stage("source-clear")
-        charts = controller.charts
-        original, coast = charts.charts[:], charts.gshhsLayer
-        charts.charts, charts.gshhsLayer = [], None
+        # Recreate the actual viewport against missing sandbox data, rather
+        # than mutating the legacy chart collection which it no longer draws.
+        presenter = canvas._weather_presenter
+        presenter._retire_native_widget()
+        with patch("gweatherrouting.core.storage.DATA_DIR", str(data / "missing")):
+            canvas.update()
+            report["checks"]["missing_coastline_fallback"] = stage(
+                "missing-coastlines"
+            ) and (
+                "low-detail" in presenter.status.text()
+                and not presenter.widget._chart_model.observations()["basemap"][
+                    "has_gshhs"
+                ]
+            )
+        presenter._retire_native_widget()
         with patch(
-            "gweatherrouting.rendering.chartcollection.DATA_DIR", str(data / "missing")
+            "gweatherrouting.qt.gribviewportchart.base_sources",
+            side_effect=OSError("Unreadable basemap"),
         ):
-            charts.load_base_chart()
-        canvas.invalidate_chart_sources()
-        report["checks"]["missing_coastline_fallback"] = stage(
-            "missing-coastlines"
-        ) and (
-            "not installed" in canvas._weather_presenter.status.text()
-            and "low-detail" in canvas._weather_presenter.status.text()
-        )
-        charts.charts = []
-        with (
-            patch(
-                "gweatherrouting.rendering.chartcollection.DATA_DIR",
-                str(data / "missing"),
-            ),
-            patch(
-                "gweatherrouting.rendering.chartcollection.GDALVectorChart",
-                side_effect=OSError("Unreadable basemap"),
-            ),
-        ):
-            charts.load_base_chart()
-        canvas._weather_presenter._label()
-        report["checks"]["loading_failure_visible"] = (
-            "Unreadable basemap" in canvas._weather_presenter.status.text()
-            and "world basemap unavailable" in canvas._weather_presenter.status.text()
-        )
-        charts.charts, charts.gshhsLayer, charts.basemap_error = original, coast, ""
-        canvas.invalidate_chart_sources()
+            canvas.update()
+            report["checks"]["loading_failure_visible"] = wait(
+                lambda: not presenter.active
+                and presenter.widget is None
+                and "Unreadable basemap" in presenter.status.text()
+                and presenter.status.isVisible()
+            )
         report["complete"] = all(report["checks"].values())
     finally:
         window.close()

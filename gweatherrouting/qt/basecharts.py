@@ -99,6 +99,8 @@ class BaseChartRenderer(OverlayRenderer):
             "synchronous_source_count": sum(chart.enabled for chart in synchronous),
             "surface_bytes": pixels * factor * factor * 4,
             "mode": "worker",
+            "sources_available": bool(sources) if sources else False,
+            "fallback_available": bool(fallback),
         }
         if (
             sources is None
@@ -146,6 +148,13 @@ class BaseChartRenderer(OverlayRenderer):
                 chart.countries = source.countries
                 chart.force_downscale = source.downscale
                 chart.last_time = dict(source.initial_times)
+                chart.drawer = SimpleChartDrawer.__new__(SimpleChartDrawer)
+            elif source.kind == "simple":
+                # This is our fallback simple vector chart (e.g., bundled countries.geojson)
+                chart = GDALVectorChart.__new__(GDALVectorChart)
+                chart.vector_file = ogr.Open(source.path)
+                if chart.vector_file is None:
+                    raise ValueError(f"Cannot open base chart {source.path}")
                 chart.drawer = SimpleChartDrawer.__new__(SimpleChartDrawer)
             else:
                 chart = GDALVectorChart.__new__(GDALVectorChart)
