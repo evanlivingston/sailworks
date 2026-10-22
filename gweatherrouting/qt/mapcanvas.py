@@ -1308,10 +1308,7 @@ class TrackMap(QWidget, MercatorProjection):
                 self._base_cache[4],
             )
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        if (
-            self._weather_presenter is None
-            or not self._weather_presenter.active
-        ):
+        if self._weather_presenter is None or not self._weather_presenter.active:
             self._paint_wind_barbs(painter)
             self._paint_foreground(painter)
         painter.end()

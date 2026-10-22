@@ -41,10 +41,12 @@ class ViewportMap(TrackMap):
         self.invalidate_navigation()
         self.view_changed.emit()
         presenter = self._weather_presenter
-        if presenter is not None and presenter.foreground is not None:
-            presenter.foreground.update()
-        if presenter is not None and presenter.widget is not None:
-            presenter.widget.set_route_overlay(self.viewport_route_overlay())
+        foreground = getattr(presenter, "foreground", None)
+        if foreground is not None:
+            foreground.update()
+        widget = getattr(presenter, "widget", None)
+        if widget is not None:
+            widget.set_route_overlay(self.viewport_route_overlay())
         return True
 
     def viewport_route_overlay(self):
