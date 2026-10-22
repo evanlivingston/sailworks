@@ -192,7 +192,7 @@ presentation FPS, and readback is fidelity, not timing; every gate labels its en
 See [`docs/adr-001-grib-rendering-architecture.md`](docs/adr-001-grib-rendering-architecture.md)
 for the architecture these gates protect and
 [`docs/rendering-performance-plan.md`](docs/rendering-performance-plan.md) for the
-canonical roadmap.
+current renderer state, the invariants and the next decision.
 
 ## License
 

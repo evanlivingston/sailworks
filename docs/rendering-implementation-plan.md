@@ -1,6 +1,7 @@
 # Rendering implementation specification
 
-Historical specification: the current roadmap and decision gates are in
+Historical specification: the current state, the invariants and the next
+decision are in
 [the canonical performance plan](rendering-performance-plan.md), tracking epic
 [#51](https://github.com/evanlivingston/gweatherrouting/issues/51). Preserve this
 document's invariants and historical R0–R5 context; its sequence is not an

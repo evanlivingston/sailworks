@@ -30,9 +30,11 @@ verified fixture (current pan/zoom/resize/time views and legacy recovery), with
 It does not declare the #70 platform/soak or
 presentation-latency program complete and does not change numerical sampling.
 
-- **Canonical roadmap and decision ledger:**
+- **Canonical current state and invariants:**
   [`rendering-performance-plan.md`](rendering-performance-plan.md) — start at its
-  "Current checkpoint". This ADR is the decision input to that roadmap.
+  "Current state". The archived decision log is in
+  [`history/rendering-decision-log.md`](history/rendering-decision-log.md).
+  This ADR is the decision input to that roadmap.
 - **Implementation program:** epic #51, issues
   [#62–#70](https://github.com/evanlivingston/gweatherrouting/issues/62); the
   local index is [`milestones.md`](milestones.md). One issue at a time; each
@@ -42,9 +44,11 @@ presentation-latency program complete and does not change numerical sampling.
   amended by §6 below.
 - **Experiment record:** the A0a–A0l slices in
   [`rendering-architecture-evaluation.md`](history/rendering-architecture-evaluation.md)
-  and in the canonical plan's decision log; the M0 mechanism probes in the
-  `rendering-m0-*.md` records; machine-readable evidence under
-  `docs/profiles/rendering/`.
+  and in the archived
+  [`decision log`](history/rendering-decision-log.md); the M0 mechanism probes
+  in the `rendering-m0-*.md` records and in
+  [`history/rendering-experiment-records.md`](history/rendering-experiment-records.md);
+  machine-readable evidence under `docs/profiles/rendering/`.
 - **Status:** D1–D6 are settled. D7 records the user's direction to start using the
   viewport in the application; integration is pending, not already delivered by
   PRs #72/#75. §10 requires explicit user forecast selection in the Weather panel.
@@ -455,4 +459,6 @@ This is a display-policy amendment, not a change to routing selection or a claim
 complete the reference application parity. Implementation is pending in a focused follow-up; #70's
 current measured candidate remains unchanged. See
 [forecast display coherence](rendering-performance-plan.md#forecast-display-coherence) for the source audit,
-acceptance contract, separate resampling question and #51 progress checkpoint.
+acceptance contract and separate resampling question; the #51 acceptance
+checkpoint is in the
+[archived decision log](history/rendering-decision-log.md).

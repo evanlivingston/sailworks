@@ -4,7 +4,7 @@
 > Superseded by [ADR-001](../adr-001-grib-rendering-architecture.md) D1-D3 and issues
 > #64-#66. Evidence, not a plan.
 
-2026-10-18. [Plan entry](../rendering-performance-plan.md#e2c-contract-persistent-gpu-field--exact-selection-indirection).
+2026-10-18. [Plan entry](rendering-experiment-records.md#e2c-contract-persistent-gpu-field--exact-selection-indirection).
 This is separate, uncommitted M0 research; #50 stays unchanged and unmerged.
 
 > **Status update (2026-10-19):** PR #50 was merged to `dev` via `b9e2471` / PR #61

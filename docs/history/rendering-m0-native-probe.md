@@ -5,7 +5,7 @@
 > program (#62-#70). Evidence, not a plan.
 
 2026-10-17; [epic #51](https://github.com/evanlivingston/gweatherrouting/issues/51),
-[plan experiment index](../rendering-performance-plan.md#experiment-contracts-and-results-b1-e1-e3).
+[plan experiment index](rendering-experiment-records.md#experiment-contracts-and-results-b1-e1-e3).
 
 ## Outcome
 
