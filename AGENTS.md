@@ -1,86 +1,63 @@
 # Fork development
 
-Our fork is the working product. The parent upstream (`origin`) is retained
-for history only; we do not prepare upstream contributions, track upstream
-PRs, or maintain upstream branches.
+Our fork is the working product. The upstream parent is kept for history only;
+we do not prepare upstream contributions or track upstream PRs.
 
-## Repository and branch roles
+## Branches
 
 - `origin` is our fork: `https://github.com/evanlivingston/gweatherrouting.git`.
-- `dev` is our integration branch and the version we use.
-- `feature/<topic>` branches start from `dev` for new development and merge
-  back into `dev` after appropriate validation.
-- The parent repo has no configured remote; its history is reachable through
-  our fork.
+- `dev` is the integration branch. Feature branches start from `dev` and merge
+  back into `dev` after validation.
+- Verify actual remotes and branches before using them.
 
-Verify actual remotes and branches before using them.
+## Workflow
 
-## Default workflow for every task
-
-1. Start independent work from `dev`, using an isolated worktree when another
-   task has uncommitted changes.
-2. Implement the complete local behavior and run checks appropriate to the
-   change. Preserve calculation fidelity when optimizing; report measured
-   performance and any changed approximation or source-selection behavior.
+1. Start from `dev`. Use an isolated worktree when another task has uncommitted
+   changes.
+2. Implement the complete local behavior. Preserve calculation fidelity when
+   optimizing; report measured performance and any changed approximation or
+   source-selection behavior.
 3. Keep commits coherent and independently understandable. Separate unrelated
-   features, bug fixes, and refactors.
-4. When PR creation is authorized, open a regular PR in our fork for human
-   review. Report validation results honestly. Use the fork PR template.
-5. After the user approves merging, integrate tested work into `dev`. Start
-   subsequent independent features from `dev`.
+   features, bug fixes and refactors.
+4. Open a PR in our fork for human review when the user authorizes it. Leave
+   it unmerged until the user approves the merge. Follow the user's
+   authorization for commits, pushes and merges.
+5. A bug fix found in review returns to `dev` and the affected feature branch
+   as a focused follow-up commit. Do not rewrite shared history.
 
-Bug fixes found during fork review return to `dev` and relevant active
-feature branches as focused follow-up commits; avoid rewriting shared history.
+## Context economy
 
-## Rendering performance work
+- The issue body is the spec. It states the gap, scope, non-goals, acceptance
+  gate and validation command. Read a repository document only when the issue
+  body points at a section.
+- Do not create a documentation file for a task. Record the result in the
+  issue body or a PR comment. Update a canonical document only when a
+  decision changed it.
+- Read `docs/README.md` only to locate a document, not to survey it.
+- Keep the files you touch small enough to read in one pass. Split a document
+  rather than growing it past roughly 400 lines.
+- Read the `AGENTS.md` in the directory you are working in; it loads when you
+  read that directory.
 
-- The target architecture is decided in `docs/adr-001-grib-rendering-architecture.md`.
-  Read it first, then the issue it points at. The implementation of that ADR is the
-  work program in issues #62-#70; work one issue at a time.
-- `docs/README.md` is the documentation index. Read it before browsing `docs/`.
-  It separates the current working set from `docs/history/`, which holds
-  completed-work records and experiment evidence: read those for why a decision
-  was made, never as a plan.
-- `docs/rendering-performance-plan.md` is the canonical roadmap and
-  `docs/rendering-implementation-plan.md` holds the detailed R0-R5 sequence;
-  older rendering plans/reports remain historical specifications and evidence.
-- Gate changes with one command from the runner built in #63. Do not re-run the
-  full test suite, and do not re-measure a baseline the change does not touch.
-  Recorded evidence under `docs/profiles/rendering/` is the reference.
-- Before an experiment, record scope/non-goals, baseline/workload, measurement
-  and fidelity gates, time/attempt budget, and stop condition. Stop and report
-  when the budget is exhausted or scope must expand; do not silently extend it.
-- Update evidence and adopt/revise/reject decisions before claiming completion.
-  Correctness tests, synthetic mechanism results, and real-workload performance
-  acceptance are separate. Never call grab/readback timing presentation FPS.
-- At each experiment/milestone gate, reevaluate the bottleneck and record
-  continue/narrow/pivot/stop. Do not start provisional later milestones by default.
+## Validation
 
-## Review in our fork
-
-- Open PRs in `evanlivingston/gweatherrouting` for the user's review before
-  merging into `dev`. Use `dev` as the base.
-- Leave PRs unmerged until the user approves merging.
-- Follow the user's authorization for commits, pushes, PR creation, and
-  merges.
-
-## Token-efficient validation and merging
-
-- Delegate test runs and validation commands to the `test-runner` subagent
-  defined in `.opencode/agents/test-runner.md`. Keep test selection, diagnosis,
-  and fixes in the primary agent; give the runner only the absolute working
-  directory, exact commands, required environment, and any timeout or log path.
-- Use the runner's configured lightweight model without overriding it or
-  passing the main conversation. Ask for concise counts and relevant failure
-  excerpts. If the runner or its model is unavailable, report the blocker
-  rather than silently switching to a heavier agent or running tests directly.
-- Validate with targeted tests covering changed modules, plus `black --check`
-  and `git diff --check` on changed files only.
+- Delegate test runs and validation commands to the `test-runner` subagent.
+  Give it the absolute working directory, the exact commands, the required
+  environment and any timeout or log path. Keep test selection, diagnosis and
+  fixes here.
+- Use the runner's configured model; do not override it. If it or its model is
+  unavailable, report the blocker rather than running tests directly.
+- Validate with targeted tests covering the changed modules, plus
+  `black --check` and `git diff --check` on changed files only.
+- When you change documentation, run `python tools/check_doc_links.py` and
+  `python tools/check_doc_anchors.py`.
 - Run the full suite only on explicit request or when shared sampling/routing
   code changes.
 - Do not re-run validation for a merge if the branch is unchanged since its
-  last recorded results; merge directly.
-- Do not replicate CI checks locally when they already fail on the base branch;
-  rely on `gh pr checks` status instead.
-- Confirm scope changes before expanding an open PR; summarize validation as
-  counts without pasting full output.
+  last recorded results.
+- Summarize validation as counts. Do not paste full output.
+
+## Scope-specific rules
+
+- Renderer, viewport and GPU work: `gweatherrouting/rendering/AGENTS.md`.
+- Qt frontend work: `gweatherrouting/qt/AGENTS.md`.
