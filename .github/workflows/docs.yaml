@@ -21,6 +21,10 @@ jobs:
       - name: Install dependencies
         run: |
           pip install sphinx pydata-sphinx-theme sphinx_design myst_parser
+      - name: Check documentation links and anchors
+        run: |
+          python tools/check_doc_links.py
+          python tools/check_doc_anchors.py
       - name: Sphinx build
         run: |
           sphinx-build docs/source _build

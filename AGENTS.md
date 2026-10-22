@@ -19,25 +19,31 @@ we do not prepare upstream contributions or track upstream PRs.
    source-selection behavior.
 3. Keep commits coherent and independently understandable. Separate unrelated
    features, bug fixes and refactors.
-4. Open a PR in our fork for human review when the user authorizes it. Leave
-   it unmerged until the user approves the merge. Follow the user's
-   authorization for commits, pushes and merges.
+4. Open a PR in our fork for human review when the user authorizes it, using
+   the fork PR template. Leave it unmerged until the user approves the merge.
+   Follow the user's authorization for commits, pushes and merges. Confirm
+   scope changes before expanding an open PR.
 5. A bug fix found in review returns to `dev` and the affected feature branch
    as a focused follow-up commit. Do not rewrite shared history.
 
 ## Context economy
 
+- Keep work proportional to the request. Read and validate only what the
+  change requires. Do not add tooling, process or adjacent cleanup without
+  approval. Keep progress updates and final reports brief.
 - The issue body is the spec. It states the gap, scope, non-goals, acceptance
-  gate and validation command. Read a repository document only when the issue
-  body points at a section.
+  gate and validation command. Read a repository document when the issue body
+  points at one, and read the ADR section your task touches; do not survey the
+  rest.
 - Do not create a documentation file for a task. Record the result in the
   issue body or a PR comment. Update a canonical document only when a
   decision changed it.
 - Read `docs/README.md` only to locate a document, not to survey it.
 - Keep the files you touch small enough to read in one pass. Split a document
-  rather than growing it past roughly 400 lines.
-- Read the `AGENTS.md` in the directory you are working in; it loads when you
-  read that directory.
+  rather than growing it past roughly 400 lines. Frozen archives under
+  `docs/history/` are exempt: they are history, read only on demand.
+- Read the `AGENTS.md` files that cover the directories you touch; they load
+  when you read those directories.
 
 ## Validation
 
@@ -59,5 +65,8 @@ we do not prepare upstream contributions or track upstream PRs.
 
 ## Scope-specific rules
 
-- Renderer, viewport and GPU work: `gweatherrouting/rendering/AGENTS.md`.
-- Qt frontend work: `gweatherrouting/qt/AGENTS.md`.
+- Renderer, viewport, GPU or rendering-gate work anywhere in the repo: read
+  `gweatherrouting/rendering/AGENTS.md` and follow it. The Qt viewport lives in
+  `gweatherrouting/qt/`, so read that file even when the change is not under
+  `gweatherrouting/rendering/`.
+- Qt frontend work: read `gweatherrouting/qt/AGENTS.md` and follow it.

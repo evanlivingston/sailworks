@@ -1,6 +1,8 @@
 # Renderer and viewport work
 
-Applies to files in this directory.
+Applies to renderer, viewport, GPU and rendering-gate work anywhere in the
+repository, not only to files in this directory. The Qt viewport lives in
+`gweatherrouting/qt/`, so read this file before changing that code too.
 
 ## Read only what the task needs
 

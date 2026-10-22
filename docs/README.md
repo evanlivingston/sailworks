@@ -1,7 +1,7 @@
 # Documentation index
 
 **The architecture decision is [ADR-001](adr-001-grib-rendering-architecture.md);
-its work program is epic #51, issues [#62-#70](milestones.md).**
+its work program is epic #51, issues [#62-#73](milestones.md).**
 
 **The issue body is the spec for a task.** It states the gap, scope, non-goals,
 acceptance gate and validation command. Read a document from this index only
@@ -29,7 +29,7 @@ when the issue body points at it.
 | [adr-001-grib-rendering-architecture.md](adr-001-grib-rendering-architecture.md) | The accepted architecture decision (D1-D7), the disposition of the seven structural gaps, and the mapping onto issues #62-#70. |
 | [rendering-performance-plan.md](rendering-performance-plan.md) | Current renderer state, the invariants, the acceptance gates and the one next decision. |
 | [rendering-implementation-plan.md](rendering-implementation-plan.md) | The R0-R5 sequence, the layer/ownership model, the non-negotiable invariants and the measurement contract. |
-| [milestones.md](milestones.md) | Local index of epic #51 and issues #62-#70. GitHub remains the authoritative tracker. |
+| [milestones.md](milestones.md) | Local index of epic #51 and issues #62-#73. GitHub remains the authoritative tracker. |
 | [current-routing.md](current-routing.md) | Current-aware routing: the Currents tab, coastline checks, source selection, and how currents enter the calculation. |
 
 ## Reference documents
@@ -42,7 +42,7 @@ Read the one that covers the area you are changing; skip the rest.
 | [reference-architecture-analysis.md](reference-architecture-analysis.md) | Reference techniques T1-T8 from a read-only analysis of a locally installed the reference application build. A hypothesis source, not a benchmark. |
 | [profiling-priorities.md](profiling-priorities.md) | Already-measured cost slices and their limits. Do not re-measure what is recorded here. |
 | [rendering-m0-measurement-audit.md](rendering-m0-measurement-audit.md) | What the instrumentation can and cannot prove, and why readback is not presentation. |
-| [rendering-startup-baseline-2026-10-15.md](rendering-startup-baseline-2026-10-15.md) | The normal start-up rendering baseline - the reference workload for comparisons. Do not recapture it. |
+| [rendering-startup-baseline-2026-10-15.md](rendering-startup-baseline-2026-10-15.md) | The October 15 start-up baseline, kept as historical evidence. The reference workload is the October 16 snapshot identified in the plan; do not recapture either. |
 | [early-weather-startup.md](early-weather-startup.md) | The opt-in `--early-weather` start-up, and what it does and does not change. |
 | [gpu-embedded-rendering.md](gpu-embedded-rendering.md) | The embedded GPU presenter: host choice, resource ledger and the matched CPU/GPU baseline. |
 | [gpu-weather-interpolation.md](gpu-weather-interpolation.md) | The opt-in numerically interpolated wind-barb path and its explicit limits. |

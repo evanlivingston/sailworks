@@ -1,10 +1,10 @@
 # Rendering performance: current state
 
 Tracking epic: [#51](https://github.com/evanlivingston/gweatherrouting/issues/51).
-This file states the current architecture decision, the invariants, the
-acceptance gates and the one next decision. It is not a work queue and it is
-not a log: the issue body is the spec for a task, and past experiment records
-live in [`history/`](history/).
+This file states the current architecture decision, what shipped, the
+invariants, the acceptance gates and the one next decision. It is not a work
+queue and it is not a log: the issue body is the spec for a task, and past
+experiment records live in [`history/`](history/).
 
 ## How to use this file
 
@@ -13,58 +13,67 @@ live in [`history/`](history/).
 | What to build next | the issue body. It states the gap, scope, non-goals, acceptance gate and validation command |
 | The accepted architecture decision (D1-D7) | [ADR-001](adr-001-grib-rendering-architecture.md), the section your task touches |
 | The invariants and the measurement contract | [the implementation plan](rendering-implementation-plan.md), section `Reference and invariants` |
-| Current state, invariants and the next decision | this file |
+| What shipped and what is not claimed | this file, `Current state` |
 | Why a past decision was made | [`history/rendering-decision-log.md`](history/rendering-decision-log.md) |
 | What an earlier experiment measured | [`history/rendering-experiment-records.md`](history/rendering-experiment-records.md) |
 
 Read only the section you need. Every result, threshold, negative result and
-budget stays on the record: in this file, in the issue body, or behind a link to
-the document that records it. Nothing is deleted evidence.
+budget stays on the record: in this file, in the issue body, or behind a link
+to the document that records it. Nothing is deleted evidence.
 
 ## Current state
 
 **Decision (ADR-001 D1-D7).** The renderer is split into decoupled layers with
 explicit ownership: weather preparation, chart composition and presentation are
-separate, and the Qt viewport owns the scene graph. The work program is epic
-[#51](https://github.com/evanlivingston/gweatherrouting/issues/51), issues
-[#62-#70](milestones.md), and the open follow-on work is
-[#86](https://github.com/evanlivingston/gweatherrouting/issues/86),
-[#87](https://github.com/evanlivingston/gweatherrouting/issues/87) and
-[#88](https://github.com/evanlivingston/gweatherrouting/issues/88).
+separate, and the Qt viewport owns the scene graph. Issues #62-#73 are closed;
+epic [#51](https://github.com/evanlivingston/gweatherrouting/issues/51) stays
+open for the follow-on work.
 
-**#64 native weather fields.** N1 (shared native store) and N2 (real-HRRR
-application/layer gate) are complete locally. The user authorized native
-weather fields as the default on 2026-10-21; the application and the standalone
-viewport enable them without a flag. `--no-native-weather-fields` or
-`GWR_NATIVE_WEATHER_FIELDS=0` restores Image sources, and an explicit CLI choice
-wins. N3 acceptance/review is not started. **#64 is not complete**: the default
-switch is not #64 acceptance, and earlier default-OFF decisions are historical.
+**What shipped.** Native weather fields are on by default: a GPU-resident field
+cache under one shared session byte budget, merged in PR #82 for
+[#64](https://github.com/evanlivingston/gweatherrouting/issues/64) (closed
+2026-10-21). `--no-native-weather-fields` or `GWR_NATIVE_WEATHER_FIELDS=0`
+restores the Image path, and geographic barb layout is the default
+(`--screen-barbs` restores the old). ENC charts are enabled by default in the
+application viewport (PR #81);
+[#78](https://github.com/evanlivingston/gweatherrouting/issues/78) closed
+2026-10-21 after 13/13 functional and 14/14 combined-experience checks plus 104
+targeted integration passes.
 
-**#78 ENC charts in the viewport.** The experimental viewport composes enabled
-ENC with the original source ranking, multi-cell clipping and Cairo portrayal,
-asynchronously. Functional acceptance passed 13/13 on the verified fixture and
-the combined-experience gate passed 14/14 (charts, fill and barbs together;
-fractional zoom and fixed-size soundings; resize; rapid reversals; coverage
-miss/recovery; blocked-chart responsiveness and cleanup). The user deferred
-strict visual acceptance in favor of functional display and lifecycle
-completion. Default rollout, catalogue/platform coverage, RSS/VRAM and
-presentation performance remain separate #70 work. These results are not FPS.
+**What is not claimed.** The application still uses `mapcanvas.TrackMap` as its
+map; the standalone viewport is opt-in, and moving the whole application onto
+it is [#88](https://github.com/evanlivingston/gweatherrouting/issues/88).
+[#70](https://github.com/evanlivingston/gweatherrouting/issues/70) closed
+2026-10-21 as **keep-experimental**: the default application path was not
+switched. Presentation and input-to-present latency are unmeasured; the recorded
+endpoint is a render-callback proxy, never FPS. #64's recorded limits stand:
+stale in-flight completions are covered by headless tests only, true device loss
+is not exercisable, there is no single repeatable `residency-native` gate, byte
+figures are texture payload not physical VRAM, upload counts are QRhi
+submissions not GPU completion, and the original-sampler
+([#65](https://github.com/evanlivingston/gweatherrouting/issues/65)) fidelity
+dependency is unchanged.
 
 **Display policy.** The user chooses the forecast in the Weather panel; the
 application must not silently pick a different file/run/member while the user
 pans or changes forecast time. See `Forecast display coherence` below.
 
 **Next decision.** Make the full desktop application work with the new viewport
-and the world basemap (#88), then decide whether the old default map is removed
-(#86). The ENC chart engine is under evaluation against tile57 (#87); that is an
+and the world basemap
+([#88](https://github.com/evanlivingston/gweatherrouting/issues/88)), then
+decide whether the old default map is removed
+([#86](https://github.com/evanlivingston/gweatherrouting/issues/86)). Removal is
+gated on #70 acceptance, which closed as keep-experimental and therefore has
+not passed. The ENC chart engine is under
+evaluation against tile57
+([#87](https://github.com/evanlivingston/gweatherrouting/issues/87)); that is an
 evaluation, not a removal.
 
-**Evidence identity.** The checkpoint, the acceptance table and the per-experiment
-results are in the history records linked above. Recorded evidence under
+**Evidence identity.** Per-experiment contracts and results are in the history
+records linked below. Recorded evidence under
 [`profiles/rendering/`](profiles/rendering/) is the reference: do not re-measure
 a baseline the change does not touch, and do not attribute a measurement to a
 later commit than the one it was taken on.
-
 
 ## Forecast display coherence
 
@@ -195,11 +204,11 @@ and explicit review. Routing remains unchanged.
 
 | Milestone | Exit gate | Status |
 | --- | --- | --- |
-| M0 Baseline + architecture decision | Reproducible real-workload evidence; E1–E3 decisions; selected host/ownership/residency design | In progress |
-| M1 Bounded residency | Real forecasts work inside an explicit budget with sampler/provenance equivalence and resource release | Provisional |
-| M2 Production fill + barbs | Retained numerical layers, cheap camera/time changes, accurate loading state, matched fidelity/performance gates | Provisional |
-| M3 Remaining bottlenecks | Reprofile, then retain contours/streamlines and address charts/navigation only as justified | Provisional |
-| M4 Validation + rollout | Soak, lifecycle/DPR/context/backend coverage and explicit approval for rollout | Provisional |
+| M0 Baseline + architecture decision | Reproducible real-workload evidence; E1–E3 decisions; selected host/ownership/residency design | **Closed 2026-10-19** (ADR-001 accepted) |
+| M1 Bounded residency | Real forecasts work inside an explicit budget with sampler/provenance equivalence and resource release | **Closed** (#64, #71) |
+| M2 Production fill + barbs | Retained numerical layers, cheap camera/time changes, accurate loading state, matched fidelity/performance gates | **Closed** (#65-#69, #73) |
+| M3 Remaining bottlenecks | Reprofile, then retain contours/streamlines and address charts/navigation only as justified | **Closed** (#69); contours and streamlines stay out of the viewport |
+| M4 Validation + rollout | Soak, lifecycle/DPR/context/backend coverage and explicit approval for rollout | **Closed 2026-10-21: keep-experimental**; the default application path was not switched |
 
 Do not interpret a later milestone as an instruction to implement it before its
 predecessor passes. A negative experiment can close an uncertainty successfully.
@@ -254,7 +263,8 @@ or merge. Ask before pushing/creating PRs when not already authorized.
 ## History
 
 - [`history/rendering-decision-log.md`](history/rendering-decision-log.md) - the
-  archived checkpoint notes, the consolidation notes and the A0 decision log.
+  archived checkpoint notes, the consolidation notes, the #51 acceptance
+  checkpoint and the A0 decision log.
 - [`history/rendering-experiment-records.md`](history/rendering-experiment-records.md) -
   the runtime integration record and the M0 experiment contracts (B1, E1-E3).
 - [`history/`](history/) - every other completed-work record and experiment
