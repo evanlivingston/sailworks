@@ -14,7 +14,6 @@ GNU General Public License for more details.
 For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
-import json
 import os
 import tempfile
 import unittest

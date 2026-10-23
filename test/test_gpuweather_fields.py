@@ -13,7 +13,6 @@ from gweatherrouting.core.gribsampling import WeatherSampler
 from gweatherrouting.qt.gpuweatherfields import (
     FieldIdentity,
     FieldStore,
-    GeographicField,
     TEXTURE_BYTES_PER_FLOAT32,
     validate_binding,
 )

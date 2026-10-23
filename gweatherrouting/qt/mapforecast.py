@@ -7,15 +7,14 @@ import sys
 class MapForecastMixin:
     def _display_forecast_changed(self):
         self._cancel_cursor()
-        self.wind.forget(self)
         self._base_cache = None
         self.weather_coverage.key = None
         if self._weather_presenter is not None:
             self._weather_presenter.source_changed()
-        # Apply the selected forecast's geographic extents and time bounds
+        # Metadata completion and chart startup also notify this slot. They
+        # refresh the source, not the user's camera (including a restored view).
         sources = self.controller.display_forecast.sources()
         if sources:
-            self._apply_forecast_extents(sources[0].path)
             self.time_control.set_time(sources[0].start_time)
         self.queue_draw()
         self.view_changed.emit()

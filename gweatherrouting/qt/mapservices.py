@@ -1,6 +1,5 @@
 """Weather service references shared by Qt map hosts."""
 
-from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
 from .basecharts import BaseChartRenderer
 
 
@@ -19,8 +18,10 @@ class MapWeatherServices:
         return self.base_chart_renderer
 
     def initialize_wind(self, wind_painter, controller):
-        self.wind = WindOverlayRenderer(wind_painter, controller.scheduler.submit)
-        return self.wind
+        # Qt Quick owns viewport wind presentation; retain the legacy slot for
+        # non-viewport hosts without constructing the retired recovery renderer.
+        self.wind = None
+        return None
 
     def initialize_wind_cursor(self, host, controller):
         from .windcursor import WindCursorSampler

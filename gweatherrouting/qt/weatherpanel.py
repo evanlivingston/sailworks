@@ -42,7 +42,7 @@ class WeatherPanel(QWidget):
         controls.addWidget(self.wind)
         self.wind_style = QComboBox()
         self.wind_style.addItem("Barbs", "barbs")
-        self.wind_style.addItem("Streamlines (legacy renderer)", "streamlines")
+        self.wind_style.addItem("Streamlines", "streamlines")
         self.wind_style.setToolTip(
             "Static forecast-flow curves with direction chevrons,"
             " or native-point wind barbs. No particle animation."
@@ -110,20 +110,6 @@ class WeatherPanel(QWidget):
         self.forecast_identity = QLabel()
         self.forecast_identity.setWordWrap(True)
         controls.addWidget(self.forecast_identity)
-        self.weather_renderer = QComboBox()
-        self.weather_renderer.addItem("Viewport ENC + barbs", "viewport")
-        self.weather_renderer.addItem("Legacy chart/weather recovery", "legacy")
-        self.weather_renderer.setToolTip(
-            "Viewport ENC is the default. Legacy recovery restores chart and weather "
-            "presentation without changing forecast selection or routing. "
-            "All forecast points uses the unthinned legacy renderer automatically."
-        )
-        self.weather_renderer.currentIndexChanged.connect(
-            lambda _index: self.set_preference(
-                "weatherRenderer", self.weather_renderer.currentData()
-            )
-        )
-        controls.addWidget(self.weather_renderer)
         self.open_forecast = QPushButton("Open forecast…")
         self.open_forecast.clicked.connect(open_forecast)
         controls.addWidget(self.open_forecast)
@@ -212,16 +198,6 @@ class WeatherPanel(QWidget):
         )
 
     def refresh(self):
-        self.weather_renderer.blockSignals(True)
-        self.weather_renderer.setCurrentIndex(
-            max(
-                0,
-                self.weather_renderer.findData(
-                    self.controller.settings.get("weatherRenderer", "viewport")
-                ),
-            )
-        )
-        self.weather_renderer.blockSignals(False)
         self.wind_style.blockSignals(True)
         self.wind_style.setCurrentIndex(
             max(0, self.wind_style.findData(self.controller.settings.gribWindStyle))

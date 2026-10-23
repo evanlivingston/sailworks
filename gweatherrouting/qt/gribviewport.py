@@ -1225,7 +1225,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
     Qt is imported lazily so the model and the tests stay usable headless.
     """
     from PySide6.QtCore import QEvent, QObject, QTimer, QUrl, Qt, Signal
-    from PySide6.QtGui import QSurfaceFormat
+    from PySide6.QtGui import QSurfaceFormat, QVector2D
     from PySide6.QtQuickWidgets import QQuickWidget
     from PySide6.QtWidgets import QLabel
     import shiboken6
@@ -1265,6 +1265,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
         chartPublished = Signal(object)  # noqa: N815 - Qt signal name
         chartStateChanged = Signal(str)  # noqa: N815 - Qt signal name
         nativeError = Signal(str)  # noqa: N815 - Qt signal name
+        streamlinesPrepared = Signal()  # noqa: N815
 
         def __init__(
             self,
@@ -1285,6 +1286,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._source_generation = 0
             self._disposed = False
             self._wind_opacity = 1.0
+            self._wind_style = "barbs"
             self._camera = None
             self._drag = None
             self._drag_velocity = DragVelocity()
@@ -1342,6 +1344,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
             self._provider = WeatherImageProvider()
             self.engine().addImageProvider("weather", self._provider)
+            from .viewportstreamlines import StreamlineImageProvider
+
+            self._streamline_provider = StreamlineImageProvider()
+            self.engine().addImageProvider("streamlines", self._streamline_provider)
             self._chart_provider = None
             self._navigation_provider = None
             self._dashboard_provider = None
@@ -1515,6 +1521,55 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._chart_state_changed, Qt.ConnectionType.QueuedConnection
             )
             self._attach_model()
+            from .viewportstreamlines import ViewportStreamlineModel
+
+            self._streamline_model = ViewportStreamlineModel(
+                model.paths, model.display_identity
+            )
+            self._streamline_model.on_change = self.streamlinesPrepared.emit
+            self._streamline_publication = None
+            self._streamline_display_camera = None
+            self._streamline_last_camera = None
+            self._streamline_urls = ()
+            self._pending_streamline_groups = []
+            self._pending_streamline_urls = ()
+            self._pending_streamline_camera = None
+            self._pending_streamline_publication = None
+            self._pending_streamline_buffer = -1
+            self._streamline_settle = QTimer(self)
+            self._streamline_settle.setSingleShot(True)
+            self._streamline_settle.setInterval(120)
+            self._streamline_settle.timeout.connect(self._retrace_streamlines)
+            self.streamlinesPrepared.connect(
+                self._refresh_streamlines, Qt.ConnectionType.QueuedConnection
+            )
+            self._streamlines = self._weather.findChild(QObject, "weatherStreamlines")
+            if self._streamlines is None:
+                raise RuntimeError("The weather scene has no GPU streamline layer")
+            self._streamlines.setProperty("buffer0Groups", [])
+            self._streamlines.setProperty("buffer1Groups", [])
+            self._streamlines.setProperty("frontBuffer", -1)
+            self._streamlines.setProperty("pendingBuffer", -1)
+            self._pending_streamline_groups = []
+            self._pending_streamline_urls = ()
+            self._pending_streamline_camera = None
+            self._pending_streamline_publication = None
+            self._streamlines.setVisible(False)
+            getattr(self._streamlines, "readyChanged").connect(
+                self._streamline_readiness_changed
+            )
+            getattr(self._streamlines, "pendingReadyChanged").connect(
+                self._streamline_readiness_changed,
+                Qt.ConnectionType.QueuedConnection,
+            )
+            getattr(self._streamlines, "pendingErrorChanged").connect(
+                self._streamline_readiness_changed,
+                Qt.ConnectionType.QueuedConnection,
+            )
+            getattr(self._streamlines, "shaderErrorChanged").connect(
+                self._streamline_readiness_changed
+            )
+            self.destroyed.connect(self._streamline_model.close)
             # Parent teardown need not deliver closeEvent to child widgets.
             self.destroyed.connect(lambda: model.close())
             # This signal is declared by QML, not by the QQuickItem Python stub.
@@ -1746,6 +1801,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             }
 
         def _readiness_changed(self):
+            if self._wind_style == "streamlines":
+                return
             if self._native_weather_fields:
                 self._update_native_state()
                 return
@@ -1785,6 +1842,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._update_native_state()
 
         def _update_native_state(self):
+            if self._wind_style == "streamlines":
+                return
             if self._disposed or self._camera is None:
                 return
             items = [self._barbs] + ([self._fill] if self._fill is not None else [])
@@ -1858,6 +1917,28 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             old.on_change = None
             self._source_generation += 1
             old.close()  # nonjoining; the owning worker releases private handles
+            from .viewportstreamlines import ViewportStreamlineModel
+
+            self._streamline_model.close()
+            self._streamline_model = ViewportStreamlineModel(
+                model.paths, model.display_identity
+            )
+            self._streamline_model.on_change = self.streamlinesPrepared.emit
+            self._streamline_publication = None
+            self._streamline_display_camera = None
+            self._streamline_last_camera = None
+            self._streamline_urls = ()
+            self._pending_streamline_groups = []
+            self._pending_streamline_urls = ()
+            self._pending_streamline_camera = None
+            self._pending_streamline_publication = None
+            self._pending_streamline_buffer = -1
+            self._streamlines.setProperty("buffer0Groups", [])
+            self._streamlines.setProperty("buffer1Groups", [])
+            self._streamlines.setProperty("frontBuffer", -1)
+            self._streamlines.setProperty("pendingBuffer", -1)
+            self._streamlines.setVisible(False)
+            self._streamline_provider.clear()
             self._provider.clear()
             self._published = self._published_fill = None
             self._published_generations.clear()
@@ -1869,13 +1950,309 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self.set_camera(self._camera)
 
         def set_wind_opacity(self, opacity):
+            previous = self._wind_opacity
             self._wind_opacity = max(0.0, min(1.0, float(opacity)))
             self._barbs.setOpacity(self._wind_opacity)
+            self._streamlines.setOpacity(self._wind_opacity)
+            if previous != self._wind_opacity and self._camera is not None:
+                self.set_camera(self._camera)
+
+        def set_wind_style(self, style):
+            if style not in ("barbs", "streamlines"):
+                raise ValueError("Unsupported wind style: " + style)
+            if style != self._wind_style:
+                self._wind_style = style
+                self._streamlines.setVisible(False)
+                if self._camera is not None:
+                    self.set_camera(self._camera)
+
+        def _refresh_streamlines(self):
+            if not self._disposed and self._camera is not None:
+                self._publish_streamlines(self._camera, force=True)
+
+        def _update_streamline_camera(self, camera):
+            view = camera.view()
+            size = view.TILE_SIZE * 2.0**camera.zoom
+            center = QVector2D(
+                view._lon_to_x(camera.center_lon) / size,
+                view._lat_to_y(camera.center_lat) / size,
+            )
+            self._streamlines.setProperty("cameraCenter", center)
+            self._streamlines.setProperty("cameraZoom", camera.zoom)
+
+        def _retrace_streamlines(self):
+            if (
+                self._disposed
+                or self._camera is None
+                or self._wind_style != "streamlines"
+            ):
+                return
+            self._publish_streamlines(self._camera, force=True)
+
+        def _streamline_readiness_changed(self):
+            debug_streamlines = os.environ.get("GWR_STREAMLINE_DEBUG")
+            if (
+                self._disposed
+                or self._wind_style != "streamlines"
+                or self._streamline_model._state != "ready"
+                or (
+                    self._streamline_publication is None
+                    and self._pending_streamline_publication is None
+                )
+            ):
+                return
+            if debug_streamlines:
+                logger.warning(
+                    "streamlines readiness: state=%s front=%s pending=%s "
+                    "front_ready=%s pending_ready=%s visible=%s opacity=%.2f",
+                    self._streamline_model._state,
+                    self._streamlines.property("frontBuffer"),
+                    self._streamlines.property("pendingBuffer"),
+                    self._streamlines.property("ready"),
+                    self._streamlines.property("pendingReady"),
+                    self._streamlines.isVisible(),
+                    self._streamlines.opacity(),
+                )
+            error = self._streamlines.property("shaderError")
+            if error:
+                self._show_state("unavailable")
+                self._status.setText(str(error))
+                self._status.adjustSize()
+            else:
+                if self._streamlines.property("pendingError"):
+                    pending_error = str(self._streamlines.property("pendingError"))
+                    pending_buffer = self._pending_streamline_buffer
+                    if pending_buffer == 0:
+                        self._streamlines.setProperty("buffer0Groups", [])
+                    elif pending_buffer == 1:
+                        self._streamlines.setProperty("buffer1Groups", [])
+                    self._streamlines.setProperty("pendingBuffer", -1)
+                    self._streamline_provider.retain(self._streamline_urls)
+                    self._pending_streamline_groups = []
+                    self._pending_streamline_urls = ()
+                    self._pending_streamline_camera = None
+                    self._pending_streamline_publication = None
+                    self._pending_streamline_buffer = -1
+                    self._show_state("unavailable")
+                    self._status.setText(pending_error)
+                    self._status.adjustSize()
+                    return
+                if self._streamlines.property("pendingReady"):
+                    old_front = self._streamlines.property("frontBuffer")
+                    new_front = self._pending_streamline_buffer
+                    if debug_streamlines:
+                        logger.warning(
+                            "streamlines swap: %s -> %s, groups=%d, camera=%r",
+                            old_front,
+                            new_front,
+                            len(self._pending_streamline_groups),
+                            self._pending_streamline_camera,
+                        )
+                    self._streamlines.setProperty("frontBuffer", new_front)
+                    self._streamlines.setProperty("pendingBuffer", -1)
+                    if old_front == 0:
+                        self._streamlines.setProperty("buffer0Groups", [])
+                    elif old_front == 1:
+                        self._streamlines.setProperty("buffer1Groups", [])
+                    self._streamline_urls = self._pending_streamline_urls
+                    self._streamlines.setOpacity(self._wind_opacity)
+                    self._streamlines.setVisible(True)
+                    self._streamline_provider.retain(self._streamline_urls)
+                    self._pending_streamline_groups = []
+                    self._pending_streamline_urls = ()
+                    self._streamline_display_camera = self._pending_streamline_camera
+                    self._streamline_publication = self._pending_streamline_publication
+                    self._pending_streamline_camera = None
+                    self._pending_streamline_publication = None
+                    self._pending_streamline_buffer = -1
+                elif self._pending_streamline_publication is not None:
+                    self._show_state("loading")
+                    previous = self._streamline_display_camera
+                    pending = self._pending_streamline_camera
+                    self._status.setText(
+                        "Updating streamlines — previous forecast time"
+                        if previous is not None
+                        and pending is not None
+                        and previous.time != pending.time
+                        else "Updating streamlines — preparing display"
+                    )
+                    self._status.adjustSize()
+                    return
+                self._show_state(
+                    "ready" if self._streamlines.property("ready") else "loading"
+                )
+
+        def _publish_streamlines(self, camera, force=False):
+            debug_streamlines = os.environ.get("GWR_STREAMLINE_DEBUG")
+            enabled = self._wind_style == "streamlines" and self._wind_opacity > 0
+            self._update_streamline_camera(camera)
+            camera_changed = camera != self._streamline_last_camera
+            self._streamline_last_camera = camera
+            prior = self._streamline_display_camera
+            same_trace = prior is not None and (
+                prior.time,
+                prior.density,
+                prior.over_land,
+            ) == (camera.time, camera.density, camera.over_land)
+            if (
+                same_trace
+                and not force
+                and self._streamline_publication is not None
+                and self._streamline_urls
+            ):
+                self._streamlines.setVisible(enabled)
+                self._streamlines.setOpacity(
+                    self._wind_opacity * (0.6 if prior.time != camera.time else 1.0)
+                )
+                if not camera_changed:
+                    self._streamline_readiness_changed()
+                    return "ready"
+                self._streamline_settle.start()
+                if prior.time == camera.time:
+                    self._streamline_readiness_changed()
+                    return "ready"
+            else:
+                self._streamline_settle.stop()
+            state, paths = self._streamline_model.update(camera, enabled)
+            if debug_streamlines and state != "ready":
+                logger.warning(
+                    "streamlines awaiting trace: state=%s time=%s front=%s "
+                    "pending=%s visible=%s",
+                    state,
+                    camera.time,
+                    self._streamlines.property("frontBuffer"),
+                    self._streamlines.property("pendingBuffer"),
+                    self._streamlines.isVisible(),
+                )
+            from gweatherrouting.rendering.streamlinepaths import (
+                paths_to_render_buffers,
+            )
+            from gweatherrouting.rendering.windpainter import barb_bucket_colors
+            from PySide6.QtGui import QColor
+            from .viewportstreamlines import MAX_BATCH_SIZE
+
+            if state != "ready" or paths is None:
+                source = self._streamline_display_camera
+                retain_previous = (
+                    state == "loading"
+                    and enabled
+                    and source is not None
+                    and source.over_land == camera.over_land
+                )
+                if retain_previous:
+                    self._streamlines.setOpacity(
+                        self._wind_opacity
+                        * (0.6 if source.time != camera.time else 1.0)
+                    )
+                    self._streamlines.setVisible(True)
+                else:
+                    self._streamline_publication = None
+                    self._streamline_display_camera = None
+                    self._streamline_urls = ()
+                    self._streamlines.setProperty("buffer0Groups", [])
+                    self._streamlines.setProperty("buffer1Groups", [])
+                    self._streamlines.setProperty("frontBuffer", -1)
+                    self._streamlines.setProperty("pendingBuffer", -1)
+                    self._streamlines.setVisible(False)
+                if self._wind_style == "streamlines":
+                    self._show_state(state)
+                    if retain_previous:
+                        self._status.setText(
+                            "Updating streamlines — previous forecast time"
+                            if source.time != camera.time
+                            else "Updating streamlines — updating coverage"
+                        )
+                        self._status.adjustSize()
+                    elif state == "hidden":
+                        self._status.hide()
+                    elif state == "unavailable":
+                        self._status.setText(self._streamline_model.error)
+                        self._status.adjustSize()
+                return state
+            publication = (id(paths), camera)
+            if publication == self._streamline_publication and not force:
+                self._streamlines.setOpacity(self._wind_opacity)
+                self._streamlines.setVisible(enabled)
+                self._streamline_readiness_changed()
+                return state
+            groups = []
+            buffers = paths_to_render_buffers(paths, camera.over_land)
+            for bucket, (lines, arrows) in buffers.items():
+                for arrow, segments in ((False, lines), (True, arrows)):
+                    if not len(segments):
+                        continue
+                    for offset in range(0, len(segments), MAX_BATCH_SIZE):
+                        batch = segments[offset : offset + MAX_BATCH_SIZE]
+                        try:
+                            url, count = self._streamline_provider.publish(
+                                bucket, batch
+                            )
+                        except (ValueError, MemoryError) as exc:
+                            self._streamline_model.error = (
+                                f"Streamline encoding failed: {exc}"
+                            )
+                            # Failed staging must not tear down the front buffer.
+                            self._show_state("unavailable")
+                            self._status.setText(self._streamline_model.error)
+                            self._status.adjustSize()
+                            return
+                        groups.append(
+                            {
+                                "source": url,
+                                "count": count,
+                                "color": QColor.fromRgbF(*barb_bucket_colors()[bucket]),
+                                "arrow": arrow,
+                            }
+                        )
+            self._pending_streamline_groups = groups
+            self._pending_streamline_urls = tuple(group["source"] for group in groups)
+            self._pending_streamline_camera = camera
+            self._pending_streamline_publication = publication
+            front_buffer = self._streamlines.property("frontBuffer")
+            pending_buffer = 0 if front_buffer != 0 else 1
+            self._pending_streamline_buffer = pending_buffer
+            self._streamlines.setProperty("pendingBuffer", pending_buffer)
+            self._streamlines.setProperty(
+                f"buffer{pending_buffer}Groups", groups
+            )
+            self._streamlines.setOpacity(self._wind_opacity * (0.6 if self._streamline_display_camera and self._streamline_display_camera.time != camera.time else 1.0))
+            self._streamlines.setVisible(enabled)
+            if not groups:
+                self._streamlines.setProperty("buffer0Groups", [])
+                self._streamlines.setProperty("buffer1Groups", [])
+                self._streamlines.setProperty("frontBuffer", -1)
+                self._streamlines.setProperty("pendingBuffer", -1)
+                self._streamline_display_camera = None
+                self._streamline_publication = None
+                self._streamline_urls = ()
+                self._streamline_provider.retain(())
+                self._show_state("unavailable")
+                self._status.setText("No visible streamlines in the selected forecast")
+                self._status.adjustSize()
+                return "unavailable"
+            self._streamline_provider.retain(self._streamline_urls + self._pending_streamline_urls)
+            if debug_streamlines:
+                logger.warning(
+                    "streamlines staged: segments=%d groups=%d front=%s "
+                    "pending=%s pending_ready=%s visible=%s diagnostics=%s",
+                    sum(group["count"] for group in groups),
+                    len(groups),
+                    self._streamlines.property("frontBuffer"),
+                    self._streamlines.property("pendingBuffer"),
+                    self._streamlines.property("pendingReady"),
+                    self._streamlines.isVisible(),
+                    self._streamlines.property("batchDiagnostics"),
+                )
+            self._streamline_readiness_changed()
+            return state
 
         def dispose(self):
             if self._disposed:
                 return
             self._disposed = True
+            self._streamline_model.close()
+            self._streamline_settle.stop()
+            self._streamlines.setVisible(False)
             self._source_generation += 1
             self._wheel_zoom_tick.stop()
             self._wheel_zoom_settle.stop()
@@ -1891,6 +2268,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             if self._chart_model is not None:
                 self._chart_model.close()
             self._provider.clear()
+            self._streamline_provider.clear()
             if self._chart_provider is not None:
                 self._chart_provider.clear()
             if self._navigation_provider is not None:
@@ -1984,7 +2362,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                         # Withdraw old-scale/time ENC immediately, not after
                         # the settle timer or the replacement worker finishes.
                         cast(QObject, self._chart).setProperty("source", QUrl(""))
-                    self._place_chart()
+                self._place_chart()
+                self._publish_streamlines(camera)
+                if self._wind_style == "streamlines":
+                    self._set_weather_visible(False)
+                    self.cameraChanged.emit(camera)
+                    return self._state
                 state, field, selection = self._model.update(camera)
                 if state != "ready":
                     # A miss shows the loading state; it never shows stale content.

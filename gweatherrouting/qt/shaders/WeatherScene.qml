@@ -20,4 +20,5 @@ Item {
         objectName: "weatherBarbs"
         anchors.fill: parent
     }
+    WeatherStreamlines { objectName: "weatherStreamlines"; anchors.fill: parent; visible: false }
 }

@@ -67,8 +67,6 @@ class MapEnvironmentMixin:
         surface.set_device_scale(factor, factor)
         cr = cairo.Context(surface)
         self.charts.draw_above_enc(self, cr)
-        if not getattr(self, "_desktop_viewport", False):
-            self._draw_weather_background(cr)
         self.marine.do_draw(self, cr)
         surface.flush()
         image = QImage(
@@ -80,22 +78,3 @@ class MapEnvironmentMixin:
         ).copy()
         image.setDevicePixelRatio(factor)
         return image
-
-    def _draw_weather_background(self, cr):
-        settings = self.controller.settings
-        style = (
-            self.time_control.time,
-            settings.gribArrowOpacity,
-            getattr(settings, "gribIsobarsVisible", True),
-            self.wind_visible,
-            getattr(settings, "gribIsobarInterval", 4.0),
-            getattr(settings, "gribIsobarOpacity", 0.85),
-            getattr(settings, "gribIsobarLabels", True),
-            getattr(settings, "gribWindStyle", "barbs"),
-            getattr(settings, "gribBarbDensity", "standard"),
-        )
-        sources = tuple((grib,) for grib in self.controller.display_forecast.sources())
-        if self.wind_visible or getattr(settings, "gribIsobarsVisible", True):
-            # Fill/isobars stay in the cached base image (smooth when scaled);
-            # barbs paint crisp in paintEvent via _paint_wind_barbs().
-            self.wind.draw(self, cr, sources, style, live_barbs=False)

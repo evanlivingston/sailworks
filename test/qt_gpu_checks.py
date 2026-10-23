@@ -3,12 +3,11 @@
 import os
 import time
 import unittest
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
-from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QColor, QImage, QPainter
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QImage, QPainter
 
 from gweatherrouting.qt.controller import SessionController
 from test.qt_preview_checks import (
@@ -268,7 +267,7 @@ class NativeGpuChecks(Fixture):
         from gweatherrouting.core.mapviewport import MapViewport
         from gweatherrouting.rendering.overlayrenderer import RenderJob, RenderState
         from gweatherrouting.rendering.windpainter import flatten_wind_columns
-        from gweatherrouting.qt.mapframe import ImageFrame, MapFrame, prepare_wind
+        from gweatherrouting.qt.mapframe import ImageFrame, MapFrame
         from gweatherrouting.rendering.windpainter import WindPainter
 
         canvas, gpu = self.window.map, self.window.map._gpu

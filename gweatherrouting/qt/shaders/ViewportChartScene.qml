@@ -48,6 +48,7 @@ Item {
         objectName: "weatherBarbs"
         anchors.fill: parent
     }
+    WeatherStreamlines { objectName: "weatherStreamlines"; anchors.fill: parent; visible: false }
     ChartLayer {
         objectName: "navigationOverlay"
         anchors.fill: parent
