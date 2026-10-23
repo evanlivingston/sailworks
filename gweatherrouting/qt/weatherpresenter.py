@@ -1,4 +1,4 @@
-"""ENC/weather Quick child; TrackMap retains source policy and all input."""
+"""Qt Quick weather/chart child hosted by the desktop viewport map."""
 
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, QTimer, Qt, Signal
 from PySide6.QtGui import QGuiApplication, QPainter
@@ -69,7 +69,6 @@ class WeatherPresenter(QObject):
             and not self.reason
             and settings.get("weatherRenderer", "viewport") == "viewport"
             and settings.gribWindStyle == "barbs"
-            and getattr(settings, "gribBarbDensity", "standard") != "all"
         )
 
     @property
@@ -124,8 +123,8 @@ class WeatherPresenter(QObject):
             kwargs = dict(
                 chart_layer=True,
                 # The desktop map uses the viewport's world chart composition.
-                # Other TrackMap callers retain their existing ENC-only host.
-                enc_chart_layer=not desktop_map,
+                # Non-desktop map hosts retain their existing ENC-only host.
+                enc_chart_layer=True,
                 chart_without_weather=desktop_map,
                 enc_only=not desktop_map,
                 chart_data_dir=DATA_DIR,
@@ -251,7 +250,11 @@ class WeatherPresenter(QObject):
             return
         selection = self.canvas.controller.display_forecast
         if self.reason:
-            mode = "Legacy weather fallback: " + self.reason
+            mode = (
+                "Viewport unavailable: " + self.reason
+                if getattr(self.canvas, "_desktop_viewport", False)
+                else "Weather renderer unavailable: " + self.reason
+            )
         elif self.canvas.controller.settings.gribWindStyle == "streamlines":
             mode = "Streamlines — legacy renderer"
         elif (
@@ -265,10 +268,11 @@ class WeatherPresenter(QObject):
             getattr(self.canvas.controller.settings, "gribBarbDensity", "standard")
             == "all"
         ):
-            mode = "All forecast points — legacy chart/weather renderer (unthinned)"
+            mode = "Viewport wind (all forecast points, unthinned): " + self._state
         else:
             mode = "Viewport wind: " + self._state
-        basemap = self.canvas.charts.basemap_status(self.canvas)
+        charts = getattr(self.canvas, "charts", None)
+        basemap = charts.basemap_status(self.canvas) if charts is not None else ""
         if getattr(self.canvas, "_desktop_viewport", False) and self.widget:
             chart = self.widget._chart_model
             if chart is not None:
@@ -331,6 +335,7 @@ class WeatherPresenter(QObject):
         widget.setGeometry(self.canvas.rect())
         foreground.setGeometry(self.canvas.rect())
         widget._smooth_zoom = getattr(self.canvas, "_smooth_zoom", True)
+        widget._pan_inertia_enabled = getattr(self.canvas, "_pan_inertia_enabled", True)
         widget.set_wind_opacity(
             self.canvas.controller.settings.gribArrowOpacity
             if self.canvas.wind_visible
@@ -395,15 +400,6 @@ class WeatherPresenter(QObject):
             self.deadline.stop()
         elif self.widget is not None:
             self._drop_widget()
-        if (
-            getattr(self.canvas.controller.settings, "gribBarbDensity", "standard")
-            == "all"
-        ):
-            self.canvas.controller.set_renderer_status(
-                self.canvas,
-                "cpu",
-                reason="All forecast points: unthinned legacy renderer",
-            )
         self._label()
         # Existing interactive widgets must remain above both presentation children.
         self.canvas.coverage_notice.raise_()
@@ -434,7 +430,9 @@ class WeatherPresenter(QObject):
             return
         self.reason = reason
         self.suspend()
-        self.canvas.controller.set_renderer_status(self.canvas, "cpu", reason=reason)
+        self.canvas.controller.set_renderer_status(
+            self.canvas, "unavailable", reason=reason
+        )
         self.canvas.queue_draw()
         self._label()
 

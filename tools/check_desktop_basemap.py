@@ -90,7 +90,9 @@ def application(report, data, output, deadline):
         return _wait(predicate, max(0, min(seconds, deadline - time.perf_counter())))
 
     def center():
-        canvas._center_lat, canvas._center_lon, canvas._zoom = (48.45, -124.29, 9.38)
+        canvas.camera_state.center_lat = 48.45
+        canvas.camera_state.center_lon = -124.29
+        canvas.camera_state.zoom = 9.38
         canvas._invalidate_base()
         canvas.update()
 
@@ -169,12 +171,12 @@ def application(report, data, output, deadline):
         window.navigation_panel.add_poi((48.48, -124.29))
         report["checks"]["full_window_without_forecast"] = stage("no-weather")
         aligned = route_aligned()
-        canvas._pan_pixels(40, 20)
-        canvas._refresh_after_gesture()
+        canvas._weather_presenter.widget.pan_pixels(40, 20)
         report["checks"]["pan_basemap"] = stage("pan")
         aligned = route_aligned() and aligned
-        canvas._zoom += 0.25
-        canvas._refresh_after_gesture()
+        canvas._weather_presenter.widget.zoom_at(
+            0.25, canvas.width() / 2, canvas.height() / 2
+        )
         report["checks"]["fractional_zoom_basemap"] = stage("zoom")
         aligned = route_aligned() and aligned
         window.resize(1320, 860)

@@ -178,3 +178,33 @@ def test_integration_gate_rejects_missing_and_false_evidence():
         report["checks"][name] = False
         assert sum(row["verdict"] == "fail" for row in evaluate(gate, report)) == 1
         report["checks"][name] = True
+
+
+def test_integration_tool_uses_standalone_viewport_host():
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(load("check_native_weather_integration").run))
+    imports = [node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
+    assert any(
+        node.module == "gweatherrouting.qt.viewportmap"
+        and any(alias.name == "ViewportMap" for alias in node.names)
+        for node in imports
+    )
+    assert not any(
+        node.module == "gweatherrouting.qt.mapcanvas"
+        or any(alias.name == "TrackMap" for alias in node.names)
+        for node in imports
+    )
+    constructors = [
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    ]
+    assert "ViewportMap" in constructors
+    assert "TrackMap" not in constructors
+    assert not any(
+        isinstance(node, ast.Attribute)
+        and node.attr in {"_center_lat", "_center_lon", "_zoom"}
+        for node in ast.walk(tree)
+    )

@@ -198,17 +198,18 @@ class WorkspacePreferences(QObject):
                 "map": {
                     "dashboard": window.log_map.dashboard_visible,
                     "wind": window.log_map.wind_visible,
-                    "latitude": window.log_map._center_lat,
-                    "longitude": (window.log_map._center_lon + 180) % 360 - 180,
-                    "zoom": window.log_map._zoom,
+                    "latitude": window.log_map.camera_state.center_lat,
+                    "longitude": (window.log_map.camera_state.center_lon + 180) % 360
+                    - 180,
+                    "zoom": window.log_map.camera_state.zoom,
                 },
             },
             "map": {
                 "dashboard": window.map.dashboard_visible,
                 "wind": window.map.wind_visible,
-                "latitude": window.map._center_lat,
-                "longitude": (window.map._center_lon + 180) % 360 - 180,
-                "zoom": window.map._zoom,
+                "latitude": window.map.camera_state.center_lat,
+                "longitude": (window.map.camera_state.center_lon + 180) % 360 - 180,
+                "zoom": window.map.camera_state.zoom,
             },
             "routing": {
                 "page": panel.pages.currentIndex(),
@@ -254,13 +255,15 @@ class WorkspacePreferences(QObject):
                 self.window.views.setCurrentIndex(index)
         saved_map = mapping(state.get("map"))
         canvas = self.window.map
-        canvas._center_lat = number(
-            saved_map.get("latitude"), canvas._center_lat, -85, 85
+        canvas.camera_state.center_lat = number(
+            saved_map.get("latitude"), canvas.camera_state.center_lat, -85, 85
         )
-        canvas._center_lon = number(
-            saved_map.get("longitude"), canvas._center_lon, -180, 180
+        canvas.camera_state.center_lon = number(
+            saved_map.get("longitude"), canvas.camera_state.center_lon, -180, 180
         )
-        canvas._zoom = number(saved_map.get("zoom"), canvas._zoom, 1, 20)
+        canvas.camera_state.zoom = number(
+            saved_map.get("zoom"), canvas.camera_state.zoom, 1, 20
+        )
         canvas.queue_draw()
         self._restore_routing(mapping(state.get("routing")))
         self._restore_map_display(self.window.map, saved_map)
@@ -383,13 +386,15 @@ class WorkspacePreferences(QObject):
         saved_map = mapping(logs.get("map"))
         canvas = self.window.log_map
         self._restore_map_display(canvas, saved_map)
-        canvas._center_lat = number(
-            saved_map.get("latitude"), canvas._center_lat, -85, 85
+        canvas.camera_state.center_lat = number(
+            saved_map.get("latitude"), canvas.camera_state.center_lat, -85, 85
         )
-        canvas._center_lon = number(
-            saved_map.get("longitude"), canvas._center_lon, -180, 180
+        canvas.camera_state.center_lon = number(
+            saved_map.get("longitude"), canvas.camera_state.center_lon, -180, 180
         )
-        canvas._zoom = number(saved_map.get("zoom"), canvas._zoom, 1, 20)
+        canvas.camera_state.zoom = number(
+            saved_map.get("zoom"), canvas.camera_state.zoom, 1, 20
+        )
         canvas.queue_draw()
 
     @staticmethod

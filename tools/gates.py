@@ -2263,7 +2263,7 @@ GATES["enc-viewport-experience"] = {
 # Gates whose enforced thresholds are not yet derived from recorded evidence.
 GATES["enc-app-rollout"] = {
     **GATES["enc-viewport-functional"],
-    "title": "Default ENC through the application TrackMap and Weather panel",
+    "title": "Default ENC through the application viewport and Weather panel",
     "tool": "tools/check_enc_app_rollout.py",
     "command": [
         "{python}",
@@ -2286,7 +2286,7 @@ GATES["enc-app-rollout"] = {
             "charts_without_forecast",
             "no_implicit_forecast",
             "selected_forecast_with_enc",
-            "enc_only_no_duplicate_legacy",
+            "viewport_enc_layer_no_legacy_duplicate",
             "app_layer_order_preserved",
             "app_pan_zoom",
             "app_resize",
@@ -2295,7 +2295,7 @@ GATES["enc-app-rollout"] = {
             "chart_switch_off",
             "chart_switch_on",
             "source_clear_keeps_charts",
-            "legacy_recovery",
+            "renderer_failure_visible",
         )
     ],
     "open_requirements": [
@@ -2340,7 +2340,7 @@ GATES["desktop-basemap"] = {
 
 GATES["wind-all-points"] = {
     **GATES["enc-app-rollout"],
-    "title": "All forecast points: explicit uncapped legacy wind presentation",
+    "title": "All forecast points: unthinned standalone GPU wind presentation",
     "milestone": "#79 under #51",
     "tool": "tools/check_all_points_wind.py",
     "defaults": {"scenarios": ["all-thinned-all"], "frames": 1, "repeats": 1},
@@ -2355,7 +2355,7 @@ GATES["wind-all-points"] = {
         for name in (
             "all_points_nonblank_membership",
             "dense_uncapped",
-            "explicit_legacy_not_loading",
+            "explicit_gpu_not_loading",
             "charts_navigation_retained",
             "shoreline_membership",
             "density_roundtrip_no_duplicate",
@@ -2363,11 +2363,11 @@ GATES["wind-all-points"] = {
             "visibility_hides_wind",
             "visible_wind_recovers",
             "dense_camera_input",
+            "forecast_time_selection",
+            "failure_no_cpu_recovery",
         )
     ],
-    "open_requirements": [
-        "CPU all-points presentation; no GPU all-points, FPS or RSS/VRAM claim."
-    ],
+    "open_requirements": ["Functional GPU readback only; no FPS or RSS/VRAM claim."],
 }
 
 GATES_NEEDING_RATIFICATION = tuple(

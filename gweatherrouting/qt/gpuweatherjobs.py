@@ -19,6 +19,14 @@ from gweatherrouting.rendering.windrenderer import WindLandMask
 
 logger = logging.getLogger("gweatherrouting")
 
+
+def _camera_coordinates(canvas):
+    state = getattr(canvas, "camera_state", None)
+    if state is not None:
+        return state.center_lat, state.center_lon, state.zoom
+    return canvas._center_lat, canvas._center_lon, canvas._zoom
+
+
 # The declared residency budget of the GPU-resident field store. It is the
 # same 32 MiB the CPU staging path already allowed for one published pair, so
 # the field store does not raise the memory ceiling of the presenter.
@@ -172,12 +180,13 @@ class WeatherStager(QObject):
         if not eligible:
             self.invalidate()
             return None
+        center_lat, center_lon, zoom = _camera_coordinates(canvas)
         view = BarbView(
             canvas.width(),
             canvas.height(),
-            canvas._center_lat,
-            canvas._center_lon,
-            canvas._zoom,
+            center_lat,
+            center_lon,
+            zoom,
             getattr(settings, "gribBarbDensity", "standard"),
             True,
         )

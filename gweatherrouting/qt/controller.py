@@ -140,6 +140,11 @@ class SessionController(QObject):
 
     def renderer_status(self):
         states = list(self._renderer_states.values())
+        unavailable = [
+            s["reason"] for s in states if s["actual"] == "unavailable" and s["reason"]
+        ]
+        if unavailable:
+            return "Viewport unavailable: " + "; ".join(dict.fromkeys(unavailable))
         failures = [s["reason"] for s in states if s["reason"]]
         if failures:
             return "CPU fallback: " + "; ".join(dict.fromkeys(failures))

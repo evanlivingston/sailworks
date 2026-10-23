@@ -298,8 +298,8 @@ class DataLibrary(QDialog):
     def use_map_center(self):
         if self.controller.charts.maps:
             canvas = self.controller.charts.maps[0]
-            self.latitude.setValue(canvas._center_lat)
-            self.longitude.setValue(canvas._center_lon)
+            self.latitude.setValue(canvas.camera_state.center_lat)
+            self.longitude.setValue(canvas.camera_state.center_lon)
 
     def refresh(self):
         entries = self.data.local_forecasts

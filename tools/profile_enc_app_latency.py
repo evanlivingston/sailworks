@@ -20,7 +20,7 @@ def application(report, data, output, deadline):  # noqa: C901 - one bounded ses
     from PySide6.QtWidgets import QApplication
     from gweatherrouting.core.marine.credentials import SystemCredentialStore
     from gweatherrouting.qt.controller import SessionController
-    from gweatherrouting.qt.mapcanvas import TrackMap
+    from gweatherrouting.qt.viewportmap import ViewportMap
     from gweatherrouting.qt.weatherpanel import WeatherPanel
 
     SystemCredentialStore.load = lambda self: None
@@ -28,7 +28,7 @@ def application(report, data, output, deadline):  # noqa: C901 - one bounded ses
     controller = SessionController(offline=True)
     controller.settings["weatherRenderer"] = "viewport"
     controller.settings["gribWindStyle"] = "barbs"
-    canvas = TrackMap(controller)
+    canvas = ViewportMap(controller)
     canvas.resize(710, 743)
     panel = WeatherPanel(controller, lambda: canvas, lambda: None, lambda: None)
     report["stages"] = {}
@@ -42,7 +42,9 @@ def application(report, data, output, deadline):  # noqa: C901 - one bounded ses
 
     def ready_chart():
         chart = model()
-        return chart is not None and chart.state == "ready" and chart.enc_state == "ready"
+        return (
+            chart is not None and chart.state == "ready" and chart.enc_state == "ready"
+        )
 
     def spans():
         chart = model()
@@ -63,7 +65,9 @@ def application(report, data, output, deadline):  # noqa: C901 - one bounded ses
         }
 
     try:
-        hrrr = [c for c in controller.display_forecast.choices if "hrrr" in c.name.lower()]
+        hrrr = [
+            c for c in controller.display_forecast.choices if "hrrr" in c.name.lower()
+        ]
         if hrrr:
             panel.display_forecast.setCurrentIndex(
                 panel.display_forecast.findData(hrrr[0].key)

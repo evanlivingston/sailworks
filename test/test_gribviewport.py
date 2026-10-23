@@ -91,6 +91,71 @@ def test_the_viewport_owns_its_camera_and_time_state():
     assert other.view()._center_lon == 0.7
 
 
+@pytest.mark.parametrize("over_land", [True, False])
+def test_all_points_selects_every_native_node_at_current_time(gribs, over_land):
+    import numpy as np
+    from gweatherrouting.core.gribsampling import WeatherSampler
+    from gweatherrouting.qt.gpuweather import decode_component
+    from gweatherrouting.rendering.weatherbarbs import _view_bounds
+
+    fields = gribs.field(0, size=101) + gribs.field(3, size=101)
+    fields = [
+        (element, hour, values / 100 if element in ("UGRD", "VGRD") else values)
+        for element, hour, values in fields
+    ]
+    source = gribs.file(
+        fields,
+        transform=(-0.005, 0.01, 0, -0.005, 0, 0.01),
+        end=3,
+    )
+    model = GribViewportModel((source.path,), land_mask=Land())
+    sampler = WeatherSampler([source])
+    camera = _camera(density="all", over_land=over_land)
+    try:
+        for hour in (1, 2, 3):
+            current = replace(camera, time=START + timedelta(hours=hour))
+            field, selection = _wait_ready(model, camera=current)
+            points = source.sampling.nodes(_view_bounds(current.view()))
+            uv = sampler.sample_timestamps(
+                "wind", current.stamp(), points[:, 0], points[:, 1]
+            )
+            expected = points[np.isfinite(uv).all(axis=1)]
+            if not over_land:
+                expected = expected[expected[:, 0] <= 0.5]
+            ids = selection.node_ids.ravel()
+            ids = ids[ids >= 0].astype(int)
+            actual = field.points[ids]
+            assert selection.count == len(expected)
+            assert len(np.unique(ids)) == len(expected)
+            if over_land:
+                assert selection.count > 8192
+            order = lambda a: a[np.lexsort((a[:, 0], a[:, 1]))]
+            np.testing.assert_allclose(
+                order(actual), order(expected), rtol=0, atol=1e-9
+            )
+            values = field.staged.first[0, ids] + (
+                field.staged.second[0, ids] - field.staged.first[0, ids]
+            ) * field.staged.weight(current.stamp())
+            reference = sampler.sample_timestamps(
+                "wind", current.stamp(), actual[:, 0], actual[:, 1]
+            )
+            # GPU staging uses float32 (relative rounding up to ~7e-8).
+            # At zero, equivalent interpolation orders also leave float64
+            # roundoff (~1e-18 m/s); neither difference is a missing node.
+            np.testing.assert_allclose(values, reference, rtol=1e-7, atol=1e-14)
+            np.testing.assert_array_equal(
+                decode_component(selection.node_image).ravel(),
+                selection.node_ids.ravel(),
+            )
+        # Density is portrayal only: returning from thinned mode loses no nodes.
+        assert model.update(replace(current, density="standard"))[0] == "ready"
+        state, same, restored = model.update(current)
+        assert state == "ready" and same is field
+        np.testing.assert_array_equal(restored.node_ids, selection.node_ids)
+    finally:
+        model.close()
+
+
 # -------------------------------------------------------------- coverage
 def test_a_covered_camera_move_reuses_the_resident_field(gribs):
     paths, _source = _paths(gribs)
@@ -1016,13 +1081,29 @@ def test_a_fill_only_publication_leaves_the_barbs_untouched():
     assert scene._barbs.properties == {}
 
 
-def test_the_application_never_imports_the_viewport():
-    """The default application path is unchanged by the viewport's fill."""
+def test_the_application_never_imports_the_legacy_map():
+    """Application hosts may use the viewport, never the retired TrackMap."""
+    import ast
+
     package = Path(gribviewport.__file__).parent
     for path in sorted(package.glob("*.py")):
-        if path.name == "gribviewport.py":
+        if path.name == "mapcanvas.py":
             continue
-        assert "gribviewport" not in path.read_text(), path.name
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                assert not any(
+                    "mapcanvas" in alias.name.split(".") for alias in node.names
+                ), path.name
+            elif isinstance(node, ast.ImportFrom):
+                assert "mapcanvas" not in (node.module or "").split("."), path.name
+                assert not any(
+                    alias.name in ("TrackMap", "mapcanvas") for alias in node.names
+                ), path.name
+            elif isinstance(node, ast.Name):
+                assert node.id != "TrackMap", path.name
+            elif isinstance(node, ast.Attribute):
+                assert node.attr not in ("TrackMap", "mapcanvas"), path.name
 
 
 def test_the_chart_layer_is_off_by_default():

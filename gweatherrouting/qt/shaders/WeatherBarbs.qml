@@ -28,10 +28,29 @@ Item {
                          && imageU1.status === Image.Ready && imageV1.status === Image.Ready)
                          && imageX.status === Image.Ready && imageY.status === Image.Ready
                          && (!root.nodeIdIndirection || imageId.status === Image.Ready)
-    property bool ready: imagesReady && (nativeFields
-                         ? nativeFrameObserved && effect.status !== ShaderEffect.Error
-                         : effect.status === ShaderEffect.Compiled)
-    property string shaderError: effect.status === ShaderEffect.Error ? effect.log : ""
+    // Bound each mesh, not the selection: all-point selections may contain
+    // arbitrarily many coincident symbols within the resident field budget.
+    property int batchRows: Math.max(1, Math.floor(8192 / columns))
+    property int batchRevision: 0
+    property bool ready: imagesReady && batchesReady()
+    property string shaderError: batchError()
+    function batchesReady() {
+        let revision = batchRevision
+        for (let i = 0; i < batches.count; ++i) {
+            let item = batches.itemAt(i)
+            if (!item || item.status === ShaderEffect.Error
+                || (!nativeFields && item.status !== ShaderEffect.Compiled)) return false
+        }
+        return batches.count > 0 && (!nativeFields || nativeFrameObserved)
+    }
+    function batchError() {
+        let revision = batchRevision
+        for (let i = 0; i < batches.count; ++i) {
+            let item = batches.itemAt(i)
+            if (item && item.status === ShaderEffect.Error) return item.log
+        }
+        return ""
+    }
     Image { id: imageU0; objectName: "fieldU0"; visible: false; smooth: false; cache: false }
     Image { id: imageV0; objectName: "fieldV0"; visible: false; smooth: false; cache: false }
     Image { id: imageU1; objectName: "fieldU1"; visible: false; smooth: false; cache: false }
@@ -39,8 +58,13 @@ Item {
     Image { id: imageX; objectName: "selectionX"; visible: false; smooth: false; cache: false }
     Image { id: imageY; objectName: "selectionY"; visible: false; smooth: false; cache: false }
     Image { id: imageId; objectName: "selectionId"; visible: false; smooth: false; cache: false }
-    ShaderEffect {
-        id: effect
+    Repeater {
+        id: batches
+        model: Math.ceil(root.rows / root.batchRows)
+        onItemAdded: root.batchRevision++
+        onItemRemoved: root.batchRevision++
+        ShaderEffect {
+        required property int index
         anchors.fill: parent
         visible: root.imagesReady
         property variant u0: root.nativeFields ? root.nativeU0 : imageU0
@@ -53,8 +77,11 @@ Item {
         property real blend: root.blend
         property int nodeIdIndirection: root.nodeIdIndirection ? 1 : 0
         property int fieldColumns: root.fieldColumns
-        mesh: GridMesh { resolution: Qt.size(root.columns * 2 - 1, root.rows * 2 - 1) }
+        property int rowOffset: index * root.batchRows
+        property int meshRows: Math.min(root.batchRows, root.rows - rowOffset)
+        mesh: GridMesh { resolution: Qt.size(root.columns * 2 - 1, meshRows * 2 - 1) }
         vertexShader: "barbs.vert.qsb"
         fragmentShader: "barbs.frag.qsb"
+    }
     }
 }

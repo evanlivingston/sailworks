@@ -248,7 +248,9 @@ def worker(config):
     from gweatherrouting.core.mapviewport import MapViewport
     from gweatherrouting.qt.controller import SessionController
     from gweatherrouting.qt.datacontroller import read_forecast
-    from gweatherrouting.qt.mapcanvas import TrackMap
+    from gweatherrouting.qt.mapcanvas import (
+        TrackMap,
+    )  # TODO #86: legacy CPU-rendering benchmark; retarget or replace before deleting mapcanvas.py
     from gweatherrouting.rendering.overlayrenderer import RenderJob, RenderState
 
     def no_network(*_args, **_kwargs):
@@ -265,7 +267,9 @@ def worker(config):
     controller.settings.panInertia = False
     controller.settings.gribIsobarsVisible = bool(scene["datasets"])
     controller.time_control.set_time(datetime.fromisoformat(scene["time"]))
-    canvas = TrackMap(controller)
+    canvas = TrackMap(
+        controller
+    )  # TODO #86: legacy CPU-rendering benchmark; retarget or replace before deleting mapcanvas.py
     canvas.resize(config["width"], config["height"])
     canvas._center_lat, canvas._center_lon = scene["center"]
     canvas._zoom = scene["zoom"]

@@ -386,9 +386,9 @@ class MarinePanel(QWidget):
             return
         instant = chart_instant(self.clock.time)
         signature = (
-            self.canvas._center_lat,
-            self.canvas._center_lon,
-            self.canvas._zoom,
+            self.canvas.camera_state.center_lat,
+            self.canvas.camera_state.center_lon,
+            self.canvas.camera_state.zoom,
             self.canvas.width(),
             self.canvas.height(),
             instant,

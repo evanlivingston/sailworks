@@ -134,7 +134,7 @@ class ChartDebugPanel(QWidget):
     REFRESH_MS = 150
 
     def __init__(self, controller, active_map, maps=(), parent=None):
-        """active_map is a callable returning the currently shown TrackMap."""
+        """active_map is a callable returning the currently shown map host."""
         super().__init__(parent)
         self.controller = controller
         self._active_map = active_map
@@ -172,7 +172,8 @@ class ChartDebugPanel(QWidget):
             return
         scale = map_widget.get_scale()
         window = viewport_window(map_widget)
-        center_lat, center_lon = map_widget._center_lat, map_widget._center_lon
+        camera_state = map_widget.camera_state
+        center_lat, center_lon = camera_state.center_lat, camera_state.center_lon
         active = collection.detailed_chart_at(
             center_lat, center_lon, scale, enabled=True
         )
@@ -181,7 +182,7 @@ class ChartDebugPanel(QWidget):
             "Center {lat:.4f}, {lon:.4f}\n"
             "Active at center: {active}\nCHS tiles: {chs}\n"
             "Manage charts in Data Library → Charts".format(
-                zoom=map_widget._zoom,
+                zoom=camera_state.zoom,
                 mpp=scale,
                 nominal=scale * METERS_PER_PIXEL_TO_SCALE,
                 lat=center_lat,

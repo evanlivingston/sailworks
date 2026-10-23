@@ -424,8 +424,8 @@ class NavigationPanel(QWidget):
         form = QFormLayout(dialog)
         latitude, longitude = QDoubleSpinBox(), QDoubleSpinBox()
         for control, limit, value in (
-            (latitude, 90, self.canvas._center_lat),
-            (longitude, 180, self.canvas._center_lon),
+            (latitude, 90, self.canvas.camera_state.center_lat),
+            (longitude, 180, self.canvas.camera_state.center_lon),
         ):
             control.setRange(-limit, limit)
             control.setDecimals(6)

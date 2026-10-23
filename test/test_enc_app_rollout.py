@@ -1,7 +1,7 @@
 """Application wiring regressions; native presentation is gated separately."""
 
 from types import SimpleNamespace
-from unittest.mock import Mock, call
+from unittest.mock import ANY, Mock, call, patch
 from datetime import datetime
 from threading import Event
 from threading import Condition
@@ -49,7 +49,7 @@ def test_app_constructs_enc_only_viewport_by_default(presenter, monkeypatch):
     assert presenter.enc_active
 
 
-def test_desktop_map_uses_world_chart_layer_without_enc(presenter, monkeypatch):
+def test_desktop_map_uses_world_chart_layer_with_enc(presenter, monkeypatch):
     presenter.canvas._desktop_viewport = True
     factory = Mock()
     widget = Mock()
@@ -62,7 +62,7 @@ def test_desktop_map_uses_world_chart_layer_without_enc(presenter, monkeypatch):
 
     kwargs = factory.call_args.kwargs
     assert kwargs["chart_layer"]
-    assert not kwargs["enc_chart_layer"]
+    assert kwargs["enc_chart_layer"]
     assert kwargs["chart_without_weather"]
     assert not kwargs["enc_only"]
 
@@ -111,6 +111,33 @@ def test_legacy_recovery_disables_both_viewport_weather_and_enc(presenter):
     presenter.canvas.controller.settings.get = lambda key, default=None: "legacy"
     assert not presenter.active
     assert not presenter.enc_active
+
+
+def test_all_points_uses_viewport_and_failure_stays_unavailable(presenter, monkeypatch):
+    canvas = presenter.canvas
+    canvas._desktop_viewport = True
+    canvas.controller.settings.gribBarbDensity = "all"
+    canvas.controller.display_forecast = SimpleNamespace(sources=lambda: ())
+    canvas.controller.set_renderer_status = Mock()
+    canvas.disposed = False
+    canvas.queue_draw = Mock()
+    canvas.coverage_notice, canvas.coverage_fetch = Mock(), Mock()
+    canvas.coverage_fetch_buttons = {}
+    canvas.show()
+    monkeypatch.setattr(presenter, "_label", Mock())
+    monkeypatch.setattr(
+        presenter, "_sync_active", Mock(side_effect=RuntimeError("GPU lost"))
+    )
+    assert presenter.active
+    presenter.sync()
+    presenter._sync_active.assert_called_once_with(None)
+    assert not presenter.active
+    assert presenter.reason == "GPU lost"
+    presenter.sync()
+    # In particular, all-density sync must not overwrite unavailable with cpu.
+    canvas.controller.set_renderer_status.assert_called_once_with(
+        canvas, "unavailable", reason="GPU lost"
+    )
 
 
 def test_enc_only_worker_never_composes_the_standalone_coastline(tmp_path):
@@ -324,14 +351,18 @@ def test_basemap_gate_checks_the_displayed_chart_not_legacy_cache():
 
 
 def test_viewport_camera_handoff_is_encapsulated_by_the_map_host():
-    from gweatherrouting.qt.viewportmap import ViewportMap
+    from gweatherrouting.qt.viewportmap import (
+        ViewportCameraState,
+        ViewportMap,
+        ViewportMapState,
+    )
 
     changed = Mock()
     foreground = SimpleNamespace(update=Mock())
+    camera_state = ViewportCameraState(48.0, -123.0, 8.0)
     host = SimpleNamespace(
-        _center_lat=48.0,
-        _center_lon=-123.0,
-        _zoom=8.0,
+        camera_state=camera_state,
+        _view_state=ViewportMapState(camera_state),
         _cancel_cursor=Mock(),
         invalidate_navigation=Mock(),
         view_changed=SimpleNamespace(emit=changed),
@@ -340,7 +371,11 @@ def test_viewport_camera_handoff_is_encapsulated_by_the_map_host():
     camera = SimpleNamespace(center_lat=48.45, center_lon=-124.29, zoom=9.38)
 
     assert ViewportMap.adopt_viewport_camera(host, camera)
-    assert (host._center_lat, host._center_lon, host._zoom) == (
+    assert (
+        host.camera_state.center_lat,
+        host.camera_state.center_lon,
+        host.camera_state.zoom,
+    ) == (
         camera.center_lat,
         camera.center_lon,
         camera.zoom,
@@ -356,13 +391,16 @@ def test_viewport_camera_handoff_is_encapsulated_by_the_map_host():
 
 def test_map_host_translates_app_state_to_the_viewport_camera_contract():
     from gweatherrouting.qt.gribviewport import ViewportCamera
-    from gweatherrouting.qt.viewportmap import ViewportMap
+    from gweatherrouting.qt.viewportmap import (
+        ViewportCameraState,
+        ViewportMap,
+        ViewportMapState,
+    )
 
     instant = datetime(2026, 10, 22, 12)
+    camera_state = ViewportCameraState(48.45, -124.29, 9.38)
     host = SimpleNamespace(
-        _center_lat=48.45,
-        _center_lon=-124.29,
-        _zoom=9.38,
+        camera_state=camera_state,
         width=lambda: 710,
         height=lambda: 743,
         time_control=SimpleNamespace(time=instant),
@@ -381,8 +419,352 @@ def test_map_host_translates_app_state_to_the_viewport_camera_contract():
     )
 
 
-def test_map_host_publishes_existing_routes_to_the_viewport_overlay_layer():
+def test_weather_stager_prefers_viewport_camera_and_falls_back_to_trackmap_fields():
+    from gweatherrouting.qt.gpuweatherjobs import _camera_coordinates
+
+    legacy = SimpleNamespace(_center_lat=1, _center_lon=2, _zoom=3)
+    assert _camera_coordinates(legacy) == (1, 2, 3)
+    legacy.camera_state = SimpleNamespace(center_lat=4, center_lon=5, zoom=6)
+    assert _camera_coordinates(legacy) == (4, 5, 6)
+
+
+def test_renderer_failure_reports_unavailable_for_desktop_and_generic_hosts():
+    from gweatherrouting.qt.controller import SessionController
+    from PySide6.QtWidgets import QWidget
     from gweatherrouting.qt.viewportmap import ViewportMap
+    from gweatherrouting.qt.weatherpresenter import WeatherPresenter
+
+    assert issubclass(ViewportMap, QWidget)
+    canvas = SimpleNamespace(
+        _desktop_viewport=True,
+        controller=SimpleNamespace(set_renderer_status=Mock()),
+        queue_draw=Mock(),
+    )
+    presenter = SimpleNamespace(
+        closed=False,
+        reason="",
+        suspend=Mock(),
+        canvas=canvas,
+        _label=Mock(),
+    )
+
+    WeatherPresenter.fail(presenter, "viewport initialization failed")
+
+    presenter.suspend.assert_called_once_with()
+    canvas.controller.set_renderer_status.assert_called_once_with(
+        canvas, "unavailable", reason="viewport initialization failed"
+    )
+    canvas.queue_draw.assert_called_once_with()
+
+    controller = SimpleNamespace(
+        _renderer_states={
+            object(): {
+                "actual": "unavailable",
+                "reason": "viewport initialization failed",
+                "api": "",
+            }
+        },
+        map_renderer="gpu",
+        renderer_override=None,
+    )
+    assert SessionController.renderer_status(controller) == (
+        "Viewport unavailable: viewport initialization failed"
+    )
+
+    legacy_canvas = SimpleNamespace(
+        _desktop_viewport=False,
+        controller=SimpleNamespace(set_renderer_status=Mock()),
+        queue_draw=Mock(),
+    )
+    legacy_presenter = SimpleNamespace(
+        closed=False,
+        reason="",
+        suspend=Mock(),
+        canvas=legacy_canvas,
+        _label=Mock(),
+    )
+    WeatherPresenter.fail(legacy_presenter, "legacy renderer failure")
+    legacy_canvas.controller.set_renderer_status.assert_called_once_with(
+        legacy_canvas, "unavailable", reason="legacy renderer failure"
+    )
+
+
+def test_fit_zoom_preserves_projection_bounds_policy():
+    import math
+
+    from gweatherrouting.qt.mapstate import fit_zoom
+
+    assert fit_zoom(512, 256, 1104, 592) == 1
+    assert fit_zoom(256, 256, 1104, 720) == math.log2(2.5)
+    assert fit_zoom(0, 0, 1000, 800) == 14
+    assert fit_zoom(1000, 1000, 200, 200) == 1
+
+
+def test_map_host_size_and_invalidation_helpers_preserve_dpr_contract():
+    from gweatherrouting.qt.maphost import MapHostMixin
+
+    host = SimpleNamespace(
+        width=lambda: 320,
+        height=lambda: 200,
+        devicePixelRatioF=lambda: 1.75,
+        _render_padding=20,
+        _base_cache=object(),
+        _environment_cache=object(),
+        _nav_cache=object(),
+        background=object(),
+    )
+
+    assert MapHostMixin.get_allocated_width(host) == 360
+    assert MapHostMixin.get_allocated_height(host) == 240
+    assert MapHostMixin.get_scale_factor(host) == 2
+    assert MapHostMixin._view_pixel_size(host) == (320, 200, 1.75)
+    MapHostMixin._invalidate_base(host)
+    MapHostMixin.invalidate_navigation(host)
+    assert host._base_cache is None
+    assert host._environment_cache is None
+    assert host._nav_cache is None
+    assert host.background is None
+
+
+def test_environment_layer_keeps_marine_and_only_cpu_draws_weather():
+    from datetime import datetime
+
+    from gweatherrouting.qt.mapenvironment import MapEnvironmentMixin
+
+    source = object()
+    wind = SimpleNamespace(draw=Mock())
+
+    class Host(MapEnvironmentMixin):
+        pass
+
+    host = Host()
+    host.get_scale_factor = lambda: 2
+    host.get_allocated_width = lambda: 10
+    host.get_allocated_height = lambda: 8
+    host.charts = SimpleNamespace(draw_above_enc=Mock())
+    host.marine = SimpleNamespace(do_draw=Mock())
+    host.wind = wind
+    host.wind_visible = True
+    host.time_control = SimpleNamespace(time=datetime(2026, 10, 22, 12))
+    host.controller = SimpleNamespace(
+        settings=SimpleNamespace(gribArrowOpacity=0.7),
+        display_forecast=SimpleNamespace(sources=lambda: (source,)),
+    )
+    host._desktop_viewport = True
+
+    image = MapEnvironmentMixin._environment_image(host)
+
+    assert (image.width(), image.height(), image.devicePixelRatio()) == (20, 16, 2)
+    host.charts.draw_above_enc.assert_called_once()
+    host.marine.do_draw.assert_called_once()
+    wind.draw.assert_not_called()
+
+    host._desktop_viewport = False
+    MapEnvironmentMixin._environment_image(host)
+    assert wind.draw.call_count == 1
+    assert wind.draw.call_args.args[0] is host
+    assert wind.draw.call_args.kwargs == {"live_barbs": False}
+
+
+def test_map_state_isochrone_updates_keep_empty_and_nonempty_semantics():
+    from gweatherrouting.qt.mapstate import MapStateMixin
+
+    host = SimpleNamespace(
+        isochrones=SimpleNamespace(forget=Mock()),
+        invalidate_navigation=Mock(),
+        update=Mock(),
+    )
+
+    MapStateMixin.set_isochrones(host, ())
+
+    assert host.isochrone_frame.isochrones == ()
+    assert host.isochrone_frame.path == ()
+    assert host.isochrone_frame.exclusions == ()
+    host.isochrones.forget.assert_called_once_with(host)
+    host.invalidate_navigation.assert_called_once_with()
+    host.update.assert_called_once_with()
+
+    MapStateMixin.set_isochrones(host, ((48.4, -123.4),))
+
+    assert host.isochrone_frame.isochrones == ((48.4, -123.4),)
+    assert host.isochrone_frame.path == ()
+    assert host.isochrone_frame.exclusions == ()
+    host.isochrones.forget.assert_called_once_with(host)
+    assert host.invalidate_navigation.call_count == 2
+    assert host.update.call_count == 2
+
+
+def test_viewport_foreground_publishes_navigation_instead_of_legacy_painting():
+    from gweatherrouting.qt.viewportmap import ViewportMap
+
+    image = object()
+    target = object()
+    painter = object()
+    cache = ("key", 0, 0, 0, image)
+    widget = SimpleNamespace(set_navigation_overlay=Mock())
+    presenter = SimpleNamespace(active=True, widget=widget)
+    host = SimpleNamespace(
+        _weather_presenter=presenter,
+        _nav_cache=None,
+        _resolve_reusable_layer=Mock(return_value=(cache, target)),
+        _nav_key=Mock(return_value="key"),
+        _navigation_image=Mock(return_value=image),
+        _paint_dashboard=Mock(),
+        _paint_route_overlay=Mock(),
+        _paint_track_overlay=Mock(),
+        _paint_caption=Mock(),
+    )
+
+    ViewportMap._paint_foreground(host, painter)
+
+    host._resolve_reusable_layer.assert_called_once_with(
+        None, "key", host._navigation_image
+    )
+    widget.set_navigation_overlay.assert_called_once_with(image, target)
+    host._paint_dashboard.assert_called_once_with(painter)
+    host._paint_route_overlay.assert_not_called()
+    host._paint_track_overlay.assert_not_called()
+    host._paint_caption.assert_not_called()
+
+
+def test_viewport_dashboard_publishes_or_clears_only_through_qml():
+    from gweatherrouting.qt.viewportmap import ViewportMap
+
+    image = object()
+    widget = SimpleNamespace(set_dashboard_overlay=Mock())
+    presenter = SimpleNamespace(active=True, widget=widget)
+    painter = SimpleNamespace(drawImage=Mock())
+    host = SimpleNamespace(
+        _weather_presenter=presenter,
+        dashboard_visible=True,
+        _dash_cache=None,
+        _dash_key=Mock(return_value="dashboard-key"),
+        _dashboard_image=Mock(return_value=image),
+    )
+
+    ViewportMap._paint_dashboard(host, painter)
+
+    assert host._dash_cache == ("dashboard-key", image)
+    widget.set_dashboard_overlay.assert_called_once_with(image)
+    painter.drawImage.assert_not_called()
+
+    host.dashboard_visible = False
+    ViewportMap._paint_dashboard(host, painter)
+    assert widget.set_dashboard_overlay.call_args == call(None)
+    painter.drawImage.assert_not_called()
+
+    presenter.active = False
+    host.dashboard_visible = True
+    widget.set_dashboard_overlay.reset_mock()
+    ViewportMap._paint_dashboard(host, painter)
+    widget.set_dashboard_overlay.assert_not_called()
+    painter.drawImage.assert_not_called()
+
+
+def test_retained_overlay_mixin_preserves_dpr_and_renderer_draw_calls():
+    from gweatherrouting.qt import mapoverlays
+    from gweatherrouting.qt.mapoverlays import RetainedOverlayMixin
+
+    surfaces = []
+
+    class Surface:
+        def __init__(self, _format, width, height):
+            self.width = width
+            self.height = height
+            surfaces.append(self)
+
+        def set_device_scale(self, _x, _y):
+            pass
+
+        def flush(self):
+            pass
+
+        def get_data(self):
+            return b"pixels"
+
+        def get_width(self):
+            return self.width
+
+        def get_height(self):
+            return self.height
+
+        def get_stride(self):
+            return self.width * 4
+
+    class Image:
+        Format = SimpleNamespace(Format_ARGB32_Premultiplied=1)
+
+        def __init__(self, *args):
+            self.args = args
+            self.dpr = None
+
+        def copy(self):
+            return self
+
+        def setDevicePixelRatio(self, dpr):
+            self.dpr = dpr
+
+    isochrones = SimpleNamespace(draw=Mock())
+    navigation = SimpleNamespace(draw_routes=Mock(), draw_navigation=Mock())
+    dashboard = SimpleNamespace(boat_info=None, _draw_dashboard=Mock())
+    host = SimpleNamespace(
+        get_scale_factor=lambda: 2,
+        get_allocated_width=lambda: 10,
+        get_allocated_height=lambda: 8,
+        width=lambda: 11,
+        height=lambda: 9,
+        isochrone_frame=SimpleNamespace(isochrones=()),
+        isochrones=isochrones,
+        navigation=navigation,
+        time_control=SimpleNamespace(time=datetime(2026, 10, 22, 12)),
+        ais_visible=False,
+        dashboard=dashboard,
+        controller=SimpleNamespace(core=SimpleNamespace(boat_info=object())),
+    )
+
+    with (
+        patch.object(mapoverlays.cairo, "ImageSurface", side_effect=Surface),
+        patch.object(mapoverlays.cairo, "Context", return_value=object()),
+        patch.object(mapoverlays, "QImage", Image),
+    ):
+        navigation_image = RetainedOverlayMixin._navigation_image(host)
+        dashboard_image = RetainedOverlayMixin._dashboard_image(host)
+
+    assert [(surface.width, surface.height) for surface in surfaces] == [
+        (20, 16),
+        (22, 18),
+    ]
+    assert navigation_image.dpr == dashboard_image.dpr == 2
+    isochrones.draw.assert_called_once()
+    navigation.draw_routes.assert_called_once()
+    navigation.draw_navigation.assert_called_once()
+    dashboard._draw_dashboard.assert_called_once_with(host, ANY)
+
+
+def test_overlay_service_owns_hide_and_close_lifecycle():
+    from gweatherrouting.qt.mapoverlays import MapOverlayServices
+
+    host = object()
+    service = object.__new__(MapOverlayServices)
+    service.isochrones = SimpleNamespace(forget=Mock())
+    service.marine = SimpleNamespace(forget=Mock(), close=Mock())
+
+    service.forget(host)
+    service.isochrones.forget.assert_called_once_with(host)
+    service.marine.forget.assert_called_once_with(host)
+
+    service.close(host)
+    assert service.isochrones.forget.call_count == 2
+    service.isochrones.forget.assert_called_with(host)
+    service.marine.close.assert_called_once_with()
+
+
+def test_map_host_publishes_existing_routes_to_the_viewport_overlay_layer():
+    from gweatherrouting.qt.viewportmap import (
+        ViewportCameraState,
+        ViewportMap,
+        ViewportMapState,
+    )
 
     class Route:
         visible = True
@@ -400,16 +782,19 @@ def test_map_host_publishes_existing_routes_to_the_viewport_overlay_layer():
             ),
         ),
         navigation=SimpleNamespace(hl_routing="selected route"),
-        selected_route_point=1,
-        route_plan=((48.1, -124.1), (48.2, -124.0)),
-        route_preview=((48.3, -124.3), (48.4, -124.2)),
-        points=(
-            SimpleNamespace(lat=48.0, lon=-124.0),
-            SimpleNamespace(lat=48.1, lon=-124.1),
-            SimpleNamespace(lat=48.2, lon=-124.2),
+        _view_state=ViewportMapState(
+            camera=ViewportCameraState(),
+            selected_route_point=1,
+            route_plan=((48.1, -124.1), (48.2, -124.0)),
+            route_preview=((48.3, -124.3), (48.4, -124.2)),
+            points=(
+                SimpleNamespace(lat=48.0, lon=-124.0),
+                SimpleNamespace(lat=48.1, lon=-124.1),
+                SimpleNamespace(lat=48.2, lon=-124.2),
+            ),
+            offsets=(0, 10, 20),
+            position=15,
         ),
-        offsets=(0, 10, 20),
-        position=15,
         _MAX_TRACK_POLYLINE=1500,
         move_callback=None,
         dashboard_visible=True,

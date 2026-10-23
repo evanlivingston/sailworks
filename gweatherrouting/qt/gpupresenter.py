@@ -1,4 +1,4 @@
-"""Opt-in QQuickWidget map host; existing TrackMap owns all input and map state."""
+"""Optional QQuickWidget map host; the application map host owns input and state."""
 
 import logging
 import math
@@ -133,7 +133,7 @@ class GpuPresenter(QObject):
             )
         ):
             # Both presentation children have the canvas's origin and extent.
-            # Keep all gestures/picking in the existing TrackMap implementation.
+            # Keep gestures/picking in the application map host.
             QCoreApplication.sendEvent(self.canvas, event)
             return True
         return super().eventFilter(watched, event)
@@ -244,7 +244,7 @@ class GpuPresenter(QObject):
         self.timer.stop()
         self.deadline.stop()
         self._failure_reason = reason
-        logger.warning("GPU map unavailable; using CPU: %s", reason)
+        logger.warning("GPU map unavailable; CPU recovery is disabled: %s", reason)
         # Never destroy scene nodes inside an updatePaintNode/render callback.
         QTimer.singleShot(0, self._fallback)
 
@@ -252,7 +252,7 @@ class GpuPresenter(QObject):
         if self.closed:
             return
         self.canvas.controller.set_renderer_status(
-            self.canvas, "cpu", reason=self._failure_reason
+            self.canvas, "unavailable", reason=self._failure_reason
         )
         self.widget.hide()
         self.overlay.hide()
@@ -266,7 +266,6 @@ class GpuPresenter(QObject):
         self.canvas._gpu_batches = ()
         self.canvas._gpu_wind_raster = None
         self.canvas._gpu_raster_key = None
-        self.canvas._invalidate_base()
         self.canvas.update()
 
     def close(self):

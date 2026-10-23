@@ -20,12 +20,15 @@ def application(report, output):  # noqa: C901 - one bounded diagnostic
     from PySide6.QtWidgets import QApplication
     from gweatherrouting.core.marine.credentials import SystemCredentialStore
     from gweatherrouting.qt.controller import SessionController
-    from gweatherrouting.qt.mapcanvas import TrackMap
+
+    # LEGACY-ONLY (TODO #86): diagnose_base_map probes TrackMap base-map internals
+    # (_base_image, _sea_color, _invalidate_base, _base_chart_renderer); not retargeted.
+    from gweatherrouting.qt.mapcanvas import TrackMap  # LEGACY-ONLY (TODO #86)
 
     SystemCredentialStore.load = lambda self: None
     app = QApplication.instance() or QApplication([])
     controller = SessionController(offline=True)
-    canvas = TrackMap(controller)
+    canvas = TrackMap(controller)  # LEGACY-ONLY (TODO #86)
     canvas.resize(710, 743)
 
     workspace = (

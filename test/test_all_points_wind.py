@@ -10,29 +10,35 @@ from gweatherrouting.rendering.windpainter import WindPainter, barb_density_para
 presenter = _presenter_fixture
 
 
-def test_all_points_selects_legacy_without_changing_the_preference(presenter):
+def test_all_points_keeps_standalone_viewport_without_changing_the_preference(
+    presenter,
+):
+    presenter.canvas._desktop_viewport = True
     settings = presenter.canvas.controller.settings
     settings.gribBarbDensity = "all"
-    assert not presenter.active
+    assert presenter.active
     assert not presenter.enc_active
     assert settings.gribBarbDensity == "all"
     settings.gribBarbDensity = "very_dense"
     assert presenter.active
     settings.gribBarbDensity = "all"
-    assert not presenter.active
+    assert presenter.active
+    assert settings.gribBarbDensity == "all"
 
 
 def test_all_points_status_is_explicit_not_loading(presenter):
+    presenter.canvas._desktop_viewport = True
     presenter.canvas.controller.settings.gribBarbDensity = "all"
     presenter.canvas.controller.display_forecast = SimpleNamespace(
         status="chosen HRRR", error=""
     )
     presenter.canvas.wind_visible = True
-    presenter._state = "loading"
+    presenter._state = "ready"
     presenter._label()
     text = presenter.status.text()
     assert "chosen HRRR" in text
-    assert "unthinned" in text and "legacy" in text
+    assert "Viewport wind (all forecast points, unthinned): ready" in text
+    assert "legacy" not in text
     assert "loading" not in text
 
 

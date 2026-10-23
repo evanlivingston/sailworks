@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise default ENC through the actual application TrackMap/Weather panel."""
+"""Exercise default ENC through the actual application ViewportMap/Weather panel."""
 
 import argparse
 from datetime import datetime, timedelta
@@ -98,7 +98,7 @@ def _application(report, data, output, deadline):  # noqa: C901 - one native app
     from gweatherrouting.core.marine.credentials import SystemCredentialStore
     from gweatherrouting.core.storage import DATA_DIR
     from gweatherrouting.qt.controller import SessionController
-    from gweatherrouting.qt.mapcanvas import TrackMap
+    from gweatherrouting.qt.viewportmap import ViewportMap
     from gweatherrouting.qt.weatherpanel import WeatherPanel
 
     if Path(DATA_DIR) != data:
@@ -106,7 +106,7 @@ def _application(report, data, output, deadline):  # noqa: C901 - one native app
     SystemCredentialStore.load = lambda _self: None
     app = QApplication.instance() or QApplication([])
     controller = SessionController(offline=True)
-    canvas = TrackMap(controller)
+    canvas = ViewportMap(controller)
     canvas.resize(710, 743)
     panel = WeatherPanel(controller, lambda: canvas, lambda: None, lambda: None)
 
@@ -198,9 +198,10 @@ def _application(report, data, output, deadline):  # noqa: C901 - one native app
         center()
         report["checks"]["selected_forecast_with_enc"] = stage("forecast", weather=True)
         widget = canvas._weather_presenter.widget
-        report["checks"]["enc_only_no_duplicate_legacy"] = bool(
+        report["checks"]["viewport_enc_layer_no_legacy_duplicate"] = bool(
             widget is not None
-            and widget._chart_model._enc_only
+            and not widget._chart_model._enc_only
+            and widget._enc_chart_layer
             and canvas not in controller.charts._enc_renderer._states
         )
         report["checks"]["app_layer_order_preserved"] = bool(
@@ -248,14 +249,16 @@ def _application(report, data, output, deadline):  # noqa: C901 - one native app
         )
         output.parent.mkdir(parents=True, exist_ok=True)
         canvas.grab().save(str(output.with_suffix(".png")))
-        panel.weather_renderer.setCurrentIndex(
-            panel.weather_renderer.findData("legacy")
-        )
-        report["checks"]["legacy_recovery"] = wait(
+        failure_reason = "synthetic renderer failure for rollout acceptance"
+        canvas._weather_presenter.fail(failure_reason)
+        report["checks"]["renderer_failure_visible"] = wait(
             lambda: (
                 not canvas._weather_presenter.active
                 and not canvas._weather_presenter.enc_active
-                and canvas._base_cache is not None
+                and canvas._weather_presenter.widget is None
+                and failure_reason in str(canvas._weather_presenter.reason)
+                and "unavailable" in controller.renderer_status().lower()
+                and canvas._weather_presenter.status.isVisible()
             )
         )
         report["complete"] = all(report["checks"].values())

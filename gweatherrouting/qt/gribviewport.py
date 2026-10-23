@@ -1,7 +1,7 @@
 """An independent GRIB viewport: its own camera, scheduler and GPU context.
 
 The viewport is a standalone subsystem.  It does not instantiate the
-application's Core, SessionController, TrackMap, MapFrame, MapScene or
+application's Core, SessionController, legacy map widget, MapFrame, MapScene or
 WeatherStager, and it imports nothing from ``tools/``.  It reuses the weather
 decoding and sampler semantics, the native-grid geometry, the packed-float
 transport and the reviewed field/selection shader.
@@ -27,6 +27,7 @@ from threading import Condition, Event, Thread
 import time
 from typing import Any, cast
 
+from gweatherrouting.core.mapmotion import DragVelocity, PanInertia
 from gweatherrouting.qt.gpuweatherfields import (
     FIELD_COLUMNS,
     FieldIdentity,
@@ -1286,6 +1287,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._wind_opacity = 1.0
             self._camera = None
             self._drag = None
+            self._drag_velocity = DragVelocity()
+            self._pan_inertia = None
+            self._pan_inertia_last_tick = None
+            self._pan_inertia_enabled = True
+            self._pan_inertia_tick = QTimer(self)
+            self._pan_inertia_tick.setInterval(16)
+            self._pan_inertia_tick.timeout.connect(self._advance_pan_inertia)
             self._wheel_zoom_target = None
             self._wheel_zoom_anchor = None
             self._wheel_zoom_last_tick = None
@@ -1872,6 +1880,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._wheel_zoom_tick.stop()
             self._wheel_zoom_settle.stop()
             self._wheel_scroll_settle.stop()
+            self._pan_inertia_tick.stop()
             for context in self._native_contexts.values():
                 context.close()
             self._clear_weather_sources()
@@ -2199,6 +2208,70 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 )
             )
 
+        def is_moving(self):
+            return bool(
+                self._drag is not None
+                or self._pan_inertia is not None
+                or self._pan_inertia_tick.isActive()
+                or self._wheel_zoom_target is not None
+                or self._wheel_zoom_tick.isActive()
+                or self._wheel_trackpad_panning
+                or getattr(self, "_native_gesture_active", False)
+            )
+
+        def cancel_motion(self):
+            """Stop pending camera motion at its current presented state."""
+            self._wheel_zoom_tick.stop()
+            self._wheel_zoom_settle.stop()
+            self._wheel_scroll_settle.stop()
+            self._wheel_zoom_target = None
+            self._wheel_zoom_anchor = None
+            self._wheel_zoom_last_tick = None
+            self._wheel_trackpad_panning = False
+            self._native_gesture_active = False
+            self._drag = None
+            self._pan_inertia_tick.stop()
+            self._pan_inertia = None
+            self._pan_inertia_last_tick = None
+
+        def finish_motion(self):
+            """Finish an anchored wheel zoom, then clear pending motion state."""
+            camera = self._camera
+            target = self._wheel_zoom_target
+            anchor = self._wheel_zoom_anchor
+            if camera is not None and target is not None:
+                if anchor is None:
+                    self.set_camera(replace(camera, zoom=target))
+                else:
+                    x, y, anchor_lat, anchor_lon = anchor
+                    self._set_zoom_around(target, x, y, (anchor_lat, anchor_lon))
+            self.cancel_motion()
+
+        def _advance_pan_inertia(self):
+            motion = self._pan_inertia
+            if motion is None or self._camera is None:
+                self._pan_inertia_tick.stop()
+                self._pan_inertia = None
+                self._pan_inertia_last_tick = None
+                return
+            now = time.monotonic()
+            elapsed = min(
+                0.05,
+                max(1.0 / 120.0, now - (self._pan_inertia_last_tick or now)),
+            )
+            self._pan_inertia_last_tick = now
+            if not motion.active:
+                self._pan_inertia_tick.stop()
+                self._pan_inertia = None
+                self._pan_inertia_last_tick = None
+                return
+            dx, dy = motion.step(elapsed)
+            self.pan_pixels(dx, dy)
+            if not motion.active:
+                self._pan_inertia_tick.stop()
+                self._pan_inertia = None
+                self._pan_inertia_last_tick = None
+
         def _advance_wheel_zoom(self):
             if self._camera is None or self._wheel_zoom_target is None:
                 self._wheel_zoom_tick.stop()
@@ -2367,7 +2440,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
 
         def mousePressEvent(self, event):  # noqa: N802 - Qt virtual method name
             if event.button() == Qt.MouseButton.LeftButton:
+                self.cancel_motion()
                 self._drag = event.position()
+                self._drag_velocity = DragVelocity()
+                self._drag_velocity.add(
+                    time.monotonic(), self._drag.x(), self._drag.y()
+                )
                 event.accept()
             else:
                 super().mousePressEvent(event)
@@ -2377,14 +2455,28 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 position = event.position()
                 delta = position - self._drag
                 self._drag = position
+                self._drag_velocity.add(time.monotonic(), position.x(), position.y())
                 self.pan_pixels(delta.x(), delta.y())
                 event.accept()
             else:
                 super().mouseMoveEvent(event)
 
         def mouseReleaseEvent(self, event):  # noqa: N802 - Qt virtual method name
+            if event.button() != Qt.MouseButton.LeftButton or self._drag is None:
+                super().mouseReleaseEvent(event)
+                return
+            position = event.position()
             self._drag = None
-            super().mouseReleaseEvent(event)
+            if self._pan_inertia_enabled:
+                vx, vy = self._drag_velocity.release(
+                    time.monotonic(), position.x(), position.y()
+                )
+                motion = PanInertia(vx, vy)
+                if motion.active:
+                    self._pan_inertia = motion
+                    self._pan_inertia_last_tick = time.monotonic()
+                    self._pan_inertia_tick.start()
+            event.accept()
 
         def wheelEvent(self, event):  # noqa: N802 - Qt virtual method name
             if self._chart_without_weather:

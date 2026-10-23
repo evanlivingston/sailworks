@@ -23,7 +23,7 @@ to the document that records it. Nothing is deleted evidence.
 
 ## Current state
 
-**Decision (ADR-001 D1-D7).** The renderer is split into decoupled layers with
+**Decision (ADR-001 D1-D8).** The renderer is split into decoupled layers with
 explicit ownership: weather preparation, chart composition and presentation are
 separate, and the Qt viewport owns the scene graph. Issues #62-#73 are closed;
 epic [#51](https://github.com/evanlivingston/gweatherrouting/issues/51) stays
@@ -40,13 +40,15 @@ application viewport (PR #81);
 2026-10-21 after 13/13 functional and 14/14 combined-experience checks plus 104
 targeted integration passes.
 
-**What is not claimed.** The application still uses `mapcanvas.TrackMap` as its
-map; the standalone viewport is opt-in, and moving the whole application onto
-it is [#88](https://github.com/evanlivingston/gweatherrouting/issues/88).
+**What is not claimed.** The normal Charts/Logs application now uses the
+viewport (PR #91), while `ViewportMap` still inherits the `TrackMap` compatibility
+host during cleanup in [#86](https://github.com/evanlivingston/gweatherrouting/issues/86).
 [#70](https://github.com/evanlivingston/gweatherrouting/issues/70) closed
-2026-10-21 as **keep-experimental**: the default application path was not
-switched. Presentation and input-to-present latency are unmeasured; the recorded
-endpoint is a render-callback proxy, never FPS. #64's recorded limits stand:
+2026-10-21 with a **keep-experimental recommendation**; the user's later D7/D8
+decisions direct application use and retirement of the legacy map. This does not
+retroactively pass #70's visual, platform, workload, or performance gaps.
+Presentation and input-to-present latency are unmeasured; the recorded endpoint
+is a render-callback proxy, never FPS. #64's recorded limits stand:
 stale in-flight completions are covered by headless tests only, true device loss
 is not exercisable, there is no single repeatable `residency-native` gate, byte
 figures are texture payload not physical VRAM, upload counts are QRhi
@@ -58,13 +60,11 @@ dependency is unchanged.
 application must not silently pick a different file/run/member while the user
 pans or changes forecast time. See `Forecast display coherence` below.
 
-**Next decision.** Make the full desktop application work with the new viewport
-and the world basemap
-([#88](https://github.com/evanlivingston/gweatherrouting/issues/88)), then
-decide whether the old default map is removed
-([#86](https://github.com/evanlivingston/gweatherrouting/issues/86)). Removal is
-gated on #70 acceptance, which closed as keep-experimental and therefore has
-not passed. The ENC chart engine is under
+**Next decision.** Complete the staged removal of the old default map under
+[#86](https://github.com/evanlivingston/gweatherrouting/issues/86), following
+the user's explicit decision not to require legacy CPU recovery. The #70
+evidence remains a recorded limitation, not a passed acceptance gate. The ENC
+chart engine is under
 evaluation against tile57
 ([#87](https://github.com/evanlivingston/gweatherrouting/issues/87)); that is an
 evaluation, not a removal.

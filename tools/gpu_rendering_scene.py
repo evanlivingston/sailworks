@@ -199,7 +199,9 @@ def paint_wind(painter, geometry, metadata, mode):
 
     if mode == "cpu_current":
         # Invoke the actual production painting method, not a copied approximation.
-        from gweatherrouting.qt.mapcanvas import TrackMap
+        # LEGACY-ONLY (TODO #86): cpu_current invokes TrackMap._paint_wind_barbs
+        # legacy CPU painting; not retargeted.
+        from gweatherrouting.qt.mapcanvas import TrackMap  # LEGACY-ONLY (TODO #86)
 
         proxy = SimpleNamespace(
             wind_visible=True,
@@ -218,7 +220,7 @@ def paint_wind(painter, geometry, metadata, mode):
                 settings=SimpleNamespace(gribBarbDensity=metadata["density"])
             ),
         )
-        TrackMap._paint_wind_barbs(proxy, painter)
+        TrackMap._paint_wind_barbs(proxy, painter)  # LEGACY-ONLY (TODO #86)
         return
     colors = barb_bucket_colors()
     for bucket, (lines, triangles, dots) in sorted(geometry.items()):
