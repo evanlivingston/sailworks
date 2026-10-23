@@ -35,7 +35,10 @@ def main(argv=None):
         "--native-weather-fields",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Use the native weather texture cache (default: on); --no-native-weather-fields restores Image sources",
+        help=(
+            "Use the native weather texture cache (default: on); "
+            "--no-native-weather-fields restores Image sources"
+        ),
     )
     args = parser.parse_args(argv)
     try:
