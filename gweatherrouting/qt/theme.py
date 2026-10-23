@@ -47,7 +47,9 @@ def _force_macos_dark_appearance() -> bool:
         objc.objc_getClass.argtypes = [ctypes.c_char_p]
         objc.sel_registerName.restype = ctypes.c_void_p
         objc.sel_registerName.argtypes = [ctypes.c_char_p]
-        sel = lambda name: objc.sel_registerName(name.encode("ascii"))  # noqa: E731
+
+        def sel(name):
+            return objc.sel_registerName(name.encode("ascii"))
 
         def _send(target, selector, *args, argtypes=()):
             objc.objc_msgSend.restype = ctypes.c_void_p
