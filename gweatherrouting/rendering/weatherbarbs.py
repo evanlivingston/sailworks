@@ -442,12 +442,13 @@ def stage_selection(sampler, field, stamp, view, land_mask, cancel=lambda: False
     from gweatherrouting.qt.gpuweatherfields import BarbSelection
 
     step, cap = barb_density_parameters(view.density)
-    if step <= 0:
-        raise ValueError("Unthinned wind uses CPU symbols")
+    unthinned = view.density == "all"
+    if step <= 0 and not unthinned:
+        raise ValueError("Unsupported wind density")
     margin = 32.0
-    cols = math.ceil((view.width + 2 * margin) / step) + 1
-    rows = math.ceil((view.height + 2 * margin) / step) + 1
-    if cols * rows > 8192:
+    cols = 1 if unthinned else math.ceil((view.width + 2 * margin) / step) + 1
+    rows = 1 if unthinned else math.ceil((view.height + 2 * margin) / step) + 1
+    if not unthinned and cols * rows > 8192:
         raise ValueError("Wind symbol mesh exceeds vertex budget")
     if field.grids:
         bounds = _view_bounds(view, margin)
@@ -488,7 +489,12 @@ def stage_selection(sampler, field, stamp, view, land_mask, cancel=lambda: False
         & np.isfinite(yy)
     )
     ids = np.flatnonzero(visible)
-    if getattr(view, "geographic", False):
+    if unthinned:
+        # Every visible native node gets its own slot, even when several
+        # nodes project into the same pixel. No cell selection or cap.
+        cells = np.arange(len(ids))
+        chosen = cells
+    elif getattr(view, "geographic", False):
         cells, chosen = _geographic_cells(
             points[ids], xx[ids], yy[ids], view, step, margin, cols, rows
         )
@@ -513,6 +519,11 @@ def stage_selection(sampler, field, stamp, view, land_mask, cancel=lambda: False
     if chosen is None:
         return None
     selected = ids[chosen]
+    if unthinned:
+        cols = min(64, max(1, len(selected)))
+        rows = max(1, math.ceil(len(selected) / cols))
+        cells = np.arange(len(selected))
+        chosen = cells
     slots = cells[chosen]
     # Empty cells carry node id -1: the shader discards them exactly as it
     # discards a missing mesh cell, and their anchors stay finite and local.

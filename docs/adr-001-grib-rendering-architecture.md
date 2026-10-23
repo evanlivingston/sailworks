@@ -2,9 +2,10 @@
 
 - **Status:** Accepted. D2 was decided on 2026-10-19 in favour of option (a); the
   amendment is applied in §6. D6 (target interaction path) was decided on
-  2026-10-19 in §4.6. **§4.7 is a proposed amendment** (the #70 rollout
-  decision, keep-experimental); it records what the evidence says and it awaits
-  the user's decision — no default path is switched by it.
+  2026-10-19 in §4.6. D7 records the user's direction to use the viewport in the
+  normal application; D8 records the decision to retire the old map without CPU
+  recovery. The #70 keep-experimental evidence remains recorded, but those later
+  user directions supersede its rollout recommendation.
 - **Date:** 2026-10-19
 - **Supersedes:** nothing. **Amends:** [`rendering-implementation-plan.md`](rendering-implementation-plan.md)
   (the R0–R5 sequence and the invariants at lines 43–70), as recorded in §6.
@@ -49,10 +50,10 @@ presentation-latency program complete and does not change numerical sampling.
   in the `rendering-m0-*.md` records and in
   [`history/rendering-experiment-records.md`](history/rendering-experiment-records.md);
   machine-readable evidence under `docs/profiles/rendering/`.
-- **Status:** D1–D6 are settled. D7 records the user's direction to start using the
-  viewport in the application; integration is pending, not already delivered by
-  PRs #72/#75. §10 requires explicit user forecast selection in the Weather panel.
-  Fidelity/performance acceptance remains incomplete. No new A0 slice is authorized.
+- **Status:** D1–D6 are settled. D7's application integration was delivered by
+  PR #91; D8's legacy-map retirement is in progress under #86. §10 requires
+  explicit user forecast selection in the Weather panel. Fidelity/performance
+  acceptance remains incomplete. No new A0 slice is authorized.
 - **Wider documentation map:** [the documentation index](README.md).
 
 ---
@@ -283,7 +284,7 @@ Consequences:
 **Issues:** [#64](https://github.com/evanlivingston/gweatherrouting/issues/64)–[#70](https://github.com/evanlivingston/gweatherrouting/issues/70);
 review vehicle [#72](https://github.com/evanlivingston/gweatherrouting/pull/72).
 
-### 4.7 D7 — User-directed application use (2026-10-20; implementation pending)
+### 4.7 D7 — User-directed application use (2026-10-20; implemented in PR #91)
 
 **User decision after reviewing the proposal:** start using the new viewport in the
 normal application, and add explicit forecast selection to the **Weather panel**.
@@ -291,11 +292,10 @@ Prioritize these two implementation tasks over further issue/branch cleanup. The
 choice of forecast belongs to the user, not an automatic multi-file fallback policy.
 
 This authorizes the integration/default-use direction despite the recorded open
-checks; it does **not** claim that those checks passed or that integration already
-exists. Preserve the legacy renderer as a recovery path, without silently changing
-the user's forecast selection. Routing calculations remain unchanged. No supported
-map layer or interaction may silently disappear during integration; unsupported
-states must be explicit and recoverable.
+checks; it does **not** claim that those checks passed. PR #91 moved normal
+Charts/Logs presentation onto the viewport without silently changing forecast
+selection. D8 below supersedes D7's legacy recovery requirement. Unsupported
+states remain explicit; routing calculations remain unchanged.
 
 **Original #70 recommendation, retained as evidence rather than the current usage
 decision:** keep the independent viewport **experimental**. Do **not** switch the
@@ -347,6 +347,24 @@ start-up and draw path.
 **Issues:** [#70](https://github.com/evanlivingston/gweatherrouting/issues/70),
 [#51](https://github.com/evanlivingston/gweatherrouting/issues/51).
 
+### 4.8 D8 — Retire the legacy map without CPU recovery (2026-10-22)
+
+**User decision after PR #91:** continue the application migration by retiring
+`TrackMap`/`mapcanvas.py`. The old QWidget map and its CPU rendering/recovery path
+are not required as a fallback. If viewport rendering is unavailable, report that
+state explicitly; do not silently present a blank or stale map.
+
+This supersedes D7's requirement to preserve the legacy renderer as a recovery
+path and #86's original prerequisite to retain the old map until #70's full gate
+passes. It does **not** change the #70 evidence: the viewport's presentation
+latency, visual fidelity, unsupported backends, marine-heavy workload and
+two-map workload remain recorded limitations, not passed results. No performance
+claim is made by this decision.
+
+The old base-chart painting defect in #84 will not be repaired in the legacy
+path; once that path is removed, #84 should be closed as superseded, with the
+viewport's own missing-data/error reporting retained.
+
 ---
 
 ## 5. Relationship to the existing sequences
@@ -381,7 +399,8 @@ remains the single roadmap.
 | Line 103 (`ContentKey`) | "Forecast instant/bracket" becomes a resident time window over multiple instants. (D4) |
 | Lines 212–215 (R3 reuse) | Reuse extends from spatial to temporal. (D4) |
 | §4.6 (program target) | The independent viewport is the target weather interaction path; issues #64–#68 are re-pointed to it and the frame assembler is retired at #69/#70. (D6) |
-| §4.7 (user direction, 2026-10-20) | **ACCEPTED DIRECTION, implementation pending:** use the new viewport in the application with a user-controlled Weather-panel forecast selector and retained renderer recovery. The original #70 keep-experimental recommendation and its open fidelity/performance/platform checks remain evidence, not retroactively passed gates. (D7) |
+| §4.7 (user direction, 2026-10-20) | **Implemented in PR #91:** use the new viewport in the application with user-controlled forecast selection. The original #70 keep-experimental recommendation and open checks remain evidence, not retroactively passed gates. (D7) |
+| §4.8 (user direction, 2026-10-22) | **In progress under #86:** retire the old map without requiring its CPU recovery renderer; unavailable viewport states remain explicit. The #70 evidence gaps remain documented. (D8) |
 
 **Deferred and not amended:** R1 (host), R0.3/R0.4 (resource envelope, platform matrix),
 R5 (retention hardening, rollout). R0.2 is discharged by

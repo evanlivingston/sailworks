@@ -2,7 +2,7 @@
 
 The old app is preparation/oracle only: it exports pre-computed chart/weather
 resources and numerical fields at one or more forecast times. The candidate
-instantiates no TrackMap, MapFrame assembler, or legacy MapScene; it composes
+instantiates no legacy TrackMap (mapcanvas), MapFrame assembler, or legacy MapScene; it composes
 retained image nodes and switches between pre-exported numerical fields as the
 forecast time changes. GDAL open entrypoints raise during the candidate run.
 """
@@ -801,7 +801,7 @@ def run_candidate(
     coverage_step_px=48,
     preparation=None,
 ):
-    """Independent QQuickWidget: no TrackMap, MapFrame, or old MapScene instance."""
+    """Independent QQuickWidget: no legacy TrackMap (mapcanvas), MapFrame, or old MapScene instance."""
     from PySide6.QtCore import QEventLoop, QPointF, QTimer, Qt, QUrl
     from PySide6.QtGui import QColor, QImage, QSurfaceFormat, QWheelEvent
     from PySide6.QtQml import QQmlComponent

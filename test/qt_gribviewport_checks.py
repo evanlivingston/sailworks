@@ -855,8 +855,8 @@ def _layer_states(widget):
 
     The state is read from the layer's own QML object, so it is the layer's
     own state and not the viewport's guess.  No layer of the viewport has a
-    per-layer CPU fallback: the retained CPU fallback is the application's
-    CPU map renderer, which is proven separately.
+    per-layer CPU fallback: renderer failures are explicit; an explicitly
+    selected CPU renderer is distinct from recovery after viewport failure.
     """
     counters = widget.publication_counters()
     state = widget._state
@@ -865,8 +865,8 @@ def _layer_states(widget):
     barbs = widget._barbs
     chart = widget._chart
     note = (
-        "the viewport's layers have no per-layer CPU fallback; the retained "
-        "CPU fallback is the application's CPU map renderer"
+        "the viewport's layers have no per-layer CPU fallback; renderer "
+        "failures are explicit and CPU selection is a separate mode"
     )
 
     def shader_layer(item, publications, uploads):

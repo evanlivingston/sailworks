@@ -22,7 +22,7 @@ ORIGINAL_STORAGE_LOAD = Storage.load_or_save_default
 from gweatherrouting.core.polarmanager import PolarManager
 
 ORIGINAL_POLAR_REFRESH = PolarManager.refresh_local_polars
-from gweatherrouting.core.mapviewport import MapPoint, MapViewport
+from gweatherrouting.core.mapviewport import MapPoint, MapViewport, MercatorProjection
 from gweatherrouting.qt.controller import SessionController
 from gweatherrouting.qt.window import PreviewWindow
 from gweatherrouting.qt.theme import apply_theme
@@ -112,6 +112,64 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(self.controller.session.error)
         self.drain()
         return self.controller.session.log
+
+    def test_viewport_camera_state_compatibility_aliases(self):
+        from gweatherrouting.qt.viewportmap import ViewportMapState
+
+        canvas = self.window.map
+        self.assertIsInstance(canvas._view_state, ViewportMapState)
+        self.assertIs(
+            canvas._base_chart_renderer, canvas._weather_services.base_chart_renderer
+        )
+        self.assertIs(canvas.wind, canvas._weather_services.wind)
+        self.assertIs(canvas._wind_cursor, canvas._weather_services.wind_cursor)
+        self.assertIs(
+            canvas.weather_coverage, canvas._weather_services.weather_coverage
+        )
+        self.assertIs(
+            canvas._weather_presenter, canvas._weather_services.weather_presenter
+        )
+        canvas._center_lat = 47.1
+        canvas._center_lon = -122.2
+        canvas._zoom = 8.5
+        self.assertEqual(
+            (
+                canvas._view_state.camera.center_lat,
+                canvas._view_state.camera.center_lon,
+                canvas._view_state.camera.zoom,
+            ),
+            (47.1, -122.2, 8.5),
+        )
+        canvas.points = ("track-point",)
+        canvas.offsets = (3,)
+        canvas.position = 2.5
+        canvas.route_plan = ((1, 2),)
+        canvas.route_preview = ((3, 4),)
+        canvas.route = ((5, 6),)
+        canvas.route_speeds = (7,)
+        canvas.selected_route_point = 0
+        canvas.ais_targets = ("target",)
+        canvas.ais_visible = False
+        self.assertEqual(canvas._view_state.points, ("track-point",))
+        self.assertEqual(canvas._view_state.offsets, (3,))
+        self.assertEqual(canvas._view_state.position, 2.5)
+        self.assertEqual(canvas._view_state.route_plan, ((1, 2),))
+        self.assertEqual(canvas._view_state.route_preview, ((3, 4),))
+        self.assertEqual(canvas._view_state.route, ((5, 6),))
+        self.assertEqual(canvas._view_state.route_speeds, (7,))
+        self.assertEqual(canvas._view_state.selected_route_point, 0)
+        self.assertEqual(canvas._view_state.ais_targets, ("target",))
+        self.assertFalse(canvas._view_state.ais_visible)
+        self.assertTrue(self.window.map.marine.visible)
+        self.assertFalse(self.window.log_map.marine.visible)
+
+        canvas._view_state.camera.center_lat = 46.2
+        canvas._view_state.camera.center_lon = -121.3
+        canvas._view_state.camera.zoom = 9.5
+        self.assertEqual(
+            (canvas._center_lat, canvas._center_lon, canvas._zoom),
+            (46.2, -121.3, 9.5),
+        )
 
     def test_live_wind_barbs_keep_size_over_zoomed_base_and_retina(self):
         from PySide6.QtGui import QImage, QPainter
@@ -340,6 +398,9 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertIsNone(canvas.drag)
 
     def test_coastline_polygon_hole_is_preserved(self):
+        import cairo
+        from PySide6.QtGui import QColor, QImage
+
         path = self.path / "coast.geojson"
         path.write_text(
             json.dumps(
@@ -373,27 +434,56 @@ class QtPreviewChecks(unittest.TestCase):
                 }
             )
         )
-        from gweatherrouting.qt.mapcanvas import TrackMap
-
         self.controller.charts.load_vector_layer(str(path))
-        canvas = TrackMap(self.controller)
-        self.addCleanup(canvas.close)
-        canvas.resize(600, 400)
-        canvas._base_image()  # Submit background coastline portrayal.
-        renderer = canvas._base_chart_renderer
-        deadline = time.monotonic() + 5
-        while renderer._states[canvas].frame is None and time.monotonic() < deadline:
-            self.drain()
-            time.sleep(0.002)
-        self.assertIsNotNone(renderer._states[canvas].frame)
-        image = canvas._base_image()
+
+        class Projection(MercatorProjection):
+            _center_lat = 48.4
+            _center_lon = -123.4
+            _zoom = 6.0
+
+            def get_allocated_width(self):
+                return 600
+
+            def get_allocated_height(self):
+                return 400
+
+            def get_scale_factor(self):
+                return 1
+
+            def queue_draw(self):
+                pass
+
+        canvas = Projection()
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 600, 400)
+        cr = cairo.Context(surface)
+        cr.set_source_rgb(0.0, 0.0, 1.0)
+        cr.paint()
+        self.controller.charts._draw_base(
+            canvas, cr, tuple(self.controller.charts.charts)
+        )
+        surface.flush()
+        image = QImage(
+            surface.get_data(),
+            surface.get_width(),
+            surface.get_height(),
+            surface.get_stride(),
+            QImage.Format.Format_ARGB32_Premultiplied,
+        ).copy()
         center = image.pixelColor(image.width() // 2, image.height() // 2)
         self.assertGreater(center.blue(), center.red())  # Hole remains sea.
-        x, y = canvas.convert_geographic_to_screen(MapPoint(48.4, -121.4))
-        factor = canvas.devicePixelRatioF()
-        land = image.pixelColor(round(x * factor), round(y * factor))
+        viewport = MapViewport(canvas, 0)
+        x = (
+            viewport._lon_to_x(-121.4)
+            - viewport._lon_to_x(canvas._center_lon)
+            + canvas.get_allocated_width() / 2
+        )
+        y = (
+            viewport._lat_to_y(48.4)
+            - viewport._lat_to_y(canvas._center_lat)
+            + canvas.get_allocated_height() / 2
+        )
+        land = image.pixelColor(round(x), round(y))
         self.assertGreater(land.red(), land.blue())
-        canvas.close()
 
     def test_local_tcp_and_udp_feed_reaches_ui_and_timestamped_recording(self):
         import socket
@@ -707,10 +797,7 @@ class QtPreviewChecks(unittest.TestCase):
     def test_qt_overlay_completes_without_glib_and_shutdown_discards_callbacks(self):
         import cairo
 
-        from gweatherrouting.qt.mapcanvas import TrackMap
-
-        canvas = TrackMap(self.controller)
-        self.addCleanup(canvas.close)
+        canvas = self.window.map
         renderer = self.controller.charts._enc_renderer
         started, release = Event(), Event()
         self.addCleanup(release.set)
@@ -5273,6 +5360,7 @@ class QtPreviewChecks(unittest.TestCase):
                 canvas._finish_zoom_silent()
 
     def test_padded_map_paint_cannot_escape_into_ancestor_surface(self):
+        from PySide6.QtCore import QRectF
         from PySide6.QtGui import QColor, QImage, QPainter
 
         canvas = self.window.map
@@ -5298,17 +5386,17 @@ class QtPreviewChecks(unittest.TestCase):
                     image.fill(QColor("#39954c"))
                     return image
 
-                canvas._base_cache = canvas._nav_cache = None
-                with (
-                    patch(
-                        "gweatherrouting.qt.mapcanvas.QPainter",
-                        return_value=painter,
-                        RenderHint=QPainter.RenderHint,
+                canvas._paint_layer(
+                    painter,
+                    layer(),
+                    QRectF(
+                        -192,
+                        -192,
+                        canvas.width() + 384,
+                        canvas.height() + 384,
                     ),
-                    patch.object(canvas, "_base_image", side_effect=layer),
-                    patch.object(canvas, "_navigation_image", side_effect=layer),
-                ):
-                    canvas.paintEvent(None)
+                )
+                painter.end()
                 self.assertEqual(
                     output.pixelColor(100 * factor, 100 * factor), QColor("#151515")
                 )
@@ -5620,217 +5708,6 @@ class QtPreviewChecks(unittest.TestCase):
         canvas.mouseMoveEvent(event(145, 120))
         clock[0] += 0.005
         canvas.mouseReleaseEvent(event(145, 120))
-
-    def test_motion_smooth_zoom_off_is_immediate_and_cursor_anchored_in_both_views(
-        self,
-    ):
-        self._enable_motion_settings()
-        self.controller.settings.smoothZoom = False
-        for view, canvas in (
-            (self.window.map, self.window.map),
-            (self.window.logs_view, self.window.log_map),
-        ):
-            self.window.views.setCurrentWidget(view)
-            self.drain()
-            before = canvas._zoom
-            anchor = canvas.convert_screen_to_geographic(83, 71)
-            canvas.wheelEvent(self._motion_wheel())
-            self.assertAlmostEqual(canvas._zoom, before + 0.25)
-            self.assertIsNone(canvas._zoom_target)
-            self.assertIsNone(canvas._zoom_tick_token)
-            self.assertFalse(canvas._zoom_animating)
-            self.assertFalse(canvas._zoom_settle.isActive())
-            x, y = canvas.convert_geographic_to_screen(anchor)
-            self.assertAlmostEqual(x, 83, places=7)
-            self.assertAlmostEqual(y, 71, places=7)
-
-    def test_motion_disabling_smooth_zoom_finishes_current_target_without_drift(self):
-        self._enable_motion_settings()
-        canvas = self.window.map
-        self.controller.settings.smoothZoom = True
-        clock = [100.0]
-        with patch(
-            "gweatherrouting.qt.mapcanvas.time.monotonic", side_effect=lambda: clock[0]
-        ):
-            before = canvas._zoom
-            anchor = canvas.convert_screen_to_geographic(83, 71)
-            canvas.wheelEvent(self._motion_wheel())
-            token = canvas._zoom_tick_token
-            self.assertIsNotNone(token)
-            self.assertEqual(canvas._zoom, before)
-            clock[0] += 0.016
-            canvas._ticks[token].timeout.emit()
-            self.assertGreater(canvas._zoom, before)
-            self.assertLess(canvas._zoom, before + 0.25)
-            self.controller.settings.smoothZoom = False
-            self.assertAlmostEqual(canvas._zoom, before + 0.25)
-            self.assertIsNone(canvas._zoom_tick_token)
-            self.assertNotIn(token, canvas._ticks)
-            self.assertFalse(canvas._zoom_animating)
-            x, y = canvas.convert_geographic_to_screen(anchor)
-            self.assertAlmostEqual(x, 83, places=7)
-            self.assertAlmostEqual(y, 71, places=7)
-
-    def test_motion_drag_inertia_follows_release_and_live_setting_stops_it(self):
-        self._enable_motion_settings()
-        canvas = self.window.map
-        clock = [100.0]
-        with (
-            patch(
-                "gweatherrouting.qt.mapcanvas.time.monotonic",
-                side_effect=lambda: clock[0],
-            ),
-            patch.object(canvas, "_hover"),
-        ):
-            self.controller.settings.panInertia = False
-            self._fling_canvas(canvas, clock)
-            self.assertIsNone(canvas._inertia)
-            self.assertIsNone(canvas._inertia_tick_token)
-            self.controller.settings.panInertia = True
-            self._fling_canvas(canvas, clock)
-            motion = canvas._inertia
-            token = canvas._inertia_tick_token
-            self.assertIsNotNone(motion)
-            point = canvas.convert_screen_to_geographic(100, 100)
-            velocity = math.hypot(motion.vx, motion.vy)
-            clock[0] += 0.02
-            canvas._ticks[token].timeout.emit()
-            x, y = canvas.convert_geographic_to_screen(point)
-            self.assertGreater(x, 100)
-            self.assertGreater(y, 100)
-            self.assertLess(math.hypot(motion.vx, motion.vy), velocity)
-            canvas.queue_draw()
-            self.assertTrue(canvas._overlay_pending)
-            with patch.object(self.window.workspace, "save") as save:
-                self.window.workspace._autosave()
-                save.assert_not_called()
-                self.controller.settings.panInertia = False
-                self.window.workspace._autosave()
-                save.assert_called_once()
-            self.assertFalse(canvas._overlay_pending)
-            self.assertIsNone(canvas._inertia)
-            self.assertIsNone(canvas._inertia_tick_token)
-            self.assertNotIn(token, canvas._ticks)
-            before = canvas._center_lat, canvas._center_lon
-            clock[0] += 1
-            self.assertFalse(canvas._inertia_tick(canvas, None))
-            self.assertEqual((canvas._center_lat, canvas._center_lon), before)
-
-    def test_motion_pause_before_release_suppresses_glide_and_ticks_finish(self):
-        self._enable_motion_settings()
-        canvas = self.window.map
-        clock = [100.0]
-        self.controller.settings.panInertia = True
-        with (
-            patch(
-                "gweatherrouting.qt.mapcanvas.time.monotonic",
-                side_effect=lambda: clock[0],
-            ),
-            patch.object(canvas, "_hover"),
-        ):
-            canvas.mousePressEvent(
-                SimpleNamespace(
-                    button=lambda: Qt.MouseButton.LeftButton,
-                    position=lambda: QPointF(100, 100),
-                )
-            )
-            clock[0] += 0.04
-            canvas.mouseMoveEvent(SimpleNamespace(position=lambda: QPointF(145, 120)))
-            clock[0] += 0.2
-            canvas.mouseReleaseEvent(None)
-            self.assertIsNone(canvas._inertia)
-            self._fling_canvas(canvas, clock)
-            token = canvas._inertia_tick_token
-            for _ in range(180):
-                if token not in canvas._ticks:
-                    break
-                clock[0] += 1 / 60
-                canvas._ticks[token].timeout.emit()
-            self.assertIsNone(canvas._inertia)
-            self.assertIsNone(canvas._inertia_tick_token)
-            self.assertNotIn(token, canvas._ticks)
-
-    def test_motion_new_gestures_fit_move_hide_and_resize_cancel_inertia(self):
-        self._enable_motion_settings()
-        from PySide6.QtGui import QResizeEvent
-
-        canvas = self.window.map
-        clock = [100.0]
-        self.controller.settings.panInertia = True
-        with (
-            patch(
-                "gweatherrouting.qt.mapcanvas.time.monotonic",
-                side_effect=lambda: clock[0],
-            ),
-            patch.object(canvas, "_hover"),
-        ):
-            actions = (
-                lambda: canvas.mousePressEvent(
-                    SimpleNamespace(
-                        button=lambda: Qt.MouseButton.LeftButton,
-                        position=lambda: QPointF(100, 100),
-                    )
-                ),
-                lambda: canvas.wheelEvent(self._motion_wheel()),
-                lambda: canvas.fit_coordinates(((48.4, -123.4), (48.5, -123.5))),
-                lambda: canvas.begin_move(lambda point: None),
-                canvas.hide,
-                lambda: canvas.resizeEvent(QResizeEvent(canvas.size(), canvas.size())),
-            )
-            for action in actions:
-                self._fling_canvas(canvas, clock)
-                token = canvas._inertia_tick_token
-                self.assertIsNotNone(token)
-                action()
-                self.assertIsNone(canvas._inertia)
-                self.assertIsNone(canvas._inertia_tick_token)
-                self.assertNotIn(token, canvas._ticks)
-                canvas._finish_zoom_silent()
-                canvas.cancel_move()
-                canvas.drag = None
-                canvas.show()
-
-    def test_motion_display_preferences_persist_and_close_cancels_callbacks(self):
-        from PySide6.QtWidgets import QCheckBox
-
-        with (
-            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
-            patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
-        ):
-            ORIGINAL_STORAGE_LOAD(self.controller.settings)
-            self.window.show_settings()
-            for checkbox in self.window.settings_dialog.findChildren(QCheckBox):
-                if checkbox.text() in ("Smooth zoom", "Pan inertia"):
-                    checkbox.setChecked(False)
-            for canvas in (self.window.map, self.window.log_map):
-                self.assertFalse(canvas._smooth_zoom)
-                self.assertFalse(canvas._pan_inertia_enabled)
-            with patch.object(Storage, "load_or_save_default", ORIGINAL_STORAGE_LOAD):
-                self.restart_workspace()
-            for canvas in (self.window.map, self.window.log_map):
-                self.assertFalse(canvas._smooth_zoom)
-                self.assertFalse(canvas._pan_inertia_enabled)
-            self.controller.settings.panInertia = True
-            canvas = self.window.map
-            clock = [100.0]
-            with (
-                patch(
-                    "gweatherrouting.qt.mapcanvas.time.monotonic",
-                    side_effect=lambda: clock[0],
-                ),
-                patch.object(canvas, "_hover"),
-            ):
-                self._fling_canvas(canvas, clock)
-                self.assertIsNotNone(canvas._inertia_tick_token)
-            settings = self.controller.settings
-            self.window.close()
-            self.assertIsNone(canvas._inertia_tick_token)
-            self.assertIsNone(canvas._inertia)
-            self.assertFalse(canvas._ticks)
-            settings.panInertia = False
-            settings.smoothZoom = True
-            self.assertFalse(canvas._smooth_zoom)
-
 
 if __name__ == "__main__":
     unittest.main()

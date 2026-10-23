@@ -219,6 +219,223 @@ def test_desktop_mouse_wheel_zoom_keeps_the_pointer_anchor():
     assert event.accepted
 
 
+def test_viewport_mouse_drag_inertia_is_bounded_and_cancelable():
+    from unittest.mock import patch
+
+    viewport_type = _viewport_widget_class()
+
+    class Timer:
+        def __init__(self):
+            self.active = False
+
+        def start(self):
+            self.active = True
+
+        def stop(self):
+            self.active = False
+
+        def isActive(self):
+            return self.active
+
+    def host(inertia_enabled):
+        widget = SimpleNamespace(
+            _camera=object(),
+            _drag=None,
+            _drag_velocity=None,
+            _pan_inertia=None,
+            _pan_inertia_last_tick=None,
+            _pan_inertia_enabled=inertia_enabled,
+            _pan_inertia_tick=Timer(),
+            _wheel_zoom_target=None,
+            _wheel_zoom_anchor=None,
+            _wheel_zoom_last_tick=None,
+            _wheel_zoom_tick=Timer(),
+            _wheel_zoom_settle=Timer(),
+            _wheel_scroll_settle=Timer(),
+            _wheel_trackpad_panning=False,
+            _native_gesture_active=False,
+            pan_pixels=Mock(),
+        )
+        widget.cancel_motion = lambda: viewport_type.cancel_motion(widget)
+        widget.is_moving = lambda: viewport_type.is_moving(widget)
+        return widget
+
+    def event(x, y):
+        return SimpleNamespace(
+            button=lambda: Qt.MouseButton.LeftButton,
+            position=lambda: QPointF(x, y),
+            accept=Mock(),
+        )
+
+    clock = [10.0]
+    active = host(True)
+    with patch(
+        "gweatherrouting.qt.gribviewport.time.monotonic", side_effect=lambda: clock[0]
+    ):
+        viewport_type.mousePressEvent(active, event(0, 0))
+        clock[0] += 0.05
+        viewport_type.mouseMoveEvent(active, event(80, 30))
+        clock[0] += 0.01
+        viewport_type.mouseReleaseEvent(active, event(80, 30))
+        assert active._pan_inertia is not None
+        assert active._pan_inertia_tick.isActive()
+        clock[0] += 0.02
+        viewport_type._advance_pan_inertia(active)
+    assert active.pan_pixels.call_count == 2
+    assert active.is_moving()
+    viewport_type.cancel_motion(active)
+    assert not active.is_moving()
+    assert not active._pan_inertia_tick.isActive()
+
+    disabled = host(False)
+    clock[0] = 20.0
+    with patch(
+        "gweatherrouting.qt.gribviewport.time.monotonic", side_effect=lambda: clock[0]
+    ):
+        viewport_type.mousePressEvent(disabled, event(0, 0))
+        clock[0] += 0.05
+        viewport_type.mouseMoveEvent(disabled, event(80, 30))
+        clock[0] += 0.01
+        viewport_type.mouseReleaseEvent(disabled, event(80, 30))
+    assert disabled._pan_inertia is None
+    assert not disabled._pan_inertia_tick.isActive()
+    assert disabled.pan_pixels.call_count == 1
+
+
+def test_viewport_motion_preferences_propagate_and_cancel_active_motion():
+    from gweatherrouting.qt.viewportmap import ViewportMap
+
+    widget = SimpleNamespace(
+        _smooth_zoom=True,
+        _pan_inertia_enabled=True,
+        finish_motion=Mock(),
+        cancel_motion=Mock(),
+    )
+    host = SimpleNamespace(
+        disposed=False,
+        _weather_presenter=SimpleNamespace(widget=widget),
+    )
+    host._finish_zoom_silent = lambda: ViewportMap._finish_zoom_silent(host)
+    host._cancel_inertia = lambda *args, **kwargs: ViewportMap._cancel_inertia(
+        host, *args, **kwargs
+    )
+
+    ViewportMap._set_smooth_zoom(host, False)
+    assert not host._smooth_zoom
+    assert not widget._smooth_zoom
+    widget.finish_motion.assert_called_once_with()
+
+    ViewportMap._set_pan_inertia(host, False)
+    assert not host._pan_inertia_enabled
+    assert not widget._pan_inertia_enabled
+    widget.cancel_motion.assert_called_once_with()
+
+
+def test_desktop_smooth_wheel_zoom_eases_to_target_at_pointer_anchor():
+    from datetime import datetime
+    from unittest.mock import patch
+
+    from gweatherrouting.qt.gribviewport import ViewportCamera
+
+    viewport_type = _viewport_widget_class()
+
+    class Timer:
+        def __init__(self):
+            self.active = False
+
+        def start(self, *_args):
+            self.active = True
+
+        def stop(self):
+            self.active = False
+
+        def isActive(self):
+            return self.active
+
+    class Wheel:
+        def phase(self):
+            return Qt.ScrollPhase.NoScrollPhase
+
+        def pixelDelta(self):
+            return QPoint()
+
+        def angleDelta(self):
+            return QPoint(0, 120)
+
+        def modifiers(self):
+            return Qt.KeyboardModifier.NoModifier
+
+        def position(self):
+            return QPointF(123, 234)
+
+        def accept(self):
+            self.accepted = True
+
+    initial = ViewportCamera(48.45, -124.29, 9.0, 710, 743, datetime(2026, 10, 22))
+    widget = SimpleNamespace(
+        _camera=initial,
+        _wheel_zoom_target=None,
+        _wheel_zoom_anchor=None,
+        _wheel_zoom_last_tick=None,
+        _wheel_trackpad_panning=False,
+        _native_gesture_active=False,
+        _smooth_zoom=True,
+        _wheel_zoom_tick=Timer(),
+        _wheel_zoom_settle=Timer(),
+        _wheel_scroll_settle=Timer(),
+        set_camera=lambda camera: setattr(widget, "_camera", camera),
+    )
+    widget._set_zoom_around = lambda zoom, x, y, anchor=None: (
+        viewport_type._set_zoom_around(widget, zoom, x, y, anchor)
+    )
+
+    clock = [100.0]
+    wheel = Wheel()
+    original_view = initial.view()
+    anchor = (
+        original_view._y_to_lat(
+            original_view._lat_to_y(initial.center_lat) + 234 - initial.height / 2
+        ),
+        original_view._x_to_lon(
+            original_view._lon_to_x(initial.center_lon) + 123 - initial.width / 2
+        ),
+    )
+    with patch(
+        "gweatherrouting.qt.gribviewport.time.perf_counter",
+        side_effect=lambda: clock[0],
+    ):
+        viewport_type._handle_desktop_wheel(widget, wheel)
+        assert widget._camera.zoom == initial.zoom
+        assert widget._wheel_zoom_tick.isActive()
+        for _ in range(80):
+            if not widget._wheel_zoom_tick.isActive():
+                break
+            clock[0] += 0.05
+            viewport_type._advance_wheel_zoom(widget)
+
+    assert wheel.accepted
+    assert widget._camera.zoom == 9.25
+    target_view = widget._camera.view()
+    assert (
+        abs(
+            target_view._lat_to_y(anchor[0])
+            - target_view._lat_to_y(widget._camera.center_lat)
+            - 234
+            + initial.height / 2
+        )
+        < 1e-8
+    )
+    assert (
+        abs(
+            target_view._lon_to_x(anchor[1])
+            - target_view._lon_to_x(widget._camera.center_lon)
+            - 123
+            + initial.width / 2
+        )
+        < 1e-8
+    )
+
+
 def test_world_chart_scene_stays_visible_when_weather_is_unavailable():
     scene = SimpleNamespace(visible=True)
     scene.setVisible = lambda visible: setattr(scene, "visible", visible)

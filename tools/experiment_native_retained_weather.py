@@ -284,7 +284,7 @@ def main():
         files = (
             "gweatherrouting/qt/gpuweatherjobs.py",
             "gweatherrouting/qt/gpuscene.py",
-            "gweatherrouting/qt/mapcanvas.py",
+            "gweatherrouting/qt/mapcanvas.py",  # LEGACY-ONLY (TODO #86): deleted legacy file retained in historical reference identity  # LEGACY-ONLY (TODO #86): still hashed for reference-app identity
             "gweatherrouting/rendering/weathercache.py",
             "gweatherrouting/rendering/weatherstaging.py",
             "gweatherrouting/rendering/weatherbarbs.py",

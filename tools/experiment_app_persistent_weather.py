@@ -224,11 +224,13 @@ def shader_sources(app_root, directory, safe_missing=False):
 def install(config, directory):
     from PySide6.QtCore import QUrl
     from PySide6.QtQml import QQmlComponent
+    # LEGACY-ONLY (TODO #86): mapcanvas.TrackMap._gpu_frame is a legacy CPU-painting
+    # hook; not retargeted to ViewportMap until the retained path replaces it.
     from gweatherrouting.qt import (
         gpuweatherjobs as jobs,
         gpuweather as images,
         gpuscene,
-        mapcanvas,
+        mapcanvas,  # LEGACY-ONLY (TODO #86)
     )
     from gweatherrouting.rendering import weatherbarbs as barbs
     from gweatherrouting.rendering.weatherstaging import stage_wind
@@ -442,6 +444,7 @@ def install(config, directory):
         self.weather.setProperty("blend", blend)
         self.weather.setVisible(True)
 
+    # LEGACY-ONLY (TODO #86): TrackMap-specific internal; not retargeted.
     original_frame = mapcanvas.TrackMap._gpu_frame
 
     def frame(self):
@@ -467,6 +470,7 @@ def install(config, directory):
         hook(jobs._WeatherResources, "prepare", prepare)
         hook(jobs.WeatherStager, "request", request)
         hook(gpuscene.MapScene, "present_weather", present_weather)
+        # LEGACY-ONLY (TODO #86): TrackMap-specific internal; not retargeted.
         hook(mapcanvas.TrackMap, "_gpu_frame", frame)
 
     def metadata(canvas):

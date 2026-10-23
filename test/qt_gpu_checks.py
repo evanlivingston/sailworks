@@ -105,8 +105,8 @@ class PreferenceChecks(Fixture):
         self.assertEqual(self.controller.settings.mapRenderer, "cpu")
         self.assertEqual(self.controller.map_renderer, "cpu")
 
-    def test_unsupported_gpu_falls_back_without_rewriting_choice(self):
-        from gweatherrouting.qt.mapcanvas import TrackMap
+    def test_unsupported_gpu_does_not_rewrite_renderer_choice(self):
+        from gweatherrouting.qt.viewportmap import ViewportMap
 
         self.controller.map_renderer = "gpu"
         self.controller.settings.mapRenderer = "gpu"
@@ -114,10 +114,10 @@ class PreferenceChecks(Fixture):
             "gweatherrouting.qt.gpupresenter.QGuiApplication.platformName",
             return_value="offscreen",
         ):
-            canvas = TrackMap(self.controller)
+            canvas = ViewportMap(self.controller)
         self.addCleanup(canvas.dispose)
         self.assertIsNone(canvas._gpu)
-        self.assertIn("CPU fallback", self.controller.renderer_status())
+        self.assertNotIn("CPU fallback", self.controller.renderer_status())
         self.assertEqual(self.controller.settings.mapRenderer, "gpu")
 
 

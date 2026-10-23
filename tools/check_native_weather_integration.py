@@ -99,7 +99,12 @@ def run(path, report):
         choice = selection.choices[0]
         selection.choose(choice.key)
         canvas = fixture.window.map
-        canvas._center_lat, canvas._center_lon, canvas._zoom = 48.5, -123.25, 9
+        camera_state = canvas.camera_state
+        camera_state.center_lat, camera_state.center_lon, camera_state.zoom = (
+            48.5,
+            -123.25,
+            9,
+        )
         canvas.time_control.set_time(choice.start_time + timedelta(hours=1))
         presenter = canvas._weather_presenter
         presenter.sync()
@@ -113,12 +118,17 @@ def run(path, report):
         report["checks"]["presenter_real_barbs"] = (
             bool((pixels[..., 3] > 25).any()) and not presenter.reason
         )
-        from gweatherrouting.qt.mapcanvas import TrackMap
+        from gweatherrouting.qt.viewportmap import ViewportMap
 
-        sibling = TrackMap(controller)
+        sibling = ViewportMap(controller)
         fixture.addCleanup(sibling.close)
         sibling.resize(640, 480)
-        sibling._center_lat, sibling._center_lon, sibling._zoom = 48.5, -123.25, 9
+        sibling_camera = sibling.camera_state
+        sibling_camera.center_lat, sibling_camera.center_lon, sibling_camera.zoom = (
+            camera_state.center_lat,
+            camera_state.center_lon,
+            camera_state.zoom,
+        )
         sibling.show()
         sibling_presenter = sibling._weather_presenter
         sibling_presenter.sync()

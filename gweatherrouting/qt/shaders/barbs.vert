@@ -12,6 +12,8 @@ layout(std140, binding = 0) uniform buf {
     float blend;
     int nodeIdIndirection;
     int fieldColumns;
+    int rowOffset;
+    int meshRows;
 };
 layout(binding = 1) uniform sampler2D u0;
 layout(binding = 2) uniform sampler2D v0;
@@ -43,8 +45,9 @@ void main() {
     ivec2 grid = nodeIdIndirection == 1 ? textureSize(nodeId, 0) / ivec2(2, 1) : size;
     // A 2N-1 mesh has two vertices per symbol axis. Every other mesh cell
     // connects neighboring quads; its fractional marker discards that gap.
-    ivec2 vertex = ivec2(round(qt_MultiTexCoord0 * vec2(grid * 2 - 1)));
+    ivec2 vertex = ivec2(round(qt_MultiTexCoord0 * vec2(ivec2(grid.x, meshRows) * 2 - 1)));
     ivec2 cell = vertex / 2;
+    cell.y += rowOffset;
     marker = vec2(cell);
     localPoint = (vec2(vertex % 2) * 2.0 - 1.0) * 32.0;
     vec2 anchor = vec2(decodeField(anchorX, cell), decodeField(anchorY, cell));
