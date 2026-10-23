@@ -47,7 +47,7 @@ class OSMChartDrawer(VectorChartDrawer):
                 geom = feat.GetGeometryRef()
                 try:
                     self.feature_render(gpsmap, cr, geom, feat, layer)
-                except:
+                except Exception:
                     logger.debug("Failed to render OSM feature:", exc_info=True)
 
                 feat = layer.GetNextFeature()

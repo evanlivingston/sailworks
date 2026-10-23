@@ -165,7 +165,7 @@ class Storage(dict):
         try:
             self.load()
             self.__init = True
-        except:
+        except Exception:
             self.__init = True
             self.save()
 

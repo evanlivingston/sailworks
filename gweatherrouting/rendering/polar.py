@@ -72,7 +72,7 @@ class PolarRenderer:
         polar = None
         try:
             polar = Polar(self.polar_manager.get_path(polar_file))
-        except:
+        except Exception:
             logger.error("Error loading polar file %s", polar_file)
 
         self.set_polar(polar)

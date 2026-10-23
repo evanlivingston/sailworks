@@ -203,7 +203,7 @@ class GDALSingleRasterChart:
             try:
                 c = ct.GetColorEntry(x)
                 colors[x] = (c[3] << 24) | (c[2] << 16) | (c[1] << 8) | c[0]
-            except:
+            except Exception:
                 colors[x] = 0x00000000
 
         data = np.vectorize(lambda x: colors[x], otypes=[np.uint32])(band.ReadAsArray())
@@ -308,7 +308,7 @@ class GDALRasterChart(ChartLayer):
                     path.split("/")[-1],
                     str(int((time.time() - s) * 10.0) / 10.0),
                 )
-            except:
+            except Exception:
                 logger.error("Error loading raster file %s", path.split("/")[-1])
                 return None
             self.last_rasters.append(r)
