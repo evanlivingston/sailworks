@@ -113,7 +113,8 @@ def apply_theme(app: QApplication):
         palette.setColor(QPalette.ColorGroup.Disabled, role, QColor("#777774"))
     app.setPalette(palette)
     install_wheel_guard(app)
-    app.setStyleSheet("""
+    app.setStyleSheet(
+        """
         QToolBar { spacing: 8px; padding: 5px 8px; border: none;
                    border-bottom: 1px solid #454545; }
         QToolBar QToolButton { padding: 5px 9px; border-radius: 6px; }
@@ -205,7 +206,8 @@ def apply_theme(app: QApplication):
         QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
             background: none; }
         QStatusBar { border-top: 1px solid #454545; }
-    """)
+    """
+    )
 
 
 def section_label(text):
