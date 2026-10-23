@@ -22,7 +22,7 @@ from gweatherrouting.core.geo.elementmultipoint import ElementMultiPoint
 
 
 class Track(ElementMultiPoint):
-    def __init__(self, name, points=[], visible=True, collection=None):
+    def __init__(self, name, points=None, visible=True, collection=None):
         super().__init__(name, points, visible, collection)
 
     @staticmethod

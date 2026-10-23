@@ -17,6 +17,9 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 from typing import Generic, Optional, TypeVar
 
 import gpxpy
+import logging
+
+logger = logging.getLogger("gweatherrouting")
 
 from gweatherrouting.core.geo.element import Element
 from gweatherrouting.core.storage import Storage
@@ -139,7 +142,7 @@ class Collection(Generic[T]):
                 f = open(dest, "w")
                 f.write(gpx.to_xml())
             except Exception as e:
-                print(str(e))
+                logger.debug("Failed to export GPX: %s", e)
 
 
 class CollectionWithActiveElement(Collection):

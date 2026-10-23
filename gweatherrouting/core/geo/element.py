@@ -15,6 +15,9 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
 import gpxpy
+import logging
+
+logger = logging.getLogger("gweatherrouting")
 
 
 class Element:
@@ -51,7 +54,7 @@ class Element:
                 f.close()
                 return True
             except Exception as e:
-                print(str(e))
+                logger.debug("Failed to export GPX: %s", e)
 
         return False
 
