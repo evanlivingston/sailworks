@@ -47,7 +47,9 @@ def _force_macos_dark_appearance() -> bool:
         objc.objc_getClass.argtypes = [ctypes.c_char_p]
         objc.sel_registerName.restype = ctypes.c_void_p
         objc.sel_registerName.argtypes = [ctypes.c_char_p]
-        sel = lambda name: objc.sel_registerName(name.encode("ascii"))  # noqa: E731
+
+        def sel(name):
+            return objc.sel_registerName(name.encode("ascii"))
 
         def _send(target, selector, *args, argtypes=()):
             objc.objc_msgSend.restype = ctypes.c_void_p
@@ -113,7 +115,8 @@ def apply_theme(app: QApplication):
         palette.setColor(QPalette.ColorGroup.Disabled, role, QColor("#777774"))
     app.setPalette(palette)
     install_wheel_guard(app)
-    app.setStyleSheet("""
+    app.setStyleSheet(
+        """
         QToolBar { spacing: 8px; padding: 5px 8px; border: none;
                    border-bottom: 1px solid #454545; }
         QToolBar QToolButton { padding: 5px 9px; border-radius: 6px; }
@@ -205,7 +208,8 @@ def apply_theme(app: QApplication):
         QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
             background: none; }
         QStatusBar { border-top: 1px solid #454545; }
-    """)
+    """
+    )
 
 
 def section_label(text):

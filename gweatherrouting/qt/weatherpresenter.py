@@ -67,8 +67,7 @@ class WeatherPresenter(QObject):
         return (
             not self.closed
             and not self.reason
-            and settings.get("weatherRenderer", "viewport") == "viewport"
-            and settings.gribWindStyle == "barbs"
+            and settings.gribWindStyle in ("barbs", "streamlines")
         )
 
     @property
@@ -255,15 +254,10 @@ class WeatherPresenter(QObject):
                 if getattr(self.canvas, "_desktop_viewport", False)
                 else "Weather renderer unavailable: " + self.reason
             )
-        elif self.canvas.controller.settings.gribWindStyle == "streamlines":
-            mode = "Streamlines — legacy renderer"
-        elif (
-            self.canvas.controller.settings.get("weatherRenderer", "viewport")
-            == "legacy"
-        ):
-            mode = "Legacy weather recovery"
         elif not self.canvas.wind_visible:
             mode = "Wind hidden"
+        elif self.canvas.controller.settings.gribWindStyle == "streamlines":
+            mode = "Viewport streamlines: " + self._state
         elif (
             getattr(self.canvas.controller.settings, "gribBarbDensity", "standard")
             == "all"
@@ -311,6 +305,24 @@ class WeatherPresenter(QObject):
         self.canvas._invalidate_base()
 
     def _sync_active(self, source):  # noqa: C901 - host configuration is explicit
+        # Capture the host's restored/requested view before touching the child.
+        # Resize, style and show operations can synchronously emit cameraChanged
+        # with the child's previous camera, before it has adopted this request.
+        camera_request = getattr(self.canvas, "requested_viewport_camera", None)
+        camera = (
+            camera_request()
+            if camera_request is not None
+            else ViewportCamera(
+                self.canvas._center_lat,
+                self.canvas._center_lon,
+                self.canvas._zoom,
+                self.canvas.width(),
+                self.canvas.height(),
+                self.canvas.time_control.time,
+                self.canvas.controller.settings.gribBarbDensity,
+                True,
+            )
+        )
         if self.widget is not None and (
             self.widget._chart_palette != self.canvas.controller.settings.chartPalette
         ):
@@ -332,6 +344,8 @@ class WeatherPresenter(QObject):
         widget, foreground = self.widget, self.foreground
         if widget is None or foreground is None:
             raise RuntimeError("ENC/weather viewport initialization failed")
+        if widget._camera != camera:
+            widget.set_camera(camera)
         widget.setGeometry(self.canvas.rect())
         foreground.setGeometry(self.canvas.rect())
         widget._smooth_zoom = getattr(self.canvas, "_smooth_zoom", True)
@@ -341,24 +355,8 @@ class WeatherPresenter(QObject):
             if self.canvas.wind_visible
             else 0
         )
+        widget.set_wind_style(self.canvas.controller.settings.gribWindStyle)
         widget.show()
-        camera_request = getattr(self.canvas, "requested_viewport_camera", None)
-        camera = (
-            camera_request()
-            if camera_request is not None
-            else ViewportCamera(
-                self.canvas._center_lat,
-                self.canvas._center_lon,
-                self.canvas._zoom,
-                self.canvas.width(),
-                self.canvas.height(),
-                self.canvas.time_control.time,
-                self.canvas.controller.settings.gribBarbDensity,
-                True,
-            )
-        )
-        if widget._camera != camera:
-            widget.set_camera(camera)
         route_overlay = getattr(self.canvas, "viewport_route_overlay", None)
         if route_overlay is not None:
             widget.set_route_overlay(route_overlay())
@@ -472,7 +470,12 @@ class WeatherPresenter(QObject):
     def _camera_changed(self, camera):
         """Mirror the viewport-owned camera for existing overlays and app APIs."""
         canvas = self.canvas
-        if self.closed or canvas.disposed:
+        if (
+            self.closed
+            or canvas.disposed
+            or self.widget is None
+            or self.widget._camera is None
+        ):
             return
         adopt_camera = getattr(canvas, "adopt_viewport_camera", None)
         if adopt_camera is not None:

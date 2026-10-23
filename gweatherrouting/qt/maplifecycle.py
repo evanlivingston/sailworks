@@ -57,7 +57,8 @@ class MapLifecycleMixin:
         # Terminal teardown closes renderers even if queued completion callbacks
         # never run. Hide/show retains the reusable forget path.
         self._base_chart_renderer.close()
-        self.wind.close()
+        if self.wind is not None:
+            self.wind.close()
         self._overlay_services.close(self)
         for token in list(self._ticks):
             self.remove_tick_callback(token)
@@ -86,7 +87,6 @@ class MapLifecycleMixin:
         self.cancel_move()
         self.charts._chs_renderer.forget(self)
         self._base_chart_renderer.forget(self)
-        self.wind.forget(self)
         self._overlay_services.forget(self)
         # Drop cached pixels whose forgotten overlay state may never refresh.
         self._invalidate_base()

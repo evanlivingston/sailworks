@@ -15,7 +15,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import gpxpy.gpx
 

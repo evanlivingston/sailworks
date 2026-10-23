@@ -63,7 +63,7 @@ class S57SymbolProvider:
                 self.symbols = json.load(f)
                 logger.debug("Loaded cached S57 symbols")
                 return
-        except:
+        except Exception:
             logger.warning("Cached S57 symbols not found, loading from XML")
             self.symbols = {}
 
@@ -119,7 +119,7 @@ class S57SymbolProvider:
                     "gloc": gloc,
                 }
 
-            except:
+            except Exception:
                 continue
 
         with open(DATA_DIR + "/s57_symbols.json", "w") as f:
@@ -158,7 +158,7 @@ class S57SymbolProvider:
                 + "s"
             )
             cr.show_text(txt)
-        except:
+        except Exception:
             y = yy + 4
             i = 1
             while True:
@@ -171,7 +171,7 @@ class S57SymbolProvider:
                         + tags["seamark:light:" + str(i) + ":period"]
                         + "s"
                     )
-                except:
+                except Exception:
                     break
                 cr.move_to(xx + 12, y)
                 cr.show_text(txt)

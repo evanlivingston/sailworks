@@ -19,9 +19,9 @@ from gweatherrouting.core.geo.element import Element
 
 
 class ElementMultiPoint(Element):
-    def __init__(self, name, points=[], visible=True, collection=None):
+    def __init__(self, name, points=None, visible=True, collection=None):
         super().__init__(name, visible, collection)
-        self.points = points
+        self.points = [] if points is None else points
 
     def to_gpx_object(self):
         raise Exception("Not implemented")

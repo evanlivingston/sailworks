@@ -399,7 +399,7 @@ class QtPreviewChecks(unittest.TestCase):
 
     def test_coastline_polygon_hole_is_preserved(self):
         import cairo
-        from PySide6.QtGui import QColor, QImage
+        from PySide6.QtGui import QImage
 
         path = self.path / "coast.geojson"
         path.write_text(
@@ -1384,7 +1384,6 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertEqual(len(self.controller.charts.charts), 1)
 
     def test_regional_forecast_sources_reach_download_ui_and_correct_provider(self):
-        from gweatherrouting.core.gribsources import NOAAHRRRSource, ECCHRDPSource
 
         self.window.show_library()
         library = self.window.library_dialog
@@ -5114,7 +5113,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertIn("completed datasets are available", setup.message)
 
     def test_rebuilt_cached_layers_are_drawn_before_returning(self):
-        from PySide6.QtGui import QColor, QImage, QPainter
+        from PySide6.QtGui import QImage, QPainter
 
         canvas = self.window.map
         for factor in (1, 2):
@@ -5144,7 +5143,7 @@ class QtPreviewChecks(unittest.TestCase):
 
     def test_map_presents_rebuild_frames_with_direct_overlays_at_two_pixel_scales(self):
         from contextlib import ExitStack
-        from PySide6.QtGui import QColor, QImage, QPainter
+        from PySide6.QtGui import QImage, QPainter
 
         canvas = self.window.map
         for factor in (1, 2):
@@ -5268,7 +5267,7 @@ class QtPreviewChecks(unittest.TestCase):
                     self.assertEqual(nav.call_count, 1)
 
     def test_padded_scene_pixels_cover_pan_and_zoom_and_rebuild_before_edges(self):
-        from PySide6.QtGui import QColor, QImage, QPainter
+        from PySide6.QtGui import QImage, QPainter
 
         canvas = self.window.map
         canvas.resize(640, 480)
@@ -5361,7 +5360,7 @@ class QtPreviewChecks(unittest.TestCase):
 
     def test_padded_map_paint_cannot_escape_into_ancestor_surface(self):
         from PySide6.QtCore import QRectF
-        from PySide6.QtGui import QColor, QImage, QPainter
+        from PySide6.QtGui import QImage, QPainter
 
         canvas = self.window.map
         for factor in (1, 2):

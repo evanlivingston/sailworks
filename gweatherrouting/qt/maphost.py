@@ -197,9 +197,6 @@ class MapHostMixin:
     def get_allocated_height(self):
         return self.height() + 2 * self._render_padding
 
-    def get_attribution_bounds(self):
-        return self._render_padding, self._render_padding, self.width(), self.height()
-
     def _invalidate_base(self):
         self._base_cache = None
         self._environment_cache = None
@@ -215,22 +212,3 @@ class MapHostMixin:
             self.height(),
             round(float(self.devicePixelRatioF()), 3),
         )
-
-    @staticmethod
-    def _collection_snapshot(manager):
-        snapshot = []
-        for element in manager:
-            position = getattr(element, "position", None)
-            try:
-                size = len(element)
-            except TypeError:
-                size = 0
-            snapshot.append(
-                (
-                    element.name,
-                    bool(getattr(element, "visible", True)),
-                    size,
-                    tuple(position) if position is not None else None,
-                )
-            )
-        return tuple(snapshot)

@@ -1006,28 +1006,24 @@ class PreviewWindow(QMainWindow):
         if (
             session.source == "log"
             and session.log
-            and (previous is None or previous != key)
+            and previous is not None
+            and previous[0] != session.source
         ):
             self.views.setCurrentWidget(self.logs_view)
+        # Startup restores the exact saved camera. Fitting a preloaded track
+        # before workspace restoration briefly sends the viewport to the track
+        # bounds (often the placeholder pole), and later refreshes can replace
+        # the user's last view. Only a deliberate source switch auto-fits.
+        fit = bool(points) and previous is not None and previous[0] != session.source
         self.log_map.set_points(
             points,
             offsets,
-            fit=bool(points)
-            and (
-                previous is None
-                or previous[0] != session.source
-                or session.source == "log"
-            ),
+            fit=fit,
         )
         self.map.set_points(
             points,
             offsets,
-            fit=bool(points)
-            and (
-                previous is None
-                or previous[0] != session.source
-                or session.source == "log"
-            ),
+            fit=fit,
         )
 
     def _source_changed(self, index):

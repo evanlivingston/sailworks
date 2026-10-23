@@ -47,7 +47,12 @@ class ChartStartup(QObject):
         if self.jobs is None:
             if self.canvas is None or self.began is None:
                 return
-            current = self.canvas.wind.prepared_view_status(self.canvas)["current"]
+            wind = self.canvas.wind
+            current = (
+                wind.prepared_view_status(self.canvas)["current"]
+                if wind is not None
+                else None
+            )
             weather_requested = getattr(
                 self.canvas, "wind_visible", True
             ) or self.owner.settings.get("gribIsobarsVisible", True)

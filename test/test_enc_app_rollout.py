@@ -188,7 +188,6 @@ def test_chart_placement_scales_the_retained_zoom_preview_about_its_center():
     from datetime import datetime as _datetime
 
     from gweatherrouting.core.mapviewport import MapViewport
-    from gweatherrouting.qt.gribviewport import ViewportCamera
     from gweatherrouting.qt.gribviewportchart import (
         CHART_SETTLE_MS,
         ChartCamera,
@@ -354,7 +353,6 @@ def test_viewport_camera_handoff_is_encapsulated_by_the_map_host():
     from gweatherrouting.qt.viewportmap import (
         ViewportCameraState,
         ViewportMap,
-        ViewportMapState,
     )
 
     changed = Mock()
@@ -394,7 +392,6 @@ def test_map_host_translates_app_state_to_the_viewport_camera_contract():
     from gweatherrouting.qt.viewportmap import (
         ViewportCameraState,
         ViewportMap,
-        ViewportMapState,
     )
 
     instant = datetime(2026, 10, 22, 12)
@@ -763,7 +760,6 @@ def test_map_host_publishes_existing_routes_to_the_viewport_overlay_layer():
     from gweatherrouting.qt.viewportmap import (
         ViewportCameraState,
         ViewportMap,
-        ViewportMapState,
     )
 
     class Route:

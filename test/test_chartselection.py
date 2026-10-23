@@ -4,9 +4,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import MethodType, SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
-import cairo
 from osgeo import ogr
 
 from gweatherrouting.core.enccharts import ENCCatalog, ENCCell, chart_scale_rank

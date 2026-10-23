@@ -7,7 +7,6 @@ from tempfile import TemporaryDirectory
 from threading import Event
 import time
 import unittest
-from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import cairo

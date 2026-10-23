@@ -280,8 +280,6 @@ class BaseChartChecks(Fixture):
             )
 
     def test_release_velocity_triggers_bounded_directional_prefetch(self):
-        from types import SimpleNamespace
-
         from gweatherrouting.rendering.overlayrenderer import RenderState
 
         canvas = self.window.map
@@ -315,7 +313,6 @@ class BaseChartChecks(Fixture):
 
     def test_trackpad_stream_queues_mid_gesture_speculation_ahead(self):
         import time
-        from types import SimpleNamespace
 
         from gweatherrouting.rendering.overlayrenderer import RenderState
         from test.qt_preview_checks import QtPreviewChecks

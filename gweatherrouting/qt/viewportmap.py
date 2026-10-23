@@ -12,7 +12,6 @@ from PySide6.QtWidgets import QWidget
 
 from gweatherrouting.core.mapviewport import MercatorProjection
 from gweatherrouting.rendering.isochrones import IsochroneFrame
-from gweatherrouting.rendering.windpainter import WindPainter
 from .mapcoverage import MapCoverageMixin
 from .mapcursor import MapCursorMixin
 from .mapenvironment import MapEnvironmentMixin
@@ -120,7 +119,6 @@ class ViewportMap(
         self.isochrone_frame = IsochroneFrame((), (), ())
 
         self._weather_services.initialize_base_chart_renderer(controller)
-        self._weather_services.initialize_wind(WindPainter, controller)
         self._overlay_services = MapOverlayServices.create(
             controller, self.time_control, marine_visible=time_control is None
         )

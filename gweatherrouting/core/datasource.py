@@ -34,7 +34,7 @@ class DataPacket:
     def is_heading(self):
         try:
             return getattr(self.data, "heading") is not None
-        except:
+        except Exception:
             return False
 
     @staticmethod

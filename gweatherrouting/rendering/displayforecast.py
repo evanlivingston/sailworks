@@ -42,7 +42,9 @@ class DisplayForecast:
     @property
     def label(self):
         reference, model = self.display_identity
-        run = datetime.fromtimestamp(reference, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        run = datetime.fromtimestamp(reference, timezone.utc).strftime(
+            "%Y-%m-%d %H:%M UTC"
+        )
         member = "/".join(model[2]) if model[2] else "deterministic"
         return f"{self.name} · run {run} · member {member}"
 
@@ -57,19 +59,35 @@ def inspect_forecasts(entries):
         try:
             metadata = Grib.parse_metadata(path)
             source = Grib(
-                metadata.path, metadata.name, metadata.centre, metadata.bounds,
-                metadata.start_time, metadata.last_forecast, metadata.model_name,
+                metadata.path,
+                metadata.name,
+                metadata.centre,
+                metadata.bounds,
+                metadata.start_time,
+                metadata.last_forecast,
+                metadata.model_name,
             )
             groups = {}
             for record in source.sampling.records:
-                groups.setdefault((record.reference, record.identity[1]), []).append(record.valid)
+                groups.setdefault((record.reference, record.identity[1]), []).append(
+                    record.valid
+                )
             for identity, times in groups.items():
-                forecasts.append(DisplayForecast(
-                    str(path), metadata.name, metadata.centre, metadata.bounds,
-                    datetime.fromtimestamp(identity[0]),
-                    (max(times) - identity[0]) / 3600, metadata.model_name,
-                    identity, min(times), max(times), version,
-                ))
+                forecasts.append(
+                    DisplayForecast(
+                        str(path),
+                        metadata.name,
+                        metadata.centre,
+                        metadata.bounds,
+                        datetime.fromtimestamp(identity[0]),
+                        (max(times) - identity[0]) / 3600,
+                        metadata.model_name,
+                        identity,
+                        min(times),
+                        max(times),
+                        version,
+                    )
+                )
             if not groups:
                 errors.append(f"{metadata.name}: no supported point forecasts")
         except Exception as exc:
