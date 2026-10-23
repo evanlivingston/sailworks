@@ -31,7 +31,6 @@ class SessionController(QObject):
 
     def __init__(
         self,
-        offline=False,
         recording_directory=None,
         parent=None,
         load_charts=True,
@@ -43,7 +42,6 @@ class SessionController(QObject):
         super().__init__(parent)
         if map_renderer not in (None, "cpu", "gpu"):
             raise ValueError("Map renderer must be cpu or gpu")
-        self.offline = offline
         self.load_charts = load_charts
         self.early_weather = early_weather
         self.gpu_resident_fields = gpu_resident_fields
@@ -74,8 +72,6 @@ class SessionController(QObject):
             WeakKeyDictionary()
         )
         self.charts = ChartCollection(self.settings, self.scheduler.submit)
-        if offline:
-            self.charts._chs_renderer.set_enabled(False)
         self.chart_errors = []
         if load_charts and not early_weather:
             self.charts.load_base_chart()
@@ -158,7 +154,6 @@ class SessionController(QObject):
     def start_connections(self):
         if (
             not self.closed
-            and not self.offline
             and self.session.streaming
             and not self.connections.polling_active
         ):

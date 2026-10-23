@@ -66,7 +66,7 @@ def application(report, data, output, deadline):
     SystemCredentialStore.load = lambda _self: None
     app = QApplication.instance() or QApplication([])
     apply_theme(app)
-    controller = SessionController(offline=True)
+    controller = SessionController()
     settings = controller.settings
     for key in (
         "chartENCVisible",

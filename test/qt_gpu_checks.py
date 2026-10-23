@@ -73,14 +73,12 @@ class PreferenceChecks(Fixture):
                 loaded = SettingsManager()
                 self.assertEqual(loaded.mapRenderer, "gpu")
                 saved = SessionController(
-                    offline=True,
                     load_charts=False,
                     recording_directory=self.path / "saved-recordings",
                 )
                 self.addCleanup(saved.close)
                 self.assertEqual(saved.map_renderer, "gpu")
                 override = SessionController(
-                    offline=True,
                     load_charts=False,
                     map_renderer="cpu",
                     recording_directory=self.path / "override-recordings",

@@ -27,7 +27,7 @@ def application(report, output):  # noqa: C901 - one bounded diagnostic
 
     SystemCredentialStore.load = lambda self: None
     app = QApplication.instance() or QApplication([])
-    controller = SessionController(offline=True)
+    controller = SessionController()
     canvas = TrackMap(controller)  # LEGACY-ONLY (TODO #86)
     canvas.resize(710, 743)
 

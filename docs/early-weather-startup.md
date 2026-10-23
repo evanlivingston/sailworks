@@ -4,8 +4,8 @@ Launch from this branch with:
 
 ```sh
 python -m gweatherrouting --early-weather
-# Without instrument connections:
-python -m gweatherrouting --early-weather --offline
+# Without instrument connections, use --log with a saved NMEA log:
+python -m gweatherrouting --early-weather --log tools/samples/data_12_12_2021.nmea
 ```
 
 This is integrated into the real `SessionController`/`PreviewWindow` and normal

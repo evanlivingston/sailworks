@@ -18,11 +18,7 @@ def main(argv=None):
         choices=("cpu", "gpu"),
         help="Override the saved map renderer for this session (GPU is experimental)",
     )
-    parser.add_argument(
-        "--offline",
-        action="store_true",
-        help="Do not open saved instrument connections",
-    )
+    
     parser.add_argument(
         "--gpu-resident-fields",
         action="store_true",
@@ -56,7 +52,6 @@ def main(argv=None):
     app.setApplicationDisplayName("GWeatherRouting")
     apply_theme(app)
     controller = SessionController(
-        offline=args.offline,
         map_renderer=args.map_renderer,
         early_weather=args.early_weather,
         gpu_resident_fields=args.gpu_resident_fields,

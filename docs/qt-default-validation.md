@@ -15,8 +15,8 @@ Checked on macOS 26.6.2 arm64, Python 3.11 and PySide6/Qt 6.12.0, October 14, 20
 
 | Check | Result and evidence |
 | --- | --- |
-| Installed default command | Editable install regenerated the console scripts. `gweatherrouting --help` exposes `--offline`/`--log`; installed metadata includes Qt and Python 3.10+. |
-| Native startup | The actual installed console script opened Qt at DPR 2, honored `--offline`, and did not import `gi.repository.Gtk`. Private settings/layout copies protected the original workspace. |
+| Installed default command | Editable install regenerated the console scripts. `gweatherrouting --help` exposes `--log`; installed metadata includes Qt and Python 3.10+. |
+| Native startup | The actual installed console script opened Qt at DPR 2 and did not import `gi.repository.Gtk`. Private settings/layout copies protected the original workspace. |
 | Full suite | `python -m pytest -q`: 826 tests and 106 subtests pass in 99.36s. This includes 99 isolated Qt checks; the POSIX pseudo-terminal check skips on Windows. |
 | Scoped checks | Black, Flake8 and mypy with silent imports pass for the changed production modules. Changed YAML parses and the AppImage shell recipe passes `bash -n`. |
 | Workflow/provider parity | The Qt suite covers navigation/import/export, full log plots/cursor, automatic recording, preferences, chart selection/NOAA staging, vector/raster geometry, weather/marine overlays, polars, routing/comparisons/cancellation and saved workspace. Live provider downloads are not revalidated by these fixture-based checks. |

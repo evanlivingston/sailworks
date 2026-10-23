@@ -44,7 +44,7 @@ def main():
     SystemCredentialStore.load = lambda _self: None
     imported = time.perf_counter()
     app = QApplication([])
-    controller = SessionController(offline=True, load_charts=not args.no_charts)
+    controller = SessionController(load_charts=not args.no_charts)
     controlled = time.perf_counter()
     window = PreviewWindow(controller)
     constructed = time.perf_counter()

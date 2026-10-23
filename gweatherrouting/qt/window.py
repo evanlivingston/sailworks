@@ -421,7 +421,6 @@ class PreviewWindow(QMainWindow):
                 self.controller.chart_startup is None
                 or self.controller.chart_startup.state == "ready"
             )
-            and not self.controller.offline
             and any(self.controller.map_data.missing().values())
         ):
             self._ensure_library(chart_section=2)
@@ -976,7 +975,7 @@ class PreviewWindow(QMainWindow):
         task = self.controller.connection_task
         return (
             "NMEA connections closed"
-            if self.controller.offline or not self.session.streaming
+            if not self.session.streaming
             else (
                 (task.message if task.message != "Done" else "")
                 or "Using saved NMEA connections"

@@ -29,7 +29,6 @@ assert "gi.repository.Gtk" not in sys.modules
             timeout=20,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("--offline", result.stdout)
         self.assertIn("--log", result.stdout)
         self.assertIn("--native-weather-fields", result.stdout)
         self.assertIn("--no-native-weather-fields", result.stdout)

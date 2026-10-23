@@ -1423,7 +1423,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     current_camera=lambda: self._camera,
                     on_publish=self.chartPublished.emit,
                     on_state=self.chartStateChanged.emit,
-                    enc_enabled=self._enc_chart_layer,
+                    enc_enabled=False,
                     dpr=self.devicePixelRatio(),
                     enc_only=enc_only,
                 )
@@ -2212,10 +2212,16 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             pending_buffer = 0 if front_buffer != 0 else 1
             self._pending_streamline_buffer = pending_buffer
             self._streamlines.setProperty("pendingBuffer", pending_buffer)
-            self._streamlines.setProperty(
-                f"buffer{pending_buffer}Groups", groups
+            self._streamlines.setProperty(f"buffer{pending_buffer}Groups", groups)
+            self._streamlines.setOpacity(
+                self._wind_opacity
+                * (
+                    0.6
+                    if self._streamline_display_camera
+                    and self._streamline_display_camera.time != camera.time
+                    else 1.0
+                )
             )
-            self._streamlines.setOpacity(self._wind_opacity * (0.6 if self._streamline_display_camera and self._streamline_display_camera.time != camera.time else 1.0))
             self._streamlines.setVisible(enabled)
             if not groups:
                 self._streamlines.setProperty("buffer0Groups", [])
@@ -2230,7 +2236,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._status.setText("No visible streamlines in the selected forecast")
                 self._status.adjustSize()
                 return "unavailable"
-            self._streamline_provider.retain(self._streamline_urls + self._pending_streamline_urls)
+            self._streamline_provider.retain(
+                self._streamline_urls + self._pending_streamline_urls
+            )
             if debug_streamlines:
                 logger.warning(
                     "streamlines staged: segments=%d groups=%d front=%s "
@@ -2344,8 +2352,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     if self._chart_camera != camera:
                         self._chart_camera = camera
                         self._chart_camera_changed = time.perf_counter()
+                    # Show retained image as a scaled preview during zoom when ENC is off.
+                    # (Desktop viewport sets enc_chart_layer=True as a capability;
+                    # the preview should activate whenever ENC isn't actually enabled.)
+                    enc_enabled = getattr(self._chart_model, "_enc_enabled", False)
                     if (
-                        not self._enc_chart_layer
+                        not enc_enabled
                         and previous_chart_camera is not None
                         and previous_chart_camera.zoom != camera.zoom
                         and self._chart_model._published is not None
@@ -2354,7 +2366,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                         # the new native-scale composition waits for the view
                         # to settle. The QML status makes the preview explicit.
                         cast(QObject, self._chart).setProperty("chartLoading", True)
-                    if self._enc_chart_layer and chart_withdrawn_on_camera_change(
+                    # Only withdraw the chart image immediately when ENC is actually
+                    # enabled. When ENC is off, keep the retained image as a scaled
+                    # preview (the non-ENC path above) to avoid blanking the basemap
+                    # on zoom/time changes.
+                    if enc_enabled and chart_withdrawn_on_camera_change(
                         previous_chart_camera,
                         camera,
                         self._chart_model._published is not None,

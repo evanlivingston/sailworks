@@ -77,7 +77,7 @@ def application(report, data, output, deadline):  # noqa: C901
 
     SystemCredentialStore.load = lambda self: None
     app = QApplication.instance() or QApplication([])
-    controller = SessionController(offline=True)
+    controller = SessionController()
     controller.settings["gribBarbDensity"] = "all"
     controller.settings["gribWindStyle"] = "barbs"
     controller.settings["weatherRenderer"] = "viewport"

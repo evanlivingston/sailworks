@@ -50,7 +50,7 @@ The experimental map path now draws **numerically interpolated wind barbs**.
 Enable it only with the existing GPU presenter:
 
 ```sh
-GWR_GPU_WEATHER=1 python -m gweatherrouting.qt --offline --map-renderer gpu
+GWR_GPU_WEATHER=1 python -m gweatherrouting.qt --map-renderer gpu
 ```
 
 It is not a fully GPU weather renderer: background wind fill and isobars still

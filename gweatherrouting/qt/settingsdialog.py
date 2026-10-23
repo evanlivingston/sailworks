@@ -180,12 +180,7 @@ class SettingsDialog(QDialog):
         connections = QWidget()
         content = QVBoxLayout(connections)
         hint = QLabel(
-            "Add or edit instruments, then apply to save and reconnect.\n"
-            + (
-                "Offline mode keeps all connections closed."
-                if controller.offline
-                else ""
-            )
+            "Add or edit instruments, then apply to save and reconnect."
         )
         hint.setWordWrap(True)
         content.addWidget(hint)
@@ -280,9 +275,7 @@ class SettingsDialog(QDialog):
         connected = sum(s["connected"] for s in statuses)
         packets = sum(s["packets"] for s in statuses)
         self.connection_status.setText(
-            "Offline · connections closed"
-            if self.controller.offline
-            else f"{connected} / {len(statuses)} connected · {packets:,} packets"
+            f"{connected} / {len(statuses)} connected · {packets:,} packets"
         )
         message = self.task.message
         if not busy and message == "Done":
@@ -316,9 +309,7 @@ class SettingsDialog(QDialog):
 
     def applied(self, result, error):
         if error is None and self.applying:
-            self.task.message = "Connections saved" + (
-                " · offline" if self.controller.offline else ""
-            )
+            self.task.message = "Connections saved"
             self.draft = [dict(c) for c in self.controller.connections.connections]
             self.reload()
         self.applying = False

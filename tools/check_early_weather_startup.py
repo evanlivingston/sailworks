@@ -304,7 +304,7 @@ def main():
     timer.setInterval(25)
     timer.timeout.connect(watch.tick)
     timer.start()
-    argv = ["--offline"] + ([] if args.baseline else ["--early-weather"])
+    argv = ([] if args.baseline else ["--early-weather"])
     watch.report["entry_exit"] = entry.main(argv)
     watch.report["controller_closed"] = bool(windows and windows[0].controller.closed)
     watch.heartbeat()

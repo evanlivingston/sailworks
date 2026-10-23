@@ -260,7 +260,7 @@ def worker(config):
     socket.socket.connect_ex = no_network
     scene, scenario = config["scene"], config["scenario"]
     app = QApplication([])
-    controller = SessionController(offline=True, load_charts=False)
+    controller = SessionController(load_charts=False)
     controller.timer.stop()
     controller.settings.canadianCharts = False
     controller.settings.gribArrowOnGround = True

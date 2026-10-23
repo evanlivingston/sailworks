@@ -87,17 +87,17 @@ Homebrew dependencies separately, run `brew bundle --file=tools/macos/Brewfile`.
 Qt is the default for both the installed command and module launch:
 
 ```sh
-gweatherrouting --offline
-python -m gweatherrouting --offline
+gweatherrouting
+python -m gweatherrouting
 ```
 
-Omit `--offline` to open saved instrument connections. `--log FILE` opens an
-interpreted NMEA log. `gweatherrouting-qt` remains an alias; the old `[qt]` install
+`--log FILE` opens an interpreted NMEA log. `gweatherrouting-qt` remains an alias; the old `[qt]` install
 extra is compatible but no longer needed because PySide6 is a base dependency.
 
+Instrument connections are managed from the UI: use the "Read live NMEA" checkbox in the NMEA panel to start/stop connections, and "Configure connections…" to manage saved instrument settings.
+
 For opt-in early-weather startup, use `python -m gweatherrouting --early-weather`
-(add `--offline` to keep instrument connections closed). It defers unused log
-plots and stages chart initialization after weather preparation in the real map.
+It defers unused log plots and stages chart initialization after weather preparation in the real map.
 The default startup and renderer selection are unchanged. See
 [early-weather startup](docs/early-weather-startup.md) for limits and validation.
 

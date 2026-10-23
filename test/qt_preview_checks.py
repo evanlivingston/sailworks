@@ -69,7 +69,6 @@ class QtPreviewChecks(unittest.TestCase):
             mock.start()
             self.addCleanup(mock.stop)
         self.controller = SessionController(
-            offline=True,
             recording_directory=self.path / "recordings",
             load_charts=False,
         )
@@ -539,7 +538,6 @@ class QtPreviewChecks(unittest.TestCase):
                         "network": transport,
                     }
                 ]
-                self.controller.offline = False
                 worker = Thread(target=feed, daemon=True)
                 worker.start()
                 received = []
@@ -613,7 +611,6 @@ class QtPreviewChecks(unittest.TestCase):
                 "baudrate": 4800,
             }
         ]
-        self.controller.offline = False
         worker.start()
         try:
             self.controller.start_connections()
@@ -2221,11 +2218,13 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(self.window.streaming.isChecked())
         self.assertFalse(self.window.workspace.save_state()["nmea"]["streaming"])
 
-    def test_offline_read_toggle_never_opens_connections(self):
+    def test_streaming_toggle_opens_and_closes_connections(self):
         with patch.object(self.controller.connections, "start_polling") as opened:
             self.window.streaming.click()
+            self.assertTrue(opened.called)
+            opened.reset_mock()
             self.window.streaming.click()
-            opened.assert_not_called()
+            self.controller.connections.stop_polling.assert_called()
 
     def test_reading_off_ignores_already_queued_live_packets(self):
         packet = NMEADataPacket.parse(rmc("120000"))
@@ -2238,7 +2237,6 @@ class QtPreviewChecks(unittest.TestCase):
     def test_connection_start_and_reconnect_worker_keep_playback_and_close_safely(self):
         started, release = Event(), Event()
         controller = self.controller
-        controller.offline = False
 
         def connect():
             started.set()
@@ -4939,10 +4937,9 @@ class QtPreviewChecks(unittest.TestCase):
             page.downloads["seamarks"].click()
             start.assert_called_once_with(("seamarks",))
         library.hide()
-        self.controller.offline = False
         self.controller.load_charts = True
         self.window._offer_map_data()
-        self.controller.offline = True
+        # _offer_map_data() now shows library if there's missing map data
         self.assertTrue(library.isVisible())
         self.assertIs(library.tabs.currentWidget(), library.charts_page)
         self.assertEqual(library.chart_sections.currentIndex(), 2)
@@ -5034,11 +5031,10 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertIsNotNone(self.controller.charts.osmLayer)
             self.assertTrue(all(not b.isEnabled() for b in page.downloads.values()))
             self.window.library_dialog.hide()
-            self.controller.offline = False
             self.controller.load_charts = True
             self.window._offer_map_data()
-            self.controller.offline = True
-            self.assertFalse(self.window.library_dialog.isVisible())
+            # _offer_map_data() shows library if there's missing map data
+            self.assertTrue(self.window.library_dialog.isVisible())
 
     def test_map_data_cancel_and_close_reject_late_chart_attachment(self):
         from gweatherrouting.core.mapdata import MapDownloadCancelledError

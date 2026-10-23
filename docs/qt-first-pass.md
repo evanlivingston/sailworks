@@ -12,20 +12,16 @@ Use Python 3.10 or newer in the development environment:
 
 ```sh
 .venv/bin/python -m pip install -e .
-.venv/bin/gweatherrouting --offline --log tools/samples/data_12_12_2021.nmea
+.venv/bin/gweatherrouting --log tools/samples/data_12_12_2021.nmea
 ```
 
 The equivalent module command is:
 
 ```sh
-.venv/bin/python -m gweatherrouting --offline
+.venv/bin/python -m gweatherrouting
 ```
 
-`--offline` leaves instrument connections closed and disables Canadian online
-chart tiles. Without it, Qt opens the saved instrument connections and honors
-the Canadian charts preference. Close GTK's live connections before opening
-the same serial device or listening port in Qt. Use File → Settings or the
-NMEA panel’s Configure connections button to edit instruments directly in Qt.
+Instrument connections are managed from the UI: use the "Read live NMEA" checkbox in the NMEA panel to start/stop connections, and "Configure connections…" to manage saved instrument settings. Canadian chart tiles (CHS) are enabled by default and can be toggled in the chart visibility settings. Close GTK's live connections before opening the same serial device or listening port in Qt. Use File → Settings or the NMEA panel's Configure connections button to edit instruments directly in Qt.
 
 PySide6 Essentials is a base dependency and Python 3.10+ is required. The `[qt]`
 extra and `gweatherrouting-qt` command remain compatibility aliases. Use

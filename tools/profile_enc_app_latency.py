@@ -25,7 +25,7 @@ def application(report, data, output, deadline):  # noqa: C901 - one bounded ses
 
     SystemCredentialStore.load = lambda self: None
     app = QApplication.instance() or QApplication([])
-    controller = SessionController(offline=True)
+    controller = SessionController()
     controller.settings["weatherRenderer"] = "viewport"
     controller.settings["gribWindStyle"] = "barbs"
     canvas = ViewportMap(controller)

@@ -84,7 +84,7 @@ def export_worker(config):
 
     app = QApplication([])
     apply_theme(app)
-    controller = SessionController(offline=True)
+    controller = SessionController()
     controller.timer.stop()
     controller.time_control.set_time(datetime.fromisoformat(config["forecast_time"]))
     chs = controller.charts._chs_renderer

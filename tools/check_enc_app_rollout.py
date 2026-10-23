@@ -105,7 +105,7 @@ def _application(report, data, output, deadline):  # noqa: C901 - one native app
         raise RuntimeError("Application storage escaped the sandbox")
     SystemCredentialStore.load = lambda _self: None
     app = QApplication.instance() or QApplication([])
-    controller = SessionController(offline=True)
+    controller = SessionController()
     canvas = ViewportMap(controller)
     canvas.resize(710, 743)
     panel = WeatherPanel(controller, lambda: canvas, lambda: None, lambda: None)
