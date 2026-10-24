@@ -354,7 +354,6 @@ def worker(config):
         "base_charts": canvas._base_chart_renderer,
         "enc": controller.charts._enc_renderer,
         "wind": canvas.wind,
-        "marine": canvas.marine._renderer,
         "isochrones": canvas.isochrones,
     }
     jobs = []

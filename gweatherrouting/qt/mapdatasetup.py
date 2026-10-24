@@ -83,10 +83,7 @@ class MapDataController(QObject):
                 self.owner.charts.reload_base_chart()
                 for canvas in self.owner.charts.maps:
                     if "coastlines" in installed:
-                        overlay = canvas.marine
-                        overlay.forget(canvas)
-                        mask = overlay._renderer._land_mask
-                        overlay._renderer._land_mask = type(mask)(self.directory)
+                        canvas.marine.forget(canvas)
                 self.owner.data.redraw()
             self.message = str(failure) if failure else "Map data installed and ready"
             if installed and failure:

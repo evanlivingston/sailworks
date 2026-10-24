@@ -219,7 +219,6 @@ def tracked_surface_bytes(canvas):
     for renderer in (
         canvas.wind,
         canvas.isochrones,
-        canvas.marine._renderer,
         canvas.charts._enc_renderer,
     ):
         state = renderer._states.get(canvas)

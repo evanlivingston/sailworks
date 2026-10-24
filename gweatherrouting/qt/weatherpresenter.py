@@ -74,25 +74,9 @@ class WeatherPresenter(QObject):
     def enc_active(self):
         return self.active and self.widget is not None and self.widget._enc_chart_layer
 
-    @property
-    def marine_active(self):
-        from gweatherrouting.rendering.marinemaplayer import chart_instant
-
-        marine = self.canvas.marine
-        return bool(
-            self.active
-            and self.widget is not None
-            and self.widget._marine_layer.accepts(
-                marine.sources,
-                chart_instant(marine.time_control.time),
-                marine.visible and marine.currents_visible,
-            )
-        )
-
     def _marine_state_changed(self, generation, _state):
         if generation != self._host_generation:
             return
-        self.canvas._invalidate_base()
         self.canvas.queue_draw()
         self._label()
 
@@ -388,14 +372,14 @@ class WeatherPresenter(QObject):
             else 0
         )
         widget.set_wind_style(self.canvas.controller.settings.gribWindStyle)
-        from gweatherrouting.rendering.marinemaplayer import chart_instant
+        from gweatherrouting.rendering.marinepresentation import chart_instant
 
         marine = self.canvas.marine
-        marine._maps.add(self.canvas)
+        marine.watch(self.canvas)
         widget.set_marine(
             marine.sources,
             chart_instant(marine.time_control.time),
-            marine.visible and marine.currents_visible,
+            marine.visible,
         )
         widget.show()
         route_overlay = getattr(self.canvas, "viewport_route_overlay", None)

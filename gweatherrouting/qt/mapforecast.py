@@ -27,7 +27,6 @@ class MapForecastMixin:
             gpu is not None
             and gpu.active
             and stager is not None
-            and not self._marine_time_dependent()
             and stager.request(self) is not None
         ):
             # The numerical field is already staged. CPU fill/isobar workers

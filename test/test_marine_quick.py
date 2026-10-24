@@ -17,7 +17,7 @@ from gweatherrouting.core.mapviewport import MapPoint, MapViewport
 from gweatherrouting.core.marine.manager import MarineManager
 from gweatherrouting.core.marine.models import Capability
 from gweatherrouting.qt.gribviewport import ViewportCamera
-from gweatherrouting.rendering.marinemaplayer import MarineSources, chart_instant
+from gweatherrouting.rendering.marinepresentation import MarineSources, chart_instant
 from gweatherrouting.rendering.marinesnapshot import (
     CurrentArrow,
     MarineSnapshot,
@@ -52,9 +52,9 @@ class TestMarineQuick(unittest.TestCase):
         )
         self.camera = ViewportCamera(49.5, -125.5, 10, 256, 192, START)
 
-    def sample(self, sources=None, instant=START, land=lambda *_: False):
+    def sample(self, sources=None, instant=START):
         return sample_currents(
-            sources or self.sources, instant, self.camera, lambda: False, land
+            sources or self.sources, instant, self.camera, lambda: False
         )
 
     def test_marine_density_grid_and_station_batches(self):
@@ -91,10 +91,10 @@ class TestMarineQuick(unittest.TestCase):
                 self.assertEqual(result.instant, START)
                 self.assertTrue(current_triangles(result, self.camera))
 
-    def test_time_coverage_and_land_mask_do_not_mask_stations(self):
-        result = self.sample(land=lambda *_: True)
-        self.assertEqual(len(result.arrows), 1)
-        self.assertTrue(result.arrows[0].station)
+    def test_time_coverage_and_field_anchors_are_sampled(self):
+        result = self.sample()
+        self.assertGreater(sum(not a.station for a in result.arrows), 0)
+        self.assertEqual(sum(a.station for a in result.arrows), 1)
         self.assertEqual(self.sample(instant=START + timedelta(days=1)).arrows, ())
         self.assertEqual(
             self.sample(instant=START + timedelta(days=1)).state, "no valid data"
@@ -111,9 +111,7 @@ class TestMarineQuick(unittest.TestCase):
             "gweatherrouting.rendering.marinesnapshot.FieldSelection",
             return_value=selected,
         ) as selection:
-            result = sample_currents(
-                self.sources, instant, camera, lambda: False, lambda *_: False
-            )
+            result = sample_currents(self.sources, instant, camera, lambda: False)
         selection.assert_called_once_with(self.sources.fields)
         self.assertTrue(
             all(c.args[2] == instant for c in selected.sample.call_args_list)
@@ -137,9 +135,7 @@ class TestMarineQuick(unittest.TestCase):
 
     def test_published_field_anchors_survive_zoom_and_level_refinement(self):
         def sample(camera):
-            return sample_currents(
-                self.sources, START, camera, lambda: False, lambda *_: False
-            )
+            return sample_currents(self.sources, START, camera, lambda: False)
 
         def anchors(snapshot):
             return {(a.latitude, a.longitude) for a in snapshot.arrows if not a.station}
@@ -180,27 +176,28 @@ class TestMarineQuick(unittest.TestCase):
                     current_triangles(old, camera), current_triangles(new, camera)
                 )
 
-    def test_field_lattice_wraps_clips_and_masks_actual_anchors(self):
+    def test_field_lattice_wraps_clips_and_samples_actual_anchors(self):
         selection = Mock()
         selection.sample.return_value = SimpleNamespace(
             status="available", values=(1, 0)
         )
         for latitude in (-85, 0, 85):
             camera = replace(self.camera, center_lat=latitude, center_lon=179, zoom=2)
-            mask = Mock(return_value=False)
+            selection.sample.reset_mock()
             with patch(
                 "gweatherrouting.rendering.marinesnapshot.FieldSelection",
                 return_value=selection,
             ):
-                snapshot = sample_currents(
-                    self.sources, START, camera, lambda: False, mask
-                )
+                snapshot = sample_currents(self.sources, START, camera, lambda: False)
             anchors = [
                 (a.latitude, a.longitude) for a in snapshot.arrows if not a.station
             ]
             self.assertTrue(anchors)
             self.assertEqual(len(anchors), len(set(anchors)))
-            self.assertEqual(anchors, [c.args for c in mask.call_args_list])
+            self.assertEqual(
+                anchors,
+                [c.args[:2] for c in selection.sample.call_args_list],
+            )
             self.assertTrue(
                 all(
                     -180 <= lon < 180 and abs(lat) <= MapViewport.MAX_LAT
@@ -222,9 +219,7 @@ class TestMarineQuick(unittest.TestCase):
 
     def test_cancellation_and_station_deduplication(self):
         self.assertIsNone(
-            sample_currents(
-                self.sources, START, self.camera, lambda: True, lambda *_: False
-            )
+            sample_currents(self.sources, START, self.camera, lambda: True)
         )
         currents = replace(
             self.sources.currents, datasets=self.sources.currents.datasets * 2
@@ -329,7 +324,7 @@ class TestMarineQuick(unittest.TestCase):
             window.close()
             window.releaseResources()
 
-    def test_latest_request_rejects_old_time_and_close(self):
+    def test_time_request_keeps_previous_arrows_until_latest_frame_publishes(self):
         from PySide6.QtCore import QObject
         from PySide6.QtQuick import QQuickItem
         from gweatherrouting.qt.marinequick import MarineQuickLayer
@@ -337,102 +332,77 @@ class TestMarineQuick(unittest.TestCase):
         parent, root = QObject(), QQuickItem()
         entered, release = Event(), Event()
 
-        def sampling(sources, instant, camera, cancelled, land):
-            if instant == START:
-                entered.set()
-                release.wait(2)
-            return MarineSnapshot(sources, instant, (), "available")
+        latest = START + timedelta(minutes=5)
+
+        def sampling(sources, instant, camera, cancelled):
+            entered.set()
+            release.wait(2)
+            return MarineSnapshot(sources, instant, (), "no valid data")
 
         with patch(
             "gweatherrouting.qt.marinequick.sample_currents", side_effect=sampling
         ):
             layer = MarineQuickLayer(root, parent)
-            self.addCleanup(layer.close)
             sources = replace(self.sources, fields=())
-            layer.request(sources, START, True, self.camera)
-            self.assertTrue(entered.wait(2))
-            latest = START + timedelta(minutes=5)
+            old_snapshot = MarineSnapshot(
+                sources,
+                START,
+                (CurrentArrow(49.5, -125.5, 1, 0),),
+                "available",
+            )
+            layer._content = (sources, START, True)
+            layer.snapshot = old_snapshot
+            layer.item.present(old_snapshot, self.camera)
+            old_vertices = layer.item.vertices.copy()
             layer.request(sources, latest, True, self.camera)
+            self.assertTrue(entered.wait(2))
+            self.assertIs(layer.snapshot, old_snapshot)
+            np.testing.assert_array_equal(layer.item.vertices, old_vertices)
+            self.assertEqual(layer.state, "loading (showing previous frame)")
             release.set()
             deadline = time.monotonic() + 3
-            while layer.snapshot is None and time.monotonic() < deadline:
+            while layer.snapshot is old_snapshot and time.monotonic() < deadline:
                 app.processEvents()
                 time.sleep(0.005)
             self.assertIsNotNone(layer.snapshot)
             self.assertEqual(layer.snapshot.instant, latest)
-            layer.request(sources, latest, False, self.camera)
+            self.assertEqual(len(layer.item.vertices), 0)
+            layer.snapshot = old_snapshot
+            layer.item.present(old_snapshot, self.camera)
+            new_sources = replace(sources, density="dense")
+            layer.request(new_sources, latest, True, self.camera)
+            self.assertIsNone(layer.snapshot)
+            self.assertEqual(len(layer.item.vertices), 0)
+            layer.request(new_sources, latest, False, self.camera)
             self.assertIsNone(layer.snapshot)
             self.assertEqual(layer.state, "hidden")
             layer.close()
             layer._thread.join(2)
             self.assertFalse(layer._thread.is_alive())
 
-    def test_active_quick_compatibility_renderer_receives_tides_only(self):
-        from gweatherrouting.qt.marineoverlay import MarineOverlay
-
-        overlay = MarineOverlay(self.manager, Mock(time=START), lambda cb: cb())
-        self.addCleanup(overlay.close)
-        overlay.sources = self.sources
-        overlay._renderer = Mock()
-        canvas = Mock()
-        canvas._weather_presenter.active = True
-        canvas._weather_presenter.marine_active = True
-        overlay.do_draw(canvas, Mock())
-        sources = overlay._renderer.draw.call_args.args[2][0][0]
-        self.assertFalse(sources.fields)
-        self.assertFalse(sources.currents.datasets)
-        self.assertIs(sources.levels, self.sources.levels)
-
-    def test_scene_failure_restores_cairo_and_replacement_recovers(self):
+    def test_scene_failure_reports_unavailable_without_cairo_fallback(self):
         from PySide6.QtCore import QObject
         from PySide6.QtQuick import QQuickItem
         from gweatherrouting.qt.marinequick import MarineQuickLayer
-        from gweatherrouting.qt.marineoverlay import MarineOverlay
-        from gweatherrouting.qt.weatherpresenter import WeatherPresenter
 
         parent, root = QObject(), QQuickItem()
-        overlay = MarineOverlay(self.manager, Mock(time=START), lambda cb: cb())
-        self.addCleanup(overlay.close)
-        overlay.sources = self.sources
-        overlay._renderer = Mock()
-        canvas = Mock()
-        canvas.marine = overlay
-        presenter = SimpleNamespace(active=True, widget=None, canvas=canvas)
+        layer = MarineQuickLayer(root, parent)
+        layer._fail("injected geometry failure")
+        self.assertIn("Marine rendering unavailable", layer.state)
+        self.assertIn("injected geometry failure", layer.state)
+        self.assertFalse(layer.item.isVisible())
+        self.assertFalse(layer.request(self.sources, START, True, self.camera))
+        layer.close()
 
-        def draw():
-            canvas._weather_presenter = SimpleNamespace(
-                marine_active=WeatherPresenter.marine_active.fget(presenter)
-            )
-            overlay.do_draw(canvas, Mock())
-            return overlay._renderer.draw.call_args.args[2][0][0]
+    def test_quick_label_item_receives_station_annotations(self):
+        from PySide6.QtQuick import QQuickItem
+        from gweatherrouting.qt.marinequick import MarineLabelItem
 
-        self.assertIs(draw(), self.sources)  # No widget has accepted ownership.
-        with patch("gweatherrouting.qt.marinequick.sample_currents", return_value=None):
-            for attempt in range(2):
-                layer = MarineQuickLayer(root, parent)
-                self.addCleanup(
-                    lambda layer=layer, root=root, parent=parent: layer.close()
-                )
-                presenter.widget = SimpleNamespace(_marine_layer=layer)
-                self.assertIs(draw(), self.sources)  # Widget alone is insufficient.
-                self.assertTrue(layer.request(self.sources, START, True, self.camera))
-                self.assertFalse(draw().fields)
-                self.assertFalse(draw().currents.datasets)
-                if attempt:
-                    break  # A new healthy host recovers Quick ownership.
-                layer.item.present(self.sample(), self.camera)
-                with patch(
-                    "gweatherrouting.qt.marinequick.QSGGeometryNode",
-                    side_effect=RuntimeError("injected geometry failure"),
-                ):
-                    self.assertIsNone(layer.item.updatePaintNode(None, None))
-                self.assertIn("injected geometry failure", layer.state)
-                self.assertFalse(layer.item.isVisible())
-                self.assertIs(draw(), self.sources)
-                self.assertFalse(layer.request(self.sources, START, True, self.camera))
-                layer.close()
-            presenter.active = False
-            self.assertIs(draw(), self.sources)
+        root = QQuickItem()
+        item = MarineLabelItem(root)
+        item.present(self.sample(), self.camera)
+        self.assertTrue(item.labels)
+        self.assertTrue(any("station" in text for _, _, text in item.labels))
 
     def test_worker_failure_relinquishes_ownership(self):
         from PySide6.QtCore import QObject
@@ -442,14 +412,24 @@ class TestMarineQuick(unittest.TestCase):
         parent, root = QObject(), QQuickItem()
         layer = MarineQuickLayer(root, parent)
         self.addCleanup(lambda root=root, parent=parent: layer.close())
+        sources = replace(self.sources, fields=())
+        old_snapshot = self.sample(sources=sources)
+        layer._content = (sources, START, True)
+        layer.snapshot = old_snapshot
+        layer.item.present(old_snapshot, self.camera)
+        layer.labels.present(old_snapshot, self.camera)
+        self.assertTrue(layer.labels.labels)
         with patch(
             "gweatherrouting.qt.marinequick.sample_currents",
             side_effect=RuntimeError("injected sampling failure"),
         ):
-            layer.request(replace(self.sources, fields=()), START, True, self.camera)
+            layer.request(sources, START + timedelta(minutes=5), True, self.camera)
             deadline = time.monotonic() + 2
             while not layer.error and time.monotonic() < deadline:
                 app.processEvents()
                 time.sleep(0.005)
+        self.assertIn("Marine rendering unavailable", layer.state)
         self.assertIn("injected sampling failure", layer.state)
-        self.assertFalse(layer.accepts(*layer._content))
+        self.assertFalse(layer.labels.labels)
+        self.assertFalse(layer.labels.isVisible())
+        self.assertFalse(layer.request(*layer._content, self.camera))

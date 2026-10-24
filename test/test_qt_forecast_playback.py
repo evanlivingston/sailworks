@@ -81,18 +81,15 @@ class TestForecastPlayback(unittest.TestCase):
                 self.assertEqual(self.clock.time.timestamp(), self.start)
 
     def test_playback_updates_marine_arrows_without_rebuilding_sources(self):
-        from gweatherrouting.qt.marineoverlay import MarineOverlay
-        from gweatherrouting.rendering.marinemaplayer import chart_instant
+        from gweatherrouting.qt.marinestate import MarineDisplayState
+        from gweatherrouting.rendering.marinepresentation import chart_instant
 
         manager = Mock()
         manager.fields.snapshot.return_value.fields = (Mock(),)
-        with unittest.mock.patch(
-            "gweatherrouting.rendering.marinemaplayer.MarineRenderer"
-        ) as renderer_type:
-            overlay = MarineOverlay(manager, self.clock, lambda callback: callback())
+        overlay = MarineDisplayState(manager, self.clock)
         self.addCleanup(overlay.close)
-        canvas, context = Mock(), Mock()
-        overlay.do_draw(canvas, context)
+        canvas = Mock()
+        overlay.watch(canvas)
         sources = overlay.sources
         manager.reset_mock()
         self.timeline.play()
@@ -102,11 +99,8 @@ class TestForecastPlayback(unittest.TestCase):
                 canvas.queue_draw.reset_mock()
                 self.timeline.play_timer.timeout.emit()
                 canvas.queue_draw.assert_called_once_with()
-                overlay.do_draw(canvas, context)
-                renderer_type.return_value.draw.assert_called_with(
-                    canvas,
-                    context,
-                    ((sources,),),
+                self.assertEqual(
+                    chart_instant(overlay.time_control.time),
                     chart_instant(datetime.fromtimestamp(self.start + elapsed)),
                 )
                 self.assertIs(overlay.sources, sources)

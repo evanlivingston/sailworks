@@ -33,7 +33,10 @@ from gweatherrouting.core.marine.presentation import (
     stations_in_view,
     source_intervals,
 )
-from gweatherrouting.rendering.marinemaplayer import CURRENT_DENSITIES, chart_instant
+from gweatherrouting.rendering.marinepresentation import (
+    CURRENT_DENSITIES,
+    chart_instant,
+)
 from .dockchrome import style_scrollarea
 from .theme import symbol_icon
 

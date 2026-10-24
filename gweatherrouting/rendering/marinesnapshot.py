@@ -5,7 +5,7 @@ from math import asinh, atan, ceil, cos, degrees, floor, pi, radians, sin, sinh,
 
 from gweatherrouting.core.mapviewport import MapPoint, MapViewport
 from gweatherrouting.core.marine.fields import FieldSelection
-from .marinemaplayer import current_grid_spacing, current_style, flow
+from .marinepresentation import current_grid_spacing, current_style, flow
 
 
 @dataclass(frozen=True)
@@ -15,6 +15,8 @@ class CurrentArrow:
     east: float
     north: float
     station: bool = False
+    tide: bool = False
+    label: str = ""
 
 
 @dataclass(frozen=True)
@@ -25,11 +27,10 @@ class MarineSnapshot:
     state: str
 
 
-def sample_currents(sources, instant, camera, cancelled, on_land):
+def sample_currents(sources, instant, camera, cancelled):
     """Use marine selections unchanged, including their effective-time policy.
 
     Station coordinates are never thinned or displaced to the field lattice.
-    The shoreline predicate is worker-owned; no Quick objects cross this API.
     """
     view = camera.view()
     arrows = []
@@ -70,8 +71,6 @@ def sample_currents(sources, instant, camera, cancelled, on_land):
             lat = degrees(atan(sinh(pi * (1 - 2 * row / cells))))
             for column in columns:
                 lon = column / cells * 360 - 180
-                if on_land(lat, lon):
-                    continue
                 result = selection.sample(lat, lon, instant)
                 if result.status == "available":
                     arrows.append(CurrentArrow(lat, lon, *result.values))
@@ -93,8 +92,44 @@ def sample_currents(sources, instant, camera, cancelled, on_land):
             continue
         result = sources.currents.sample(station.id, instant)
         if result.status == "available":
+            speed, _ = flow(*result.values)
             arrows.append(
-                CurrentArrow(station.latitude, station.longitude, *result.values, True)
+                CurrentArrow(
+                    station.latitude,
+                    station.longitude,
+                    *result.values,
+                    station=True,
+                    label=f"{station.name} {speed:.1f} kn (station)",
+                )
+            )
+    seen_levels = set()
+    for dataset in sources.levels.datasets:
+        if cancelled():
+            return None
+        station = dataset.station
+        if station.id in seen_levels:
+            continue
+        seen_levels.add(station.id)
+        lon = (
+            camera.center_lon
+            + (station.longitude - camera.center_lon + 180) % 360
+            - 180
+        )
+        x, y = view.convert_geographic_to_screen(MapPoint(station.latitude, lon))
+        if not (0 <= x <= camera.width and 0 <= y <= camera.height):
+            continue
+        result = sources.levels.sample(station.id, instant)
+        if result.status == "available":
+            arrows.append(
+                CurrentArrow(
+                    station.latitude,
+                    station.longitude,
+                    0,
+                    0,
+                    station=True,
+                    tide=True,
+                    label="%s %.2f m (source datum)" % (station.name, result.values[0]),
+                )
             )
     state = "available" if arrows else "no valid data"
     if not sources.fields and not sources.currents.datasets:
@@ -139,6 +174,9 @@ def current_triangles(snapshot, camera):
 
         if arrow.station:
             circle(8.75, 7.25, (255, 178, 46, 255))
+        if arrow.tide:
+            circle(4.5, 0, (255, 178, 46, 255))
+            continue
         if speed < 0.05:
             circle(2.5, 0, color)
             continue
@@ -176,59 +214,24 @@ def current_triangles(snapshot, camera):
     return tuple(vertices)
 
 
-class MarinePointMask:
-    """Worker-local vector shoreline test; never creates a Cairo surface.
-
-    Model masks still belong to FieldSelection. Installed detailed shoreline
-    polygons take precedence over the country-outline fallback, as before.
-    This masks glyph anchors, not tips crossing a shoreline.
-    """
-
-    def __init__(self, camera):
-        from pathlib import Path
-        from osgeo import ogr
-        from shapely import from_wkb, make_valid, STRtree
-        from shapely.geometry import shape
-        from gweatherrouting.core.storage import DATA_DIR
-        from gweatherrouting.core.utils import COUNTRY_SHAPES
-
-        polygons = []
-        detailed = False
-        view = camera.view()
-        north, west = view.convert_screen_to_geographic(0, 0).get_degrees()
-        south, east = view.convert_screen_to_geographic(
-            camera.width, camera.height
-        ).get_degrees()
-        for quality in ("f", "h", "i", "l", "c"):
-            path = (
-                Path(DATA_DIR)
-                / "gshhs"
-                / "GSHHS_shp"
-                / quality
-                / ("GSHHS_" + quality + "_L1.shp")
+def current_labels(snapshot, camera):
+    """Project station annotations into screen-space label positions."""
+    view = camera.view()
+    labels = []
+    for arrow in snapshot.arrows:
+        if not arrow.label:
+            continue
+        lon = (
+            camera.center_lon + (arrow.longitude - camera.center_lon + 180) % 360 - 180
+        )
+        x, y = view.convert_geographic_to_screen(MapPoint(arrow.latitude, lon))
+        if not (-32 <= x <= camera.width + 32 and -32 <= y <= camera.height + 32):
+            continue
+        labels.append(
+            (
+                x + (8 if arrow.tide else 10),
+                y - 8 if arrow.tide else y + 30,
+                arrow.label,
             )
-            if not path.exists():
-                continue
-            source = ogr.Open(str(path))
-            if source is not None:
-                detailed = True
-                layer = source.GetLayer(0)
-                for shift in (-360, 0, 360):
-                    left, right = max(-180, west - shift), min(180, east - shift)
-                    if left >= right:
-                        continue
-                    layer.SetSpatialFilterRect(left, south, right, north)
-                    layer.ResetReading()
-                    polygons.extend(
-                        from_wkb(bytes(f.GetGeometryRef().ExportToWkb())) for f in layer
-                    )
-                break
-        if not detailed:
-            polygons = [shape(f["geometry"]) for f in COUNTRY_SHAPES]
-        self.tree = STRtree([p if p.is_valid else make_valid(p) for p in polygons])
-
-    def __call__(self, latitude, longitude):
-        from shapely.geometry import Point
-
-        point = Point((longitude + 180) % 360 - 180, latitude)
-        return bool(len(self.tree.query(point, predicate="intersects")))
+        )
+    return tuple(labels)

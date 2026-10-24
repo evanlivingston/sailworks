@@ -5,9 +5,11 @@ from threading import Condition, Thread
 
 import numpy as np
 from shiboken6 import delete
-from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtCore import QObject, QTimer, Signal, Qt
+from PySide6.QtGui import QFont, QPainter, QPainterPath, QPen
 from PySide6.QtQuick import (
     QQuickItem,
+    QQuickPaintedItem,
     QSGGeometry,
     QSGGeometryNode,
     QSGNode,
@@ -15,13 +17,36 @@ from PySide6.QtQuick import (
 )
 
 from gweatherrouting.rendering.marinesnapshot import (
-    MarinePointMask,
     current_triangles,
+    current_labels,
     sample_currents,
 )
 
 _ATTRIBUTES = QSGGeometry.defaultAttributes_ColoredPoint2D()
 _VERTEX = np.dtype([("position", "<f4", 2), ("color", "u1", 4)])
+
+
+class MarineLabelItem(QQuickPaintedItem):
+    """Paint station labels in Qt Quick without routing them through Cairo."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.labels = ()
+        self.setAntialiasing(True)
+
+    def present(self, snapshot, camera):
+        self.labels = current_labels(snapshot, camera) if snapshot is not None else ()
+        self.setSize(self.parentItem().size())
+        self.update()
+
+    def paint(self, painter):
+        painter.setFont(QFont("Sans Serif", 10, QFont.Weight.Bold))
+        for x, y, text in self.labels:
+            path = QPainterPath()
+            path.addText(x, y, painter.font(), text)
+            painter.setPen(QPen(Qt.GlobalColor.black, 3))
+            painter.drawPath(path)
+            painter.fillPath(path, Qt.GlobalColor.white)
 
 
 class MarineCurrentItem(QQuickItem):
@@ -96,9 +121,11 @@ class MarineQuickLayer(QObject):
     def __init__(self, root, parent):
         super().__init__(parent)
         self.item = MarineCurrentItem(root)
+        self.labels = MarineLabelItem(root)
         barbs = root.findChild(QQuickItem, "weatherBarbs")
         if barbs is not None:
             self.item.stackBefore(barbs)
+            self.labels.stackBefore(barbs)
         self.state = "unavailable"
         self.snapshot = None
         self.camera = None
@@ -140,7 +167,11 @@ class MarineQuickLayer(QObject):
         )
         if key == self._key:
             return True
-        if self._content != content:
+        # A time-only request keeps the previous completed frame visible while
+        # the worker samples its replacement. Source/visibility changes must
+        # clear immediately because the previous content is no longer valid.
+        same_sources = self._content is not None and self._content[0] is sources
+        if self._content != content and (not same_sources or not visible):
             self.snapshot = None
             self._present(None, camera)
             if self.error:
@@ -153,26 +184,24 @@ class MarineQuickLayer(QObject):
                 (self._generation, sources, instant, camera) if visible else None
             )
             self._condition.notify()
-        self.state = "loading" if visible else "hidden"
+        showing_previous = same_sources and self.snapshot is not None and visible
+        self.state = (
+            "loading (showing previous frame)"
+            if showing_previous
+            else "loading" if visible else "hidden"
+        )
         self.stateChanged.emit(self.state)
         if not visible:
             self.snapshot = None
             self._present(None, camera)
         return not self.error
 
-    def accepts(self, sources, instant, visible):
-        """Only an accepted, healthy request may suppress compatibility arrows."""
-        return (
-            not self._closed
-            and not self.error
-            and self._content == (sources, instant, visible)
-        )
-
     def _present(self, snapshot, camera):
         if self._closed or self.error:
             return
         try:
             self.item.present(snapshot, camera)
+            self.labels.present(snapshot, camera)
         except Exception as exc:
             self._fail(str(exc))
 
@@ -185,12 +214,12 @@ class MarineQuickLayer(QObject):
             self._pending = self._completed = None
         self.snapshot = None
         self.item.setVisible(False)
-        self.state = "Cairo fallback: " + self.error
+        self.labels.present(None, self.camera)
+        self.labels.setVisible(False)
+        self.state = "Marine rendering unavailable: " + self.error
         self.stateChanged.emit(self.state)
 
     def _run(self):
-        mask = None
-        mask_camera = None
         while True:
             with self._condition:
                 self._condition.wait_for(
@@ -206,19 +235,7 @@ class MarineQuickLayer(QObject):
                     return self._closed or generation != self._generation
 
             try:
-                mask_key = (
-                    camera.center_lat,
-                    camera.center_lon,
-                    camera.zoom,
-                    camera.width,
-                    camera.height,
-                )
-                if sources.fields and mask_camera != mask_key:
-                    mask = MarinePointMask(camera)
-                    mask_camera = mask_key
-                snapshot = sample_currents(
-                    sources, instant, camera, cancelled, mask or (lambda *_: False)
-                )
+                snapshot = sample_currents(sources, instant, camera, cancelled)
                 result = (snapshot, "" if snapshot is None else snapshot.state)
             except Exception as exc:
                 result = (None, "unavailable: " + str(exc))

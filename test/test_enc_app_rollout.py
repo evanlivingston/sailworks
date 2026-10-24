@@ -85,6 +85,12 @@ def test_app_supplies_basemap_inside_quick_before_weather(presenter):
     settings.gribBarbDensity, settings.gribArrowOpacity = "standard", 1
     canvas._center_lat, canvas._center_lon, canvas._zoom = 48.4, -123.4, 9
     canvas.time_control = SimpleNamespace(time=datetime(2026, 10, 22))
+    canvas.marine = SimpleNamespace(
+        visible=True,
+        sources=object(),
+        time_control=canvas.time_control,
+        watch=Mock(),
+    )
     canvas.wind_visible = True
     canvas._base_key = Mock(return_value="base")
     canvas._base_cache = canvas._environment_cache = None
@@ -108,6 +114,7 @@ def test_app_supplies_basemap_inside_quick_before_weather(presenter):
 
 def test_legacy_recovery_disables_both_viewport_weather_and_enc(presenter):
     presenter.widget = Mock()
+    presenter.canvas.controller.settings.gribWindStyle = "legacy"
     presenter.canvas.controller.settings.get = lambda key, default=None: "legacy"
     assert not presenter.active
     assert not presenter.enc_active
@@ -188,6 +195,7 @@ def test_chart_placement_scales_the_retained_zoom_preview_about_its_center():
     from datetime import datetime as _datetime
 
     from gweatherrouting.core.mapviewport import MapViewport
+    from gweatherrouting.qt.gribviewport import ViewportCamera
     from gweatherrouting.qt.gribviewportchart import (
         CHART_SETTLE_MS,
         ChartCamera,
@@ -352,6 +360,7 @@ def test_basemap_gate_checks_the_displayed_chart_not_legacy_cache():
 def test_viewport_camera_handoff_is_encapsulated_by_the_map_host():
     from gweatherrouting.qt.viewportmap import (
         ViewportCameraState,
+        ViewportMapState,
         ViewportMap,
     )
 
@@ -523,7 +532,7 @@ def test_map_host_size_and_invalidation_helpers_preserve_dpr_contract():
     assert host.background is None
 
 
-def test_environment_layer_keeps_marine_and_only_cpu_draws_weather():
+def test_environment_layer_excludes_marine_and_weather_raster():
     from datetime import datetime
 
     from gweatherrouting.qt.mapenvironment import MapEnvironmentMixin
@@ -539,7 +548,7 @@ def test_environment_layer_keeps_marine_and_only_cpu_draws_weather():
     host.get_allocated_width = lambda: 10
     host.get_allocated_height = lambda: 8
     host.charts = SimpleNamespace(draw_above_enc=Mock())
-    host.marine = SimpleNamespace(do_draw=Mock())
+    host.marine = SimpleNamespace()
     host.wind = wind
     host.wind_visible = True
     host.time_control = SimpleNamespace(time=datetime(2026, 10, 22, 12))
@@ -553,14 +562,11 @@ def test_environment_layer_keeps_marine_and_only_cpu_draws_weather():
 
     assert (image.width(), image.height(), image.devicePixelRatio()) == (20, 16, 2)
     host.charts.draw_above_enc.assert_called_once()
-    host.marine.do_draw.assert_called_once()
     wind.draw.assert_not_called()
 
     host._desktop_viewport = False
     MapEnvironmentMixin._environment_image(host)
-    assert wind.draw.call_count == 1
-    assert wind.draw.call_args.args[0] is host
-    assert wind.draw.call_args.kwargs == {"live_barbs": False}
+    wind.draw.assert_not_called()
 
 
 def test_map_state_isochrone_updates_keep_empty_and_nonempty_semantics():
@@ -759,6 +765,7 @@ def test_overlay_service_owns_hide_and_close_lifecycle():
 def test_map_host_publishes_existing_routes_to_the_viewport_overlay_layer():
     from gweatherrouting.qt.viewportmap import (
         ViewportCameraState,
+        ViewportMapState,
         ViewportMap,
     )
 

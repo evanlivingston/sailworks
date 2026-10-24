@@ -82,8 +82,6 @@ class QtPreviewChecks(unittest.TestCase):
         self.window = PreviewWindow(
             self.controller, workspace_path=self.path / "workspace-qt.json"
         )
-        for canvas in (self.window.map, self.window.log_map):
-            canvas.marine._renderer._land_mask.directory = self.path / "shoreline"
         self.window.show()
         self.addCleanup(self.window.close)
         self.drain()
@@ -129,7 +127,7 @@ class QtPreviewChecks(unittest.TestCase):
         from PySide6.QtTest import QTest
 
         from gweatherrouting.qt.marinequick import MarineCurrentItem
-        from gweatherrouting.rendering.marinemaplayer import chart_instant
+        from gweatherrouting.rendering.marinepresentation import chart_instant
         from gweatherrouting.rendering.marinesnapshot import (
             CurrentArrow,
             MarineSnapshot,
@@ -264,19 +262,8 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertTrue(presenter.active, presenter.reason)
             self.assertTrue(widget.isVisible())
             self.assertFalse(layer.error, layer.state)
-            self.assertTrue(layer.accepts(marine.sources, instant, True))
-            self.assertTrue(presenter.marine_active, "Cairo still owns current arrows")
-            with patch.object(marine._renderer, "draw") as draw:
-                marine.do_draw(canvas, None)
-            self.assertTrue(
-                draw.called, "Compatibility ownership path was not exercised"
-            )
-            cairo_sources = draw.call_args.args[2][0][0]
-            self.assertFalse(cairo_sources.fields, "Cairo duplicates grid arrows")
-            self.assertFalse(
-                cairo_sources.currents.datasets, "Cairo duplicates station arrows"
-            )
-            self.assertIs(cairo_sources.levels, marine.sources.levels)
+            self.assertEqual(layer._content, (marine.sources, instant, True))
+            self.assertFalse(hasattr(marine, "do_draw"))
             self.assertEqual(
                 (canvas._center_lat, canvas._center_lon, canvas._zoom),
                 (
@@ -477,7 +464,7 @@ class QtPreviewChecks(unittest.TestCase):
                 def synthetic_style(speed):
                     # flow() reports speed in knots; directions and geometry
                     # still go through production current_triangles().
-                    from gweatherrouting.rendering.marinemaplayer import flow
+                    from gweatherrouting.rendering.marinepresentation import flow
 
                     speeds = [flow(i + 1, 0)[0] for i in range(len(palette))]
                     index = min(
@@ -545,9 +532,8 @@ class QtPreviewChecks(unittest.TestCase):
                                 )
                                 presenter.request()
                                 wait_for(
-                                    lambda: layer.accepts(
-                                        marine.sources, requested, True
-                                    )
+                                    lambda: layer._content
+                                    == (marine.sources, requested, True)
                                     and layer.snapshot is None
                                     and layer.item in cleared,
                                     "New marine time never rendered its loading transition",
@@ -2883,8 +2869,6 @@ class QtPreviewChecks(unittest.TestCase):
             controller.core.routingManager.append(route)
         self.controller = controller
         self.window = PreviewWindow(controller, workspace_path=path)
-        for canvas in (self.window.map, self.window.log_map):
-            canvas.marine._renderer._land_mask.directory = self.path / "shoreline"
         self.window.show()
         self.addCleanup(self.window.close)
         self.drain()
@@ -4792,7 +4776,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertTrue(marine.closed)
         self.assertTrue(marine.jobs.closed)
         self.assertFalse(marine.timer.isActive())
-        self.assertFalse(self.window.map.marine._renderer._states)
+        self.assertFalse(self.window.map.marine._hosts)
         self.assertNotIn(marine.sources_changed, manager.handlers["changed"])
         self.assertNotIn(marine.sources_changed, manager.fields.handlers["changed"])
 
@@ -4921,39 +4905,29 @@ class QtPreviewChecks(unittest.TestCase):
         )
 
     def test_marine_overlay_uses_shared_worker_and_cursor_values(self):
-        import cairo
-
         current, tide = self.marine_fixture()
         manager = self.controller.core.marine_manager
         manager.fields.add(current)
         manager.add(tide)
         manager.enable(tide.id)
         canvas = self.window.map
-        renderer = canvas.marine._renderer
-        with patch.object(
-            renderer._land_mask,
-            "surface",
-            side_effect=lambda view: cairo.ImageSurface(
-                cairo.FORMAT_A8, view.width, view.height
-            ),
-        ):
-            canvas.queue_draw()
-            canvas.repaint()
-            self.wait_for_marine(
-                lambda: renderer._states.get(canvas) is not None
-                and renderer._states[canvas].frame is not None
-            )
-            job, surface = renderer._states[canvas].frame
-            self.assertTrue(any(bytes(surface.get_data())))
-            self.assertEqual(job.palette, tide.requested_start)
-            self.assertEqual(renderer.schedule, self.controller.scheduler.submit)
-            self.assertIn(
-                "Current 4.3 kn toward 27°T", canvas.marine.cursor_text(49.5, -125.5)
-            )
-            canvas._hover(QPointF(canvas.width() / 2, canvas.height() / 2))
-            self.assertIn("Test currents", self.window.cursor_status.text())
-            canvas.hide()
-            self.assertFalse(renderer._states)
+        canvas.queue_draw()
+        canvas.repaint()
+        presenter = canvas._weather_presenter
+        self.wait_for_marine(
+            lambda: presenter.widget is not None
+            and presenter.widget._marine_layer.snapshot is not None
+        )
+        snapshot = presenter.widget._marine_layer.snapshot
+        self.assertTrue(snapshot.arrows)
+        self.assertEqual(snapshot.instant, tide.requested_start)
+        self.assertIn(
+            "Current 4.3 kn toward 27°T", canvas.marine.cursor_text(49.5, -125.5)
+        )
+        canvas._hover(QPointF(canvas.width() / 2, canvas.height() / 2))
+        self.assertIn("Test currents", self.window.cursor_status.text())
+        canvas.hide()
+        self.assertNotIn(canvas, canvas.marine._hosts)
         self.assertFalse(self.window.log_map.marine.visible)
 
     def test_marine_account_controls_use_system_store_without_saved_secrets(self):
@@ -5544,10 +5518,6 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertEqual(len(self.controller.charts.charts), count)
             self.assertFalse(setup.start(("coastlines",)))
             self.assertFalse(setup.task.busy)
-            self.assertEqual(
-                self.window.map.marine._renderer._land_mask.directory,
-                root / "gshhs/GSHHS_shp",
-            )
             coast = self.controller.charts.gshhsLayer
             coast.enabled = False
             body = (

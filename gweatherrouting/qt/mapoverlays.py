@@ -15,23 +15,19 @@ class MapOverlayServices:
         from gweatherrouting.rendering.ais import AISRenderer
         from gweatherrouting.rendering.dashboard import DashboardRenderer
         from gweatherrouting.rendering.isochrones import IsochronesRenderer
-        from .marineoverlay import MarineOverlay
+        from .marinestate import MarineDisplayState
 
         self.navigation = NavigationRenderer(controller.core)
         self.ais_renderer = AISRenderer()
         self.isochrones = IsochronesRenderer(controller.scheduler.submit)
-        self.marine = MarineOverlay(
-            controller.core.marine_manager,
-            time_control,
-            controller.scheduler.submit,
-        )
+        self.marine = MarineDisplayState(controller.core.marine_manager, time_control)
         self.marine.visible = marine_visible
         self.marine.set_current_density(controller.settings.marineCurrentDensity)
         marine_ref = weakref.ref(self.marine)
 
         def current_density_changed(value):
             marine = marine_ref()
-            if marine is not None and not marine.closed:
+            if marine is not None:
                 marine.set_current_density(value)
 
         controller.settings.register_on_change(

@@ -416,13 +416,17 @@ system credential store. Password drafts clear on save and hide; credentials are
 excluded from workspace and downloaded metadata. Provider behavior and account
 requirements are unchanged; see [Tides & currents](tides-currents-manager.md).
 
-Chart arrows and station labels reuse GTK's production Cairo renderer, including
-the fixed knots color/size scale, true flow-toward bearings, detailed shoreline
-clipping and source-datum tide labels. Current speed, bearing and model appear
-under the pointer. Rendering uses a worker and the existing bounded overlay cache;
-time/source changes invalidate stale frames. Logs retains its independent NMEA
-clock and does not gain a marine overlay. These display controls do not enable
-current-aware routing or use tides for depth/clearance calculations.
+The Qt Quick viewport renders gridded and station-current arrows, station labels,
+and tide-height labels. It preserves the fixed knots color/size scale,
+flow-toward bearings, source-datum text, and cursor speed/bearing/model details.
+Current sampling runs on a latest-request worker; obsolete generations are not
+published. Current glyphs are intentionally not shoreline-clipped; native field
+masks and missing-value handling still control whether a sample is available.
+This accepts some samples that the former display-only coastline predicate
+classified as land, so nearshore glyphs may overlap coastline pixels. Logs
+retains its independent NMEA clock and has no marine overlay. These display
+controls do not enable current-aware routing or use tides for depth/clearance
+calculations.
 
 Settings is in the macOS application menu (⌘,) and under File on other
 platforms. Direct Python launches retain the interpreter bundle's menu name;

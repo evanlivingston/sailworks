@@ -25,7 +25,7 @@ from gweatherrouting.core.mapviewport import MapViewport
 from gweatherrouting.core.marine.chs import CHSProvider
 from gweatherrouting.core.marine.models import Capability, sample_station
 from gweatherrouting.core.marine.presentation import download_tides
-from gweatherrouting.rendering.marinemaplayer import chart_instant
+from gweatherrouting.rendering.marinepresentation import chart_instant
 from .marinejobs import MarineJobs
 from .marinepanel import CoverageTarget, CurrentSources, DownloadStart, text_label
 from .theme import section_label

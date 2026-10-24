@@ -105,7 +105,6 @@ def export_worker(config):
     )
     renderers = (
         canvas.wind,
-        canvas.marine._renderer,
         canvas.isochrones,
         controller.charts._enc_renderer,
     )

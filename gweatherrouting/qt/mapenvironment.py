@@ -31,21 +31,6 @@ class MapEnvironmentMixin:
             ),
         )
 
-    def _marine_key(self):
-        presenter = getattr(self, "_weather_presenter", None)
-        return (
-            self.marine.visible,
-            self.marine.currents_visible,
-            id(self.marine.sources),
-            bool(presenter and presenter.marine_active),
-        )
-
-    def _marine_time_dependent(self):
-        sources = self.marine.sources
-        return self.marine.visible and bool(
-            sources.fields or sources.levels.datasets or sources.currents.datasets
-        )
-
     def _base_key(self):
         width, height, ratio = self._view_pixel_size()
         return (
@@ -54,7 +39,6 @@ class MapEnvironmentMixin:
             ratio,
             self.controller.settings.chartPalette,
             self._wind_style_key(),
-            self._marine_key(),
             bool(self._weather_presenter and self._weather_presenter.enc_active),
         )
 
@@ -69,7 +53,6 @@ class MapEnvironmentMixin:
         surface.set_device_scale(factor, factor)
         cr = cairo.Context(surface)
         self.charts.draw_above_enc(self, cr)
-        self.marine.do_draw(self, cr)
         surface.flush()
         image = QImage(
             surface.get_data(),

@@ -8,16 +8,17 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-import cairo
-
 from gweatherrouting.core.marine.manager import MarineManager
+from gweatherrouting.core.marine.models import Capability
 from gweatherrouting.core.settings import SettingsManager
 from gweatherrouting.core.timecontrol import TimeControl
-from gweatherrouting.rendering.marinemaplayer import (
+from gweatherrouting.rendering.marinepresentation import (
     CURRENT_DENSITIES,
-    MarineRenderer,
+    MarineSources,
     current_grid_spacing,
 )
+from gweatherrouting.rendering.marinesnapshot import sample_currents
+from gweatherrouting.qt.gribviewport import ViewportCamera
 from test import test_marine_display as display
 from test.test_marine import dataset
 from test.test_marine_fields import field
@@ -34,31 +35,6 @@ def setUpModule():
 
 
 class TestCurrentDensity(unittest.TestCase):
-    def test_density_rejects_stale_frames_and_cancels_old_field_work(self):
-        from test.test_marine_scheduling import ManualMarineRenderer
-        from test.test_overlay_scheduling import Canvas
-
-        fixture = display.TestMarineDisplay()
-        fixture.setUp()
-        self.addCleanup(fixture.doCleanups)
-        sources = fixture.job((field(),)).charts[0][0]
-        renderer = ManualMarineRenderer()
-        canvas = Canvas()
-        cr = cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 320, 240))
-        renderer.draw(canvas, cr, ((sources,),), display.START)
-        old_job = renderer._active_job
-        dense = replace(sources, density="dense")
-        renderer.draw(canvas, cr, ((dense,),), display.START)
-        self.assertTrue(old_job.cancel.is_set())
-        self.assertFalse(renderer._can_preview(old_job, renderer._states[canvas].key))
-        renderer.finish()
-        self.assertIsNone(renderer._states[canvas].frame)
-        self.assertEqual(renderer._active_job.charts[0][0].density, "dense")
-        renderer.finish()
-        self.assertEqual(
-            renderer._states[canvas].frame[0].charts[0][0].density, "dense"
-        )
-
     def test_presets_sample_expected_grid_without_thinning_stations(self):
         fixture = display.TestMarineDisplay()
         fixture.setUp()
@@ -70,48 +46,55 @@ class TestCurrentDensity(unittest.TestCase):
         )
         fixture.manager.add(value)
         fixture.manager.enable(value.id)
-        job = fixture.job((field(),))
-        renderer = MarineRenderer()
-        land = cairo.ImageSurface(
-            cairo.FORMAT_A8, job.viewport.width, job.viewport.height
-        )
+        camera = ViewportCamera(49.5, -125.5, 10, 256, 192, display.START)
         expected = {"sparse": 128, "standard": 64, "dense": 32, "maximum": 16}
         for key, _label, spacing in CURRENT_DENSITIES:
             with self.subTest(key=key):
                 self.assertEqual(spacing, expected[key])
                 self.assertEqual(current_grid_spacing(key), expected[key])
-                job.charts = ((replace(job.charts[0][0], density=key),),)
+                sources = MarineSources(
+                    (field(),),
+                    fixture.manager.snapshot(Capability.WATER_LEVEL),
+                    fixture.manager.snapshot(Capability.STATION_CURRENT),
+                    key,
+                )
                 selection = Mock()
                 selection.sample.return_value = SimpleNamespace(
                     status="available", values=(1, 0)
                 )
-                with (
-                    patch.object(renderer._land_mask, "surface", return_value=land),
-                    patch(
-                        "gweatherrouting.rendering.marinemaplayer.FieldSelection",
-                        return_value=selection,
-                    ),
-                    patch("gweatherrouting.rendering.marinemaplayer.arrow") as arrow,
+                with patch(
+                    "gweatherrouting.rendering.marinesnapshot.FieldSelection",
+                    return_value=selection,
                 ):
-                    renderer._render(job)
+                    snapshot = sample_currents(
+                        sources, display.START, camera, lambda: False
+                    )
                 positions = [
-                    call.args[1:3] for call in arrow.call_args_list if not call.kwargs
+                    camera.view().convert_geographic_to_screen(
+                        display.MapPoint(arrow.latitude, arrow.longitude)
+                    )
+                    for arrow in snapshot.arrows
+                    if not arrow.station
                 ]
                 self.assertEqual(
-                    positions,
-                    [
-                        (x, y)
-                        for y in range(28, job.viewport.height, spacing)
-                        for x in range(28, job.viewport.width, spacing)
-                    ],
+                    len(positions),
+                    len({(round(x, 6), round(y, 6)) for x, y in positions}),
                 )
-                stations = [c for c in arrow.call_args_list if c.kwargs.get("station")]
+                xs = sorted({round(x, 6) for x, _ in positions})
+                ys = sorted({round(y, 6) for _, y in positions})
+                self.assertTrue(positions)
+                if len(xs) > 1:
+                    self.assertAlmostEqual(
+                        min(xs[i + 1] - xs[i] for i in range(len(xs) - 1)), spacing
+                    )
+                if len(ys) > 1:
+                    self.assertAlmostEqual(
+                        min(ys[i + 1] - ys[i] for i in range(len(ys) - 1)), spacing
+                    )
+                stations = [a for a in snapshot.arrows if a.station]
                 self.assertEqual(len(stations), 1)
                 self.assertEqual(
-                    stations[0].args[1:3],
-                    job.viewport.convert_geographic_to_screen(
-                        display.MapPoint(49.5, -125.5)
-                    ),
+                    (stations[0].latitude, stations[0].longitude), (49.5, -125.5)
                 )
         self.assertEqual(current_grid_spacing("unknown"), 64)
 
@@ -160,14 +143,12 @@ class TestCurrentDensitySettings(unittest.TestCase):
         return services
 
     def test_dropdown_persists_and_invalidates_each_owned_overlay(self):
-        from gweatherrouting.qt.mapenvironment import MapEnvironmentMixin
-
         self.assertEqual(self.settings.marineCurrentDensity, "standard")
         self.settings.gribBarbDensity = "sparse"
         overlays = [self.services().marine for _ in range(2)]
         canvases = [Mock(), Mock()]
         for overlay, canvas in zip(overlays, canvases):
-            overlay._maps.add(canvas)
+            overlay.watch(canvas)
         panel = self.panel()
         panel.show()
         self.addCleanup(panel.hide)
@@ -179,10 +160,6 @@ class TestCurrentDensitySettings(unittest.TestCase):
         )
         for key in ("sparse", "dense", "maximum", "standard"):
             old_sources = [overlay.sources for overlay in overlays]
-            old_keys = [
-                MapEnvironmentMixin._marine_key(SimpleNamespace(marine=overlay))
-                for overlay in overlays
-            ]
             self.controller.data.redraw.reset_mock()
             panel.current_density.setCurrentIndex(panel.current_density.findData(key))
             self.controller.data.redraw.assert_called_once_with()
@@ -191,10 +168,6 @@ class TestCurrentDensitySettings(unittest.TestCase):
             for i, (overlay, canvas) in enumerate(zip(overlays, canvases)):
                 self.assertEqual(overlay.sources.density, key)
                 self.assertIsNot(overlay.sources, old_sources[i])
-                self.assertNotEqual(
-                    MapEnvironmentMixin._marine_key(SimpleNamespace(marine=overlay)),
-                    old_keys[i],
-                )
                 canvas.queue_draw.assert_called()
                 canvas.queue_draw.reset_mock()
         self.controller.data.redraw.assert_called()
@@ -232,7 +205,7 @@ class TestCurrentDensitySettings(unittest.TestCase):
         marine = self.services().marine
         self.assertEqual(marine.sources.density, "dense")
         canvas = Mock()
-        marine._maps.add(canvas)
+        marine.watch(canvas)
         parent, root = QObject(), QQuickItem()
         layer = MarineQuickLayer(root, parent)
         self.addCleanup(lambda root=root, parent=parent: layer.close())

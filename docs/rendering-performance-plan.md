@@ -172,7 +172,29 @@ never silently substitute a new workload.
 Replay pan/zoom/reversal and forecast scrubs within/across intervals, charts
 alone and with fill/barbs/contours/streamlines, then both maps visible. The
 existing snapshot has no marine fields according to the October 16 report;
-marine-heavy acceptance needs a separately identified fixture.
+marine-heavy acceptance therefore uses the separate `marine-current-scrub` gate
+and an explicit `--snapshot` pointing at an installed marine field cache. That
+gate compares warm field-sampling p95 with the legacy point-shoreline predicate
+against unmasked Qt Quick sampling on identical sources, time, camera and
+density; it does not measure viewport presentation callbacks or presentation
+FPS. The companion `marine-current-correctness` gate covers station-current and
+tide annotation geometry/labels and verifies the old Cairo marine modules are
+absent.
+
+The locally installed 162-field cache passed the marine scrub gate at dense
+density and a 1024×768 Salish Sea view: masked baseline sampling p95 was
+2647.8 ms, versus 126.9 ms unmasked (95.2% lower), with available field arrows
+increasing from 26 to 27. A separate saved-view check found 11 unmasked samples
+that the old GSHHS predicate classified as land; the selected policy accepts
+that difference, so shoreline pixel fidelity is intentionally not preserved.
+At that saved zoom (12.27), the same experiment measured 20.8 ms masked versus
+28.9 ms unmasked (38.6% slower), while arrows increased from 147 to 156. The
+no-mask policy is therefore a large improvement for the zoom-8 workload that
+triggered multi-second stalls, but is not faster at every camera scale. These
+are local-cache sampling measurements, not a substitute for full
+presentation-path or cross-platform acceptance. The gate records a SHA-256
+fingerprint of selected field manifests/arrays so a changed cache is not
+mistaken for the same workload.
 
 Record input dispatch, GUI work, rendering/submission callbacks, cadence,
 preparation/publication delay, uploads, memory, backend/fallback, and usable-data
