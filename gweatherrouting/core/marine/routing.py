@@ -4,8 +4,10 @@ References and numerical limits are documented in docs/current-routing.md.
 """
 
 import json
+import logging
 import math
 import threading
+from time import monotonic
 from collections import OrderedDict
 from copy import copy
 from dataclasses import dataclass
@@ -24,6 +26,7 @@ from .chs import DownloadCancelledError
 from .fields import Area, FieldSelection, field_sort_key, normalize_priority
 
 GEOD = Geod(ellps="WGS84")
+logger = logging.getLogger("gweatherrouting")
 KNOT = 1852 / 3600
 ARRIVAL_METRES = 92.6
 
@@ -748,15 +751,41 @@ def step_with_coverage(  # noqa: C901
                 if all(g.kind == "wind" for g in error.gaps):
                     continue
             current_gaps = [g for g in error.gaps if g.kind == "current"]
+            logger.info(
+                "Current coverage recovery started: gaps=%d tiles=%d sample=%s",
+                len(current_gaps),
+                len({gap_request_key(g) for g in current_gaps}),
+                ",".join(
+                    f"{g.position[0]:.3f},{g.position[1]:.3f}@{routing_utc(g.time):%Y-%m-%dT%H:%MZ}"
+                    for g in current_gaps[:3]
+                ),
+            )
             report(
                 "Missing current data; downloading coverage and retrying this routing step…"
             )
-            if environment.prefetch is not None:
-                fields, issues = environment.prefetch.wait_for(current_gaps)
-            else:
-                fields, issues = download_gap_coverage(
-                    manager, current_gaps, environment.cancel, report
+            started = monotonic()
+            try:
+                if environment.prefetch is not None:
+                    logger.info("Current coverage recovery joining prefetch")
+                    fields, issues = environment.prefetch.wait_for(current_gaps)
+                else:
+                    logger.info("Current coverage recovery using direct download")
+                    fields, issues = download_gap_coverage(
+                        manager, current_gaps, environment.cancel, report
+                    )
+            except Exception:
+                logger.exception(
+                    "Current coverage recovery retrieval failed after %.3fs",
+                    monotonic() - started,
                 )
+                raise
+            elapsed = monotonic() - started
+            logger.info(
+                "Current coverage recovery retrieval finished: elapsed=%.3fs fields=%d issues=%d",
+                elapsed,
+                len(fields),
+                len(issues),
+            )
             if environment.cancel.is_set():
                 raise DownloadCancelledError()
             added = install_downloaded_fields(routing, manager, fields, save_fields)
@@ -769,9 +798,23 @@ def step_with_coverage(  # noqa: C901
                 for gap in error.gaps
             )
             if not added or not improved:
+                logger.warning(
+                    "Current coverage recovery failed: elapsed=%.3fs fields=%d installed=%d improved=%s",
+                    elapsed,
+                    len(fields),
+                    len(added),
+                    improved,
+                )
                 detail = (
                     "\n" + "\n".join(issues)
                     if issues
                     else "\nDownloads did not fill the gap."
                 )
                 raise ValueError(str(error) + detail) from error
+            logger.info(
+                "Current coverage recovery retrying: elapsed=%.3fs fields=%d installed=%d improved=%s",
+                elapsed,
+                len(fields),
+                len(added),
+                improved,
+            )
