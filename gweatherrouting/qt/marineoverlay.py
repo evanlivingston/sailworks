@@ -1,5 +1,9 @@
 """Qt lifecycle adapter for the production marine renderer."""
 
+from dataclasses import replace
+
+from gweatherrouting.core.marine.manager import Selection
+from gweatherrouting.core.marine.models import Capability
 from gweatherrouting.rendering.marinemaplayer import MarineMapLayer, chart_instant
 
 
@@ -19,8 +23,16 @@ class MarineOverlay(MarineMapLayer):
             self.forget(canvas)
             return
         self._maps.add(canvas)
+        sources = self.sources
+        presenter = getattr(canvas, "_weather_presenter", None)
+        if presenter is not None and presenter.marine_active:
+            # Quick owns both kinds of current arrow. Retain only tide labels
+            # in the compatibility image; never duplicate arrows in that image.
+            sources = replace(
+                sources, fields=(), currents=Selection((), Capability.STATION_CURRENT)
+            )
         self._renderer.draw(
-            canvas, cr, ((self.sources,),), chart_instant(self.time_control.time)
+            canvas, cr, ((sources,),), chart_instant(self.time_control.time)
         )
 
     def forget(self, canvas):

@@ -11,7 +11,7 @@ from gweatherrouting.core.marine.fields import FieldSelection
 from gweatherrouting.core.marine.manager import Selection
 from gweatherrouting.core.marine.models import Capability
 from gweatherrouting.core.mapviewport import MapPoint
-from gweatherrouting.rendering.overlayrenderer import OverlayRenderer
+from gweatherrouting.rendering.overlayrenderer import MARGIN, OverlayRenderer
 from .marinelandmask import MarineLandMask
 from gweatherrouting.core.scheduling import schedule_idle
 
@@ -19,6 +19,21 @@ from gweatherrouting.core.scheduling import schedule_idle
 def chart_instant(value):
     """The existing chart clock is local wall time; marine data uses aware UTC."""
     return value.astimezone(timezone.utc)
+
+
+CURRENT_DENSITIES = (
+    ("sparse", "Sparse", 128),
+    ("standard", "Standard", 64),
+    ("dense", "Dense", 32),
+    ("maximum", "Maximum", 16),
+)
+
+
+def current_grid_spacing(density):
+    return next(
+        (spacing for key, _label, spacing in CURRENT_DENSITIES if key == density),
+        64,
+    )
 
 
 def flow(east, north):
@@ -101,6 +116,7 @@ class MarineSources:
     fields: tuple
     levels: Selection
     currents: Selection
+    density: str = "standard"
 
 
 class MarineRenderer(OverlayRenderer):
@@ -109,6 +125,54 @@ class MarineRenderer(OverlayRenderer):
     def __init__(self, schedule=schedule_idle):
         super().__init__(schedule)
         self._land_mask = MarineLandMask()
+        self._last_views = {}
+
+    def forget(self, canvas):
+        self._last_views.pop(canvas, None)
+        super().forget(canvas)
+
+    def _coalesce_demand(self, canvas, state, key):
+        camera = (canvas._zoom, canvas._center_lat, canvas._center_lon)
+        previous = self._last_views.get(canvas)
+        self._last_views[canvas] = camera
+        # Cursor-anchored zoom changes the center along with the scale. A
+        # center-only change is a pan, even if the zoom lifecycle is still open.
+        if (
+            previous is not None
+            and previous[0] == camera[0]
+            and previous[1:] != camera[1:]
+            and getattr(canvas, "_zoom_animating", False)
+            and self._active_canvas is canvas
+            and self._active_job is not None
+        ):
+            self._cancel(self._active_job, "pan during zoom")
+        super()._coalesce_demand(canvas, state, key)
+
+    def _request_during_zoom(self):
+        return True
+
+    def _keep_active(self, job, canvas, key):
+        view = job.viewport
+        # A zoom preview may finish while one latest viewport waits behind it.
+        # Keep that grace for the whole animation, including repeated draws at
+        # the active scale and cursor-anchored center changes. Center-only pans
+        # are invalidated against the previous demand in _coalesce_demand.
+        # Resizes, source/DPR changes and uncovered times still invalidate work.
+        zoom_only = (
+            getattr(canvas, "_zoom_animating", False)
+            and view.width == canvas.get_allocated_width() + 2 * MARGIN
+            and view.height == canvas.get_allocated_height() + 2 * MARGIN
+        )
+        return (
+            not job.cancel.is_set()
+            and self._can_complete(job, key)
+            and (self._fits_job(job, canvas) or zoom_only)
+        )
+
+    def _can_complete(self, job, key):
+        # Let time-only work publish the same covered preview we already allow
+        # painting, while the latest requested instant stays queued.
+        return self._can_preview(job, key)
 
     def _can_preview(self, job, key):
         if job.key == key:
@@ -142,10 +206,11 @@ class MarineRenderer(OverlayRenderer):
             land = self._land_mask.surface(view)
             selection = FieldSelection(sources.fields)
             # Screen spacing keeps work and clutter bounded at every map scale.
-            for y in range(28, view.height, 64):
+            spacing = current_grid_spacing(sources.density)
+            for y in range(28, view.height, spacing):
                 if job.cancel.is_set():
                     return None
-                for x in range(28, view.width, 64):
+                for x in range(28, view.width, spacing):
                     if self._land_mask.contains(land, x, y):
                         continue
                     lat, lon = view.convert_screen_to_geographic(x, y).get_degrees()
@@ -215,6 +280,7 @@ class MarineMapLayer:
         self.visible = True
         self.currents_visible = True
         self.tides_visible = True
+        self.current_density = "standard"
         self._maps = set()
         self._renderer = MarineRenderer(schedule)
         self._refresh_sources()
@@ -235,7 +301,15 @@ class MarineMapLayer:
                 if self.currents_visible
                 else Selection((), Capability.STATION_CURRENT)
             ),
+            self.current_density,
         )
+
+    def set_current_density(self, density):
+        if density not in {key for key, _label, _spacing in CURRENT_DENSITIES}:
+            density = "standard"
+        if density != self.current_density:
+            self.current_density = density
+            self._changed()
 
     def _changed(self, *args):
         self._refresh_sources()

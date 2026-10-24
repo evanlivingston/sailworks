@@ -24,6 +24,7 @@ class SettingsManager(Storage):
         self.gribArrowOpacity = 0.4
         self.gribArrowOnGround = False
         self.gribBarbDensity = "standard"
+        self.marineCurrentDensity = "standard"
         self.gribWindStyle = "barbs"
         self.displayForecast = ""
         self.weatherRenderer = "viewport"

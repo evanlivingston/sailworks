@@ -32,10 +32,12 @@ class MapEnvironmentMixin:
         )
 
     def _marine_key(self):
+        presenter = getattr(self, "_weather_presenter", None)
         return (
             self.marine.visible,
             self.marine.currents_visible,
             id(self.marine.sources),
+            bool(presenter and presenter.marine_active),
         )
 
     def _marine_time_dependent(self):

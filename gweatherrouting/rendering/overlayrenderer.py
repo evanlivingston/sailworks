@@ -300,7 +300,10 @@ class OverlayRenderer:
         if (
             not fresh
             and not pending
-            and not getattr(canvas, "_zoom_animating", False)
+            and (
+                not getattr(canvas, "_zoom_animating", False)
+                or self._request_during_zoom()
+            )
             and time.monotonic() >= state.retry_after
         ):
             self._request_visible(canvas, state, key, charts, factor, palette)
@@ -362,7 +365,10 @@ class OverlayRenderer:
             and (
                 not self._can_complete(active, key)
                 or (
-                    not getattr(canvas, "_zoom_animating", False)
+                    (
+                        not getattr(canvas, "_zoom_animating", False)
+                        or self._request_during_zoom()
+                    )
                     and not self._keep_active(active, canvas, key)
                 )
             )
@@ -414,6 +420,9 @@ class OverlayRenderer:
 
     def _can_complete(self, job, key):
         return job.key == key
+
+    def _request_during_zoom(self):
+        return False
 
     def _fits_job(self, job, canvas):
         return fits(job.viewport, canvas)

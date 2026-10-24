@@ -74,6 +74,28 @@ class WeatherPresenter(QObject):
     def enc_active(self):
         return self.active and self.widget is not None and self.widget._enc_chart_layer
 
+    @property
+    def marine_active(self):
+        from gweatherrouting.rendering.marinemaplayer import chart_instant
+
+        marine = self.canvas.marine
+        return bool(
+            self.active
+            and self.widget is not None
+            and self.widget._marine_layer.accepts(
+                marine.sources,
+                chart_instant(marine.time_control.time),
+                marine.visible and marine.currents_visible,
+            )
+        )
+
+    def _marine_state_changed(self, generation, _state):
+        if generation != self._host_generation:
+            return
+        self.canvas._invalidate_base()
+        self.canvas.queue_draw()
+        self._label()
+
     def request(self):
         if not self.closed and not self.timer.isActive():
             self.timer.start(0)
@@ -135,6 +157,12 @@ class WeatherPresenter(QObject):
                     self.canvas.controller.native_weather_budget
                 )
             widget = _viewport_widget_class()(model, self.canvas, **kwargs)
+            widget.marineStateChanged.connect(
+                lambda state: self._marine_state_changed(generation, state)
+            )
+            widget.nativeError.connect(
+                lambda reason: self._nativeFailed.emit(generation, reason)
+            )
             # The viewport owns pan/zoom input. The transparent foreground
             # sibling keeps the application's navigation/route drawing above it.
             widget.setMouseTracking(True)
@@ -159,9 +187,6 @@ class WeatherPresenter(QObject):
                 )
                 widget.sceneGraphError.connect(
                     lambda _code, reason: self._nativeFailed.emit(generation, reason)
-                )
-                widget.nativeError.connect(
-                    lambda reason: self._nativeFailed.emit(generation, reason)
                 )
                 widget.statusChanged.connect(
                     lambda status: (
@@ -275,8 +300,15 @@ class WeatherPresenter(QObject):
                     basemap = chart.error or basemap or "World basemap unavailable"
                 elif chart.state == "loading" and not basemap:
                     basemap = "World basemap loading…"
+        marine_status = ""
+        if self.widget is not None and self.canvas.marine.visible:
+            marine_status = "Viewport currents: " + self.widget._marine_layer.state
         self.status.setText(
-            "\n".join(text for text in (selection.status, mode, basemap) if text)
+            "\n".join(
+                text
+                for text in (selection.status, mode, marine_status, basemap)
+                if text
+            )
         )
         self.status.setToolTip(selection.error)
         self.status.setFixedWidth(max(80, min(530, self.canvas.width() - 16)))
@@ -356,6 +388,15 @@ class WeatherPresenter(QObject):
             else 0
         )
         widget.set_wind_style(self.canvas.controller.settings.gribWindStyle)
+        from gweatherrouting.rendering.marinemaplayer import chart_instant
+
+        marine = self.canvas.marine
+        marine._maps.add(self.canvas)
+        widget.set_marine(
+            marine.sources,
+            chart_instant(marine.time_control.time),
+            marine.visible and marine.currents_visible,
+        )
         widget.show()
         route_overlay = getattr(self.canvas, "viewport_route_overlay", None)
         if route_overlay is not None:

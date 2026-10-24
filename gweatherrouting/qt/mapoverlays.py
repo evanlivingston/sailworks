@@ -1,6 +1,7 @@
 """Retained navigation and dashboard image overlays for Qt map hosts."""
 
 import math
+import weakref
 
 import cairo
 from PySide6.QtGui import QImage
@@ -25,6 +26,17 @@ class MapOverlayServices:
             controller.scheduler.submit,
         )
         self.marine.visible = marine_visible
+        self.marine.set_current_density(controller.settings.marineCurrentDensity)
+        marine_ref = weakref.ref(self.marine)
+
+        def current_density_changed(value):
+            marine = marine_ref()
+            if marine is not None and not marine.closed:
+                marine.set_current_density(value)
+
+        controller.settings.register_on_change(
+            "marineCurrentDensity", current_density_changed
+        )
         self.dashboard = DashboardRenderer(controller.connections)
 
     @classmethod

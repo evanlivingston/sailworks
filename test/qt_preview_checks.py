@@ -2,6 +2,7 @@
 
 import json
 import math
+import os
 import sys
 import tempfile
 import time
@@ -111,6 +112,539 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(self.controller.session.error)
         self.drain()
         return self.controller.session.log
+
+    @unittest.skipUnless(
+        os.environ.get("GWR_MARINE_QUICK_SNAPSHOT") == "1",
+        "opt-in full-application native marine gesture readback",
+    )
+    def test_presenter_marine_arrows_render_during_pan_and_wheel(self):
+        import ctypes
+        from dataclasses import replace
+        from datetime import timedelta
+        from threading import Lock
+
+        import numpy as np
+        from PySide6.QtCore import QPoint
+        from PySide6.QtGui import QMouseEvent, QWheelEvent
+        from PySide6.QtTest import QTest
+
+        from gweatherrouting.qt.marinequick import MarineCurrentItem
+        from gweatherrouting.rendering.marinemaplayer import chart_instant
+        from gweatherrouting.rendering.marinesnapshot import (
+            CurrentArrow,
+            MarineSnapshot,
+            current_triangles,
+        )
+        from test.test_marine import dataset
+
+        canvas = self.window.map
+        presenter = canvas._weather_presenter
+        lock = Lock()
+        publications, nodes, frames = [], [], []
+        node_geometry = []
+        cleared = []
+        original_present = MarineCurrentItem.present
+        original_node = MarineCurrentItem.updatePaintNode
+
+        def present(item, snapshot, camera):
+            original_present(item, snapshot, camera)
+            with lock:
+                publications.append((item, camera, item.vertices.tobytes()))
+
+        def paint_node(item, old, data):
+            node = original_node(item, old, data)
+            with lock:
+                if node is None:
+                    cleared.append(item)
+                if node is not None:
+                    geometry = node.geometry()
+                    node_geometry.append(
+                        (
+                            item,
+                            ctypes.string_at(
+                                int(geometry.vertexData()),
+                                geometry.vertexCount() * geometry.sizeOfVertex(),
+                            ),
+                            node.childCount(),
+                            node.parent().childCount() if node.parent() else 0,
+                        )
+                    )
+                    records = [r for r in publications if r[0] is item]
+                    if records:
+                        nodes.append(records[-1])
+            return node
+
+        def wait_for(predicate, stage, timeout=10):
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                self.app.processEvents()
+                if predicate():
+                    return
+                time.sleep(0.002)
+            self.fail(
+                f"{stage}; presenter={presenter.reason!r}, "
+                f"active={presenter.active}, widget={presenter.widget!r}; "
+                f"publications/nodes/frames="
+                f"{len(publications)}/{len(nodes)}/{len(frames)}"
+            )
+
+        self.assertNotIn(
+            self.app.platformName(),
+            ("offscreen", "minimal"),
+            "Run this check with a native hardware Qt platform",
+        )
+        wait_for(
+            lambda: presenter.widget is not None and presenter._rendered,
+            "Application presenter did not create/render its visible Quick host",
+        )
+        widget = presenter.widget
+        layer = widget._marine_layer
+        self.assertTrue(widget.isVisible())
+        self.assertTrue(presenter.foreground.isVisible())
+        self.assertIs(
+            self.app.widgetAt(widget.mapToGlobal(widget.rect().center())), widget
+        )
+        camera = widget._camera
+        # Put deterministic geographic grid and station anchors in this actual
+        # application's restored camera, independent of saved user coordinates.
+        # Keep the station centered so pan followed by centered wheel zoom
+        # leaves its ring inside the captured viewport throughout the gesture.
+        anchors = [
+            camera.view().convert_screen_to_geographic(x, y).get_degrees()
+            for x, y in (
+                (camera.width * 0.45, camera.height * 0.45),
+                (camera.width * 0.5, camera.height * 0.5),
+            )
+        ]
+        marine = canvas.marine
+        marine.sources = replace(
+            marine.sources,
+            currents=replace(marine.sources.currents, datasets=(dataset(),)),
+        )
+        marine.visible = marine.currents_visible = True
+        instant = chart_instant(marine.time_control.time)
+        snapshot = MarineSnapshot(
+            marine.sources,
+            instant,
+            (CurrentArrow(*anchors[0], 1, 0), CurrentArrow(*anchors[1], 0, 1, True)),
+            "available",
+        )
+        replacements = {}
+        sampling_release = Event()
+        sampling_release.set()
+        self.addCleanup(sampling_release.set)
+
+        def sampled(sources, requested, *_):
+            if requested in replacements:
+                if not sampling_release.wait(5):
+                    raise RuntimeError("Timed out waiting for loading-frame readback")
+            return replace(
+                replacements.get(requested, snapshot),
+                sources=sources,
+                instant=requested,
+            )
+
+        def rendered():
+            # afterRendering may execute on the scene graph thread: read only
+            # the locked observations, never QWidget/camera state here.
+            with lock:
+                records = [r for r in nodes if r[0] is layer.item]
+                if records:
+                    frames.append(records[-1])
+
+        def has_frame(current):
+            expected = layer.item.vertices.tobytes()
+            with lock:
+                return any(c == current and v == expected for _, c, v in frames)
+
+        def assert_ownership():
+            self.assertIs(
+                presenter.widget, widget, "Presenter replaced the gesture host"
+            )
+            self.assertTrue(presenter.active, presenter.reason)
+            self.assertTrue(widget.isVisible())
+            self.assertFalse(layer.error, layer.state)
+            self.assertTrue(layer.accepts(marine.sources, instant, True))
+            self.assertTrue(presenter.marine_active, "Cairo still owns current arrows")
+            with patch.object(marine._renderer, "draw") as draw:
+                marine.do_draw(canvas, None)
+            self.assertTrue(
+                draw.called, "Compatibility ownership path was not exercised"
+            )
+            cairo_sources = draw.call_args.args[2][0][0]
+            self.assertFalse(cairo_sources.fields, "Cairo duplicates grid arrows")
+            self.assertFalse(
+                cairo_sources.currents.datasets, "Cairo duplicates station arrows"
+            )
+            self.assertIs(cairo_sources.levels, marine.sources.levels)
+            self.assertEqual(
+                (canvas._center_lat, canvas._center_lon, canvas._zoom),
+                (
+                    widget._camera.center_lat,
+                    widget._camera.center_lon,
+                    widget._camera.zoom,
+                ),
+                "Presenter did not mirror the gesture camera into the application",
+            )
+
+        def readback():
+            image = widget.grabFramebuffer()
+            self.assertFalse(image.isNull(), "Visible Quick host readback unavailable")
+            # Verify actual station-ring pixels, not merely changing basemap pixels.
+            x, y = widget._camera.view().convert_geographic_to_screen(
+                MapPoint(*anchors[1])
+            )
+            # Cocoa's Quick framebuffer can contain Retina-sized pixels while
+            # its QImage DPR metadata remains 1. Map logical widget coordinates
+            # using the captured dimensions, independently on each axis.
+            scale_x = image.width() / widget.width()
+            scale_y = image.height() / widget.height()
+            colors = [
+                image.pixelColor(px, py)
+                for px in range(
+                    max(0, int((x - 10) * scale_x)),
+                    min(image.width(), int((x + 10) * scale_x)),
+                )
+                for py in range(
+                    max(0, int((y - 10) * scale_y)),
+                    min(image.height(), int((y + 10) * scale_y)),
+                )
+            ]
+            self.assertTrue(
+                any(
+                    c.red() > 245 and 165 < c.green() < 190 and c.blue() < 60
+                    for c in colors
+                ),
+                "Station triangles reached a node but station ring is absent from native pixels; "
+                f"anchor={(x, y)}, image={image.width()}x{image.height()}, "
+                f"scale={(scale_x, scale_y)}, dpr={image.devicePixelRatio()}, "
+                f"camera={widget._camera}, "
+                f"vertex_bounds={np.min(layer.item.vertices['position'], axis=0)}.."
+                f"{np.max(layer.item.vertices['position'], axis=0)}, "
+                f"colors={sorted(set(c.name() for c in colors))[:30]}",
+            )
+            return image
+
+        with (
+            patch(
+                "gweatherrouting.qt.marinequick.sample_currents", side_effect=sampled
+            ),
+            patch.object(MarineCurrentItem, "present", present),
+            patch.object(MarineCurrentItem, "updatePaintNode", paint_node),
+        ):
+            # PySide binds scene-graph virtuals when the item is constructed.
+            # Recreate through the production presenter with observers installed.
+            presenter.suspend()
+            presenter.request()
+            wait_for(
+                lambda: presenter.widget is not None and presenter._rendered,
+                "Observed application Quick host did not render",
+            )
+            widget = presenter.widget
+            layer = widget._marine_layer
+            quick_window = widget.quickWindow()
+            quick_window.afterRendering.connect(
+                rendered, Qt.ConnectionType.DirectConnection
+            )
+            try:
+                presenter.request()  # Exercise real presenter scheduling/ownership.
+                wait_for(
+                    lambda: layer.snapshot is not None and has_frame(widget._camera),
+                    "Initial presenter marine frame missing",
+                )
+                assert_ownership()
+                baseline = readback()
+                initial = layer.item.vertices.tobytes()
+                start = widget.rect().center()
+                QTest.mousePress(widget, Qt.MouseButton.LeftButton, pos=start)
+                try:
+                    for delta in (QPoint(24, 10), QPoint(48, 20)):
+                        position = QPointF(start + delta)
+                        event = QMouseEvent(
+                            QMouseEvent.Type.MouseMove,
+                            position,
+                            QPointF(widget.mapToGlobal(position.toPoint())),
+                            Qt.MouseButton.NoButton,
+                            Qt.MouseButton.LeftButton,
+                            Qt.KeyboardModifier.NoModifier,
+                        )
+                        self.app.sendEvent(widget, event)
+                        self.assertTrue(event.isAccepted(), "Visible host rejected pan")
+                        current = widget._camera
+                        self.assertNotEqual(current, camera, "Pan never changed camera")
+                        self.assertNotEqual(
+                            layer.item.vertices.tobytes(),
+                            initial,
+                            "Pan camera moved but marine vertices froze",
+                        )
+                        wait_for(
+                            lambda: has_frame(current),
+                            "Pan vertices never reached a rendered frame while button held",
+                        )
+                        self.assertIsNotNone(
+                            widget._drag, "Pan ended before marine rendered"
+                        )
+                        assert_ownership()
+                        np.testing.assert_allclose(
+                            layer.item.vertices["position"],
+                            np.asarray(current_triangles(snapshot, current))[:, :2],
+                            rtol=0,
+                            atol=1e-4,
+                        )
+                        self.assertNotEqual(
+                            readback(), baseline, "Pan native image froze"
+                        )
+                finally:
+                    QTest.mouseRelease(
+                        widget, Qt.MouseButton.LeftButton, pos=start + QPoint(48, 20)
+                    )
+                wait_for(
+                    lambda: not widget._pan_inertia_tick.isActive(),
+                    "Pan inertia never settled",
+                )
+                before = widget._camera
+                initial = layer.item.vertices.tobytes()
+                baseline = readback()
+                position = QPointF(widget.rect().center())
+                wheel = QWheelEvent(
+                    position,
+                    QPointF(widget.mapToGlobal(position.toPoint())),
+                    QPoint(),
+                    QPoint(0, 480),
+                    Qt.MouseButton.NoButton,
+                    Qt.KeyboardModifier.NoModifier,
+                    Qt.ScrollPhase.NoScrollPhase,
+                    False,
+                )
+                self.app.sendEvent(widget, wheel)
+                self.assertTrue(wheel.isAccepted(), "Visible host rejected wheel")
+                target = widget._wheel_zoom_target
+                self.assertIsNotNone(
+                    target, "Presenter-hosted wheel animation never started"
+                )
+
+                def intermediate_frame():
+                    with lock:
+                        return any(
+                            before.zoom < c.zoom < target and v != initial
+                            for _, c, v in frames
+                        )
+
+                wait_for(
+                    intermediate_frame,
+                    "Wheel camera/vertices/node/frame pipeline stalled before gesture end",
+                )
+                self.assertTrue(
+                    widget._wheel_zoom_tick.isActive(),
+                    "Marine rendered only after wheel settled",
+                )
+                assert_ownership()
+                self.assertNotEqual(
+                    readback(), baseline, "Wheel native marine image froze"
+                )
+                self.assertTrue(
+                    widget._wheel_zoom_tick.isActive(),
+                    "Readback occurred only after wheel settled",
+                )
+                wait_for(
+                    lambda: widget._wheel_zoom_target is None, "Wheel never settled"
+                )
+
+                # Reproduce time scrubbing interleaved with pans in the real
+                # presenter, including a rendered empty/loading transition.
+                # Unique saturated colors make *all* old layers identifiable
+                # anywhere in the Quick framebuffer, not just at new anchors.
+                palette = ((247, 13, 231), (19, 241, 37), (11, 229, 247), (239, 31, 67))
+                base_time = marine.time_control.time
+                camera = widget._camera
+                for index in range(len(palette)):
+                    selected = base_time + timedelta(hours=index + 1)
+                    requested = chart_instant(selected)
+                    lat, lon = (
+                        camera.view()
+                        .convert_screen_to_geographic(
+                            camera.width * (0.3 + index * 0.12), camera.height * 0.5
+                        )
+                        .get_degrees()
+                    )
+                    replacements[requested] = MarineSnapshot(
+                        marine.sources,
+                        requested,
+                        (CurrentArrow(lat, lon, index + 1, 0),),
+                        "available",
+                    )
+
+                def synthetic_style(speed):
+                    # flow() reports speed in knots; directions and geometry
+                    # still go through production current_triangles().
+                    from gweatherrouting.rendering.marinemaplayer import flow
+
+                    speeds = [flow(i + 1, 0)[0] for i in range(len(palette))]
+                    index = min(
+                        range(len(speeds)), key=lambda i: abs(speeds[i] - speed)
+                    )
+                    return 36, tuple(c / 255 for c in palette[index])
+
+                def assert_latest_pixels(expected):
+                    from PySide6.QtGui import QImage
+
+                    image = widget.grabFramebuffer().convertToFormat(
+                        QImage.Format.Format_RGBA8888
+                    )
+                    self.assertFalse(image.isNull())
+                    rgba = (
+                        np.frombuffer(image.constBits(), dtype=np.uint8)
+                        .reshape(image.height(), image.bytesPerLine())[
+                            :, : image.width() * 4
+                        ]
+                        .reshape(image.height(), image.width(), 4)
+                    )
+                    for color in palette:
+                        mask = (
+                            np.max(
+                                np.abs(rgba[:, :, :3].astype(np.int16) - color), axis=2
+                            )
+                            <= 2
+                        )
+                        ys, xs = np.nonzero(mask)
+                        if expected is None or color != palette[expected]:
+                            self.assertEqual(
+                                len(xs), 0, f"Stale {color} anywhere in framebuffer"
+                            )
+                            continue
+                        self.assertGreater(len(xs), 30, "Latest marine arrow missing")
+                        vertices = layer.item.vertices["position"]
+                        scale = np.array(
+                            [
+                                image.width() / widget.width(),
+                                image.height() / widget.height(),
+                            ]
+                        )
+                        low, high = (
+                            vertices.min(axis=0) * scale,
+                            vertices.max(axis=0) * scale,
+                        )
+                        self.assertTrue(
+                            np.all((xs >= low[0] - 2) & (xs <= high[0] + 2))
+                            and np.all((ys >= low[1] - 2) & (ys <= high[1] + 2)),
+                            "Current-color pixels include frozen geometry at an old camera",
+                        )
+
+                with patch(
+                    "gweatherrouting.rendering.marinesnapshot.current_style",
+                    side_effect=synthetic_style,
+                ):
+                    for index, (requested, latest) in enumerate(replacements.items()):
+                        with self.subTest(marine_time=requested):
+                            with lock:
+                                cleared.clear()
+                            sampling_release.clear()
+                            try:
+                                marine.time_control.set_time(
+                                    base_time + timedelta(hours=index + 1)
+                                )
+                                presenter.request()
+                                wait_for(
+                                    lambda: layer.accepts(
+                                        marine.sources, requested, True
+                                    )
+                                    and layer.snapshot is None
+                                    and layer.item in cleared,
+                                    "New marine time never rendered its loading transition",
+                                )
+                                assert_latest_pixels(None)
+                            finally:
+                                sampling_release.set()
+                            instant = (
+                                requested  # Keep existing ownership assertions current.
+                            )
+                            wait_for(
+                                lambda: layer.snapshot is not None
+                                and layer.snapshot.instant == requested
+                                and has_frame(widget._camera),
+                                "Replacement marine time never reached a frame",
+                            )
+
+                            def assert_latest():
+                                assert_ownership()
+                                self.assertIs(layer.snapshot.sources, marine.sources)
+                                self.assertEqual(layer.snapshot, latest)
+                                rows = np.asarray(
+                                    current_triangles(latest, widget._camera)
+                                )
+                                np.testing.assert_allclose(
+                                    layer.item.vertices["position"],
+                                    rows[:, :2],
+                                    rtol=0,
+                                    atol=1e-4,
+                                )
+                                np.testing.assert_array_equal(
+                                    layer.item.vertices["color"], rows[:, 2:]
+                                )
+                                root = layer.item.parentItem()
+                                items = []
+
+                                def collect(parent):
+                                    for child in parent.childItems():
+                                        if isinstance(child, MarineCurrentItem):
+                                            items.append(child)
+                                        collect(child)
+
+                                collect(root)
+                                self.assertEqual(
+                                    items, [layer.item], "Marine items accumulated"
+                                )
+                                with lock:
+                                    actual = [
+                                        r for r in node_geometry if r[0] is layer.item
+                                    ][-1]
+                                self.assertEqual(
+                                    actual[1], layer.item.vertices.tobytes()
+                                )
+                                self.assertEqual(
+                                    actual[2], 0, "Marine child nodes accumulated"
+                                )
+                                self.assertLessEqual(
+                                    actual[3], 1, "Marine sibling nodes accumulated"
+                                )
+                                assert_latest_pixels(index)
+
+                            assert_latest()
+                            start = widget.rect().center()
+                            QTest.mousePress(
+                                widget, Qt.MouseButton.LeftButton, pos=start
+                            )
+                            end = start + QPoint(29, -13)
+                            try:
+                                event = QMouseEvent(
+                                    QMouseEvent.Type.MouseMove,
+                                    QPointF(end),
+                                    QPointF(widget.mapToGlobal(end)),
+                                    Qt.MouseButton.NoButton,
+                                    Qt.MouseButton.LeftButton,
+                                    Qt.KeyboardModifier.NoModifier,
+                                )
+                                before = widget._camera
+                                self.app.sendEvent(widget, event)
+                                self.assertTrue(event.isAccepted())
+                                self.assertNotEqual(widget._camera, before)
+                                wait_for(
+                                    lambda: has_frame(widget._camera),
+                                    "Latest-time pan frame missing",
+                                )
+                                assert_latest()
+                            finally:
+                                QTest.mouseRelease(
+                                    widget, Qt.MouseButton.LeftButton, pos=end
+                                )
+                            wait_for(
+                                lambda: not widget._pan_inertia_tick.isActive()
+                                and has_frame(widget._camera),
+                                "Latest-time pan did not settle",
+                            )
+                            assert_latest()
+            finally:
+                quick_window.afterRendering.disconnect(rendered)
 
     def test_viewport_camera_state_compatibility_aliases(self):
         from gweatherrouting.qt.viewportmap import ViewportMapState
@@ -5703,6 +6237,7 @@ class QtPreviewChecks(unittest.TestCase):
         canvas.mouseMoveEvent(event(145, 120))
         clock[0] += 0.005
         canvas.mouseReleaseEvent(event(145, 120))
+
 
 if __name__ == "__main__":
     unittest.main()

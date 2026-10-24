@@ -1266,6 +1266,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
         chartStateChanged = Signal(str)  # noqa: N815 - Qt signal name
         nativeError = Signal(str)  # noqa: N815 - Qt signal name
         streamlinesPrepared = Signal()  # noqa: N815
+        marineStateChanged = Signal(str)  # noqa: N815
 
         def __init__(
             self,
@@ -1387,6 +1388,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._weather: Any = self.rootObject()
             if self._weather is None:
                 raise RuntimeError("The GRIB viewport could not load its shader")
+            from .marinequick import MarineQuickLayer
+
+            self._marine_layer = MarineQuickLayer(self._weather, self)
+            self._marine_layer.stateChanged.connect(self.marineStateChanged.emit)
             self._barbs = self._weather
             self._fill = None
             if self._gpu_weather_fill or self._chart_layer:
@@ -1717,6 +1722,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 ("zoom", camera.zoom),
             ):
                 item.setProperty(name, value)
+
+        def set_marine(self, sources, instant, visible):
+            if self._camera is not None:
+                self._marine_layer.request(sources, instant, visible, self._camera)
 
         def set_navigation_overlay(self, image, target):
             """Present retained application navigation imagery in Quick."""
@@ -2258,6 +2267,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             if self._disposed:
                 return
             self._disposed = True
+            self._marine_layer.close()
             self._streamline_model.close()
             self._streamline_settle.stop()
             self._streamlines.setVisible(False)
@@ -2341,6 +2351,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             state = "loading"
             try:
                 self._camera = camera
+                self._marine_layer.set_camera(camera)
                 if self._chart_model is not None:
                     # The chart is composed for a settled view: the settle
                     # timer only asks for a composition when the view has

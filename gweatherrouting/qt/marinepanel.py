@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QToolButton,
@@ -32,7 +33,7 @@ from gweatherrouting.core.marine.presentation import (
     stations_in_view,
     source_intervals,
 )
-from gweatherrouting.rendering.marinemaplayer import chart_instant
+from gweatherrouting.rendering.marinemaplayer import CURRENT_DENSITIES, chart_instant
 from .dockchrome import style_scrollarea
 from .theme import symbol_icon
 
@@ -336,6 +337,21 @@ class MarinePanel(QWidget):
         self.settings.clicked.connect(lambda: settings_callback(kind))
         row.addWidget(self.settings)
         controls.addLayout(row)
+        if kind == "currents":
+            density_row = QHBoxLayout()
+            density_row.addWidget(text_label("Field arrow density"))
+            self.current_density = QComboBox()
+            self.current_density.setAccessibleName("Current field arrow density")
+            for key, label, _spacing in CURRENT_DENSITIES:
+                self.current_density.addItem(label, key)
+            self.current_density.setToolTip(
+                "Spacing of gridded current arrows: Sparse 128 px, Standard 64 px, "
+                "Dense 32 px, Maximum 16 px. Station arrows are unchanged."
+            )
+            self.refresh_density()
+            self.current_density.currentIndexChanged.connect(self.set_density)
+            density_row.addWidget(self.current_density)
+            controls.addLayout(density_row)
         self.coverage = text_label()
         controls.addWidget(self.coverage)
         self.coverage_detail = text_label()
@@ -371,6 +387,28 @@ class MarinePanel(QWidget):
 
     def set_display(self, enabled):
         self.canvas.marine.set_display(**{self.kind: enabled})
+
+    def refresh_density(self):
+        index = self.current_density.findData(
+            self.controller.settings.marineCurrentDensity
+        )
+        self.current_density.blockSignals(True)
+        self.current_density.setCurrentIndex(
+            index if index >= 0 else self.current_density.findData("standard")
+        )
+        self.current_density.blockSignals(False)
+
+    def set_density(self, *_):
+        settings = self.controller.settings
+        previous = settings.marineCurrentDensity
+        try:
+            settings["marineCurrentDensity"] = self.current_density.currentData()
+        except OSError as exc:
+            settings.__dict__["marineCurrentDensity"] = previous
+            dict.__setitem__(settings, "marineCurrentDensity", previous)
+            QMessageBox.warning(self, "Unable to save setting", str(exc))
+        self.refresh_density()
+        self.controller.data.redraw()
 
     def invalidate(self, *_):
         if not self.closed:
