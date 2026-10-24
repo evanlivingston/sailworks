@@ -178,11 +178,17 @@ class NavigationPanel(QWidget):
         self.pois.cellDoubleClicked.connect(lambda *_: self.fit_poi())
         self.routes.cellDoubleClicked.connect(lambda *_: self.fit_route())
         self._menu(
-            self.tracks, [("Remove", self.remove_track), ("Export…", self.export_track)]
+            self.tracks,
+            [
+                ("Fit", self.fit_track),
+                ("Remove", self.remove_track),
+                ("Export…", self.export_track),
+            ],
         )
         self._menu(
             self.track_points,
             [
+                ("Fit", self.fit_track_point),
                 ("Move", self.move_point),
                 ("Move Up", lambda: self.edit_point("move_up")),
                 ("Move Down", lambda: self.edit_point("move_down")),
@@ -521,6 +527,13 @@ class NavigationPanel(QWidget):
         active = self.core.trackManager.get_active()
         if active is not None:
             self.canvas.fit_coordinates(active.to_list())
+
+    def fit_track_point(self):
+        active = self.core.trackManager.get_active()
+        if active is not None and 0 <= self.point_index < len(active):
+            self.canvas.fit_coordinates([active.points[self.point_index][:2]])
+        elif active is not None:
+            self.fit_track()
 
     def fit_poi(self):
         if self.poi is not None and self.poi in self.core.poiManager.elements:
