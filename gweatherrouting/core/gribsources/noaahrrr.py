@@ -16,6 +16,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 
 import json
 import logging
+import math
 import os
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -68,6 +69,24 @@ class NOAAHRRRSource(GribSource):
     @bounds.setter
     def bounds(self, value):
         self._bounds = value
+
+    @staticmethod
+    def _filter_bounds(bounds):
+        if bounds is None:
+            return None
+        south, west, north, east = bounds
+        # The NOMADS filter selects projected grid points inside the geographic
+        # box. Pad by more than one 3 km cell so the resulting raster extent
+        # contains the requested viewport at every edge.
+        lat_pad = 0.06
+        max_latitude = max(abs(south), abs(north))
+        lon_pad = lat_pad / max(math.cos(math.radians(max_latitude)), 0.5)
+        return (
+            max(-90.0, south - lat_pad),
+            max(-180.0, west - lon_pad),
+            min(90.0, north + lat_pad),
+            min(180.0, east + lon_pad),
+        )
 
     def _source_tag(self, identifier: str) -> str:
         try:
@@ -146,8 +165,9 @@ class NOAAHRRRSource(GribSource):
         # small subsets) plus ~2MB/hour scaled to the full globe.
         num_steps = hours + 1
         if self._bounds:
-            lat_range = abs(self._bounds[2] - self._bounds[0])
-            lon_range = abs(self._bounds[3] - self._bounds[1])
+            south, west, north, east = self._filter_bounds(self._bounds)
+            lat_range = abs(north - south)
+            lon_range = abs(east - west)
             area_fraction = (lat_range * lon_range) / (180 * 360)
             size_mb = num_steps * (0.08 + 2.0 * area_fraction)
         else:
@@ -178,7 +198,7 @@ class NOAAHRRRSource(GribSource):
             "var_MSLMA": "on",
         }
         if self._bounds:
-            lat_south, lon_west, lat_north, lon_east = self._bounds
+            lat_south, lon_west, lat_north, lon_east = self._filter_bounds(self._bounds)
             params["subregion"] = ""
             params["leftlon"] = str(lon_west)
             params["rightlon"] = str(lon_east)

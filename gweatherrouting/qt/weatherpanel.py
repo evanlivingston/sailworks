@@ -6,7 +6,6 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
-    QLabel,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -21,7 +20,7 @@ from gweatherrouting.rendering.windpainter import BARB_DENSITIES
 
 
 class WeatherPanel(QWidget):
-    def __init__(self, controller, active_map, open_forecast, manage_forecasts):
+    def __init__(self, controller, active_map, manage_forecasts):
         super().__init__()
         self.controller = controller
         self.active_map = active_map
@@ -94,63 +93,13 @@ class WeatherPanel(QWidget):
         form.addRow(self.labels)
         controls.addWidget(self.isobar_options)
         self.isobar_options.setEnabled(self.isobars.isChecked())
-        note = QLabel(
-            "Isobars use mean sea-level pressure when included in the GRIB forecast."
-        )
-        note.setWordWrap(True)
-        controls.addWidget(note)
-        controls.addWidget(section_label("GRIB forecasts"))
-        self.display_forecast = QComboBox()
-        self.display_forecast.setToolTip(
-            "Display only: choose one file, production run and member. "
-            "This does not change routing sources or either map clock."
-        )
-        self.display_forecast.currentIndexChanged.connect(self.choose_forecast)
-        controls.addWidget(self.display_forecast)
-        self.forecast_identity = QLabel()
-        self.forecast_identity.setWordWrap(True)
-        controls.addWidget(self.forecast_identity)
-        self.open_forecast = QPushButton("Open forecast…")
-        self.open_forecast.clicked.connect(open_forecast)
-        controls.addWidget(self.open_forecast)
         self.manage_forecasts = QPushButton("Manage / download forecasts…")
         self.manage_forecasts.clicked.connect(manage_forecasts)
         controls.addWidget(self.manage_forecasts)
         controls.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll)
-        controller.display_forecast.changed.connect(self.refresh_forecasts)
-        self.refresh_forecasts()
         self.refresh()
-
-    def choose_forecast(self, _index):
-        selection = self.controller.display_forecast
-        previous = selection.selected_key
-        try:
-            selection.choose(self.display_forecast.currentData() or "")
-        except OSError as exc:
-            self.controller.settings.__dict__["displayForecast"] = previous
-            dict.__setitem__(self.controller.settings, "displayForecast", previous)
-            QMessageBox.warning(self, "Unable to save display forecast", str(exc))
-            self.refresh_forecasts()
-
-    def refresh_forecasts(self):
-        selection = self.controller.display_forecast
-        self.display_forecast.blockSignals(True)
-        self.display_forecast.clear()
-        self.display_forecast.addItem("None — weather unavailable", "")
-        for choice in selection.choices:
-            self.display_forecast.addItem(choice.label, choice.key)
-        index = self.display_forecast.findData(selection.selected_key)
-        if index < 0:
-            self.display_forecast.addItem(
-                "Selected forecast unavailable", selection.selected_key
-            )
-            index = self.display_forecast.count() - 1
-        self.display_forecast.setCurrentIndex(index)
-        self.display_forecast.blockSignals(False)
-        self.forecast_identity.setText(selection.status)
-        self.forecast_identity.setToolTip(selection.error)
 
     def checkbox(self, label, key):
         widget = QCheckBox(label)

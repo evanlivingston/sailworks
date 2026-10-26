@@ -6,7 +6,6 @@ from threading import Condition, Event, Thread
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from gweatherrouting.core.grib import Grib
 from gweatherrouting.core.gribsampling import WeatherSampler
 from gweatherrouting.core.routingjob import freeze_wind_sources
 from gweatherrouting.qt.gpuweatherfields import FieldStore
@@ -168,12 +167,15 @@ class WeatherStager(QObject):
         if self.closed:
             return None
         settings = canvas.controller.settings
-        sources = tuple(canvas.controller.core.grib_manager.gribs)
+        sources = tuple(canvas.controller.display_forecast.sources())
         # Non-GDAL providers, streamlines and unthinned mode keep the CPU path.
         eligible = (
             canvas.wind_visible
             and sources
-            and all(isinstance(s, Grib) for s in sources)
+            and all(
+                all(hasattr(s, attribute) for attribute in ("path", "model_name"))
+                for s in sources
+            )
             and getattr(settings, "gribWindStyle", "barbs") == "barbs"
             and getattr(settings, "gribBarbDensity", "standard") != "all"
         )

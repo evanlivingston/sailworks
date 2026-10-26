@@ -17,12 +17,13 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 
 import datetime
 import logging
-import re
 from functools import lru_cache
 from typing import Optional, Tuple
 
 import numpy as np
 
+from .forecastcapabilities import model_from_grib_metadata
+from .gribfields import PRESSURE_ELEMENTS, is_mean_sea_level_pressure
 from .gribsampling import GridIndex, WeatherSampler, number
 
 import weatherrouting
@@ -32,28 +33,12 @@ logger = logging.getLogger("gweatherrouting")
 
 # Mean-sea-level pressure elements (Pa) used for isobars. GFS downloads
 # request PRMSL; other models may already carry one of these bands.
-PRESSURE_ELEMENTS = ("PRMSL", "MSLMA")
 PA_TO_HPA = 1.0 / 100.0
 
 
 def forecast_model_name(dataset, metadata):
     """Display identity only; never change the sampler's model-selection keys."""
-    center = re.search(r"(?:^|\s)CENTER=(\d+)", metadata.get("GRIB_IDS", ""))
-    values = metadata.get("GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES", "").split()
-    if center is None or len(values) < 5:
-        return "Unknown"
-    origin, process = center.group(1), values[4]
-    if origin == "7":
-        return {"81": "GFS", "96": "GFS", "83": "HRRR"}.get(process, "Unknown")
-    if origin == "54" and process == "50":
-        # CMC process 50 alone is insufficient: confirm the continental HRDPS grid.
-        transform = dataset.GetGeoTransform()
-        if (
-            abs(abs(transform[1]) - 0.0225) < 1e-6
-            and "Pole rotation" in dataset.GetProjection()
-        ):
-            return "HRDPS"
-    return "Unknown"
+    return model_from_grib_metadata(dataset, metadata)
 
 
 class MetaGrib:
@@ -137,7 +122,7 @@ class Grib(weatherrouting.Grib):
                 continue
 
             if (
-                metadata["GRIB_ELEMENT"] in PRESSURE_ELEMENTS
+                is_mean_sea_level_pressure(metadata)
                 and number(metadata["GRIB_FORECAST_SECONDS"]) / 3600 == t
             ):
                 return band
@@ -259,9 +244,8 @@ class Grib(weatherrouting.Grib):
         for bidx in range(1, self.dataset.RasterCount + 1):
             band = self.dataset.GetRasterBand(bidx)
             metadata = band.GetMetadata()
-            if (
-                "GRIB_FORECAST_SECONDS" in metadata
-                and metadata.get("GRIB_ELEMENT") in PRESSURE_ELEMENTS
+            if "GRIB_FORECAST_SECONDS" in metadata and is_mean_sea_level_pressure(
+                metadata
             ):
                 hours.add(number(metadata["GRIB_FORECAST_SECONDS"]) / 3600)
         return sorted(hours)
@@ -335,7 +319,10 @@ class Grib(weatherrouting.Grib):
             band = dataset.GetRasterBand(bidx)
             metadata = band.GetMetadata()
 
-            if metadata.get("GRIB_ELEMENT") in ("UGRD", "VGRD", *PRESSURE_ELEMENTS):
+            if metadata.get("GRIB_ELEMENT") in (
+                "UGRD",
+                "VGRD",
+            ) or is_mean_sea_level_pressure(metadata):
                 models.add(forecast_model_name(dataset, metadata))
                 centre = metadata.get("GRIB_CENTER", "")
                 forecast_hours = number(metadata.get("GRIB_FORECAST_SECONDS", 0)) / 3600

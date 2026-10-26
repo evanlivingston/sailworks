@@ -37,7 +37,7 @@ from .dockchrome import style_dock, style_scrollarea
 from .viewportmap import ViewportMap
 from .routingpanel import RoutingPanel
 from .settingsdialog import SettingsDialog
-from .datalibrary import DataLibrary, FORECAST_FILTER
+from .datalibrary import DataLibrary
 from .plotdata import elapsed_offsets
 from .workspace import WorkspacePreferences
 from .polarworkspace import PolarWorkspace
@@ -46,6 +46,7 @@ from .navigationpanel import NavigationPanel
 from .forecasttimeline import ForecastTimeline
 from .marinepanel import MarinePanel
 from .weatherpanel import WeatherPanel
+from .modelregion import region_from_visible_workspace
 from .chartdebugpanel import ChartDebugPanel
 from .cursorstatus import CursorStatus
 from .marinesettings import MarineSettings
@@ -231,6 +232,10 @@ class PreviewWindow(QMainWindow):
             [self.nmea_dock, self.routing_dock], [350, 350], Qt.Orientation.Horizontal
         )
         file_menu = self.menuBar().addMenu("File")
+        open_log = file_menu.addAction(
+            symbol_icon("document-open-symbolic"), "Open NMEA log…", self.load_log
+        )
+        open_log.setShortcut(QKeySequence.StandardKey.Open)
         file_menu.addAction(
             symbol_icon("weather-windy-symbolic"), "Open forecast…", self.load_grib
         )
@@ -243,12 +248,11 @@ class PreviewWindow(QMainWindow):
         self.settings_action = file_menu.addAction("Settings…", self.show_settings)
         self.settings_action.setMenuRole(QAction.MenuRole.PreferencesRole)
         self.settings_action.setShortcut(QKeySequence.StandardKey.Preferences)
-        controller.data.forecast_loaded.connect(self._forecast_loaded)
         self._create_marine_panels(controller)
         self.weather_open = False
         self.weather_syncing = False
         self.weather_panel = WeatherPanel(
-            controller, self._active_map, self.load_grib, self.show_library
+            controller, self._active_map, self.show_library
         )
         self.weather_dock = self._dock("Weather", "weather", self.weather_panel)
         self.tabifyDockWidget(self.nmea_dock, self.weather_dock)
@@ -613,6 +617,11 @@ class PreviewWindow(QMainWindow):
     def _active_map(self):
         return (
             self.log_map if self.views.currentWidget() is self.logs_view else self.map
+        )
+
+    def _capture_analysis_region(self):
+        return region_from_visible_workspace(
+            self.views.currentIndex(), self.map, self.log_map
         )
 
     def _sync_map_actions(self):
@@ -1113,7 +1122,11 @@ class PreviewWindow(QMainWindow):
 
     def _ensure_library(self, chart_section=None):
         if self.library_dialog is None:
-            self.library_dialog = DataLibrary(self.controller, self)
+            self.library_dialog = DataLibrary(
+                self.controller,
+                self,
+                capture_region=self._capture_analysis_region,
+            )
         if chart_section is not None:
             self.library_dialog.show_charts(chart_section)
         self.library_dialog.show()
@@ -1135,34 +1148,6 @@ class PreviewWindow(QMainWindow):
             self._show_panel(self.routing_dock)
             if self.library_dialog is not None:
                 self.library_dialog.hide()
-
-    def _forecast_loaded(self, grib):
-        imported = self.controller.data.operation == "forecast"
-        # Import/enabling is not a display choice and must not reset either clock.
-        self.timeline.refresh()
-        self.map.queue_draw()
-        self.statusBar().showMessage(
-            (
-                "Forecast imported; choose its display run in Weather"
-                if imported
-                else "Forecast models updated"
-            ),
-            5000,
-        )
-
-    def load_grib(self):
-        if self.controller.data.task.busy or self.controller.routing.busy:
-            self._ensure_library()
-            self.statusBar().showMessage(
-                "Wait for the current operation before importing a forecast.", 5000
-            )
-            return
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Import wind forecast", "", FORECAST_FILTER
-        )
-        if path:
-            self._ensure_library()
-            self.controller.data.import_forecast(path)
 
     def closeEvent(self, event):  # noqa: N802 - Qt virtual method name
         self.workspace.close()

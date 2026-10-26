@@ -4,6 +4,7 @@ import logging
 import time
 from dataclasses import asdict
 from datetime import datetime
+from pathlib import Path
 from threading import Thread
 from typing import Any
 from weakref import WeakKeyDictionary
@@ -47,6 +48,8 @@ class SessionController(QObject):
         early_weather=False,
         gpu_resident_fields=False,
         native_weather_fields=None,
+        analysis_root=None,
+        analysis_state=None,
         log_library_directory=None,
     ):
         super().__init__(parent)
@@ -73,6 +76,13 @@ class SessionController(QObject):
         )
         self.time_control = TimeControl()
         self.settings = SettingsManager()
+        self.closed = False
+        if analysis_root is not None and analysis_state is not None:
+            raise ValueError("provide analysis_root or analysis_state, not both")
+        self.analysis = None
+        self.models_analysis = None
+        self._analysis_root = analysis_root
+        self._analysis_state = analysis_state
         selected_renderer = map_renderer or self.settings.get("mapRenderer", "cpu")
         self.map_renderer = (
             selected_renderer if selected_renderer in ("cpu", "gpu") else "cpu"
@@ -112,9 +122,10 @@ class SessionController(QObject):
         self.routing = RoutingController(self)
         self.connection_task = BackgroundTask(self)
         self.data = DataController(self)
-        from .displayforecast import DisplayForecastSelection
+        self.analysis = self.prepare_model_analysis()
+        from .analysisdisplay import BoundDisplayForecastSelection
 
-        self.display_forecast = DisplayForecastSelection(self)
+        self.display_forecast = BoundDisplayForecastSelection(self.analysis, self)
         self.polars = PolarController(self)
         self.map_data = MapDataController(self)
         self.points = []
@@ -148,6 +159,26 @@ class SessionController(QObject):
             from .chartstartup import ChartStartup
 
             self.chart_startup = ChartStartup(self)
+
+    def prepare_model_analysis(self):
+        """Create/reuse the opt-in authority without switching display or routing."""
+        if self.closed:
+            raise RuntimeError("session controller is closed")
+        if self.models_analysis is not None:
+            return self.models_analysis
+        from .analysiscontroller import AnalysisController
+
+        if self._analysis_state is not None:
+            analysis = AnalysisController(state=self._analysis_state, parent=self)
+        else:
+            root = self._analysis_root
+            if root is None:
+                from gweatherrouting.core.storage import DATA_DIR
+
+                root = Path(DATA_DIR) / "forecast-analysis"
+            analysis = AnalysisController(root, parent=self)
+        self.models_analysis = analysis
+        return analysis
 
     def set_renderer_status(self, canvas, actual, reason="", api=""):
         state = dict(actual=actual, reason=reason, api=api)
@@ -618,6 +649,8 @@ class SessionController(QObject):
         if self.log_progress is not None:
             self._clear_load_progress(self.log_progress["token"])
         self.display_forecast.close()
+        if self.models_analysis is not None:
+            self.models_analysis.close()
         if self.chart_startup is not None:
             self.chart_startup.close()
         self.routing.close()

@@ -96,6 +96,15 @@ class TestNOAAGFSSource(unittest.TestCase):
         self.assertEqual(params["leftlon"], "-80.0")
         self.assertEqual(params["rightlon"], "-10.0")
 
+    def test_build_filter_url_rounds_bounds_outward_to_gfs_grid(self):
+        source = NOAAGFSSource()
+        source.bounds = (48.071, -125.107, 48.864, -123.825)
+        params = source._build_filter_url("20261025", "18", 0)
+        self.assertEqual(params["bottomlat"], "48.0")
+        self.assertEqual(params["toplat"], "49.0")
+        self.assertEqual(params["leftlon"], "-125.25")
+        self.assertEqual(params["rightlon"], "-123.75")
+
     def test_estimate_size_with_bounds(self):
         source = NOAAGFSSource()
         source.bounds = (30.0, -10.0, 50.0, 40.0)
@@ -114,11 +123,3 @@ class TestNOAAGFSSource(unittest.TestCase):
         self.assertIn(240, GFS_FORECAST_HOURS)
         self.assertIn(252, GFS_FORECAST_HOURS)
         self.assertIn(384, GFS_FORECAST_HOURS)
-
-
-class TestOpenSkironSource(unittest.TestCase):
-    def test_name(self):
-        from gweatherrouting.core.gribsources.openskiron import OpenSkironSource
-
-        source = OpenSkironSource()
-        self.assertEqual(source.name, "OpenSkiron")

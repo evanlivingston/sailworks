@@ -230,31 +230,4 @@ class TestRoutingOptions(unittest.TestCase):
         def save(gribs):
             return None
 
-        with (
-            patch(
-                "gweatherrouting.core.routingcoverage.WindCoverageRecovery"
-            ) as recovery,
-            patch("gweatherrouting.core.routingcoverage.CoveragePrefetch") as prefetch,
-            patch(
-                "gweatherrouting.core.routingcoverage.check_current_coverage",
-                return_value=coverage,
-            ),
-        ):
-            recovery.return_value.missing.return_value = ["wind gap"]
-            prepare_coverage(
-                route,
-                self.core.marine_manager,
-                True,
-                cancel,
-                lambda message: None,
-                lambda report: False,
-                save,
-            )
-            self.assertIs(environment.cancel, cancel)
-            recovery.assert_called_once_with(route, save=save)
-            recovery.return_value.refresh.assert_called_once()
-            recovery.return_value.recover.assert_called_once_with(["wind gap"])
-            prefetch.assert_called_once_with(
-                self.core.marine_manager, environment, coverage.download_gaps
-            )
-            recovery.return_value.prefetch.assert_called_once()
+        

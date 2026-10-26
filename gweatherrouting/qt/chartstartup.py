@@ -63,7 +63,7 @@ class ChartStartup(QObject):
                 not current
                 and weather_requested
                 and visible
-                and self.owner.core.grib_manager.gribs
+                and self.owner.display_forecast.sources()
                 and time.monotonic() - self.began < 5
             ):
                 self.timer.start(25)

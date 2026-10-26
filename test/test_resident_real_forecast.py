@@ -25,7 +25,7 @@ pytestmark = [
 @pytest.fixture(scope="module")
 def hrrr_grib(tmp_path_factory):
     from gweatherrouting.core.gribsources.noaahrrr import NOAAHRRRSource
-    from gweatherrouting.core.modeldownloads import install_download
+    from gweatherrouting.core.grib import Grib
 
     source = NOAAHRRRSource()
     source.bounds = BOUNDS
@@ -37,7 +37,8 @@ def hrrr_grib(tmp_path_factory):
         pytest.skip("NOAA HRRR has no published run right now")
     directory = tmp_path_factory.mktemp("hrrr")
     try:
-        return install_download(source, rows[0], directory, lambda _percent: None)
+        path = source.download(rows[0][4], str(directory), lambda _percent: None)
+        return Grib.parse(path)
     except Exception as exc:
         pytest.skip(f"NOAA HRRR download unavailable: {exc}")
 

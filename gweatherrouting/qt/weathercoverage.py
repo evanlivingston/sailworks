@@ -7,7 +7,6 @@ from threading import Thread
 import numpy as np
 from PySide6.QtCore import QObject, QTimer, Signal
 
-from gweatherrouting.core.forecastselection import forecast_source
 from gweatherrouting.core.gribsampling import WeatherSampler
 from gweatherrouting.core.routingjob import freeze_wind_sources
 from gweatherrouting.rendering.windrenderer import DisplayGrib
@@ -118,7 +117,10 @@ class WeatherCoverage(QObject):
                     reader = DisplayGrib(source)
                     self.readers[identity] = reader
                 self.readers.move_to_end(identity)
-                grouped.setdefault(forecast_source(source), []).append(reader)
+                model_id = getattr(
+                    source, "entry_id", getattr(source, "model_name", "Unknown")
+                )
+                grouped.setdefault(model_id, []).append(reader)
             except Exception:
                 continue
         return grouped

@@ -1,20 +1,16 @@
 """Qt lifecycle around the shared engines, scenarios and current-coverage workflow."""
 
 import time
-from dataclasses import replace
 from threading import Event, Thread
 
 from PySide6.QtCore import QObject, Signal, Slot
 from weatherrouting import RoutingNoWindError
 
 from gweatherrouting.core.geo.routing import Routing
-from gweatherrouting.core.grib import Grib
-from gweatherrouting.core.forecastselection import forecast_source
 from gweatherrouting.core.routingjob import (
     RoutingCancelledError,
-    calculate_route,
-    freeze_wind_sources,
 )
+from gweatherrouting.core.tranchestore import ResolvedForecast
 from gweatherrouting.core.marine.chs import DownloadCancelledError
 
 
@@ -58,20 +54,13 @@ class RoutingController(QObject):
             return self.fail(
                 "Wait for map-data and Data Library operations to finish before calculating."
             )
-        selection = self.session_controller.data.selection
+        analysis = getattr(self.session_controller, "analysis", None)
+        if analysis is None:
+            return self.fail("No published model forecast analysis is available.")
         try:
-            selection.options(routing=True)
-        except ValueError as exc:
+            sources = analysis.snapshot(required_fields=("wind",))
+        except Exception as exc:
             return self.fail(str(exc))
-        request = replace(request, forecast_selection=selection)
-        scenarios = tuple(
-            replace(item, forecast_selection=selection) for item in scenarios
-        )
-        sources = freeze_wind_sources(
-            g
-            for g in self.core.grib_manager.gribs
-            if forecast_source(g) in selection.models
-        )
         self.generation += 1
         token = self.generation
         self.request = request
@@ -134,7 +123,7 @@ class RoutingController(QObject):
                         )
 
                 options = {}
-                if item.use_currents or item.forecast_selection is not None:
+                if item.use_currents:
                     options = dict(
                         report=lambda message: self._message.emit(token, message),
                         confirm=lambda report: self._ui_call(
@@ -143,12 +132,14 @@ class RoutingController(QObject):
                         save_fields=lambda fields: self._ui_call(
                             token, self._save_fields, fields
                         ),
-                        save_gribs=lambda gribs: self._ui_call(
-                            token, self._save_gribs, freeze_wind_sources(gribs)
-                        ),
                         current_selection=selection,
                     )
-                result = calculate_route(
+                if not isinstance(sources, ResolvedForecast):
+                    raise TypeError("routing requires a published model forecast")
+                from gweatherrouting.core.forecastboundrouting import calculate_bound_route
+
+                calculate = calculate_bound_route
+                result = calculate(
                     self.core, item, sources, providers, cancel, progress, **options
                 )
                 self._ui_call(token, self._save_result, item, result)
@@ -201,33 +192,6 @@ class RoutingController(QObject):
     def _save_fields(self, fields):
         for field in fields:
             self.core.marine_manager.fields.add(field)
-
-    def _save_gribs(self, gribs):
-        data = self.session_controller.data
-        manager = self.core.grib_manager
-        for grib in gribs:
-            if forecast_source(
-                grib
-            ) in data.selection.models and not manager.is_enabled(grib.name):
-                # The worker passes frozen metadata; the UI owns a fresh reader.
-                opened = Grib(
-                    grib.path,
-                    grib.name,
-                    grib.centre,
-                    grib.bounds,
-                    grib.start_time,
-                    grib.last_forecast,
-                    grib.model_name,
-                )
-                manager.gribs.append(opened)
-                data.local_forecasts = [
-                    g for g in data.local_forecasts if g.path != opened.path
-                ]
-                data.local_forecasts.append(opened)
-        manager.store_opened_gribs()
-        manager.storage.save()
-        data.redraw()
-        data.changed.emit()
 
     def _save_result(self, request, result):
         collection = self.core.routingManager

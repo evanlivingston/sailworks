@@ -77,14 +77,15 @@ later commit than the one it was taken on.
 
 ## Forecast display coherence
 
-**Accepted user policy, 2026-10-20; implementation pending.** The user chooses the
-forecast in the Weather panel; the application must not silently pick a different
-file/run/member while the user pans or changes forecast time. This is a display-policy
-amendment, not a routing change or complete the reference application equivalence claim. The
-[static trace](reference-architecture-analysis.md#2026-10-20-follow-up-file-selection-and-interpolation-boundary)
-supports a selected-file evaluator, but does not prove whole-map pinning or the
-handling of multiple production runs in one container. Our whole-display rule is
-explicitly stricter.
+**Accepted user policy, 2026-10-20; shared path opt-in.** The Models panel and explicit
+`SessionController` analysis paths use one `ForecastAnalysisState` tranche/entry for
+display and routing; old jobs retain their binding. All models share one region captured
+from the current map view, unchanged by later panning. Refresh intent stays separate.
+No legacy files are adopted, deleted or used as fallback. Profiles remain legacy until
+explicit Models opt-in; cleanup awaits validation. This is not viewport or
+performance acceptance. The [static trace](reference-architecture-analysis.md#2026-10-20-follow-up-file-selection-and-interpolation-boundary)
+does not prove whole-map pinning or multi-run containers; our coherence rule remains
+stricter.
 
 ### Policy
 

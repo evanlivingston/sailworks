@@ -5,16 +5,13 @@ handle GRIB decoding. `Grib`, `GribManager`, private cursor/display handles,
 ordinary routing, current-assisted routing, and frontier batches all use the
 same record selection, bilinear interpolation, and time blending rules.
 
-**Display-policy follow-up (2026-10-20; not implemented):** the user-approved
-[forecast coherence decision](rendering-performance-plan.md#forecast-display-coherence) requires pinning the
-weather display to one file/run/member, with additional files only for explicit
-geographic stitching. The **user chooses that forecast in the Weather panel**;
-loading/enabling a file is distinct from selecting it for display. Application use
-of the new viewport is now the user's implementation priority, not a completed
-runtime change in this documentation PR. The shared-sampler behavior below remains current;
-do not read the new display policy as an implemented change to cursor/display or
-routing selection. In particular, existing cross-file pairing and fallback are not
-permission to mix predictions in the future coherent display path.
+**Source scope:** the opt-in Models workflow implements the
+[forecast coherence decision](rendering-performance-plan.md#forecast-display-coherence)
+with one immutable tranche/model selection shared by display and bound routing.
+It supplies only that selection's coherent artifact and records its provenance;
+missing data cannot trigger another model, run, library file or weather download.
+Legacy selection remains available for validation. The multi-source sampler rules
+below describe unbound callers, not permission to widen a bound selection.
 
 ## Records and selection
 
@@ -22,8 +19,10 @@ Each relevant band is indexed once by element, level, reference time, valid
 time, originating center/subcenter, generating process, product status, and
 ensemble member where GDAL provides that metadata. U/V wind is selected at
 10 m above ground (`10-HTGL`); pressure uses PRMSL/MSLMA at mean sea level
-(`0-MSL`). Other levels and interval-statistic products are excluded. Metadata
-without a level retains the existing imported-file assumption for that field.
+(`0-MSL`). ECMWF's `PRES` alias is accepted only with an explicit `0-MSL` level,
+never at the surface, an isobaric level or an unknown level. Other levels and
+interval-statistic products are excluded. Missing levels retain the legacy
+imported-file assumption for existing elements, not for generic `PRES`.
 
 Instantaneous GRIB2 templates 4.0 and 4.1 are supported. Ensemble members remain
 separate candidates; they are not averaged. NCEP GFS analysis process 81 and

@@ -4,6 +4,8 @@ from PySide6.QtCore import QCoreApplication, QEvent, QObject, QTimer, Qt, Signal
 from PySide6.QtGui import QGuiApplication, QPainter
 from PySide6.QtWidgets import QLabel, QWidget
 
+from gweatherrouting.core.forecastcapabilities import MODEL_CAPABILITIES
+
 from .gribviewport import GribViewportModel, ViewportCamera, _viewport_widget_class
 
 
@@ -287,11 +289,10 @@ class WeatherPresenter(QObject):
         marine_status = ""
         if self.widget is not None and self.canvas.marine.visible:
             marine_status = "Viewport currents: " + self.widget._marine_layer.state
+        model_status = self._model_status(selection)
         self.status.setText(
             "\n".join(
-                text
-                for text in (selection.status, mode, marine_status, basemap)
-                if text
+                text for text in (model_status, mode, marine_status, basemap) if text
             )
         )
         self.status.setToolTip(selection.error)
@@ -300,6 +301,23 @@ class WeatherPresenter(QObject):
         self.status.move(8, max(8, self.canvas.height() - self.status.height() - 8))
         self.status.show()
         self.status.raise_()
+
+    def _model_status(self, selection):
+        model_id = ""
+        analysis = getattr(self.canvas.controller, "analysis", None)
+        active = getattr(analysis, "active", None)
+        if active is not None:
+            model_id = active.entry.model_id
+        else:
+            sources_method = getattr(selection, "sources", None)
+            sources = sources_method() if callable(sources_method) else ()
+            if sources:
+                model_id = getattr(sources[0], "model_name", "")
+        if not model_id:
+            return selection.status
+        capabilities = MODEL_CAPABILITIES.get(model_id)
+        model_name = capabilities.provider_name if capabilities else model_id
+        return f"Model: {model_name}"
 
     def _drop_widget(self):
         """Chart-enabled children own their source; replace them as a whole."""
@@ -426,9 +444,12 @@ class WeatherPresenter(QObject):
         self._label()
         # Existing interactive widgets must remain above both presentation children.
         self.canvas.coverage_notice.raise_()
-        self.canvas.coverage_fetch.raise_()
-        for button in self.canvas.coverage_fetch_buttons.values():
-            button.raise_()
+        if hasattr(self.canvas, 'coverage_fetch'):
+            self.canvas.coverage_fetch.raise_()
+        coverage_fetch_buttons = getattr(self.canvas, 'coverage_fetch_buttons', None)
+        if coverage_fetch_buttons:
+            for button in coverage_fetch_buttons.values():
+                button.raise_()
 
     def source_changed(self):
         # Hide old weather synchronously, before the coalesced GUI refresh.

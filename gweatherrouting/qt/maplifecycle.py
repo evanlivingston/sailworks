@@ -40,15 +40,6 @@ class MapLifecycleMixin:
         self._wind_cursor.close()
         self.controller.data.changed.disconnect(self._cancel_cursor)
         self.weather_coverage.close()
-        self._disconnect_optional(
-            self.controller.data.task.changed, self._download_progress
-        )
-        self._disconnect_optional(
-            self.controller.data.forecast_loaded, self._note_installed_forecast
-        )
-        self._disconnect_optional(
-            self.controller.data.task.finished, self._fetch_finished
-        )
         self.cursor_readout.emit("")
         self._cancel_inertia(settle=False)
         self._finish_zoom_silent()
