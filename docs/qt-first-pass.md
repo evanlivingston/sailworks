@@ -21,7 +21,7 @@ The equivalent module command is:
 .venv/bin/python -m gweatherrouting
 ```
 
-Instrument connections are managed from the UI: use the "Read live NMEA" checkbox in the NMEA panel to start/stop connections, and "Configure connections…" to manage saved instrument settings. Canadian chart tiles (CHS) are enabled by default and can be toggled in the chart visibility settings. Close GTK's live connections before opening the same serial device or listening port in Qt. Use File → Settings or the NMEA panel's Configure connections button to edit instruments directly in Qt.
+Instrument connections are managed from **File → Settings → Connections**. Choose **Live data source** in the NMEA panel to read from them, or **Loaded log** to inspect a saved log. Import logs and open File Info from the **Log library**. Canadian chart tiles (CHS) are enabled by default and can be toggled in the chart visibility settings. Close GTK's live connections before opening the same serial device or listening port in Qt.
 
 PySide6 Essentials is a base dependency and Python 3.10+ is required. The `[qt]`
 extra and `gweatherrouting-qt` command remain compatibility aliases. Use
@@ -327,8 +327,8 @@ does not hide an active cursor readout; instrument updates reuse the chart image
 Qt automatically saves its window’s normal size/position and maximized state,
 sidebar placement/sizes, detached panel bounds, hidden panels/toolbar, active
 sidebar and Charts/Logs/Polars view. It also remembers the map center/zoom, Routing
-Plan/Results page, polar/algorithm/coastline options, selected saved route and
-NMEA playback speed/live-stream preference. View → Reset layout restores the
+Plan/Results page, polar/algorithm/coastline options and selected saved route.
+Live versus loaded-log source selection is session state. View → Reset layout restores the
 default grouped sidebar and toolbar; the View menu can reopen hidden panels
 and the Navigation toolbar individually.
 

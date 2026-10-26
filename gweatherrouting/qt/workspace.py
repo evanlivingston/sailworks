@@ -103,8 +103,6 @@ class WorkspacePreferences(QObject):
         window.navigation_panel.route_selected.connect(self.changed)
         panel.coastlines.toggled.connect(self.changed)
         panel.pages.currentChanged.connect(self.changed)
-        window.speed.currentIndexChanged.connect(self.changed)
-        window.streaming.toggled.connect(self.changed)
         for panel in window.marine_panels.values():
             panel.toggle.toggled.connect(self.changed)
         window.routing_panel.options_changed.connect(self.changed)
@@ -220,10 +218,6 @@ class WorkspacePreferences(QObject):
                 "options": panel.saved_options(),
                 "selected_route": route.name if route is not None else None,
             },
-            "nmea": {
-                "speed": window.session.speed,
-                "streaming": window.session.streaming,
-            },
         }
 
     def save(self):
@@ -268,12 +262,6 @@ class WorkspacePreferences(QObject):
         self._restore_routing(mapping(state.get("routing")))
         self._restore_map_display(self.window.map, saved_map)
         self.window._sync_map_actions()
-        nmea = mapping(state.get("nmea"))
-        speed = nmea.get("speed")
-        if type(speed) in (int, float) and speed in (0.5, 1, 2, 5, 10):
-            self.window.session.speed = speed
-        if isinstance(nmea.get("streaming"), bool):
-            self.window.session.set_streaming(nmea["streaming"])
         marine = mapping(state.get("marine"))
         for kind, panel in self.window.marine_panels.items():
             if isinstance(marine.get(kind), bool):

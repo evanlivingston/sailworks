@@ -94,7 +94,7 @@ python -m gweatherrouting
 `--log FILE` opens an interpreted NMEA log. `gweatherrouting-qt` remains an alias; the old `[qt]` install
 extra is compatible but no longer needed because PySide6 is a base dependency.
 
-Instrument connections are managed from the UI: use the "Read live NMEA" checkbox in the NMEA panel to start/stop connections, and "Configure connections…" to manage saved instrument settings.
+Instrument connections are managed from **Settings → Connections**. Choose **Live data source** in the NMEA panel to read from them; choose **Loaded log** to inspect a saved log. Import and inspect logs from the **Log library**.
 
 For opt-in early-weather startup, use `python -m gweatherrouting --early-weather`
 It defers unused log plots and stages chart initialization after weather preparation in the real map.
