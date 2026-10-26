@@ -59,6 +59,12 @@ class PolarCanvas(QWidget, PolarRenderer):
             self, SimpleNamespace(x=event.position().x(), y=event.position().y())
         )
 
+    def mousePressEvent(self, event):  # noqa: N802 - Qt virtual method name
+        self.on_mouse_press(
+            self, SimpleNamespace(x=event.position().x(), y=event.position().y())
+        )
+        event.accept()
+
     def leaveEvent(self, event):  # noqa: N802 - Qt virtual method name
         self.on_mouse_leave(self)
 

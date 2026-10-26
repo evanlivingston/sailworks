@@ -51,6 +51,7 @@ class PolarRenderer:
         self.samples: Tuple[PerformanceSample, ...] = ()
         self.wind_filter = None
         self.hover_wind: Optional[float] = None
+        self.isolated_wind: Optional[float] = None
         self.hover_text: Optional[str] = None
         self._point_positions: List[Tuple[float, float, PerformanceSample]] = []
         self._curve_segments: List[Tuple[float, float, float, float, float]] = []
@@ -68,6 +69,19 @@ class PolarRenderer:
         self.hover_wind = None
         self.queue_draw()
 
+    def on_mouse_press(self, widget, event):
+        # Click a windspeed curve to isolate it (highlight only it); click the
+        # same isolated windspeed again to unisolate. Clicking empty space does
+        # nothing. Hover still works transiently on top of isolation.
+        wind, _angle = self._curve_hover(event.x, event.y) or (None, None)
+        if wind is None:
+            return
+        if self.isolated_wind == wind:
+            self.isolated_wind = None
+        else:
+            self.isolated_wind = wind
+        self.queue_draw()
+
     def load_polar(self, polar_file):
         polar = None
         try:
@@ -79,6 +93,7 @@ class PolarRenderer:
 
     def set_polar(self, polar):
         self.polar = polar
+        self.isolated_wind = None
         self.on_mouse_leave(self, None)
         self._curve_segments = []
         self._point_positions = []
@@ -105,10 +120,11 @@ class PolarRenderer:
         )
         if math.hypot(px - x, py - y) > 10:
             return None, None
+        band = wind_band(sample.tws, self.polar.tws) if self.polar else None
         return (
             f"TWA {sample.twa:.1f}° · TWS {sample.tws:.1f} kt\n"
             f"{sample.basis.upper()} {sample.speed:.2f} kt",
-            None,
+            self.polar.tws[band] if band is not None else None,
         )
 
     def _curve_hover(self, x, y):
@@ -234,8 +250,13 @@ class PolarRenderer:
             if self.wind_filter is not None and i != self.wind_filter:
                 continue
             color = POLAR_COLORS[i % len(POLAR_COLORS)]
-            focused = self.polar.tws[i] == self.hover_wind
-            dimmed = self.hover_wind is not None and not focused
+            focused = (
+                self.polar.tws[i] == self.hover_wind
+                or self.polar.tws[i] == self.isolated_wind
+            )
+            dimmed = (
+                self.hover_wind is not None or self.isolated_wind is not None
+            ) and not focused
             cr.set_source_rgba(*color, 0.15 if dimmed else 0.9)
             cr.set_line_width(1.0 if focused else 0.7)
             for side in ((1, -1) if self.full_circle else (1,)):
@@ -265,16 +286,36 @@ class PolarRenderer:
     def _draw_samples(self, cr, cx, cy, speed_scale, scale, dx, dy):
         assert self.polar is not None
         for sample in self.samples:
+            # Skip observations from when the boat is not moving, or when there
+            # is no wind (a polar with zero wind has no meaningful position).
+            if sample.speed <= 0 or sample.tws <= 0:
+                continue
             band = wind_band(sample.tws, self.polar.tws)
             if band is None or (
                 self.wind_filter is not None and band != self.wind_filter
+            ):
+                continue
+            # The zero-wind polar band includes small positive readings below
+            # its midpoint boundary; they are not useful performance samples.
+            if self.polar.tws[band] <= 0:
+                continue
+            # Isolation means show only that wind band's observations, rather
+            # than merely dimming the other points.
+            if (
+                self.isolated_wind is not None
+                and self.polar.tws[band] != self.isolated_wind
             ):
                 continue
             angle = math.radians(sample.twa)
             px = cx + speed_scale * sample.speed * math.sin(angle)
             py = cy - speed_scale * sample.speed * math.cos(angle)
             color = POLAR_COLORS[band % len(POLAR_COLORS)]
-            cr.set_source_rgba(*color, 0.4)
+            band_tws = self.polar.tws[band]
+            focused = band_tws == self.hover_wind or band_tws == self.isolated_wind
+            dimmed = (
+                self.hover_wind is not None or self.isolated_wind is not None
+            ) and not focused
+            cr.set_source_rgba(*color, 0.15 if dimmed else 0.8)
             cr.arc(px, py, 0.65, 0, 2 * math.pi)
             cr.fill()
             self._point_positions.append((dx + px * scale, dy + py * scale, sample))
