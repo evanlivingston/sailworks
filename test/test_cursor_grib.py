@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 import unittest
 
 import numpy as np
@@ -20,15 +20,28 @@ class TestCursorGrib(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name) / "wind.tif"
         dataset = gdal.GetDriverByName("GTiff").Create(
-            str(self.path), 4, 3, 4, gdal.GDT_Float32
+            str(self.path), 4, 3, 6, gdal.GDT_Float32
         )
         dataset.SetGeoTransform((-124.5, 1, 0, 50.5, 0, -1))
         for index, (hour, element, value) in enumerate(
-            ((0, "UGRD", 2), (0, "VGRD", 4), (3, "UGRD", 8), (3, "VGRD", 10)), 1
+            (
+                (0, "UGRD", 2),
+                (0, "VGRD", 4),
+                (0, "GUST", 6),
+                (3, "UGRD", 8),
+                (3, "VGRD", 10),
+                (3, "GUST", 12),
+            ),
+            1,
         ):
             band = dataset.GetRasterBand(index)
             band.SetMetadata(
-                dict(GRIB_ELEMENT=element, GRIB_FORECAST_SECONDS=str(hour * 3600))
+                dict(
+                    GRIB_ELEMENT=element,
+                    GRIB_FORECAST_SECONDS=str(hour * 3600),
+                    GRIB_SHORT_NAME="0-SFC" if element == "GUST" else "10-HTGL",
+                    GRIB_UNIT="[m/s]",
+                )
             )
             band.WriteArray(
                 np.full((3, 4), value, dtype=np.float32)
@@ -57,7 +70,7 @@ class TestCursorGrib(unittest.TestCase):
         self.assertIsNotNone(self.source.dataset)
 
     def test_enabled_source_order_fallback_eviction_and_close(self):
-        sampler = WindCursorSampler(Mock(), Mock(), Mock())
+        sampler = WindCursorSampler(Mock())
         self.addCleanup(sampler.close)
         unavailable = SimpleNamespace()
         # Unhashable/invalid sources are skipped; enabled-file order is preserved.
@@ -77,9 +90,7 @@ class TestCursorGrib(unittest.TestCase):
         self.assertTrue(all(grib.dataset is None for grib in held))
 
     def test_first_available_enabled_source_wins_and_missing_sources_fall_through(self):
-        sampler = WindCursorSampler(
-            Mock(), Mock(), Mock(), display_grib=lambda source: source
-        )
+        sampler = WindCursorSampler(Mock(), display_grib=lambda source: source)
         missing, first, second = Mock(), Mock(), Mock()
         missing.get_wind_at.side_effect = ValueError("No coverage")
         first.get_wind_at.return_value = (180, 10)
@@ -92,3 +103,21 @@ class TestCursorGrib(unittest.TestCase):
             sampler._sample([second, first], self.start, 49, -123), (270, 20)
         )
         sampler.close()
+
+    def test_cursor_weather_includes_interpolated_gust(self):
+        sampler = WindCursorSampler(Mock())
+        self.addCleanup(sampler.close)
+        instant = self.start + timedelta(minutes=90)
+        wind, gust = sampler._sample_weather([self.source], instant, 49, -123)
+        self.assertEqual(wind, self.source.get_wind_at(instant, 49, -123))
+        self.assertAlmostEqual(gust, 10.25)
+
+    def test_cursor_sampling_starts_without_a_debounce_timer(self):
+        sampler = WindCursorSampler(Mock())
+        self.addCleanup(sampler.close)
+        with patch("gweatherrouting.rendering.windcursor.Thread") as thread:
+            sampler.request([self.source], self.start, 49, -123, Mock())
+        thread.assert_called_once()
+        thread.return_value.start.assert_called_once()
+        self.assertTrue(sampler._running)
+        self.assertIsNone(sampler._pending)

@@ -18,11 +18,15 @@ from osgeo import gdal
 from pyproj import CRS, Transformer, Geod
 
 from .gribvectors import vector_flags
-from .gribfields import PRESSURE_ELEMENTS, is_mean_sea_level_pressure
+from .gribfields import GUST_ELEMENTS, PRESSURE_ELEMENTS, is_mean_sea_level_pressure
 
 logger = logging.getLogger("gweatherrouting")
 
-FIELDS = {"wind": ("UGRD", "VGRD"), "pressure": PRESSURE_ELEMENTS}
+FIELDS = {
+    "wind": ("UGRD", "VGRD"),
+    "pressure": PRESSURE_ELEMENTS,
+    "gust": GUST_ELEMENTS,
+}
 
 
 def number(value):
@@ -117,13 +121,22 @@ class GridIndex:
         for band_id in range(1, self.dataset.RasterCount + 1):
             metadata = self.dataset.GetRasterBand(band_id).GetMetadata()
             element = metadata.get("GRIB_ELEMENT")
-            if element not in ("UGRD", "VGRD") and not is_mean_sea_level_pressure(
-                metadata
-            ):
+            is_wind = element in FIELDS["wind"]
+            is_gust = element in FIELDS["gust"]
+            is_pressure = is_mean_sea_level_pressure(metadata)
+            if not (is_wind or is_gust or is_pressure):
                 continue
             level = metadata.get("GRIB_SHORT_NAME", "")
-            expected = "10-HTGL" if element in FIELDS["wind"] else "0-MSL"
-            if level and level != expected:
+            if is_wind:
+                expected = "10-HTGL"
+                accepted_levels = (expected,)
+            elif is_gust:
+                expected = level or "0-SFC"
+                accepted_levels = ("0-SFC", "10-HTGL")
+            else:
+                expected = "0-MSL"
+                accepted_levels = (expected,)
+            if level and level not in accepted_levels:
                 continue
             relative = self.vector_flags[band_id - 1] if self.vector_flags else False
             if element in FIELDS["wind"] and relative is None:
@@ -144,13 +157,20 @@ class GridIndex:
                 identity = (reference, model_key(metadata, self.source), expected)
             except (ValueError, KeyError):
                 continue
-            unit = metadata.get("GRIB_UNIT", "[Pa]")
-            scale = (
-                0.01
-                if element in FIELDS["pressure"]
-                and unit not in ("[hPa]", "hPa", "[mb]", "mb")
-                else 1.0
-            )
+            unit = metadata.get("GRIB_UNIT", "[m/s]" if is_gust else "[Pa]")
+            if element in FIELDS["pressure"] and unit not in (
+                "[hPa]",
+                "hPa",
+                "[mb]",
+                "mb",
+            ):
+                scale = 0.01
+            elif is_gust and unit.lower().strip("[] ") in ("kt", "knot", "knots"):
+                scale = 0.514444
+            elif is_gust and unit.lower().strip("[] ") in ("km/h", "kph"):
+                scale = 1.0 / 3.6
+            else:
+                scale = 1.0
             records.append(
                 Record(
                     self,
@@ -499,6 +519,19 @@ class WeatherSampler:
                 origins[ids] = self._origin(record)
         return result, origins
 
+    def _gust_at_time(self, records, lats, lons):
+        result = np.full((len(lats), 1), np.nan)
+        origins = np.full(len(lats), "", dtype=object)
+        for record in records.get("GUST", ()):
+            use = ~np.isfinite(result[:, 0])
+            if not use.any():
+                break
+            candidate = self._sample_record(record, lats[use], lons[use])
+            ids = np.flatnonzero(use)[np.isfinite(candidate)]
+            result[ids, 0] = candidate[np.isfinite(candidate)]
+            origins[ids] = self._origin(record)
+        return result, origins
+
     @staticmethod
     def _wind_pairs(records):
         us, vs = records.get("UGRD", ()), records.get("VGRD", ())
@@ -521,6 +554,8 @@ class WeatherSampler:
     def _at_time(self, records, field, lats, lons):
         if field == "pressure":
             return self._pressure_at_time(records, lats, lons)
+        if field == "gust":
+            return self._gust_at_time(records, lats, lons)
         result = np.full((len(lats), 2), np.nan)
         origins = np.full(len(lats), "", dtype=object)
         for u, v in self._wind_pairs(records):
@@ -673,6 +708,12 @@ class WeatherSampler:
                 self.last_sources.update(b[2].split("\x1f"))
             return wind_value(uv)
         return None
+
+    def gust_at(self, instant, lat, lon):
+        """Sample the gust field in m/s at the exact cursor location."""
+        values = self.sample("gust", instant, np.array([lat]), np.array([lon]))
+        value = values[0, 0]
+        return float(value) if math.isfinite(value) else None
 
     @staticmethod
     def _round_bounds(bounds):

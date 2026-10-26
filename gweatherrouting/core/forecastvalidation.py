@@ -12,6 +12,7 @@ from .gribvectors import vector_flags
 from .forecastgrid import ForecastGridError, validate_grid
 from .forecastcapabilities import MODEL_CAPABILITIES
 from .forecastrefreshplan import RefreshCancelledError
+from .gribfields import GUST_ELEMENTS
 
 
 class ForecastValidationError(ValueError):
@@ -37,6 +38,15 @@ _LEVELS = {
     "PRMSL": "0-MSL",
     "MSLMA": "0-MSL",
     "PRES": "0-MSL",
+    "GUST": "0-SFC",
+}
+_FIELD_BY_ELEMENT = {
+    "UGRD": "wind",
+    "VGRD": "wind",
+    "PRMSL": "pressure",
+    "MSLMA": "pressure",
+    "PRES": "pressure",
+    **{element: "gust" for element in GUST_ELEMENTS},
 }
 
 
@@ -62,6 +72,8 @@ def _planned_model(planned):
     capability = MODEL_CAPABILITIES.get(model)
     if capability is None or planned.provider_name != capability.provider_name:
         _fail("planned provider does not match model")
+    if any(not capability.available_steps(None, field) for field in config.fields):
+        _fail("model does not support a requested forecast field")
     native = capability.native_resolution
     if not isinstance(planned.identifier, str) or not planned.identifier:
         _fail("planned identifier is missing")
@@ -210,7 +222,7 @@ def inspect_download(path, planned, cancel=None, *, opener=None, vector_reader=N
             level = metadata.get("GRIB_SHORT_NAME", "")
             if level != _LEVELS[element]:
                 _fail(f"unsupported level for {element}")
-            field = "wind" if element in ("UGRD", "VGRD") else "pressure"
+            field = _FIELD_BY_ELEMENT[element]
             if field not in expected:
                 _fail("download contains an unrequested forecast field")
             unit = metadata.get("GRIB_UNIT", "")
@@ -225,6 +237,8 @@ def inspect_download(path, planned, cancel=None, *, opener=None, vector_reader=N
                 "mb",
             ):
                 _fail("unsupported pressure units")
+            if field == "gust" and unit not in ("[m/s]", "m/s", "m s-1"):
+                _fail("unsupported gust units")
             reference = _utc_epoch(metadata.get("GRIB_REF_TIME"), "reference time")
             if reference != run:
                 _fail("forecast bands contain mixed or unexpected run times")
@@ -261,14 +275,14 @@ def inspect_download(path, planned, cancel=None, *, opener=None, vector_reader=N
         for field in fields:
             for hour in expected[field]:
                 found = records[field].get(hour, set())
-                required = (
-                    {"UGRD", "VGRD"} if field == "wind" else set(PRESSURE_ELEMENTS)
-                )
-                if field == "pressure":
-                    if len(found) != 1:
+                if field == "wind":
+                    if found != {"UGRD", "VGRD"}:
+                        _fail(f"wind requires both components at hour {hour}")
+                elif field == "pressure":
+                    if len(found) != 1 or not found <= set(PRESSURE_ELEMENTS):
                         _fail(f"missing or duplicate pressure at hour {hour}")
-                elif found != required:
-                    _fail(f"wind requires both components at hour {hour}")
+                elif found != {"GUST"}:
+                    _fail(f"missing or duplicate gust at hour {hour}")
             times = tuple(
                 run + timedelta(hours=hour) for hour in sorted(expected[field])
             )
@@ -281,11 +295,7 @@ def inspect_download(path, planned, cancel=None, *, opener=None, vector_reader=N
             fields,
             tuple(
                 sorted(
-                    set(
-                        _LEVELS[e]
-                        for e in _LEVELS
-                        if ("wind" if e in ("UGRD", "VGRD") else "pressure") in fields
-                    )
+                    set(_LEVELS[e] for e in _LEVELS if _FIELD_BY_ELEMENT[e] in fields)
                 )
             ),
             actual_region,

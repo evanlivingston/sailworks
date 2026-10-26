@@ -93,6 +93,31 @@ def test_capability_ui_contract_and_lazy_source_registry():
     assert MODEL_CAPABILITIES["IFS"].license_url
     factories = default_provider_factories()
     assert {"IFS", "AIFS", "AIGFS"} <= set(factories)
+    assert MODEL_CAPABILITIES["GFS"].available_steps(None, "gust")
+    assert MODEL_CAPABILITIES["HRRR"].available_steps(18, "gust")[-1] == 48
+    assert MODEL_CAPABILITIES["HRDPS"].available_steps(None, "gust") == ()
+    assert MODEL_CAPABILITIES["IFS"].available_steps(None, "gust") == ()
+
+
+def test_gust_is_rejected_for_models_without_a_gust_product():
+    with pytest.raises(
+        UnsupportedConfigurationError, match="unsupported forecast field"
+    ):
+        plan_refresh(
+            (ModelConfiguration("IFS", ("gust",), REQUESTED, "native", 3, (0, 3), 3),),
+            "IFS",
+            factories={"IFS": lambda: pytest.fail("unsupported provider was created")},
+        )
+
+
+@pytest.mark.parametrize("model_id", ("GFS", "HRRR"))
+def test_gust_request_plans_surface_field_steps_for_noaa_models(model_id):
+    configuration = ModelConfiguration(
+        model_id, ("gust",), REQUESTED, "native", 3, (0, 3), 3
+    )
+    plan = plan_refresh((configuration,), model_id)
+    assert plan.models[0].field_steps == (("gust", (0, 3)),)
+    assert json.loads(plan.models[0].identifier)["fields"] == ["gust"]
 
 
 def test_plan_prefers_long_ifs_run_and_rejects_unsupported_interval_before_factory():

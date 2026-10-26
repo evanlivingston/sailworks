@@ -3,14 +3,15 @@
 import json
 from dataclasses import dataclass
 
-FIELDS = ("wind", "pressure")
+DEFAULT_FIELDS = ("wind", "pressure")
+FIELDS = (*DEFAULT_FIELDS, "gust")
 
 
 @dataclass(frozen=True)
 class DownloadOptions:
     hours: int = 120
     interval: int = 3
-    fields: tuple = FIELDS
+    fields: tuple = DEFAULT_FIELDS
     steps: tuple = ()
 
     def __post_init__(self):
@@ -19,7 +20,7 @@ class DownloadOptions:
         if self.interval not in (0, 1, 3, 6, 12):
             raise ValueError("Choose model default, 1, 3, 6 or 12 hour spacing")
         if not self.fields or not set(self.fields) <= set(FIELDS):
-            raise ValueError("Select wind, sea-level pressure, or both")
+            raise ValueError("Select at least one supported forecast field")
         if any(type(h) is not int or not 0 <= h <= self.hours for h in self.steps):
             raise ValueError("Forecast hours must lie within the chosen length")
 
@@ -38,7 +39,7 @@ class DownloadOptions:
 def selection(config, available, defaults):
     """Validate serialized custom requests; preserve legacy schedules."""
     if "steps" not in config:
-        return list(defaults), FIELDS
+        return list(defaults), DEFAULT_FIELDS
     options = DownloadOptions(
         config["hours"], 0, tuple(config["fields"]), tuple(config["steps"])
     )
@@ -51,8 +52,12 @@ def selection(config, available, defaults):
 def custom_rows(source, options, runs, available, estimate):
     """One row per run, reporting the actual selected hours for that model."""
     rows = []
+    supported = getattr(source, "download_fields", DEFAULT_FIELDS)
+    fields = tuple(field for field in options.fields if field in supported)
+    if not fields:
+        return rows
     for date, cycle, run_label, hours in runs:
-        steps = options.select(available(cycle, options.fields, hours))
+        steps = options.select(available(cycle, fields, hours))
         if not steps:
             continue
         config = {
@@ -61,14 +66,14 @@ def custom_rows(source, options, runs, available, estimate):
             "cycle": cycle,
             "hours": max(steps),
             "steps": steps,
-            "fields": options.fields,
+            "fields": fields,
         }
         coverage = f"{min(steps)}–{max(steps)} h · {len(steps)} times"
         rows.append(
             [
                 f"{source.name.removeprefix('NOAA ').removeprefix('CMC ')} · {coverage}",
                 source.name,
-                estimate(steps, options.fields),
+                estimate(steps, fields),
                 run_label,
                 json.dumps(config),
             ]
@@ -83,5 +88,8 @@ def filtered_parameters(params, fields, pressure):
             params.pop(key, None)
     if "pressure" not in fields:
         for key in ("lev_mean_sea_level", "var_" + pressure):
+            params.pop(key, None)
+    if "gust" not in fields:
+        for key in ("lev_surface", "var_GUST"):
             params.pop(key, None)
     return params

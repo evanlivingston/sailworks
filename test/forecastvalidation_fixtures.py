@@ -127,11 +127,15 @@ class RotatedDataset(Dataset):
 def band(element, hour, *, model="GFS", unit=None, level=None):
     process = {"GFS": "81", "HRRR": "83", "HRDPS": "50"}[model]
     center = "54" if model == "HRDPS" else "7"
-    default_unit = "[m/s]" if element in ("UGRD", "VGRD") else "[Pa]"
+    default_unit = "[m/s]" if element in ("UGRD", "VGRD", "GUST") else "[Pa]"
     return {
         "GRIB_ELEMENT": element,
         "GRIB_SHORT_NAME": level
-        or ("10-HTGL" if element in ("UGRD", "VGRD") else "0-MSL"),
+        or (
+            "10-HTGL"
+            if element in ("UGRD", "VGRD")
+            else "0-SFC" if element == "GUST" else "0-MSL"
+        ),
         "GRIB_UNIT": unit or default_unit,
         "GRIB_IDS": f"CENTER={center}",
         "GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES": f"0 0 0 0 {process}",
@@ -200,6 +204,8 @@ def dataset_for(fields=("wind",), hours=(0, 3), **kwargs):
                 bands.extend(
                     (band("UGRD", hour, **kwargs), band("VGRD", hour, **kwargs))
                 )
+            elif field == "gust":
+                bands.append(band("GUST", hour, **kwargs))
             else:
                 bands.append(band("PRMSL", hour, **kwargs))
     return Dataset(bands)

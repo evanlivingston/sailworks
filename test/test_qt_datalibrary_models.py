@@ -50,6 +50,11 @@ def test_forecasts_page_reuses_existing_model_parameters_and_hours_ui(tmp_path):
     assert "published" in options.model_selection_hint.text().lower()
     assert {"ECMWF IFS", "ECMWF AIFS Single", "NOAA AI-GFS"} <= set(options.models)
     assert options.fields["wind"].text() == "Wind at 10 m"
+    assert options.fields["gust"].text() == "Wind gust"
+    assert options._parameter_model_id == "GFS"
+    assert options.model_rows["NOAA GFS"].property("selected")
+    assert not options.fields["gust"].isHidden()
+    assert not options.fields["gust"].isChecked()
     assert options.duration.count() >= 8
     assert {box.title() for box in options.findChildren(QGroupBox)} >= {
         "Models",
@@ -112,6 +117,40 @@ def test_changing_forecast_hours_emits_changed(tmp_path):
     item.setCheckState(Qt.CheckState.Unchecked)
 
     assert emitted == [True]
+    library.close()
+
+
+def test_gust_selection_is_limited_to_models_with_supported_products(tmp_path):
+    app()
+    library, _, _ = forecast_page(tmp_path, capture_region=lambda: (-2, -2, 2, 2))
+    options = library.forecast_options
+    options.models["NOAA HRRR"].setChecked(True)
+    options.fields["gust"].setChecked(True)
+
+    configurations = {c.model_id: c for c in options._configurations()}
+    assert "gust" in configurations["GFS"].fields
+    assert "gust" not in configurations["HRRR"].fields
+    checked_models = options.names()
+    assert options._parameter_model_id == "GFS"
+
+    options.model_rows["NOAA HRRR"].selected.emit("HRRR")
+    assert options.fields["gust"].isChecked() is False
+    options.fields["gust"].setChecked(True)
+    configurations = {c.model_id: c for c in options._configurations()}
+    assert "gust" in configurations["GFS"].fields
+    assert "gust" in configurations["HRRR"].fields
+
+    options.models["ECMWF IFS"].setChecked(True)
+    assert options._parameter_model_id == "HRRR"
+    options.model_rows["ECMWF IFS"].selected.emit("IFS")
+    assert options.fields["gust"].isHidden()
+    configurations = {c.model_id: c for c in options._configurations()}
+    assert "gust" in configurations["GFS"].fields
+    assert "gust" in configurations["HRRR"].fields
+    assert "gust" not in configurations["IFS"].fields
+    assert options.names() == checked_models + ("ECMWF IFS",)
+    assert options._parameter_model_id == "IFS"
+    assert options.active_model.currentData() == "GFS"
     library.close()
 
 

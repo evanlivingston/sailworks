@@ -74,10 +74,21 @@ class TestNOAAHRRRSource(unittest.TestCase):
         self.assertEqual(params["dir"], "/hrrr.20261015/conus")
         self.assertEqual(params["var_MSLMA"], "on")
         self.assertNotIn("var_PRMSL", params)
+        self.assertNotIn("var_GUST", params)
         self.assertLess(float(params["leftlon"]), -126.0)
         self.assertGreater(float(params["rightlon"]), -122.0)
         self.assertEqual(float(params["bottomlat"]), 46.94)
         self.assertEqual(float(params["toplat"]), 50.06)
+
+    def test_hrrr_filter_requests_surface_gust_only_when_selected(self):
+        params = NOAAHRRRSource()._build_filter_url(
+            "20261015", "03", 1, fields=("gust",)
+        )
+        self.assertEqual(params["lev_surface"], "on")
+        self.assertEqual(params["var_GUST"], "on")
+        self.assertNotIn("var_UGRD", params)
+        self.assertNotIn("var_VGRD", params)
+        self.assertNotIn("var_MSLMA", params)
 
     def test_identifier_round_trip(self):
         source = NOAAHRRRSource()

@@ -52,7 +52,11 @@ class TestGribSampling(unittest.TestCase):
                 GRIB_FORECAST_SECONDS=str(hour * 3600),
                 GRIB_REF_TIME=str(start.timestamp()),
                 GRIB_VALID_TIME=str((start + timedelta(hours=hour)).timestamp()),
-                GRIB_SHORT_NAME="10-HTGL" if element in ("UGRD", "VGRD") else "0-MSL",
+                GRIB_SHORT_NAME=(
+                    "10-HTGL"
+                    if element in ("UGRD", "VGRD")
+                    else "0-SFC" if element == "GUST" else "0-MSL"
+                ),
                 GRIB_IDS="CENTER=7 SUBCENTER=0",
                 GRIB_PDS_PDTN="0",
                 GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES=(
@@ -346,7 +350,7 @@ class TestGribSampling(unittest.TestCase):
         manager.gribs = sources
         expected = manager.get_wind_at(instant, 0.5, 0.5)
         self.assertIsNotNone(expected)
-        cursor = WindCursorSampler(Mock(), Mock(), Mock())
+        cursor = WindCursorSampler(Mock())
         self.addCleanup(cursor.close)
         self.assertEqual(cursor._sample(sources, instant, 0.5, 0.5), expected)
         routing = RoutingWind(freeze_wind_sources(sources), Event())
@@ -459,7 +463,7 @@ class TestGribSampling(unittest.TestCase):
         manager = GribManager.__new__(GribManager)
         manager.gribs = [old, new]
         expected = manager.get_wind_at(instant, 0.5, 0.5)
-        cursor = WindCursorSampler(Mock(), Mock(), Mock())
+        cursor = WindCursorSampler(Mock())
         self.addCleanup(cursor.close)
         self.assertEqual(cursor._sample([old, new], instant, 0.5, 0.5), expected)
         routing = FrozenRoutingWind(manager)
@@ -568,3 +572,35 @@ class TestGribSampling(unittest.TestCase):
         for hour in range(12):
             source.get_wind_at(START + timedelta(hours=hour), 0.5, 0.5)
         self.assertLessEqual(len(source.sampling.arrays), 6)
+
+    def test_gust_is_interpolated_in_space_and_time_and_missing_gust_is_none(self):
+        start_gust = np.array([[2, 4], [6, 8]], dtype=float)
+        end_gust = np.array([[8, 10], [12, 14]], dtype=float)
+        source = self.file(
+            self.field(0)
+            + [("GUST", 0, start_gust)]
+            + self.field(3)
+            + [("GUST", 3, end_gust)]
+        )
+        sampler = WeatherSampler([source])
+        # At the fractional grid point the spatial means are 5 and 11 m/s;
+        # the 90-minute time midpoint is therefore 8 m/s.
+        self.assertAlmostEqual(
+            sampler.gust_at(START + timedelta(minutes=90), 0.5, 0.5), 8.0
+        )
+
+        no_gust = self.file(self.field(0))
+        self.assertIsNone(WeatherSampler([no_gust]).gust_at(START, 0.5, 0.5))
+
+    def test_gust_rejects_non_surface_levels(self):
+        source = self.file(
+            [
+                (
+                    "GUST",
+                    0,
+                    [[12, 12], [12, 12]],
+                    {"GRIB_SHORT_NAME": "500-ISBL"},
+                )
+            ]
+        )
+        self.assertIsNone(WeatherSampler([source]).gust_at(START, 0.5, 0.5))

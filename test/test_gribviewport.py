@@ -1001,6 +1001,8 @@ def test_the_fill_runs_the_corrected_weather_shader():
     assert "if (any(isnan(value)) || any(isinf(value)))" in shader
     # U and V are interpolated first; the wind speed is derived afterwards.
     assert "float speed = clamp(length(uv) / 32.0" in shader
+    assert "fragColor = vec4(color, 0.35) * qt_Opacity;" in shader
+    assert "continuous wind-speed wash" in shader
     assert shader.index("uv += value * weight;") < shader.index("length(uv)")
 
 

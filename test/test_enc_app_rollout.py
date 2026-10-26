@@ -41,8 +41,10 @@ def test_app_constructs_enc_only_viewport_by_default(presenter, monkeypatch):
     monkeypatch.setattr(weatherpresenter, "_viewport_widget_class", lambda: factory)
     monkeypatch.setattr(weatherpresenter, "WeatherForeground", Mock())
     model = Mock()
-    monkeypatch.setattr(presenter, "_model", lambda source: model)
+    model_factory = Mock(return_value=model)
+    monkeypatch.setattr(presenter, "_model", model_factory)
     presenter._create(None)
+    model_factory.assert_called_once_with(None, grid=False)
     kwargs = factory.call_args.kwargs
     assert kwargs["chart_layer"] and kwargs["enc_chart_layer"] and kwargs["enc_only"]
     assert kwargs["chart_palette"] == "dark"
@@ -56,14 +58,17 @@ def test_desktop_map_uses_world_chart_layer_with_enc(presenter, monkeypatch):
     widget.quickWindow.return_value.afterRendering = Mock()
     monkeypatch.setattr(weatherpresenter, "_viewport_widget_class", lambda: factory)
     monkeypatch.setattr(weatherpresenter, "WeatherForeground", Mock())
-    monkeypatch.setattr(presenter, "_model", lambda _source: Mock())
+    model_factory = Mock(return_value=Mock())
+    monkeypatch.setattr(presenter, "_model", model_factory)
 
     presenter._create(None)
 
+    model_factory.assert_called_once_with(None, grid=True)
     kwargs = factory.call_args.kwargs
     assert kwargs["chart_layer"]
     assert kwargs["enc_chart_layer"]
     assert kwargs["chart_without_weather"]
+    assert kwargs["gpu_weather_fill"]
     assert not kwargs["enc_only"]
 
 

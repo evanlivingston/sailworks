@@ -25,7 +25,7 @@ from typing import Callable, List
 import requests
 
 from gweatherrouting.core.gribsources.base import GribSource
-from .options import FIELDS, custom_rows, filtered_parameters, selection
+from .options import DEFAULT_FIELDS, FIELDS, custom_rows, filtered_parameters, selection
 
 logger = logging.getLogger("gweatherrouting")
 
@@ -49,11 +49,13 @@ FORECAST_PRESETS = {
 class NOAAHRRRSource(GribSource):
     """GRIB source for NOAA HRRR 3km regional forecasts (CONUS).
 
-    Downloads wind (UGRD/VGRD at 10m) plus MSL pressure (PRMSL, for
-    isobars) from NOAA NOMADS for user-specified geographic bounds.
+    Downloads wind (UGRD/VGRD at 10m), optional surface gust, and MSL pressure
+    (MSLMA, for isobars) from NOAA NOMADS for user-specified geographic bounds.
     Covers the US Pacific Northwest south of the border; pair with
     CMC HRDPS for BC waters.
     """
+
+    download_fields = FIELDS
 
     def __init__(self):
         self._bounds = None  # (lat_south, lon_west, lat_north, lon_east)
@@ -181,11 +183,14 @@ class NOAAHRRRSource(GribSource):
         legacy = max(steps) + 1
         estimate = self._estimate_size(max(steps)).split()
         scale = (
-            len(steps) / legacy * (2 * ("wind" in fields) + ("pressure" in fields)) / 3
+            len(steps)
+            / legacy
+            * (2 * ("wind" in fields) + ("pressure" in fields) + ("gust" in fields))
+            / 3
         )
         return f"~{float(estimate[0]) * scale:.1f} {estimate[1]}"
 
-    def _build_filter_url(self, date_str, cycle, forecast_hour, fields=FIELDS):
+    def _build_filter_url(self, date_str, cycle, forecast_hour, fields=DEFAULT_FIELDS):
         # HRRR mean-sea-level pressure is MSLMA, not PRMSL (verified in the
         # .idx inventory); both decode through the shared sampler.
         params = {
@@ -194,6 +199,8 @@ class NOAAHRRRSource(GribSource):
             "lev_10_m_above_ground": "on",
             "var_UGRD": "on",
             "var_VGRD": "on",
+            "lev_surface": "on",
+            "var_GUST": "on",
             "lev_mean_sea_level": "on",
             "var_MSLMA": "on",
         }

@@ -39,7 +39,9 @@ class ModelCapabilities:
         raise ValueError(f"No forecast horizon defined for {self.model_id}")
 
     def available_steps(self, run_hour, field):
-        if field not in ("wind", "pressure"):
+        if field not in ("wind", "pressure") and not (
+            field == "gust" and self.model_id in ("GFS", "HRRR")
+        ):
             return ()
         maximum = self.max_horizon(run_hour)
         if self.model_id == "GFS":
@@ -53,6 +55,8 @@ class ModelCapabilities:
             return tuple(range(0, 361, 6))
         if self.model_id == "AIGFS":
             return tuple(range(0, 385, 6))
+        if self.model_id == "HRRR" and field == "gust":
+            return tuple(range(maximum + 1))
         if self.model_id == "HRDPS" and field == "pressure":
             return tuple(range(0, maximum + 1, 3))
         return tuple(range(maximum + 1))

@@ -120,19 +120,20 @@ class WeatherPresenter(QObject):
         if QGuiApplication.platformName() in ("offscreen", "minimal"):
             raise RuntimeError("hardware weather unavailable on this Qt platform")
         widget = None
-        model = self._model(source)
+        desktop_map = getattr(self.canvas, "_desktop_viewport", False)
+        model = self._model(source, grid=desktop_map)
         try:
             self._host_generation += 1
             generation = self._host_generation
             from gweatherrouting.core.storage import DATA_DIR
 
-            desktop_map = getattr(self.canvas, "_desktop_viewport", False)
             kwargs = dict(
                 chart_layer=True,
                 # The desktop map uses the viewport's world chart composition.
                 # Non-desktop map hosts retain their existing ENC-only host.
                 enc_chart_layer=True,
                 chart_without_weather=desktop_map,
+                gpu_weather_fill=desktop_map,
                 enc_only=not desktop_map,
                 chart_data_dir=DATA_DIR,
                 chart_palette=self.canvas.controller.settings.chartPalette,
@@ -204,11 +205,12 @@ class WeatherPresenter(QObject):
             raise
 
     @staticmethod
-    def _model(source):
+    def _model(source, grid=False):
         return GribViewportModel(
             () if source is None else (source.path,),
             display_identity=None if source is None else source.display_identity,
             resident_time_window=True,
+            grid=grid,
         )
 
     def _qml_status(self, status):
@@ -444,9 +446,9 @@ class WeatherPresenter(QObject):
         self._label()
         # Existing interactive widgets must remain above both presentation children.
         self.canvas.coverage_notice.raise_()
-        if hasattr(self.canvas, 'coverage_fetch'):
+        if hasattr(self.canvas, "coverage_fetch"):
             self.canvas.coverage_fetch.raise_()
-        coverage_fetch_buttons = getattr(self.canvas, 'coverage_fetch_buttons', None)
+        coverage_fetch_buttons = getattr(self.canvas, "coverage_fetch_buttons", None)
         if coverage_fetch_buttons:
             for button in coverage_fetch_buttons.values():
                 button.raise_()
@@ -483,6 +485,12 @@ class WeatherPresenter(QObject):
     def eventFilter(self, watched, event):  # noqa: N802
         if watched is self.widget and event.type() == QEvent.Type.MouseMove:
             self.canvas._hover(event.position())
+        if watched is self.widget and event.type() == QEvent.Type.Leave:
+            self.canvas._cursor_screen_position = None
+            cursor_timer = getattr(self.canvas, "_cursor_refresh_timer", None)
+            if cursor_timer is not None:
+                cursor_timer.stop()
+            self.canvas._cancel_cursor()
         if (
             watched is self.widget
             and event.type() == QEvent.Type.MouseButtonPress
