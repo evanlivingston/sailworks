@@ -18,10 +18,11 @@ from osgeo import gdal
 from pyproj import CRS, Transformer, Geod
 
 from .gribvectors import vector_flags
+from .gribfields import PRESSURE_ELEMENTS, is_mean_sea_level_pressure
 
 logger = logging.getLogger("gweatherrouting")
 
-FIELDS = {"wind": ("UGRD", "VGRD"), "pressure": ("PRMSL", "MSLMA")}
+FIELDS = {"wind": ("UGRD", "VGRD"), "pressure": PRESSURE_ELEMENTS}
 
 
 def number(value):
@@ -116,7 +117,9 @@ class GridIndex:
         for band_id in range(1, self.dataset.RasterCount + 1):
             metadata = self.dataset.GetRasterBand(band_id).GetMetadata()
             element = metadata.get("GRIB_ELEMENT")
-            if element not in ("UGRD", "VGRD", "PRMSL", "MSLMA"):
+            if element not in ("UGRD", "VGRD") and not is_mean_sea_level_pressure(
+                metadata
+            ):
                 continue
             level = metadata.get("GRIB_SHORT_NAME", "")
             expected = "10-HTGL" if element in FIELDS["wind"] else "0-MSL"

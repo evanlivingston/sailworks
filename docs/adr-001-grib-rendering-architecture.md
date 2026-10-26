@@ -458,26 +458,24 @@ Standing constraints carried by every implementing issue:
 4. Render callbacks are proxies, not presentation. Readback is fidelity, not timing.
 5. Every change is feature-flagged, default OFF, with the default path byte-identical.
 
-## 10. Display forecast coherence — accepted policy, implementation pending
+## 10. Display forecast coherence — accepted policy; shared path opt-in
 
-The 2026-10-20 user review of epic #51 requires the **user** to choose the forecast
-in the **Weather panel**: one chosen file and coherent model run/member for the
-weather display, except explicitly defined geographic
-stitching. Spatial/time interpolation within that selection is allowed; implicit
-cross-file components, temporal endpoints, older-run gap filling and spatial blending
-across forecast ownership are not. A file containing multiple runs/members must still
-respect the chosen identity. Ensemble statistics are explicit products, not fallback.
+The 2026-10-20 user review of epic #51 requires one explicitly chosen file and
+coherent model run/member for display. Within that identity, spatial/time interpolation
+is allowed; implicit cross-file components, endpoints, older-run gap filling and
+spatial blending across forecast ownership are not. A multi-run/member file must
+respect the chosen identity; ensemble statistics are explicit products, not fallback.
 
-The control must identify the selected file and its run/member, retain that choice
-through camera/time changes, and report unavailable data instead of silently choosing
-another forecast. Loading/enabling files in the data library is not the same action
-as choosing the forecast to display. Geographic stitching is a separate explicit mode,
-not automatic overlap blending.
+Issue #101 adds an opt-in Models panel and explicit `SessionController` analysis paths.
+One shared region is captured from the current map view; later panning does not change
+it. `ForecastAnalysisState` binds display and new routes to one active tranche/entry;
+running routes retain their inputs. Saved refresh intent is separate from active data.
+Missing or unsupported data fails visibly, without legacy-file fallback. Explicitly
+choosing Models persists that profile mode; otherwise legacy selection remains the
+default. No legacy data is adopted or deleted; cleanup still awaits validation.
 
-This is a display-policy amendment, not a change to routing selection or a claim of
-complete the reference application parity. Implementation is pending in a focused follow-up; #70's
-current measured candidate remains unchanged. See
-[forecast display coherence](rendering-performance-plan.md#forecast-display-coherence) for the source audit,
-acceptance contract and separate resampling question; the #51 acceptance
-checkpoint is in the
-[archived decision log](history/rendering-decision-log.md).
+This does not claim default cutover, real-viewport acceptance, performance acceptance
+or complete the reference application parity; #70's measured candidate is unchanged. See
+[forecast display coherence](rendering-performance-plan.md#forecast-display-coherence)
+for the source audit, remaining acceptance gates and resampling question; the #51
+checkpoint is in the [archived decision log](history/rendering-decision-log.md).

@@ -18,4 +18,3 @@ from gweatherrouting.core.gribsources.base import GribSource  # noqa: F401
 from gweatherrouting.core.gribsources.eccchrdps import ECCHRDPSource  # noqa: F401
 from gweatherrouting.core.gribsources.noaagfs import NOAAGFSSource  # noqa: F401
 from gweatherrouting.core.gribsources.noaahrrr import NOAAHRRRSource  # noqa: F401
-from gweatherrouting.core.gribsources.openskiron import OpenSkironSource  # noqa: F401

@@ -17,10 +17,6 @@ from gweatherrouting.core.modifiedgrib import ModifiedGribManager
 from gweatherrouting.core.routingoptions import configured_algorithm
 from gweatherrouting.core.grib import Grib
 from gweatherrouting.core.gribmanager import GribManager
-from .forecastselection import ForecastSelection, forecast_source
-from .modeldownloads import ModelForecastRecovery
-from .marine.fields import Area
-from .storage import GRIB_DIR
 from gweatherrouting.core.marine.routing import routing_completion, routing_utc
 
 
@@ -151,7 +147,6 @@ class RouteRequest:
     min_sailing_speed_kn: Optional[float] = None
     motor_speed_kn: float = 5.0
     wave_correct: bool = False
-    forecast_selection: Optional[ForecastSelection] = None
 
 
 class RoutingPreview(tuple):
@@ -200,16 +195,9 @@ def calculate_route(
     report=lambda message: None,
     confirm=lambda report: False,
     save_fields=None,
-    save_gribs=None,
     current_selection=None,
 ):
     """Run the existing engines and current-coverage workflow with injected UI hooks."""
-    if request.forecast_selection is not None:
-        sources = tuple(
-            g
-            for g in sources
-            if forecast_source(g) in request.forecast_selection.models
-        )
     wind = RoutingWind(sources, cancel)
     routing = None
     try:
@@ -218,10 +206,6 @@ def calculate_route(
         )
         from gweatherrouting.core.routingcoverage import prepare_coverage
 
-        recovery = prepare_selected_wind(
-            request, routing, wind, cancel, report, save_gribs
-        )
-
         prepare_coverage(
             routing,
             core.marine_manager if request.use_currents else None,
@@ -229,57 +213,14 @@ def calculate_route(
             cancel,
             report,
             confirm,
-            save_gribs,
-            forecast_selection=request.forecast_selection,
         )
         result = run_requested_routing(
             core, routing, request, wind, progress, report, save_fields
         )
-        if request.forecast_selection is not None:
-            result.provenance["weather_models"] = list(
-                request.forecast_selection.models
-            )
-            if recovery.issues:
-                result.provenance["weather_warnings"] = sorted(set(recovery.issues))
         return result
     finally:
         close_requested_routing(routing)
         wind.close()
-
-
-def prepare_selected_wind(request, routing, wind, cancel, report, save_gribs):
-    if request.forecast_selection is None:
-        return None
-    recovery = ModelForecastRecovery(
-        request.forecast_selection, GRIB_DIR, cancel, report
-    )
-
-    def install(added):
-        known = {g.path for g in wind.manager.gribs if hasattr(g, "path")}
-        added = [g for g in added if g.path not in known]
-        wind.manager.gribs.extend(added)
-        if routing.current_environment is not None:
-            routing.current_environment.wind.add_gribs(added)
-        if added and save_gribs is not None:
-            save_gribs(added)
-
-    install(recovery.cached(wind.manager.gribs))
-
-    def recover(instant, lat, lon):
-        points = [(lat, lon), *routing.track[routing.wp :]]
-        area = Area.from_points(points, padding=1)
-        install(recovery.download(wind.manager.gribs, points, instant, area))
-
-    # Probe all checked models before starting, then fill actual search gaps.
-    recover(request.departure, *routing.position)
-    wind.recover_missing = recover
-    if wind.manager.get_wind_at(request.departure, *routing.position) is None:
-        details = "; ".join(sorted(set(recovery.issues)))
-        raise RoutingNoWindError(
-            "Selected weather models have no wind data at the departure position and time. "
-            + details
-        )
-    return recovery
 
 
 def create_requested_routing(core, request, providers, wind, current_selection):
@@ -452,7 +393,7 @@ def close_requested_routing(routing):
     if environment is None:
         return
     environment.progress = None
-    for job in (environment.prefetch, environment.wind_recovery):
+    for job in (environment.prefetch,):
         if job is not None:
             job.close()
     for source in environment.wind.gribs:

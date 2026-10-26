@@ -74,7 +74,10 @@ class TestNOAAHRRRSource(unittest.TestCase):
         self.assertEqual(params["dir"], "/hrrr.20261015/conus")
         self.assertEqual(params["var_MSLMA"], "on")
         self.assertNotIn("var_PRMSL", params)
-        self.assertEqual(params["leftlon"], "-126.0")
+        self.assertLess(float(params["leftlon"]), -126.0)
+        self.assertGreater(float(params["rightlon"]), -122.0)
+        self.assertEqual(float(params["bottomlat"]), 46.94)
+        self.assertEqual(float(params["toplat"]), 50.06)
 
     def test_identifier_round_trip(self):
         source = NOAAHRRRSource()

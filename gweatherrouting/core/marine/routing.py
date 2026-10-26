@@ -126,7 +126,6 @@ class CurrentRoutingEnvironment:
         self.last_sample = None
         self.progress = None
         self.prefetch = None
-        self.wind_recovery = None
         self._sample_cache: OrderedDict = OrderedDict()
         self.policy_pruned = 0
 
@@ -713,8 +712,6 @@ def step_with_coverage(  # noqa: C901
     environment = getattr(routing, "current_environment", None)
     if environment is None:
         return routing.step()
-    if environment.wind_recovery is not None:
-        environment.wind_recovery.ready()
     if environment.prefetch is not None:
         fields, _ = environment.prefetch.ready()
         if fields:
@@ -724,32 +721,16 @@ def step_with_coverage(  # noqa: C901
             return routing.step()
         except RoutingDataGapError as error:
             report(str(error))
+            if any(g.kind == "wind" for g in error.gaps):
+                report("The published model forecast does not cover this route point and time.")
+                raise
             if (
-                (
-                    not auto_download
-                    and (
-                        any(g.kind != "wind" for g in error.gaps)
-                        or getattr(environment.wind_recovery, "model_recovery", None)
-                        is None
-                    )
-                )
+                not auto_download
                 or attempt == 2
-                or (
-                    any(g.kind == "wind" for g in error.gaps)
-                    and environment.wind_recovery is None
-                )
                 or any(g.reason == "masked_or_missing" for g in error.gaps)
             ):
                 raise
             environment.gap_history.extend(g.to_json() for g in error.gaps[:64])
-            wind_gaps = [g for g in error.gaps if g.kind == "wind"]
-            if wind_gaps:
-                report(
-                    "Downloading missing wind forecasts; routing will resume automatically…"
-                )
-                environment.wind_recovery.recover(wind_gaps)
-                if all(g.kind == "wind" for g in error.gaps):
-                    continue
             current_gaps = [g for g in error.gaps if g.kind == "current"]
             logger.info(
                 "Current coverage recovery started: gaps=%d tiles=%d sample=%s",
