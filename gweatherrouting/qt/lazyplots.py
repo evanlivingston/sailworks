@@ -12,6 +12,11 @@ class LazyLogPlots(QWidget):
         self.points, self.offsets, self.playback = (), (), False
         self.position = 0.0
         self.series = {}
+        self.logged_fields = ()
+        self.selected_logged_fields = set()
+        self.time_bounds = None
+        self.viewport_fraction = 0.0
+        self.viewport_changed = None
         self.layout_ = QVBoxLayout(self)
         self.layout_.setContentsMargins(0, 0, 0, 0)
         self.notice = QLabel("Plots load when the Logs workspace is opened", self)
@@ -42,7 +47,14 @@ class LazyLogPlots(QWidget):
             plot = factory(self)
             for key, enabled in self.series.items():
                 plot.set_series(key, enabled)
+            plot.set_logged_fields(self.logged_fields, reset=True, redraw=False)
+            plot.selected_logged_fields.update(self.selected_logged_fields)
             plot.set_points(self.points, self.offsets, self.playback)
+            if self.time_bounds is not None:
+                plot.set_time_bounds(*self.time_bounds, reset=True)
+            plot.set_viewport_callback(self.viewport_changed)
+            if self.viewport_fraction:
+                plot.set_viewport_fraction(self.viewport_fraction)
             plot.set_position(self.position)
             self.plot = plot
             self.notice.hide()
@@ -70,6 +82,36 @@ class LazyLogPlots(QWidget):
         self.series[key] = enabled
         if self.plot is not None:
             self.plot.set_series(key, enabled)
+
+    def set_logged_fields(self, fields, *, reset=False, redraw=True):
+        if self.plot is not None:
+            self.selected_logged_fields = set(self.plot.selected_logged_fields)
+        self.logged_fields = tuple(fields)
+        available = {field.key for field in self.logged_fields}
+        if reset:
+            self.selected_logged_fields.clear()
+        else:
+            self.selected_logged_fields.intersection_update(available)
+        if self.plot is not None:
+            self.plot.set_logged_fields(self.logged_fields, reset=reset, redraw=False)
+            self.plot.selected_logged_fields = set(self.selected_logged_fields)
+            if redraw:
+                self.plot.set_points(self.points, self.offsets, self.playback)
+
+    def set_time_bounds(self, start, end, *, reset=False):
+        self.time_bounds = (float(start), float(end))
+        if self.plot is not None:
+            self.plot.set_time_bounds(start, end, reset=reset)
+
+    def set_viewport_fraction(self, fraction):
+        self.viewport_fraction = min(1.0, max(0.0, float(fraction)))
+        if self.plot is not None:
+            self.plot.set_viewport_fraction(self.viewport_fraction)
+
+    def set_viewport_callback(self, callback):
+        self.viewport_changed = callback
+        if self.plot is not None:
+            self.plot.set_viewport_callback(callback)
 
     def __getattr__(self, name):
         # Delegate to the materialized plot so existing callers keep working
