@@ -217,7 +217,8 @@ class PolarWorkspace(QWidget):
         self.splitter.setSizes([500, 560])
         self.splitter.setCollapsible(0, False)
         self.splitter.setCollapsible(1, False)
-        self.status = QLabel("Select an enabled polar in Polar selector")
+        self.status = QLabel()
+        self.status.hide()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.splitter, 1)
@@ -279,10 +280,12 @@ class PolarWorkspace(QWidget):
         self.performance.polar_changed()
         self.selection_changed.emit()
         if not name:
-            self.status.setText("Please add/enable a polar file using Polar manager")
+            self.status.clear()
+            self.status.hide()
             return
         path = self.controller.core.polar_manager.get_path(name)
-        self.status.setText("Loading polar: " + name)
+        self.status.clear()
+        self.status.hide()
 
         def read():
             polar, error = None, None
@@ -302,6 +305,7 @@ class PolarWorkspace(QWidget):
             return
         if error is not None:
             self.status.setText("Unable to load polar: " + str(error))
+            self.status.show()
             return
         self.chart.set_polar(polar)
         step = int(len(polar.twa) / 10) if len(polar.twa) > 20 else 1
@@ -326,7 +330,8 @@ class PolarWorkspace(QWidget):
                 self.table.setItem(row, column, QTableWidgetItem(str(speed)))
         self.table.resizeColumnToContents(0)
         self.performance.polar_changed()
-        self.status.setText("Polar loaded: " + name)
+        self.status.clear()
+        self.status.hide()
 
     def dispose(self):
         if self.closed:

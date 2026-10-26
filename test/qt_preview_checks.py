@@ -1194,6 +1194,8 @@ class QtPreviewChecks(unittest.TestCase):
         self.drain()
         self.assertEqual(events, [(get_ident(), core.boat_info.latitude)])
         self.assertIn("48.11730", self.window.instruments.text())
+        self.window._boat_changed(SimpleNamespace(is_valid=lambda: False))
+        self.assertEqual(self.window.instruments.text(), "")
         events.clear()
         worker = Thread(
             target=lambda: self.controller.connections.dispatch(
@@ -2727,9 +2729,7 @@ class QtPreviewChecks(unittest.TestCase):
             release.set()
             self.wait_for_routing_stage(lambda: not controller.connection_task.busy)
             self.assertFalse(controller.connections.polling_active)
-            self.assertEqual(
-                self.window._connection_message(), "NMEA connections closed"
-            )
+            self.assertEqual(self.window._connection_message(), "")
             self.window.source.setCurrentIndex(0)
             self.wait_for_routing_stage(lambda: not controller.connection_task.busy)
             self.assertTrue(controller.session.streaming)
@@ -3369,6 +3369,8 @@ class QtPreviewChecks(unittest.TestCase):
         workspace = self.window.polar_workspace
         self.window.show_polar_workspace()
         self.wait_for_polar_view()
+        self.assertEqual(workspace.status.text(), "")
+        self.assertTrue(workspace.status.isHidden())
         history = self.controller.session.active_history
         samples = [
             PerformanceSample(45, 10, 5, "stw"),
@@ -4051,9 +4053,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.controller.offline = False
         task = self.controller.connection_task
         task.message = "Done"
-        self.assertEqual(
-            self.window._connection_message(), "Using saved NMEA connections"
-        )
+        self.assertEqual(self.window._connection_message(), "")
         task.message = "Connection failed"
         self.assertEqual(self.window._connection_message(), "Connection failed")
 
