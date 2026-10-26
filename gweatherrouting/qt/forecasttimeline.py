@@ -225,6 +225,7 @@ class ForecastTimeline(QWidget):
 
     def __init__(self, controller, parent=None):
         super().__init__(parent)
+        self.setObjectName("forecast-timeline-overlay")
         self.controller = controller
         self.clock = controller.time_control
         self.marine = controller.core.marine_manager
@@ -366,7 +367,7 @@ class ForecastTimeline(QWidget):
         button.setIcon(symbol_icon(icon))
         button.setAccessibleName(title)
         button.setToolTip(title)
-        button.setAutoRaise(False)
+        button.setAutoRaise(True)
         button.setFixedSize(32, 32)
         button.setIconSize(QSize(20, 20))
         button.clicked.connect(callback)

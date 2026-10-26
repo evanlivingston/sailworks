@@ -33,7 +33,7 @@ class MapOverlayServices:
         controller.settings.register_on_change(
             "marineCurrentDensity", current_density_changed
         )
-        self.dashboard = DashboardRenderer(controller.connections)
+        self.dashboard = DashboardRenderer()
 
     @classmethod
     def create(cls, controller, time_control, marine_visible=True):
@@ -72,18 +72,6 @@ class RetainedOverlayMixin:
     @property
     def dashboard(self):
         return self._overlay_services.dashboard
-
-    def refresh_instruments(self):
-        status = (
-            self.controller.connections.polling_active,
-            tuple(
-                (s["name"], s["connected"], s["packets"])
-                for s in self.controller.connections.get_status()
-            ),
-        )
-        if status != self._instrument_status:
-            self._instrument_status = status
-            self.update()
 
     def _nav_key(self):
         core = self.controller.core
@@ -130,7 +118,6 @@ class RetainedOverlayMixin:
             ratio,
             self.dashboard_visible,
             (boat.sog, boat.cog, boat.aws, boat.awa, boat.tws, boat.twa, boat.depth),
-            self._instrument_status,
         )
 
     def _navigation_image(self):

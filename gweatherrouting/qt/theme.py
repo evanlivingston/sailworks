@@ -115,8 +115,7 @@ def apply_theme(app: QApplication):
         palette.setColor(QPalette.ColorGroup.Disabled, role, QColor("#777774"))
     app.setPalette(palette)
     install_wheel_guard(app)
-    app.setStyleSheet(
-        """
+    app.setStyleSheet("""
         QToolBar { spacing: 8px; padding: 5px 8px; border: none;
                    border-bottom: 1px solid #454545; }
         QToolBar QToolButton { padding: 5px 9px; border-radius: 6px; }
@@ -125,6 +124,27 @@ def apply_theme(app: QApplication):
         QToolBar QToolButton:checked { background: #344966;
                                        border: 1px solid #3584e4; }
         QToolBar QToolButton:disabled { color: #777774; background: #292929; }
+        QWidget#forecast-timeline-overlay QToolButton {
+            padding: 0px; border: none; border-radius: 6px;
+            background: transparent; }
+        QWidget#forecast-timeline-overlay QToolButton:hover {
+            background: #3c3c3c; }
+        QWidget#forecast-timeline-overlay QToolButton:pressed {
+            background: #454545; }
+        QWidget#forecast-timeline-overlay QToolButton:checked {
+            background: #344966; border: 1px solid #3584e4; }
+        QToolButton#drawer-flag-left, QToolButton#drawer-flag-right {
+            background: #303030; border: 1px solid #454545;
+            color: #c8c8c5; font-size: 16px; font-weight: 700;
+            padding: 0px; }
+        QToolButton#drawer-flag-left {
+            border-left: none; border-top-right-radius: 6px;
+            border-bottom-right-radius: 6px; }
+        QToolButton#drawer-flag-right {
+            border-right: none; border-top-left-radius: 6px;
+            border-bottom-left-radius: 6px; }
+        QToolButton#drawer-flag-left:hover, QToolButton#drawer-flag-right:hover {
+            background: #3c3c3c; color: #ffffff; }
         QDockWidget { border: 1px solid #454545; background: #242424; }
         QDockWidget::title { background: #303030; padding: 7px 10px 7px 30px;
                              text-align: left; }
@@ -161,6 +181,11 @@ def apply_theme(app: QApplication):
                       background: #303030; border: 1px solid #454545; }
         QPushButton:hover { background: #3c3c3c; }
         QPushButton:disabled { color: #777774; background: #292929; }
+        QPushButton#instruments-toggle:checked { background: #344966;
+                                                  border-color: #3584e4; }
+        QPushButton#instruments-toggle:checked:hover { background: #3c547a; }
+        QLabel#connection-status { background: #242424; border: 1px solid #3a3a3a;
+                                   border-radius: 6px; padding: 6px 8px; }
         QPushButton[primary="true"] { background: #3584e4; color: white;
                                        border: 1px solid #3584e4; }
         QPushButton[primary="true"]:hover { background: #4b93eb; }
@@ -179,13 +204,14 @@ def apply_theme(app: QApplication):
         QToolButton[transport="true"]:checked { background: #344966; }
         QToolButton#record:checked { background: #623535; border-color: #e34b4b; }
         QToolButton[transport="true"]:disabled { background: #292929; }
-        QHeaderView::section { background: #303030; padding: 5px; border: none;
-                              border-right: 1px solid #454545; }
-        QTableWidget { border: 1px solid #454545; gridline-color: #3b3b3b; }
+        QHeaderView::section { background: #303030; padding: 2px 4px;
+                              border: none; }
+        QTableWidget { border: none; gridline-color: #303030; }
+        QTableWidget::item { padding: 0px; }
         QSplitter::handle { background: #454545; height: 5px; width: 5px; }
         QMainWindow::separator { background: #454545; width: 4px; height: 4px;
                                  border: none; }
-        QTabWidget::pane { border: 1px solid #454545; background: #242424;
+        QTabWidget::pane { border: none; background: #242424;
                            margin: 0px; padding: 0px; }
         QTabBar { background: #242424; border: none; }
         QScrollArea { background: transparent; border: none; padding: 0px; }
@@ -208,8 +234,7 @@ def apply_theme(app: QApplication):
         QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
             background: none; }
         QStatusBar { border-top: 1px solid #454545; }
-    """
-    )
+    """)
 
 
 def section_label(text):

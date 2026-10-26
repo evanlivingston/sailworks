@@ -104,7 +104,8 @@ class NavigationPanel(QWidget):
         self.point_index = -1
         self.ais_targets = []
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(12, 8, 12, 12)
+        layout.setSpacing(8)
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         layout.addWidget(self.tabs)
@@ -119,7 +120,7 @@ class NavigationPanel(QWidget):
         self.track_split.setChildrenCollapsible(False)
         tracks_page = QWidget()
         box = QVBoxLayout(tracks_page)
-        box.setContentsMargins(0, 4, 0, 0)
+        box.setContentsMargins(0, 0, 0, 0)
         box.addWidget(self.track_split)
         self.track_buttons = self._buttons(
             box,
@@ -143,7 +144,7 @@ class NavigationPanel(QWidget):
         self._compact_columns(self.pois)
         pois_page = QWidget()
         box = QVBoxLayout(pois_page)
-        box.setContentsMargins(0, 4, 0, 0)
+        box.setContentsMargins(0, 0, 0, 0)
         box.addWidget(self.pois)
         self._buttons(box, [("Add POI", self.add_poi_dialog), ("Fit", self.fit_poi)])
         self.tabs.addTab(pois_page, "POIs")
@@ -153,6 +154,7 @@ class NavigationPanel(QWidget):
         self.status = QLabel("Right-click the map to add a POI or track point.")
         self.status.setWordWrap(True)
         self.status.setProperty("secondary", True)
+        self.status.setContentsMargins(0, 4, 0, 4)
         layout.addWidget(self.status)
         self.task = BackgroundTask(self)
         self.task.finished.connect(self._import_finished)

@@ -425,6 +425,9 @@ class WeatherPresenter(QObject):
             self.deadline.start()
         foreground.show()
         foreground.raise_()
+        timeline = getattr(self.canvas, "timeline", None)
+        if timeline is not None:
+            timeline.raise_()
         foreground.update()
 
     def sync(self):
@@ -452,6 +455,9 @@ class WeatherPresenter(QObject):
         if coverage_fetch_buttons:
             for button in coverage_fetch_buttons.values():
                 button.raise_()
+        timeline = getattr(self.canvas, "timeline", None)
+        if timeline is not None:
+            timeline.raise_()
 
     def source_changed(self):
         # Hide old weather synchronously, before the coalesced GUI refresh.
