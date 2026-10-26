@@ -93,9 +93,7 @@ class WorkspacePreferences(QObject):
         window.navigation_panel.route_split.splitterMoved.connect(self.changed)
         window.ais_action.toggled.connect(self.changed)
         window.weather_panel.wind.toggled.connect(self.changed)
-        for action in window.map_toolbar_actions:
-            action.toggled.connect(self.changed)
-        for action in window.log_toggles.values():
+        for action in window.map_display_actions:
             action.toggled.connect(self.changed)
         panel = window.routing_panel
         for combo in (panel.polar, panel.algorithm):
@@ -107,7 +105,6 @@ class WorkspacePreferences(QObject):
             panel.toggle.toggled.connect(self.changed)
         window.routing_panel.options_changed.connect(self.changed)
         window.timeline.step_changed.connect(self.changed)
-        window.navigation_toolbar.visibilityChanged.connect(self.changed)
         window.workspace_toolbar.visibilityChanged.connect(self.changed)
 
     def eventFilter(self, watched, event):  # noqa: N802 - Qt virtual method name
@@ -135,6 +132,9 @@ class WorkspacePreferences(QObject):
             self.changed()
 
     def changed(self, *_):
+        collapsed = getattr(self.window, "_drawer_collapsed", {})
+        if collapsed.get("left") or collapsed.get("right"):
+            return
         if not self.closed and not self.restoring:
             self.timer.start()
 
@@ -336,7 +336,6 @@ class WorkspacePreferences(QObject):
         else:
             self.window.navigation_open = True
         self.window._view_changed()
-        self.window.navigation_action.setChecked(self.window.navigation_open)
         panel = self.window.navigation_panel
         for index in range(panel.tabs.count()):
             if panel.tabs.tabText(index) == navigation.get(
@@ -369,8 +368,8 @@ class WorkspacePreferences(QObject):
             if isinstance(saved, list) and len(saved) == 2:
                 splitter.setSizes([int(number(v, 300, 60, 10000)) for v in saved])
         for key, value in mapping(logs.get("series")).items():
-            if key in self.window.log_toggles and isinstance(value, bool):
-                self.window.log_toggles[key].setChecked(value)
+            if isinstance(value, bool):
+                self.window.plots.set_series(key, value)
         saved_map = mapping(logs.get("map"))
         canvas = self.window.log_map
         self._restore_map_display(canvas, saved_map)

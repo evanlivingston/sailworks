@@ -4,8 +4,9 @@ import os
 import sys
 from bisect import bisect_right
 from datetime import timedelta
+from html import escape
 
-from PySide6.QtCore import Qt, QTimer, QSize, QSignalBlocker
+from PySide6.QtCore import QEvent, Qt, QTimer, QSize, QSignalBlocker
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QKeySequence, QAction
 from PySide6.QtWidgets import (
     QComboBox,
@@ -21,7 +22,6 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QScrollBar,
     QFrame,
-    QSizePolicy,
     QToolBar,
     QToolButton,
     QVBoxLayout,
@@ -43,7 +43,6 @@ from .workspace import WorkspacePreferences
 from .polarworkspace import PolarWorkspace
 from .polarlibrary import PolarLibrary
 from .navigationpanel import NavigationPanel
-from .forecasttimeline import ForecastTimeline
 from .marinepanel import MarinePanel
 from .weatherpanel import WeatherPanel
 from .modelregion import region_from_visible_workspace
@@ -72,6 +71,11 @@ class PreviewWindow(QMainWindow):
         self.controller = controller
         self.session = controller.session
         self.syncing = False
+        self._drawer_collapsed = {"left": False, "right": False}
+        self._drawer_saved = {"left": [], "right": []}
+        self._drawer_syncing = False
+        self._instruments_syncing = False
+        self.drawer_flags = {}
         self.data_key = None
         self._plot_log_generation = None
         self.settings_dialog = None
@@ -86,40 +90,18 @@ class PreviewWindow(QMainWindow):
         self.resize(1200, 800)
         if sys.platform == "darwin":
             self.setUnifiedTitleAndToolBarOnMac(True)
-        self.map = ViewportMap(controller, self)
+        self.map = ViewportMap(controller, self, show_timeline=True)
+        self.timeline = self.map.timeline
         header = QToolBar("Workspaces", self)
         header.setObjectName("workspaces")
         self.workspace_toolbar = header
         header.setMovable(False)
         self.addToolBar(header)
-        spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        header.addWidget(spacer)
         self.workspace_tabs = QTabBar()
         self.workspace_tabs.setExpanding(False)
         for name in ("Charts", "Logs", "Polars"):
             self.workspace_tabs.addTab(name)
         header.addWidget(self.workspace_tabs)
-        spacer = QWidget()
-        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        header.addWidget(spacer)
-        self.addToolBarBreak()
-        toolbar = QToolBar("Navigation", self)
-        self.navigation_toolbar = toolbar
-        toolbar.setObjectName("navigation")
-        toolbar.setMovable(False)
-        toolbar.setAutoFillBackground(True)
-        toolbar.setMinimumHeight(32)
-        self.addToolBar(toolbar)
-        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        toolbar.setIconSize(QSize(18, 18))
-        toolbar_separator = toolbar.addSeparator()
-        self.forecast_toolbar = QToolBar("Forecast timeline", self)
-        self.forecast_toolbar.setObjectName("forecast-timeline")
-        self.forecast_toolbar.setMovable(False)
-        self.timeline = ForecastTimeline(controller, self)
-        self.forecast_toolbar.addWidget(self.timeline)
-        self.addToolBar(self.forecast_toolbar)
         self.plots = self._build_plots(controller)
         self.log_time = TimeControl()
         self.log_map = ViewportMap(controller, self, time_control=self.log_time)
@@ -272,6 +254,12 @@ class PreviewWindow(QMainWindow):
             "Chart Debug", "chart-debug", self.chart_debug_panel
         )
         self.chart_debug_dock.hide()
+        self._create_drawer_flags()
+        for dock in self._drawer_dock_pool():
+            dock.installEventFilter(self)
+            dock.toggleViewAction().triggered.connect(
+                lambda checked, dock=dock: self._menu_dock_toggled(dock, checked)
+            )
         view_menu = self.menuBar().addMenu("View")
         view_menu.addAction(self.nmea_dock.toggleViewAction())
         view_menu.addAction(self.routing_dock.toggleViewAction())
@@ -281,8 +269,15 @@ class PreviewWindow(QMainWindow):
         view_menu.addAction(self.navigation_dock.toggleViewAction())
         view_menu.addAction(self.weather_dock.toggleViewAction())
         view_menu.addAction(self.chart_debug_dock.toggleViewAction())
-        view_menu.addAction(toolbar.toggleViewAction())
         view_menu.addAction(header.toggleViewAction())
+        self.ais_action = view_menu.addAction("AIS targets")
+        self.ais_action.setCheckable(True)
+        self.ais_action.setChecked(True)
+        self.ais_action.toggled.connect(self._toggle_ais)
+        self.dashboard_action = view_menu.addAction("Dashboard")
+        self.dashboard_action.setCheckable(True)
+        self.dashboard_action.toggled.connect(self._toggle_instruments)
+        self.map_display_actions = (self.ais_action, self.dashboard_action)
         window_menu = self.menuBar().addMenu("Window")
         window_menu.addSection("Panels")
         window_menu.addAction(self.navigation_dock.toggleViewAction())
@@ -297,100 +292,13 @@ class PreviewWindow(QMainWindow):
             view_menu.addAction(dock.toggleViewAction())
         window_menu.addSeparator()
         window_menu.addAction("Reset Panels", self.reset_panels)
-        self.chart_toolbar_actions = list(toolbar.actions())
-        ordered_actions = []
-        for name, callback in (
-            ("Import…", self.navigation_panel.import_gpx),
-            ("Export…", self._export_navigation),
-        ):
-            action = toolbar.addAction(name, callback)
-            self.chart_toolbar_actions.append(action)
-            ordered_actions.append(action)
-        self.navigation_action = toolbar.addAction("Tabs")
-        self.navigation_action.setCheckable(True)
-        self.navigation_action.setChecked(True)
-        self.navigation_action.setToolTip("Show / Hide Track / POI tabs")
-        self.navigation_action.triggered.connect(self._toggle_navigation)
-        self.chart_toolbar_actions.append(self.navigation_action)
-        ordered_actions.append(self.navigation_action)
-        self.ais_action = toolbar.addAction("AIS")
-        self.ais_action.setCheckable(True)
-        self.ais_action.setChecked(True)
-        self.ais_action.toggled.connect(self._toggle_ais)
-        self.chart_toolbar_actions.append(self.ais_action)
-        ordered_actions.append(self.ais_action)
-        for action in ordered_actions:
-            toolbar.insertAction(toolbar_separator, action)
-        self.map_toolbar_actions = []
-        self.weather_action = toolbar.addAction("Weather")
-        self.weather_action.setCheckable(True)
-        self.weather_action.setToolTip("Show / Hide Weather panel")
-        self.weather_action.triggered.connect(self._toggle_weather)
-        toolbar.insertAction(toolbar_separator, self.weather_action)
-        self.map_toolbar_actions.append(self.weather_action)
-        self.dashboard_action = toolbar.addAction("Dashboard")
-        for action, label in ((self.dashboard_action, "dashboard"),):
-            action.setCheckable(True)
-            action.setChecked(True)
-            action.toggled.connect(
-                lambda enabled, label=label: self._toggle_map_display(label, enabled)
-            )
-            toolbar.insertAction(toolbar_separator, action)
-            self.map_toolbar_actions.append(action)
-        self.marine_action = toolbar.addAction(
-            symbol_icon("tides-currents-symbolic"), "Tides & currents"
-        )
-        self.marine_action.setToolTip("Show / Hide Currents and Tides panels")
-        self.marine_action.setCheckable(True)
-        self.marine_action.triggered.connect(self._toggle_marine)
-        toolbar.insertAction(toolbar_separator, self.marine_action)
-        self.chart_toolbar_actions.append(self.marine_action)
         file_menu.addAction("Import GPX…", self.navigation_panel.import_gpx)
         file_menu.addAction("Export navigation…", self._export_navigation)
-        toolbar.addSeparator()
-        self.nmea_action = self.nmea_dock.toggleViewAction()
-        toolbar.addAction(self.nmea_action)
-        self.routing_action = toolbar.addAction(
-            "Routing", lambda: self._show_panel(self.routing_dock)
-        )
-        self.chart_toolbar_actions.append(self.routing_action)
         fit_menu = self.menuBar().addMenu("Navigate")
         fit_menu.addAction("Fit NMEA track", self._fit_track)
         fit_menu.addAction("Fit route", self._fit_route)
-        self.chart_toolbar_actions.append(toolbar.addAction("Fit view", self._fit_view))
-        self.polar_toolbar_actions = [
-            toolbar.addAction("Polar manager", self.show_polars)
-        ]
-        for action in (
-            self.polar_selector_dock.toggleViewAction(),
-            self.performance_dock.toggleViewAction(),
-        ):
-            button = QToolButton()
-            button.setDefaultAction(action)
-            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-            button.setAutoRaise(True)
-            self.polar_toolbar_actions.append(toolbar.addWidget(button))
-        self.log_toolbar_actions = []
-        self.log_toggles = {}
-        for key, label, enabled in (
-            ("speed", "Speed", True),
-            ("aws", "Wind (A)", False),
-            ("tws", "Wind (T)", True),
-            ("depth", "Depth", False),
-            ("hdg", "HDG", True),
-            ("twa", "RW", False),
-        ):
-            action = toolbar.addAction(label)
-            action.setCheckable(True)
-            action.setChecked(enabled)
-            action.toggled.connect(
-                lambda checked, key=key: self._toggle_log(key, checked)
-            )
-            self.log_toggles[key] = action
-            self.log_toolbar_actions.append(action)
         self.views.currentChanged.connect(self._view_changed)
-        self.navigation_toolbar.visibilityChanged.connect(self._sync_forecast_toolbar)
-        self._set_chart_toolbar_icons(toolbar)
+        self.workspace_toolbar.visibilityChanged.connect(self._sync_timeline)
         self._view_changed()
         self.routing_panel.plan_changed.connect(self.map.set_route_plan)
         controller.routing.completed.connect(self._routing_completed)
@@ -544,71 +452,202 @@ class PreviewWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
         return dock
 
-    def _order_toolbars(self):
-        hidden = self.workspace_toolbar.isHidden()
-        self.removeToolBarBreak(self.navigation_toolbar)
-        self.removeToolBar(self.workspace_toolbar)
-        self.removeToolBar(self.forecast_toolbar)
-        self.insertToolBar(self.navigation_toolbar, self.workspace_toolbar)
-        self.insertToolBarBreak(self.navigation_toolbar)
-        self.addToolBar(self.forecast_toolbar)
-        self.workspace_toolbar.setVisible(not hidden)
-        self._sync_forecast_toolbar()
-
-    def _sync_forecast_toolbar(self, *_):
-        self.forecast_toolbar.setVisible(
-            self.views.currentWidget() is self.map
-            and not self.navigation_toolbar.isHidden()
+    def _drawer_dock_pool(self):
+        return (
+            self.navigation_dock,
+            self.nmea_dock,
+            self.routing_dock,
+            self.polar_selector_dock,
+            self.performance_dock,
+            self.polar_manager_dock,
+            self.weather_dock,
+            self.chart_debug_dock,
+            *self.marine_docks.values(),
         )
+
+    def _drawer_side(self, dock):
+        if dock.isFloating():
+            return None
+        area = self.dockWidgetArea(dock)
+        if area == Qt.DockWidgetArea.LeftDockWidgetArea:
+            return "left"
+        if area == Qt.DockWidgetArea.RightDockWidgetArea:
+            return "right"
+        return None
+
+    def _drawer_docks(self, side):
+        area = (
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            if side == "left"
+            else Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        return [
+            dock
+            for dock in self._drawer_dock_pool()
+            if not dock.isFloating() and self.dockWidgetArea(dock) == area
+        ]
+
+    def _create_drawer_flags(self):
+        for side in ("left", "right"):
+            flag = QToolButton(self)
+            flag.setObjectName("drawer-flag-" + side)
+            flag.setAutoRaise(True)
+            flag.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            flag.setCursor(Qt.CursorShape.PointingHandCursor)
+            flag.setFixedSize(18, 64)
+            flag.clicked.connect(
+                lambda checked=False, side=side: self._toggle_drawer(side)
+            )
+            self.drawer_flags[side] = flag
+        self._position_drawer_flags()
+        QTimer.singleShot(0, self._position_drawer_flags)
+
+    def _visible_drawer_docks(self, side):
+        return [dock for dock in self._drawer_docks(side) if not dock.isHidden()]
+
+    def _drawer_closed(self, side):
+        return self._drawer_collapsed[side] or not self._visible_drawer_docks(side)
+
+    def _update_drawer_flags(self):
+        for side, flag in self.drawer_flags.items():
+            closed = self._drawer_closed(side)
+            if side == "left":
+                flag.setText("›" if closed else "‹")
+                flag.setToolTip(
+                    "Expand left panels" if closed else "Collapse left panels"
+                )
+            else:
+                flag.setText("‹" if closed else "›")
+                flag.setToolTip(
+                    "Expand right panels" if closed else "Collapse right panels"
+                )
+
+    def _position_drawer_flags(self):
+        if not self.drawer_flags:
+            return
+        self._update_drawer_flags()
+        central = self.views.geometry()
+        top = central.top() + max(0, (central.height() - 64) // 2)
+        for side, flag in self.drawer_flags.items():
+            if side == "left":
+                x = central.left()
+            else:
+                x = central.right() + 1 - 18
+            x = max(0, min(self.width() - 18, x))
+            flag.setGeometry(x, top, 18, 64)
+            flag.show()
+            flag.raise_()
+
+    def _toggle_drawer(self, side):
+        if self._drawer_closed(side):
+            self._expand_drawer(side)
+        else:
+            self._collapse_drawer(side)
+
+    def _collapse_drawer(self, side):
+        if self._drawer_collapsed[side]:
+            return
+        docks = self._drawer_docks(side)
+        visible = self._visible_drawer_docks(side)
+        if not visible:
+            return
+        self._drawer_saved[side] = visible
+        self._drawer_collapsed[side] = True
+        self._drawer_syncing = True
+        try:
+            for dock in docks:
+                dock.hide()
+        finally:
+            self._drawer_syncing = False
+        self._position_drawer_flags()
+        QTimer.singleShot(0, self._position_drawer_flags)
+
+    def _expand_drawer(self, side):
+        if not self._drawer_closed(side):
+            return
+        saved = self._drawer_saved[side]
+        if not saved:
+            saved = [self.navigation_dock] if side == "left" else [self.nmea_dock]
+        self._drawer_collapsed[side] = False
+        self._drawer_saved[side] = []
+        self._drawer_syncing = True
+        try:
+            if side == "left":
+                self.navigation_open = True
+                self.views.setCurrentWidget(self.map)
+            for dock in saved:
+                dock.show()
+            saved[-1].raise_()
+        finally:
+            self._drawer_syncing = False
+        self._position_drawer_flags()
+        QTimer.singleShot(0, self._position_drawer_flags)
+
+    def _menu_dock_toggled(self, dock, checked):
+        if checked:
+            side = self._drawer_side(dock)
+            if side is not None:
+                self._expand_drawer(side)
+            dock.show()
+            dock.raise_()
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt virtual method name
+        super().resizeEvent(event)
+        self._position_drawer_flags()
+
+    def eventFilter(self, watched, event):  # noqa: N802 - Qt virtual method name
+        if isinstance(watched, QDockWidget) and event.type() in (
+            QEvent.Type.Move,
+            QEvent.Type.Resize,
+            QEvent.Type.Show,
+            QEvent.Type.Hide,
+        ):
+            QTimer.singleShot(0, self._position_drawer_flags)
+        return super().eventFilter(watched, event)
+
+    def _sync_timeline(self, *_):
+        if self.map.timeline is not None:
+            self.map.timeline.setVisible(
+                self.views.currentWidget() is self.map
+                and not self.workspace_toolbar.isHidden()
+            )
+
+    def _order_toolbars(self):
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.workspace_toolbar)
+        self._sync_timeline()
 
     def _view_changed(self, *_):
         current = self.views.currentWidget()
-        self.navigation_toolbar.setToolButtonStyle(
-            Qt.ToolButtonStyle.ToolButtonIconOnly
-            if current is self.map
-            else Qt.ToolButtonStyle.ToolButtonTextBesideIcon
-        )
-        self._sync_forecast_toolbar()
+        self._sync_timeline()
         self.weather_syncing = True
         self.weather_dock.setVisible(
-            current in (self.map, self.logs_view) and self.weather_open
+            current in (self.map, self.logs_view)
+            and self.weather_open
+            and not self._drawer_collapsed["right"]
         )
         self.weather_syncing = False
-        self.weather_action.setChecked(self.weather_open)
         self.navigation_syncing = True
-        self.navigation_dock.setVisible(current is self.map and self.navigation_open)
+        self.navigation_dock.setVisible(
+            current is self.map
+            and self.navigation_open
+            and not self._drawer_collapsed["left"]
+        )
         self.navigation_syncing = False
         self.marine_syncing = True
         for kind, dock in self.marine_docks.items():
-            dock.setVisible(current is self.map and self.marine_open[kind])
+            dock.setVisible(
+                current is self.map
+                and self.marine_open[kind]
+                and not self._drawer_collapsed["right"]
+            )
         self.marine_syncing = False
-        self.marine_action.setChecked(any(self.marine_open.values()))
-        self.navigation_action.setChecked(self.navigation_open)
         self._sync_map_actions()
         if hasattr(self, "cursor_status"):
             self.cursor_status.clear()
-        before = (
-            self.polar_toolbar_actions[-1]
-            if current is self.polar_workspace
-            else (
-                self.log_toolbar_actions[0]
-                if current is self.logs_view
-                else self.routing_action
-            )
-        )
-        self.navigation_toolbar.insertAction(before, self.nmea_action)
         for bar in self.findChildren(QTabBar):
             if bar.parent() is self:
                 bar.setElideMode(Qt.TextElideMode.ElideNone)
                 bar.setUsesScrollButtons(True)
-        for action in self.chart_toolbar_actions:
-            action.setVisible(current is self.map)
-        for action in self.log_toolbar_actions:
-            action.setVisible(current is self.logs_view)
-        for action in self.polar_toolbar_actions:
-            action.setVisible(current is self.polar_workspace)
-        for action in self.map_toolbar_actions:
-            action.setVisible(current in (self.map, self.logs_view))
         if current is self.polar_workspace and not self.polars_visited:
             self.polars_visited = True
             self.polar_selector_dock.show()
@@ -630,20 +669,23 @@ class PreviewWindow(QMainWindow):
 
     def _sync_map_actions(self):
         canvas = self._active_map()
-        for action, enabled in ((self.dashboard_action, canvas.dashboard_visible),):
-            action.blockSignals(True)
-            action.setChecked(enabled)
-            action.blockSignals(False)
+        for widget, enabled in (
+            (self.dashboard_action, canvas.dashboard_visible),
+            (self.instruments_toggle, canvas.dashboard_visible),
+            (self.ais_action, canvas.ais_visible),
+        ):
+            with QSignalBlocker(widget):
+                widget.setChecked(enabled)
 
         self.weather_panel.refresh()
 
     def _weather_visibility(self, *_):
-        if not self.weather_syncing and self.views.currentWidget() in (
-            self.map,
-            self.logs_view,
+        if (
+            not self.weather_syncing
+            and not self._drawer_syncing
+            and self.views.currentWidget() in (self.map, self.logs_view)
         ):
             self.weather_open = not self.weather_dock.isHidden()
-            self.weather_action.setChecked(self.weather_open)
 
     def _toggle_weather(self, enabled):
         self.weather_open = enabled
@@ -651,6 +693,17 @@ class PreviewWindow(QMainWindow):
             self._show_panel(self.weather_dock)
         else:
             self.weather_dock.hide()
+
+    def _toggle_instruments(self, enabled):
+        if self._instruments_syncing:
+            return
+        self._instruments_syncing = True
+        try:
+            self.dashboard_action.setChecked(enabled)
+            self.instruments_toggle.setChecked(enabled)
+            self._active_map().set_dashboard_visible(enabled)
+        finally:
+            self._instruments_syncing = False
 
     def _toggle_map_display(self, layer, enabled):
         canvas = self._active_map()
@@ -702,17 +755,19 @@ class PreviewWindow(QMainWindow):
         self._sync_route_isochrones()
 
     def _navigation_visibility(self, _):
-        if not self.navigation_syncing and self.views.currentWidget() is self.map:
+        if (
+            not self.navigation_syncing
+            and not self._drawer_syncing
+            and self.views.currentWidget() is self.map
+        ):
             self.navigation_open = not self.navigation_dock.isHidden()
-            if hasattr(self, "navigation_action"):
-                self.navigation_action.setChecked(self.navigation_open)
 
     def _toggle_navigation(self, checked):
         self.navigation_open = checked
         if checked:
+            self._expand_drawer("left")
             self.views.setCurrentWidget(self.map)
         self.navigation_dock.setVisible(checked)
-        self.navigation_action.setChecked(checked)
 
     def _navigation_changed(self):
         self.routing_panel.refresh_destinations()
@@ -753,12 +808,13 @@ class PreviewWindow(QMainWindow):
         menu.addAction("Export GPX…", self.navigation_panel.export_all)
         menu.addAction("Export POIs as NMEA PFEC…", self.navigation_panel.export_pfec)
         menu.exec(
-            self.navigation_toolbar.mapToGlobal(
-                self.navigation_toolbar.rect().bottomLeft()
-            )
+            self.navigation_dock.mapToGlobal(self.navigation_dock.rect().bottomLeft())
         )
 
     def _show_panel(self, dock):
+        side = self._drawer_side(dock)
+        if side is not None:
+            self._expand_drawer(side)
         if dock is self.weather_dock:
             self.weather_open = True
             if self.views.currentWidget() not in (self.map, self.logs_view):
@@ -788,11 +844,14 @@ class PreviewWindow(QMainWindow):
             self.views.setCurrentWidget(self.map)
 
     def _marine_visibility(self, *_):
-        if not self.marine_syncing and self.views.currentWidget() is self.map:
+        if (
+            not self.marine_syncing
+            and not self._drawer_syncing
+            and self.views.currentWidget() is self.map
+        ):
             self.marine_open = {
                 kind: not dock.isHidden() for kind, dock in self.marine_docks.items()
             }
-            self.marine_action.setChecked(any(self.marine_open.values()))
 
     def _toggle_marine(self, enabled):
         self.marine_open = {kind: enabled for kind in self.marine_docks}
@@ -863,6 +922,21 @@ class PreviewWindow(QMainWindow):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(12, 8, 12, 12)
         layout.setSpacing(8)
+        layout.addWidget(section_label("Instruments"))
+        self.instruments_toggle = QPushButton("Instruments")
+        self.instruments_toggle.setObjectName("instruments-toggle")
+        self.instruments_toggle.setCheckable(True)
+        self.instruments_toggle.setAccessibleName("Instrument gauges")
+        self.instruments_toggle.setToolTip("Show or hide instrument gauges on the map")
+        self.instruments_toggle.toggled.connect(self._toggle_instruments)
+        layout.addWidget(self.instruments_toggle)
+        self.connection_status = QLabel()
+        self.connection_status.setObjectName("connection-status")
+        self.connection_status.setTextFormat(Qt.TextFormat.RichText)
+        self.connection_status.setWordWrap(True)
+        layout.addWidget(self.connection_status)
+        self._connection_status_text = None
+        self._refresh_connection_status()
         layout.addWidget(section_label("Data source"))
         self.source = QComboBox()
         self.source.addItems(["Live data source", "Loaded log"])
@@ -969,9 +1043,36 @@ class PreviewWindow(QMainWindow):
         task = self.controller.connection_task
         return task.message if self.session.streaming and task.message != "Done" else ""
 
+    def _connection_status_html(self):
+        connections = self.controller.connections
+        statuses = connections.get_status()
+        if not connections.polling_active and not statuses:
+            return '<span style="color:#8a8a8a;">●</span> Data off'
+        if not statuses:
+            return '<span style="color:#8a8a8a;">●</span> No connections'
+
+        connected = sum(1 for status in statuses if status["connected"])
+        total = len(statuses)
+        packets = sum(status["packets"] for status in statuses)
+        color = "#33e566" if connected == total else "#ff5544"
+        rows = [
+            f'<span style="color:{color};">●</span> {connected}/{total} connected'
+            f'&nbsp;&nbsp;<span style="color:#66b3e6;">{packets:,} pkt</span>'
+        ]
+        for status in statuses:
+            if not status["connected"]:
+                name = escape(str(status.get("name", "Unknown source")))
+                rows.append(f'<span style="color:#ff5544;">●</span> {name}')
+        return "<br>".join(rows)
+
+    def _refresh_connection_status(self):
+        text = self._connection_status_html()
+        if text != self._connection_status_text:
+            self._connection_status_text = text
+            self.connection_status.setText(text)
+
     def _refresh_data(self):
-        self.map.refresh_instruments()
-        self.log_map.refresh_instruments()
+        self._refresh_connection_status()
         session = self.session
         log = session.log if session.source == "log" else None
         tracks = log.source_tracks if log else {}
@@ -1154,8 +1255,11 @@ class PreviewWindow(QMainWindow):
                 self.library_dialog.hide()
 
     def closeEvent(self, event):  # noqa: N802 - Qt virtual method name
+        for side in ("left", "right"):
+            self._expand_drawer(side)
         self.workspace.close()
-        self.timeline.dispose()
+        if self.map.timeline is not None:
+            self.map.timeline.dispose()
         self.dispose_marine()
         self.navigation_panel.dispose()
         self.polar_workspace.dispose()

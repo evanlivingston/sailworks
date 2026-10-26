@@ -4,6 +4,8 @@
 class MapLifecycleMixin:
     def showEvent(self, event):  # noqa: N802 - Qt virtual method name
         super().showEvent(event)
+        if getattr(self, "timeline", None) is not None:
+            self._layout_timeline()
         if self._weather_presenter is not None:
             self._weather_presenter.request()
         if self._gpu is not None and self._gpu.active:
@@ -19,6 +21,8 @@ class MapLifecycleMixin:
             self.coverage_notice.adjustSize()
             self._layout_coverage()
         super().resizeEvent(event)
+        if getattr(self, "timeline", None) is not None:
+            self._layout_timeline()
         if self._weather_presenter is not None:
             self._weather_presenter.request()
         if self._gpu is not None and self._gpu.active:
@@ -37,6 +41,8 @@ class MapLifecycleMixin:
             self._gpu.close()
         if hasattr(self.controller, "forget_renderer"):
             self.controller.forget_renderer(self)
+        if getattr(self, "timeline", None) is not None:
+            self.timeline.dispose()
         self._wind_cursor.close()
         self.controller.data.changed.disconnect(self._cancel_cursor)
         self.weather_coverage.close()

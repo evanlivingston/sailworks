@@ -73,7 +73,7 @@ class ViewportMap(
     navigation_request = Signal(str, object)
     cursor_readout = Signal(str)
 
-    def __init__(self, controller, parent=None, time_control=None):
+    def __init__(self, controller, parent=None, time_control=None, show_timeline=False):
         super().__init__(parent)
         self._initialize_view_state()
         self._weather_services = MapWeatherServices()
@@ -112,7 +112,6 @@ class ViewportMap(
         self.disposed = False
         self._ticks = {}
         self._next_tick = 0
-        self._instrument_status = None
         self._cursor_context = None
         self._cursor_parts = {
             "wind": "",
@@ -143,6 +142,22 @@ class ViewportMap(
         self._weather_services.initialize_weather_presenter(self)
         controller.display_forecast.changed.connect(self._display_forecast_changed)
         controller.set_renderer_status(self, "pending")
+        self.timeline = None
+        if show_timeline:
+            from .forecasttimeline import ForecastTimeline
+
+            self.timeline = ForecastTimeline(controller, self)
+            self.timeline.setAutoFillBackground(True)
+            self._layout_timeline()
+
+    def _layout_timeline(self):
+        if self.timeline is None:
+            return
+        height = self.timeline.sizeHint().height()
+        self.timeline.setGeometry(
+            0, max(0, self.height() - height), self.width(), height
+        )
+        self.timeline.raise_()
 
     def is_moving(self):
         presenter = self._weather_presenter

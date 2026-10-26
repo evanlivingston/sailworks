@@ -13,8 +13,7 @@ from gweatherrouting.rendering.dashboard import DashboardRenderer
 
 class TestDashboard(unittest.TestCase):
     def setUp(self):
-        self.connections = SimpleNamespace(get_status=lambda: [], polling_active=False)
-        self.renderer = DashboardRenderer(self.connections)
+        self.renderer = DashboardRenderer()
         self.boat = BoatInfo()
         self.renderer.boat_info = self.boat
 
@@ -83,29 +82,3 @@ class TestDashboard(unittest.TestCase):
                     self.assertLessEqual(y + gauge.HEIGHT, height)
                     positions.append((y, x))
                 self.assertEqual(positions, sorted(positions))
-
-    def test_connection_summary_and_disconnected_details_match_instrument_state(self):
-        for polling, statuses, expected in (
-            (False, [], ["Data off"]),
-            (True, [], ["No connections"]),
-            (
-                True,
-                [dict(name="GPS", connected=True, packets=120)],
-                ["1/1 connected", "120 pkt"],
-            ),
-            (
-                True,
-                [
-                    dict(name="GPS", connected=True, packets=120),
-                    dict(name="Wind", connected=False, packets=30),
-                ],
-                ["1/2 connected", "150 pkt", "Wind"],
-            ),
-        ):
-            self.connections.polling_active = polling
-            self.connections.get_status = lambda: statuses
-            surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, 900, 400)
-            cr = Mock(wraps=cairo.Context(surface))
-            self.renderer._draw_connection_status(cr, 40, 300, 806)
-            texts = [call.args[0] for call in cr.show_text.call_args_list]
-            self.assertEqual(texts, expected)
