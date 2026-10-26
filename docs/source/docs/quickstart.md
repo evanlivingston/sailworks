@@ -176,31 +176,24 @@ The selected component, tab groups, vertical splits, sidebar width, and floating
 windows stay in place. Closing a component hides it everywhere; any NMEA toolbar
 button reopens that same component.
 
-Source selection, live streaming, loaded log, play/pause, playback position,
-and speed also persist when switching tabs, hiding panels, or floating them.
-The session stays in memory until the app closes.
-Configure instrument inputs in **Settings > Connections**, then choose
-**Live connections** and enable **Read live NMEA**. This opens the configured
-instrument connections and reads incoming messages. Turning it off stops device
-reads, closes those connections and stops any active recording without deleting
-your saved connection settings. The on/off preference is remembered across app
-restarts; offline mode always keeps connections closed.
+Configure instrument inputs in **Settings → Connections**. Choose **Live data
+source** in the NMEA panel to read incoming messages; choosing **Loaded log**
+stops live reads and selects the loaded recording. The recording button is only
+shown for live data. Saved connection settings are kept when live reads stop.
 
-Use **Load NMEA log…** to open an interpreted `.nmea`, `.log`, or `.txt` file.
-Select the primary interpreted file for NMEA 2000 recordings, rather than its
-raw `.n2k.log` companion. Loading runs in the background and shows the full
-track in Logs and measured samples in Polars. **Play** starts from the beginning
-and feeds the replay to all three tabs; **Pause** retains the position, and
-**Restart** clears replay progress. Choose a playback speed from 0.5× to 10×.
-Playback uses NMEA UTC timestamps, including midnight rollover. Logs without
-timestamps use ten sentences per second, stated in the panel. Files are limited
-to one million valid sentences. Incoming live data is excluded while a log is
-selected. Return to **Live connections** to resume instrument input.
+Import interpreted `.nmea`, `.log`, `.txt`, and Actisense `.ebl` files through
+the **Log library**. For NMEA 2000 recordings, select the interpreted `.log`
+companion when available; W2K-1 EBL stacks can be dropped together and are
+stitched in numeric segment order without altering the originals. Import runs
+in the background. Use **File Info** in the library to inspect captured device
+identities and decode diagnostics. Drag or click in an instrument chart to seek
+to that elapsed time; the chart cursor and GPS marker follow the selected time.
+Fast-packet NMEA 2000 messages and unsupported PGNs remain in the preserved EBL
+but are not fully decoded for replay.
 
-Recording and saving remain in **Logs**. Changing away from live input or
-pausing its stream stops an active recording. Loading and playing a log does
-not overwrite the working recording. Cropping a loaded log filters its plotted
-track and subsequent saved copy; the original file and raw archive are preserved.
+Recording remains available while viewing live data. Switching to a loaded log
+stops an active recording. Imported originals are retained in the managed log
+library; external source files are never modified.
 
 ### Compare actual performance with your polars
 
@@ -226,7 +219,7 @@ speed is never replaced with GPS speed. Apparent wind is not converted into
 true wind for this overlay. Supported NMEA 2000 inputs use the same instrument
 conversions described above.
 
-**Load NMEA log…** opens a saved interpreted NMEA log, including the primary
+The **Log library** opens a saved interpreted NMEA log, including the primary
 file saved from Logs. Select that file rather than its raw `.n2k.log` companion.
 These interpreted logs have no receipt timestamps, so import pairs each wind
 report with speed within the preceding 50 lines instead of applying a time
@@ -236,7 +229,7 @@ with the replay.
 
 Live collection retains the latest 20,000 samples in memory, with at most one
 sample per second per speed basis. Import retains the latest 20,000 samples
-without time resampling. **Read live NMEA** in the shared NMEA panel connects or disconnects instruments;
+without time resampling. Choosing **Live data source** in the NMEA panel connects or disconnects instruments;
 **Clear samples** in Performance clears the selected live/log history. The comparison
 uses the same samples when you select a different polar, so clear the history
 when changing boats or sail configurations. Save recordings through **Logs**

@@ -6,6 +6,7 @@ gestures to the Qt Quick viewport. It does not depend on the retired map widget.
 
 from bisect import bisect_right
 from dataclasses import dataclass
+import math
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QWidget
@@ -383,6 +384,8 @@ class ViewportMap(
             selected_point = [point[0], point[1]]
         track_points = []
         track_position = []
+        track_heading = None
+        track_awa = None
         if state.points:
             count = len(state.points)
             stride = -(-count // self._MAX_TRACK_POLYLINE)
@@ -401,17 +404,56 @@ class ViewportMap(
                 )
             point = state.points[marker_index]
             track_position = [point.lat, point.lon]
+            track_heading = _track_point_heading(state.points, marker_index)
+            track_awa = getattr(point, "awa", None)
         return {
             "route_plan": [list(point) for point in state.route_plan],
             "route_preview": [list(point) for point in state.route_preview],
             "selected_point": selected_point,
             "track_points": track_points,
             "track_position": track_position,
+            "track_heading": track_heading,
+            "track_awa": track_awa,
             "caption": _viewport_caption(
                 self.move_callback, self.controller.chart_errors
             ),
             "dashboard_visible": self.dashboard_visible,
         }
+
+
+def _track_point_heading(points, index):
+    """Use logged heading, or infer course from neighboring fixes if absent."""
+    heading = getattr(points[index], "hdg", None)
+    if heading is not None and math.isfinite(float(heading)):
+        return float(heading) % 360.0
+
+    current = points[index]
+
+    def distinct_neighbor(indices):
+        for neighbor_index in indices:
+            neighbor = points[neighbor_index]
+            if (neighbor.lat, neighbor.lon) != (current.lat, current.lon):
+                return neighbor
+        return None
+
+    previous = distinct_neighbor(range(index - 1, -1, -1))
+    following = distinct_neighbor(range(index + 1, len(points)))
+    start = previous or current
+    end = following or current
+    if start is end:
+        return None
+
+    lat1, lat2 = math.radians(float(start.lat)), math.radians(float(end.lat))
+    delta_lon = math.radians(
+        (float(end.lon) - float(start.lon) + 180.0) % 360.0 - 180.0
+    )
+    east = math.sin(delta_lon) * math.cos(lat2)
+    north = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(
+        lat2
+    ) * math.cos(delta_lon)
+    if east == north == 0:
+        return None
+    return math.degrees(math.atan2(east, north)) % 360.0
 
 
 def _viewport_caption(move_callback, chart_errors):

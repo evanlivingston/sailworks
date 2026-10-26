@@ -2,18 +2,23 @@
 
 import logging
 import time
+from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 from threading import Thread
 from typing import Any
 from weakref import WeakKeyDictionary
 
 import nmeatoolkit as nt
-from PySide6.QtCore import QObject, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
+from PySide6.QtWidgets import QMessageBox, QWidget
 
 from gweatherrouting.core import Core, TimeControl
 from gweatherrouting.core.settings import SettingsManager
 from gweatherrouting.rendering.chartcollection import ChartCollection
-from gweatherrouting.core.nmeasession import read_nmea_log
+from gweatherrouting.core.nmeasession import read_nmea_log, ripple_delete_log
+from gweatherrouting.core.n2kdevices import captured_device_from_dict
+from gweatherrouting.core.loglibrary import LogLibrary
 from .scheduling import UiScheduler
 from .routingcontroller import RoutingController
 from .backgroundtask import BackgroundTask
@@ -27,8 +32,12 @@ class SessionController(QObject):
     boat_changed = Signal(object)
     model_changed = Signal()
     load_finished = Signal(int, object, object)
+    log_edit_finished = Signal(object, object, object)
     packets = Signal(object, int)
     renderer_changed = Signal()
+    log_library_changed = Signal()
+    load_progress = Signal(int, object)
+    log_progress_changed = Signal()
 
     def __init__(
         self,
@@ -41,6 +50,7 @@ class SessionController(QObject):
         native_weather_fields=None,
         analysis_root=None,
         analysis_state=None,
+        log_library_directory=None,
     ):
         super().__init__(parent)
         if map_renderer not in (None, "cpu", "gpu"):
@@ -102,6 +112,13 @@ class SessionController(QObject):
         self.core.connect("boat_data", self.boat_changed.emit)
         self.connections = self.core.connectionManager
         self.session = self.core.nmea_session
+        self.log_library = LogLibrary(log_library_directory)
+        self._replay_load_tokens = set()
+        self.log_edit_busy = False
+        self.log_edit_error = None
+        self._log_edit_thread = None
+        self._load_error_dialog = None
+        self.log_progress = None
         self.routing = RoutingController(self)
         self.connection_task = BackgroundTask(self)
         self.data = DataController(self)
@@ -122,12 +139,21 @@ class SessionController(QObject):
         self.session.connect("loaded", self._loaded)
         self.session.connect("data", self._queue_packets)
         self.load_finished.connect(self._finish_load)
+        self.log_edit_finished.connect(
+            self._finish_log_range_delete, Qt.ConnectionType.QueuedConnection
+        )
+        self.load_progress.connect(
+            self._receive_load_progress, Qt.ConnectionType.QueuedConnection
+        )
         self.packets.connect(self._consume)
         self.timer = QTimer(self)
         self.timer.setInterval(100)
         self.timer.timeout.connect(self._tick)
         self.last_tick = time.monotonic()
         self.timer.start()
+        self.seek_timer = QTimer(self)
+        self.seek_timer.setInterval(1)
+        self.seek_timer.timeout.connect(self._seek_tick)
         self.chart_startup = None
         if load_charts and early_weather:
             from .chartstartup import ChartStartup
@@ -205,12 +231,23 @@ class SessionController(QObject):
             )
 
     def _changed(self, _):
+        seek_timer = getattr(self, "seek_timer", None)
+        if seek_timer is not None and not self.session.seeking:
+            seek_timer.stop()
+        progress = self.log_progress
+        if progress is not None and (
+            not self.session.loading or progress["token"] != self.session._generation
+        ):
+            self._clear_load_progress(progress["token"])
         self.changed.emit()
 
     def _reset(self, _):
         self.generation += 1
         self.translator = nt.TrackPointTranslator()
         self.wind_pipe = nt.TrueWindPipe()
+        if self.session.seeking:
+            # The loaded log's immutable chart/plot track has not changed.
+            return
         self.points = (
             list(self.session.log.points)
             if self.session.source == "log" and self.session.log
@@ -259,28 +296,358 @@ class SessionController(QObject):
         self.session.advance(now - self.last_tick)
         self.last_tick = now
 
+    def preview_log_position(self, position):
+        if self.closed:
+            return False
+        self.seek_timer.stop()
+        return self.session.preview(position)
+
+    def seek_log_position(self, position):
+        if self.closed:
+            return False
+        if not self.session.begin_seek(position):
+            return False
+        self.last_tick = time.monotonic()
+        self.seek_timer.start()
+        return True
+
+    def delete_log_range(self, start, end):
+        if self.closed or self.log_edit_busy:
+            logging.getLogger(__name__).info(
+                "Controller ignored log delete: closed=%s busy=%s",
+                self.closed,
+                self.log_edit_busy,
+            )
+            return False
+        self.seek_timer.stop()
+        request = self.session.prepare_log_range_delete(start, end)
+        if request is None:
+            return False
+        self.log_edit_busy = True
+        self.log_edit_error = None
+        self.changed.emit()
+        logging.getLogger(__name__).info(
+            "Controller building log delete for range (%r, %r) in background",
+            request[1],
+            request[2],
+        )
+
+        def build():
+            try:
+                edited = ripple_delete_log(request[0], request[1], request[2])
+                error = None
+            except Exception as exc:
+                edited, error = None, exc
+            self.log_edit_finished.emit(request, edited, error)
+
+        self._log_edit_thread = Thread(target=build, daemon=True)
+        self._log_edit_thread.start()
+        return True
+
+    @Slot(object, object, object)
+    def _finish_log_range_delete(self, request, edited, error):
+        if self.closed:
+            return
+        self.log_edit_busy = False
+        self._log_edit_thread = None
+        if error is not None:
+            self.log_edit_error = str(error)
+            logging.getLogger(__name__).error(
+                "Background log delete failed: %s",
+                error,
+                exc_info=(type(error), error, error.__traceback__),
+            )
+            self.changed.emit()
+            return
+        applied = self.session.apply_log_range_delete(request, edited)
+        logging.getLogger(__name__).info(
+            "Controller background log delete committed: %s", applied
+        )
+        self.changed.emit()
+
+    def undo_log_edit(self):
+        if self.closed or self.log_edit_busy:
+            return False
+        self.seek_timer.stop()
+        return self.session.undo_log_edit()
+
+    def save_log_edits(self):
+        if self.closed or self.log_edit_busy or not self.session.log_edits_dirty:
+            return False
+        self.log_library.save_log(self.session.log)
+        self.session.mark_log_saved()
+        self.log_library_changed.emit()
+        return True
+
+    def _seek_tick(self):
+        if self.closed or self.session.seek_batch(limit=1000):
+            self.seek_timer.stop()
+            self.last_tick = time.monotonic()
+
     def load_path(self, path):
+        return self.load_paths([path])
+
+    @Slot(int, object)
+    def _receive_load_progress(self, token, progress):
+        """Only this GUI-thread slot publishes worker progress to views."""
+        if self.closed or token != self.session._generation or not self.session.loading:
+            self._clear_load_progress(token)
+            return
+        self.log_progress = {**progress, "token": token}
+        self.log_progress_changed.emit()
+
+    def _clear_load_progress(self, token):
+        if self.log_progress is not None and self.log_progress["token"] == token:
+            self.log_progress = None
+            self.log_progress_changed.emit()
+
+    def load_paths(self, paths, replay=False):
+        """Import each log/EBL stack; only the latest request selects or replays."""
+        if self.closed or not paths:
+            return False
+        paths = tuple(paths)
+        if not paths:
+            return False
+        if self.session.streaming:
+            stop_live = getattr(self, "set_live_reading", None)
+            if callable(stop_live):
+                stop_live(False)
+            else:
+                self.session.set_streaming(False)
+        groups = self.log_library.group_paths(paths)
         token = self.session.begin_load()
+        if replay:
+            self._replay_load_tokens.add(token)
+        else:
+            self._replay_load_tokens.discard(token)
+        self._receive_load_progress(
+            token,
+            dict(
+                path=str(paths[0]),
+                index=1,
+                count=len(groups),
+                phase="copy",
+                done=0,
+                total=0,
+            ),
+        )
 
         def read():
-            try:
-                log, error = read_nmea_log(path), None
-            except (OSError, ValueError) as exc:
-                log, error = None, exc
+            log, errors = None, []
+            for index, group in enumerate(groups, 1):
+                path = group[0]
+                if self.closed:
+                    return
+                item = None
+
+                def reporter(phase):
+                    last = None
+                    last_total = None
+
+                    def report(done, total):
+                        nonlocal last, last_total
+                        now = time.monotonic()
+                        # Bound the Qt event queue even on fast local disks.
+                        if (
+                            last is not None
+                            and total == last_total
+                            and 0 < done < total
+                            and now - last < 0.1
+                        ):
+                            return
+                        last = now
+                        last_total = total
+                        if not self.closed:
+                            self.load_progress.emit(
+                                token,
+                                dict(
+                                    path=str(path),
+                                    index=index,
+                                    count=len(groups),
+                                    phase=phase,
+                                    done=done,
+                                    total=total,
+                                ),
+                            )
+
+                    return report
+
+                try:
+                    copy_progress = reporter("copy")
+                    # Announce even before path validation or a metadata-lock
+                    # wait, using the original filename rather than its UUID.
+                    copy_progress(0, 0)
+                    item = self.log_library.import_paths(
+                        group,
+                        progress=copy_progress,
+                        decode_progress=reporter("decode"),
+                    )[0]
+                    existing_info = item.get("file_info", {})
+                    candidate = item.get("_decoded_log")
+                    if candidate is None:
+                        candidate = read_nmea_log(
+                            self.log_library.path(item["id"]),
+                            progress=reporter("decode"),
+                            frame_count=existing_info.get("frame_count"),
+                            devices=tuple(
+                                (
+                                    captured_device_from_dict(d)
+                                    if isinstance(d, dict)
+                                    else d
+                                )
+                                for d in existing_info.get("devices", [])
+                            ),
+                            device_metadata_available=existing_info.get(
+                                "device_metadata_available", False
+                            ),
+                            timestamp_origin=(
+                                datetime.fromisoformat(
+                                    existing_info["timestamp_origin"]
+                                )
+                                if existing_info.get("timestamp_origin")
+                                else None
+                            ),
+                        )
+                    # Use original EBL format for status if this was decoded from EBL
+                    original_format = existing_info.get("format", candidate.format)
+                    original_frame_count = existing_info.get("frame_count")
+                    self.log_library.update(
+                        item["id"],
+                        status=(
+                            (
+                                f"{original_format}: {original_frame_count:,} raw CAN frames; "
+                                f"{len(candidate.entries):,} replay entries"
+                            )
+                            if candidate.entries and original_frame_count is not None
+                            else (
+                                f"{candidate.format}: {len(candidate.entries):,} replay entries"
+                                if candidate.entries
+                                else "Archive only — no supported replay data"
+                            )
+                        ),
+                        diagnostics=list(candidate.diagnostics),
+                        file_info=(
+                            {
+                                "path": str(self.log_library.path(item["id"])),
+                                "format": candidate.format,
+                                "entries": len(candidate.entries),
+                                "duration": candidate.duration,
+                                "timestamped": candidate.timestamped,
+                                "skipped": candidate.skipped,
+                                "frame_count": candidate.frame_count,
+                                "source_tracks": list(candidate.source_tracks),
+                                "device_metadata_available": (
+                                    candidate.device_metadata_available
+                                    or existing_info.get(
+                                        "device_metadata_available", False
+                                    )
+                                ),
+                                "devices": (
+                                    [asdict(device) for device in candidate.devices]
+                                    if candidate.devices
+                                    else existing_info.get("devices", [])
+                                ),
+                                "diagnostics": list(candidate.diagnostics),
+                            }
+                            if candidate.device_metadata_available
+                            or not existing_info.get("devices")
+                            else existing_info
+                        ),
+                    )
+                    log = candidate
+                except Exception as exc:
+                    errors.append(f"{path}: {exc}")
+                    if item is not None:
+                        try:
+                            self.log_library.update(
+                                item["id"], status=f"Cannot replay: {exc}"
+                            )
+                        except Exception:
+                            pass
+            error = ValueError("\n".join(errors)) if errors else None
             if not self.closed:
                 self.load_finished.emit(token, log, error)
 
-        Thread(target=read, daemon=True).start()
+        try:
+            Thread(target=read, daemon=True).start()
+        except Exception as exc:
+            self._finish_load(token, None, exc)
+            return False
+        return True
 
     @Slot(int, object, object)
     def _finish_load(self, token, log, error):
+        # Consume intent before emitting signals: their handlers may start and
+        # even finish another import before this completion returns.
+        replay = token in self._replay_load_tokens
+        self._replay_load_tokens.discard(token)
+        self._clear_load_progress(token)
         if not self.closed:
+            if token != self.session._generation:
+                self.log_library_changed.emit()
+                return
             self.session.finish_load(token, log, error)
+            self.log_library_changed.emit()
+            if (
+                error is not None
+                and not self.closed
+                and token == self.session._generation
+            ):
+                self._show_load_error(error)
+            if (
+                replay
+                and not self.closed
+                and token == self.session._generation
+                and log is not None
+                and log.entries
+            ):
+                self.session.set_playing(True)
+
+    def _show_load_error(self, error):
+        """Report failures on the GUI thread without a removed verbose panel."""
+        if self._load_error_dialog is not None:
+            self._load_error_dialog.close()
+        parent = self.parent()
+        dialog = QMessageBox(parent if isinstance(parent, QWidget) else None)
+        dialog.setWindowTitle("Cannot replay log")
+        dialog.setIcon(QMessageBox.Icon.Warning)
+        dialog.setTextFormat(Qt.TextFormat.PlainText)
+        dialog.setText("One or more logs could not be opened for replay.")
+        message = str(error) or "Unknown load error"
+        dialog.setInformativeText(message.splitlines()[0])
+        dialog.setDetailedText(message)
+        dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
+        def finished():
+            if self._load_error_dialog is dialog:
+                self._load_error_dialog = None
+
+        dialog.finished.connect(finished)
+        self._load_error_dialog = dialog
+        dialog.open()
+
+    def remove_library_log(self, identifier):
+        if self.session.loading:
+            raise ValueError("Wait for log import to finish before removing a log")
+        path = self.log_library.path(identifier)
+        self.log_library.remove(identifier)
+        if self.session.log is not None and self.session.log.path == str(path):
+            self.session.select_source("live")
+            self.session.log = None
+            self.session.error = ""
+            self.changed.emit()
+        self.log_library_changed.emit()
 
     def close(self):
         if self.closed:
             return
         self.closed = True
+        if self._load_error_dialog is not None:
+            self._load_error_dialog.close()
+            self._load_error_dialog = None
+        if self.log_progress is not None:
+            self._clear_load_progress(self.log_progress["token"])
         self.display_forecast.close()
         if self.models_analysis is not None:
             self.models_analysis.close()
@@ -289,6 +656,7 @@ class SessionController(QObject):
         self.routing.close()
         self.map_data.close()
         self.timer.stop()
+        self.seek_timer.stop()
         self.polars.close()
         self.data.close()
         self.connection_task.close(wait=True)

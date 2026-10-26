@@ -2,27 +2,26 @@
 
 import os
 import sys
+from bisect import bisect_right
 from datetime import timedelta
 
-from PySide6.QtCore import Qt, QTimer, QSize
+from PySide6.QtCore import Qt, QTimer, QSize, QSignalBlocker
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QKeySequence, QAction
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDockWidget,
     QFileDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
-    QProgressBar,
     QPushButton,
     QTabWidget,
     QTabBar,
     QSplitter,
     QScrollArea,
+    QScrollBar,
     QFrame,
     QSizePolicy,
-    QStyle,
     QToolBar,
     QToolButton,
     QVBoxLayout,
@@ -31,8 +30,9 @@ from PySide6.QtWidgets import (
 )
 
 from gweatherrouting.core.timecontrol import TimeControl, naive_wall_time
+from gweatherrouting.core.n2kdevices import source_label
 from gweatherrouting.common import resource_path
-from .theme import section_label, symbol_icon, transport_icon
+from .theme import section_label, symbol_icon
 from .dockchrome import style_dock, style_scrollarea
 from .viewportmap import ViewportMap
 from .routingpanel import RoutingPanel
@@ -50,6 +50,11 @@ from .modelregion import region_from_visible_workspace
 from .chartdebugpanel import ChartDebugPanel
 from .cursorstatus import CursorStatus
 from .marinesettings import MarineSettings
+from .loglibrary import (
+    LogImportProgress,
+    LogLibraryDialog,
+    dropped_log_paths,
+)
 
 
 class NavigationScroll(QScrollArea):
@@ -68,8 +73,11 @@ class PreviewWindow(QMainWindow):
         self.session = controller.session
         self.syncing = False
         self.data_key = None
+        self._plot_log_generation = None
         self.settings_dialog = None
         self.library_dialog = None
+        self.log_library_dialog = None
+        self.setAcceptDrops(True)
         self.marine_settings = None
         self.marine_open = {"currents": False, "tides": False}
         self.marine_syncing = False
@@ -115,9 +123,31 @@ class PreviewWindow(QMainWindow):
         self.plots = self._build_plots(controller)
         self.log_time = TimeControl()
         self.log_map = ViewportMap(controller, self, time_control=self.log_time)
+        self.log_plot_panel = QWidget(self)
+        plot_layout = QVBoxLayout(self.log_plot_panel)
+        plot_layout.setContentsMargins(0, 0, 0, 0)
+        plot_layout.addWidget(self.plots, 1)
+        plot_controls = QHBoxLayout()
+        self.undo_log_edit = QPushButton("Undo")
+        self.undo_log_edit.setEnabled(False)
+        self.undo_log_edit.clicked.connect(controller.undo_log_edit)
+        plot_controls.addWidget(self.undo_log_edit)
+        self.save_log_edit = QPushButton("Save edits")
+        self.save_log_edit.setEnabled(False)
+        self.save_log_edit.clicked.connect(self._save_log_edits)
+        plot_controls.addWidget(self.save_log_edit)
+        self.log_viewport = QScrollBar(Qt.Orientation.Horizontal)
+        self.log_viewport.setRange(0, 10000)
+        self.log_viewport.setEnabled(False)
+        self.log_viewport.valueChanged.connect(
+            lambda value: self.plots.set_viewport_fraction(value / 10000)
+        )
+        plot_controls.addWidget(self.log_viewport, 1)
+        plot_layout.addLayout(plot_controls)
+        self.plots.set_viewport_callback(self._plot_viewport_changed)
         self.logs_view = QSplitter(Qt.Orientation.Vertical)
         self.logs_view.addWidget(self.log_map)
-        self.logs_view.addWidget(self.plots)
+        self.logs_view.addWidget(self.log_plot_panel)
         self.logs_view.setSizes([350, 300])
         self.logs_view.setCollapsible(0, False)
         self.logs_view.setCollapsible(1, False)
@@ -206,6 +236,9 @@ class PreviewWindow(QMainWindow):
             symbol_icon("document-open-symbolic"), "Open NMEA log…", self.load_log
         )
         open_log.setShortcut(QKeySequence.StandardKey.Open)
+        file_menu.addAction(
+            symbol_icon("weather-windy-symbolic"), "Open forecast…", self.load_grib
+        )
         file_menu.addAction("Data Library…", self.show_library)
         file_menu.addAction("Polars", self.show_polar_workspace)
         file_menu.addSeparator()
@@ -367,7 +400,7 @@ class PreviewWindow(QMainWindow):
             or next(iter(controller.core.routingManager), None)
         )
         self.statusBar().setContentsMargins(12, 4, 12, 4)
-        self.instruments = QLabel("Waiting for position")
+        self.instruments = QLabel()
         self.cursor_status = CursorStatus()
         self.statusBar().addPermanentWidget(self.cursor_status, 1)
         for canvas in (self.map, self.log_map):
@@ -375,6 +408,8 @@ class PreviewWindow(QMainWindow):
                 lambda text, canvas=canvas: self._cursor_readout(canvas, text)
             )
         self.statusBar().addPermanentWidget(self.instruments)
+        self.log_import_progress = LogImportProgress(controller, self)
+        self.statusBar().addPermanentWidget(self.log_import_progress)
         controller.boat_changed.connect(self._boat_changed)
         controller.changed.connect(self.refresh)
         controller.connection_task.changed.connect(self.refresh)
@@ -388,6 +423,8 @@ class PreviewWindow(QMainWindow):
         self._show_startup_status(controller)
         view_menu.addSeparator()
         view_menu.addAction("Reset layout", self.workspace.reset_layout)
+        log_menu = self.menuBar().addMenu("Logs")
+        log_menu.addAction("Log library…", self.show_log_library)
         QTimer.singleShot(0, self._offer_map_data)
 
     def _show_startup_status(self, controller):
@@ -405,10 +442,36 @@ class PreviewWindow(QMainWindow):
         if getattr(controller, "early_weather", False):
             from .lazyplots import LazyLogPlots
 
-            return LazyLogPlots(self)
+            return LazyLogPlots(
+                self,
+                factory=lambda parent: self._interactive_plots(parent, controller),
+            )
+        return self._interactive_plots(self, controller)
+
+    @staticmethod
+    def _interactive_plots(parent, controller):
         from .plots import LogPlots
 
-        return LogPlots(self)
+        return LogPlots(
+            parent,
+            preview=controller.preview_log_position,
+            seek=controller.seek_log_position,
+            delete_range=getattr(controller, "delete_log_range", None),
+            undo=getattr(controller, "undo_log_edit", None),
+        )
+
+    def _plot_viewport_changed(self, fraction):
+        if not hasattr(self, "log_viewport"):
+            return
+        with QSignalBlocker(self.log_viewport):
+            self.log_viewport.setValue(round(fraction * self.log_viewport.maximum()))
+
+    def _save_log_edits(self):
+        try:
+            if self.controller.save_log_edits():
+                self.statusBar().showMessage("Saved edited log", 3000)
+        except Exception as exc:
+            QMessageBox.warning(self, "Unable to save log", str(exc))
 
     def _offer_map_data(self):
         if (
@@ -798,36 +861,22 @@ class PreviewWindow(QMainWindow):
         layout.setSpacing(8)
         layout.addWidget(section_label("Data source"))
         self.source = QComboBox()
-        self.source.addItems(["Live connections", "Loaded log"])
+        self.source.addItems(["Live data source", "Loaded log"])
         self.source.currentIndexChanged.connect(self._source_changed)
         layout.addWidget(self.source)
-        self.streaming = QCheckBox("Read live NMEA")
-        self.streaming.setToolTip(
-            "Read from configured instruments. Turning this off closes their "
-            "connections and stops recording; saved connection settings are kept."
-        )
-        self.streaming.toggled.connect(self._stream_changed)
-        layout.addWidget(self.streaming)
-        connections = QPushButton("Configure connections…")
-        connections.clicked.connect(self.show_settings)
-        layout.addWidget(connections)
-        load = QPushButton("Load NMEA log…")
-        load.clicked.connect(self.load_log)
-        self.load_button = load
-        layout.addWidget(load)
-        layout.addWidget(section_label("Transport"))
-        transport = QHBoxLayout()
-        transport.setSpacing(0)
-        self.restart = self._button(
-            QStyle.StandardPixmap.SP_MediaSkipBackward, "Restart playback"
-        )
-        self.restart.clicked.connect(lambda: self.session.restart())
-        self.play = self._button(
-            QStyle.StandardPixmap.SP_MediaPlay, "Play", checkable=True
-        )
-        self.play.clicked.connect(self._play)
-        self.stop = self._button(QStyle.StandardPixmap.SP_MediaStop, "Stop")
-        self.stop.clicked.connect(lambda: self.session.stop())
+        library = QPushButton("Log library…")
+        library.clicked.connect(self.show_log_library)
+        layout.addWidget(library)
+        self.track_source_group = QWidget()
+        track_layout = QVBoxLayout(self.track_source_group)
+        track_layout.setContentsMargins(0, 0, 0, 0)
+        track_layout.addWidget(QLabel("GPS track source"))
+        self.track_source = QComboBox()
+        self.track_source.setAccessibleName("GPS track source")
+        self.track_source.currentIndexChanged.connect(self._track_source_changed)
+        self._track_source_log = None
+        track_layout.addWidget(self.track_source)
+        layout.addWidget(self.track_source_group)
         self.record = QToolButton()
         self.record.setFixedSize(42, 34)
         self.record.setCheckable(True)
@@ -845,65 +894,20 @@ class PreviewWindow(QMainWindow):
         self.record.setObjectName("record")
         self.record.setProperty("transport", True)
         self.record.clicked.connect(self._record)
-        for button in (self.restart, self.play, self.stop, self.record):
-            transport.addWidget(button)
-        transport.addStretch()
-        layout.addLayout(transport)
-        self.speed_group = QWidget()
-        speed_layout = QVBoxLayout(self.speed_group)
-        speed_layout.setContentsMargins(0, 0, 0, 0)
-        speed_layout.addWidget(QLabel("Playback speed"))
-        self.speed = QComboBox()
-        for value in (0.5, 1, 2, 5, 10):
-            self.speed.addItem(f"{value:g}×", value)
-        self.speed.currentIndexChanged.connect(self._speed_changed)
-        speed_layout.addWidget(self.speed)
-        layout.addWidget(self.speed_group)
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 1000)
-        layout.addWidget(self.progress)
-        self.status = QLabel()
-        self.status.setWordWrap(True)
-        layout.addWidget(self.status)
-        self.recording_file = QLabel()
-        self.recording_file.setProperty("secondary", True)
-        self.recording_file.setWordWrap(True)
-        self.recording_file.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
-        layout.addWidget(self.recording_file)
+        layout.addWidget(self.record)
         layout.addStretch()
         return panel
-
-    def _button(self, icon, label, checkable=False):
-        button = QToolButton()
-        names = {
-            QStyle.StandardPixmap.SP_MediaSkipBackward: "restart",
-            QStyle.StandardPixmap.SP_MediaPlay: "play",
-            QStyle.StandardPixmap.SP_MediaStop: "stop",
-        }
-        button.setIcon(transport_icon(names[icon]))
-        button.setIconSize(QSize(20, 20))
-        button.setToolTip(label)
-        button.setAccessibleName(label)
-        button.setCheckable(checkable)
-        button.setFixedSize(42, 34)
-        button.setProperty("transport", True)
-        return button
 
     def refresh(self):
         self.syncing = True
         session = self.session
         self.source.setCurrentIndex(0 if session.source == "live" else 1)
-        self.source.setEnabled(not session.loading)
-        self.streaming.setChecked(session.streaming)
-        self.streaming.setEnabled(
-            session.source == "live"
-            and not session.loading
-            and not self.controller.connection_task.busy
+        self.source.model().item(1).setEnabled(session.log is not None)
+        self.source.setEnabled(
+            not session.loading and not self.controller.connection_task.busy
         )
-        self.load_button.setEnabled(not session.loading)
         self.record.setChecked(session.recording)
+        self.record.setVisible(session.source == "live" and session.streaming)
         self.record.setEnabled(
             session.recording
             or (session.source == "live" and session.streaming and not session.loading)
@@ -913,83 +917,75 @@ class PreviewWindow(QMainWindow):
             if session.recording
             else "Start a new timestamped recording"
         )
-        self.play.setChecked(session.playing)
-        self.play.setIcon(transport_icon("pause" if session.playing else "play"))
-        self.play.setToolTip("Pause" if session.playing else "Play")
-        enabled = (
-            session.source == "log" and session.log is not None and not session.loading
-        )
-        self.play.setEnabled(enabled)
-        self.restart.setEnabled(enabled)
-        self.stop.setEnabled(session.recording or session.playing)
-        self.speed_group.setVisible(session.source == "log")
-        self.speed.setCurrentIndex(self.speed.findData(session.speed))
-        total = len(session.log.entries) if session.log else 0
-        self.progress.setValue(round(1000 * session.cursor / total) if total else 0)
-        self.progress.setFormat(
-            f"{session.position:.1f} / {session.log.duration:.1f} s"
-            if session.log
-            else "No log loaded"
-        )
-        if session.loading:
-            text = "Loading NMEA log…"
-        elif session.error:
-            text = f"Could not load log: {session.error}"
-        elif session.recording:
-            text = "Recording · saving automatically…"
-        elif session.source == "log" and session.log:
-            state = "Playing" if session.playing else "Paused"
-            text = (
-                f"{state} · {os.path.basename(session.log.path)}\n{total:,} sentences"
-            )
-        elif session.recording_path:
-            text = "Recording stopped · saved automatically."
+        if getattr(self.controller, "log_edit_busy", False):
+            message = "Deleting selected range…"
+        elif getattr(self.controller, "log_edit_error", None):
+            message = f"Unable to delete range: {self.controller.log_edit_error}"
         else:
-            text = (
-                "Reading live connections"
-                if session.streaming
-                else "Live NMEA reading off"
-            )
-        self.status.setText(text)
-        path = session.recording_path
-        self.recording_file.setText(
-            f"Recording file:\n{path}"
-            if path
-            else f"Recordings folder:\n{session.recording_directory}"
-        )
-        self.recording_file.setToolTip(str(path or session.recording_directory))
-        self.statusBar().showMessage(
-            "" if self.cursor_status.text() else self._connection_message()
-        )
+            message = "" if self.cursor_status.text() else self._connection_message()
+        self.statusBar().showMessage(message)
         self.syncing = False
+        refresh_log_editor = getattr(self, "_refresh_log_editor_controls", None)
+        if callable(refresh_log_editor):
+            refresh_log_editor()
         self._refresh_data()
-        self.plots.set_position(session.position)
-        self.map.set_position(session.position if session.source == "log" else None)
-        self.log_map.set_position(session.position if session.source == "log" else None)
+        self._refresh_log_position()
+
+    def _refresh_log_editor_controls(self):
+        session = self.session
+        has_log = session.source == "log" and session.log is not None
+        busy = getattr(self.controller, "log_edit_busy", False)
+        self.undo_log_edit.setEnabled(
+            has_log and bool(session._log_edit_undo) and not busy
+        )
+        self.save_log_edit.setEnabled(has_log and session.log_edits_dirty and not busy)
+        self.log_viewport.setEnabled(has_log and session.log.duration > 0 and not busy)
+
+    def _refresh_log_position(self):
+        session = self.session
+        position = session.display_position
+        self.plots.set_position(position)
+        self.map.set_position(position if session.source == "log" else None)
+        self.log_map.set_position(position if session.source == "log" else None)
         if session.source == "log" and session.log and session.log.points:
-            offset = session.log.point_offsets[0] if session.log.point_offsets else 0
-            self.log_time.set_time(
-                naive_wall_time(session.log.points[0].time)
-                + timedelta(seconds=session.position - offset)
-            )
+            offsets = session.log.point_offsets
+            if len(offsets) == len(session.log.points):
+                point_index = max(0, bisect_right(offsets, position) - 1)
+                self.log_time.set_time(
+                    naive_wall_time(session.log.points[point_index].time)
+                )
+            else:
+                offset = offsets[0] if offsets else 0
+                self.log_time.set_time(
+                    naive_wall_time(session.log.points[0].time)
+                    + timedelta(seconds=position - offset)
+                )
 
     def _connection_message(self):
         task = self.controller.connection_task
-        return (
-            "NMEA connections closed"
-            if not self.session.streaming
-            else (
-                (task.message if task.message != "Done" else "")
-                or "Using saved NMEA connections"
-            )
-        )
+        return task.message if self.session.streaming and task.message != "Done" else ""
 
     def _refresh_data(self):
         self.map.refresh_instruments()
         self.log_map.refresh_instruments()
         session = self.session
+        log = session.log if session.source == "log" else None
+        tracks = log.source_tracks if log else {}
+        self.track_source_group.setVisible(bool(tracks))
+        self.track_source.setEnabled(bool(tracks) and not session.loading)
+        if log is not self._track_source_log:
+            self._track_source_log = log
+            with QSignalBlocker(self.track_source):
+                self.track_source.clear()
+                self.track_source.addItem("Auto (most fixes)", None)
+                for source, track in tracks.items():
+                    self.track_source.addItem(
+                        f"{source_label(log.devices, source)} ({len(track.points):,} fixes)",
+                        source,
+                    )
+        selected_source = self.track_source.currentData() if tracks else None
         key = (
-            (session.source, id(session.log))
+            (session.source, id(session.log), selected_source)
             if session.source == "log"
             else ("live", self.controller.point_revision)
         )
@@ -1003,7 +999,31 @@ class PreviewWindow(QMainWindow):
             if session.source == "log" and session.log
             else elapsed_offsets(points)
         )
+        if selected_source in tracks:
+            track = tracks[selected_source]
+            points, offsets = track.points, track.point_offsets
+        if session.source == "log" and session.log:
+            reset_view = (
+                previous is None
+                or previous[0] != "log"
+                or self._plot_log_generation != session._generation
+            )
+            self._plot_log_generation = session._generation
+            self.plots.set_logged_fields(
+                session.log.numeric_series, reset=reset_view, redraw=False
+            )
+        else:
+            reset_view = previous is None or previous[0] != session.source
+            self.plots.set_logged_fields((), reset=True, redraw=False)
         self.plots.set_points(points, offsets, session.source == "log")
+        if session.source == "log" and session.log:
+            self.plots.set_time_bounds(0.0, session.log.duration, reset=reset_view)
+        else:
+            self.plots.set_time_bounds(
+                min(offsets, default=0.0),
+                max(offsets, default=0.0),
+                reset=reset_view,
+            )
         if (
             session.source == "log"
             and session.log
@@ -1026,23 +1046,20 @@ class PreviewWindow(QMainWindow):
             offsets,
             fit=fit,
         )
+        self._refresh_log_position()
+
+    def _track_source_changed(self, _):
+        self._refresh_data()
 
     def _source_changed(self, index):
-        if not self.syncing:
-            self.session.select_source("live" if index == 0 else "log")
-
-    def _stream_changed(self, active):
-        if not self.syncing:
-            self.controller.set_live_reading(active)
-
-    def _play(self, active):
-        if not self.syncing:
-            self.session.set_playing(active)
-
-    def _speed_changed(self, index):
-        if not self.syncing:
-            self.session.speed = self.speed.itemData(index)
-            self.session.dispatch("changed", None)
+        if self.syncing:
+            return
+        if index == 0:
+            self.session.select_source("live")
+            self.controller.set_live_reading(True)
+        else:
+            self.controller.set_live_reading(False)
+            self.session.select_source("log")
 
     def _record(self, active):
         try:
@@ -1054,15 +1071,30 @@ class PreviewWindow(QMainWindow):
             self.refresh()
             QMessageBox.critical(self, "Cannot record NMEA", str(error))
 
-    def load_log(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Load NMEA log",
-            str(self.session.recording_directory),
-            "NMEA logs (*.log *.nmea *.txt);;All files (*)",
-        )
-        if path:
-            self.controller.load_path(path)
+    def show_log_library(self):
+        if self.log_library_dialog is None:
+            self.log_library_dialog = LogLibraryDialog(self.controller, self)
+        self.log_library_dialog.show()
+        self.log_library_dialog.raise_()
+        self.log_library_dialog.activateWindow()
+
+    def dragEnterEvent(self, event):  # noqa: N802
+        if not self.session.loading and dropped_log_paths(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):  # noqa: N802
+        self.dragEnterEvent(event)
+
+    def dropEvent(self, event):  # noqa: N802
+        paths = dropped_log_paths(event.mimeData())
+        if paths and self.controller.load_paths(paths):
+            event.acceptProposedAction()
+            self.views.setCurrentWidget(self.logs_view)
+            self._show_panel(self.nmea_dock)
+        else:
+            event.ignore()
 
     def _boat_changed(self, boat):
         if boat.is_valid():
@@ -1071,7 +1103,7 @@ class PreviewWindow(QMainWindow):
                 + (f" · SOG {boat.sog:.1f} kn" if boat.sog is not None else "")
             )
         else:
-            self.instruments.setText("Waiting for position")
+            self.instruments.clear()
 
     def show_settings(self):
         if self.settings_dialog is None:

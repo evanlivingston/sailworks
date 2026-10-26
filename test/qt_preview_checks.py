@@ -788,14 +788,15 @@ class QtPreviewChecks(unittest.TestCase):
         QTest.mouseRelease(dock, Qt.MouseButton.LeftButton, pos=QPoint(1, 100))
         self.assertIsNone(frame._resize)
 
-    def test_full_plot_play_pause_restart_eof_and_source_visibility(self):
-        self.assertFalse(self.window.speed_group.isVisible())
+    def test_full_plot_core_replay_and_source_visibility_without_transport(self):
+        for name in ("play", "stop", "restart", "speed", "speed_group"):
+            self.assertFalse(hasattr(self.window, name))
         log = self.load()
-        self.assertTrue(self.window.speed_group.isVisible())
+        self.assertFalse(self.controller.session.playing)
         self.assertEqual(
             len(self.window.plots.axes[0].lines[0].get_xdata()), len(log.points)
         )
-        self.window.play.click()
+        self.controller.session.set_playing(True)
         self.controller.session.advance(5)
         self.drain()
         self.assertTrue(self.controller.session.playing)
@@ -803,17 +804,16 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(tuple(self.controller.points), log.points)
         for cursor in self.window.plots.cursors:
             self.assertEqual(list(cursor.get_xdata()), [5, 5])
-        self.window.stop.click()
+        self.controller.session.stop()
         self.assertFalse(self.controller.session.playing)
         self.assertEqual(self.window.plots.position, 5)
-        self.window.restart.click()
+        self.controller.session.restart()
         self.assertEqual(self.window.plots.position, 0)
-        self.window.play.click()
+        self.controller.session.set_playing(True)
         self.controller.session.advance(100)
         self.assertFalse(self.controller.session.playing)
         self.assertEqual(self.window.plots.position, log.duration)
         self.window.source.setCurrentIndex(0)
-        self.assertFalse(self.window.speed_group.isVisible())
         self.assertEqual(self.controller.points, [])
         self.window.source.setCurrentIndex(1)
         self.assertEqual(tuple(self.controller.points), log.points)
@@ -822,9 +822,9 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertTrue(self.window.nmea_dock.isFloating())
         self.assertEqual(tuple(self.controller.points), log.points)
 
-    def test_recording_persists_for_both_stop_controls_and_shutdown(self):
+    def test_recording_persists_for_record_toggle_and_shutdown(self):
         paths = []
-        for stop_name in ("record", "stop"):
+        for _ in range(2):
             self.window.record.click()
             self.assertTrue(self.controller.session.recording)
             packets = [
@@ -837,10 +837,11 @@ class QtPreviewChecks(unittest.TestCase):
             paths.append(path)
             self.assertEqual(len(path.read_text().splitlines()), len(packets))
             points = tuple(self.controller.points)
-            getattr(self.window, stop_name).click()
+            self.window.record.click()
             self.assertFalse(self.controller.session.recording)
             self.assertEqual(tuple(self.controller.points), points)
-            self.assertIn("saved automatically", self.window.status.text())
+            self.assertFalse(self.window.record.isChecked())
+            self.assertEqual(self.controller.session.recording_path, path)
         self.assertNotEqual(*paths)
         self.window.close()
         for path in paths:
@@ -877,7 +878,9 @@ class QtPreviewChecks(unittest.TestCase):
             self.drain()
             time.sleep(0.005)
         self.assertIs(self.controller.session.log, previous)
-        self.assertIn("Could not load log", self.window.status.text())
+        self.assertTrue(self.controller.session.error)
+        self.assertFalse(hasattr(self.window, "load_button"))
+        self.assertFalse(hasattr(self.window, "file_info_button"))
         self.assertEqual(tuple(self.controller.points), previous.points)
 
     def test_shared_projection_cairo_buffer_and_pan(self):
@@ -1054,8 +1057,11 @@ class QtPreviewChecks(unittest.TestCase):
                 callback = lambda boat: received.append((get_ident(), boat.latitude))
                 self.controller.core.connect("boat_position", callback)
                 try:
-                    self.controller.session.select_source("live")
-                    self.controller.session.set_streaming(True)
+                    self.load()
+                    self.window.source.setCurrentIndex(0)
+                    self.wait_for_routing_stage(
+                        lambda: not self.controller.connection_task.busy
+                    )
                     self.controller.session.start_recording()
                     recording = self.controller.session.recorder.path
                     self.controller.start_connections()
@@ -1071,7 +1077,7 @@ class QtPreviewChecks(unittest.TestCase):
                     self.wait_for_routing_stage(
                         lambda: not self.controller.connection_task.busy
                     )
-                    self.window.streaming.click()
+                    self.window.source.setCurrentIndex(1)
                     self.wait_for_routing_stage(
                         lambda: not self.controller.connection_task.busy
                     )
@@ -1178,6 +1184,8 @@ class QtPreviewChecks(unittest.TestCase):
         self.drain()
         self.assertEqual(events, [(get_ident(), core.boat_info.latitude)])
         self.assertIn("48.11730", self.window.instruments.text())
+        self.window._boat_changed(SimpleNamespace(is_valid=lambda: False))
+        self.assertEqual(self.window.instruments.text(), "")
         events.clear()
         worker = Thread(
             target=lambda: self.controller.connections.dispatch(
@@ -1610,9 +1618,10 @@ class QtPreviewChecks(unittest.TestCase):
                 self.controller.settings.vectorCharts[0]["path"], str(path)
             )
 
-    def test_read_live_toggle_stops_and_restarts_configured_connections(self):
+    def test_data_source_selection_controls_live_connections(self):
         controller = self.controller
         controller.offline = False
+        self.load()
         release = Event()
         self.addCleanup(release.set)
 
@@ -1631,24 +1640,24 @@ class QtPreviewChecks(unittest.TestCase):
                 controller.connections, "stop_polling", side_effect=stop
             ) as closed,
         ):
-            controller.start_connections()
+            self.window.source.setCurrentIndex(0)
             self.wait_for_routing_stage(lambda: not controller.connection_task.busy)
+            self.assertTrue(controller.session.streaming)
+            self.assertFalse(self.window.record.isHidden())
             controller.session.start_recording()
-            self.window.streaming.click()
+            self.window.source.setCurrentIndex(1)
             self.assertFalse(controller.session.streaming)
             self.assertFalse(controller.session.recording)
             self.assertTrue(controller.connection_task.busy)
-            self.assertFalse(self.window.streaming.isEnabled())
+            self.assertTrue(self.window.record.isHidden())
             # A slow disconnect stays off the UI thread and cannot race a restart.
             controller.set_live_reading(True)
             self.assertFalse(controller.session.streaming)
             release.set()
             self.wait_for_routing_stage(lambda: not controller.connection_task.busy)
             self.assertFalse(controller.connections.polling_active)
-            self.assertEqual(
-                self.window._connection_message(), "NMEA connections closed"
-            )
-            self.window.streaming.click()
+            self.assertEqual(self.window._connection_message(), "")
+            self.window.source.setCurrentIndex(0)
             self.wait_for_routing_stage(lambda: not controller.connection_task.busy)
             self.assertTrue(controller.session.streaming)
             self.assertTrue(controller.connections.polling_active)
@@ -1656,22 +1665,9 @@ class QtPreviewChecks(unittest.TestCase):
             closed.assert_called_once()
             controller.connections._polling_active = False
 
-    def test_saved_reading_off_does_not_open_connections_at_startup(self):
-        self.window.workspace.restore({"nmea": {"streaming": False}})
-        self.controller.offline = False
-        with patch.object(self.controller.connections, "start_polling") as opened:
-            self.controller.start_connections()
-            opened.assert_not_called()
-        self.assertFalse(self.window.streaming.isChecked())
-        self.assertFalse(self.window.workspace.save_state()["nmea"]["streaming"])
-
-    def test_streaming_toggle_opens_and_closes_connections(self):
-        with patch.object(self.controller.connections, "start_polling") as opened:
-            self.window.streaming.click()
-            self.assertTrue(opened.called)
-            opened.reset_mock()
-            self.window.streaming.click()
-            self.controller.connections.stop_polling.assert_called()
+    def test_live_reading_toggle_is_not_persisted_as_a_separate_setting(self):
+        self.assertFalse(hasattr(self.window, "streaming"))
+        self.assertNotIn("streaming", self.window.workspace.save_state()["nmea"])
 
     def test_reading_off_ignores_already_queued_live_packets(self):
         packet = NMEADataPacket.parse(rmc("120000"))
@@ -1696,7 +1692,7 @@ class QtPreviewChecks(unittest.TestCase):
             controller.start_connections()
             self.assertTrue(started.wait(1))
             self.load()
-            self.window.play.click()
+            controller.session.set_playing(True)
             controller.session.advance(5)
             self.drain()
             self.assertTrue(controller.session.playing)
@@ -1921,7 +1917,6 @@ class QtPreviewChecks(unittest.TestCase):
             "view": "unknown",
             "active_dock": "unknown",
             "map": {"latitude": True, "longitude": 900, "zoom": -20},
-            "nmea": {"speed": True, "streaming": "yes"},
             "routing": {"polar": "missing", "algorithm": "missing", "page": 999},
             "docks": {
                 "routing": {
@@ -2301,6 +2296,8 @@ class QtPreviewChecks(unittest.TestCase):
         workspace = self.window.polar_workspace
         self.window.show_polar_workspace()
         self.wait_for_polar_view()
+        self.assertEqual(workspace.status.text(), "")
+        self.assertTrue(workspace.status.isHidden())
         history = self.controller.session.active_history
         samples = [
             PerformanceSample(45, 10, 5, "stw"),
@@ -2923,9 +2920,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.controller.offline = False
         task = self.controller.connection_task
         task.message = "Done"
-        self.assertEqual(
-            self.window._connection_message(), "Using saved NMEA connections"
-        )
+        self.assertEqual(self.window._connection_message(), "")
         task.message = "Connection failed"
         self.assertEqual(self.window._connection_message(), "Connection failed")
 

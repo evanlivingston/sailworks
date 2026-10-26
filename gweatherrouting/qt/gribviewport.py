@@ -1715,6 +1715,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 ("selectedPoint", overlay["selected_point"]),
                 ("trackPoints", overlay["track_points"]),
                 ("trackPosition", overlay["track_position"]),
+                ("trackHeading", overlay.get("track_heading")),
+                ("trackAwa", overlay.get("track_awa")),
                 ("captionText", overlay["caption"]),
                 ("dashboardVisible", overlay["dashboard_visible"]),
                 ("centerLatitude", camera.center_lat),

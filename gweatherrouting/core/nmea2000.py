@@ -167,6 +167,30 @@ def sentence(kind, fields):
     return NMEADataPacket.parse(f"${body}*{checksum:02X}")
 
 
+class _N2KSentence:
+    """Minimal pynmea2-like sentence for raw N2K PGN instrument fields."""
+
+    def __init__(self, sentence_type, fields):
+        self.sentence_type = sentence_type
+        self.fields = fields
+        for display, attr, value in fields:
+            setattr(self, attr, value)
+
+    def serialize(self):
+        body = self.sentence_type + ",".join(
+            "," if getattr(self, f[1]) is None else str(getattr(self, f[1]))
+            for f in self.fields
+        ).lstrip(",")
+        checksum = 0
+        for c in body:
+            checksum ^= ord(c)
+        return f"${body}*{checksum:02X}"
+
+
+def _n2k_packet(kind, fields):
+    return NMEADataPacket(_N2KSentence(kind, fields))
+
+
 def instruments(message: N2KMessage) -> List[NMEADataPacket]:  # noqa: C901
     """Convert supported PGNs to NMEA 0183 packets used by sailing features.
 
@@ -289,4 +313,51 @@ def instruments(message: N2KMessage) -> List[NMEADataPacket]:  # noqa: C901
             temperature = None
         if temperature is not None:
             return [sentence("MTW", [f"{temperature - 273.15:.3f}", "C"])]
+    elif pgn == 127245 and len(d) >= 5:
+        instance = d[0]
+        order = number(d, 1, 2, 0.0001, True)
+        position = number(d, 3, 2, 0.0001, True)
+        fields = [("Instance", "instance", instance)]
+        if order is not None:
+            fields.append(("Rudder Order", "order_deg", f"{math.degrees(order):.1f}"))
+        if position is not None:
+            fields.append(
+                ("Rudder Position", "position_deg", f"{math.degrees(position):.1f}")
+            )
+        return [_n2k_packet("RUD", fields)]
+    elif pgn == 127488 and len(d) >= 3:
+        rpm = number(d, 1, 2, 0.125)
+        if rpm is not None:
+            return [
+                _n2k_packet(
+                    "ENG",
+                    [
+                        ("Instance", "instance", d[0]),
+                        ("Engine Speed", "rpm", f"{rpm:.0f}"),
+                    ],
+                )
+            ]
+    elif pgn == 127489 and len(d) >= 11:
+        instance = d[0]
+        fields = [("Instance", "instance", instance)]
+        oil_pressure = number(d, 1, 2, 1.0)
+        if oil_pressure is not None:
+            fields.append(
+                ("Engine Oil Pressure", "oil_pressure_kpa", f"{oil_pressure:.0f}")
+            )
+        oil_temp = number(d, 3, 2, 0.125, True)
+        if oil_temp is not None:
+            fields.append(("Engine Oil Temp", "oil_temp_c", f"{oil_temp - 273.15:.1f}"))
+        engine_temp = number(d, 5, 2, 0.125, True)
+        if engine_temp is not None:
+            fields.append(
+                ("Engine Temperature", "engine_temp_c", f"{engine_temp - 273.15:.1f}")
+            )
+        alternator = number(d, 7, 2, 0.05)
+        if alternator is not None:
+            fields.append(("Alternator Potential", "alternator_v", f"{alternator:.2f}"))
+        fuel_rate = number(d, 9, 2, 0.0001)
+        if fuel_rate is not None:
+            fields.append(("Fuel Rate", "fuel_rate_lph", f"{fuel_rate:.2f}"))
+        return [_n2k_packet("ENG", fields)]
     return []

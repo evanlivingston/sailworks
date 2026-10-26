@@ -814,9 +814,9 @@ def test_map_host_publishes_existing_routes_to_the_viewport_overlay_layer():
             route_plan=((48.1, -124.1), (48.2, -124.0)),
             route_preview=((48.3, -124.3), (48.4, -124.2)),
             points=(
-                SimpleNamespace(lat=48.0, lon=-124.0),
-                SimpleNamespace(lat=48.1, lon=-124.1),
-                SimpleNamespace(lat=48.2, lon=-124.2),
+                SimpleNamespace(lat=48.0, lon=-124.0, hdg=10, awa=350),
+                SimpleNamespace(lat=48.1, lon=-124.1, hdg=123, awa=270),
+                SimpleNamespace(lat=48.2, lon=-124.2, hdg=250, awa=45),
             ),
             offsets=(0, 10, 20),
             position=15,
@@ -832,9 +832,46 @@ def test_map_host_publishes_existing_routes_to_the_viewport_overlay_layer():
         "selected_point": [48.5, -124.2],
         "track_points": [[48.0, -124.0], [48.1, -124.1], [48.2, -124.2]],
         "track_position": [48.1, -124.1],
+        "track_heading": 123,
+        "track_awa": 270,
         "caption": "",
         "dashboard_visible": True,
     }
+
+
+def test_log_boat_heading_falls_back_to_course_between_track_fixes():
+    from gweatherrouting.qt.viewportmap import (
+        ViewportCameraState,
+        ViewportMapState,
+        ViewportMap,
+    )
+
+    host = SimpleNamespace(
+        controller=SimpleNamespace(
+            chart_errors=(),
+            core=SimpleNamespace(
+                routingManager=SimpleNamespace(get_by_name=lambda _name: None)
+            ),
+        ),
+        navigation=SimpleNamespace(hl_routing=""),
+        _view_state=ViewportMapState(
+            camera=ViewportCameraState(),
+            points=(
+                SimpleNamespace(lat=48.0, lon=-124.0, hdg=None, awa=90.0),
+                SimpleNamespace(lat=48.0, lon=-123.9, hdg=None, awa=90.0),
+            ),
+            offsets=(0, 10),
+            position=0,
+        ),
+        _MAX_TRACK_POLYLINE=1500,
+        move_callback=None,
+        dashboard_visible=True,
+    )
+
+    overlay = ViewportMap.viewport_route_overlay(host)
+    assert overlay["track_position"] == [48.0, -124.0]
+    assert overlay["track_heading"] == pytest.approx(90, abs=0.1)
+    assert overlay["track_awa"] == 90
 
 
 def test_route_overlay_is_drawn_above_weather_in_the_viewport_scene():
@@ -856,6 +893,13 @@ def test_route_overlay_is_drawn_above_weather_in_the_viewport_scene():
     assert "drawRoute(context, routePreview" in scene
     assert "trackPoints" in scene
     assert "trackPosition" in scene
+    assert "trackHeading" in scene and "trackAwa" in scene
+    assert "drawTrackMarker(context)" in scene
+    assert "context.rotate(heading * Math.PI / 180)" in scene
+    assert "if (!hasFiniteValue(trackHeading))" in scene
+    assert "if (hasFiniteValue(trackAwa))" in scene
+    assert "if (awa > 180)" in scene
+    assert "context.rotate(awa * Math.PI / 180)" in scene
 
 
 def test_viewport_publishes_retained_navigation_images_without_reupload():
