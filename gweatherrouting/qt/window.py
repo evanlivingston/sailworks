@@ -396,7 +396,7 @@ class PreviewWindow(QMainWindow):
             or next(iter(controller.core.routingManager), None)
         )
         self.statusBar().setContentsMargins(12, 4, 12, 4)
-        self.instruments = QLabel("Waiting for position")
+        self.instruments = QLabel()
         self.cursor_status = CursorStatus()
         self.statusBar().addPermanentWidget(self.cursor_status, 1)
         for canvas in (self.map, self.log_map):
@@ -954,14 +954,7 @@ class PreviewWindow(QMainWindow):
 
     def _connection_message(self):
         task = self.controller.connection_task
-        return (
-            "NMEA connections closed"
-            if not self.session.streaming
-            else (
-                (task.message if task.message != "Done" else "")
-                or "Using saved NMEA connections"
-            )
-        )
+        return task.message if self.session.streaming and task.message != "Done" else ""
 
     def _refresh_data(self):
         self.map.refresh_instruments()
@@ -1101,7 +1094,7 @@ class PreviewWindow(QMainWindow):
                 + (f" · SOG {boat.sog:.1f} kn" if boat.sog is not None else "")
             )
         else:
-            self.instruments.setText("Waiting for position")
+            self.instruments.clear()
 
     def show_settings(self):
         if self.settings_dialog is None:
