@@ -2,11 +2,17 @@
 
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 from gweatherrouting.core.datasource import NMEADataPacket
-from gweatherrouting.core.nmeasession import NMEALog, NMEASession, read_nmea_log
+from gweatherrouting.core.nmea2000 import N2KMessage, instruments
+from gweatherrouting.core.nmeasession import (
+    NMEALog,
+    NMEASession,
+    read_nmea_log,
+)
 from gweatherrouting.core.utils import EventDispatcher
 from test.test_polarperformance import water, wind
 
@@ -60,6 +66,52 @@ class TestNMEASession(unittest.TestCase):
         self.session.set_playing(True)
         self.session.advance(0)
         self.assertEqual(len(self.received), 9)
+
+    def test_ripple_delete_preserves_nmea_timestamps_and_undoes(self):
+        original = self.load([rmc("120000"), rmc("120010"), rmc("120020")])
+        original_times = [entry[1].data.timestamp for entry in original.entries]
+        original_numeric = {
+            field.key: tuple(field.offsets) for field in original.numeric_series
+        }
+        points = original.points
+        offsets = original.point_offsets
+
+        self.assertTrue(self.session.delete_log_range(5, 15))
+        edited = self.session.log
+        self.assertEqual([offset for offset, _ in edited.entries], [0, 10])
+        self.assertEqual(
+            [packet.data.timestamp for _, packet in edited.entries],
+            [original_times[0], original_times[2]],
+        )
+        self.assertEqual(edited.point_offsets, (offsets[0], offsets[2] - 10))
+        self.assertEqual(edited.points, (points[0], points[2]))
+        self.assertTrue(original_numeric)
+        self.assertTrue(
+            all(tuple(field.offsets) == (0, 10) for field in edited.numeric_series)
+        )
+        self.assertTrue(self.session.log_edits_dirty)
+
+        self.assertTrue(self.session.undo_log_edit())
+        self.assertIs(self.session.log, original)
+        self.assertFalse(self.session.log_edits_dirty)
+
+    def test_saved_edit_becomes_undo_baseline(self):
+        self.load([rmc("120000"), rmc("120010"), rmc("120020")])
+        self.assertTrue(self.session.delete_log_range(5, 15))
+        self.assertTrue(self.session.mark_log_saved())
+        self.assertFalse(self.session.log_edits_dirty)
+        self.assertTrue(self.session.undo_log_edit())
+        self.assertTrue(self.session.log_edits_dirty)
+
+    def test_ripple_delete_can_remove_an_empty_interval(self):
+        original = self.load([rmc("120000"), rmc("120010"), rmc("120020")])
+        original_packets = [packet for _, packet in original.entries]
+        self.assertTrue(self.session.delete_log_range(2, 5))
+        self.assertEqual([offset for offset, _ in self.session.log.entries], [0, 7, 17])
+        self.assertEqual(
+            [packet for _, packet in self.session.log.entries], original_packets
+        )
+        self.assertEqual(self.session.log.duration, 17)
 
     def test_live_pause_and_replay_do_not_mix_sources(self):
         packets = [NMEADataPacket(s) for s in (water(), wind())]
@@ -232,3 +284,145 @@ class TestNMEASession(unittest.TestCase):
             log.point_offsets, tuple(offset for offset, packet in log.entries[2:])
         )
         self.assertGreater(log.point_offsets[0], 0)
+
+    def seek(self, position, limit=2):
+        self.assertTrue(self.session.begin_seek(position))
+        while not self.session.seek_batch(limit):
+            pass
+
+    def test_preview_suspends_replay_without_mutating_replay_state(self):
+        self.load([rmc("120000"), water(), wind(), rmc("120010")])
+        self.session.set_playing(True)
+        self.session.advance(1)
+        before = (
+            self.session.position,
+            self.session.cursor,
+            self.session.active_history.snapshot(),
+            list(self.received),
+        )
+        self.assertTrue(self.session.preview(8))
+        self.session.advance(20)
+        self.assertEqual(self.session.display_position, 8)
+        self.assertTrue(self.session.playing)
+        self.assertEqual(
+            before,
+            (
+                self.session.position,
+                self.session.cursor,
+                self.session.active_history.snapshot(),
+                self.received,
+            ),
+        )
+
+    def test_seeks_reconstruct_prefix_history_and_reset_consumers_once(self):
+        log = self.load(
+            [rmc("120000"), water(), wind(), rmc("120005"), wind(315), rmc("120010")]
+        )
+        resets = []
+        self.session.connect("reset", lambda _: resets.append(True))
+        for target in (7, 1, 10, 0, 7):
+            with self.subTest(target=target):
+                self.received.clear()
+                previous_resets = len(resets)
+                self.seek(target)
+                expected = [
+                    packet for offset, packet in log.entries if offset <= target
+                ]
+                self.assertEqual(self.received, expected)
+                self.assertEqual(len(resets), previous_resets + 1)
+                self.assertEqual(self.session.cursor, len(expected))
+                self.assertEqual(self.session.position, target)
+                self.assertIsNone(self.session.preview_position)
+                self.assertFalse(self.session.overview)
+                reference = NMEASession(EventDispatcher(), self.recording_directory)
+                try:
+                    reference.finish_load(reference.begin_load(), log)
+                    reference.set_playing(True)
+                    reference.advance(target)
+                    self.assertEqual(
+                        self.session.active_history.snapshot()[1],
+                        reference.active_history.snapshot()[1],
+                    )
+                finally:
+                    reference.close()
+
+    def test_seek_preserves_play_intent_except_at_eof(self):
+        self.load([rmc("120000"), water(), wind(), rmc("120010")])
+        for playing in (False, True):
+            self.session.set_playing(playing)
+            self.seek(5)
+            self.assertEqual(self.session.playing, playing)
+            self.session.advance(1)
+            self.assertEqual(self.session.position, 6 if playing else 5)
+        self.seek(100)
+        self.assertEqual(self.session.position, 10)
+        self.assertFalse(self.session.playing)
+        self.seek(-1)
+        self.assertEqual(self.session.position, 0)
+
+    def test_million_entry_seek_is_bounded_and_cancellable(self):
+        packet = NMEADataPacket(water())
+        log = NMEALog("million.log", ((0, packet),) * 1000000, 0, True)
+        self.session.finish_load(self.session.begin_load(), log)
+        self.session.begin_seek(0)
+        self.assertEqual(self.session.cursor, 0)
+        self.assertFalse(self.session.seek_batch())
+        self.assertEqual(self.session.cursor, 1000)
+        self.assertFalse(self.session.seek_batch(7))
+        self.assertEqual(self.session.cursor, 1007)
+        self.session.select_source("live")
+        self.assertTrue(self.session.seek_batch())
+        self.assertEqual(self.session.cursor, 1007)
+        self.assertIsNone(self.session.preview_position)
+
+    def test_load_restart_and_close_cancel_pending_seek_and_preview(self):
+        self.load([rmc("120000"), rmc("120010")])
+        for cancel in (
+            self.session.restart,
+            self.session.begin_load,
+            self.session.close,
+        ):
+            self.session.begin_seek(9)
+            cancel()
+            self.assertTrue(self.session.seek_batch())
+            self.assertFalse(self.session.seeking)
+            self.assertIsNone(self.session.preview_position)
+            if self.session.loading:
+                self.session.finish_load(self.session._generation)
+
+    def test_seek_before_first_fix_does_not_consume_future_position(self):
+        log = self.load([water(), wind(), rmc("120000"), rmc("120010")])
+        self.seek(0)
+        self.assertLess(self.session.position, log.point_offsets[0])
+        self.assertEqual(self.received, [log.entries[0][1]])
+
+    def test_rudder_and_engine_pgns_are_instrument_fields(self):
+        from gweatherrouting.core.nmeasession import NumericFieldCollector
+
+        now = datetime.now(timezone.utc)
+        rudder = bytes([0]) + int(0.1 / 0.0001).to_bytes(2, "little", signed=True)
+        rudder += int(-0.2 / 0.0001).to_bytes(2, "little", signed=True)
+        rpm = bytes([0]) + int(1500 / 0.125).to_bytes(2, "little")
+        oil_temp = bytes([0]) + (100).to_bytes(2, "little")
+        oil_temp += int((85 + 273.15) / 0.125).to_bytes(2, "little", signed=True)
+        oil_temp += int((90 + 273.15) / 0.125).to_bytes(2, "little", signed=True)
+        oil_temp += (14 * 20).to_bytes(2, "little")
+        oil_temp += (5000).to_bytes(2, "little")
+        oil_temp += (100).to_bytes(4, "little")
+
+        collector = NumericFieldCollector()
+        for offset, pgn, data in (
+            (0.0, 127245, rudder),
+            (1.0, 127488, rpm),
+            (2.0, 127489, oil_temp),
+        ):
+            packet = instruments(N2KMessage(now, 6, pgn, 255, 4, 0, data))[0]
+            collector.add(offset, packet)
+
+        fields = {field.key: field for field in collector.snapshot()}
+        self.assertIn("RUD.position_deg", fields)
+        self.assertIn("ENG.rpm", fields)
+        self.assertIn("ENG.engine_temp_c", fields)
+        self.assertAlmostEqual(fields["RUD.position_deg"].values[0], -11.5)
+        self.assertAlmostEqual(fields["ENG.rpm"].values[0], 1500.0)
+        self.assertAlmostEqual(fields["ENG.engine_temp_c"].values[0], 90.0)

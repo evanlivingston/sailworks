@@ -62,6 +62,8 @@ Item {
         property var selectedPoint: []
         property var trackPoints: []
         property var trackPosition: []
+        property var trackHeading: null
+        property var trackAwa: null
         property string captionText: ""
         property bool dashboardVisible: true
         property real centerLatitude: 0
@@ -95,6 +97,70 @@ Item {
             context.setLineDash([6, 4])
             context.stroke()
             context.setLineDash([])
+        }
+
+        function hasFiniteValue(value) {
+            return value !== null && value !== undefined && isFinite(Number(value))
+        }
+
+        function drawTrackMarker(context) {
+            if (!trackPosition || trackPosition.length !== 2)
+                return
+            const point = screenPoint(trackPosition)
+            if (!hasFiniteValue(trackHeading)) {
+                context.beginPath()
+                context.arc(point.x, point.y, 5, 0, Math.PI * 2)
+                context.fillStyle = "white"
+                context.fill()
+                context.lineWidth = 2
+                context.strokeStyle = "#d8851b"
+                context.stroke()
+                return
+            }
+
+            // The hull points north in local coordinates; positive canvas
+            // rotation is clockwise, matching compass heading degrees.
+            const heading = ((Number(trackHeading) % 360) + 360) % 360
+            context.save()
+            context.translate(point.x, point.y)
+            context.rotate(heading * Math.PI / 180)
+            context.beginPath()
+            context.moveTo(0, -10)
+            context.lineTo(4.5, -3)
+            context.lineTo(4, 5)
+            context.lineTo(0, 8)
+            context.lineTo(-4, 5)
+            context.lineTo(-4.5, -3)
+            context.closePath()
+            context.fillStyle = "white"
+            context.fill()
+            context.lineWidth = 1.5
+            context.strokeStyle = "#d8851b"
+            context.stroke()
+
+            if (hasFiniteValue(trackAwa)) {
+                let awa = ((Number(trackAwa) % 360) + 360) % 360
+                if (awa > 180)
+                    awa -= 360
+                context.save()
+                context.translate(0, -6)
+                context.rotate(awa * Math.PI / 180)
+                context.beginPath()
+                context.moveTo(0, 1)
+                context.lineTo(0, -11)
+                context.strokeStyle = "#28a6c2"
+                context.lineWidth = 1.5
+                context.stroke()
+                context.beginPath()
+                context.moveTo(0, -13)
+                context.lineTo(-2.5, -8.5)
+                context.lineTo(2.5, -8.5)
+                context.closePath()
+                context.fillStyle = "#28a6c2"
+                context.fill()
+                context.restore()
+            }
+            context.restore()
         }
 
         onPaint: {
@@ -141,22 +207,15 @@ Item {
                 context.strokeStyle = "#5295d2"
                 context.stroke()
             }
-            if (trackPosition && trackPosition.length === 2) {
-                const point = screenPoint(trackPosition)
-                context.beginPath()
-                context.arc(point.x, point.y, 5, 0, Math.PI * 2)
-                context.fillStyle = "white"
-                context.fill()
-                context.lineWidth = 2
-                context.strokeStyle = "#d8851b"
-                context.stroke()
-            }
+            drawTrackMarker(context)
         }
         onRoutePlanChanged: requestPaint()
         onRoutePreviewChanged: requestPaint()
         onSelectedPointChanged: requestPaint()
         onTrackPointsChanged: requestPaint()
         onTrackPositionChanged: requestPaint()
+        onTrackHeadingChanged: requestPaint()
+        onTrackAwaChanged: requestPaint()
         onCenterLatitudeChanged: requestPaint()
         onCenterLongitudeChanged: requestPaint()
         onZoomChanged: requestPaint()
