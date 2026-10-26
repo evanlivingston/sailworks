@@ -109,6 +109,16 @@ def _validate_configuration(configuration):
         raise UnsupportedConfigurationError(
             f"{configuration.model_id}: requested horizon exceeds provider maximum"
         )
+    unsupported = tuple(
+        field
+        for field in configuration.fields
+        if not capability.available_steps(None, field)
+    )
+    if unsupported:
+        raise UnsupportedConfigurationError(
+            f"{configuration.model_id}: unsupported forecast field(s): "
+            + ", ".join(unsupported)
+        )
     supported_union = {
         step
         for field in configuration.fields

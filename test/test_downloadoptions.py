@@ -14,6 +14,65 @@ from gweatherrouting.core.gribsources.eccchrdps import ECCHRDPSource
 
 
 class DownloadSelectionTests(unittest.TestCase):
+    def test_gust_is_opt_in_and_downloaded_by_gfs(self):
+        self.assertEqual(DownloadOptions().fields, ("wind", "pressure"))
+        source = NOAAGFSSource()
+        options = DownloadOptions(6, 3, ("gust",), (0, 3, 6))
+        row = source.get_download_list(options)[0]
+        config = json.loads(row[4])
+        self.assertEqual(config["fields"], ["gust"])
+        response = MagicMock()
+        response.iter_content.return_value = [b"GRIB-fixture"]
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch(
+                "gweatherrouting.core.gribsources.noaagfs.requests.get",
+                return_value=response,
+            ) as get,
+        ):
+            source.download(row[4], directory, lambda _: None)
+            self.assertEqual(get.call_count, 3)
+            for call in get.call_args_list:
+                params = call.kwargs["params"]
+                self.assertEqual(params["lev_surface"], "on")
+                self.assertEqual(params["var_GUST"], "on")
+                self.assertNotIn("var_UGRD", params)
+                self.assertNotIn("var_VGRD", params)
+                self.assertNotIn("var_PRMSL", params)
+
+    def test_gust_is_downloaded_by_hrrr_when_selected(self):
+        source = NOAAHRRRSource()
+        run = datetime(2026, 10, 15, 3, tzinfo=timezone.utc)
+        with patch.object(source, "_get_available_cycles", return_value=[run]):
+            row = source.get_download_list(DownloadOptions(3, 3, ("gust",), (0, 3)))[0]
+        config = json.loads(row[4])
+        self.assertEqual(config["fields"], ["gust"])
+        response = MagicMock()
+        response.iter_content.return_value = [b"GRIB-fixture"]
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch(
+                "gweatherrouting.core.gribsources.noaahrrr.requests.get",
+                return_value=response,
+            ) as get,
+        ):
+            source.download(row[4], directory, lambda _: None)
+            self.assertEqual(get.call_count, 2)
+            for call in get.call_args_list:
+                params = call.kwargs["params"]
+                self.assertEqual(params["lev_surface"], "on")
+                self.assertEqual(params["var_GUST"], "on")
+                self.assertNotIn("var_UGRD", params)
+                self.assertNotIn("var_VGRD", params)
+                self.assertNotIn("var_MSLMA", params)
+
+    def test_unsupported_hrdps_gust_selection_has_no_download_rows(self):
+        source = ECCHRDPSource()
+        with patch.object(source, "_discover", return_value=("20261015", "12")):
+            self.assertEqual(
+                source.get_download_list(DownloadOptions(24, 3, ("gust",))), []
+            )
+
     def test_sparse_selected_hours_and_fields_reach_gfs_network(self):
         source = NOAAGFSSource()
         options = DownloadOptions(24, 3, ("pressure",), (0, 9, 24))

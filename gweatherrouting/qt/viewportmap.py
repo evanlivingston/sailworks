@@ -8,7 +8,7 @@ from bisect import bisect_right
 from dataclasses import dataclass
 import math
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import QWidget
 
 from gweatherrouting.core.mapviewport import MercatorProjection
@@ -114,9 +114,18 @@ class ViewportMap(
         self._next_tick = 0
         self._instrument_status = None
         self._cursor_context = None
-        self._cursor_parts = {"wind": "", "current": "", "depth": ""}
+        self._cursor_parts = {
+            "wind": "",
+            "gust": "",
+            "current": "",
+            "depth": "",
+        }
         self._cursor_coords = ""
         self._cursor_position = None
+        self._cursor_screen_position = None
+        self._cursor_refresh_timer = QTimer(self)
+        self._cursor_refresh_timer.setSingleShot(True)
+        self._cursor_refresh_timer.timeout.connect(self._refresh_cursor_after_motion)
         self.isochrone_frame = IsochroneFrame((), (), ())
 
         self._weather_services.initialize_base_chart_renderer(controller)
@@ -357,6 +366,13 @@ class ViewportMap(
             return False
         current.center_lat, current.center_lon, current.zoom = state
         self._cancel_cursor()
+        cursor_position = getattr(self, "_cursor_screen_position", None)
+        cursor_timer = getattr(self, "_cursor_refresh_timer", None)
+        if cursor_position is not None and cursor_timer is not None:
+            # Camera updates cancel in-flight samples. Re-sample once a drag,
+            # inertia pan, or zoom has actually settled, even if the pointer
+            # itself has not moved.
+            cursor_timer.start(180)
         self.invalidate_navigation()
         self.view_changed.emit()
         presenter = self._weather_presenter
@@ -367,6 +383,19 @@ class ViewportMap(
         if widget is not None:
             widget.set_route_overlay(self.viewport_route_overlay())
         return True
+
+    def _refresh_cursor_after_motion(self):
+        position = self._cursor_screen_position
+        if (
+            position is None
+            or self.disposed
+            or not self.isVisible()
+            or self.is_moving()
+            or self.move_callback is not None
+        ):
+            return
+        if self.rect().contains(position.toPoint()):
+            self._hover(position)
 
     def viewport_route_overlay(self):
         """Route and log-track geometry for the viewport's top scene layer."""

@@ -1,4 +1,4 @@
-"""Debounced cursor weather queries with private, bounded GRIB handles."""
+"""Asynchronous cursor weather queries with private, bounded GRIB handles."""
 
 from collections import OrderedDict
 from threading import Thread
@@ -24,12 +24,9 @@ class CursorGrib(DisplayGrib):
 
 
 class WindCursorSampler:
-    def __init__(self, call_later, cancel_later, dispatch, display_grib=CursorGrib):
-        self._call_later = call_later
-        self._cancel_later = cancel_later
+    def __init__(self, dispatch, display_grib=CursorGrib):
         self._dispatch = dispatch
         self._display_grib = display_grib
-        self._timer = 0
         self._generation = 0
         self._pending = None
         self._running = False
@@ -41,14 +38,11 @@ class WindCursorSampler:
         if self._closed or not sources:
             return
         self._pending = (self._generation, tuple(sources), forecast, lat, lon, callback)
-        self._timer = self._call_later(120, self._start)
+        self._start()
 
     def cancel(self):
         self._generation += 1
         self._pending = None
-        if self._timer:
-            self._cancel_later(self._timer)
-            self._timer = 0
 
     def close(self, *args):
         self.cancel()
@@ -68,7 +62,6 @@ class WindCursorSampler:
             close()
 
     def _start(self):
-        self._timer = 0
         if self._running or self._pending is None or self._closed:
             return False
         request, self._pending = self._pending, None
@@ -76,9 +69,9 @@ class WindCursorSampler:
 
         def worker():
             try:
-                result = self._sample(*request[1:5])
+                result = self._sample_weather(*request[1:5])
             except Exception:
-                result = None
+                result = (None, None)
             if self._closed:
                 self._clear_gribs()
             self._dispatch(self._ready, request, result)
@@ -87,6 +80,10 @@ class WindCursorSampler:
         return False
 
     def _sample(self, sources, forecast, lat, lon):
+        """Compatibility API returning wind only."""
+        return self._sample_weather(sources, forecast, lat, lon)[0]
+
+    def _sample_weather(self, sources, forecast, lat, lon):
         private = []
         try:
             for source in sources:
@@ -100,7 +97,18 @@ class WindCursorSampler:
                 except Exception:
                     continue
             if private and all(isinstance(grib, Grib) for grib in private):
-                return WeatherSampler(private).wind_at(forecast, lat, lon)
+                sampler = WeatherSampler(private)
+                wind = sampler.wind_at(forecast, lat, lon)
+                gust = (
+                    sampler.gust_at(forecast, lat, lon)
+                    if any(
+                        record.element == "GUST"
+                        for index in sampler.indices
+                        for record in index.records
+                    )
+                    else None
+                )
+                return wind, gust
             return self._sample_providers(private, forecast, lat, lon)
         finally:
             # Keep every enabled file alive until cross-file sampling completes.
@@ -110,14 +118,23 @@ class WindCursorSampler:
 
     @staticmethod
     def _sample_providers(private, forecast, lat, lon):
+        wind = gust = None
         for grib in private:
-            try:
-                wind = grib.get_wind_at(forecast, lat, lon)
-                if wind is not None:
-                    return wind
-            except Exception:
-                continue
-        return None
+            if wind is None:
+                try:
+                    wind = grib.get_wind_at(forecast, lat, lon)
+                except Exception:
+                    pass
+            if gust is None:
+                try:
+                    get_gust = getattr(grib, "get_gust_at", None)
+                    if get_gust is not None:
+                        gust = get_gust(forecast, lat, lon)
+                except Exception:
+                    pass
+            if wind is not None and gust is not None:
+                break
+        return wind, gust
 
     def _ready(self, request, result):
         self._running = False
@@ -125,6 +142,6 @@ class WindCursorSampler:
             request[5](result)
         if self._closed:
             self._clear_gribs()
-        elif self._pending is not None and not self._timer:
+        elif self._pending is not None:
             self._start()
         return False

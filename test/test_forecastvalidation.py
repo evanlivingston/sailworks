@@ -58,6 +58,52 @@ def test_inspects_bands_and_returns_immutable_full_per_field_coverage():
         result.field_times[0][1][0] = RUN
 
 
+def test_inspects_surface_gust_as_its_own_field():
+    request = planned(("wind", "gust"), {"wind": (0, 3), "gust": (0, 3)})
+    dataset = Dataset(
+        [
+            band("UGRD", 0),
+            band("VGRD", 0),
+            band("GUST", 0),
+            band("UGRD", 3),
+            band("VGRD", 3),
+            band("GUST", 3),
+        ]
+    )
+    result = inspect_fake("fake.grib", request, dataset)
+    assert result.fields == ("wind", "gust")
+    assert result.levels == ("0-SFC", "10-HTGL")
+    assert dict(result.field_times) == {
+        "wind": (RUN, RUN + timedelta(hours=3)),
+        "gust": (RUN, RUN + timedelta(hours=3)),
+    }
+
+    incomplete = Dataset(
+        [
+            band("UGRD", 0),
+            band("VGRD", 0),
+            band("GUST", 0),
+            band("UGRD", 3),
+            band("VGRD", 3),
+        ]
+    )
+    with pytest.raises(ForecastValidationError, match="gust at hour 3"):
+        inspect_fake("fake.grib", request, incomplete)
+
+
+@pytest.mark.parametrize(
+    "gust_band",
+    [
+        band("GUST", 0, level="10-HTGL"),
+        band("GUST", 0, unit="[knots]"),
+    ],
+)
+def test_rejects_gust_with_wrong_level_or_units(gust_band):
+    request = planned(("gust",), {"gust": (0,)})
+    with pytest.raises(ForecastValidationError):
+        inspect_fake("fake.grib", request, Dataset([gust_band]))
+
+
 @pytest.mark.parametrize(
     "bands,planned_case",
     [

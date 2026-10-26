@@ -25,7 +25,7 @@ from typing import Callable, List
 import requests
 
 from gweatherrouting.core.gribsources.base import GribSource
-from .options import FIELDS, custom_rows, filtered_parameters, selection
+from .options import DEFAULT_FIELDS, FIELDS, custom_rows, filtered_parameters, selection
 
 logger = logging.getLogger("gweatherrouting")
 
@@ -56,10 +56,11 @@ FORECAST_PRESETS = {
 class NOAAGFSSource(GribSource):
     """GRIB source for NOAA GFS global weather forecasts (0.25 degree).
 
-    Downloads wind data (UGRD/VGRD at 10m above ground) plus mean-sea-level
-    pressure (PRMSL, for isobars) from NOAA NOMADS for user-specified
-    geographic bounds.
+    Downloads wind data (UGRD/VGRD at 10m above ground), optional surface gust,
+    and mean-sea-level pressure (PRMSL, for isobars) from NOAA NOMADS.
     """
+
+    download_fields = FIELDS
 
     def __init__(self):
         self._bounds = None  # (lat_south, lon_west, lat_north, lon_east)
@@ -196,17 +197,22 @@ class NOAAGFSSource(GribSource):
         legacy = len([h for h in GFS_FORECAST_HOURS if h <= max(steps)])
         estimate = self._estimate_size(max(steps)).split()
         scale = (
-            len(steps) / legacy * (2 * ("wind" in fields) + ("pressure" in fields)) / 3
+            len(steps)
+            / legacy
+            * (2 * ("wind" in fields) + ("pressure" in fields) + ("gust" in fields))
+            / 3
         )
         return f"~{float(estimate[0]) * scale:.1f} {estimate[1]}"
 
-    def _build_filter_url(self, date_str, cycle, forecast_hour, fields=FIELDS):
+    def _build_filter_url(self, date_str, cycle, forecast_hour, fields=DEFAULT_FIELDS):
         """Build NOAA NOMADS filter URL for a specific forecast hour."""
         params = {
             "file": f"gfs.t{cycle}z.pgrb2.0p25.f{forecast_hour:03d}",
             "lev_10_m_above_ground": "on",
             "var_UGRD": "on",
             "var_VGRD": "on",
+            "lev_surface": "on",
+            "var_GUST": "on",
             "lev_mean_sea_level": "on",
             "var_PRMSL": "on",
             "dir": f"/gfs.{date_str}/{cycle}/atmos",
@@ -308,7 +314,7 @@ class NOAAGFSSource(GribSource):
         cycle,
         percentage_callback,
         check_cancel,
-        fields=FIELDS,
+        fields=DEFAULT_FIELDS,
     ):
         total_steps = len(forecast_steps)
         bytes_written = 0

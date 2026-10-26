@@ -77,6 +77,16 @@ class TestNOAAGFSSource(unittest.TestCase):
         self.assertEqual(params["lev_mean_sea_level"], "on")
         self.assertEqual(params["var_PRMSL"], "on")
         self.assertNotIn("subregion", params)
+        self.assertNotIn("var_GUST", params)
+
+    def test_build_filter_url_requests_gust_only_when_selected(self):
+        source = NOAAGFSSource()
+        params = source._build_filter_url("20260324", "00", 3, fields=("gust",))
+        self.assertEqual(params["lev_surface"], "on")
+        self.assertEqual(params["var_GUST"], "on")
+        self.assertNotIn("var_UGRD", params)
+        self.assertNotIn("var_VGRD", params)
+        self.assertNotIn("var_PRMSL", params)
 
     def test_build_filter_url_with_bounds(self):
         source = NOAAGFSSource()

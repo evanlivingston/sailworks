@@ -58,7 +58,10 @@ void main() {
     } else if (outputMode > 0.5) {
         fragColor = vec4((uv + 128.0) / 256.0, 0, 1) * qt_Opacity;
     } else {
+        // A continuous wind-speed wash beneath the barbs. Keep the existing
+        // speed ramp translucent so chart and other map layers show through.
         float speed = clamp(length(uv) / 32.0, 0.0, 1.0);
-        fragColor = vec4(speed, 1.0 - abs(2.0 * speed - 1.0), 1.0 - speed, 1) * qt_Opacity;
+        vec3 color = vec3(speed, 1.0 - abs(2.0 * speed - 1.0), 1.0 - speed);
+        fragColor = vec4(color, 0.35) * qt_Opacity;
     }
 }

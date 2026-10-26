@@ -4,10 +4,10 @@ from datetime import datetime, timezone
 from threading import Event, Thread
 
 from PySide6.QtCore import QTimer, Qt, Signal, Slot
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
     QWidget,
     QHBoxLayout,
-    QGridLayout,
     QVBoxLayout,
     QLabel,
     QCheckBox,
@@ -55,6 +55,71 @@ MODELS = (
 )
 
 
+class ModelListRow(QWidget):
+    selected = Signal(str)
+
+    def __init__(self, model_id, name, resolution, forecast, checked, parent=None):
+        super().__init__(parent)
+        self.model_id = model_id
+        self.setObjectName("forecastModelRow")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(8)
+
+        include = QWidget(self)
+        include.setFixedWidth(58)
+        include_layout = QHBoxLayout(include)
+        include_layout.setContentsMargins(0, 0, 0, 0)
+        include_layout.addStretch(1)
+        self.download_check = QCheckBox(include)
+        self.download_check.setChecked(checked)
+        self.download_check.setAccessibleName(f"Include {name} in download")
+        include_layout.addWidget(self.download_check)
+        include_layout.addStretch(1)
+
+        self.model_label = QLabel(name, self)
+        self.resolution_label = QLabel(resolution, self)
+        self.forecast_label = QLabel(forecast, self)
+        self.resolution_label.setFixedWidth(88)
+        self.forecast_label.setFixedWidth(72)
+        for label in (self.model_label, self.resolution_label, self.forecast_label):
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+        layout.addWidget(include)
+        layout.addWidget(self.model_label, 1)
+        layout.addWidget(self.resolution_label)
+        layout.addWidget(self.forecast_label)
+        self.set_selected(False)
+
+    def set_selected(self, selected):
+        self.setProperty("selected", bool(selected))
+        background = (
+            self.palette().color(QPalette.ColorRole.Highlight).name()
+            if selected
+            else "transparent"
+        )
+        foreground = (
+            self.palette().color(QPalette.ColorRole.HighlightedText).name()
+            if selected
+            else self.palette().color(QPalette.ColorRole.WindowText).name()
+        )
+        self.setStyleSheet(
+            "QWidget#forecastModelRow {"
+            f"background-color: {background}; border-radius: 3px;"
+            "}"
+        )
+        for label in (self.model_label, self.resolution_label, self.forecast_label):
+            label.setStyleSheet(f"background: transparent; color: {foreground};")
+
+    def mousePressEvent(self, event):  # noqa: N802 - Qt virtual method name
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.selected.emit(self.model_id)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
 class ForecastDownloadOptions(QWidget):
     changed = Signal()
 
@@ -64,30 +129,56 @@ class ForecastDownloadOptions(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         layout = QHBoxLayout()
         root.addLayout(layout)
+        self._model_id_by_name = {
+            capability.provider_name: model_id
+            for model_id, capability in MODEL_CAPABILITIES.items()
+            if capability.provider_name in sources
+        }
+        self._fields_by_model = {
+            model_id: {"wind": True, "pressure": True, "gust": False}
+            for model_id in self._model_id_by_name.values()
+        }
         model_box = QGroupBox("Models")
-        models = QGridLayout(model_box)
-        models.setHorizontalSpacing(18)
-        for column, heading in enumerate(("Model", "Resolution", "Forecast")):
-            models.addWidget(QLabel(heading), 0, column)
+        models = QVBoxLayout(model_box)
+        models.setSpacing(2)
+        header = QHBoxLayout()
+        include_heading = QLabel("Include")
+        include_heading.setFixedWidth(58)
+        resolution_heading = QLabel("Resolution")
+        resolution_heading.setFixedWidth(88)
+        forecast_heading = QLabel("Forecast")
+        forecast_heading.setFixedWidth(72)
+        header.addWidget(include_heading)
+        header.addWidget(QLabel("Model"), 1)
+        header.addWidget(resolution_heading)
+        header.addWidget(forecast_heading)
+        models.addLayout(header)
         self.models = {}
         self.model_rows = {}
-        model_row = 1
+        self.model_rows_by_id = {}
+        self._parameter_model_id = None
         for record in MODELS:
             name, label, resolution, forecast, region = record[:5]
             if name not in sources:
                 continue
-            check = QCheckBox(label)
-            check.setChecked(name == "NOAA GFS")
-            check.setToolTip(region)
-            self.models[name] = check
-            models.addWidget(check, model_row, 0)
-            resolution_label, forecast_label = QLabel(resolution), QLabel(forecast)
-            models.addWidget(resolution_label, model_row, 1)
-            models.addWidget(forecast_label, model_row, 2)
-            self.model_rows[name] = (check, resolution_label, forecast_label)
-            check.toggled.connect(self.rebuild_hours)
-            model_row += 1
-        models.setRowStretch(model_row, 1)
+            model_id = self._model_id_by_name[name]
+            row = ModelListRow(
+                model_id,
+                label,
+                resolution,
+                forecast,
+                checked=name == "NOAA GFS",
+            )
+            row.download_check.setToolTip(region)
+            self.models[name] = row.download_check
+            self.model_rows[name] = row
+            self.model_rows_by_id[model_id] = row
+            if self._parameter_model_id is None:
+                self._parameter_model_id = model_id
+            row.selected.connect(self._parameter_model_changed)
+            row.download_check.toggled.connect(self.rebuild_hours)
+            models.addWidget(row)
+        models.addStretch(1)
         layout.addWidget(model_box, 3)
         parameter_box = QGroupBox("Parameters")
         parameters = QVBoxLayout(parameter_box)
@@ -95,12 +186,19 @@ class ForecastDownloadOptions(QWidget):
         for name, label in (
             ("wind", "Wind at 10 m"),
             ("pressure", "Sea-level pressure"),
+            ("gust", "Wind gust"),
         ):
             check = QCheckBox(label)
-            check.setChecked(True)
-            check.toggled.connect(self.rebuild_hours)
+            check.setChecked(name != "gust")
+            if name == "gust":
+                check.setToolTip(
+                    "Surface GUST forecast field. Available only for models "
+                    "that provide it."
+                )
+            check.toggled.connect(self._parameter_fields_changed)
             self.fields[name] = check
             parameters.addWidget(check)
+        self._parameter_model_changed(self._parameter_model_id)
         parameters.addStretch()
         layout.addWidget(parameter_box, 2)
         time_box = QGroupBox("Forecast hours")
@@ -168,21 +266,41 @@ class ForecastDownloadOptions(QWidget):
     def names(self):
         return tuple(name for name, check in self.models.items() if check.isChecked())
 
+    def _fields_for_model(self, model_id):
+        selected = self._fields_by_model.get(model_id, {})
+        return tuple(field for field in self.fields if selected.get(field, False))
+
+    def _parameter_model_changed(self, model_id):
+        if model_id not in self._fields_by_model:
+            self.fields["gust"].hide()
+            return
+        self._parameter_model_id = model_id
+        for selected_model, row in self.model_rows_by_id.items():
+            row.set_selected(selected_model == model_id)
+        capability = MODEL_CAPABILITIES[model_id]
+        self.fields["gust"].setVisible(bool(capability.available_steps(None, "gust")))
+        values = self._fields_by_model[model_id]
+        for field, check in self.fields.items():
+            previous = check.blockSignals(True)
+            check.setChecked(values.get(field, False))
+            check.blockSignals(previous)
+
+    def _parameter_fields_changed(self, *_args):
+        model_id = self._parameter_model_id
+        if model_id not in self._fields_by_model:
+            return
+        self._fields_by_model[model_id] = {
+            field: check.isChecked() for field, check in self.fields.items()
+        }
+        self.rebuild_hours()
+
     def available(self):
         hours: set[int] = set()
-        fields = tuple(name for name, check in self.fields.items() if check.isChecked())
         for name in self.names():
-            model_id = next(
-                (
-                    model_id
-                    for model_id, capability in MODEL_CAPABILITIES.items()
-                    if capability.provider_name == name
-                ),
-                None,
-            )
+            model_id = self._model_id_by_name.get(name)
             if model_id is not None:
                 capability = MODEL_CAPABILITIES[model_id]
-                for field in fields:
+                for field in self._fields_for_model(model_id):
                     hours.update(
                         hour
                         for hour in capability.available_steps(None, field)
@@ -395,9 +513,6 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
         selected = self.names()
         if not selected:
             raise ValueError("Select at least one model")
-        fields = tuple(name for name, check in self.fields.items() if check.isChecked())
-        if not fields:
-            raise ValueError("Select wind, pressure, or both")
         hours = self.duration.currentData()
         interval = self.interval.currentData()
         requested = tuple(
@@ -419,6 +534,11 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
             if interval not in capability.intervals:
                 raise ValueError(
                     f"{capability.provider_name} does not support this interval"
+                )
+            fields = self._fields_for_model(model_id)
+            if not fields:
+                raise ValueError(
+                    f"Select at least one parameter for {capability.provider_name}"
                 )
             model_hours = min(hours, capability.max_horizon())
             available = {
@@ -502,10 +622,12 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
                 if row is None:
                     continue
                 item = by_model.get(model_id)
+                if item is not None:
+                    self._fields_by_model[model_id] = {
+                        field: field in item.fields for field in self.fields
+                    }
                 row.setChecked(item is not None)
                 if item is not None:
-                    for field, check in self.fields.items():
-                        check.setChecked(field in item.fields)
                     index = self.duration.findData(
                         item.hours if hasattr(item, "hours") else item.forecast_hours
                     )
@@ -514,6 +636,13 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
                     index = self.interval.findData(item.interval)
                     if index >= 0:
                         self.interval.setCurrentIndex(index)
+            parameter_model_id = (
+                saved.refresh_model_id
+                if saved.refresh_model_id in by_model
+                else next(iter(by_model), None)
+            )
+            if parameter_model_id in self.model_rows_by_id:
+                self._parameter_model_changed(parameter_model_id)
             self.rebuild_hours()
             self._saved_signature = (saved.configurations, saved.refresh_model_id)
         finally:

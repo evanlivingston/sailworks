@@ -16,6 +16,7 @@ class CursorStatus(QWidget):
         # Missing observations leave their column empty, never move other fields.
         for key, sample in (
             ("wind", "Wind 359.9°, 99.9 kts"),
+            ("gust", "Gust 99.9 kts"),
             ("depth", "Sounding 999.9 m (999 m away)"),
             ("coords", "Lat -89.999999°  Lon -179.999999°"),
             ("current", None),

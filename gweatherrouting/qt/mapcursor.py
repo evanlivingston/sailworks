@@ -20,7 +20,12 @@ class MapCursorMixin:
         self._wind_cursor.cancel()
         self._cursor_context = None
         self._cursor_position = None
-        self._cursor_parts = {"wind": "", "current": "", "depth": ""}
+        self._cursor_parts = {
+            "wind": "",
+            "gust": "",
+            "current": "",
+            "depth": "",
+        }
         self.cursor_readout.emit("")
 
     def _emit_cursor_readout(self):
@@ -28,6 +33,7 @@ class MapCursorMixin:
             part
             for part in (
                 self._cursor_parts["wind"],
+                self._cursor_parts["gust"],
                 self._cursor_parts["current"],
                 self._cursor_parts["depth"],
             )
@@ -71,7 +77,14 @@ class MapCursorMixin:
         context = self._weather_context()
         self._cursor_context = context
         self._cursor_position = (lat, lon)
-        self._cursor_parts = {"wind": "", "current": "", "depth": ""}
+        self._cursor_screen_position = position
+        self._cursor_parts = {
+            "wind": "Wind …",
+            "gust": "",
+            "current": "",
+            "depth": "",
+        }
+        point = (lat, lon)
         self._cursor_coords = "Lat %.6f°  Lon %.6f°" % (lat, lon)
         if not self.is_moving() and self.move_callback is None:
             marine = self.marine.cursor_text(lat, lon)
@@ -81,24 +94,34 @@ class MapCursorMixin:
         self._emit_cursor_readout()
         if self.is_moving() or self.move_callback is not None or not self.isVisible():
             self._wind_cursor.cancel()
+            self._cursor_parts["wind"] = "Wind unavailable"
+            self._emit_cursor_readout()
             return
-        if not self.wind_visible:
+        sources = context[1]
+        if not sources:
             self._wind_cursor.cancel()
+            self._cursor_parts["wind"] = "Wind unavailable"
+            self._emit_cursor_readout()
             return
 
-        def show(wind):
+        def show(weather):
             if (
                 self.disposed
                 or not self.isVisible()
                 or self._cursor_context != context
+                or self._cursor_position != point
                 or context != self._weather_context()
             ):
                 return
+            wind, gust = weather
             self._cursor_parts["wind"] = (
                 "Wind %.1f°, %.1f kts" % (wind[0], wind[1] * 1.94384)
                 if wind is not None
-                else ""
+                else "Wind unavailable"
+            )
+            self._cursor_parts["gust"] = (
+                "Gust %.1f kts" % (gust * 1.94384) if gust is not None else ""
             )
             self._emit_cursor_readout()
 
-        self._wind_cursor.request(context[1], context[0], lat, lon, show)
+        self._wind_cursor.request(sources, context[0], lat, lon, show)
