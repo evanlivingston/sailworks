@@ -233,11 +233,15 @@ class PreviewWindow(QMainWindow):
         )
         file_menu = self.menuBar().addMenu("File")
         open_log = file_menu.addAction(
-            symbol_icon("document-open-symbolic"), "Open NMEA log…", self.load_log
+            symbol_icon("document-open-symbolic"),
+            "Open NMEA log…",
+            self.show_log_library,
         )
         open_log.setShortcut(QKeySequence.StandardKey.Open)
         file_menu.addAction(
-            symbol_icon("weather-windy-symbolic"), "Open forecast…", self.load_grib
+            symbol_icon("weather-windy-symbolic"),
+            "Open forecast…",
+            self.show_library,
         )
         file_menu.addAction("Data Library…", self.show_library)
         file_menu.addAction("Polars", self.show_polar_workspace)
