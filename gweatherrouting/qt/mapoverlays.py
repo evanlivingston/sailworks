@@ -16,11 +16,13 @@ class MapOverlayServices:
         from gweatherrouting.rendering.dashboard import DashboardRenderer
         from gweatherrouting.rendering.isochrones import IsochronesRenderer
         from .marinestate import MarineDisplayState
+        from .icoadsstate import IcoadsState
 
         self.navigation = NavigationRenderer(controller.core)
         self.ais_renderer = AISRenderer()
         self.isochrones = IsochronesRenderer(controller.scheduler.submit)
         self.marine = MarineDisplayState(controller.core.marine_manager, time_control)
+        self.ship_observations = IcoadsState()
         self.marine.visible = marine_visible
         self.marine.set_current_density(controller.settings.marineCurrentDensity)
         marine_ref = weakref.ref(self.marine)
@@ -48,6 +50,7 @@ class MapOverlayServices:
         """Close terminal overlay resources for a map host."""
         self.isochrones.forget(host)
         self.marine.close()
+        self.ship_observations.close()
 
 
 class RetainedOverlayMixin:
@@ -68,6 +71,10 @@ class RetainedOverlayMixin:
     @property
     def marine(self):
         return self._overlay_services.marine
+
+    @property
+    def ship_observations(self):
+        return self._overlay_services.ship_observations
 
     @property
     def dashboard(self):
