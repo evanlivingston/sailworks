@@ -131,6 +131,42 @@ class RefreshCoordinator:
             estimated_models.append((planned.model_id, size, approximate))
         return total_bytes, tuple(estimated_models), tuple(reusable_models)
 
+    def models_needing_download(
+        self, configurations, selected_model_id, *, cancel=None
+    ):
+        """Return planned models whose latest forecast is not already stored locally.
+
+        A non-empty result means a more recent forecast is available for at least
+        one selected model and a refresh would transfer data. An empty result
+        means every selected model is already current for its latest planned run.
+        """
+        configurations = tuple(configurations)
+        plan = self.planner(
+            configurations,
+            selected_model_id,
+            factories=self.factories,
+            cancel=cancel,
+        )
+        needed = []
+        for planned in plan.models:
+            if cancel is not None and cancel.is_set():
+                raise RefreshCancelledError("Forecast freshness check cancelled")
+            if self.store.reusable_entry(planned) is None:
+                needed.append(planned)
+        return tuple(needed)
+
+    def _all_models_current(self, plan):
+        """Return True when every planned model is already stored locally.
+
+        Staleness and cancellation are enforced by the caller's guards
+        (_raise_if_stale_or_cancelled); this only reports whether local data
+        already covers every planned run.
+        """
+        for planned in plan.models:
+            if self.store.reusable_entry(planned) is None:
+                return False
+        return True
+
     @staticmethod
     def _estimate_legacy_size(planned):
         from .gribsources.eccchrdps import ECCHRDPSource
@@ -313,6 +349,20 @@ class RefreshCoordinator:
             ",".join(item.model_id for item in plan.models),
             selected_model_id,
         )
+
+        # If the configuration changed while the plan was being built, this
+        # refresh ticket is superseded before any transfer decision is made.
+        self._raise_if_stale_or_cancelled(revision, ticket, cancel)
+        if self._all_models_current(plan):
+            current = self.store.active()
+            if current is not None:
+                self._progress(progress, selected_model_id, 100)
+                logger.info(
+                    "Forecast refresh up to date; models=%s selected=%s",
+                    ",".join(item.model_id for item in plan.models),
+                    selected_model_id,
+                )
+                return current
 
         entries = []
         try:

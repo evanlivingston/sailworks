@@ -372,6 +372,9 @@ def test_stale_during_active_pointer_staging_is_blocked_at_commit_guard(
     service.configure((config(),), "GFS")
     service.refresh()
     previous = store.active_path.read_bytes()
+    # The second refresh must require a real download so it exercises the commit
+    # path where staleness can be injected; an all-current refresh is a no-op.
+    service.configure((config("GFS", hours=6),), "GFS")
     entered, release = Event(), Event()
     original = store._fsync_dir
 
@@ -400,6 +403,9 @@ def test_replace_failure_preserves_previous_binding(tmp_path, monkeypatch):
     service.configure((config(),), "GFS")
     service.refresh()
     previous = store.active_path.read_bytes()
+    # The second refresh must require a real download so the replace failure can
+    # be exercised; an all-current refresh is a no-op.
+    service.configure((config("GFS", hours=6),), "GFS")
     service.id_factory = lambda: "replacement"
     original_replace = __import__("os").replace
 
@@ -447,3 +453,116 @@ def test_registered_blob_is_opened_by_production_validator(tmp_path):
     result = service.refresh()
     assert result.entry.artifacts[0].path.startswith("artifacts/")
     assert result.entry.field_times[0][1] == (RUN, RUN + timedelta(hours=3))
+
+
+def make_plan_at(configurations, selected, run_by_model=None):
+    """Build a plan like make_plan, with a run-time override per model id."""
+    run_by_model = run_by_model or {}
+    models = []
+    for cfg in configurations:
+        capability = MODEL_CAPABILITIES[cfg.model_id]
+        run = run_by_model.get(cfg.model_id, RUN)
+        field_steps = tuple(
+            (
+                field,
+                tuple(
+                    hour
+                    for hour in capability.available_steps(0, field)
+                    if hour <= cfg.forecast_hours
+                    and (not cfg.interval or hour % cfg.interval == 0)
+                    and (not cfg.steps or hour in cfg.steps)
+                ),
+            )
+            for field in cfg.fields
+        )
+        union = sorted({hour for _, times in field_steps for hour in times})
+        identifier = json.dumps(
+            {
+                "source": capability.provider_name,
+                "date": run.strftime("%Y%m%d"),
+                "cycle": run.strftime("%H"),
+                "hours": max(union),
+                "steps": union,
+                "fields": list(cfg.fields),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        models.append(
+            PlannedModel(
+                cfg,
+                run,
+                capability.provider_name,
+                identifier,
+                capability.native_resolution,
+                field_steps,
+            )
+        )
+    return ForecastRefreshPlan(tuple(models), selected)
+
+
+def test_refresh_does_not_transfer_when_all_selected_models_are_current(tmp_path):
+    store = TrancheStore(tmp_path)
+    cfg = config("GFS")
+    service, created = coordinator(store, (cfg,))
+    service.configure((cfg,), "GFS")
+    first = service.refresh()
+    downloads_before = len(created)
+    assert downloads_before == 1
+
+    second = service.refresh()
+
+    # No new download source was created and the published selection is unchanged:
+    # every selected model is already current for its latest planned run.
+    assert len(created) == downloads_before
+    assert second.tranche.tranche_id == first.tranche.tranche_id
+
+
+def test_models_needing_download_empty_when_all_current(tmp_path):
+    store = TrancheStore(tmp_path)
+    gfs = config("GFS")
+    service, _ = coordinator(store, (gfs,))
+    service.configure((gfs,), "GFS")
+    service.refresh()
+    needed = service.models_needing_download((gfs,), "GFS")
+    assert needed == ()
+
+
+def test_models_needing_download_reports_model_with_newer_run(tmp_path):
+    store = TrancheStore(tmp_path)
+    gfs = config("GFS")
+    service, _ = coordinator(store, (gfs,))
+    service.configure((gfs,), "GFS")
+    service.refresh()
+    newer_run = RUN + timedelta(hours=6)
+
+    def newer_planner(requested, selected, **kwargs):
+        return make_plan_at(requested, selected, {"GFS": newer_run})
+
+    service.planner = newer_planner
+    needed = service.models_needing_download((gfs,), "GFS")
+    assert [model.model_id for model in needed] == ["GFS"]
+
+
+def test_refresh_downloads_only_model_with_newer_run(tmp_path):
+    store = TrancheStore(tmp_path)
+    gfs = config("GFS")
+    hrrr = config("HRRR")
+    service, created = coordinator(store, (gfs, hrrr))
+    service.configure((gfs, hrrr), "HRRR")
+    first = service.refresh()
+    assert {entry.model_id for entry in first.tranche.entries} == {"GFS", "HRRR"}
+    sources_before = [source.name for source in created]
+
+    newer_run = RUN + timedelta(hours=6)
+
+    def newer_planner(requested, selected, **kwargs):
+        return make_plan_at(requested, selected, {"GFS": newer_run})
+
+    service.planner = newer_planner
+    second = service.refresh()
+    assert {entry.model_id for entry in second.tranche.entries} == {"GFS", "HRRR"}
+
+    # Only GFS had a newer forecast available; HRRR was already current.
+    newly_downloaded = [source.name for source in created][len(sources_before) :]
+    assert newly_downloaded == ["NOAA GFS"]
