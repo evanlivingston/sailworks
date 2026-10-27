@@ -298,7 +298,7 @@ def create_requested_routing(core, request, providers, wind, current_selection):
         target,
         request.departure,
         request.start,
-        providers,
+        providers if request.coastline_checks else (),
         not request.coastline_checks,
         **options,
     )
@@ -306,7 +306,7 @@ def create_requested_routing(core, request, providers, wind, current_selection):
     if environment is not None:
         environment.factors = {
             "currents": bool(request.use_currents),
-            "land_avoidance": bool(request.coastline_checks) or bool(providers),
+            "land_avoidance": bool(request.coastline_checks),
             "wave_correction": bool(request.wave_correct),
         }
     return routing
@@ -352,9 +352,13 @@ def run_requested_routing(core, routing, request, wind, progress, report, save_f
     if result is None or not result.path:
         raise ValueError("The routing engine returned no route.")
     provenance = routing_provenance(routing, result.path)
+    environment = getattr(routing, "current_environment", None)
+    land_avoidance = bool(request.coastline_checks)
+    if environment is not None and getattr(environment, "factors", None):
+        land_avoidance = bool(environment.factors.get("land_avoidance", land_avoidance))
     provenance["factors"] = {
         "currents": bool(request.use_currents),
-        "land_avoidance": bool(request.coastline_checks),
+        "land_avoidance": land_avoidance,
         "wave_correction": bool(request.wave_correct),
     }
     provenance["active_factors"] = [
