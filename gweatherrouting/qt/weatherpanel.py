@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from .dockchrome import style_scrollarea
+from .marinepanel import BusyButton
 from .theme import section_label
 from gweatherrouting.rendering.windpainter import BARB_DENSITIES
 
@@ -32,6 +33,7 @@ class WeatherPanel(QWidget):
         content = QWidget()
         controls = QVBoxLayout(content)
         controls.setContentsMargins(12, 8, 12, 8)
+        controls.addWidget(self._section_divider())
         controls.addWidget(section_label("Wind"))
         self.wind = QCheckBox("Show wind")
         self.wind.setChecked(active_map().wind_visible)
@@ -71,6 +73,21 @@ class WeatherPanel(QWidget):
         )
         form.addRow("Density", self.barb_density)
         controls.addLayout(form)
+        controls.addWidget(self._section_divider())
+        controls.addWidget(section_label("Ship weather observations"))
+        self.ship_observations = self.active_map().ship_observations
+        self.ship_toggle = QCheckBox("Recent ship observations (NOAA ICOADS)")
+        self.ship_toggle.setToolTip(
+            "Show delayed ship weather reports. Report positions are not live vessel positions."
+        )
+        self.ship_toggle.setChecked(self.ship_observations.visible)
+        self.ship_toggle.toggled.connect(self.ship_observations.set_visible)
+        controls.addWidget(self.ship_toggle)
+        self.ship_refresh = BusyButton("Refresh reports")
+        self.ship_refresh.clicked.connect(self.ship_observations.refresh)
+        controls.addWidget(self.ship_refresh)
+        self.ship_observations.changed.connect(self._ship_observations_changed)
+        controls.addWidget(self._section_divider())
         controls.addWidget(section_label("Isobars"))
         self.isobars = self.checkbox("Show isobars", "gribIsobarsVisible")
         controls.addWidget(self.isobars)
@@ -145,6 +162,30 @@ class WeatherPanel(QWidget):
             " All forecast points shows every visible sample without a"
             " symbol-count cap."
         )
+
+    @staticmethod
+    def _section_divider():
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFrameShadow(QFrame.Shadow.Sunken)
+        return line
+
+    def _ship_observations_changed(self):
+        self.ship_refresh.set_busy(self.ship_observations.loading)
+        status = self.ship_observations.status
+        if status:
+            main_window = self.window()
+            status_bar = getattr(main_window, "statusBar", None)
+            if callable(status_bar):
+                timeout = 0 if self.ship_observations.loading else 12_000
+                status_bar().showMessage(status, timeout)
+        self.active_map().queue_draw()
+
+    def dispose(self):
+        try:
+            self.ship_observations.changed.disconnect(self._ship_observations_changed)
+        except (RuntimeError, TypeError):
+            pass
 
     def refresh(self):
         self.wind_style.blockSignals(True)

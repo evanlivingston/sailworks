@@ -401,6 +401,8 @@ class WeatherPresenter(QObject):
             chart_instant(marine.time_control.time),
             marine.visible,
         )
+        observations = self.canvas.ship_observations
+        widget.set_ship_observations(observations.reports, observations.visible)
         widget.show()
         route_overlay = getattr(self.canvas, "viewport_route_overlay", None)
         if route_overlay is not None:

@@ -7,7 +7,8 @@ Downloads and saved-source management live in the Data Library
 import json
 from datetime import datetime, timezone
 
-from PySide6.QtCore import QDateTime, Qt, QTimer
+from PySide6.QtCore import QDateTime, QRectF, Qt, QTimer
+from PySide6.QtGui import QColor, QPainter, QPalette
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -47,6 +48,50 @@ def text_label(text=""):
     label.setTextFormat(Qt.TextFormat.PlainText)
     label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
     return label
+
+
+class BusyButton(QPushButton):
+    """Keep the button's label/size while showing an indeterminate progress strip."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self._busy = False
+        self._phase = 0.0
+        self._animation = QTimer(self)
+        self._animation.setInterval(32)
+        self._animation.timeout.connect(self._advance)
+
+    def set_busy(self, busy):
+        self._busy = bool(busy)
+        if self._busy:
+            self._animation.start()
+        else:
+            self._animation.stop()
+        self.update()
+
+    def _advance(self):
+        self._phase = (self._phase + 0.045) % 1.0
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self._busy:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        highlight = self.palette().color(QPalette.ColorRole.Highlight)
+        track = QColor(highlight)
+        track.setAlpha(70)
+        y = self.height() - 5
+        bounds = QRectF(3, y, max(0, self.width() - 6), 3)
+        painter.setBrush(track)
+        painter.drawRoundedRect(bounds, 1.5, 1.5)
+        segment_width = min(30.0, max(12.0, bounds.width() * 0.28))
+        x = bounds.left() + self._phase * (bounds.width() + segment_width)
+        x -= segment_width
+        painter.setBrush(highlight)
+        painter.drawRoundedRect(QRectF(x, y, segment_width, 3), 1.5, 1.5)
 
 
 def interval(manifest):

@@ -171,6 +171,7 @@ class WorkspacePreferences(QObject):
             "weather": {"open": window.weather_open},
             "marine": {
                 "open": dict(window.marine_open),
+                "ship_observations": window.map.ship_observations.visible,
                 **{
                     kind: panel.toggle.isChecked()
                     for kind, panel in window.marine_panels.items()
@@ -263,6 +264,9 @@ class WorkspacePreferences(QObject):
         self._restore_map_display(self.window.map, saved_map)
         self.window._sync_map_actions()
         marine = mapping(state.get("marine"))
+        ship_observations = marine.get("ship_observations")
+        if isinstance(ship_observations, bool):
+            self.window.map.ship_observations.set_visible(ship_observations)
         for kind, panel in self.window.marine_panels.items():
             if isinstance(marine.get(kind), bool):
                 panel.toggle.setChecked(marine[kind])

@@ -1261,6 +1261,8 @@ class PreviewWindow(QMainWindow):
         if self.map.timeline is not None:
             self.map.timeline.dispose()
         self.dispose_marine()
+        if hasattr(self, "weather_panel"):
+            self.weather_panel.dispose()
         self.navigation_panel.dispose()
         self.polar_workspace.dispose()
         self.live_timer.stop()
