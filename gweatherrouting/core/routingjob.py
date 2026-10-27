@@ -10,6 +10,25 @@ from typing import Optional
 import math
 
 from weatherrouting import RoutingNoWindError
+from weatherrouting.routers.linearbestisorouter import LinearBestIsoRouter
+
+_original_linear_route = LinearBestIsoRouter._route
+
+
+def _linear_route_with_missing_destination_wind(
+    self, lastlog, time, timedelta, start, end, iso_f
+):
+    try:
+        return _original_linear_route(self, lastlog, time, timedelta, start, end, iso_f)
+    except AttributeError as exc:
+        if "isochrones" in str(exc):
+            raise RoutingNoWindError(
+                "Load a wind forecast covering the destination position and time."
+            ) from exc
+        raise
+
+
+LinearBestIsoRouter._route = _linear_route_with_missing_destination_wind
 
 from gweatherrouting.core.geo.poi import POI
 from gweatherrouting.core.geo.track import Track
@@ -147,6 +166,13 @@ class RouteRequest:
     min_sailing_speed_kn: Optional[float] = None
     motor_speed_kn: float = 5.0
     wave_correct: bool = False
+    land_avoidance: Optional[bool] = None
+
+    def __post_init__(self):
+        if self.land_avoidance is None:
+            object.__setattr__(self, "land_avoidance", self.coastline_checks)
+        else:
+            object.__setattr__(self, "coastline_checks", self.land_avoidance)
 
 
 class RoutingPreview(tuple):
@@ -266,7 +292,7 @@ def create_requested_routing(core, request, providers, wind, current_selection):
         options["grib_override"] = (
             override if isinstance(override, ModifiedGribManager) else None
         )
-    return core.create_routing(
+    routing = core.create_routing(
         algorithm,
         request.polar_file,
         target,
@@ -276,6 +302,14 @@ def create_requested_routing(core, request, providers, wind, current_selection):
         not request.coastline_checks,
         **options,
     )
+    environment = getattr(routing, "current_environment", None)
+    if environment is not None:
+        environment.factors = {
+            "currents": bool(request.use_currents),
+            "land_avoidance": bool(request.coastline_checks) or bool(providers),
+            "wave_correction": bool(request.wave_correct),
+        }
+    return routing
 
 
 def run_requested_routing(core, routing, request, wind, progress, report, save_fields):
@@ -318,6 +352,20 @@ def run_requested_routing(core, routing, request, wind, progress, report, save_f
     if result is None or not result.path:
         raise ValueError("The routing engine returned no route.")
     provenance = routing_provenance(routing, result.path)
+    provenance["factors"] = {
+        "currents": bool(request.use_currents),
+        "land_avoidance": bool(request.coastline_checks),
+        "wave_correction": bool(request.wave_correct),
+    }
+    provenance["active_factors"] = [
+        name
+        for name, enabled in (
+            ("currents", request.use_currents),
+            ("land_avoidance", request.coastline_checks),
+            ("wave_correction", request.wave_correct),
+        )
+        if enabled
+    ]
     if (
         request.parameters
         or request.waypoints
@@ -347,6 +395,8 @@ def run_requested_routing(core, routing, request, wind, progress, report, save_f
                 if request.wave_correct
                 else None
             ),
+            factors=provenance["factors"],
+            active_factors=provenance["active_factors"],
         )
     return CalculatedRoute(
         serialize_routing_points(routing, result.path),

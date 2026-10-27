@@ -220,7 +220,7 @@ class CurrentRoutingEnvironment:
         ]
         selected = self.selection.to_json()
         selected["actual_sources"] = sorted({s["dataset_id"] for s in legs})
-        return dict(
+        result = dict(
             schema_version=1,
             routing="isochrone-with-currents",
             integration="explicit midpoint (RK2)",
@@ -239,6 +239,12 @@ class CurrentRoutingEnvironment:
             downloads=self.downloads,
             tide_heights="not used for depth or clearance",
         )
+        if getattr(self, "factors", None):
+            result["factors"] = self.factors
+            result["active_factors"] = [
+                name for name, enabled in self.factors.items() if enabled
+            ]
+        return result
 
 
 class FractionalRoutingGrib(Grib):
@@ -439,7 +445,7 @@ class CurrentIsoRouter(LinearBestIsoRouter):
         elapsed = 0.0
         while elapsed < seconds:
             distance, _ = distance_bearing(position, end)
-            if distance <= ARRIVAL_METRES:
+            if distance <= 1.0:
                 break
             v = self.velocity(position, instant, heading)
             sog = math.hypot(v[0], v[1])
@@ -589,11 +595,13 @@ class CurrentIsoRouter(LinearBestIsoRouter):
                     # rejected trajectory and its provenance until the step ends.
                     _, bearing = distance_bearing(start, candidate.pos)
                     key = round(math.degrees(bearing) / 2)
-                    if (
-                        key not in bins
-                        or candidate.next_wp_dist < bins[key].next_wp_dist
-                    ):
-                        bins[key] = candidate
+                    if key not in bins:
+                        bins[key] = [candidate]
+                    else:
+                        bins[key].append(candidate)
+                        bins[key].sort(key=lambda item: item.next_wp_dist)
+                        if len(bins[key]) > 2:
+                            bins[key] = bins[key][:2]
         if self.environment.progress:
             self.environment.progress(best_distance, total, total)
         masked = [
@@ -626,7 +634,7 @@ class CurrentIsoRouter(LinearBestIsoRouter):
             path.reverse()
             return self.result(winner.time, path, isochrones + [[winner]], winner.pos)
         # Equal-time isochrones, pruned by bearing from the leg's start.
-        frontier = list(bins.values())
+        frontier = [item for group in bins.values() for item in group]
         return self.result(frontier[0].time, [], isochrones + [frontier], start)
 
     def result(self, time, path, isochrones, position):
@@ -722,7 +730,9 @@ def step_with_coverage(  # noqa: C901
         except RoutingDataGapError as error:
             report(str(error))
             if any(g.kind == "wind" for g in error.gaps):
-                report("The published model forecast does not cover this route point and time.")
+                report(
+                    "The published model forecast does not cover this route point and time."
+                )
                 raise
             if (
                 not auto_download
