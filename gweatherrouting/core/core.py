@@ -353,7 +353,7 @@ class Core(EventDispatcher):
             # lval is a function that checks all lines_validity of validity_providers
             lval = validity_providers[0].lines_validity
 
-        if disable_coastline_checks:
+        if disable_coastline_checks and not validity_providers:
             lval = None
             pval = None
 
@@ -399,6 +399,17 @@ class Core(EventDispatcher):
             lines_validity=lval,
         )
         routing.current_environment = environment
+        if environment is not None:
+            environment.factors = {
+                "currents": True,
+                "land_avoidance": not disable_coastline_checks
+                or bool(validity_providers),
+                "wave_correction": (
+                    getattr(safety_policy, "wave_correct", False)
+                    if safety_policy is not None
+                    else False
+                ),
+            }
         return routing
 
     # Import a GPX file (tracks, pois and routings)

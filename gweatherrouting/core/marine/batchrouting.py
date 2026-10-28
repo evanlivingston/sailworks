@@ -90,7 +90,7 @@ def advance_headings(router, point, seconds, headings, end):  # noqa: C901
         if router.environment.cancel.is_set():
             raise DownloadCancelledError()
         distance = distances(positions, end)
-        ids = np.flatnonzero(alive & (elapsed < seconds) & (distance > ARRIVAL_METRES))
+        ids = np.flatnonzero(alive & (elapsed < seconds) & (distance > 1.0))
         if not len(ids):
             break
         alive[ids] = False

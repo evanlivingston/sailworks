@@ -155,18 +155,20 @@ class TestCurrentRouting(unittest.TestCase):
                 candidate.prev_idx = index
                 _, bearing = distance_bearing(first.pos, candidate.pos)
                 key = round(math.degrees(bearing) / 2)
-                if (
-                    key not in expected
-                    or candidate.next_wp_dist < expected[key].next_wp_dist
-                ):
-                    expected[key] = candidate
+                if key not in expected:
+                    expected[key] = [candidate]
+                else:
+                    expected[key].append(candidate)
+                    expected[key].sort(key=lambda item: item.next_wp_dist)
+                    if len(expected[key]) > 2:
+                        expected[key] = expected[key][:2]
         env.progress = Mock()
         result = router.route(
             SimpleNamespace(isochrones=[[first], previous]), START, 1, first.pos, end
         )
         self.assertEqual(
             [(p.pos, p.prev_idx, p.time) for p in result.isochrones[-1]],
-            [(p.pos, p.prev_idx, p.time) for p in expected.values()],
+            [(p.pos, p.prev_idx, p.time) for group in expected.values() for p in group],
         )
         self.assertEqual(env.progress.call_args_list[0].args[1:], (0, 3))
         self.assertEqual(env.progress.call_args_list[-1].args[1:], (3, 3))
@@ -299,6 +301,7 @@ class TestCurrentRouting(unittest.TestCase):
         self.assertLessEqual(
             distance_bearing(result.path[-1].pos, (0, 0.02))[0], ARRIVAL_METRES
         )
+        self.assertEqual(result.path[-1].pos, (0, 0.02))
         self.assertEqual(result.path[0].time, START)
         self.assertTrue(
             all(a.time < b.time for a, b in zip(result.path, result.path[1:]))
