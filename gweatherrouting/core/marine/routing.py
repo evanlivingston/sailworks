@@ -28,7 +28,11 @@ from .fields import Area, FieldSelection, field_sort_key, normalize_priority
 GEOD = Geod(ellps="WGS84")
 logger = logging.getLogger("gweatherrouting")
 KNOT = 1852 / 3600
-ARRIVAL_METRES = 92.6
+# A candidate may only finish a waypoint when the integrated trajectory is
+# within the same one-metre residual used by the terminal-leg integrator.
+# The former 92.6 m acceptance radius allowed visibly short routes to be
+# reported as complete.
+ARRIVAL_METRES = 1.0
 
 
 def routing_utc(instant):
@@ -589,6 +593,10 @@ class CurrentIsoRouter(LinearBestIsoRouter):
                     candidate.prev_idx = index
                     best_distance = min(best_distance, candidate.next_wp_dist * 1852)
                     if candidate.next_wp_dist * 1852 <= ARRIVAL_METRES:
+                        # Normalize only the already-integrated sub-metre
+                        # residual; never use this as a route-length shortcut.
+                        candidate.pos = tuple(end)
+                        candidate.next_wp_dist = 0
                         if winner is None or candidate.time < winner.time:
                             winner = candidate
                     # Prune as candidates arrive, rather than retaining every

@@ -301,6 +301,7 @@ class TestCurrentRouting(unittest.TestCase):
         self.assertLessEqual(
             distance_bearing(result.path[-1].pos, (0, 0.02))[0], ARRIVAL_METRES
         )
+        self.assertEqual(result.path[-1].pos, (0, 0.02))
         self.assertEqual(result.path[0].time, START)
         self.assertTrue(
             all(a.time < b.time for a, b in zip(result.path, result.path[1:]))

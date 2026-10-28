@@ -448,6 +448,10 @@ def route_frontier(self, lastlog, t, hours, start, end):  # noqa: C901
 
     if winner is not None:
         win = materialize(winner)
+        # The trajectory has already been integrated to within one metre;
+        # normalize only this residual in the published route position.
+        win.pos = tuple(end)
+        win.next_wp_dist = 0.0
         path = [win]
         for front in reversed(isochrones):
             path.append(front[path[-1].prev_idx])
