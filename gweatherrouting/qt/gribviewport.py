@@ -1281,9 +1281,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             chart_without_weather=False,
             chart_palette=CHART_PALETTE,
             enc_only=False,
+            gpu_streamlines=False,
         ):
             super().__init__(parent)
             self._model = model
+            self._gpu_streamlines_enabled = bool(gpu_streamlines)
+            self._gpu_streamlines_item = None
             self._source_generation = 0
             self._disposed = False
             self._wind_opacity = 1.0
@@ -1388,6 +1391,23 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._weather: Any = self.rootObject()
             if self._weather is None:
                 raise RuntimeError("The GRIB viewport could not load its shader")
+            if self._gpu_streamlines_enabled:
+                try:
+                    from .gpustreamlines import GpuStreamlineItem
+
+                    self._gpu_streamlines_item = GpuStreamlineItem(self._weather)
+                    self._gpu_streamlines_item.setParentItem(self._weather)
+                    self._gpu_streamlines_item.attach_window(self.quickWindow())
+                    self._gpu_streamlines_item.setZ(1000)
+                    self._gpu_streamlines_item.gpuError.connect(
+                        self._gpu_streamlines_failed,
+                        Qt.ConnectionType.QueuedConnection,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "GPU streamline initialization failed; using CPU: %s", exc
+                    )
+                    self._gpu_streamlines_enabled = False
             from .marinequick import MarineQuickLayer
 
             self._marine_layer = MarineQuickLayer(self._weather, self)
@@ -1529,7 +1549,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             from .viewportstreamlines import ViewportStreamlineModel
 
             self._streamline_model = ViewportStreamlineModel(
-                model.paths, model.display_identity
+                model.paths,
+                model.display_identity,
+                gpu_trace=self._gpu_streamlines_enabled,
             )
             self._streamline_model.on_change = self.streamlinesPrepared.emit
             self._streamline_publication = None
@@ -1560,6 +1582,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._pending_streamline_camera = None
             self._pending_streamline_publication = None
             self._streamlines.setVisible(False)
+            if self._gpu_streamlines_item is not None:
+                self._gpu_streamlines_item.setVisible(False)
             getattr(self._streamlines, "readyChanged").connect(
                 self._streamline_readiness_changed
             )
@@ -1932,7 +1956,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
 
             self._streamline_model.close()
             self._streamline_model = ViewportStreamlineModel(
-                model.paths, model.display_identity
+                model.paths,
+                model.display_identity,
+                gpu_trace=self._gpu_streamlines_enabled,
             )
             self._streamline_model.on_change = self.streamlinesPrepared.emit
             self._streamline_publication = None
@@ -1949,6 +1975,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._streamlines.setProperty("frontBuffer", -1)
             self._streamlines.setProperty("pendingBuffer", -1)
             self._streamlines.setVisible(False)
+            if self._gpu_streamlines_item is not None:
+                self._gpu_streamlines_item.set_trace_input(None)
+                self._gpu_streamlines_item.setVisible(False)
             self._streamline_provider.clear()
             self._provider.clear()
             self._published = self._published_fill = None
@@ -2096,10 +2125,35 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
         def _publish_streamlines(self, camera, force=False):
             debug_streamlines = os.environ.get("GWR_STREAMLINE_DEBUG")
             enabled = self._wind_style == "streamlines" and self._wind_opacity > 0
+            gpu_enabled = getattr(self, "_gpu_streamlines_enabled", False)
+            gpu_item = getattr(self, "_gpu_streamlines_item", None)
             self._update_streamline_camera(camera)
             camera_changed = camera != self._streamline_last_camera
             self._streamline_last_camera = camera
             prior = self._streamline_display_camera
+            if gpu_item is not None:
+                if not enabled:
+                    gpu_item.set_trace_input(None)
+                    gpu_item.setVisible(False)
+                elif prior is not None and (
+                    prior.center_lat,
+                    prior.center_lon,
+                    prior.zoom,
+                    prior.width,
+                    prior.height,
+                ) != (
+                    camera.center_lat,
+                    camera.center_lon,
+                    camera.zoom,
+                    camera.width,
+                    camera.height,
+                ):
+                    # GPU output is viewport-local, so do not leave geometry
+                    # from the old camera masquerading as current coverage.
+                    gpu_item.set_trace_input(None)
+                    gpu_item.setVisible(False)
+                elif prior is not None and prior.time != camera.time:
+                    gpu_item.set_opacity(self._wind_opacity * 0.6)
             same_trace = prior is not None and (
                 prior.time,
                 prior.density,
@@ -2109,19 +2163,25 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 same_trace
                 and not force
                 and self._streamline_publication is not None
-                and self._streamline_urls
+                and (self._streamline_urls or gpu_enabled)
             ):
-                self._streamlines.setVisible(enabled)
-                self._streamlines.setOpacity(
-                    self._wind_opacity * (0.6 if prior.time != camera.time else 1.0)
-                )
-                if not camera_changed:
-                    self._streamline_readiness_changed()
-                    return "ready"
-                self._streamline_settle.start()
-                if prior.time == camera.time:
-                    self._streamline_readiness_changed()
-                    return "ready"
+                if gpu_enabled:
+                    if not camera_changed:
+                        gpu_item.set_opacity(self._wind_opacity)
+                        gpu_item.setVisible(enabled)
+                        return "ready"
+                else:
+                    self._streamlines.setVisible(enabled)
+                    self._streamlines.setOpacity(
+                        self._wind_opacity * (0.6 if prior.time != camera.time else 1.0)
+                    )
+                    if not camera_changed:
+                        self._streamline_readiness_changed()
+                        return "ready"
+                    self._streamline_settle.start()
+                    if prior.time == camera.time:
+                        self._streamline_readiness_changed()
+                        return "ready"
             else:
                 self._streamline_settle.stop()
             state, paths = self._streamline_model.update(camera, enabled)
@@ -2143,6 +2203,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             from .viewportstreamlines import MAX_BATCH_SIZE
 
             if state != "ready" or paths is None:
+                if gpu_item is not None and state in (
+                    "hidden",
+                    "unavailable",
+                ):
+                    gpu_item.set_trace_input(None)
+                    gpu_item.setVisible(False)
                 source = self._streamline_display_camera
                 retain_previous = (
                     state == "loading"
@@ -2182,10 +2248,28 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 return state
             publication = (id(paths), camera)
             if publication == self._streamline_publication and not force:
-                self._streamlines.setOpacity(self._wind_opacity)
-                self._streamlines.setVisible(enabled)
+                if gpu_item is not None and gpu_enabled:
+                    gpu_item.set_opacity(self._wind_opacity)
+                    gpu_item.setVisible(enabled)
+                else:
+                    self._streamlines.setOpacity(self._wind_opacity)
+                    self._streamlines.setVisible(enabled)
                 self._streamline_readiness_changed()
                 return state
+            if gpu_enabled:
+                from .gpustreamlines import GpuTraceInput
+
+                if isinstance(paths, GpuTraceInput):
+                    if gpu_item is None:
+                        raise RuntimeError("GPU streamline layer is not initialized")
+                    self._streamlines.setVisible(False)
+                    gpu_item.set_trace_input(replace(paths, opacity=self._wind_opacity))
+                    gpu_item.setVisible(enabled)
+                    self._streamline_publication = publication
+                    self._streamline_display_camera = camera
+                    self._streamline_urls = ()
+                    self._show_state("ready")
+                    return "ready"
             groups = []
             buffers = paths_to_render_buffers(paths, camera.over_land)
             for bucket, (lines, arrows) in buffers.items():
@@ -2265,6 +2349,30 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._streamline_readiness_changed()
             return state
 
+        def _gpu_streamlines_failed(self, reason):
+            if not self._gpu_streamlines_enabled:
+                return
+            logger.warning(
+                "GPU streamlines unavailable; falling back to CPU: %s", reason
+            )
+            self._gpu_streamlines_enabled = False
+            if self._gpu_streamlines_item is not None:
+                self._gpu_streamlines_item.set_trace_input(None)
+                self._gpu_streamlines_item.setVisible(False)
+            self._streamline_model.close()
+            from .viewportstreamlines import ViewportStreamlineModel
+
+            self._streamline_model = ViewportStreamlineModel(
+                self._model.paths, self._model.display_identity
+            )
+            self._streamline_model.on_change = self.streamlinesPrepared.emit
+            self.destroyed.connect(self._streamline_model.close)
+            self._streamline_publication = None
+            self._streamline_display_camera = None
+            self._streamline_urls = ()
+            if self._camera is not None:
+                self._publish_streamlines(self._camera, force=True)
+
         def dispose(self):
             if self._disposed:
                 return
@@ -2273,6 +2381,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._streamline_model.close()
             self._streamline_settle.stop()
             self._streamlines.setVisible(False)
+            if self._gpu_streamlines_item is not None:
+                self._gpu_streamlines_item.set_trace_input(None)
+                self._gpu_streamlines_item.setVisible(False)
             self._source_generation += 1
             self._wheel_zoom_tick.stop()
             self._wheel_zoom_settle.stop()

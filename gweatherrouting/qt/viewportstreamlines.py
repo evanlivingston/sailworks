@@ -1,7 +1,7 @@
 """Viewport-owned cancellable streamline tracing and packed image payloads."""
 
 import math
-from threading import Condition, Event, Thread
+from threading import Condition, Event, Lock, Thread
 
 import numpy as np
 from PySide6.QtGui import QImage
@@ -105,14 +105,7 @@ def clip_segments(segments, width, height):
     return np.asarray(result, dtype=float).reshape((-1, 4))
 
 
-def wind_columns(sampler, camera, cancelled):
-    """Sample a bounded screen-space lattice, retaining NaN coverage holes.
-
-    Native rotated/curvilinear grids have distinct coordinates per node; their
-    unique latitude and longitude axes do not form a useful Cartesian grid.
-    Four-pixel view spacing also bounds worker sampling independently of the
-    source resolution while keeping the tracing grid finer than the seeds.
-    """
+def _streamline_lattice(sampler, camera):
     bounds = _view_bounds(camera.view())
     if not any(len(index.nodes(bounds)) for index in sampler.indices):
         raise ValueError("No wind nodes in view")
@@ -129,11 +122,24 @@ def wind_columns(sampler, camera, cancelled):
     lats = np.linspace(south, north, nrows)
     lons = np.linspace(west, east, ncols)
     latitude, longitude = np.meshgrid(lats, lons)
-    uv = np.asarray(
-        sampler.sample(
+    return lats, lons, latitude, longitude, nrows, ncols
+
+
+def wind_columns(sampler, camera, cancelled, uv=None, lattice=None):
+    """Sample or convert a bounded screen-space grid, retaining coverage holes.
+
+    Native rotated/curvilinear grids have distinct coordinates per node; their
+    unique latitude and longitude axes do not form a useful Cartesian grid.
+    Four-pixel view spacing bounds work independently of source resolution.
+    """
+    if lattice is None:
+        lattice = _streamline_lattice(sampler, camera)
+    lats, lons, latitude, longitude, nrows, ncols = lattice
+    if uv is None:
+        uv = sampler.sample(
             "wind", camera.time, latitude.ravel(), longitude.ravel(), cancelled
         )
-    ).reshape(ncols, nrows, 2)
+    uv = np.asarray(uv).reshape(ncols, nrows, 2)
     speed = np.hypot(uv[..., 0], uv[..., 1])
     direction = np.degrees(np.arctan2(-uv[..., 0], -uv[..., 1])) % 360
     return [(float(lon), lats, direction[i], speed[i]) for i, lon in enumerate(lons)]
@@ -142,9 +148,10 @@ def wind_columns(sampler, camera, cancelled):
 class ViewportStreamlineModel:
     """Latest-camera-only worker; forecast handles never leave its thread."""
 
-    def __init__(self, paths, display_identity=None):
+    def __init__(self, paths, display_identity=None, gpu_trace=False):
         self.paths = tuple(paths)
         self.display_identity = display_identity
+        self.gpu_trace = gpu_trace
         self.on_change = None
         self.error = ""
         self._condition = Condition()
@@ -155,6 +162,9 @@ class ViewportStreamlineModel:
         self._key = None
         self._state = "hidden"
         self._paths = None
+        self._endpoint_cache = None
+        self._endpoint_key = None
+        self._endpoint_lock = Lock()
 
     def update(self, camera, enabled=True):
         with self._condition:
@@ -163,6 +173,10 @@ class ViewportStreamlineModel:
                 self._cancel.set()
                 self._cancel = Event()
                 self._key, self._paths, self.error = key, None, ""
+                if key is None:
+                    with self._endpoint_lock:
+                        self._endpoint_cache = None
+                        self._endpoint_key = None
                 self._state = "loading" if key is not None else "hidden"
                 self._pending = (key, self._cancel) if key is not None else None
                 if key is not None and self._thread is None:
@@ -191,7 +205,14 @@ class ViewportStreamlineModel:
             DecodedBandCache,
             DisplayWeatherSource,
         )
-        from gweatherrouting.rendering.windrenderer import WindLandMask
+
+        if self.gpu_trace:
+            from .gpustreamlines import make_gpu_trace_input
+            from gweatherrouting.rendering.weatherstaging import (
+                blend_streamline_endpoints,
+                stage_streamline_endpoints,
+                time_window,
+            )
 
         sources = []
         sampler = None
@@ -217,7 +238,6 @@ class ViewportStreamlineModel:
                 sampler = WeatherSampler(sources)
                 if not sources or len(sampler.indices) != len(sources):
                     raise ValueError("Selected wind forecast unavailable")
-                land = WindLandMask()
             except Exception as exc:
                 initialization_error = str(exc)
             while True:
@@ -231,15 +251,62 @@ class ViewportStreamlineModel:
                 paths, error = None, initialization_error
                 if not error:
                     try:
-                        columns = wind_columns(sampler, camera, cancel.is_set)
-                        land.refresh_source(camera.view().get_scale())
-                        paths = trace_streamline_paths(
-                            camera.view(),
-                            columns,
-                            land.contains,
-                            cancel.is_set,
-                            density=camera.density,
-                        )
+                        if self.gpu_trace:
+                            lattice = _streamline_lattice(sampler, camera)
+                            lats, lons, latitude, longitude, nrows, ncols = lattice
+                            stamp = camera.time.timestamp()
+                            before, after = time_window(sampler, stamp)
+                            uv = None
+                            if before != after:
+                                endpoint_key = (
+                                    lats.tobytes(),
+                                    lons.tobytes(),
+                                    before,
+                                    after,
+                                )
+                                with self._endpoint_lock:
+                                    endpoints = (
+                                        self._endpoint_cache
+                                        if self._endpoint_key == endpoint_key
+                                        else None
+                                    )
+                                if endpoints is None and not cancel.is_set():
+                                    endpoints = stage_streamline_endpoints(
+                                        sampler,
+                                        stamp,
+                                        latitude,
+                                        longitude,
+                                        cancel.is_set,
+                                    )
+                                    if endpoints is not None and not cancel.is_set():
+                                        with self._endpoint_lock:
+                                            self._endpoint_cache = endpoints
+                                            self._endpoint_key = endpoint_key
+                                if endpoints is not None and not cancel.is_set():
+                                    uv = blend_streamline_endpoints(
+                                        sampler, endpoints, stamp
+                                    ).reshape(ncols, nrows, 2)
+                            columns = wind_columns(
+                                sampler,
+                                camera,
+                                cancel.is_set,
+                                uv=uv,
+                                lattice=lattice,
+                            )
+                        else:
+                            columns = wind_columns(sampler, camera, cancel.is_set)
+                        if self.gpu_trace:
+                            paths = make_gpu_trace_input(
+                                camera.view(), columns, camera.density
+                            )
+                        else:
+                            paths = trace_streamline_paths(
+                                camera.view(),
+                                columns,
+                                lambda *_: False,
+                                cancel.is_set,
+                                density=camera.density,
+                            )
                         if paths is None and not cancel.is_set():
                             error = "No traceable wind cells in selected forecast"
                     except Exception as exc:
@@ -254,6 +321,9 @@ class ViewportStreamlineModel:
             self._closed = True
             self._cancel.set()
             self._pending = self._paths = self._key = None
+            with self._endpoint_lock:
+                self._endpoint_cache = None
+                self._endpoint_key = None
             self._state = "hidden"
             self.on_change = None
             self._condition.notify_all()

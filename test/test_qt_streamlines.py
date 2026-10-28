@@ -449,7 +449,14 @@ class TestStreamlineShaderPixels(unittest.TestCase):
             )
             layer.setProperty(
                 "groups",
-                [{"source": image_url, "count": count, "color": QColor("red"), "arrow": True}],
+                [
+                    {
+                        "source": image_url,
+                        "count": count,
+                        "color": QColor("red"),
+                        "arrow": True,
+                    }
+                ],
             )
             from PySide6.QtGui import QVector2D
 
@@ -473,7 +480,9 @@ class TestStreamlineShaderPixels(unittest.TestCase):
                 self.skipTest(
                     "This Qt platform does not support QQuickWindow framebuffer readback"
                 )
-            self.assertFalse(scene_errors, f"Qt Quick scene graph errors: {scene_errors}")
+            self.assertFalse(
+                scene_errors, f"Qt Quick scene graph errors: {scene_errors}"
+            )
             dpr = pixels.width() / window.width()
             for x, y in ((96, 48), (96, 52)):
                 self.assertTrue(
@@ -488,8 +497,12 @@ class TestStreamlineShaderPixels(unittest.TestCase):
             layer.setProperty("groups", [])
             self._pump()
             withdrawn = window.grabWindow()
-            self.assertFalse(withdrawn.isNull(), "readback became empty after withdrawal")
-            self.assertEqual(withdrawn.pixelColor(round(60 * dpr), round(50 * dpr)), QColor("white"))
+            self.assertFalse(
+                withdrawn.isNull(), "readback became empty after withdrawal"
+            )
+            self.assertEqual(
+                withdrawn.pixelColor(round(60 * dpr), round(50 * dpr)), QColor("white")
+            )
         finally:
             window.close()
             layer.deleteLater()

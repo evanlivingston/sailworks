@@ -1,6 +1,7 @@
 """Stable geographic seed paths, separate from the legacy flat renderer API."""
 
 from dataclasses import dataclass
+from hashlib import blake2b
 import math
 
 import numpy as np
@@ -44,8 +45,12 @@ def _screen_geo(view, x, y):
 
 def _seeds(view, density):
     spacing, seed_limit, _ = density_parameters(density)
-    # View projection coordinates are already in pixels at the current zoom.
-    # Grid indices therefore identify the same world cells across pans.
+    """Generate a bounded, deterministic jittered world-cell seed grid.
+
+    The reference application's stored jitter table is unavailable, so derive
+    stable per-cell offsets from a fixed hash instead of claiming its exact
+    sequence. Cell identities stay stable across pans at a fixed zoom.
+    """
     cell = spacing
     cx, cy = view._lon_to_x(view._center_lon), view._lat_to_y(view._center_lat)
     left, top = cx - view.width / 2, cy - view.height / 2
@@ -55,21 +60,34 @@ def _seeds(view, density):
     candidates = []
     for iy in range(iy0, iy1 + 1):
         for ix in range(ix0, ix1 + 1):
-            wx, wy = (ix + 0.5) * cell, (iy + 0.5) * cell
+            digest = blake2b(
+                f"{round(view._zoom, 6)}:{iy}:{ix}".encode("ascii"), digest_size=8
+            ).digest()
+            jitter_x = int.from_bytes(digest[:4], "little") / 0xFFFFFFFF - 0.5
+            jitter_y = int.from_bytes(digest[4:], "little") / 0xFFFFFFFF - 0.5
+            wx = (ix + 0.5 + 0.6 * jitter_x) * cell
+            wy = (iy + 0.5 + 0.6 * jitter_y) * cell
             sx, sy = wx - left, wy - top
             if 0 <= sx < view.width and 0 <= sy < view.height:
                 candidates.append(((round(view._zoom, 6), iy, ix), sx, sy))
+    if len(candidates) > seed_limit:
+        keep = np.linspace(0, len(candidates) - 1, seed_limit, dtype=np.int64)
+        candidates = [candidates[index] for index in keep]
     candidates.sort(
         key=lambda item: (item[1] - view.width / 2) ** 2
         + (item[2] - view.height / 2) ** 2
     )
-    return candidates[:seed_limit]
+    return candidates
 
 
 def trace_streamline_paths(
     view, columns, on_ground, cancelled=lambda: False, density="standard"
 ):
-    """Build deterministic per-seed geographic paths with hard shared budgets."""
+    """Build bidirectional, fixed-step paths; coast filtering is disabled.
+
+    ``on_ground`` remains in the signature for compatibility, but is not called.
+    Streamlines use single-step integration and are drawn over land.
+    """
     if cancelled():
         return None
     columns = _columns_to_arrays(columns)
@@ -80,8 +98,8 @@ def trace_streamline_paths(
     ):
         return None
     grid = WindGrid(view, columns)
-    _spacing, seed_limit, segment_limit = density_parameters(density)
-    paths, used = [], 0
+    _spacing, seed_limit, _segment_limit = density_parameters(density)
+    paths = []
     for seed_id, sx, sy in _seeds(view, density)[:seed_limit]:
         if cancelled():
             return None
@@ -90,31 +108,18 @@ def trace_streamline_paths(
         for sign in (1, -1):
             x, y = sx, sy
             part = []
-            visited = {(round(x / STEP), round(y / STEP))}
             for step in range(MAX_STEPS):
-                if cancelled() or used >= segment_limit:
+                if cancelled():
                     break
                 vel = grid.velocity(x, y)
                 if vel is None:
                     break
-                dx, dy, _ = vel
-                mid = grid.velocity(x + sign * dx * STEP / 2, y + sign * dy * STEP / 2)
-                if mid is None:
-                    break
-                dx, dy, speed = mid
+                dx, dy, speed = vel
                 nx, ny = x + sign * dx * STEP, y + sign * dy * STEP
-                if (
-                    not (0 <= nx < view.width and 0 <= ny < view.height)
-                    or grid.velocity(nx, ny) is None
-                ):
+                if not (0 <= nx < view.width and 0 <= ny < view.height):
                     break
-                key = (round(nx / STEP), round(ny / STEP))
-                if key in visited:
-                    break
-                visited.add(key)
                 a, b = _screen_geo(view, x, y), _screen_geo(view, nx, ny)
                 part.append((a, b, speed, step % 20 == 10))
-                used += 1
                 x, y = nx, ny
             halves.append(part)
         ordered = [(b, a, speed, arrow) for a, b, speed, arrow in reversed(halves[1])]
@@ -124,22 +129,17 @@ def trace_streamline_paths(
         vertices = [ordered[0][0]] + [segment[1] for segment in ordered]
         if vertices[len(halves[1])] != start:
             raise AssertionError("backward and forward paths must join at their seed")
-        # Land is sampled at each geographic segment midpoint.
         if cancelled():
             return None
         metadata = tuple(
             PathSegment(
                 float(speed),
-                bool(
-                    on_ground((a[0] + b[0]) / 2, ((a[1] + b[1]) / 2 + 180) % 360 - 180)
-                ),
+                False,
                 bool(arrow),
             )
             for a, b, speed, arrow in ordered
         )
         paths.append(StreamlinePath(seed_id, tuple(vertices), metadata))
-        if used >= segment_limit:
-            break
     return tuple(paths)
 
 

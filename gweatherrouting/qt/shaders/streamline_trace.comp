@@ -1,0 +1,124 @@
+#version 440
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+const int MAX_STEPS = 160;
+const int SEGMENTS_PER_SEED = MAX_STEPS * 2;
+const float STEP_PIXELS = 4.0;
+
+struct Segment {
+    vec4 endpoints;
+    vec4 metadata;
+};
+
+layout(std430, binding = 0) readonly buffer WindField {
+    vec2 wind[];
+};
+layout(std430, binding = 1) readonly buffer XCoordinates {
+    float xCoordinates[];
+};
+layout(std430, binding = 2) readonly buffer YCoordinates {
+    float yCoordinates[];
+};
+layout(std430, binding = 3) readonly buffer ValidXCells {
+    uint validX[];
+};
+layout(std430, binding = 4) readonly buffer ValidYCells {
+    uint validY[];
+};
+layout(std430, binding = 5) readonly buffer Seeds {
+    vec2 seeds[];
+};
+layout(std430, binding = 6) writeonly buffer TraceOutput {
+    Segment segments[];
+};
+layout(std140, binding = 7) uniform TraceParameters {
+    float viewWidth;
+    float viewHeight;
+    uint seedCount;
+    uint reserved;
+};
+
+int cellFor(float value, bool horizontal) {
+    int count = horizontal ? xCoordinates.length() : yCoordinates.length();
+    float first = horizontal ? xCoordinates[0] : yCoordinates[0];
+    float last = horizontal ? xCoordinates[count - 1] : yCoordinates[count - 1];
+    if (value < first || value >= last) return -1;
+    int low = 0;
+    int high = count;
+    while (low < high) {
+        int middle = (low + high) / 2;
+        float coordinate = horizontal ? xCoordinates[middle] : yCoordinates[middle];
+        if (coordinate <= value)
+            low = middle + 1;
+        else
+            high = middle;
+    }
+    return low - 1;
+}
+
+bool velocity(vec2 point, out vec2 direction, out float speed) {
+    if (any(lessThan(point, vec2(0.0)))
+        || any(greaterThanEqual(point, vec2(viewWidth, viewHeight))))
+        return false;
+    int xCell = cellFor(point.x, true);
+    int yCell = cellFor(point.y, false);
+    if (xCell < 0 || yCell < 0 || validX[xCell] == 0u || validY[yCell] == 0u)
+        return false;
+    float tx = (point.x - xCoordinates[xCell])
+        / (xCoordinates[xCell + 1] - xCoordinates[xCell]);
+    float ty = (point.y - yCoordinates[yCell])
+        / (yCoordinates[yCell + 1] - yCoordinates[yCell]);
+    vec4 weights = vec4(
+        (1.0 - tx) * (1.0 - ty),
+        tx * (1.0 - ty),
+        (1.0 - tx) * ty,
+        tx * ty
+    );
+    int columns = xCoordinates.length();
+    int i00 = yCell * columns + xCell;
+    int i10 = i00 + 1;
+    int i01 = i00 + columns;
+    int i11 = i01 + 1;
+    vec2 a = wind[i00];
+    vec2 b = wind[i10];
+    vec2 c = wind[i01];
+    vec2 d = wind[i11];
+    if (any(isnan(a)) || any(isinf(a)) || any(isnan(b)) || any(isinf(b))
+        || any(isnan(c)) || any(isinf(c)) || any(isnan(d)) || any(isinf(d)))
+        return false;
+    vec2 value = weights.x * a + weights.y * b + weights.z * c + weights.w * d;
+    speed = length(value);
+    if (isnan(speed) || isinf(speed) || speed < 0.05)
+        return false;
+    direction = value / speed;
+    return true;
+}
+
+void main() {
+    uint seed_index = gl_GlobalInvocationID.x;
+    if (seed_index >= seedCount || seed_index >= uint(seeds.length())) return;
+    vec2 seed = seeds[seed_index];
+    for (int direction_index = 0; direction_index < 2; ++direction_index) {
+        float sign_direction = direction_index == 0 ? 1.0 : -1.0;
+        vec2 point = seed;
+        for (int step = 0; step < MAX_STEPS; ++step) {
+            vec2 direction;
+            float speed;
+            if (!velocity(point, direction, speed)) break;
+            vec2 next = point + sign_direction * direction * STEP_PIXELS;
+            if (any(lessThan(next, vec2(0.0)))
+                || any(greaterThanEqual(next, vec2(viewWidth, viewHeight))))
+                break;
+
+            int half_slot = direction_index == 0
+                ? step
+                : SEGMENTS_PER_SEED - 1 - step;
+            int slot = int(seed_index) * SEGMENTS_PER_SEED + half_slot;
+            segments[slot].endpoints = direction_index == 0
+                ? vec4(point, next)
+                : vec4(next, point);
+            segments[slot].metadata = vec4(speed, step % 20 == 10 ? 1.0 : 0.0, 1.0, 0.0);
+            point = next;
+        }
+    }
+}

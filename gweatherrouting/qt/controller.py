@@ -51,6 +51,7 @@ class SessionController(QObject):
         analysis_root=None,
         analysis_state=None,
         log_library_directory=None,
+        gpu_streamlines=False,
     ):
         super().__init__(parent)
         if map_renderer not in (None, "cpu", "gpu"):
@@ -58,6 +59,7 @@ class SessionController(QObject):
         self.load_charts = load_charts
         self.early_weather = early_weather
         self.gpu_resident_fields = gpu_resident_fields
+        self.gpu_streamlines = gpu_streamlines
         from .gpuweathertextures import native_weather_fields_enabled
 
         self.native_weather_fields = native_weather_fields_enabled(

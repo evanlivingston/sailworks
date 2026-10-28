@@ -16,6 +16,10 @@ from gweatherrouting.core.gribsampling import WeatherSampler
 from gweatherrouting.core.routingjob import RoutingWind, freeze_wind_sources
 from gweatherrouting.rendering.windcursor import WindCursorSampler
 from gweatherrouting.rendering.windrenderer import DisplayGrib, WindOverlayRenderer
+from gweatherrouting.rendering.weatherstaging import (
+    blend_streamline_endpoints,
+    stage_streamline_endpoints,
+)
 from threading import Event
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -140,6 +144,51 @@ class TestGribSampling(unittest.TestCase):
                 "pressure", START + timedelta(seconds=seconds), 0.25, 0.75
             )[0, 0]
             self.assertAlmostEqual(pressure, 1000 + 0.75 + 2 * 0.25 + hour)
+
+    def test_streamline_endpoint_replay_matches_direct_sampler_between_events(self):
+        source = self.file(self.field(0) + self.field(3))
+        sampler = source.sampler()
+        lats = np.array([[0.25, 0.5], [0.75, 0.25]])
+        lons = np.array([[0.25, 0.5], [0.75, 0.75]])
+        first = START + timedelta(minutes=30)
+        endpoints = stage_streamline_endpoints(sampler, first.timestamp(), lats, lons)
+        self.assertIsNotNone(endpoints)
+        for minutes in (1, 30, 90, 179):
+            instant = START + timedelta(minutes=minutes)
+            staged = blend_streamline_endpoints(sampler, endpoints, instant.timestamp())
+            direct = sampler.sample("wind", instant, lats, lons)
+            np.testing.assert_array_equal(staged, direct)
+
+    def test_streamline_endpoint_replay_preserves_pointwise_source_fallback(self):
+        newest = self.file(
+            [
+                ("UGRD", 0, [[2, -9999], [2, 2]]),
+                ("VGRD", 0, [[4, 4], [4, 4]]),
+            ],
+            process=10,
+        )
+        fallback = self.file(
+            [
+                ("UGRD", 0, [[1, 1], [1, 1]]),
+                ("VGRD", 0, [[1, 1], [1, 1]]),
+                ("UGRD", 3, [[3, 3], [3, 3]]),
+                ("VGRD", 3, [[3, 3], [3, 3]]),
+            ],
+            process=20,
+        )
+        sampler = WeatherSampler([newest, fallback])
+        lats = np.array([[0.0, 0.5], [0.0, 2.0]])
+        lons = np.array([[0.0, 0.5], [0.5, 2.0]])
+        endpoints = stage_streamline_endpoints(
+            sampler, (START + timedelta(minutes=30)).timestamp(), lats, lons
+        )
+        self.assertIsNotNone(endpoints)
+        for minutes in (1, 30, 90, 179):
+            instant = START + timedelta(minutes=minutes)
+            staged = blend_streamline_endpoints(sampler, endpoints, instant.timestamp())
+            direct = sampler.sample("wind", instant, lats, lons)
+            np.testing.assert_array_equal(staged, direct)
+            np.testing.assert_array_equal(np.isnan(staged), np.isnan(direct))
 
     def test_vector_blend_does_not_average_direction_angles(self):
         def uv(angle):

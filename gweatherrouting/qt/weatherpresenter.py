@@ -137,6 +137,7 @@ class WeatherPresenter(QObject):
                 enc_only=not desktop_map,
                 chart_data_dir=DATA_DIR,
                 chart_palette=self.canvas.controller.settings.chartPalette,
+                gpu_streamlines=self.canvas.controller.gpu_streamlines,
             )
             if self.native_fields:
                 kwargs["native_weather_fields"] = True
