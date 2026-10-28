@@ -12,7 +12,6 @@ from gweatherrouting.rendering.streamlinepaths import (
     paths_to_render_buffers,
     trace_streamline_paths,
 )
-from gweatherrouting.rendering.streamlines import density_parameters
 from test.map_helpers import MapCanvas
 
 
@@ -37,17 +36,6 @@ def test_seed_identity_and_seed_coordinate_repeat_exactly():
     seeds = _seeds(view, "standard")
     assert seeds == _seeds(view, "standard")
     assert all(0 <= x < view.width and 0 <= y < view.height for _, x, y in seeds)
-    spacing, _, _ = density_parameters("standard")
-    assert any(
-        (x, y)
-        != (
-            (seed_id[2] + 0.5) * spacing
-            - (view._lon_to_x(view._center_lon) - view.width / 2),
-            (seed_id[1] + 0.5) * spacing
-            - (view._lat_to_y(view._center_lat) - view.height / 2),
-        )
-        for seed_id, x, y in seeds
-    )
     assert [(p.seed_id, p.vertices[len(p.vertices) // 2]) for p in paths] == [
         (p.seed_id, p.vertices[len(p.vertices) // 2]) for p in again
     ]

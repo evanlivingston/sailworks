@@ -1,7 +1,6 @@
 """Stable geographic seed paths, separate from the legacy flat renderer API."""
 
 from dataclasses import dataclass
-from hashlib import blake2b
 import math
 
 import numpy as np
@@ -45,12 +44,6 @@ def _screen_geo(view, x, y):
 
 def _seeds(view, density):
     spacing, seed_limit, _ = density_parameters(density)
-    """Generate a bounded, deterministic jittered world-cell seed grid.
-
-    The reference application's stored jitter table is unavailable, so derive
-    stable per-cell offsets from a fixed hash instead of claiming its exact
-    sequence. Cell identities stay stable across pans at a fixed zoom.
-    """
     cell = spacing
     cx, cy = view._lon_to_x(view._center_lon), view._lat_to_y(view._center_lat)
     left, top = cx - view.width / 2, cy - view.height / 2
@@ -60,13 +53,7 @@ def _seeds(view, density):
     candidates = []
     for iy in range(iy0, iy1 + 1):
         for ix in range(ix0, ix1 + 1):
-            digest = blake2b(
-                f"{round(view._zoom, 6)}:{iy}:{ix}".encode("ascii"), digest_size=8
-            ).digest()
-            jitter_x = int.from_bytes(digest[:4], "little") / 0xFFFFFFFF - 0.5
-            jitter_y = int.from_bytes(digest[4:], "little") / 0xFFFFFFFF - 0.5
-            wx = (ix + 0.5 + 0.6 * jitter_x) * cell
-            wy = (iy + 0.5 + 0.6 * jitter_y) * cell
+            wx, wy = (ix + 0.5) * cell, (iy + 0.5) * cell
             sx, sy = wx - left, wy - top
             if 0 <= sx < view.width and 0 <= sy < view.height:
                 candidates.append(((round(view._zoom, 6), iy, ix), sx, sy))
@@ -83,10 +70,10 @@ def _seeds(view, density):
 def trace_streamline_paths(
     view, columns, on_ground, cancelled=lambda: False, density="standard"
 ):
-    """Build bidirectional, fixed-step paths; coast filtering is disabled.
+    """Build deterministic geographic paths with bounded shared budgets.
 
     ``on_ground`` remains in the signature for compatibility, but is not called.
-    Streamlines use single-step integration and are drawn over land.
+    Streamlines are drawn over land.
     """
     if cancelled():
         return None
@@ -98,8 +85,8 @@ def trace_streamline_paths(
     ):
         return None
     grid = WindGrid(view, columns)
-    _spacing, seed_limit, _segment_limit = density_parameters(density)
-    paths = []
+    _spacing, seed_limit, segment_limit = density_parameters(density)
+    paths, used = [], 0
     for seed_id, sx, sy in _seeds(view, density)[:seed_limit]:
         if cancelled():
             return None
@@ -108,18 +95,31 @@ def trace_streamline_paths(
         for sign in (1, -1):
             x, y = sx, sy
             part = []
+            visited = {(round(x / STEP), round(y / STEP))}
             for step in range(MAX_STEPS):
-                if cancelled():
+                if cancelled() or used >= segment_limit:
                     break
                 vel = grid.velocity(x, y)
                 if vel is None:
                     break
-                dx, dy, speed = vel
-                nx, ny = x + sign * dx * STEP, y + sign * dy * STEP
-                if not (0 <= nx < view.width and 0 <= ny < view.height):
+                dx, dy, _ = vel
+                mid = grid.velocity(x + sign * dx * STEP / 2, y + sign * dy * STEP / 2)
+                if mid is None:
                     break
+                dx, dy, speed = mid
+                nx, ny = x + sign * dx * STEP, y + sign * dy * STEP
+                if (
+                    not (0 <= nx < view.width and 0 <= ny < view.height)
+                    or grid.velocity(nx, ny) is None
+                ):
+                    break
+                key = (round(nx / STEP), round(ny / STEP))
+                if key in visited:
+                    break
+                visited.add(key)
                 a, b = _screen_geo(view, x, y), _screen_geo(view, nx, ny)
                 part.append((a, b, speed, step % 20 == 10))
+                used += 1
                 x, y = nx, ny
             halves.append(part)
         ordered = [(b, a, speed, arrow) for a, b, speed, arrow in reversed(halves[1])]
@@ -140,6 +140,8 @@ def trace_streamline_paths(
             for a, b, speed, arrow in ordered
         )
         paths.append(StreamlinePath(seed_id, tuple(vertices), metadata))
+        if used >= segment_limit:
+            break
     return tuple(paths)
 
 

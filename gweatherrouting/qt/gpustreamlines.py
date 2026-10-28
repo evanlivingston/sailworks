@@ -1,6 +1,7 @@
 """Experimental Metal compute tracer embedded in the Qt Quick scene graph."""
 
 from dataclasses import dataclass
+from hashlib import blake2b
 from pathlib import Path
 import struct
 from threading import Lock
@@ -19,7 +20,6 @@ from PySide6.QtGui import (
 )
 from PySide6.QtQuick import QQuickItem, QSGRenderNode, QSGRendererInterface
 
-from gweatherrouting.rendering.streamlinepaths import _seeds
 from gweatherrouting.rendering.streamlines import WindGrid
 
 MAX_STEPS = 160
@@ -43,8 +43,7 @@ class GpuTraceInput:
 def make_gpu_trace_input(view, columns, density):
     """Pack authoritative sampled wind and stable CPU-selected seeds for Metal."""
     grid = WindGrid(view, columns)
-    seed_data = _seeds(view, density)
-    seeds = [(x, y) for _seed_id, x, y in seed_data]
+    seeds = jittered_seed_positions(view, density)
     if not seeds:
         return None
     arrays = (
@@ -62,6 +61,42 @@ def make_gpu_trace_input(view, columns, density):
         width=view.width,
         height=view.height,
     )
+
+
+def jittered_seed_positions(view, density):
+    """Bound a stable world-cell seed grid and jitter its interior points.
+
+    the reference application's stored jitter table was not available in the supplied artifacts,
+    so this uses a fixed per-cell hash rather than claiming identical offsets.
+    """
+    spacing, seed_limit, _segment_limit = density_parameters(density)
+    cx = view._lon_to_x(view._center_lon)
+    cy = view._lat_to_y(view._center_lat)
+    left, top = cx - view.width / 2, cy - view.height / 2
+    right, bottom = cx + view.width / 2, cy + view.height / 2
+    ix0, ix1 = int(np.floor(left / spacing)), int(np.floor(right / spacing))
+    iy0, iy1 = int(np.floor(top / spacing)), int(np.floor(bottom / spacing))
+    zoom = round(view._zoom, 6)
+    candidates = []
+    for iy in range(iy0, iy1 + 1):
+        for ix in range(ix0, ix1 + 1):
+            digest = blake2b(
+                f"{zoom}:{iy}:{ix}".encode("ascii"), digest_size=8
+            ).digest()
+            dx = int.from_bytes(digest[:4], "little") / 0xFFFFFFFF - 0.5
+            dy = int.from_bytes(digest[4:], "little") / 0xFFFFFFFF - 0.5
+            x = (ix + 0.5 + 0.6 * dx) * spacing - left
+            y = (iy + 0.5 + 0.6 * dy) * spacing - top
+            if 0 <= x < view.width and 0 <= y < view.height:
+                candidates.append((x, y))
+    if len(candidates) > seed_limit:
+        keep = np.linspace(0, len(candidates) - 1, seed_limit, dtype=np.int64)
+        candidates = [candidates[index] for index in keep]
+    candidates.sort(
+        key=lambda point: (point[0] - view.width / 2) ** 2
+        + (point[1] - view.height / 2) ** 2
+    )
+    return candidates
 
 
 def _shader(name):
