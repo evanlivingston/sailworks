@@ -2191,6 +2191,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             else:
                 self._streamline_settle.stop()
             state, paths = self._streamline_model.update(camera, enabled)
+            if (
+                self._gpu_streamlines_enabled
+                and enabled
+                and state == "unavailable"
+            ):
+                self._gpu_streamlines_failed(self._streamline_model.error)
+                return self._streamline_model._state
             if debug_streamlines and state != "ready":
                 logger.warning(
                     "streamlines awaiting trace: state=%s time=%s front=%s "
