@@ -2860,6 +2860,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
 
         def mousePressEvent(self, event):  # noqa: N802 - Qt virtual method name
             if event.button() == Qt.MouseButton.LeftButton:
+                parent_widget = getattr(self, "parentWidget", None)
+                canvas = parent_widget() if parent_widget else None
+                record_measurement = getattr(canvas, "_record_measurement_click", None)
+                if record_measurement and record_measurement(
+                    event.position().x(), event.position().y()
+                ):
+                    event.accept()
+                    return
                 self.cancel_motion()
                 self._drag = event.position()
                 self._drag_velocity = DragVelocity()
@@ -2871,6 +2879,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 super().mousePressEvent(event)
 
         def mouseMoveEvent(self, event):  # noqa: N802 - Qt virtual method name
+            parent_widget = getattr(self, "parentWidget", None)
+            canvas = parent_widget() if parent_widget else None
+            update_preview = getattr(canvas, "_update_measurement_preview", None)
+            if update_preview and update_preview(
+                event.position().x(), event.position().y()
+            ):
+                event.accept()
+                return
             if self._drag is not None:
                 position = event.position()
                 delta = position - self._drag
