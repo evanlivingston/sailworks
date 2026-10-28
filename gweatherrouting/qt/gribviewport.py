@@ -2195,6 +2195,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._gpu_streamlines_enabled
                 and enabled
                 and state == "unavailable"
+                and self._streamline_model.error
+                == "No traceable wind cells in selected forecast"
             ):
                 self._gpu_streamlines_failed(self._streamline_model.error)
                 return self._streamline_model._state

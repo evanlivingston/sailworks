@@ -20,7 +20,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtQuick import QQuickItem, QSGRenderNode, QSGRendererInterface
 
-from gweatherrouting.rendering.streamlines import WindGrid
+from gweatherrouting.rendering.streamlines import WindGrid, density_parameters
 
 MAX_STEPS = 160
 SEGMENTS_PER_SEED = MAX_STEPS * 2
