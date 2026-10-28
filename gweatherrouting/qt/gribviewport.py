@@ -1409,9 +1409,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     )
                     self._gpu_streamlines_enabled = False
             from .marinequick import MarineQuickLayer
+            from .icoadsquick import IcoadsQuickLayer
 
             self._marine_layer = MarineQuickLayer(self._weather, self)
             self._marine_layer.stateChanged.connect(self.marineStateChanged.emit)
+            self._icoads_layer = IcoadsQuickLayer(self._weather, self)
             self._barbs = self._weather
             self._fill = None
             if self._gpu_weather_fill or self._chart_layer:
@@ -1752,6 +1754,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
         def set_marine(self, sources, instant, visible):
             if self._camera is not None:
                 self._marine_layer.request(sources, instant, visible, self._camera)
+
+        def set_ship_observations(self, reports, visible):
+            if self._camera is not None:
+                self._icoads_layer.present(reports, visible, self._camera)
 
         def set_navigation_overlay(self, image, target):
             """Present retained application navigation imagery in Quick."""
@@ -2378,6 +2384,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 return
             self._disposed = True
             self._marine_layer.close()
+            self._icoads_layer.close()
             self._streamline_model.close()
             self._streamline_settle.stop()
             self._streamlines.setVisible(False)
@@ -2465,6 +2472,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             try:
                 self._camera = camera
                 self._marine_layer.set_camera(camera)
+                self._icoads_layer.set_camera(camera)
                 if self._chart_model is not None:
                     # The chart is composed for a settled view: the settle
                     # timer only asks for a composition when the view has
@@ -2963,6 +2971,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
 
         def mousePressEvent(self, event):  # noqa: N802 - Qt virtual method name
             if event.button() == Qt.MouseButton.LeftButton:
+                parent_widget = getattr(self, "parentWidget", None)
+                canvas = parent_widget() if parent_widget else None
+                record_measurement = getattr(canvas, "_record_measurement_click", None)
+                if record_measurement and record_measurement(
+                    event.position().x(), event.position().y()
+                ):
+                    event.accept()
+                    return
                 self.cancel_motion()
                 self._drag = event.position()
                 self._drag_velocity = DragVelocity()
@@ -2974,6 +2990,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 super().mousePressEvent(event)
 
         def mouseMoveEvent(self, event):  # noqa: N802 - Qt virtual method name
+            parent_widget = getattr(self, "parentWidget", None)
+            canvas = parent_widget() if parent_widget else None
+            update_preview = getattr(canvas, "_update_measurement_preview", None)
+            if update_preview and update_preview(
+                event.position().x(), event.position().y()
+            ):
+                event.accept()
+                return
             if self._drag is not None:
                 position = event.position()
                 delta = position - self._drag

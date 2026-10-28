@@ -196,6 +196,7 @@ class ViewportMap(
 
     def _paint_foreground(self, painter):
         """Publish shared foreground imagery to the active desktop viewport."""
+        self._paint_measurement_overlay(painter)
         presenter = self._weather_presenter
         if presenter is None or not presenter.active or presenter.widget is None:
             return
@@ -204,6 +205,39 @@ class ViewportMap(
         )
         presenter.widget.set_navigation_overlay(self._nav_cache[4], target)
         self._paint_dashboard(painter)
+
+    def _paint_measurement_overlay(self, painter):
+        points = getattr(self, "_measure_points", ())
+        if not points:
+            return
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QColor, QPen
+
+        def screen(point):
+            lat, lon = point
+            return QPointF(
+                self._lon_to_x(lon)
+                - self._lon_to_x(self._center_lon)
+                + self.width() / 2,
+                self._lat_to_y(lat)
+                - self._lat_to_y(self._center_lat)
+                + self.height() / 2,
+            )
+
+        painter.setPen(QPen(QColor("#ffcc33"), 2))
+        if len(points) == 2:
+            first, second = map(screen, points)
+            painter.drawLine(first, second)
+            painter.drawText(
+                (first + second) / 2, f"{self._measurement_distance_km():.1f} km"
+            )
+        elif len(points) == 1 and self._measure_preview_point is not None:
+            first, second = map(screen, (points[0], self._measure_preview_point))
+            painter.drawLine(first, second)
+            distance = self._distance_between_km(points[0], self._measure_preview_point)
+            painter.drawText((first + second) / 2, f"{distance:.1f} km")
+        else:
+            painter.drawEllipse(screen(points[0]), 4, 4)
 
     def _paint_dashboard(self, painter):
         """Publish the dashboard image through the active desktop viewport."""

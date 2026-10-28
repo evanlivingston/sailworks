@@ -262,7 +262,7 @@ def propagate(self, frontier, seconds, end, gaps, numeric):  # noqa: C901
         if self.environment.cancel.is_set():
             raise DownloadCancelledError()
         distance = distances(positions, end)
-        ids = np.flatnonzero(alive & (elapsed < seconds) & (distance > ARRIVAL_METRES))
+        ids = np.flatnonzero(alive & (elapsed < seconds) & (distance > 1.0))
         if self.environment.progress:
             # All headings advance together. Count parents whose trajectories
             # have finished, rather than reporting an arbitrary heading index.
@@ -378,8 +378,13 @@ def route_frontier(self, lastlog, t, hours, start, end):  # noqa: C901
             ):
                 winner = i
             key = int(keys[i])
-            if key not in bins or distance[i] < distance[bins[key]]:
-                bins[key] = i
+            if key not in bins:
+                bins[key] = [i]
+            else:
+                bins[key].append(i)
+                bins[key].sort(key=lambda idx: distance[idx])
+                if len(bins[key]) > 2:
+                    bins[key] = bins[key][:2]
         if len(ids):
             best_distance = min(best_distance, float(np.min(distance[ids])))
     if self.environment.progress:
@@ -443,10 +448,15 @@ def route_frontier(self, lastlog, t, hours, start, end):  # noqa: C901
 
     if winner is not None:
         win = materialize(winner)
+        # The trajectory has already been integrated to within one metre;
+        # normalize only this residual in the published route position.
+        win.pos = tuple(end)
+        win.next_wp_dist = 0.0
         path = [win]
         for front in reversed(isochrones):
             path.append(front[path[-1].prev_idx])
         path.reverse()
         return self.result(win.time, path, isochrones + [[win]], win.pos)
-    new = [materialize(i) for i in bins.values()]
+    retained = [idx for group in bins.values() for idx in group]
+    new = [materialize(i) for i in retained]
     return self.result(new[0].time, [], isochrones + [new], start)

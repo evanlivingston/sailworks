@@ -34,6 +34,7 @@ class DynamicOverlay(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.canvas._paint_route_overlay(painter)
         self.canvas._paint_track_overlay(painter)
+        self.canvas._paint_measurement_overlay(painter)
         self.canvas._paint_dashboard(painter)
         self.canvas._paint_caption(painter)
         painter.end()

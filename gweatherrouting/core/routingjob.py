@@ -4,12 +4,272 @@ from dataclasses import dataclass
 from functools import lru_cache
 from copy import deepcopy
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta as TimeDelta
 from threading import Event, RLock
-from typing import Optional
 import math
+from typing import Optional
 
-from weatherrouting import RoutingNoWindError
+from weatherrouting import IsoPoint, RoutingNoWindError
+from weatherrouting.routers.linearbestisorouter import LinearBestIsoRouter
+
+_original_linear_route = LinearBestIsoRouter._route
+
+
+def _linear_route_with_missing_destination_wind(
+    self, lastlog, time, timedelta, start, end, iso_f
+):
+    try:
+        result = _original_linear_route(
+            self, lastlog, time, timedelta, start, end, iso_f
+        )
+        if result.path:
+            candidate = result.path[-1]
+            from gweatherrouting.core.marine.routing import GEOD
+
+            _, _, metres = GEOD.inv(candidate.pos[1], candidate.pos[0], end[1], end[0])
+            if metres <= 1:
+                candidate.pos = tuple(end)
+                candidate.next_wp_dist = 0
+                result.position = tuple(end)
+                return result
+            terminal = _integrate_wind_terminal_leg(self, candidate, end)
+            if terminal:
+                result.path.extend(terminal)
+                result.position = tuple(end)
+                result.time = terminal[-1].time
+            else:
+                # Do not let a nearby dependency candidate consume the waypoint.
+                result.path = []
+                result.position = tuple(start)
+        return result
+    except AttributeError as exc:
+        if "isochrones" in str(exc):
+            raise RoutingNoWindError(
+                "Load a wind forecast covering the destination position and time."
+            ) from exc
+        raise
+
+
+def _wind_terminal_velocity(router, position, instant, end):
+    """Return a polar-derived ground velocity on the direct wind-only course."""
+    from gweatherrouting.core.marine.routing import KNOT, distance_bearing
+
+    wind = router.grib.get_wind_at(instant, *position)
+    if wind is None or len(wind) < 2 or not all(math.isfinite(v) for v in wind[:2]):
+        raise RoutingNoWindError(
+            "Load a wind forecast covering the final route segment and arrival time."
+        )
+    wind_from, wind_ms = wind[:2]
+    tws_kn = wind_ms / KNOT
+    _, course = distance_bearing(position, end)
+    wind_from = math.radians(wind_from)
+    twa = abs((course - wind_from + math.pi) % (2 * math.pi) - math.pi)
+    speed_kn = router.polar.get_speed(tws_kn, twa)
+    if not math.isfinite(speed_kn) or speed_kn <= 0:
+        return None
+    speed_ms = speed_kn * KNOT
+    return (
+        speed_ms * math.sin(course),
+        speed_ms * math.cos(course),
+        speed_kn,
+        wind_from,
+        tws_kn,
+        math.degrees(course) % 360,
+    )
+
+
+def _valid_wind_terminal_segment(router, start, end):
+    """Apply the configured point and full-segment land predicates."""
+    points = getattr(router, "points_validity", None)
+    if points and not all(points([end])):
+        return False
+    point = getattr(router, "point_validity", None)
+    if point and not point(*end):
+        return False
+    lines = getattr(router, "lines_validity", None)
+    if lines and not all(lines([[*start, *end]])):
+        return False
+    line = getattr(router, "line_validity", None)
+    return not line or line(*start, *end)
+
+
+def _integrate_wind_terminal_leg(router, candidate, end):
+    """Integrate a bounded, wind-sampled final leg; return points or no connection.
+
+    The endpoint shortcut in the dependency used a nearby point and its current
+    polar speed as an implicit arrival. This small RK2 connector instead samples
+    start, midpoint and endpoint wind, applies the configured polar/safety wrapper,
+    and checks each emitted segment. It is limited to one hour, matching the
+    dependency's existing max-reach acceptance horizon.
+    """
+    from gweatherrouting.core.marine.routing import (
+        KNOT,
+        distance_bearing,
+        move,
+    )
+
+    if candidate.time is None:
+        return None
+    position = tuple(candidate.pos)
+    instant = candidate.time
+    elapsed = 0.0
+    points = []
+    budget = 3600.0
+    for _ in range(12):
+        distance, _ = distance_bearing(position, end)
+        if distance <= 1.0:
+            if distance == 0:
+                return points
+            final = _wind_terminal_velocity(router, position, instant, end)
+            if final is None:
+                return None
+            duration = distance / (final[2] * KNOT)
+            if elapsed + duration > budget:
+                return None
+            if not _valid_wind_terminal_segment(router, position, end):
+                return None
+            arrival = instant + TimeDelta(seconds=duration)
+            wind = router.grib.get_wind_at(arrival, *end)
+            if wind is None or not all(math.isfinite(v) for v in wind[:2]):
+                raise RoutingNoWindError(
+                    "Load a wind forecast covering the final route segment and arrival time."
+                )
+            end_speed = router.polar.get_speed(
+                wind[1] / KNOT,
+                abs(
+                    (math.radians(final[5]) - math.radians(wind[0]) + math.pi)
+                    % (2 * math.pi)
+                    - math.pi
+                ),
+            )
+            if not math.isfinite(end_speed) or end_speed <= 0:
+                return None
+            points.append(
+                IsoPoint(
+                    tuple(end),
+                    time=arrival,
+                    twd=math.radians(wind[0]),
+                    tws=wind[1] / KNOT,
+                    speed=final[2],
+                    brg=final[5],
+                    next_wp_dist=0,
+                )
+            )
+            return points
+        initial = _wind_terminal_velocity(router, position, instant, end)
+        if initial is None:
+            return None
+        remaining = budget - elapsed
+        if remaining <= 0:
+            return None
+        duration = min(300.0, remaining, distance / (initial[2] * KNOT))
+        midpoint = move(position, initial[0], initial[1], duration / 2)
+        if not _valid_wind_terminal_segment(router, position, midpoint):
+            return None
+        middle_time = instant + TimeDelta(seconds=duration / 2)
+        middle = _wind_terminal_velocity(router, midpoint, middle_time, end)
+        if middle is None:
+            return None
+
+        # If the direct course can cover the remainder in this substep, refine
+        # the midpoint estimate and integrate exactly that final duration.
+        final_duration = distance / (middle[2] * KNOT)
+        if final_duration <= min(300.0, remaining):
+            converged = False
+            for _ in range(8):
+                midpoint = move(
+                    position,
+                    initial[0],
+                    initial[1],
+                    final_duration / 2,
+                )
+                if not _valid_wind_terminal_segment(router, position, midpoint):
+                    return None
+                middle_time = instant + TimeDelta(seconds=final_duration / 2)
+                middle = _wind_terminal_velocity(router, midpoint, middle_time, end)
+                if middle is None:
+                    return None
+                refined = distance / (middle[2] * KNOT)
+                if abs(refined - final_duration) < 0.005:
+                    final_duration = refined
+                    converged = True
+                    break
+                final_duration = refined
+            if not converged:
+                return None
+            if final_duration <= min(300.0, remaining):
+                if not _valid_wind_terminal_segment(router, position, end):
+                    return None
+                if not _valid_wind_terminal_segment(router, midpoint, end):
+                    return None
+                arrival = instant + TimeDelta(seconds=final_duration)
+                end_wind = router.grib.get_wind_at(arrival, *end)
+                if (
+                    end_wind is None
+                    or len(end_wind) < 2
+                    or not all(math.isfinite(v) for v in end_wind[:2])
+                ):
+                    raise RoutingNoWindError(
+                        "Load a wind forecast covering the final route segment and arrival time."
+                    )
+                end_tws = end_wind[1] / KNOT
+                end_twa = abs(
+                    (math.radians(middle[5]) - math.radians(end_wind[0]) + math.pi)
+                    % (2 * math.pi)
+                    - math.pi
+                )
+                end_speed = router.polar.get_speed(end_tws, end_twa)
+                if not math.isfinite(end_speed) or end_speed <= 0:
+                    return None
+                points.append(
+                    IsoPoint(
+                        tuple(end),
+                        time=arrival,
+                        twd=math.radians(end_wind[0]),
+                        tws=end_tws,
+                        speed=middle[2],
+                        brg=middle[5],
+                        next_wp_dist=0,
+                    )
+                )
+                return points
+
+        destination = move(position, middle[0], middle[1], duration)
+        travelled, course = distance_bearing(position, destination)
+        if travelled <= 0 or travelled >= distance:
+            return None
+        if not _valid_wind_terminal_segment(router, position, destination):
+            return None
+        if not _valid_wind_terminal_segment(router, midpoint, destination):
+            return None
+        arrival = instant + TimeDelta(seconds=duration)
+        end_wind = router.grib.get_wind_at(arrival, *destination)
+        if (
+            end_wind is None
+            or len(end_wind) < 2
+            or not all(math.isfinite(v) for v in end_wind[:2])
+        ):
+            raise RoutingNoWindError(
+                "Load a wind forecast covering the final route segment and arrival time."
+            )
+        remaining_distance, _ = distance_bearing(destination, end)
+        points.append(
+            IsoPoint(
+                destination,
+                time=arrival,
+                twd=middle[3],
+                tws=middle[4],
+                speed=middle[2],
+                brg=math.degrees(course) % 360,
+                next_wp_dist=remaining_distance / 1852,
+            )
+        )
+        position, instant = destination, arrival
+        elapsed += duration
+    return None
+
+
+LinearBestIsoRouter._route = _linear_route_with_missing_destination_wind
 
 from gweatherrouting.core.geo.poi import POI
 from gweatherrouting.core.geo.track import Track
@@ -147,6 +407,13 @@ class RouteRequest:
     min_sailing_speed_kn: Optional[float] = None
     motor_speed_kn: float = 5.0
     wave_correct: bool = False
+    land_avoidance: Optional[bool] = None
+
+    def __post_init__(self):
+        if self.land_avoidance is None:
+            object.__setattr__(self, "land_avoidance", self.coastline_checks)
+        else:
+            object.__setattr__(self, "coastline_checks", self.land_avoidance)
 
 
 class RoutingPreview(tuple):
@@ -266,16 +533,24 @@ def create_requested_routing(core, request, providers, wind, current_selection):
         options["grib_override"] = (
             override if isinstance(override, ModifiedGribManager) else None
         )
-    return core.create_routing(
+    routing = core.create_routing(
         algorithm,
         request.polar_file,
         target,
         request.departure,
         request.start,
-        providers,
+        providers if request.coastline_checks else (),
         not request.coastline_checks,
         **options,
     )
+    environment = getattr(routing, "current_environment", None)
+    if environment is not None:
+        environment.factors = {
+            "currents": bool(request.use_currents),
+            "land_avoidance": bool(request.coastline_checks),
+            "wave_correction": bool(request.wave_correct),
+        }
+    return routing
 
 
 def run_requested_routing(core, routing, request, wind, progress, report, save_fields):
@@ -318,6 +593,24 @@ def run_requested_routing(core, routing, request, wind, progress, report, save_f
     if result is None or not result.path:
         raise ValueError("The routing engine returned no route.")
     provenance = routing_provenance(routing, result.path)
+    environment = getattr(routing, "current_environment", None)
+    land_avoidance = bool(request.coastline_checks)
+    if environment is not None and getattr(environment, "factors", None):
+        land_avoidance = bool(environment.factors.get("land_avoidance", land_avoidance))
+    provenance["factors"] = {
+        "currents": bool(request.use_currents),
+        "land_avoidance": land_avoidance,
+        "wave_correction": bool(request.wave_correct),
+    }
+    provenance["active_factors"] = [
+        name
+        for name, enabled in (
+            ("currents", request.use_currents),
+            ("land_avoidance", request.coastline_checks),
+            ("wave_correction", request.wave_correct),
+        )
+        if enabled
+    ]
     if (
         request.parameters
         or request.waypoints
@@ -347,6 +640,8 @@ def run_requested_routing(core, routing, request, wind, progress, report, save_f
                 if request.wave_correct
                 else None
             ),
+            factors=provenance["factors"],
+            active_factors=provenance["active_factors"],
         )
     return CalculatedRoute(
         serialize_routing_points(routing, result.path),
