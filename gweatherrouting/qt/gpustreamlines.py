@@ -3,11 +3,13 @@
 from dataclasses import dataclass
 from hashlib import blake2b
 from pathlib import Path
+import os
 import struct
 from threading import Lock
+from time import monotonic
 
 import numpy as np
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QRhi,
     QRhiBuffer,
@@ -20,10 +22,16 @@ from PySide6.QtGui import (
 )
 from PySide6.QtQuick import QQuickItem, QSGRenderNode, QSGRendererInterface
 
-from gweatherrouting.rendering.streamlines import WindGrid, density_parameters
+from gweatherrouting.rendering.streamlines import (
+    WindGrid,
+    density_parameters,
+    spatially_thin_seeds,
+)
 
 MAX_STEPS = 160
 SEGMENTS_PER_SEED = MAX_STEPS * 2
+MAX_FILTER_CELLS = 65536
+MAX_FILTER_SEEDS = 500
 SHADER_DIR = Path(__file__).with_name("shaders")
 
 
@@ -88,15 +96,19 @@ def jittered_seed_positions(view, density):
             x = (ix + 0.5 + 0.6 * dx) * spacing - left
             y = (iy + 0.5 + 0.6 * dy) * spacing - top
             if 0 <= x < view.width and 0 <= y < view.height:
-                candidates.append((x, y))
-    if len(candidates) > seed_limit:
+                candidates.append((ix, iy, x, y))
+    capped = len(candidates) > seed_limit
+    if capped:
         keep = np.linspace(0, len(candidates) - 1, seed_limit, dtype=np.int64)
         candidates = [candidates[index] for index in keep]
-    candidates.sort(
-        key=lambda point: (point[0] - view.width / 2) ** 2
-        + (point[1] - view.height / 2) ** 2
+    candidates = spatially_thin_seeds(
+        candidates, lambda item: (item[0], item[1]), capped=capped
     )
-    return candidates
+    candidates.sort(
+        key=lambda point: (point[2] - view.width / 2) ** 2
+        + (point[3] - view.height / 2) ** 2
+    )
+    return [(x, y) for _ix, _iy, x, y in candidates]
 
 
 def _shader(name):
@@ -151,6 +163,21 @@ class _TraceNode(QSGRenderNode):
                     1,
                     QRhiShaderResourceBinding.StageFlag.VertexStage,
                     self.state["render_params"],
+                ),
+                QRhiShaderResourceBinding.bufferLoad(
+                    2,
+                    QRhiShaderResourceBinding.StageFlag.VertexStage,
+                    self.state["previous_output"] or self.state["output"],
+                ),
+                QRhiShaderResourceBinding.bufferLoad(
+                    3,
+                    QRhiShaderResourceBinding.StageFlag.VertexStage,
+                    self.state["visibility"],
+                ),
+                QRhiShaderResourceBinding.bufferLoad(
+                    4,
+                    QRhiShaderResourceBinding.StageFlag.VertexStage,
+                    self.state["previous_visibility"] or self.state["visibility"],
                 ),
             ]
         )
@@ -210,16 +237,32 @@ class GpuStreamlineItem(QQuickItem):
         self._input_lock = Lock()
         self._input = None
         self._input_generation = 0
+        self._phase = 0.0
+        self._flow_started = monotonic()
+        self._opacity = 1.0
+        self._view_transform = (1.0, 0.0, 0.0, 0.0)
+        self._transition_requested = False
+        self._displayed_input = None
+        self._transition_started = None
         self._last_dispatched = -1
         self._failed = False
         self._node = None
         self._window = None
+        self._animation_timer = QTimer(self)
+        self._animation_timer.setInterval(16)
+        self._animation_timer.timeout.connect(self._advance_flow)
+        self.visibleChanged.connect(self._sync_animation)
         self._buffers = []
         self._pipelines = []
         self._compute_bindings = None
         self._compute_pipeline = None
+        self._filter_bindings = None
+        self._filter_pipeline = None
         self._state = {
             "output": None,
+            "previous_output": None,
+            "visibility": None,
+            "previous_visibility": None,
             "render_params": None,
             "generation": 0,
             "seed_count": 0,
@@ -230,12 +273,15 @@ class GpuStreamlineItem(QQuickItem):
         }
         self.windowChanged.connect(self._window_changed)
 
-    def set_trace_input(self, trace_input):
+    def set_trace_input(self, trace_input, *, transition=False):
         with self._input_lock:
             if trace_input is None and self._input is None:
                 return
             self._input = trace_input
             self._input_generation += 1
+            self._view_transform = (1.0, 0.0, 0.0, 0.0)
+            self._transition_requested = bool(transition)
+            self._opacity = trace_input.opacity if trace_input is not None else 1.0
             self._state["size"] = (
                 (trace_input.width, trace_input.height)
                 if trace_input is not None
@@ -246,24 +292,39 @@ class GpuStreamlineItem(QQuickItem):
         if trace_input is not None:
             self.setWidth(trace_input.width)
             self.setHeight(trace_input.height)
+        self._sync_animation()
+        self.update()
+
+    def set_view_transform(self, width, height, scale, offset_x, offset_y, world_width):
+        """Project existing source-camera traces into the current viewport."""
+        with self._input_lock:
+            self._state["size"] = (float(width), float(height))
+            self._view_transform = (
+                float(scale),
+                float(offset_x),
+                float(offset_y),
+                float(world_width),
+            )
+        self.setWidth(width)
+        self.setHeight(height)
         self.update()
 
     def set_opacity(self, opacity):
         with self._input_lock:
-            if self._input is None or self._input.opacity == float(opacity):
+            if self._input is None or self._opacity == float(opacity):
                 return
-            self._input = GpuTraceInput(
-                self._input.wind,
-                self._input.x_coordinates,
-                self._input.y_coordinates,
-                self._input.valid_x,
-                self._input.valid_y,
-                self._input.seeds,
-                self._input.width,
-                self._input.height,
-                float(opacity),
-            )
-            self._input_generation += 1
+            self._opacity = float(opacity)
+        self.update()
+
+    def _sync_animation(self):
+        if self.isVisible() and self._input is not None:
+            self._animation_timer.start()
+        else:
+            self._animation_timer.stop()
+
+    def _advance_flow(self):
+        with self._input_lock:
+            self._phase = ((monotonic() - self._flow_started) * 6.6) % 20.0
         self.update()
 
     def updatePaintNode(self, old_node, _data):
@@ -291,11 +352,14 @@ class GpuStreamlineItem(QQuickItem):
             self._failed = True
             self.gpuError.emit(message)
 
-    def _create_buffer(self, rhi, data, usage=QRhiBuffer.UsageFlag.StorageBuffer):
-        size = max(len(data), 4)
+    def _create_buffer(
+        self, rhi, data, usage=QRhiBuffer.UsageFlag.StorageBuffer, *, dynamic=False
+    ):
+        size = max(data if isinstance(data, int) else len(data), 4)
         if usage == QRhiBuffer.UsageFlag.UniformBuffer:
             size = rhi.ubufAligned(size)
-        buffer = rhi.newBuffer(QRhiBuffer.Type.Static, usage, size)
+        buffer_type = QRhiBuffer.Type.Dynamic if dynamic else QRhiBuffer.Type.Static
+        buffer = rhi.newBuffer(buffer_type, usage, size)
         if not buffer.create():
             raise RuntimeError("GPU streamline buffer allocation failed")
         self._buffers.append(buffer)
@@ -310,7 +374,13 @@ class GpuStreamlineItem(QQuickItem):
         self._buffers.clear()
         self._compute_bindings = None
         self._compute_pipeline = None
+        self._filter_bindings = None
+        self._filter_pipeline = None
         self._state["output"] = self._state["render_params"] = None
+        self._state["previous_output"] = None
+        self._state["visibility"] = self._state["previous_visibility"] = None
+        self._transition_started = None
+        self._displayed_input = None
 
     def _before_rendering(self):
         try:
@@ -319,14 +389,13 @@ class GpuStreamlineItem(QQuickItem):
             with self._input_lock:
                 trace_input = self._input
                 generation = self._input_generation
+                requested_transition = self._transition_requested
             if trace_input is None:
                 if generation != self._last_dispatched:
                     if self._node is not None:
                         self._node.release_pipeline()
                     self._reset_resources()
                     self._last_dispatched = generation
-                return
-            if generation == self._last_dispatched:
                 return
             window = self._window
             if window is None:
@@ -355,10 +424,81 @@ class GpuStreamlineItem(QQuickItem):
             )
             if command_buffer.rhi().backend() != QRhi.Implementation.Metal:
                 raise RuntimeError("Qt Quick command buffer is not Metal-backed")
+            if self._transition_started is not None:
+                elapsed = monotonic() - self._transition_started
+                if elapsed >= 0.2:
+                    if self._node is not None:
+                        self._node.release_pipeline()
+                    previous = self._state["previous_output"]
+                    previous_visibility = self._state["previous_visibility"]
+                    self._state["previous_output"] = None
+                    self._state["previous_visibility"] = None
+                    if previous is not None:
+                        self._buffers.remove(previous)
+                        previous.destroy()
+                    if previous_visibility is not None:
+                        self._buffers.remove(previous_visibility)
+                        previous_visibility.destroy()
+                    self._transition_started = None
+                elif (
+                    trace_input is not None
+                    and requested_transition
+                    and generation != self._last_dispatched
+                ):
+                    # Finish the displayed transition before reusing either output.
+                    # The latest input replaces all intermediate scrub requests.
+                    return
+            if generation == self._last_dispatched:
+                if self._state["render_params"] is not None:
+                    with self._input_lock:
+                        scale, offset_x, offset_y, world_width = self._view_transform
+                        parameters = struct.pack(
+                            "<ffffffffff",
+                            *self._state["size"],
+                            self._opacity,
+                            1.2,
+                            self._phase,
+                            (
+                                min(1.0, (monotonic() - self._transition_started) / 0.2)
+                                if self._transition_started is not None
+                                else 1.0
+                            ),
+                            scale,
+                            offset_x,
+                            offset_y,
+                            world_width,
+                        )
+                    updates = rhi.nextResourceUpdateBatch()
+                    updates.updateDynamicBuffer(
+                        self._state["render_params"], 0, len(parameters), parameters
+                    )
+                    window.beginExternalCommands()
+                    command_buffer.resourceUpdate(updates)
+                    window.endExternalCommands()
+                return
 
+            previous_output = self._state["output"]
+            previous_visibility = self._state["visibility"]
+            previous_input = self._displayed_input
+            compatible = (
+                requested_transition
+                and previous_output is not None
+                and previous_input is not None
+                and trace_input.width == previous_input.width
+                and trace_input.height == previous_input.height
+                and np.array_equal(trace_input.seeds, previous_input.seeds)
+            )
+            if compatible:
+                self._buffers.remove(previous_output)
+                self._buffers.remove(previous_visibility)
             if self._node is not None:
                 self._node.release_pipeline()
             self._reset_resources()
+            if compatible:
+                self._buffers.append(previous_output)
+                self._buffers.append(previous_visibility)
+                self._state["previous_output"] = previous_output
+                self._state["previous_visibility"] = previous_visibility
             grid_inputs = (
                 trace_input.wind,
                 trace_input.x_coordinates,
@@ -374,9 +514,9 @@ class GpuStreamlineItem(QQuickItem):
             if not seed_count:
                 self._last_dispatched = generation
                 return
-            output = self._create_buffer(
-                rhi, bytes(seed_count * SEGMENTS_PER_SEED * 32)
-            )
+            output = self._create_buffer(rhi, seed_count * SEGMENTS_PER_SEED * 32)
+            visibility = self._create_buffer(rhi, seed_count * 4)
+            self._state["visibility"] = visibility
             parameter_bytes = struct.pack(
                 "<ffII",
                 trace_input.width,
@@ -384,14 +524,28 @@ class GpuStreamlineItem(QQuickItem):
                 seed_count,
                 0,
             )
-            render_parameter_bytes = struct.pack(
-                "<ffff", trace_input.width, trace_input.height, trace_input.opacity, 1.2
-            )
+            with self._input_lock:
+                scale, offset_x, offset_y, world_width = self._view_transform
+                render_parameter_bytes = struct.pack(
+                    "<ffffffffff",
+                    *self._state["size"],
+                    self._opacity,
+                    1.2,
+                    self._phase,
+                    0.0 if compatible else 1.0,
+                    scale,
+                    offset_x,
+                    offset_y,
+                    world_width,
+                )
             params = self._create_buffer(
                 rhi, parameter_bytes, QRhiBuffer.UsageFlag.UniformBuffer
             )
             render_params = self._create_buffer(
-                rhi, render_parameter_bytes, QRhiBuffer.UsageFlag.UniformBuffer
+                rhi,
+                render_parameter_bytes,
+                QRhiBuffer.UsageFlag.UniformBuffer,
+                dynamic=True,
             )
             self._state["output"] = output
             self._state["render_params"] = render_params
@@ -435,13 +589,81 @@ class GpuStreamlineItem(QQuickItem):
 
             self._pipelines.extend((self._compute_bindings, self._compute_pipeline))
 
+            cells_x = max(1, (trace_input.width + 11) // 12)
+            cells_y = max(1, (trace_input.height + 11) // 12)
+            dedup = (
+                os.environ.get("GWR_GPU_STREAMLINE_DEDUP", "1") != "0"
+                and cells_x * cells_y <= MAX_FILTER_CELLS
+                and seed_count <= MAX_FILTER_SEEDS
+            )
+            if dedup:
+                occupancy = self._create_buffer(rhi, cells_x * cells_y * 4)
+                filter_params_data = struct.pack(
+                    "<IIIIff",
+                    seed_count,
+                    cells_x,
+                    cells_y,
+                    0,
+                    float(trace_input.width),
+                    float(trace_input.height),
+                )
+                filter_params = self._create_buffer(
+                    rhi, filter_params_data, QRhiBuffer.UsageFlag.UniformBuffer
+                )
+                self._filter_bindings = rhi.newShaderResourceBindings()
+                self._filter_bindings.setBindings(
+                    [
+                        QRhiShaderResourceBinding.bufferLoad(
+                            0, QRhiShaderResourceBinding.StageFlag.ComputeStage, output
+                        ),
+                        QRhiShaderResourceBinding.bufferLoadStore(
+                            1,
+                            QRhiShaderResourceBinding.StageFlag.ComputeStage,
+                            occupancy,
+                        ),
+                        QRhiShaderResourceBinding.bufferStore(
+                            2,
+                            QRhiShaderResourceBinding.StageFlag.ComputeStage,
+                            visibility,
+                        ),
+                        QRhiShaderResourceBinding.uniformBuffer(
+                            3,
+                            QRhiShaderResourceBinding.StageFlag.ComputeStage,
+                            filter_params,
+                        ),
+                    ]
+                )
+                if not self._filter_bindings.create():
+                    raise RuntimeError("GPU streamline filter bindings failed")
+                self._filter_pipeline = rhi.newComputePipeline()
+                self._filter_pipeline.setShaderStage(
+                    QRhiShaderStage(
+                        QRhiShaderStage.Type.Compute,
+                        _shader("streamline_filter.comp.qsb"),
+                    )
+                )
+                self._filter_pipeline.setShaderResourceBindings(self._filter_bindings)
+                if not self._filter_pipeline.create():
+                    raise RuntimeError("GPU streamline filter pipeline failed")
+                self._pipelines.extend((self._filter_bindings, self._filter_pipeline))
+            else:
+                # Bind all-visible data when the optional filter is disabled.
+                all_visible_payload = struct.pack(
+                    f"<{seed_count}I", *([1] * seed_count)
+                )
+
             updates = rhi.nextResourceUpdateBatch()
             upload_payloads = [array.tobytes() for array in grid_inputs]
-            upload_payloads.append(bytes(seed_count * SEGMENTS_PER_SEED * 32))
-            for buffer, payload in zip((*input_buffers, output), upload_payloads):
+            for buffer, payload in zip(input_buffers, upload_payloads):
                 updates.uploadStaticBuffer(buffer, payload)
             updates.uploadStaticBuffer(params, parameter_bytes)
-            updates.uploadStaticBuffer(render_params, render_parameter_bytes)
+            if dedup:
+                updates.uploadStaticBuffer(filter_params, filter_params_data)
+            if not dedup:
+                updates.uploadStaticBuffer(visibility, all_visible_payload)
+            updates.updateDynamicBuffer(
+                render_params, 0, len(render_parameter_bytes), render_parameter_bytes
+            )
             window.beginExternalCommands()
             command_buffer.beginComputePass(updates)
             # PySide passes these through a void-pointer bridge; keep payloads
@@ -450,9 +672,18 @@ class GpuStreamlineItem(QQuickItem):
             command_buffer.setShaderResources(self._compute_bindings)
             command_buffer.dispatch((seed_count + 63) // 64, 1, 1)
             command_buffer.endComputePass()
+            if dedup:
+                command_buffer.beginComputePass()
+                command_buffer.setComputePipeline(self._filter_pipeline)
+                command_buffer.setShaderResources(self._filter_bindings)
+                command_buffer.dispatch(1, 1, 1)
+                command_buffer.endComputePass()
             window.endExternalCommands()
             self._state["generation"] = generation
             self._last_dispatched = generation
+            self._displayed_input = trace_input
+            if compatible:
+                self._transition_started = monotonic()
         except Exception as exc:
             self._fail(str(exc))
 

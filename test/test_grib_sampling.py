@@ -17,6 +17,7 @@ from gweatherrouting.core.routingjob import RoutingWind, freeze_wind_sources
 from gweatherrouting.rendering.windcursor import WindCursorSampler
 from gweatherrouting.rendering.windrenderer import DisplayGrib, WindOverlayRenderer
 from gweatherrouting.rendering.weatherstaging import (
+    StreamlineEndpoints,
     blend_streamline_endpoints,
     stage_streamline_endpoints,
 )
@@ -25,6 +26,40 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 START = datetime(2026, 1, 1)
+
+
+def test_streamline_value_blend_matches_sampler_without_provenance_side_effects():
+    a = np.array(
+        [[1.0, 2.0], [np.nan, 3.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0], [1.0, 2.0]]
+    )
+    b = np.array(
+        [
+            [9.0, 10.0],
+            [11.0, 12.0],
+            [13.0, 14.0],
+            [15.0, 16.0],
+            [17.0, 18.0],
+            [np.nan, 4.0],
+        ]
+    )
+    ta = np.array([0.0, np.nan, 4.0, 4.0, 0.0, 0.0])
+    tb = np.array([10.0, 10.0, np.nan, 4.0, -2.0, 10.0])
+    sa = np.array(["model-a"] * len(a), dtype=object)
+    sb = np.array(["model-b"] * len(a), dtype=object)
+    endpoints = StreamlineEndpoints(0, 10, a, ta, sa, b, tb, sb)
+    provenance = object()
+    sampler = SimpleNamespace(
+        _blend=WeatherSampler._blend,
+        last_sources={"unchanged"},
+        point_sources=provenance,
+    )
+
+    for stamp in (0, 2.5, 10):
+        expected, _ = sampler._blend(a, ta, sa, b, tb, sb, np.full(len(a), stamp))
+        actual = blend_streamline_endpoints(sampler, endpoints, stamp)
+        np.testing.assert_array_equal(actual, expected)
+        assert sampler.last_sources == {"unchanged"}
+        assert sampler.point_sources is provenance
 
 
 class TestGribSampling(unittest.TestCase):

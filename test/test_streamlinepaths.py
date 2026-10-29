@@ -3,6 +3,7 @@
 import numpy as np
 
 from gweatherrouting.core.mapviewport import MapViewport
+from gweatherrouting.rendering.streamlines import density_parameters
 from gweatherrouting.rendering.streamlinepaths import (
     PathSegment,
     StreamlinePath,
@@ -53,13 +54,45 @@ def test_capped_seed_grid_keeps_coverage_across_the_viewport():
     view = MapViewport(canvas)
 
     seeds = _seeds(view, "all")
-    assert len(seeds) == 2000
+    assert len(seeds) == 500
     xs = [seed[1] for seed in seeds]
     ys = [seed[2] for seed in seeds]
     assert min(xs) < view.width * 0.1
     assert max(xs) > view.width * 0.9
     assert min(ys) < view.height * 0.1
     assert max(ys) > view.height * 0.9
+
+
+def test_seed_selection_thins_low_and_high_candidate_counts_for_each_density():
+    for width, height in ((240, 180), (1600, 1200)):
+        canvas = MapCanvas()
+        canvas._center_lat = canvas._center_lon = 0
+        canvas._zoom = 8
+        canvas.width, canvas.height = width, height
+        view = MapViewport(canvas)
+        for density in ("sparse", "standard", "dense", "very_dense", "all"):
+            spacing, cap, _ = density_parameters(density)
+            cx, cy = view._lon_to_x(view._center_lon), view._lat_to_y(view._center_lat)
+            left, top = cx - width / 2, cy - height / 2
+            cells = [
+                (ix, iy)
+                for iy in range(
+                    int(np.floor(top / spacing)),
+                    int(np.floor((top + height) / spacing)) + 1,
+                )
+                for ix in range(
+                    int(np.floor(left / spacing)),
+                    int(np.floor((left + width) / spacing)) + 1,
+                )
+                if 0 <= (ix + 0.5) * spacing - left < width
+                and 0 <= (iy + 0.5) * spacing - top < height
+            ]
+            expected = (
+                (cap + 3) // 4
+                if len(cells) > cap
+                else sum(ix % 2 == 0 and iy % 2 == 0 for ix, iy in cells) or 1
+            )
+            assert len(_seeds(view, density)) == expected
 
 
 def test_flat_conversion_preserves_path_segment_order_and_metadata():

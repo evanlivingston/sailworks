@@ -2013,7 +2013,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     self.set_camera(self._camera)
 
         def _refresh_streamlines(self):
-            if not self._disposed and self._camera is not None:
+            if (
+                not self._disposed
+                and self._camera is not None
+                and not self._streamline_settle.isActive()
+            ):
                 self._publish_streamlines(self._camera, force=True)
 
         def _update_streamline_camera(self, camera):
@@ -2034,6 +2038,29 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             ):
                 return
             self._publish_streamlines(self._camera, force=True)
+
+        @staticmethod
+        def _streamline_view_transform(source, target):
+            source_view = source.view()
+            target_view = target.view()
+            scale = 2.0 ** (target.zoom - source.zoom)
+            world_width = target_view.TILE_SIZE * 2.0**target.zoom
+            source_x = source_view._lon_to_x(source.center_lon)
+            target_x = target_view._lon_to_x(target.center_lon)
+            source_y = source_view._lat_to_y(source.center_lat)
+            target_y = target_view._lat_to_y(target.center_lat)
+            dx = (source_x * scale - target_x) % world_width
+            if dx > world_width / 2.0:
+                dx -= world_width
+            return (
+                scale,
+                target.width / 2.0 - source.width / 2.0 * scale + dx,
+                target.height / 2.0
+                - source.height / 2.0 * scale
+                + source_y * scale
+                - target_y,
+                world_width,
+            )
 
         def _streamline_readiness_changed(self):
             debug_streamlines = os.environ.get("GWR_STREAMLINE_DEBUG")
@@ -2154,10 +2181,29 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     camera.width,
                     camera.height,
                 ):
-                    # GPU output is viewport-local, so do not leave geometry
-                    # from the old camera masquerading as current coverage.
-                    gpu_item.set_trace_input(None)
-                    gpu_item.setVisible(False)
+                    scale, offset_x, offset_y, world_width = (
+                        self._streamline_view_transform(prior, camera)
+                    )
+                    gpu_item.set_view_transform(
+                        camera.width,
+                        camera.height,
+                        scale,
+                        offset_x,
+                        offset_y,
+                        world_width,
+                    )
+                    gpu_item.set_opacity(self._wind_opacity * 0.6)
+                    gpu_item.setVisible(True)
+                    self._show_state("loading")
+                    self._status.setText(
+                        "Updating streamlines — previous time and coverage"
+                        if prior.time != camera.time
+                        else "Updating streamlines — previous coverage"
+                    )
+                    self._status.adjustSize()
+                    if not force:
+                        self._streamline_settle.start()
+                        return "loading"
                 elif prior is not None and prior.time != camera.time:
                     gpu_item.set_opacity(self._wind_opacity * 0.6)
             same_trace = prior is not None and (
@@ -2191,8 +2237,42 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             else:
                 self._streamline_settle.stop()
             state, paths = self._streamline_model.update(camera, enabled)
+            preview = False
+            if gpu_enabled and enabled and state == "loading":
+                from .gpustreamlines import GpuTraceInput
+
+                snapshot = getattr(self._streamline_model, "snapshot", None)
+                candidate = snapshot(camera) if callable(snapshot) else None
+                if (
+                    isinstance(candidate, tuple)
+                    and len(candidate) == 2
+                    and isinstance(candidate[0], ViewportCamera)
+                    and isinstance(candidate[1], GpuTraceInput)
+                ):
+                    represented, trace = candidate
+                    if (
+                        represented.center_lat,
+                        represented.center_lon,
+                        represented.zoom,
+                        represented.width,
+                        represented.height,
+                        represented.density,
+                        represented.over_land,
+                        represented.geographic,
+                    ) == (
+                        camera.center_lat,
+                        camera.center_lon,
+                        camera.zoom,
+                        camera.width,
+                        camera.height,
+                        camera.density,
+                        camera.over_land,
+                        camera.geographic,
+                    ):
+                        preview = True
+                        state, paths, camera = "preview", trace, represented
             if (
-                self._gpu_streamlines_enabled
+                gpu_enabled
                 and enabled
                 and state == "unavailable"
                 and self._streamline_model.error
@@ -2217,7 +2297,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             from PySide6.QtGui import QColor
             from .viewportstreamlines import MAX_BATCH_SIZE
 
-            if state != "ready" or paths is None:
+            if state not in ("ready", "preview") or paths is None:
                 if gpu_item is not None and state in (
                     "hidden",
                     "unavailable",
@@ -2264,8 +2344,15 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             publication = (id(paths), camera)
             if publication == self._streamline_publication and not force:
                 if gpu_item is not None and gpu_enabled:
-                    gpu_item.set_opacity(self._wind_opacity)
+                    gpu_item.set_opacity(self._wind_opacity * (0.6 if preview else 1.0))
                     gpu_item.setVisible(enabled)
+                    if preview and self._wind_style == "streamlines":
+                        self._show_state("loading")
+                        self._status.setText(
+                            f"Updating streamlines — showing {camera.time:%Y-%m-%d %H:%M UTC}"
+                        )
+                        self._status.adjustSize()
+                        return "loading"
                 else:
                     self._streamlines.setOpacity(self._wind_opacity)
                     self._streamlines.setVisible(enabled)
@@ -2278,11 +2365,39 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     if gpu_item is None:
                         raise RuntimeError("GPU streamline layer is not initialized")
                     self._streamlines.setVisible(False)
-                    gpu_item.set_trace_input(replace(paths, opacity=self._wind_opacity))
+                    same_layout = prior is not None and (
+                        prior.center_lat,
+                        prior.center_lon,
+                        prior.zoom,
+                        prior.width,
+                        prior.height,
+                        prior.density,
+                        prior.over_land,
+                    ) == (
+                        camera.center_lat,
+                        camera.center_lon,
+                        camera.zoom,
+                        camera.width,
+                        camera.height,
+                        camera.density,
+                        camera.over_land,
+                    )
+                    gpu_item.set_trace_input(
+                        replace(paths, opacity=self._wind_opacity),
+                        transition=same_layout and prior.time != camera.time,
+                    )
                     gpu_item.setVisible(enabled)
                     self._streamline_publication = publication
                     self._streamline_display_camera = camera
                     self._streamline_urls = ()
+                    if preview:
+                        gpu_item.set_opacity(self._wind_opacity * 0.6)
+                        self._show_state("loading")
+                        self._status.setText(
+                            f"Updating streamlines — showing {camera.time:%Y-%m-%d %H:%M UTC}"
+                        )
+                        self._status.adjustSize()
+                        return "loading"
                     self._show_state("ready")
                     return "ready"
             groups = []

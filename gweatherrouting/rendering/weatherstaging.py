@@ -358,7 +358,7 @@ def stage_streamline_endpoints(sampler, stamp, lats, lons, cancel=lambda: False)
     for identity in sampler.order:
         if cancel():
             return None
-        blended, _ = sampler._blend(a, ta, sa, b, tb, sb, np.full(count, float(stamp)))
+        blended = _blend_streamline_values(a, ta, b, tb, stamp)
         use = (
             ~np.isfinite(blended).all(axis=1)
             & (stamp >= identity[0])
@@ -399,15 +399,19 @@ def stage_streamline_endpoints(sampler, stamp, lats, lons, cancel=lambda: False)
     return StreamlineEndpoints(before, after, a, ta, sa, b, tb, sb)
 
 
-def blend_streamline_endpoints(sampler, endpoints, stamp):
-    """Use WeatherSampler's unchanged blending arithmetic at a scrub instant."""
-    values, _ = sampler._blend(
-        endpoints.a,
-        endpoints.ta,
-        endpoints.sa,
-        endpoints.b,
-        endpoints.tb,
-        endpoints.sb,
-        np.full(len(endpoints.a), float(stamp)),
-    )
+def _blend_streamline_values(a, ta, b, tb, stamp):
+    """Match WeatherSampler._blend's values without unused source-name unions."""
+    av, bv = np.isfinite(ta), np.isfinite(tb)
+    values = np.where(av[:, None], a, b)
+    both = av & bv & (tb > ta)
+    stamps = np.full(len(a), float(stamp))
+    weight = (stamps[both] - ta[both]) / (tb[both] - ta[both])
+    values[both] = a[both] + (b[both] - a[both]) * weight[:, None]
     return values
+
+
+def blend_streamline_endpoints(sampler, endpoints, stamp):
+    """Blend staged wind values without changing per-point source selection."""
+    return _blend_streamline_values(
+        endpoints.a, endpoints.ta, endpoints.b, endpoints.tb, stamp
+    )

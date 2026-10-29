@@ -98,6 +98,9 @@ void main() {
     uint seed_index = gl_GlobalInvocationID.x;
     if (seed_index >= seedCount || seed_index >= uint(seeds.length())) return;
     vec2 seed = seeds[seed_index];
+    // An unwritten tail must never expose stale buffer contents as valid geometry.
+    for (int slot = 0; slot < SEGMENTS_PER_SEED; ++slot)
+        segments[int(seed_index) * SEGMENTS_PER_SEED + slot].metadata.z = 0.0;
     for (int direction_index = 0; direction_index < 2; ++direction_index) {
         float sign_direction = direction_index == 0 ? 1.0 : -1.0;
         vec2 point = seed;

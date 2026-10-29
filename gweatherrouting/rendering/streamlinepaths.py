@@ -11,6 +11,7 @@ from .streamlines import (
     WindGrid,
     density_parameters,
     _columns_to_arrays,
+    spatially_thin_seeds,
 )
 from .windpainter import barb_bucket_colors
 
@@ -57,9 +58,13 @@ def _seeds(view, density):
             sx, sy = wx - left, wy - top
             if 0 <= sx < view.width and 0 <= sy < view.height:
                 candidates.append(((round(view._zoom, 6), iy, ix), sx, sy))
-    if len(candidates) > seed_limit:
+    capped = len(candidates) > seed_limit
+    if capped:
         keep = np.linspace(0, len(candidates) - 1, seed_limit, dtype=np.int64)
         candidates = [candidates[index] for index in keep]
+    candidates = spatially_thin_seeds(
+        candidates, lambda item: (item[0][2], item[0][1]), capped=capped
+    )
     candidates.sort(
         key=lambda item: (item[1] - view.width / 2) ** 2
         + (item[2] - view.height / 2) ** 2

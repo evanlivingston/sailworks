@@ -158,6 +158,8 @@ class ViewportStreamlineModel:
         self._thread = None
         self._closed = False
         self._pending = None
+        self._active = None
+        self._snapshot = None
         self._cancel = Event()
         self._key = None
         self._state = "hidden"
@@ -170,9 +172,21 @@ class ViewportStreamlineModel:
         with self._condition:
             key = camera if enabled and not self._closed else None
             if key != self._key:
+                same_layout = (
+                    key is not None
+                    and self._key is not None
+                    and self._structural_key(key) == self._structural_key(self._key)
+                )
+                if self.gpu_trace and same_layout and self._active is not None:
+                    self._key, self._paths, self.error = key, None, ""
+                    self._state = "loading"
+                    self._pending = (key, self._cancel)
+                    self._condition.notify_all()
+                    return self._state, self._paths
                 self._cancel.set()
                 self._cancel = Event()
                 self._key, self._paths, self.error = key, None, ""
+                self._snapshot = None
                 if key is None:
                     with self._endpoint_lock:
                         self._endpoint_cache = None
@@ -187,9 +201,57 @@ class ViewportStreamlineModel:
                 self._condition.notify_all()
             return self._state, self._paths
 
+    @staticmethod
+    def _structural_key(camera):
+        return (
+            camera.center_lat,
+            camera.center_lon,
+            camera.zoom,
+            camera.width,
+            camera.height,
+            camera.density,
+            camera.over_land,
+            camera.geographic,
+        )
+
+    def snapshot(self, camera):
+        with self._condition:
+            if self._snapshot is None or camera != self._key:
+                return None
+            return self._snapshot
+
+    def _take_pending_in_window(self, camera, cancel, window, window_for_stamp):
+        """Use the latest time after staging, without redoing the same endpoints."""
+        with self._condition:
+            if self._pending is None or cancel.is_set():
+                return camera
+            pending, pending_cancel = self._pending
+            if (
+                pending_cancel is not cancel
+                or pending != self._key
+                or self._structural_key(pending) != self._structural_key(camera)
+                or window_for_stamp(pending.time.timestamp()) != window
+            ):
+                return camera
+            self._pending = None
+            self._active = (pending, cancel)
+            return pending
+
     def _complete(self, camera, cancel, paths, error):
         with self._condition:
-            if self._closed or cancel.is_set() or camera != self._key:
+            if self._closed or cancel.is_set():
+                return
+            if camera != self._key:
+                if (
+                    self.gpu_trace
+                    and self._key is not None
+                    and paths
+                    and not error
+                    and self._structural_key(camera) == self._structural_key(self._key)
+                ):
+                    self._snapshot = (camera, paths)
+                    if self.on_change is not None:
+                        self.on_change()
                 return
             self._paths, self.error = paths, error
             if not error and not paths:
@@ -248,6 +310,7 @@ class ViewportStreamlineModel:
                         return
                     camera, cancel = self._pending
                     self._pending = None
+                    self._active = (camera, cancel)
                 paths, error = None, initialization_error
                 if not error:
                     try:
@@ -283,6 +346,15 @@ class ViewportStreamlineModel:
                                             self._endpoint_cache = endpoints
                                             self._endpoint_key = endpoint_key
                                 if endpoints is not None and not cancel.is_set():
+                                    camera = self._take_pending_in_window(
+                                        camera,
+                                        cancel,
+                                        (before, after),
+                                        lambda requested: time_window(
+                                            sampler, requested
+                                        ),
+                                    )
+                                    stamp = camera.time.timestamp()
                                     uv = blend_streamline_endpoints(
                                         sampler, endpoints, stamp
                                     ).reshape(ncols, nrows, 2)
@@ -312,6 +384,9 @@ class ViewportStreamlineModel:
                     except Exception as exc:
                         error = str(exc)
                 self._complete(camera, cancel, paths, error)
+                with self._condition:
+                    if self._active == (camera, cancel):
+                        self._active = None
         finally:
             for source in sources:
                 source.close()
@@ -321,6 +396,7 @@ class ViewportStreamlineModel:
             self._closed = True
             self._cancel.set()
             self._pending = self._paths = self._key = None
+            self._snapshot = self._active = None
             with self._endpoint_lock:
                 self._endpoint_cache = None
                 self._endpoint_key = None
