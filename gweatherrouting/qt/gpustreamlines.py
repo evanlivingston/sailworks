@@ -134,7 +134,7 @@ class _TraceNode(QSGRenderNode):
     def flags(self):
         return QSGRenderNode.RenderingFlag.BoundedRectRendering
 
-    def changedStates(self):
+    def changedStates(self):  # noqa: N802 - QSGRenderNode override
         return (
             QSGRenderNode.StateFlag.BlendState
             | QSGRenderNode.StateFlag.ColorState
@@ -222,14 +222,14 @@ class _TraceNode(QSGRenderNode):
         except Exception as exc:
             self.state["fail"](str(exc))
 
-    def releaseResources(self):
+    def releaseResources(self):  # noqa: N802 - QSGRenderNode override
         self.release_pipeline()
 
 
 class GpuStreamlineItem(QQuickItem):
     """Render-node item; GPU resources are created and used on Qt's render thread."""
 
-    gpuError = Signal(str)
+    gpuError = Signal(str)  # noqa: N815 - Qt signal name is part of the QML API
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -327,7 +327,7 @@ class GpuStreamlineItem(QQuickItem):
             self._phase = ((monotonic() - self._flow_started) * 6.6) % 20.0
         self.update()
 
-    def updatePaintNode(self, old_node, _data):
+    def updatePaintNode(self, old_node, _data):  # noqa: N802 - QQuickItem override
         if self._node is None:
             self._node = old_node or _TraceNode(self._state)
         return self._node
@@ -382,303 +382,246 @@ class GpuStreamlineItem(QQuickItem):
         self._transition_started = None
         self._displayed_input = None
 
+    def _dispatch_trace(
+        self, rhi, command_buffer, window, trace_input, generation, compatible
+    ):
+        grid_inputs = (
+            trace_input.wind,
+            trace_input.x_coordinates,
+            trace_input.y_coordinates,
+            trace_input.valid_x,
+            trace_input.valid_y,
+            trace_input.seeds,
+        )
+        input_buffers = [
+            self._create_buffer(rhi, array.tobytes()) for array in grid_inputs
+        ]
+        seed_count = len(trace_input.seeds)
+        if not seed_count:
+            self._last_dispatched = generation
+            return
+        output = self._create_buffer(rhi, seed_count * SEGMENTS_PER_SEED * 32)
+        visibility = self._create_buffer(rhi, seed_count * 4)
+        self._state["visibility"] = visibility
+        parameter_bytes = struct.pack(
+            "<ffII",
+            trace_input.width,
+            trace_input.height,
+            seed_count,
+            0,
+        )
+        with self._input_lock:
+            scale, offset_x, offset_y, world_width = self._view_transform
+            render_parameter_bytes = struct.pack(
+                "<ffffffffff",
+                *self._state["size"],
+                self._opacity,
+                1.2,
+                self._phase,
+                0.0 if compatible else 1.0,
+                scale,
+                offset_x,
+                offset_y,
+                world_width,
+            )
+        params = self._create_buffer(
+            rhi, parameter_bytes, QRhiBuffer.UsageFlag.UniformBuffer
+        )
+        render_params = self._create_buffer(
+            rhi,
+            render_parameter_bytes,
+            QRhiBuffer.UsageFlag.UniformBuffer,
+            dynamic=True,
+        )
+        self._state["output"] = output
+        self._state["render_params"] = render_params
+        self._state["seed_count"] = seed_count
+
+        self._compute_bindings = rhi.newShaderResourceBindings()
+        self._compute_bindings.setBindings(
+            [
+                *[
+                    QRhiShaderResourceBinding.bufferLoad(
+                        binding,
+                        QRhiShaderResourceBinding.StageFlag.ComputeStage,
+                        buffer,
+                    )
+                    for binding, buffer in enumerate(input_buffers)
+                ],
+                QRhiShaderResourceBinding.bufferStore(
+                    6,
+                    QRhiShaderResourceBinding.StageFlag.ComputeStage,
+                    output,
+                ),
+                QRhiShaderResourceBinding.uniformBuffer(
+                    7,
+                    QRhiShaderResourceBinding.StageFlag.ComputeStage,
+                    params,
+                ),
+            ]
+        )
+        if not self._compute_bindings.create():
+            raise RuntimeError("GPU streamline compute bindings failed")
+        self._compute_pipeline = rhi.newComputePipeline()
+        self._compute_pipeline.setShaderStage(
+            QRhiShaderStage(
+                QRhiShaderStage.Type.Compute,
+                _shader("streamline_trace.comp.qsb"),
+            )
+        )
+        self._compute_pipeline.setShaderResourceBindings(self._compute_bindings)
+        if not self._compute_pipeline.create():
+            raise RuntimeError("GPU streamline compute pipeline failed")
+
+        self._pipelines.extend((self._compute_bindings, self._compute_pipeline))
+
+        cells_x = max(1, (trace_input.width + 11) // 12)
+        cells_y = max(1, (trace_input.height + 11) // 12)
+        dedup = (
+            os.environ.get("GWR_GPU_STREAMLINE_DEDUP", "1") != "0"
+            and cells_x * cells_y <= MAX_FILTER_CELLS
+            and seed_count <= MAX_FILTER_SEEDS
+        )
+        if dedup:
+            occupancy = self._create_buffer(rhi, cells_x * cells_y * 4)
+            filter_params_data = struct.pack(
+                "<IIIIff",
+                seed_count,
+                cells_x,
+                cells_y,
+                0,
+                float(trace_input.width),
+                float(trace_input.height),
+            )
+            filter_params = self._create_buffer(
+                rhi, filter_params_data, QRhiBuffer.UsageFlag.UniformBuffer
+            )
+            self._filter_bindings = rhi.newShaderResourceBindings()
+            self._filter_bindings.setBindings(
+                [
+                    QRhiShaderResourceBinding.bufferLoad(
+                        0, QRhiShaderResourceBinding.StageFlag.ComputeStage, output
+                    ),
+                    QRhiShaderResourceBinding.bufferLoadStore(
+                        1,
+                        QRhiShaderResourceBinding.StageFlag.ComputeStage,
+                        occupancy,
+                    ),
+                    QRhiShaderResourceBinding.bufferStore(
+                        2,
+                        QRhiShaderResourceBinding.StageFlag.ComputeStage,
+                        visibility,
+                    ),
+                    QRhiShaderResourceBinding.uniformBuffer(
+                        3,
+                        QRhiShaderResourceBinding.StageFlag.ComputeStage,
+                        filter_params,
+                    ),
+                ]
+            )
+            if not self._filter_bindings.create():
+                raise RuntimeError("GPU streamline filter bindings failed")
+            self._filter_pipeline = rhi.newComputePipeline()
+            self._filter_pipeline.setShaderStage(
+                QRhiShaderStage(
+                    QRhiShaderStage.Type.Compute,
+                    _shader("streamline_filter.comp.qsb"),
+                )
+            )
+            self._filter_pipeline.setShaderResourceBindings(self._filter_bindings)
+            if not self._filter_pipeline.create():
+                raise RuntimeError("GPU streamline filter pipeline failed")
+            self._pipelines.extend((self._filter_bindings, self._filter_pipeline))
+        else:
+            # Bind all-visible data when the optional filter is disabled.
+            all_visible_payload = struct.pack(f"<{seed_count}I", *([1] * seed_count))
+
+        self._upload_and_dispatch(
+            rhi,
+            command_buffer,
+            window,
+            grid_inputs,
+            input_buffers,
+            params,
+            parameter_bytes,
+            render_params,
+            render_parameter_bytes,
+            dedup,
+            filter_params if dedup else None,
+            filter_params_data if dedup else None,
+            visibility,
+            all_visible_payload if not dedup else None,
+            seed_count,
+        )
+
+    def _upload_and_dispatch(
+        self,
+        rhi,
+        command_buffer,
+        window,
+        grid_inputs,
+        input_buffers,
+        params,
+        parameter_bytes,
+        render_params,
+        render_parameter_bytes,
+        dedup,
+        filter_params,
+        filter_params_data,
+        visibility,
+        all_visible_payload,
+        seed_count,
+    ):
+        updates = rhi.nextResourceUpdateBatch()
+        for buffer, array in zip(input_buffers, grid_inputs):
+            updates.uploadStaticBuffer(buffer, array.tobytes())
+        updates.uploadStaticBuffer(params, parameter_bytes)
+        if dedup:
+            updates.uploadStaticBuffer(filter_params, filter_params_data)
+        else:
+            updates.uploadStaticBuffer(visibility, all_visible_payload)
+        updates.updateDynamicBuffer(
+            render_params, 0, len(render_parameter_bytes), render_parameter_bytes
+        )
+        window.beginExternalCommands()
+        command_buffer.beginComputePass(updates)
+        # PySide passes these through a void-pointer bridge; keep payloads
+        # alive until QRhi has consumed the update batch.
+        command_buffer.setComputePipeline(self._compute_pipeline)
+        command_buffer.setShaderResources(self._compute_bindings)
+        command_buffer.dispatch((seed_count + 63) // 64, 1, 1)
+        command_buffer.endComputePass()
+        if dedup:
+            command_buffer.beginComputePass()
+            command_buffer.setComputePipeline(self._filter_pipeline)
+            command_buffer.setShaderResources(self._filter_bindings)
+            command_buffer.dispatch(1, 1, 1)
+            command_buffer.endComputePass()
+        window.endExternalCommands()
+
     def _before_rendering(self):
         try:
             if self._failed:
                 return
-            with self._input_lock:
-                trace_input = self._input
-                generation = self._input_generation
-                requested_transition = self._transition_requested
+            trace_input, generation, requested_transition = self._input_snapshot()
             if trace_input is None:
-                if generation != self._last_dispatched:
-                    if self._node is not None:
-                        self._node.release_pipeline()
-                    self._reset_resources()
-                    self._last_dispatched = generation
+                self._clear_empty_input(generation)
                 return
             window = self._window
             if window is None:
                 return
-            rhi = window.rhi()
-            if rhi is None or rhi.backend() != QRhi.Implementation.Metal:
-                raise RuntimeError("GPU streamlines require the Metal renderer")
-            if not rhi.isFeatureSupported(QRhi.Feature.Compute):
-                raise RuntimeError("GPU compute is unavailable")
-            interface = window.rendererInterface()
-            pointer = int(
-                interface.getResource(
-                    window, QSGRendererInterface.Resource.RhiRedirectCommandBuffer
-                )
-            )
-            if not pointer:
-                pointer = int(
-                    interface.getResource(
-                        window, QSGRendererInterface.Resource.CommandListResource
-                    )
-                )
-            if not pointer:
-                raise RuntimeError("Qt Quick command buffer is unavailable")
-            command_buffer = __import__("shiboken6").wrapInstance(
-                pointer, QRhiCommandBuffer
-            )
-            if command_buffer.rhi().backend() != QRhi.Implementation.Metal:
-                raise RuntimeError("Qt Quick command buffer is not Metal-backed")
-            if self._transition_started is not None:
-                elapsed = monotonic() - self._transition_started
-                if elapsed >= 0.2:
-                    if self._node is not None:
-                        self._node.release_pipeline()
-                    previous = self._state["previous_output"]
-                    previous_visibility = self._state["previous_visibility"]
-                    self._state["previous_output"] = None
-                    self._state["previous_visibility"] = None
-                    if previous is not None:
-                        self._buffers.remove(previous)
-                        previous.destroy()
-                    if previous_visibility is not None:
-                        self._buffers.remove(previous_visibility)
-                        previous_visibility.destroy()
-                    self._transition_started = None
-                elif (
-                    trace_input is not None
-                    and requested_transition
-                    and generation != self._last_dispatched
-                ):
-                    # Finish the displayed transition before reusing either output.
-                    # The latest input replaces all intermediate scrub requests.
-                    return
+            rhi, command_buffer = self._acquire_command_buffer(window)
+            if self._finish_transition(trace_input, generation, requested_transition):
+                return
             if generation == self._last_dispatched:
-                if self._state["render_params"] is not None:
-                    with self._input_lock:
-                        scale, offset_x, offset_y, world_width = self._view_transform
-                        parameters = struct.pack(
-                            "<ffffffffff",
-                            *self._state["size"],
-                            self._opacity,
-                            1.2,
-                            self._phase,
-                            (
-                                min(1.0, (monotonic() - self._transition_started) / 0.2)
-                                if self._transition_started is not None
-                                else 1.0
-                            ),
-                            scale,
-                            offset_x,
-                            offset_y,
-                            world_width,
-                        )
-                    updates = rhi.nextResourceUpdateBatch()
-                    updates.updateDynamicBuffer(
-                        self._state["render_params"], 0, len(parameters), parameters
-                    )
-                    window.beginExternalCommands()
-                    command_buffer.resourceUpdate(updates)
-                    window.endExternalCommands()
+                self._refresh_render_parameters(rhi, command_buffer, window)
                 return
-
-            previous_output = self._state["output"]
-            previous_visibility = self._state["visibility"]
-            previous_input = self._displayed_input
-            compatible = (
-                requested_transition
-                and previous_output is not None
-                and previous_input is not None
-                and trace_input.width == previous_input.width
-                and trace_input.height == previous_input.height
-                and np.array_equal(trace_input.seeds, previous_input.seeds)
+            compatible = self._promote_compatible_buffers(
+                trace_input, requested_transition
             )
-            if compatible:
-                self._buffers.remove(previous_output)
-                self._buffers.remove(previous_visibility)
-            if self._node is not None:
-                self._node.release_pipeline()
-            self._reset_resources()
-            if compatible:
-                self._buffers.append(previous_output)
-                self._buffers.append(previous_visibility)
-                self._state["previous_output"] = previous_output
-                self._state["previous_visibility"] = previous_visibility
-            grid_inputs = (
-                trace_input.wind,
-                trace_input.x_coordinates,
-                trace_input.y_coordinates,
-                trace_input.valid_x,
-                trace_input.valid_y,
-                trace_input.seeds,
+            self._dispatch_trace(
+                rhi, command_buffer, window, trace_input, generation, compatible
             )
-            input_buffers = [
-                self._create_buffer(rhi, array.tobytes()) for array in grid_inputs
-            ]
-            seed_count = len(trace_input.seeds)
-            if not seed_count:
-                self._last_dispatched = generation
-                return
-            output = self._create_buffer(rhi, seed_count * SEGMENTS_PER_SEED * 32)
-            visibility = self._create_buffer(rhi, seed_count * 4)
-            self._state["visibility"] = visibility
-            parameter_bytes = struct.pack(
-                "<ffII",
-                trace_input.width,
-                trace_input.height,
-                seed_count,
-                0,
-            )
-            with self._input_lock:
-                scale, offset_x, offset_y, world_width = self._view_transform
-                render_parameter_bytes = struct.pack(
-                    "<ffffffffff",
-                    *self._state["size"],
-                    self._opacity,
-                    1.2,
-                    self._phase,
-                    0.0 if compatible else 1.0,
-                    scale,
-                    offset_x,
-                    offset_y,
-                    world_width,
-                )
-            params = self._create_buffer(
-                rhi, parameter_bytes, QRhiBuffer.UsageFlag.UniformBuffer
-            )
-            render_params = self._create_buffer(
-                rhi,
-                render_parameter_bytes,
-                QRhiBuffer.UsageFlag.UniformBuffer,
-                dynamic=True,
-            )
-            self._state["output"] = output
-            self._state["render_params"] = render_params
-            self._state["seed_count"] = seed_count
-
-            self._compute_bindings = rhi.newShaderResourceBindings()
-            self._compute_bindings.setBindings(
-                [
-                    *[
-                        QRhiShaderResourceBinding.bufferLoad(
-                            binding,
-                            QRhiShaderResourceBinding.StageFlag.ComputeStage,
-                            buffer,
-                        )
-                        for binding, buffer in enumerate(input_buffers)
-                    ],
-                    QRhiShaderResourceBinding.bufferStore(
-                        6,
-                        QRhiShaderResourceBinding.StageFlag.ComputeStage,
-                        output,
-                    ),
-                    QRhiShaderResourceBinding.uniformBuffer(
-                        7,
-                        QRhiShaderResourceBinding.StageFlag.ComputeStage,
-                        params,
-                    ),
-                ]
-            )
-            if not self._compute_bindings.create():
-                raise RuntimeError("GPU streamline compute bindings failed")
-            self._compute_pipeline = rhi.newComputePipeline()
-            self._compute_pipeline.setShaderStage(
-                QRhiShaderStage(
-                    QRhiShaderStage.Type.Compute,
-                    _shader("streamline_trace.comp.qsb"),
-                )
-            )
-            self._compute_pipeline.setShaderResourceBindings(self._compute_bindings)
-            if not self._compute_pipeline.create():
-                raise RuntimeError("GPU streamline compute pipeline failed")
-
-            self._pipelines.extend((self._compute_bindings, self._compute_pipeline))
-
-            cells_x = max(1, (trace_input.width + 11) // 12)
-            cells_y = max(1, (trace_input.height + 11) // 12)
-            dedup = (
-                os.environ.get("GWR_GPU_STREAMLINE_DEDUP", "1") != "0"
-                and cells_x * cells_y <= MAX_FILTER_CELLS
-                and seed_count <= MAX_FILTER_SEEDS
-            )
-            if dedup:
-                occupancy = self._create_buffer(rhi, cells_x * cells_y * 4)
-                filter_params_data = struct.pack(
-                    "<IIIIff",
-                    seed_count,
-                    cells_x,
-                    cells_y,
-                    0,
-                    float(trace_input.width),
-                    float(trace_input.height),
-                )
-                filter_params = self._create_buffer(
-                    rhi, filter_params_data, QRhiBuffer.UsageFlag.UniformBuffer
-                )
-                self._filter_bindings = rhi.newShaderResourceBindings()
-                self._filter_bindings.setBindings(
-                    [
-                        QRhiShaderResourceBinding.bufferLoad(
-                            0, QRhiShaderResourceBinding.StageFlag.ComputeStage, output
-                        ),
-                        QRhiShaderResourceBinding.bufferLoadStore(
-                            1,
-                            QRhiShaderResourceBinding.StageFlag.ComputeStage,
-                            occupancy,
-                        ),
-                        QRhiShaderResourceBinding.bufferStore(
-                            2,
-                            QRhiShaderResourceBinding.StageFlag.ComputeStage,
-                            visibility,
-                        ),
-                        QRhiShaderResourceBinding.uniformBuffer(
-                            3,
-                            QRhiShaderResourceBinding.StageFlag.ComputeStage,
-                            filter_params,
-                        ),
-                    ]
-                )
-                if not self._filter_bindings.create():
-                    raise RuntimeError("GPU streamline filter bindings failed")
-                self._filter_pipeline = rhi.newComputePipeline()
-                self._filter_pipeline.setShaderStage(
-                    QRhiShaderStage(
-                        QRhiShaderStage.Type.Compute,
-                        _shader("streamline_filter.comp.qsb"),
-                    )
-                )
-                self._filter_pipeline.setShaderResourceBindings(self._filter_bindings)
-                if not self._filter_pipeline.create():
-                    raise RuntimeError("GPU streamline filter pipeline failed")
-                self._pipelines.extend((self._filter_bindings, self._filter_pipeline))
-            else:
-                # Bind all-visible data when the optional filter is disabled.
-                all_visible_payload = struct.pack(
-                    f"<{seed_count}I", *([1] * seed_count)
-                )
-
-            updates = rhi.nextResourceUpdateBatch()
-            upload_payloads = [array.tobytes() for array in grid_inputs]
-            for buffer, payload in zip(input_buffers, upload_payloads):
-                updates.uploadStaticBuffer(buffer, payload)
-            updates.uploadStaticBuffer(params, parameter_bytes)
-            if dedup:
-                updates.uploadStaticBuffer(filter_params, filter_params_data)
-            if not dedup:
-                updates.uploadStaticBuffer(visibility, all_visible_payload)
-            updates.updateDynamicBuffer(
-                render_params, 0, len(render_parameter_bytes), render_parameter_bytes
-            )
-            window.beginExternalCommands()
-            command_buffer.beginComputePass(updates)
-            # PySide passes these through a void-pointer bridge; keep payloads
-            # alive until QRhi has consumed the update batch.
-            command_buffer.setComputePipeline(self._compute_pipeline)
-            command_buffer.setShaderResources(self._compute_bindings)
-            command_buffer.dispatch((seed_count + 63) // 64, 1, 1)
-            command_buffer.endComputePass()
-            if dedup:
-                command_buffer.beginComputePass()
-                command_buffer.setComputePipeline(self._filter_pipeline)
-                command_buffer.setShaderResources(self._filter_bindings)
-                command_buffer.dispatch(1, 1, 1)
-                command_buffer.endComputePass()
-            window.endExternalCommands()
             self._state["generation"] = generation
             self._last_dispatched = generation
             self._displayed_input = trace_input
@@ -686,6 +629,118 @@ class GpuStreamlineItem(QQuickItem):
                 self._transition_started = monotonic()
         except Exception as exc:
             self._fail(str(exc))
+
+    def _input_snapshot(self):
+        with self._input_lock:
+            return self._input, self._input_generation, self._transition_requested
+
+    def _clear_empty_input(self, generation):
+        if generation == self._last_dispatched:
+            return
+        if self._node is not None:
+            self._node.release_pipeline()
+        self._reset_resources()
+        self._last_dispatched = generation
+
+    @staticmethod
+    def _acquire_command_buffer(window):
+        rhi = window.rhi()
+        if rhi is None or rhi.backend() != QRhi.Implementation.Metal:
+            raise RuntimeError("GPU streamlines require the Metal renderer")
+        if not rhi.isFeatureSupported(QRhi.Feature.Compute):
+            raise RuntimeError("GPU compute is unavailable")
+        interface = window.rendererInterface()
+        pointer = int(
+            interface.getResource(
+                window, QSGRendererInterface.Resource.RhiRedirectCommandBuffer
+            )
+        )
+        if not pointer:
+            pointer = int(
+                interface.getResource(
+                    window, QSGRendererInterface.Resource.CommandListResource
+                )
+            )
+        if not pointer:
+            raise RuntimeError("Qt Quick command buffer is unavailable")
+        command_buffer = __import__("shiboken6").wrapInstance(
+            pointer, QRhiCommandBuffer
+        )
+        if command_buffer.rhi().backend() != QRhi.Implementation.Metal:
+            raise RuntimeError("Qt Quick command buffer is not Metal-backed")
+        return rhi, command_buffer
+
+    def _finish_transition(self, trace_input, generation, requested_transition):
+        if self._transition_started is None:
+            return False
+        if monotonic() - self._transition_started >= 0.2:
+            if self._node is not None:
+                self._node.release_pipeline()
+            for key in ("previous_output", "previous_visibility"):
+                previous = self._state[key]
+                self._state[key] = None
+                if previous is not None:
+                    self._buffers.remove(previous)
+                    previous.destroy()
+            self._transition_started = None
+            return False
+        if requested_transition and generation != self._last_dispatched:
+            # Finish the displayed transition before reusing either output.
+            # The latest input replaces all intermediate scrub requests.
+            return True
+        return False
+
+    def _refresh_render_parameters(self, rhi, command_buffer, window):
+        render_params = self._state["render_params"]
+        if render_params is None:
+            return
+        with self._input_lock:
+            scale, offset_x, offset_y, world_width = self._view_transform
+            parameters = struct.pack(
+                "<ffffffffff",
+                *self._state["size"],
+                self._opacity,
+                1.2,
+                self._phase,
+                (
+                    min(1.0, (monotonic() - self._transition_started) / 0.2)
+                    if self._transition_started is not None
+                    else 1.0
+                ),
+                scale,
+                offset_x,
+                offset_y,
+                world_width,
+            )
+        updates = rhi.nextResourceUpdateBatch()
+        updates.updateDynamicBuffer(render_params, 0, len(parameters), parameters)
+        window.beginExternalCommands()
+        command_buffer.resourceUpdate(updates)
+        window.endExternalCommands()
+
+    def _promote_compatible_buffers(self, trace_input, requested_transition):
+        previous_output = self._state["output"]
+        previous_visibility = self._state["visibility"]
+        previous_input = self._displayed_input
+        compatible = (
+            requested_transition
+            and previous_output is not None
+            and previous_input is not None
+            and trace_input.width == previous_input.width
+            and trace_input.height == previous_input.height
+            and np.array_equal(trace_input.seeds, previous_input.seeds)
+        )
+        if compatible:
+            self._buffers.remove(previous_output)
+            self._buffers.remove(previous_visibility)
+        if self._node is not None:
+            self._node.release_pipeline()
+        self._reset_resources()
+        if compatible:
+            self._buffers.extend((previous_output, previous_visibility))
+            self._state["previous_output"] = previous_output
+            self._state["previous_visibility"] = previous_visibility
+        return compatible
 
     def _scene_graph_invalidated(self):
         self._reset_resources()
@@ -701,6 +756,6 @@ class GpuStreamlineItem(QQuickItem):
             pass
         self._window = None
 
-    def releaseResources(self):
+    def releaseResources(self):  # noqa: N802 - QSGRenderNode override
         self._disconnect_window()
         self._reset_resources()
