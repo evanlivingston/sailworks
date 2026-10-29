@@ -184,6 +184,10 @@ class RefreshCoordinator:
                 "GFS": NOAAGFSSource,
                 "HRRR": NOAAHRRRSource,
             }.get(planned.model_id)
+            if planned.model_id == "GFSWAVE":
+                from .gribsources.noaagfswave import NOAAGFSWaveSource
+
+                source_class = NOAAGFSWaveSource
             if source_class is None:
                 raise ValueError(f"{planned.model_id}: no size estimator available")
             source = source_class()

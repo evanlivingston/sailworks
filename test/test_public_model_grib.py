@@ -54,7 +54,7 @@ def public_metadata(model, *, gpi=None, pdt="0", message_type=None):
     }
 
 
-@pytest.mark.parametrize("model", ["IFS", "AIFS", "AIGFS"])
+@pytest.mark.parametrize("model", ["IFS", "AIFS", "AIGFS", "GFSWAVE"])
 def test_public_identity_is_metadata_only_and_rejects_near_misses(model):
     metadata = public_metadata(model)
     assert model_from_grib_metadata(None, metadata) == model
@@ -83,16 +83,28 @@ def test_aifs_type10_is_deterministic_only_when_pdt_is_zero():
 
 
 def test_capability_ui_contract_and_lazy_source_registry():
-    assert set(MODEL_CAPABILITIES) == {"GFS", "HRRR", "HRDPS", "IFS", "AIFS", "AIGFS"}
+    assert set(MODEL_CAPABILITIES) == {
+        "GFS",
+        "HRRR",
+        "HRDPS",
+        "IFS",
+        "AIFS",
+        "AIGFS",
+        "GFSWAVE",
+    }
     assert MODEL_CAPABILITIES["GFS"].default_hours == 120
     assert MODEL_CAPABILITIES["HRRR"].default_hours == 48
     assert MODEL_CAPABILITIES["HRDPS"].default_hours == 48
     assert MODEL_CAPABILITIES["IFS"].intervals == (0, 3, 6, 12)
     assert MODEL_CAPABILITIES["AIFS"].intervals == (0, 6, 12)
     assert MODEL_CAPABILITIES["AIGFS"].global_download
+    assert MODEL_CAPABILITIES["GFSWAVE"].global_download
+    assert MODEL_CAPABILITIES["GFSWAVE"].routing_eligible is False
+    assert MODEL_CAPABILITIES["GFSWAVE"].available_steps(None, "wave_height")[-1] == 384
+    assert MODEL_CAPABILITIES["GFSWAVE"].available_steps(None, "wind") == ()
     assert MODEL_CAPABILITIES["IFS"].license_url
     factories = default_provider_factories()
-    assert {"IFS", "AIFS", "AIGFS"} <= set(factories)
+    assert {"IFS", "AIFS", "AIGFS", "GFSWAVE"} <= set(factories)
     assert MODEL_CAPABILITIES["GFS"].available_steps(None, "gust")
     assert MODEL_CAPABILITIES["HRRR"].available_steps(18, "gust")[-1] == 48
     assert MODEL_CAPABILITIES["HRDPS"].available_steps(None, "gust") == ()
@@ -108,6 +120,41 @@ def test_gust_is_rejected_for_models_without_a_gust_product():
             "IFS",
             factories={"IFS": lambda: pytest.fail("unsupported provider was created")},
         )
+
+
+def test_gfswave_plans_wave_parameters_but_not_routing_wind():
+    class FakeWave:
+        name = "NOAA GFS-Wave"
+
+        def get_download_list(self, options):
+            steps = tuple(
+                hour
+                for hour in MODEL_CAPABILITIES["GFSWAVE"].available_steps(
+                    12, "wave_height"
+                )
+                if hour <= options.hours and hour % options.interval == 0
+            )
+            identifier = {
+                "source": self.name,
+                "date": "20261024",
+                "cycle": "12",
+                "hours": max(steps),
+                "steps": list(steps),
+                "fields": list(options.fields),
+            }
+            return [["wave run", self.name, "size", "label", json.dumps(identifier)]]
+
+    config = ModelConfiguration(
+        "GFSWAVE", ("wave_height",), REQUESTED, "native", 3, (0, 3), 3
+    )
+    plan = plan_refresh((config,), "GFSWAVE", factories={"GFSWAVE": FakeWave})
+    assert plan.models[0].field_steps == (("wave_height", (0, 3)),)
+
+    wind = ModelConfiguration("GFSWAVE", ("wind",), REQUESTED, "native", 3, (), 3)
+    with pytest.raises(
+        UnsupportedConfigurationError, match="unsupported forecast field"
+    ):
+        plan_refresh((wind,), "GFSWAVE", factories={"GFSWAVE": FakeWave})
 
 
 @pytest.mark.parametrize("model_id", ("GFS", "HRRR"))

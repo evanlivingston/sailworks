@@ -26,7 +26,7 @@ import requests
 
 from gweatherrouting.core.gribsources.base import GribSource
 from .parallel import write_ordered_forecasts
-from .options import DEFAULT_FIELDS, FIELDS, custom_rows, filtered_parameters, selection
+from .options import DEFAULT_FIELDS, custom_rows, filtered_parameters, selection
 
 logger = logging.getLogger("gweatherrouting")
 
@@ -56,7 +56,7 @@ class NOAAHRRRSource(GribSource):
     CMC HRDPS for BC waters.
     """
 
-    download_fields = FIELDS
+    download_fields = (*DEFAULT_FIELDS, "gust")
 
     def __init__(self):
         self._bounds = None  # (lat_south, lon_west, lat_north, lon_east)
@@ -192,6 +192,8 @@ class NOAAHRRRSource(GribSource):
         return f"~{float(estimate[0]) * scale:.1f} {estimate[1]}"
 
     def _build_filter_url(self, date_str, cycle, forecast_hour, fields=DEFAULT_FIELDS):
+        if set(fields) - set(self.download_fields):
+            raise ValueError("HRRR does not provide the requested forecast field")
         # HRRR mean-sea-level pressure is MSLMA, not PRMSL (verified in the
         # .idx inventory); both decode through the shared sampler.
         params = {
@@ -228,6 +230,8 @@ class NOAAHRRRSource(GribSource):
         forecast_steps = list(range(0, max_hours + 1))
         cap = HRRR_LONG_RANGE if cycle in HRRR_LONG_CYCLES else HRRR_SHORT_RANGE
         forecast_steps, fields = selection(config, range(cap + 1), forecast_steps)
+        if set(fields) - set(self.download_fields):
+            raise ValueError("HRRR does not provide the requested forecast field")
         total_steps = len(forecast_steps)
 
         filename = f"hrrr_{date_str}_{cycle}z_{max_hours}h.grib2"

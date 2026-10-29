@@ -26,7 +26,7 @@ import requests
 
 from gweatherrouting.core.gribsources.base import GribSource
 from .parallel import write_ordered_forecasts
-from .options import DEFAULT_FIELDS, FIELDS, custom_rows, filtered_parameters, selection
+from .options import DEFAULT_FIELDS, custom_rows, filtered_parameters, selection
 
 logger = logging.getLogger("gweatherrouting")
 
@@ -61,7 +61,7 @@ class NOAAGFSSource(GribSource):
     and mean-sea-level pressure (PRMSL, for isobars) from NOAA NOMADS.
     """
 
-    download_fields = FIELDS
+    download_fields = (*DEFAULT_FIELDS, "gust")
 
     def __init__(self):
         self._bounds = None  # (lat_south, lon_west, lat_north, lon_east)
@@ -207,6 +207,8 @@ class NOAAGFSSource(GribSource):
 
     def _build_filter_url(self, date_str, cycle, forecast_hour, fields=DEFAULT_FIELDS):
         """Build NOAA NOMADS filter URL for a specific forecast hour."""
+        if set(fields) - set(self.download_fields):
+            raise ValueError("GFS does not provide the requested forecast field")
         params = {
             "file": f"gfs.t{cycle}z.pgrb2.0p25.f{forecast_hour:03d}",
             "lev_10_m_above_ground": "on",
@@ -254,6 +256,8 @@ class NOAAGFSSource(GribSource):
         if not forecast_steps:
             raise ValueError("No GFS forecast hours in the requested interval")
         forecast_steps, fields = selection(config, GFS_CUSTOM_HOURS, forecast_steps)
+        if set(fields) - set(self.download_fields):
+            raise ValueError("GFS does not provide the requested forecast field")
         total_steps = len(forecast_steps)
 
         filename = f"gfs_{date_str}_{cycle}z_{max_hours}h.grib2"

@@ -29,12 +29,14 @@ def default_provider_factories():
     from .gribsources.eccchrdps import ECCHRDPSource
     from .gribsources.ecmwf import ECMWFAIFSSource, ECMWFIFSSource
     from .gribsources.noaagfs import NOAAGFSSource
+    from .gribsources.noaagfswave import NOAAGFSWaveSource
     from .gribsources.noaahrrr import NOAAHRRRSource
     from .gribsources.noaaaigfs import NOAAAIGFSSource
     from .gribsources.noaaaigfs import NOAAAIGFSSource
 
     return {
         "GFS": NOAAGFSSource,
+        "GFSWAVE": NOAAGFSWaveSource,
         "HRRR": NOAAHRRRSource,
         "HRDPS": ECCHRDPSource,
         "IFS": ECMWFIFSSource,

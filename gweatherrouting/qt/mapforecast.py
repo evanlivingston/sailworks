@@ -6,18 +6,28 @@ import sys
 
 class MapForecastMixin:
     def _display_forecast_changed(self):
+        sources = tuple(self.controller.display_forecast.sources() or ())
+        identity = tuple(self._forecast_source_identity(source) for source in sources)
+        if identity == getattr(self, "_display_source_identity", None):
+            return
+        self._display_source_identity = identity
         self._cancel_cursor()
         self._base_cache = None
         self.weather_coverage.key = None
         if self._weather_presenter is not None:
             self._weather_presenter.source_changed()
-        # Metadata completion and chart startup also notify this slot. They
-        # refresh the source, not the user's camera (including a restored view).
-        sources = self.controller.display_forecast.sources()
         if sources:
             self.time_control.set_time(sources[0].start_time)
         self.queue_draw()
         self.view_changed.emit()
+
+    @staticmethod
+    def _forecast_source_identity(source):
+        for attribute in ("key", "display_identity", "path"):
+            identity = getattr(source, attribute, None)
+            if identity is not None:
+                return attribute, identity
+        return "object", id(source)
 
     def _time_changed(self, _):
         self._cancel_cursor()
