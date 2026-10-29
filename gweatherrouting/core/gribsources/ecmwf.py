@@ -25,6 +25,7 @@ from .ecmwfcatalog import (
 )
 from .ecmwfindex import read_selected_index
 from .ranged import HTTPStatusError, _check_cancel, append_message, fetch_text
+from .parallel import MAX_CONCURRENT_FORECAST_REQUESTS, write_ordered_payloads
 
 BASE_URL = "https://data.ecmwf.int/forecasts/"
 _FIELDS = {
@@ -288,12 +289,16 @@ class _ECMWFSource(GribSource):
                     self.product_class,
                     cancel,
                 )
+                if not ranges:
+                    raise ValueError(
+                        f"ECMWF index contains no selected messages at step {step}"
+                    )
                 if selected_expver is not None and expver != selected_expver:
                     raise ValueError("ECMWF run mixes experiment versions across leads")
                 selected_expver = expver
                 for offset, length in ranges:
-                    messages.append((grib_url, offset, length))
-            total_bytes = sum(length for _, _, length in messages)
+                    messages.append((step, grib_url, offset, length))
+            total_bytes = sum(length for _, _, _, length in messages)
             if not messages or total_bytes <= 0:
                 raise ValueError(
                     "Pinned ECMWF request contains no selected GRIB messages"
@@ -301,34 +306,54 @@ class _ECMWFSource(GribSource):
             fd, part_name = tempfile.mkstemp(
                 dir=dest_dir, prefix=".ecmwf-", suffix=".part"
             )
-            written = 0
-            with os.fdopen(fd, "wb") as output:
-                for url, offset, length in messages:
-                    _check_cancel(cancel)
+            by_step = {step: [] for step in steps}
+            for step, url, offset, length in messages:
+                by_step[step].append((url, offset, length))
 
-                    def progress_for_message(count, base=written):
-                        percentage_callback(
-                            min(99, int((base + count) * 100 / total_bytes))
+            def fetch(step):
+                from io import BytesIO
+
+                payload = BytesIO()
+                worker_session, close_worker_session = session_for(self._session)
+                try:
+                    for url, offset, length in by_step[step]:
+                        _check_cancel(cancel)
+                        actual = append_message(
+                            worker_session,
+                            url,
+                            offset,
+                            length,
+                            payload,
+                            cancel=cancel,
                         )
+                        if actual != length:
+                            raise ValueError("ECMWF ranged message byte count mismatch")
+                    return payload.getvalue()
+                finally:
+                    if close_worker_session:
+                        worker_session.close()
 
-                    append_message(
-                        session,
-                        url,
-                        offset,
-                        length,
-                        output,
-                        cancel=cancel,
-                        progress=progress_for_message,
-                    )
-                    written += length
+            with os.fdopen(fd, "wb") as output:
+                write_ordered_payloads(
+                    output,
+                    steps,
+                    fetch,
+                    lambda: _check_cancel(cancel),
+                    lambda value: percentage_callback(min(99, value)),
+                    max_workers=(
+                        1
+                        if self._session is not None
+                        else MAX_CONCURRENT_FORECAST_REQUESTS
+                    ),
+                )
                 output.flush()
                 os.fsync(output.fileno())
             _check_cancel(cancel)
-            percentage_callback(100)
             final_name = self._output_filename(date_text, cycle)
             final_path = os.path.join(dest_dir, final_name)
             os.replace(part_name, final_path)
             part_name = None
+            percentage_callback(100)
             return final_path
         finally:
             if part_name is not None and os.path.exists(part_name):

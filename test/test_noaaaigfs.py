@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import re
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -35,7 +36,7 @@ def index_fetch(indexes):
 def test_catalog_discovers_pinned_complete_runs_and_skips_partial_latest(
     monkeypatch,
 ):
-    source = NOAAAIGFSSource(session=object())
+    source = NOAAAIGFSSource()
     indexes = index_for_hours((0, 6), date="20261026", cycle="06", apcp_hours=(6,))
     run_url = source._run_url("20261026", "06")
 
@@ -240,6 +241,63 @@ def test_download_concatenates_only_requested_bands_byte_for_byte(
     assert output.read_bytes() == bytes(expected)
     assert progress[-1] == 100
     assert output.name.startswith("aigfs_20261025_12z_6h_")
+
+
+def test_indexed_steps_complete_out_of_order_but_stage_in_order(tmp_path, monkeypatch):
+    source = NOAAAIGFSSource()
+    indexes = index_for_hours((0, 6), date="20261025", cycle="12")
+    monkeypatch.setattr(noaaaigfs, "fetch_text", index_fetch(indexes))
+    later_finished = threading.Event()
+    first_entered = threading.Event()
+    requested = []
+    staged = []
+
+    def length(_session, url, offset, *, cancel=None, max_bytes=None):
+        return int.from_bytes(
+            indexes[int(Path(url).name.rsplit("f", 1)[1].split(".")[0])][1][
+                offset + 8 : offset + 16
+            ],
+            "big",
+        )
+
+    def append(
+        _session, url, offset, message_size, output, *, cancel=None, progress=None
+    ):
+        hour = int(Path(url).name.rsplit("f", 1)[1].split(".")[0])
+        requested.append((hour, offset, message_size))
+        if hour == 0:
+            first_entered.set()
+            assert later_finished.wait(3)
+        else:
+            assert first_entered.wait(3)
+            later_finished.set()
+        payload = indexes[hour][1][offset : offset + message_size]
+        output.write(payload)
+        staged.append(hour)
+        return message_size
+
+    monkeypatch.setattr(noaaaigfs, "message_length", length)
+    monkeypatch.setattr(noaaaigfs, "append_message", append)
+    identifier = json.dumps(
+        {
+            "source": AIGFS_NAME,
+            "date": "20261025",
+            "cycle": "12",
+            "hours": 6,
+            "steps": [0, 6],
+            "fields": ["wind", "pressure"],
+        }
+    )
+    path = Path(source.download(identifier, str(tmp_path), lambda _: None))
+    expected = b"".join(
+        indexes[hour][1][offset : offset + size]
+        for hour, offset, size in sorted(requested, key=lambda item: (item[0], item[1]))
+    )
+    assert later_finished.is_set()
+    assert path.read_bytes() == expected
+    assert {hour for hour, _, _ in requested} == {0, 6}
+    assert len(requested) == len(set(requested))
+    assert staged.index(6) < staged.index(0)
 
 
 def test_pinned_download_fails_on_missing_index_without_fallback_or_final_file(

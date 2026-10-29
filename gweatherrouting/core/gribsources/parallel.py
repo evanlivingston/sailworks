@@ -3,7 +3,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Lock
 
-
 MAX_CONCURRENT_FORECAST_REQUESTS = 4
 MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024
 
@@ -22,69 +21,105 @@ def write_ordered_forecasts(
     max_workers=MAX_CONCURRENT_FORECAST_REQUESTS,
 ):
     """Fetch a bounded window concurrently, appending GRIB bytes in step order."""
-    steps = tuple(forecast_steps)
-    if not steps:
-        return 0
-    workers = min(max_workers, len(steps))
-    aborted = Event()
-    budget_lock = Lock()
-    downloaded = [0]
 
     def fetch(step):
-        check_cancel()
-        if aborted.is_set():
-            raise _ParallelRequestStopped()
         response = request(step)
         try:
             response.raise_for_status()
             content = bytearray()
             for chunk in response.iter_content(chunk_size=8192):
                 check_cancel()
-                if aborted.is_set():
-                    raise _ParallelRequestStopped()
                 if not chunk:
                     continue
-                with budget_lock:
-                    if downloaded[0] + len(chunk) > MAX_DOWNLOAD_BYTES:
-                        raise ValueError(
-                            "Forecast download exceeded 256 MiB; "
-                            "choose a smaller route area"
-                        )
-                    downloaded[0] += len(chunk)
+                if len(content) + len(chunk) > MAX_DOWNLOAD_BYTES:
+                    raise ValueError(
+                        "Forecast download exceeded 256 MiB; choose a smaller route area"
+                    )
                 content.extend(chunk)
-            check_cancel()
             return content
         finally:
             response.close()
 
+    return write_ordered_payloads(
+        outfile,
+        forecast_steps,
+        fetch,
+        check_cancel,
+        percentage_callback,
+        max_workers=max_workers,
+    )
+
+
+def write_ordered_payloads(
+    outfile,
+    steps,
+    fetch,
+    check_cancel,
+    progress_callback,
+    *,
+    max_workers=MAX_CONCURRENT_FORECAST_REQUESTS,
+):
+    """Fetch byte payloads concurrently, then write them in input order.
+
+    ``fetch(step)`` must return a bytes-like payload. At most ``max_workers``
+    tasks are submitted at once; completed payloads are retained only within
+    that bounded window. The aggregate payload size is limited to 256 MiB.
+    """
+    steps = tuple(steps)
+    if not steps:
+        return 0
+    if max_workers < 1:
+        raise ValueError("max_workers must be positive")
+    workers = min(max_workers, len(steps))
     executor = ThreadPoolExecutor(
         max_workers=workers, thread_name_prefix="forecast-download"
     )
     pending = {}
     next_index = 0
-    bytes_written = 0
+    total_bytes = 0
+    aborted = Event()
+    budget_lock = Lock()
+
+    def bounded_fetch(step):
+        check_cancel()
+        if aborted.is_set():
+            raise _ParallelRequestStopped()
+        payload = fetch(step)
+        if not isinstance(payload, (bytes, bytearray, memoryview)):
+            raise TypeError("fetch must return a bytes-like payload")
+        payload = bytes(payload)
+        nonlocal total_bytes
+        with budget_lock:
+            if total_bytes + len(payload) > MAX_DOWNLOAD_BYTES:
+                raise ValueError(
+                    "Forecast download exceeded 256 MiB; choose a smaller route area"
+                )
+            total_bytes += len(payload)
+        check_cancel()
+        return payload
+
     try:
         while next_index < workers:
-            pending[next_index] = executor.submit(fetch, steps[next_index])
+            pending[next_index] = executor.submit(bounded_fetch, steps[next_index])
             next_index += 1
-
-        for index, _step in enumerate(steps):
+        written = 0
+        for index in range(len(steps)):
             check_cancel()
             try:
-                content = pending.pop(index).result()
+                payload = pending.pop(index).result()
             except BaseException:
                 aborted.set()
                 for future in pending.values():
                     future.cancel()
                 raise
             check_cancel()
-            outfile.write(content)
-            bytes_written += len(content)
-            percentage_callback(int(100 * (index + 1) / len(steps)))
+            outfile.write(payload)
+            written += len(payload)
+            progress_callback(int(100 * (index + 1) / len(steps)))
             if next_index < len(steps):
-                pending[next_index] = executor.submit(fetch, steps[next_index])
+                pending[next_index] = executor.submit(bounded_fetch, steps[next_index])
                 next_index += 1
-        return bytes_written
+        return written
     except BaseException:
         aborted.set()
         for future in pending.values():

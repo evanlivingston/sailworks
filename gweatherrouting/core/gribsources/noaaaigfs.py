@@ -23,6 +23,7 @@ from gweatherrouting.core.marine.chs import DownloadCancelledError
 from .aigfsindex import parse_index as _parse_index
 from .options import DownloadOptions
 from .ranged import HTTPStatusError, append_message, fetch_text, message_length
+from .parallel import MAX_CONCURRENT_FORECAST_REQUESTS, write_ordered_payloads
 
 AIGFS_ROOT = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/aigfs/prod/"
 AIGFS_MODEL_ID = "AIGFS"
@@ -340,54 +341,67 @@ class NOAAAIGFSSource(GribSource):
                     raise ValueError(
                         "AI-GFS index span does not match GRIB message length"
                     )
-                messages.append((grib_url, offset, length))
+                messages.append((hour, grib_url, offset, length))
 
-        total_bytes = sum(length for _, _, length in messages)
+        total_bytes = sum(length for _, _, _, length in messages)
         if total_bytes <= 0:
             raise ValueError("AI-GFS download has no selected GRIB messages")
         temporary = tempfile.NamedTemporaryFile(
             dir=dest_dir, suffix=".part", delete=False
         )
-        written_total = 0
         installed = False
         try:
             with temporary as output:
-                for url, offset, length in messages:
-                    self._check_cancel(cancel)
+                by_hour = {hour: [] for hour in hours}
+                for hour, url, offset, length in messages:
+                    by_hour[hour].append((url, offset, length))
 
-                    def report(message_bytes):
-                        percentage_callback(
-                            min(
-                                100,
-                                int(
-                                    100 * (written_total + message_bytes) / total_bytes
-                                ),
+                def fetch(hour):
+                    from io import BytesIO
+
+                    payload = BytesIO()
+                    session = self._provided_session
+                    owned = session is None
+                    if owned:
+                        session = requests.Session()
+                    try:
+                        for url, offset, length in by_hour[hour]:
+                            self._check_cancel(cancel)
+                            actual = append_message(
+                                session, url, offset, length, payload, cancel=cancel
                             )
-                        )
+                            if actual != length:
+                                raise ValueError(
+                                    "AI-GFS ranged message byte count mismatch"
+                                )
+                        return payload.getvalue()
+                    finally:
+                        if owned:
+                            session.close()
 
-                    actual = append_message(
-                        self.session,
-                        url,
-                        offset,
-                        length,
-                        output,
-                        cancel=cancel,
-                        progress=report,
-                    )
-                    if actual != length:
-                        raise ValueError("AI-GFS ranged message byte count mismatch")
-                    written_total += actual
+                write_ordered_payloads(
+                    output,
+                    hours,
+                    fetch,
+                    lambda: self._check_cancel(cancel),
+                    lambda value: percentage_callback(min(99, value)),
+                    max_workers=(
+                        1
+                        if self._provided_session is not None
+                        else MAX_CONCURRENT_FORECAST_REQUESTS
+                    ),
+                )
+                output.flush()
             self._check_cancel(cancel)
-            if written_total != total_bytes or written_total == 0:
+            if os.path.getsize(temporary.name) != total_bytes:
                 raise ValueError("AI-GFS staged output is incomplete")
-            percentage_callback(100)
-            self._check_cancel(cancel)
             if output_path.exists() or output_path.is_symlink():
                 raise FileExistsError(
                     f"AI-GFS output already exists: {output_path.name}"
                 )
             os.link(temporary.name, output_path)
             installed = True
+            percentage_callback(100)
             try:
                 os.unlink(temporary.name)
             except OSError:
