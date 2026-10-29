@@ -1293,6 +1293,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._wind_opacity = 1.0
             self._wind_style = "barbs"
             self._camera = None
+            self._weather_display_camera = None
             self._drag = None
             self._drag_velocity = DragVelocity()
             self._pan_inertia = None
@@ -1387,7 +1388,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             elif self._gpu_weather_fill:
                 source = shaders / "WeatherScene.qml"
             else:
-                source = shaders / "WeatherBarbs.qml"
+                source = shaders / (
+                    "WeatherBufferedBarbs.qml"
+                    if self._native_weather_fields
+                    else "WeatherBarbs.qml"
+                )
             self.setSource(QUrl.fromLocalFile(str(source)))
             self._weather: Any = self.rootObject()
             if self._weather is None:
@@ -1415,7 +1420,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._icoads_layer = IcoadsQuickLayer(self._weather, self)
             self._barbs = self._weather
             self._fill: Any = None
-            if self._gpu_weather_fill or self._chart_layer:
+            if (
+                self._gpu_weather_fill
+                or self._chart_layer
+                or self._native_weather_fields
+            ):
                 # The layered scenes carry the barbs as their own item.
                 self._barbs = cast(
                     Any,
@@ -1432,6 +1441,22 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                         "The GRIB viewport could not load its weather scene"
                     )
                 self._weather.setProperty("fillEnabled", True)
+            self._barbs_back = (
+                self._weather.findChild(QObject, "weatherBarbsBack")
+                if self._native_weather_fields
+                else None
+            )
+            self._fill_back = (
+                self._weather.findChild(QObject, "weatherFillBack")
+                if self._native_weather_fields and self._fill is not None
+                else None
+            )
+            self._native_front_index = 0
+            self._native_active_camera = None
+            self._native_pending_camera = None
+            self._native_active_identity = self._native_pending_identity = None
+            self._native_publishing = False
+            self._native_pending_selection_urls = ()
             if self._chart_layer:
                 self._chart = self._weather.findChild(QObject, "chartLayer")
                 self._chart_status_item = self._weather.findChild(
@@ -1495,25 +1520,35 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
 
                 if self._native_budget is None:
                     self._native_budget = NativeWeatherBudget()
-                for role, item in (("barbs", self._barbs), ("fill", self._fill)):
-                    if item is None:
-                        continue
-                    context = native_texture_context(
-                        self.quickWindow(), self._weather, self._native_budget
-                    )
-                    self._native_contexts[role] = context
-                    item.setProperty("nativeFields", True)
-                    for name, source_item in zip(
-                        ("nativeU0", "nativeV0", "nativeU1", "nativeV1"),
-                        context.sources,
-                    ):
-                        item.setProperty(name, source_item)
-                    context.stateChanged.connect(
-                        lambda status, layer=role: self._native_status(layer, status)
-                    )
-                    if role == "fill":
+                for role, items in (
+                    ("barbs", (self._barbs, self._barbs_back)),
+                    ("fill", (self._fill, self._fill_back)),
+                ):
+                    for index, item in enumerate(items):
+                        if item is None:
+                            continue
+                        context = native_texture_context(
+                            self.quickWindow(), self._weather, self._native_budget
+                        )
+                        self._native_contexts[role, index] = context
+                        item.setProperty("nativeFields", True)
+                        for name, source_item in zip(
+                            ("nativeU0", "nativeV0", "nativeU1", "nativeV1"),
+                            context.sources,
+                        ):
+                            item.setProperty(name, source_item)
+                        context.stateChanged.connect(
+                            lambda status, layer=role, slot=index: self._native_status(
+                                layer, slot, status
+                            )
+                        )
                         getattr(item, "readyChanged").connect(self._readiness_changed)
-                    getattr(item, "shaderErrorChanged").connect(self._readiness_changed)
+                        getattr(item, "preparedChanged").connect(
+                            self._readiness_changed
+                        )
+                        getattr(item, "shaderErrorChanged").connect(
+                            self._readiness_changed
+                        )
 
                 def release_native_owners(
                     _obj=None, owners=tuple(self._native_contexts.values())
@@ -1607,12 +1642,15 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             # This signal is declared by QML, not by the QQuickItem Python stub.
             getattr(self._barbs, "readyChanged").connect(self._readiness_changed)
 
-        def _show_state(self, state):
+        def _show_state(self, state, message=None):
             self._state = state
             self._status.setText(
-                "Wind loading…"
-                if state == "loading"
-                else (self._model.error or self._native_error or "Wind unavailable")
+                message
+                or (
+                    "Wind loading…"
+                    if state == "loading"
+                    else (self._model.error or self._native_error or "Wind unavailable")
+                )
             )
             self._status.adjustSize()
             self._status.setVisible(state != "ready")
@@ -1851,16 +1889,26 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             if self._barbs.property("ready") and self._model.state == "ready":
                 self._show_state("ready")
 
-        def _native_status(self, role, status):
+        def _native_item(self, role, slot):
+            front = self._barbs if role == "barbs" else self._fill
+            back = self._barbs_back if role == "barbs" else self._fill_back
+            return front if slot == self._native_front_index else back
+
+        def _native_status(self, role, slot, status):
             if self._disposed:
                 return
-            item = self._barbs if role == "barbs" else self._fill
+            item = self._native_item(role, slot)
             if item is None or not shiboken6.isValid(item):
                 return
             if status.get("invalidated"):
-                self._native_bindings.pop(role, None)
+                self._native_bindings.pop((role, slot), None)
                 item.setProperty("nativeReady", False)
                 item.setProperty("nativeFrameObserved", False)
+                if slot == self._native_front_index:
+                    self._native_active_camera = None
+                    self._native_active_identity = None
+                    self._weather_display_camera = None
+                    self._set_weather_visible(False)
                 if self._camera is not None:
                     QTimer.singleShot(
                         0,
@@ -1871,11 +1919,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                         ),
                     )
                 return
-            if status["key"].identity != self._native_bindings.get(role):
+            if status["key"].identity != self._native_bindings.get((role, slot)):
                 return
             if status.get("error"):
                 self._native_error = status["error"]
-                self._set_weather_visible(False)
+                if slot == self._native_front_index:
+                    self._set_weather_visible(False)
                 self._show_state("unavailable")
                 self.nativeError.emit(self._native_error)
                 return
@@ -1888,7 +1937,15 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 return
             if self._disposed or self._camera is None:
                 return
-            items = [self._barbs] + ([self._fill] if self._fill is not None else [])
+            pending = self._native_pending_camera is not None
+            if pending and self._native_publishing:
+                return
+            items = (
+                [self._barbs_back]
+                + ([self._fill_back] if self._fill_back is not None else [])
+                if pending
+                else [self._barbs] + ([self._fill] if self._fill is not None else [])
+            )
             error = next(
                 (
                     str(item.property("shaderError"))
@@ -1903,21 +1960,61 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._show_state("unavailable")
                 self.nativeError.emit(error)
             elif self._model.state == "ready" and all(
-                item.property("ready") for item in items
+                item.property("prepared" if pending else "ready") for item in items
             ):
-                if self._state != "ready":
-                    self._show_state("ready")
+                if pending:
+                    if self._native_pending_camera != self._camera:
+                        return
+                    self._commit_native_weather()
+                    self._show_state("loading")
+                else:
+                    if self._native_active_camera is None:
+                        self._native_active_camera = self._camera
+                        self._native_active_identity = self._native_pending_identity
+                        self._weather_display_camera = self._camera
+                        self._provider.pin_selection(
+                            self._native_pending_selection_urls
+                        )
+                    if self._state != "ready":
+                        self._show_state("ready")
             elif self._model.state == "ready" and self._state != "loading":
                 self._show_state("loading")
 
-        def _bind_native_layer(self, role, identity, images):
-            item = self._barbs if role == "barbs" else self._fill
+        def _commit_native_weather(self):
+            old_barbs, old_fill = self._barbs, self._fill
+            old_index = self._native_front_index
+            old_barbs.setVisible(False)
+            if old_fill is not None:
+                old_fill.setVisible(False)
+            self._barbs, self._barbs_back = self._barbs_back, old_barbs
+            self._fill, self._fill_back = self._fill_back, old_fill
+            self._barbs.setOpacity(self._wind_opacity)
+            self._native_front_index = 1 - old_index
+            self._native_active_camera = self._native_pending_camera
+            self._native_active_identity = self._native_pending_identity
+            self._weather_display_camera = self._native_pending_camera
+            self._native_pending_camera = None
+            self._native_pending_identity = None
+            self._barbs.setVisible(True)
+            if self._fill is not None:
+                self._fill.setOpacity(1)
+                self._fill.setVisible(True)
+            for role in ("barbs", "fill"):
+                context = self._native_contexts.get((role, old_index))
+                if context is not None:
+                    context.clear()
+            self._provider.pin_selection(self._native_pending_selection_urls)
+            self._native_pending_selection_urls = ()
+
+        def _bind_native_layer(self, role, identity, images, pending=False):
+            slot = 1 - self._native_front_index if pending else self._native_front_index
+            item = self._native_item(role, slot)
             if item is None:
                 raise RuntimeError(f"Viewport has no native {role} layer")
-            context = self._native_contexts[role]
-            if self._native_bindings.get(role) == identity and context.ready:
+            context = self._native_contexts[role, slot]
+            if self._native_bindings.get((role, slot)) == identity and context.ready:
                 return
-            self._native_bindings[role] = identity
+            self._native_bindings[role, slot] = identity
             self._native_error = ""
             item.setProperty("nativeFrameObserved", False)
             warm = context.request(
@@ -1931,7 +2028,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 "enabled": self._native_weather_fields,
                 "layers": {
                     role: context.snapshot()
-                    for role, context in self._native_contexts.items()
+                    for (role, index), context in self._native_contexts.items()
+                    if index == self._native_front_index
+                },
+                "pending_layers": {
+                    role: context.snapshot()
+                    for (role, index), context in self._native_contexts.items()
+                    if index != self._native_front_index
                 },
                 "budget": (
                     {}
@@ -1950,6 +2053,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             if self._chart_model is not None and not self._chart_model._enc_only:
                 raise ValueError("Replace chart-enabled viewports as a whole")
             self._weather.setVisible(False)
+            self._weather_display_camera = None
+            self._native_active_camera = self._native_pending_camera = None
+            self._native_active_identity = self._native_pending_identity = None
+            self._native_pending_selection_urls = ()
             self._clear_weather_sources()
             for context in self._native_contexts.values():
                 context.clear()
@@ -2560,7 +2667,20 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                         "anchorYSource",
                     ),
                 ),
+                (
+                    self._barbs_back,
+                    (
+                        "u0Source",
+                        "v0Source",
+                        "u1Source",
+                        "v1Source",
+                        "nodeIdSource",
+                        "anchorXSource",
+                        "anchorYSource",
+                    ),
+                ),
                 (self._fill, ("u0Source", "v0Source", "u1Source", "v1Source")),
+                (self._fill_back, ("u0Source", "v0Source", "u1Source", "v1Source")),
             ):
                 if item is not None and shiboken6.isValid(item):
                     for name in names:
@@ -2577,13 +2697,19 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
 
         def _set_weather_visible(self, visible):
             """Chart scenes remain visible even when weather has no data."""
-            if getattr(self, "_chart_layer", False) or getattr(
-                self, "_enc_chart_layer", False
+            if (
+                getattr(self, "_chart_layer", False)
+                or getattr(self, "_enc_chart_layer", False)
+                or self._native_weather_fields
             ):
                 self._weather.setVisible(True)
                 self._barbs.setVisible(visible)
                 if self._fill is not None:
                     self._fill.setVisible(visible)
+                if not visible and self._native_weather_fields:
+                    self._barbs_back.setVisible(False)
+                    if self._fill_back is not None:
+                        self._fill_back.setVisible(False)
             else:
                 self._weather.setVisible(visible)
 
@@ -2642,16 +2768,37 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     return self._state
                 state, field, selection = self._model.update(camera)
                 if state != "ready":
-                    # A miss shows the loading state; it never shows stale content.
-                    self._set_weather_visible(False)
-                    self._show_state(state)
+                    previous = self._weather_display_camera
+                    preview = (
+                        state == "loading"
+                        and previous is not None
+                        and previous.time != camera.time
+                        and self._same_weather_view(previous, camera)
+                    )
+                    if preview:
+                        # Keep the last complete portrayal during time-only
+                        # staging. Label it explicitly so previous-time data
+                        # cannot be mistaken for the requested forecast.
+                        self._set_weather_visible(True)
+                        self._show_state(
+                            state, "Updating wind — showing previous forecast time"
+                        )
+                    else:
+                        self._set_weather_visible(False)
+                        self._show_state(state)
                     self.cameraChanged.emit(camera)
                     return state
                 if self._publish(field, selection, camera) is False:
                     return "unavailable"
+                if not self._native_weather_fields:
+                    self._weather_display_camera = camera
                 self._set_weather_visible(True)
                 if self._native_weather_fields:
                     self._update_native_state()
+                    if self._native_pending_camera is not None:
+                        self._show_state(
+                            "loading", "Updating wind — showing previous forecast time"
+                        )
                 else:
                     self._show_state(
                         "ready" if self._barbs.property("ready") else "loading"
@@ -2662,6 +2809,29 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._presentation_spans.append((began, time.perf_counter(), state))
                 if len(self._presentation_spans) > 4096:
                     del self._presentation_spans[: len(self._presentation_spans) - 4096]
+
+        @staticmethod
+        def _same_weather_view(first, second):
+            """Whether an old portrayal remains spatially aligned for a time preview."""
+            return (
+                first.center_lat,
+                first.center_lon,
+                first.zoom,
+                first.width,
+                first.height,
+                first.density,
+                first.over_land,
+                first.geographic,
+            ) == (
+                second.center_lat,
+                second.center_lon,
+                second.zoom,
+                second.width,
+                second.height,
+                second.density,
+                second.over_land,
+                second.geographic,
+            )
 
         def observations(self):
             """Presentation spans and the generations actually published."""
@@ -2682,6 +2852,27 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
         def _publish(self, field, selection, camera):
             # Reject before publishing either namespace or touching QML sources.
             validate_binding(field, selection)
+            if self._native_weather_fields and (
+                (
+                    self._native_active_camera == camera
+                    and self._native_pending_camera is None
+                    and self._native_active_identity == field.identity
+                )
+                or (
+                    self._native_pending_camera == camera
+                    and self._native_pending_identity == field.identity
+                )
+            ):
+                return True
+            if self._native_weather_fields and self._native_active_camera is not None:
+                self._native_pending_camera = camera
+                self._barbs_back.setOpacity(0.01)
+                self._barbs_back.setVisible(True)
+                if self._fill_back is not None:
+                    self._fill_back.setOpacity(0.01)
+                    self._fill_back.setVisible(True)
+            if self._native_weather_fields:
+                self._native_pending_identity = field.identity
             if self._native_weather_fields:
                 required = field.texture_bytes + (
                     0
@@ -2713,8 +2904,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             # The two layers are staged on their own inputs: the fill sees the
             # resident field and the temporal blend, the barbs see the resident
             # field and the current-view selection.
-            self._publish_fill(field, field_urls, camera)
-            self._publish_barbs(field, selection, field_urls, selection_urls, camera)
+            self._native_publishing = True
+            try:
+                self._publish_fill(field, field_urls, camera)
+                self._publish_barbs(
+                    field, selection, field_urls, selection_urls, camera
+                )
+            finally:
+                self._native_publishing = False
             self._published = selection.generation
             self._published_generations.add(selection.generation)
 
@@ -2733,8 +2930,19 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             if grid is None:
                 return
             key = f"{field.generation}/grid"
+            item = (
+                self._fill_back
+                if self._native_weather_fields
+                and self._native_pending_camera is not None
+                else self._fill
+            )
             if self._native_weather_fields:
-                self._bind_native_layer("fill", field.identity, grid.images)
+                self._bind_native_layer(
+                    "fill",
+                    field.identity,
+                    grid.images,
+                    pending=self._native_pending_camera is not None,
+                )
                 self._published_fill = key
             elif self._published_fill != key:
                 urls = self._provider.publish_field(grid.images, key)
@@ -2745,7 +2953,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._published_fill = key
                 self.counters["fill_publications"] += 1
                 self.counters["fill_uploads"] += 1
-            self._fill.setProperty("blend", field.staged.weight(camera.stamp()))
+            item.setProperty("blend", field.staged.weight(camera.stamp()))
             rect = _grid_rect(camera.view(), grid.lattice)
             for name, value in (
                 ("gridX", rect.x()),
@@ -2753,7 +2961,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 ("gridWidth", rect.width()),
                 ("gridHeight", rect.height()),
             ):
-                if self._fill.setProperty(name, value) is False:
+                if item.setProperty(name, value) is False:
                     logger.warning("The numerical fill rejected %s", name)
 
         def publish_fill(self, images, key):
@@ -2786,8 +2994,20 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             The barbs consume the resident field's endpoint images and the
             current-view selection.  A fill change never reaches this path.
             """
+            item = (
+                self._barbs_back
+                if self._native_weather_fields
+                and self._native_pending_camera is not None
+                else self._barbs
+            )
             if self._native_weather_fields:
-                self._bind_native_layer("barbs", field.identity, field.images)
+                self._bind_native_layer(
+                    "barbs",
+                    field.identity,
+                    field.images,
+                    pending=self._native_pending_camera is not None,
+                )
+                self._native_pending_selection_urls = selection_urls
             elif self._published != field.generation:
                 for name, url in zip(
                     ("u0Source", "v0Source", "u1Source", "v1Source"), field_urls
@@ -2798,16 +3018,17 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             for name, url in zip(
                 ("nodeIdSource", "anchorXSource", "anchorYSource"), selection_urls
             ):
-                self._barbs.setProperty(name, QUrl(url))
+                item.setProperty(name, QUrl(url))
             self.counters["barbs_selection_publications"] += 1
             self.counters["barbs_selection_uploads"] += 1
             rows, cols = selection.shape
-            self._barbs.setProperty("columns", cols)
-            self._barbs.setProperty("rows", rows)
-            self._barbs.setProperty("nodeIdIndirection", True)
-            self._barbs.setProperty("fieldColumns", FIELD_COLUMNS)
-            self._barbs.setProperty("blend", field.staged.weight(camera.stamp()))
-            self._barbs.setOpacity(self._wind_opacity)
+            item.setProperty("columns", cols)
+            item.setProperty("rows", rows)
+            item.setProperty("nodeIdIndirection", True)
+            item.setProperty("fieldColumns", FIELD_COLUMNS)
+            item.setProperty("blend", field.staged.weight(camera.stamp()))
+            if not self._native_weather_fields or self._native_pending_camera is None:
+                item.setOpacity(self._wind_opacity)
 
         def publication_counters(self):
             """The published traffic, counted apart by kind and by layer."""

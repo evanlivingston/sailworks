@@ -15,10 +15,20 @@ Item {
         anchors.fill: parent
         visible: root.fillEnabled
     }
+    WeatherFill {
+        objectName: "weatherFillBack"
+        anchors.fill: parent
+        visible: false
+    }
     WeatherBarbs {
         id: barbs
         objectName: "weatherBarbs"
         anchors.fill: parent
+    }
+    WeatherBarbs {
+        objectName: "weatherBarbsBack"
+        anchors.fill: parent
+        visible: false
     }
     WeatherStreamlines { objectName: "weatherStreamlines"; anchors.fill: parent; visible: false }
 }

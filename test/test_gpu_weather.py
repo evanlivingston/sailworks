@@ -85,3 +85,19 @@ def test_provider_is_bounded_and_generation_safe():
     np.testing.assert_array_equal(decode_component(image), [[3, -4]])
     with pytest.raises(ValueError):
         WeatherImageProvider(byte_limit=1).publish(snapshot)
+
+
+def test_provider_keeps_displayed_selection_during_native_swap():
+    provider = WeatherImageProvider()
+    first = (encode_component([[1]]),) * 3
+    second = (encode_component([[2]]),) * 3
+    displayed = provider.publish_selection(first, "first")
+    provider.pin_selection(displayed)
+    pending = provider.publish_selection(second, "second")
+    old_id = displayed[0].removeprefix("image://weather/")
+    new_id = pending[0].removeprefix("image://weather/")
+    assert not provider.requestImage(old_id, None, QSize()).isNull()
+    assert not provider.requestImage(new_id, None, QSize()).isNull()
+    provider.pin_selection(pending)
+    assert provider.requestImage(old_id, None, QSize()).isNull()
+    assert not provider.requestImage(new_id, None, QSize()).isNull()
