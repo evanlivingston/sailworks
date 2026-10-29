@@ -26,6 +26,11 @@ import requests
 
 from gweatherrouting.core.gribsources.base import GribSource
 from .options import custom_rows, selection
+from .parallel import (
+    MAX_CONCURRENT_FORECAST_REQUESTS,
+    MAX_DOWNLOAD_BYTES,
+    write_ordered_payloads,
+)
 
 logger = logging.getLogger("gweatherrouting")
 
@@ -212,29 +217,60 @@ class ECCHRDPSource(GribSource):
 
                 raise DownloadCancelledError()
 
-        session = self._session or requests.Session()
-        close = self._session is None
         check_cancel()
         temporary = tempfile.NamedTemporaryFile(
             dir=dest_dir, suffix=".part", delete=False
         )
         try:
-            bytes_written = 0
             with temporary as outfile:
-                for i, url in enumerate(plan):
+                sessions = {}
+
+                def fetch(url):
                     check_cancel()
-                    with session.get(url, stream=True, timeout=(10, 60)) as response:
+                    # A session is confined to one worker; requests.Session is
+                    # not safe to share between concurrent requests.
+                    from threading import get_ident
+
+                    if self._session is not None:
+                        session = self._session
+                    else:
+                        worker_id = get_ident()
+                        session = sessions.get(worker_id)
+                        if session is None:
+                            session = sessions[worker_id] = requests.Session()
+                    response = session.get(url, stream=True, timeout=(10, 60))
+                    try:
                         response.raise_for_status()
+                        chunks = bytearray()
                         for chunk in response.iter_content(chunk_size=65536):
                             check_cancel()
-                            outfile.write(chunk)
-                            bytes_written += len(chunk)
-                            if bytes_written > 256 * 1024 * 1024:
+                            if len(chunks) + len(chunk) > MAX_DOWNLOAD_BYTES:
                                 raise ValueError(
                                     "Forecast download exceeded 256 MiB; "
-                                    "choose a shorter range"
+                                    "choose a smaller route area"
                                 )
-                    percentage_callback(int(100 * (i + 1) / len(plan)))
+                            chunks.extend(chunk)
+                        return bytes(chunks)
+                    finally:
+                        response.close()
+
+                try:
+                    bytes_written = write_ordered_payloads(
+                        outfile,
+                        plan,
+                        fetch,
+                        check_cancel,
+                        percentage_callback,
+                        max_workers=(
+                            1
+                            if self._session is not None
+                            else MAX_CONCURRENT_FORECAST_REQUESTS
+                        ),
+                    )
+                finally:
+                    if self._session is None:
+                        for session in sessions.values():
+                            session.close()
             check_cancel()
             if bytes_written == 0:
                 raise RuntimeError("HRDPS download returned empty data.")
@@ -242,7 +278,5 @@ class ECCHRDPSource(GribSource):
         finally:
             if os.path.exists(temporary.name):
                 os.remove(temporary.name)
-            if close:
-                session.close()
         logger.info("HRDPS download completed: %s (%d bytes)", filename, bytes_written)
         return final_path

@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 import json
 import re
 from pathlib import Path
+import threading
 from urllib.parse import urlsplit
 
 import pytest
@@ -261,6 +262,103 @@ def test_download_concatenates_only_verified_selected_bytes(tmp_path):
     )
     assert Path(path).name.startswith("ecmwf-ifs-20250101-00z-")
     assert len(source._output_filename("20251231", "18")) < 255
+
+
+def test_indexed_ranges_complete_out_of_order_but_stage_in_order(tmp_path, monkeypatch):
+    import gweatherrouting.core.gribsources.ecmwf as module
+
+    session = DownloadSession()
+    source = ECMWFIFSSource()
+    monkeypatch.setattr(module, "session_for", lambda _session: (session, False))
+    later_finished = threading.Event()
+    first_entered = threading.Event()
+    requested = []
+    stems = [f"20250101000000-{step}h-oper-fc" for step in (0, 3)]
+    monkeypatch.setattr(
+        module,
+        "listed_names",
+        lambda *_args: {stem + ext for stem in stems for ext in (".grib2", ".index")},
+    )
+
+    def selected(_session, _url, _date, _cycle, step, *_args):
+        return ((session.offsets[step // 3], len(session.messages[step // 3])),), "0001"
+
+    def append(_session, url, offset, length, output, *, cancel=None):
+        step = int(re.search(r"-(\d+)h-oper-fc", url).group(1))
+        requested.append((step, url, offset, length))
+        if step == 0:
+            first_entered.set()
+            assert later_finished.wait(3)
+        else:
+            assert first_entered.wait(3)
+            later_finished.set()
+        output.write(session.messages[step // 3])
+        return length
+
+    monkeypatch.setattr(module, "read_selected_index", selected)
+    monkeypatch.setattr(module, "append_message", append)
+    identifier = json.dumps(
+        {
+            "source": source.name,
+            "date": "20250101",
+            "cycle": "00",
+            "hours": 3,
+            "steps": [0, 3],
+            "fields": ["wind"],
+        }
+    )
+    path = Path(source.download(identifier, str(tmp_path), lambda _: None))
+    assert later_finished.is_set()
+    assert path.read_bytes() == b"".join(session.messages)
+    assert sorted((step, offset, length) for step, _, offset, length in requested) == [
+        (step, offset, len(message))
+        for step, offset, message in zip((0, 3), session.offsets, session.messages)
+    ]
+    assert all(f"-{step}h-oper-fc.grib2" in url for step, url, _, _ in requested)
+
+
+def test_download_rejects_step_without_selected_messages(tmp_path, monkeypatch):
+    import gweatherrouting.core.gribsources.ecmwf as module
+
+    session = DownloadSession()
+    source = ECMWFIFSSource(session=session)
+    identifier = json.dumps(
+        {
+            "source": source.name,
+            "date": "20250101",
+            "cycle": "00",
+            "hours": 0,
+            "steps": [0],
+            "fields": ["wind"],
+        }
+    )
+    monkeypatch.setattr(module, "read_selected_index", lambda *_args: ((), "0001"))
+    with pytest.raises(ValueError, match="no selected messages at step 0"):
+        source.download(identifier, str(tmp_path), lambda percent: None)
+    assert not list(tmp_path.glob("ecmwf-*.grib2"))
+    assert not list(tmp_path.glob(".ecmwf-*.part"))
+
+
+def test_download_rejects_short_selected_message_write(tmp_path, monkeypatch):
+    import gweatherrouting.core.gribsources.ecmwf as module
+
+    session = DownloadSession()
+    source = ECMWFIFSSource(session=session)
+    identifier = json.dumps(
+        {
+            "source": source.name,
+            "date": "20250101",
+            "cycle": "00",
+            "hours": 0,
+            "steps": [0],
+            "fields": ["wind"],
+        }
+    )
+    monkeypatch.setattr(module, "append_message", lambda *_args, **_kwargs: 1)
+    with pytest.raises(ValueError, match="byte count mismatch"):
+        source.download(identifier, str(tmp_path), lambda percent: None)
+    assert not list(tmp_path.glob("ecmwf-*.grib2"))
+    assert not list(tmp_path.glob(".ecmwf-*.part"))
 
 
 def test_other_index_leads_and_ancillary_parameters_do_not_block_pinned_fields(

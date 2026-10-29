@@ -13,7 +13,10 @@ from gweatherrouting.core.gribsources.options import DownloadOptions, selection
 from gweatherrouting.core.gribsources.noaagfs import NOAAGFSSource
 from gweatherrouting.core.gribsources.noaahrrr import NOAAHRRRSource
 from gweatherrouting.core.gribsources.eccchrdps import ECCHRDPSource
-from gweatherrouting.core.gribsources.parallel import write_ordered_forecasts
+from gweatherrouting.core.gribsources.parallel import (
+    write_ordered_forecasts,
+    write_ordered_payloads,
+)
 
 
 def response_with(content=b"GRIB-fixture"):
@@ -189,6 +192,142 @@ class DownloadSelectionTests(unittest.TestCase):
         self.assertEqual(output.getvalue(), bytes(range(5)))
         self.assertEqual(progress, [20, 40, 60, 80, 100])
 
+    def test_streaming_forecast_cancel_closes_active_response(self):
+        cancelled = Event()
+
+        class Response:
+            closed = False
+
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, chunk_size):
+                yield b"GRIB"
+                cancelled.set()
+                yield b"7777"
+
+            def close(self):
+                self.closed = True
+
+        response = Response()
+
+        def check_cancel():
+            if cancelled.is_set():
+                raise RuntimeError("cancelled while streaming")
+
+        with self.assertRaisesRegex(RuntimeError, "cancelled while streaming"):
+            write_ordered_forecasts(
+                BytesIO(), (0,), lambda _: response, check_cancel, lambda _: None
+            )
+        self.assertTrue(response.closed)
+
+    def test_generic_payload_writer_orders_progress_and_closes_submission_window(self):
+        from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
+        from gweatherrouting.core.gribsources import parallel
+
+        second_done = Event()
+        lock = Lock()
+        active = 0
+        peak = 0
+        completed = []
+        submitted = 0
+
+        class TrackingExecutor(RealThreadPoolExecutor):
+            def submit(self, function, *args, **kwargs):
+                nonlocal submitted
+                with lock:
+                    submitted += 1
+                return super().submit(function, *args, **kwargs)
+
+        def fetch(step):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            try:
+                if step == 0 and not second_done.wait(timeout=3):
+                    raise AssertionError("step 0 was not held behind step 1")
+                if step == 1:
+                    with lock:
+                        completed.append(step)
+                    second_done.set()
+                else:
+                    with lock:
+                        completed.append(step)
+                return bytes((step,))
+            finally:
+                with lock:
+                    active -= 1
+
+        class TrackingOutput(BytesIO):
+            def write(self, payload):
+                if not hasattr(self, "submitted_at_first_write"):
+                    with lock:
+                        self.submitted_at_first_write = submitted
+                return super().write(payload)
+
+        output = TrackingOutput()
+        progress = []
+        with patch.object(parallel, "ThreadPoolExecutor", TrackingExecutor):
+            result = write_ordered_payloads(
+                output, range(7), fetch, lambda: None, progress.append, max_workers=2
+            )
+        self.assertEqual(peak, 2)
+        self.assertEqual(completed[:2], [1, 0])
+        self.assertEqual(result, 7)
+        self.assertEqual(output.getvalue(), bytes(range(7)))
+        self.assertEqual(progress, sorted(progress))
+        self.assertEqual(progress, [14, 28, 42, 57, 71, 85, 100])
+        self.assertEqual(output.submitted_at_first_write, 2)
+
+    def test_generic_payload_writer_cancellation_and_fetch_error_keep_staged_commit(
+        self,
+    ):
+        output = BytesIO()
+        calls = []
+
+        def fetch(step):
+            calls.append(step)
+            if step == 1:
+                raise RuntimeError("fetch failed")
+            return b"payload"
+
+        with self.assertRaisesRegex(RuntimeError, "fetch failed"):
+            write_ordered_payloads(
+                output, range(4), fetch, lambda: None, lambda _: None
+            )
+        # Earlier ordered results may be committed to the staging file before
+        # a later fetch fails; publication is handled by the caller.
+        self.assertIn(output.getvalue(), (b"", b"payload"))
+
+        checks = 0
+
+        def cancel():
+            nonlocal checks
+            checks += 1
+            if checks > 1:
+                raise RuntimeError("cancelled")
+
+        with self.assertRaisesRegex(RuntimeError, "cancelled"):
+            write_ordered_payloads(
+                BytesIO(), range(3), lambda _: b"x", cancel, lambda _: None
+            )
+
+    def test_generic_payload_writer_enforces_aggregate_size(self):
+        from gweatherrouting.core.gribsources import parallel
+
+        output = BytesIO()
+        with patch.object(parallel, "MAX_DOWNLOAD_BYTES", 3):
+            with self.assertRaisesRegex(ValueError, "256 MiB"):
+                write_ordered_payloads(
+                    output,
+                    range(2),
+                    lambda _: b"xx",
+                    lambda: None,
+                    lambda _: None,
+                    max_workers=1,
+                )
+
     def test_hrdps_pressure_cadence_and_download_plan(self):
         source = ECCHRDPSource()
         with patch.object(source, "_discover", return_value=("20261015", "12")):
@@ -202,6 +341,96 @@ class DownloadSelectionTests(unittest.TestCase):
         plan = source._download_plan(config)
         self.assertEqual(len(plan), 8)
         self.assertEqual(sum("PRMSL" in url for url in plan), 2)
+
+    def test_hrdps_download_uses_ordered_plan_and_closes_responses(self):
+        source = ECCHRDPSource()
+        config = {
+            "date": "20261015",
+            "cycle": "12",
+            "hours": 1,
+            "steps": [0, 1],
+            "fields": ["wind"],
+        }
+        plan = source._download_plan(config)
+        second_done = Event()
+        responses = []
+
+        class Response:
+            def __init__(self, url):
+                self.url = url
+                self.closed = False
+
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, chunk_size):
+                if self.url == plan[0]:
+                    self.assert_second_done()
+                yield self.url[-8:].encode()
+
+            @staticmethod
+            def assert_second_done():
+                if not second_done.wait(3):
+                    raise AssertionError("HRDPS requests did not overlap")
+
+            def close(self):
+                self.closed = True
+
+        class Session:
+            def close(self):
+                pass
+
+            def get(self, url, **kwargs):
+                self.assert_stream(kwargs)
+                response = Response(url)
+                responses.append(response)
+                if url == plan[1]:
+                    second_done.set()
+                return response
+
+            @staticmethod
+            def assert_stream(kwargs):
+                if kwargs != {"stream": True, "timeout": (10, 60)}:
+                    raise AssertionError(kwargs)
+
+        with (
+            patch(
+                "gweatherrouting.core.gribsources.eccchrdps.requests.Session",
+                return_value=Session(),
+            ),
+            tempfile.TemporaryDirectory() as directory,
+        ):
+            progress = []
+            output = source.download(json.dumps(config), directory, progress.append)
+            self.assertEqual(
+                Path(output).read_bytes(), b"".join(url[-8:].encode() for url in plan)
+            )
+        self.assertTrue(all(response.closed for response in responses))
+        self.assertEqual(progress, [25, 50, 75, 100])
+
+    def test_hrdps_http_error_and_cancel_remove_staged_file(self):
+        source = ECCHRDPSource(session=MagicMock())
+        config = {
+            "date": "20261015",
+            "cycle": "12",
+            "hours": 1,
+            "steps": [0, 1],
+            "fields": ["wind"],
+        }
+        source._session.get.side_effect = RuntimeError("HTTP failed")
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(RuntimeError, "HTTP failed"):
+                source.download(json.dumps(config), directory, lambda _: None)
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+        class Cancel:
+            def is_set(self):
+                return True
+
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(Exception):
+                source.download(json.dumps(config), directory, lambda _: None, Cancel())
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_unsupported_steps_and_fields_rejected(self):
         for config in (
