@@ -51,7 +51,7 @@ class SessionController(QObject):
         analysis_root=None,
         analysis_state=None,
         log_library_directory=None,
-        gpu_streamlines=False,
+        gpu_streamlines=True,
     ):
         super().__init__(parent)
         if map_renderer not in (None, "cpu", "gpu"):

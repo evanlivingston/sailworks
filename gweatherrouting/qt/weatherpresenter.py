@@ -138,7 +138,7 @@ class WeatherPresenter(QObject):
                 chart_data_dir=DATA_DIR,
                 chart_palette=self.canvas.controller.settings.chartPalette,
                 gpu_streamlines=getattr(
-                    self.canvas.controller, "gpu_streamlines", False
+                    self.canvas.controller, "gpu_streamlines", True
                 ),
             )
             if self.native_fields:

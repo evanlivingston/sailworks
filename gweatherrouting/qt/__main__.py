@@ -28,11 +28,6 @@ def main(argv=None):
         ),
     )
     parser.add_argument(
-        "--gpu-streamlines",
-        action="store_true",
-        help="Experimental: trace and render wind streamlines with Qt Quick Metal compute",
-    )
-    parser.add_argument(
         "--native-weather-fields",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -60,7 +55,7 @@ def main(argv=None):
         map_renderer=args.map_renderer,
         early_weather=args.early_weather,
         gpu_resident_fields=args.gpu_resident_fields,
-        gpu_streamlines=args.gpu_streamlines,
+        gpu_streamlines=True,
         native_weather_fields=args.native_weather_fields,
     )
     window = PreviewWindow(controller)
