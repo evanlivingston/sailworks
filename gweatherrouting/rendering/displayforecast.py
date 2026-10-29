@@ -34,6 +34,7 @@ class DisplayForecast:
     first_valid: float
     last_valid: float
     version: tuple
+    valid_times: tuple = ()
 
     @property
     def key(self):
@@ -86,6 +87,7 @@ def inspect_forecasts(entries):
                         min(times),
                         max(times),
                         version,
+                        valid_times=tuple(sorted(set(times))),
                     )
                 )
             if not groups:

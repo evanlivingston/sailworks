@@ -38,7 +38,7 @@ def wait_for(predicate, application, timeout=2000, detail=None):
         pytest.fail(f"display metadata worker was not delivered: {diagnostic or ''}")
 
 
-def display(path, version):
+def display(path, version, valid_times=None):
     model = path.rsplit("/", 1)[-1].upper()
     epoch = RUN.timestamp()
     process = {"GFS": ("0", "0", "gfs"), "HRRR": ("0", "0", "83")}[model]
@@ -54,6 +54,7 @@ def display(path, version):
         epoch,
         epoch,
         version,
+        valid_times=(epoch,) if valid_times is None else tuple(valid_times),
     )
 
 
@@ -78,6 +79,7 @@ def test_sources_and_choice_follow_the_single_active_model(tmp_path, monkeypatch
     assert len(selection.choices) == 2, selection.error
     assert len(selection.sources()) == 1
     assert selection.sources()[0].model_name == "GFS"
+    assert selection.sources()[0].valid_times == (RUN.timestamp(),)
     old_key = selection.selected_key
     other = next(choice for choice in selection.choices if choice.model_name == "HRRR")
     assert selection.choose(other.key)

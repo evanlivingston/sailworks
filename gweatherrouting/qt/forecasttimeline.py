@@ -27,7 +27,6 @@ from PySide6.QtWidgets import (
 from gweatherrouting.core.forecasttimeline import (
     TIME_UNITS,
     forecast_bounds,
-    forecast_intervals,
     step_forecast_time,
 )
 from .theme import symbol_icon
@@ -54,10 +53,20 @@ class DayStripWidget(QWidget):
         self.bounds = None  # (start, end) timestamps
         self.position = None  # current forecast time (blue marker)
         self.marker = None  # optional reference time (red marker)
+        self.now = datetime.now(timezone.utc).timestamp()
+        self.valid_times = ()  # forecast valid-time timestamps (dot markers)
         self.setMinimumHeight(self.CELL_HEIGHT + self.TRACK_HEIGHT + 10)
         self.setMouseTracking(True)
         self._cell_rects = []  # list of (QRect, noon_timestamp)
         self._dragging = False
+        self._now_timer = QTimer(self)
+        self._now_timer.setInterval(30_000)
+        self._now_timer.timeout.connect(self._update_now)
+        self._now_timer.start()
+
+    def _update_now(self):
+        self.now = datetime.now(timezone.utc).timestamp()
+        self.update()
 
     def set_bounds(self, start, end):
         if start is None or end is None:
@@ -74,6 +83,10 @@ class DayStripWidget(QWidget):
 
     def set_marker(self, stamp):
         self.marker = stamp
+        self.update()
+
+    def set_valid_times(self, stamps):
+        self.valid_times = tuple(stamps or ())
         self.update()
 
     def _day_cells(self, start, end):
@@ -147,7 +160,31 @@ class DayStripWidget(QWidget):
                     )
                     x += cell_width
 
+            # Small dots identify actual forecast valid times.  Keep them on
+            # the bottom edge, independently of the day-cell boundaries.
+            if self.width() > 0:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QColor("#555555"))
+                radius = 2
+                dot_y = self.height() - radius - 1
+                for stamp in self.valid_times:
+                    if not math.isfinite(stamp) or stamp < start or stamp > end:
+                        continue
+                    px = (
+                        round((stamp - start) / span * (self.width() - 1))
+                        if span > 0
+                        else (self.width() - 1) / 2
+                    )
+                    painter.drawEllipse(
+                        px - radius, dot_y - radius, radius * 2, radius * 2
+                    )
+
             # Vertical markers.
+            if self.now is not None and start <= self.now <= end and span > 0:
+                now_x = round((self.now - start) / span * (self.width() - 1))
+                painter.setPen(QPen(QColor("#e6c229"), 2))
+                painter.drawLine(now_x, 0, now_x, self.height())
+
             if self.position is not None and span > 0:
                 px = int((self.position - start) / span * self.width())
                 painter.setPen(QPen(QColor("#0066cc"), 2))
@@ -397,9 +434,13 @@ class ForecastTimeline(QWidget):
             intervals = tuple(
                 sorted((source.first_valid, source.last_valid) for source in sources)
             )
-            if intervals == self._signature:
+            valid_times = tuple(
+                sorted({stamp for source in sources for stamp in source.valid_times})
+            )
+            signature = (intervals, valid_times)
+            if signature == self._signature:
                 return
-            self._signature = intervals
+            self._signature = signature
             self.bounds = forecast_bounds(intervals)
             self.cancel_commit()
             self._syncing = True
@@ -418,11 +459,13 @@ class ForecastTimeline(QWidget):
                 self.start_month_label.setToolTip(start_local.isoformat())
                 self.end_month_label.setToolTip(end_local.isoformat())
                 self.day_strip.set_bounds(start, end)
+                self.day_strip.set_valid_times(valid_times)
             else:
                 self.slider.setEnabled(False)
                 self.start_month_label.clear()
                 self.end_month_label.clear()
                 self.day_strip.set_bounds(None, None)
+                self.day_strip.set_valid_times(())
             self._syncing = False
             self._time_changed(self.clock.time)
         except Exception as exc:  # Never let a refresh crash the app
