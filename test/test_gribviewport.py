@@ -91,6 +91,39 @@ def test_the_viewport_owns_its_camera_and_time_state():
     assert other.view()._center_lon == 0.7
 
 
+@pytest.mark.parametrize(
+    "source,target",
+    [
+        (_camera(), _camera(center_lon=0.7, center_lat=0.4)),
+        (_camera(), _camera(zoom=10, center_lon=0.501, center_lat=0.499)),
+        (_camera(width=640, height=480), _camera(width=800, height=600)),
+        (_camera(center_lon=0.999), _camera(center_lon=0.001)),
+    ],
+)
+def test_gpu_streamline_projection_maps_source_center_to_target_center(source, target):
+    viewport_type = gribviewport._viewport_widget_class()
+    scale, offset_x, offset_y, world_width = viewport_type._streamline_view_transform(
+        source, target
+    )
+    source_view, target_view = source.view(), target.view()
+    dx = (
+        source_view._lon_to_x(source.center_lon) * scale
+        - target_view._lon_to_x(target.center_lon)
+    ) % world_width
+    if dx > world_width / 2:
+        dx -= world_width
+    expected_x = target.width / 2 - source.width / 2 * scale + dx
+    expected_y = (
+        target.height / 2
+        - source.height / 2 * scale
+        + source_view._lat_to_y(source.center_lat) * scale
+        - target_view._lat_to_y(target.center_lat)
+    )
+    assert offset_x == pytest.approx(expected_x)
+    assert offset_y == pytest.approx(expected_y)
+    assert world_width == target_view.TILE_SIZE * 2.0**target.zoom
+
+
 @pytest.mark.parametrize("over_land", [True, False])
 def test_all_points_selects_every_native_node_at_current_time(gribs, over_land):
     import numpy as np

@@ -1,7 +1,7 @@
 """Viewport-owned cancellable streamline tracing and packed image payloads."""
 
 import math
-from threading import Condition, Event, Thread
+from threading import Condition, Event, Lock, Thread
 
 import numpy as np
 from PySide6.QtGui import QImage
@@ -105,14 +105,7 @@ def clip_segments(segments, width, height):
     return np.asarray(result, dtype=float).reshape((-1, 4))
 
 
-def wind_columns(sampler, camera, cancelled):
-    """Sample a bounded screen-space lattice, retaining NaN coverage holes.
-
-    Native rotated/curvilinear grids have distinct coordinates per node; their
-    unique latitude and longitude axes do not form a useful Cartesian grid.
-    Four-pixel view spacing also bounds worker sampling independently of the
-    source resolution while keeping the tracing grid finer than the seeds.
-    """
+def _streamline_lattice(sampler, camera):
     bounds = _view_bounds(camera.view())
     if not any(len(index.nodes(bounds)) for index in sampler.indices):
         raise ValueError("No wind nodes in view")
@@ -129,11 +122,24 @@ def wind_columns(sampler, camera, cancelled):
     lats = np.linspace(south, north, nrows)
     lons = np.linspace(west, east, ncols)
     latitude, longitude = np.meshgrid(lats, lons)
-    uv = np.asarray(
-        sampler.sample(
+    return lats, lons, latitude, longitude, nrows, ncols
+
+
+def wind_columns(sampler, camera, cancelled, uv=None, lattice=None):
+    """Sample or convert a bounded screen-space grid, retaining coverage holes.
+
+    Native rotated/curvilinear grids have distinct coordinates per node; their
+    unique latitude and longitude axes do not form a useful Cartesian grid.
+    Four-pixel view spacing bounds work independently of source resolution.
+    """
+    if lattice is None:
+        lattice = _streamline_lattice(sampler, camera)
+    lats, lons, latitude, longitude, nrows, ncols = lattice
+    if uv is None:
+        uv = sampler.sample(
             "wind", camera.time, latitude.ravel(), longitude.ravel(), cancelled
         )
-    ).reshape(ncols, nrows, 2)
+    uv = np.asarray(uv).reshape(ncols, nrows, 2)
     speed = np.hypot(uv[..., 0], uv[..., 1])
     direction = np.degrees(np.arctan2(-uv[..., 0], -uv[..., 1])) % 360
     return [(float(lon), lats, direction[i], speed[i]) for i, lon in enumerate(lons)]
@@ -142,27 +148,49 @@ def wind_columns(sampler, camera, cancelled):
 class ViewportStreamlineModel:
     """Latest-camera-only worker; forecast handles never leave its thread."""
 
-    def __init__(self, paths, display_identity=None):
+    def __init__(self, paths, display_identity=None, gpu_trace=False):
         self.paths = tuple(paths)
         self.display_identity = display_identity
+        self.gpu_trace = gpu_trace
         self.on_change = None
         self.error = ""
         self._condition = Condition()
         self._thread = None
         self._closed = False
         self._pending = None
+        self._active = None
+        self._snapshot = None
         self._cancel = Event()
         self._key = None
         self._state = "hidden"
         self._paths = None
+        self._endpoint_cache = None
+        self._endpoint_key = None
+        self._endpoint_lock = Lock()
 
     def update(self, camera, enabled=True):
         with self._condition:
             key = camera if enabled and not self._closed else None
             if key != self._key:
+                same_layout = (
+                    key is not None
+                    and self._key is not None
+                    and self._structural_key(key) == self._structural_key(self._key)
+                )
+                if self.gpu_trace and same_layout and self._active is not None:
+                    self._key, self._paths, self.error = key, None, ""
+                    self._state = "loading"
+                    self._pending = (key, self._cancel)
+                    self._condition.notify_all()
+                    return self._state, self._paths
                 self._cancel.set()
                 self._cancel = Event()
                 self._key, self._paths, self.error = key, None, ""
+                self._snapshot = None
+                if key is None:
+                    with self._endpoint_lock:
+                        self._endpoint_cache = None
+                        self._endpoint_key = None
                 self._state = "loading" if key is not None else "hidden"
                 self._pending = (key, self._cancel) if key is not None else None
                 if key is not None and self._thread is None:
@@ -173,9 +201,57 @@ class ViewportStreamlineModel:
                 self._condition.notify_all()
             return self._state, self._paths
 
+    @staticmethod
+    def _structural_key(camera):
+        return (
+            camera.center_lat,
+            camera.center_lon,
+            camera.zoom,
+            camera.width,
+            camera.height,
+            camera.density,
+            camera.over_land,
+            camera.geographic,
+        )
+
+    def snapshot(self, camera):
+        with self._condition:
+            if self._snapshot is None or camera != self._key:
+                return None
+            return self._snapshot
+
+    def _take_pending_in_window(self, camera, cancel, window, window_for_stamp):
+        """Use the latest time after staging, without redoing the same endpoints."""
+        with self._condition:
+            if self._pending is None or cancel.is_set():
+                return camera
+            pending, pending_cancel = self._pending
+            if (
+                pending_cancel is not cancel
+                or pending != self._key
+                or self._structural_key(pending) != self._structural_key(camera)
+                or window_for_stamp(pending.time.timestamp()) != window
+            ):
+                return camera
+            self._pending = None
+            self._active = (pending, cancel)
+            return pending
+
     def _complete(self, camera, cancel, paths, error):
         with self._condition:
-            if self._closed or cancel.is_set() or camera != self._key:
+            if self._closed or cancel.is_set():
+                return
+            if camera != self._key:
+                if (
+                    self.gpu_trace
+                    and self._key is not None
+                    and paths
+                    and not error
+                    and self._structural_key(camera) == self._structural_key(self._key)
+                ):
+                    self._snapshot = (camera, paths)
+                    if self.on_change is not None:
+                        self.on_change()
                 return
             self._paths, self.error = paths, error
             if not error and not paths:
@@ -184,6 +260,56 @@ class ViewportStreamlineModel:
             if self.on_change is not None:
                 self.on_change()
 
+    def _gpu_endpoint_input(
+        self,
+        sampler,
+        camera,
+        cancel,
+        time_window,
+        stage_streamline_endpoints,
+        blend_streamline_endpoints,
+    ):
+        lattice = _streamline_lattice(sampler, camera)
+        lats, lons, latitude, longitude, nrows, ncols = lattice
+        stamp = camera.time.timestamp()
+        before, after = time_window(sampler, stamp)
+        uv = None
+        if before != after:
+            endpoint_key = (
+                lats.tobytes(),
+                lons.tobytes(),
+                before,
+                after,
+            )
+            with self._endpoint_lock:
+                endpoints = (
+                    self._endpoint_cache if self._endpoint_key == endpoint_key else None
+                )
+            if endpoints is None and not cancel.is_set():
+                endpoints = stage_streamline_endpoints(
+                    sampler,
+                    stamp,
+                    latitude,
+                    longitude,
+                    cancel.is_set,
+                )
+                if endpoints is not None and not cancel.is_set():
+                    with self._endpoint_lock:
+                        self._endpoint_cache = endpoints
+                        self._endpoint_key = endpoint_key
+            if endpoints is not None and not cancel.is_set():
+                camera = self._take_pending_in_window(
+                    camera,
+                    cancel,
+                    (before, after),
+                    lambda requested: time_window(sampler, requested),
+                )
+                stamp = camera.time.timestamp()
+                uv = blend_streamline_endpoints(sampler, endpoints, stamp).reshape(
+                    ncols, nrows, 2
+                )
+        return lattice, camera, uv
+
     def _run(self):
         from gweatherrouting.core.grib import Grib
         from gweatherrouting.core.gribsampling import WeatherSampler
@@ -191,69 +317,138 @@ class ViewportStreamlineModel:
             DecodedBandCache,
             DisplayWeatherSource,
         )
-        from gweatherrouting.rendering.windrenderer import WindLandMask
 
-        sources = []
+        if self.gpu_trace:
+            from .gpustreamlines import make_gpu_trace_input
+            from gweatherrouting.rendering.weatherstaging import (
+                blend_streamline_endpoints,
+                stage_streamline_endpoints,
+                time_window,
+            )
+
+        sources: list[DisplayWeatherSource] = []
         sampler = None
         initialization_error = ""
         try:
-            try:
-                bands = DecodedBandCache()
-                for path in self.paths:
-                    meta = Grib.parse_metadata(path)
-                    sources.append(
-                        DisplayWeatherSource(
-                            meta.path,
-                            meta.name,
-                            meta.centre,
-                            meta.bounds,
-                            meta.start_time,
-                            meta.last_forecast,
-                            meta.model_name,
-                            band_cache=bands,
-                            display_identity=self.display_identity,
-                        )
-                    )
-                sampler = WeatherSampler(sources)
-                if not sources or len(sampler.indices) != len(sources):
-                    raise ValueError("Selected wind forecast unavailable")
-                land = WindLandMask()
-            except Exception as exc:
-                initialization_error = str(exc)
+            sampler, initialization_error = self._initialize_sampler(
+                Grib, WeatherSampler, DecodedBandCache, DisplayWeatherSource, sources
+            )
             while True:
                 with self._condition:
                     while self._pending is None and not self._closed:
                         self._condition.wait()
                     if self._closed:
                         return
-                    camera, cancel = self._pending
+                    pending = self._pending
+                    if pending is None:
+                        continue
+                    camera, cancel = pending
                     self._pending = None
+                    self._active = (camera, cancel)
                 paths, error = None, initialization_error
                 if not error:
-                    try:
-                        columns = wind_columns(sampler, camera, cancel.is_set)
-                        land.refresh_source(camera.view().get_scale())
-                        paths = trace_streamline_paths(
-                            camera.view(),
-                            columns,
-                            land.contains,
-                            cancel.is_set,
-                            density=camera.density,
-                        )
-                        if paths is None and not cancel.is_set():
-                            error = "No traceable wind cells in selected forecast"
-                    except Exception as exc:
-                        error = str(exc)
+                    camera, paths, error = self._process_request(
+                        sampler,
+                        camera,
+                        cancel,
+                        wind_columns,
+                        make_gpu_trace_input if self.gpu_trace else None,
+                        trace_streamline_paths,
+                        time_window if self.gpu_trace else None,
+                        stage_streamline_endpoints if self.gpu_trace else None,
+                        blend_streamline_endpoints if self.gpu_trace else None,
+                    )
                 self._complete(camera, cancel, paths, error)
+                with self._condition:
+                    if self._active == (camera, cancel):
+                        self._active = None
         finally:
             for source in sources:
                 source.close()
+
+    def _initialize_sampler(
+        self,
+        grib_type,
+        weather_sampler_type,
+        decoded_band_cache_type,
+        display_weather_source_type,
+        sources,
+    ):
+        try:
+            bands = decoded_band_cache_type()
+            for path in self.paths:
+                meta = grib_type.parse_metadata(path)
+                sources.append(
+                    display_weather_source_type(
+                        meta.path,
+                        meta.name,
+                        meta.centre,
+                        meta.bounds,
+                        meta.start_time,
+                        meta.last_forecast,
+                        meta.model_name,
+                        band_cache=bands,
+                        display_identity=self.display_identity,
+                    )
+                )
+            sampler = weather_sampler_type(sources)
+            if not sources or len(sampler.indices) != len(sources):
+                raise ValueError("Selected wind forecast unavailable")
+            return sampler, ""
+        except Exception as exc:
+            return None, str(exc)
+
+    def _process_request(
+        self,
+        sampler,
+        camera,
+        cancel,
+        wind_columns,
+        make_gpu_trace_input,
+        trace_streamline_paths,
+        time_window,
+        stage_streamline_endpoints,
+        blend_streamline_endpoints,
+    ):
+        try:
+            if self.gpu_trace:
+                lattice, camera, uv = self._gpu_endpoint_input(
+                    sampler,
+                    camera,
+                    cancel,
+                    time_window,
+                    stage_streamline_endpoints,
+                    blend_streamline_endpoints,
+                )
+                columns = wind_columns(
+                    sampler, camera, cancel.is_set, uv=uv, lattice=lattice
+                )
+                paths = make_gpu_trace_input(camera.view(), columns, camera.density)
+            else:
+                columns = wind_columns(sampler, camera, cancel.is_set)
+                paths = trace_streamline_paths(
+                    camera.view(),
+                    columns,
+                    lambda *_: False,
+                    cancel.is_set,
+                    density=camera.density,
+                )
+            error = ""
+            if paths is None and not cancel.is_set():
+                error = "No traceable wind cells in selected forecast"
+            return camera, paths, error
+        except Exception as exc:
+            return camera, None, str(exc)
 
     def close(self):
         with self._condition:
             self._closed = True
             self._cancel.set()
             self._pending = self._paths = self._key = None
+            self._snapshot = self._active = None
+            with self._endpoint_lock:
+                self._endpoint_cache = None
+                self._endpoint_key = None
             self._state = "hidden"
             self.on_change = None
             self._condition.notify_all()

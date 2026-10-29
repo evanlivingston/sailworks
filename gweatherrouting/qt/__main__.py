@@ -18,7 +18,7 @@ def main(argv=None):
         choices=("cpu", "gpu"),
         help="Override the saved map renderer for this session (GPU is experimental)",
     )
-    
+
     parser.add_argument(
         "--gpu-resident-fields",
         action="store_true",
@@ -26,6 +26,11 @@ def main(argv=None):
             "Experimental: keep decoded numerical fields resident in the GPU "
             "presenter under a stable identity, with an explicit budget"
         ),
+    )
+    parser.add_argument(
+        "--gpu-streamlines",
+        action="store_true",
+        help="Experimental: trace and render wind streamlines with Qt Quick Metal compute",
     )
     parser.add_argument(
         "--native-weather-fields",
@@ -55,11 +60,13 @@ def main(argv=None):
         map_renderer=args.map_renderer,
         early_weather=args.early_weather,
         gpu_resident_fields=args.gpu_resident_fields,
+        gpu_streamlines=args.gpu_streamlines,
         native_weather_fields=args.native_weather_fields,
     )
     window = PreviewWindow(controller)
     app.aboutToQuit.connect(window.workspace.close)
-    app.aboutToQuit.connect(window.timeline.dispose)
+    if window.timeline is not None:
+        app.aboutToQuit.connect(window.timeline.dispose)
     app.aboutToQuit.connect(window.dispose_marine)
     app.aboutToQuit.connect(controller.close)
     window.show()

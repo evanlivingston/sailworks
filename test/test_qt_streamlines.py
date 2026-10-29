@@ -24,7 +24,28 @@ from gweatherrouting.qt.viewportstreamlines import (
     wind_columns,
 )
 from gweatherrouting.qt.weatherpresenter import WeatherPresenter
-from gweatherrouting.rendering.streamlines import geometry_for_view
+from gweatherrouting.rendering.streamlines import density_parameters, geometry_for_view
+from gweatherrouting.qt.gpustreamlines import GpuTraceInput, jittered_seed_positions
+from gweatherrouting.core.mapviewport import MapViewport
+from test.map_helpers import MapCanvas
+
+
+def test_gpu_seed_selection_thins_low_and_high_counts_at_each_density():
+    for width, height in ((240, 180), (1600, 1200)):
+        canvas = MapCanvas()
+        canvas._center_lat = canvas._center_lon = 0
+        canvas._zoom = 8
+        canvas.width, canvas.height = width, height
+        view = MapViewport(canvas)
+        for density in ("sparse", "standard", "dense", "very_dense", "all"):
+            spacing, cap, _ = density_parameters(density)
+            seeds = jittered_seed_positions(view, density)
+            assert seeds == jittered_seed_positions(view, density)
+            estimated_candidates = min(
+                cap, (width // spacing + 1) * (height // spacing + 1)
+            )
+            expected = estimated_candidates / 4
+            assert abs(len(seeds) - expected) <= max(4, expected * 0.25)
 
 
 class TestStreamlineModel(unittest.TestCase):
@@ -70,6 +91,53 @@ class TestStreamlineModel(unittest.TestCase):
         self.assertNotEqual(replacement.paths, self.model.paths)
         self.assertNotEqual(replacement.display_identity, self.model.display_identity)
         replacement.close()
+
+    def test_gpu_time_updates_keep_active_worker_and_snapshot_stale_result(self):
+        self.model.gpu_trace = True
+        self.model.update(self.camera)
+        active_cancel = self.model._cancel
+        self.model._active = (self.camera, active_cancel)
+        latest = replace(self.camera, time=self.camera.time + timedelta(seconds=32))
+        self.model.update(
+            replace(self.camera, time=self.camera.time + timedelta(seconds=16))
+        )
+        self.model.update(latest)
+        self.assertFalse(active_cancel.is_set())
+        self.assertEqual(self.model._pending[0], latest)
+        paths = object()
+        self.model._complete(self.camera, active_cancel, paths, "")
+        self.assertEqual(self.model.snapshot(latest), (self.camera, paths))
+        self.assertEqual(self.model.update(latest), ("loading", None))
+        self.assertIsNone(self.model.snapshot(replace(latest, center_lon=1)))
+        self.model._complete(latest, active_cancel, paths, "")
+        self.assertEqual(self.model.update(latest), ("ready", paths))
+
+    def test_gpu_staged_window_uses_latest_pending_time(self):
+        self.model.gpu_trace = True
+        self.model.update(self.camera)
+        active_cancel = self.model._cancel
+        self.model._active = (self.camera, active_cancel)
+        latest = replace(self.camera, time=self.camera.time + timedelta(minutes=20))
+        self.model.update(latest)
+        within = lambda stamp: (0, 3600) if stamp == latest.time.timestamp() else None
+        self.assertEqual(
+            self.model._take_pending_in_window(
+                self.camera, active_cancel, (0, 3600), within
+            ),
+            latest,
+        )
+        self.assertIsNone(self.model._pending)
+        self.assertEqual(self.model._active, (latest, active_cancel))
+
+        beyond = replace(latest, time=latest.time + timedelta(hours=3))
+        self.model.update(beyond)
+        self.assertEqual(
+            self.model._take_pending_in_window(
+                latest, active_cancel, (0, 3600), lambda _: (3600, 7200)
+            ),
+            latest,
+        )
+        self.assertEqual(self.model._pending[0], beyond)
 
     def test_shared_trace_and_geometry_with_authoritative_time_and_nan_holes(self):
         camera = replace(
@@ -163,7 +231,9 @@ class TestStreamlinePublicationScheduling(unittest.TestCase):
         streamlines.property.side_effect = lambda name: {
             "ready": True,
             "shaderError": "",
-        }[name]
+            "frontBuffer": -1,
+            "pendingBuffer": -1,
+        }.get(name)
         host = SimpleNamespace(
             _wind_style="streamlines",
             _wind_opacity=1,
@@ -182,6 +252,7 @@ class TestStreamlinePublicationScheduling(unittest.TestCase):
         host._update_streamline_camera = (
             lambda camera: self.widget_class._update_streamline_camera(host, camera)
         )
+        host._streamline_view_transform = self.widget_class._streamline_view_transform
         return host
 
     def camera(self):
@@ -233,6 +304,147 @@ class TestStreamlinePublicationScheduling(unittest.TestCase):
         host._streamline_provider.publish.assert_not_called()
         host._show_state.assert_called_with("unavailable")
 
+    def test_gpu_time_transition_allowed_but_spatial_change_is_not(self):
+        prior = self.camera()
+        paths = GpuTraceInput(
+            wind=np.zeros((2, 2), dtype=np.float32),
+            x_coordinates=np.zeros(2, dtype=np.float32),
+            y_coordinates=np.zeros(2, dtype=np.float32),
+            valid_x=np.ones(2, dtype=np.uint32),
+            valid_y=np.ones(2, dtype=np.uint32),
+            seeds=np.zeros((1, 2), dtype=np.float32),
+            width=prior.width,
+            height=prior.height,
+        )
+
+        for camera, expected_transition in (
+            (replace(prior, time=prior.time + timedelta(seconds=37)), True),
+            (replace(prior, center_lon=1), False),
+        ):
+            with self.subTest(camera=camera):
+                host = self.make_host(prior, (1, prior))
+                item = Mock()
+                host._gpu_streamlines_enabled = True
+                host._gpu_streamlines_item = item
+                host._streamline_model.update.return_value = ("ready", paths)
+                self.widget_class._publish_streamlines(host, camera, force=True)
+                if expected_transition:
+                    item.set_trace_input.assert_called_once()
+                else:
+                    item.set_view_transform.assert_called_once()
+                self.assertEqual(
+                    item.set_trace_input.call_args.kwargs["transition"],
+                    expected_transition,
+                )
+                host._streamline_model.update.assert_called_once_with(camera, True)
+
+    def test_gpu_snapshot_previews_represented_time_then_publishes_current(self):
+        prior = self.camera()
+        requested = replace(prior, time=prior.time + timedelta(seconds=37))
+        trace = GpuTraceInput(
+            wind=np.zeros((2, 2), dtype=np.float32),
+            x_coordinates=np.zeros(2, dtype=np.float32),
+            y_coordinates=np.zeros(2, dtype=np.float32),
+            valid_x=np.ones(2, dtype=np.uint32),
+            valid_y=np.ones(2, dtype=np.uint32),
+            seeds=np.zeros((1, 2), dtype=np.float32),
+            width=prior.width,
+            height=prior.height,
+        )
+        host = self.make_host(prior, None)
+        item = Mock()
+        host._gpu_streamlines_enabled = True
+        host._gpu_streamlines_item = item
+        host._streamline_model.snapshot.return_value = (prior, trace)
+        host._streamline_model.update.return_value = ("loading", None)
+        self.assertEqual(
+            self.widget_class._publish_streamlines(host, requested), "loading"
+        )
+        item.set_trace_input.assert_called_once()
+        self.assertEqual(host._streamline_display_camera, prior)
+        self.assertEqual(host._streamline_publication, (id(trace), prior))
+        host._show_state.assert_called_with("loading")
+        host._status.setText.assert_called_with(
+            f"Updating streamlines — showing {prior.time:%Y-%m-%d %H:%M UTC}"
+        )
+
+        item.reset_mock()
+        host._streamline_model.snapshot.return_value = None
+        host._streamline_model.update.return_value = ("ready", trace)
+        self.assertEqual(
+            self.widget_class._publish_streamlines(host, requested), "ready"
+        )
+        item.set_trace_input.assert_called_once()
+        self.assertEqual(host._streamline_display_camera, requested)
+        self.assertEqual(host._streamline_publication, (id(trace), requested))
+
+    def test_gpu_snapshot_rejects_structural_camera_mismatch(self):
+        prior = self.camera()
+        requested = replace(
+            prior, time=prior.time + timedelta(seconds=37), center_lon=2
+        )
+        trace = GpuTraceInput(
+            wind=np.zeros((2, 2), dtype=np.float32),
+            x_coordinates=np.zeros(2, dtype=np.float32),
+            y_coordinates=np.zeros(2, dtype=np.float32),
+            valid_x=np.ones(2, dtype=np.uint32),
+            valid_y=np.ones(2, dtype=np.uint32),
+            seeds=np.zeros((1, 2), dtype=np.float32),
+            width=prior.width,
+            height=prior.height,
+        )
+        host = self.make_host(prior, None)
+        item = Mock()
+        host._gpu_streamlines_enabled = True
+        host._gpu_streamlines_item = item
+        host._streamline_model.snapshot.return_value = (
+            replace(prior, center_lon=1),
+            trace,
+        )
+        host._streamline_model.update.return_value = ("loading", None)
+        self.assertEqual(
+            self.widget_class._publish_streamlines(host, requested), "loading"
+        )
+        item.set_trace_input.assert_not_called()
+        self.assertFalse(
+            any(
+                call.args and call.args[0] is trace
+                for call in item.set_trace_input.call_args_list
+            )
+        )
+
+    def test_gpu_pan_keeps_projected_trace_and_waits_for_settle(self):
+        prior = self.camera()
+        camera = replace(prior, center_lon=2, zoom=prior.zoom + 1)
+        host = self.make_host(prior, (1, prior))
+        item = Mock()
+        host._gpu_streamlines_enabled = True
+        host._gpu_streamlines_item = item
+
+        self.assertEqual(
+            self.widget_class._publish_streamlines(host, camera), "loading"
+        )
+        scale, offset_x, offset_y, world_width = (
+            self.widget_class._streamline_view_transform(prior, camera)
+        )
+        item.set_view_transform.assert_called_once_with(
+            camera.width, camera.height, scale, offset_x, offset_y, world_width
+        )
+        item.set_trace_input.assert_not_called()
+        item.setVisible.assert_called_with(True)
+        item.set_opacity.assert_called_with(0.6)
+        host._streamline_settle.start.assert_called_once_with()
+        host._streamline_model.update.assert_not_called()
+        host._status.setText.assert_called_with(
+            "Updating streamlines — previous coverage"
+        )
+
+        host._streamline_model.update.return_value = ("loading", None)
+        self.assertEqual(
+            self.widget_class._publish_streamlines(host, camera, force=True), "loading"
+        )
+        host._streamline_model.update.assert_called_once_with(camera, True)
+
 
 class TestStreamlineShaderStructure(unittest.TestCase):
     def test_pixel_space_quads_and_connector_discard(self):
@@ -248,7 +460,7 @@ class TestStreamlineShaderStructure(unittest.TestCase):
         self.assertIn("2.5 : -2.5", vertex)
         self.assertIn("abs(marker - round(marker)) > 0.00001", fragment)
         self.assertIn(
-            "Math.max(1, batch.segmentCount * (batch.arrow ? 4 : 2) - 1)", qml
+            "Math.max(1, segmentCount * (arrow ? 4 : 2) - 1)", qml
         )
         self.assertIn("required property var modelData", qml)
         self.assertIn("effect.status === ShaderEffect.Compiled", qml)
@@ -299,11 +511,10 @@ class TestStreamlineShaderPixels(unittest.TestCase):
         )
         try:
             layer.setParentItem(window.contentItem())
-            layer.setWidth(window.contentItem().width())
-            layer.setHeight(window.contentItem().height())
+            layer.setWidth(120)
+            layer.setHeight(100)
             window.show()
-            layer.setWidth(window.contentItem().width())
-            layer.setHeight(window.contentItem().height())
+            self._pump()
             self.assertGreater(layer.width(), 0)
             self.assertGreater(layer.height(), 0)
             self._pump()
@@ -449,7 +660,14 @@ class TestStreamlineShaderPixels(unittest.TestCase):
             )
             layer.setProperty(
                 "groups",
-                [{"source": image_url, "count": count, "color": QColor("red"), "arrow": True}],
+                [
+                    {
+                        "source": image_url,
+                        "count": count,
+                        "color": QColor("red"),
+                        "arrow": True,
+                    }
+                ],
             )
             from PySide6.QtGui import QVector2D
 
@@ -473,7 +691,9 @@ class TestStreamlineShaderPixels(unittest.TestCase):
                 self.skipTest(
                     "This Qt platform does not support QQuickWindow framebuffer readback"
                 )
-            self.assertFalse(scene_errors, f"Qt Quick scene graph errors: {scene_errors}")
+            self.assertFalse(
+                scene_errors, f"Qt Quick scene graph errors: {scene_errors}"
+            )
             dpr = pixels.width() / window.width()
             for x, y in ((96, 48), (96, 52)):
                 self.assertTrue(
@@ -488,8 +708,12 @@ class TestStreamlineShaderPixels(unittest.TestCase):
             layer.setProperty("groups", [])
             self._pump()
             withdrawn = window.grabWindow()
-            self.assertFalse(withdrawn.isNull(), "readback became empty after withdrawal")
-            self.assertEqual(withdrawn.pixelColor(round(60 * dpr), round(50 * dpr)), QColor("white"))
+            self.assertFalse(
+                withdrawn.isNull(), "readback became empty after withdrawal"
+            )
+            self.assertEqual(
+                withdrawn.pixelColor(round(60 * dpr), round(50 * dpr)), QColor("white")
+            )
         finally:
             window.close()
             layer.deleteLater()

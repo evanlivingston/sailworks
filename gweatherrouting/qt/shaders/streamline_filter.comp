@@ -1,0 +1,84 @@
+#version 440
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+const uint SEGMENTS_PER_SEED = 320u;
+const int CELL_PIXELS = 12;
+const uint NO_OWNER = 0xffffffffu;
+
+struct Segment {
+    vec4 endpoints;
+    vec4 metadata;
+};
+
+layout(std430, binding = 0) readonly buffer TraceOutput { Segment segments[]; };
+layout(std430, binding = 1) buffer Occupancy { uint owner[]; };
+layout(std430, binding = 2) writeonly buffer Visibility { uint visible[]; };
+layout(std140, binding = 3) uniform FilterParameters {
+    uint seedCount;
+    uint cellsX;
+    uint cellsY;
+    uint reserved;
+    float viewWidth;
+    float viewHeight;
+};
+
+bool inside(vec2 point) {
+    return !any(isnan(point)) && !any(isinf(point))
+        && !any(lessThan(point, vec2(0.0)))
+        && point.x < viewWidth && point.y < viewHeight;
+}
+
+void main() {
+    uint cellCount = cellsX * cellsY;
+    for (uint i = 0u; i < cellCount; ++i) owner[i] = NO_OWNER;
+    for (uint seed = 0u; seed < seedCount; ++seed) visible[seed] = 0u;
+
+    for (uint seed = 0u; seed < seedCount; ++seed) {
+        uint base = seed * SEGMENTS_PER_SEED;
+        int usable = 0;
+        int candidate = -1;
+        int balance = 0;
+        for (uint slot = 0u; slot < SEGMENTS_PER_SEED; slot += 4u) {
+            Segment segment = segments[base + slot];
+            if (segment.metadata.z < 0.5) continue;
+            vec2 point = (segment.endpoints.xy + segment.endpoints.zw) * 0.5;
+            if (!inside(point)) continue;
+            uint cell = uint(point.y / float(CELL_PIXELS)) * cellsX
+                      + uint(point.x / float(CELL_PIXELS));
+            uint ownerSeed = owner[cell];
+            ++usable;
+            if (ownerSeed == NO_OWNER) continue;
+            if (balance == 0) { candidate = int(ownerSeed); balance = 1; }
+            else if (candidate == int(ownerSeed)) ++balance;
+            else --balance;
+        }
+        int matches = 0;
+        if (usable >= 12 && candidate >= 0) {
+            for (uint slot = 0u; slot < SEGMENTS_PER_SEED; slot += 4u) {
+                Segment segment = segments[base + slot];
+                if (segment.metadata.z < 0.5) continue;
+                vec2 point = (segment.endpoints.xy + segment.endpoints.zw) * 0.5;
+                if (!inside(point)) continue;
+                uint cell = uint(point.y / float(CELL_PIXELS)) * cellsX
+                          + uint(point.x / float(CELL_PIXELS));
+                if (owner[cell] == uint(candidate)) ++matches;
+            }
+        }
+        bool rejected = usable >= 12 && matches * 100 >= usable * 80;
+        if (!rejected) {
+            visible[seed] = 1u;
+            for (uint slot = 0u; slot < SEGMENTS_PER_SEED; slot += 4u) {
+                Segment segment = segments[base + slot];
+                if (segment.metadata.z < 0.5) continue;
+                vec2 point = (segment.endpoints.xy + segment.endpoints.zw) * 0.5;
+                if (!inside(point)) continue;
+                int cx = int(point.x / float(CELL_PIXELS));
+                int cy = int(point.y / float(CELL_PIXELS));
+                for (int y = max(0, cy - 1); y <= min(int(cellsY) - 1, cy + 1); ++y)
+                    for (int x = max(0, cx - 1); x <= min(int(cellsX) - 1, cx + 1); ++x)
+                        if (owner[uint(y) * cellsX + uint(x)] == NO_OWNER)
+                            owner[uint(y) * cellsX + uint(x)] = seed;
+            }
+        }
+    }
+}

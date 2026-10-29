@@ -15,6 +15,8 @@ from gweatherrouting.rendering.streamlines import (
     trace_streamlines,
     geometry_for_view,
     density_parameters,
+    _seed_positions,
+    spatially_thin_seeds,
 )
 from test.map_helpers import MapCanvas
 
@@ -74,6 +76,50 @@ class TestStreamlines(unittest.TestCase):
         self.assertTrue(all(a < b for a, b in zip(counts, counts[1:])), counts)
         self.assertEqual(density_parameters("invalid"), density_parameters("standard"))
 
+    def test_seed_selection_thins_after_candidate_cap_at_every_density(self):
+        for density in ("sparse", "standard", "dense", "very_dense", "all"):
+            spacing, cap, _ = density_parameters(density)
+            rows = len(np.arange(spacing / 2, self.view.height, spacing))
+            columns = len(np.arange(spacing / 2, self.view.width, spacing))
+            candidates = rows * columns
+            expected = (
+                (cap + 3) // 4
+                if candidates > cap
+                else ((rows + 1) // 2) * ((columns + 1) // 2)
+            )
+            self.assertEqual(
+                len(_seed_positions(self.view, spacing, cap)),
+                expected,
+            )
+
+    def test_seed_tiles_remain_even_and_stable_when_view_moves(self):
+        cells = [(x, y) for y in range(16) for x in range(16)]
+        selected = spatially_thin_seeds(cells, lambda cell: cell)
+        moved = spatially_thin_seeds(
+            [(x, y) for y in range(1, 17) for x in range(1, 17)],
+            lambda cell: cell,
+        )
+        self.assertEqual(len(selected), 64)
+        self.assertEqual(len({(x // 2, y // 2) for x, y in selected}), 64)
+        self.assertEqual(
+            set(selected) & set(cells) & set(moved), set(moved) & set(cells)
+        )
+        self.assertTrue(all(x % 2 == 0 and y % 2 == 0 for x, y in selected))
+
+    def test_capped_seeds_cover_each_quadrant(self):
+        cells = [(x, y) for y in range(64) for x in range(64)]
+        selected = spatially_thin_seeds(cells, lambda cell: cell, capped=True)
+        self.assertEqual(len(selected), 1024)
+        for x_side in (0, 1):
+            for y_side in (0, 1):
+                self.assertGreaterEqual(
+                    sum(
+                        (x >= 32) == bool(x_side) and (y >= 32) == bool(y_side)
+                        for x, y in selected
+                    ),
+                    200,
+                )
+
     def test_northerly_flows_south_not_toward_the_wind_source(self):
         flat = trace_streamlines(
             self.view, self.field(lambda lat, lon: (0, -8)), lambda lat, lon: False
@@ -121,8 +167,10 @@ class TestStreamlines(unittest.TestCase):
             flat = trace_streamlines(self.view, self.field(), lambda lat, lon: False)
             self.assertLessEqual(len(flat[0]), 20)
             xs, ys = self.view.convert_geographic_to_screen_batch(flat[0], flat[1])
-            self.assertLess(abs(xs[0] - 200), 22)
-            self.assertLess(abs(ys[0] - 150), 22)
+            # One fixed cell per 2x2 tile can place the closest seed up to
+            # one original grid interval from the view center.
+            self.assertLess(abs(xs[0] - 200), 44)
+            self.assertLess(abs(ys[0] - 150), 44)
         self.assertIsNone(
             trace_streamlines(
                 self.view, self.field(), lambda lat, lon: False, cancelled=lambda: True

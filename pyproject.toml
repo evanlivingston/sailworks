@@ -84,6 +84,7 @@ gweatherrouting = [
     "qt/shaders/*.qml",
     "qt/shaders/*.frag",
     "qt/shaders/*.vert",
+    "qt/shaders/*.comp",
     "qt/shaders/*.qsb",
 ]
 

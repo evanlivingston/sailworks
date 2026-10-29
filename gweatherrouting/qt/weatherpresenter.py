@@ -137,6 +137,9 @@ class WeatherPresenter(QObject):
                 enc_only=not desktop_map,
                 chart_data_dir=DATA_DIR,
                 chart_palette=self.canvas.controller.settings.chartPalette,
+                gpu_streamlines=getattr(
+                    self.canvas.controller, "gpu_streamlines", False
+                ),
             )
             if self.native_fields:
                 kwargs["native_weather_fields"] = True
@@ -437,6 +440,10 @@ class WeatherPresenter(QObject):
             return
         sources = self.canvas.controller.display_forecast.sources()
         source = sources[0] if sources else None
+        self._sync_weather(source)
+        self._raise_interactive_children()
+
+    def _sync_weather(self, source):
         if self.active:
             try:
                 self._sync_active(source)
@@ -449,6 +456,8 @@ class WeatherPresenter(QObject):
         elif self.widget is not None:
             self._drop_widget()
         self._label()
+
+    def _raise_interactive_children(self):
         # Existing interactive widgets must remain above both presentation children.
         self.canvas.coverage_notice.raise_()
         if hasattr(self.canvas, "coverage_fetch"):

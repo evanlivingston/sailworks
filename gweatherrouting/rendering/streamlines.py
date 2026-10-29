@@ -144,6 +144,35 @@ def _cell(x, y, cell_size):
     return int(x // cell_size), int(y // cell_size)
 
 
+def _morton_key(x, y):
+    """Return a deterministic Z-order key for signed integer world cells."""
+    # Zig-zag maps all signed coordinates to non-negative integers without
+    # privileging a viewport-dependent origin.
+    x = 2 * x if x >= 0 else -2 * x - 1
+    y = 2 * y if y >= 0 else -2 * y - 1
+    key = 0
+    bit = 0
+    while x or y:
+        key |= (x & 1) << (2 * bit)
+        key |= (y & 1) << (2 * bit + 1)
+        x >>= 1
+        y >>= 1
+        bit += 1
+    return key
+
+
+def spatially_thin_seeds(candidates, cell_key, *, capped=False):
+    """Keep one fixed world cell per 2x2 tile, or spread a capped subset."""
+    if not capped:
+        selected = [
+            item
+            for item in candidates
+            if all(coordinate % 2 == 0 for coordinate in cell_key(item))
+        ]
+        return selected or candidates[:1]
+    return sorted(candidates, key=lambda item: _morton_key(*cell_key(item)))[::4]
+
+
 def _seed_positions(view, spacing, max_seeds):
     """Seed points covering the view, centred first when the budget is capped."""
     seeds = [
@@ -151,8 +180,14 @@ def _seed_positions(view, spacing, max_seeds):
         for y in np.arange(spacing / 2, view.height, spacing)
         for x in np.arange(spacing / 2, view.width, spacing)
     ]
-    if len(seeds) > max_seeds:
+    capped = len(seeds) > max_seeds
+    if capped:
         seeds = [seeds[i] for i in np.linspace(0, len(seeds) - 1, max_seeds, dtype=int)]
+    seeds = spatially_thin_seeds(
+        seeds,
+        lambda point: (int(point[0] // spacing), int(point[1] // spacing)),
+        capped=capped,
+    )
     # Prioritize the visible center, not the overscan margins, when capped.
     seeds.sort(
         key=lambda point: (point[0] - view.width / 2) ** 2

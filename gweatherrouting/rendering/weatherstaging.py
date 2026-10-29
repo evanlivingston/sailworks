@@ -317,3 +317,101 @@ def stage_wind(  # noqa: C901 - staging, memo reuse and cancellation kept togeth
             ", ".join(origin.split("\x1f")) if origin else None for origin in origins
         ),
     )
+
+
+@dataclass(frozen=True)
+class StreamlineEndpoints:
+    """Raw per-point sampler sides reusable inside one selection window."""
+
+    before: float
+    after: float
+    a: np.ndarray
+    ta: np.ndarray
+    sa: np.ndarray
+    b: np.ndarray
+    tb: np.ndarray
+    sb: np.ndarray
+
+
+def stage_streamline_endpoints(sampler, stamp, lats, lons, cancel=lambda: False):
+    """Stage the sampler's exact per-point before/after inputs for one window.
+
+    Source selection is checked at the requested instant, so an incomplete
+    endpoint pair that still yields one-sided wind does not fall through to a
+    lower-priority model. Exact event times are handled by ordinary sampling.
+    """
+    lats, lons = np.broadcast_arrays(np.asarray(lats), np.asarray(lons))
+    shape = lats.shape
+    if len(shape) != 2 or not lats.size:
+        raise ValueError("Expected a nonempty two-dimensional query grid")
+    before, after = time_window(sampler, stamp)
+    if before == after:
+        return None
+    lat, lon = lats.ravel(), lons.ravel()
+    count = len(lat)
+    a = np.full((count, 2), np.nan)
+    ta = np.full(count, np.nan)
+    sa = np.full(count, "", dtype=object)
+    b = np.full((count, 2), np.nan)
+    tb = np.full(count, np.nan)
+    sb = np.full(count, "", dtype=object)
+    for identity in sampler.order:
+        if cancel():
+            return None
+        blended = _blend_streamline_values(a, ta, b, tb, stamp)
+        use = (
+            ~np.isfinite(blended).all(axis=1)
+            & (stamp >= identity[0])
+            & (stamp <= sampler.coverage[identity])
+        )
+        if not use.any():
+            continue
+        group = sampler.groups[identity]
+        times = sampler._times[identity, "wind"]
+        ai, tai, sai = sampler._side(
+            group,
+            reversed(times),
+            "wind",
+            lat[use],
+            lon[use],
+            np.full(use.sum(), before),
+            True,
+            cancel,
+        )
+        if cancel():
+            return None
+        bi, tbi, sbi = sampler._side(
+            group,
+            times,
+            "wind",
+            lat[use],
+            lon[use],
+            np.full(use.sum(), after),
+            False,
+            cancel,
+        )
+        if cancel():
+            return None
+        a[use], ta[use], sa[use] = ai, tai, sai
+        b[use], tb[use], sb[use] = bi, tbi, sbi
+    for array in (a, ta, sa, b, tb, sb):
+        array.setflags(write=False)
+    return StreamlineEndpoints(before, after, a, ta, sa, b, tb, sb)
+
+
+def _blend_streamline_values(a, ta, b, tb, stamp):
+    """Match WeatherSampler._blend's values without unused source-name unions."""
+    av, bv = np.isfinite(ta), np.isfinite(tb)
+    values = np.where(av[:, None], a, b)
+    both = av & bv & (tb > ta)
+    stamps = np.full(len(a), float(stamp))
+    weight = (stamps[both] - ta[both]) / (tb[both] - ta[both])
+    values[both] = a[both] + (b[both] - a[both]) * weight[:, None]
+    return values
+
+
+def blend_streamline_endpoints(sampler, endpoints, stamp):
+    """Blend staged wind values without changing per-point source selection."""
+    return _blend_streamline_values(
+        endpoints.a, endpoints.ta, endpoints.b, endpoints.tb, stamp
+    )

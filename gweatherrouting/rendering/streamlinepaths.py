@@ -11,6 +11,7 @@ from .streamlines import (
     WindGrid,
     density_parameters,
     _columns_to_arrays,
+    spatially_thin_seeds,
 )
 from .windpainter import barb_bucket_colors
 
@@ -44,8 +45,6 @@ def _screen_geo(view, x, y):
 
 def _seeds(view, density):
     spacing, seed_limit, _ = density_parameters(density)
-    # View projection coordinates are already in pixels at the current zoom.
-    # Grid indices therefore identify the same world cells across pans.
     cell = spacing
     cx, cy = view._lon_to_x(view._center_lon), view._lat_to_y(view._center_lat)
     left, top = cx - view.width / 2, cy - view.height / 2
@@ -59,17 +58,60 @@ def _seeds(view, density):
             sx, sy = wx - left, wy - top
             if 0 <= sx < view.width and 0 <= sy < view.height:
                 candidates.append(((round(view._zoom, 6), iy, ix), sx, sy))
+    capped = len(candidates) > seed_limit
+    if capped:
+        keep = np.linspace(0, len(candidates) - 1, seed_limit, dtype=np.int64)
+        candidates = [candidates[index] for index in keep]
+    candidates = spatially_thin_seeds(
+        candidates, lambda item: (item[0][2], item[0][1]), capped=capped
+    )
     candidates.sort(
         key=lambda item: (item[1] - view.width / 2) ** 2
         + (item[2] - view.height / 2) ** 2
     )
-    return candidates[:seed_limit]
+    return candidates
+
+
+def _trace_half(view, grid, sx, sy, sign, segment_limit, used, cancelled):
+    x, y = sx, sy
+    part = []
+    visited = {(round(x / STEP), round(y / STEP))}
+    for step in range(MAX_STEPS):
+        if cancelled() or used >= segment_limit:
+            break
+        vel = grid.velocity(x, y)
+        if vel is None:
+            break
+        dx, dy, _ = vel
+        mid = grid.velocity(x + sign * dx * STEP / 2, y + sign * dy * STEP / 2)
+        if mid is None:
+            break
+        dx, dy, speed = mid
+        nx, ny = x + sign * dx * STEP, y + sign * dy * STEP
+        if (
+            not (0 <= nx < view.width and 0 <= ny < view.height)
+            or grid.velocity(nx, ny) is None
+        ):
+            break
+        key = (round(nx / STEP), round(ny / STEP))
+        if key in visited:
+            break
+        visited.add(key)
+        a, b = _screen_geo(view, x, y), _screen_geo(view, nx, ny)
+        part.append((a, b, speed, step % 20 == 10))
+        used += 1
+        x, y = nx, ny
+    return part, used
 
 
 def trace_streamline_paths(
     view, columns, on_ground, cancelled=lambda: False, density="standard"
 ):
-    """Build deterministic per-seed geographic paths with hard shared budgets."""
+    """Build deterministic geographic paths with bounded shared budgets.
+
+    ``on_ground`` remains in the signature for compatibility, but is not called.
+    Streamlines are drawn over land.
+    """
     if cancelled():
         return None
     columns = _columns_to_arrays(columns)
@@ -88,34 +130,9 @@ def trace_streamline_paths(
         start = _screen_geo(view, sx, sy)
         halves = []
         for sign in (1, -1):
-            x, y = sx, sy
-            part = []
-            visited = {(round(x / STEP), round(y / STEP))}
-            for step in range(MAX_STEPS):
-                if cancelled() or used >= segment_limit:
-                    break
-                vel = grid.velocity(x, y)
-                if vel is None:
-                    break
-                dx, dy, _ = vel
-                mid = grid.velocity(x + sign * dx * STEP / 2, y + sign * dy * STEP / 2)
-                if mid is None:
-                    break
-                dx, dy, speed = mid
-                nx, ny = x + sign * dx * STEP, y + sign * dy * STEP
-                if (
-                    not (0 <= nx < view.width and 0 <= ny < view.height)
-                    or grid.velocity(nx, ny) is None
-                ):
-                    break
-                key = (round(nx / STEP), round(ny / STEP))
-                if key in visited:
-                    break
-                visited.add(key)
-                a, b = _screen_geo(view, x, y), _screen_geo(view, nx, ny)
-                part.append((a, b, speed, step % 20 == 10))
-                used += 1
-                x, y = nx, ny
+            part, used = _trace_half(
+                view, grid, sx, sy, sign, segment_limit, used, cancelled
+            )
             halves.append(part)
         ordered = [(b, a, speed, arrow) for a, b, speed, arrow in reversed(halves[1])]
         ordered.extend(halves[0])
@@ -124,15 +141,12 @@ def trace_streamline_paths(
         vertices = [ordered[0][0]] + [segment[1] for segment in ordered]
         if vertices[len(halves[1])] != start:
             raise AssertionError("backward and forward paths must join at their seed")
-        # Land is sampled at each geographic segment midpoint.
         if cancelled():
             return None
         metadata = tuple(
             PathSegment(
                 float(speed),
-                bool(
-                    on_ground((a[0] + b[0]) / 2, ((a[1] + b[1]) / 2 + 180) % 360 - 180)
-                ),
+                False,
                 bool(arrow),
             )
             for a, b, speed, arrow in ordered
@@ -177,7 +191,13 @@ def paths_to_render_buffers(paths, over_land):
     holding normalized Mercator endpoints. Projection and viewport clipping
     are deliberately left to the renderer.
     """
-    grouped = {}
+    grouped: dict[
+        int,
+        tuple[
+            list[tuple[float, float, float, float]],
+            list[tuple[float, float, float, float]],
+        ],
+    ] = {}
     bucket_count = len(barb_bucket_colors())
     for path in paths or ():
         for index, meta in enumerate(path.segments):
