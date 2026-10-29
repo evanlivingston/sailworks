@@ -52,6 +52,14 @@ MODELS = (
         "Global field messages",
         "AIGFS",
     ),
+    (
+        "NOAA GFS-Wave",
+        "GFS-Wave",
+        "0.25°",
+        "16 days",
+        "Global wave fields",
+        "GFSWAVE",
+    ),
 )
 
 
@@ -135,7 +143,19 @@ class ForecastDownloadOptions(QWidget):
             if capability.provider_name in sources
         }
         self._fields_by_model = {
-            model_id: {"wind": True, "pressure": True, "gust": False}
+            model_id: {
+                field: bool(MODEL_CAPABILITIES[model_id].available_steps(None, field))
+                and field
+                in ("wind", "pressure", "wave_height", "wave_period", "wave_direction")
+                for field in (
+                    "wind",
+                    "pressure",
+                    "gust",
+                    "wave_height",
+                    "wave_period",
+                    "wave_direction",
+                )
+            }
             for model_id in self._model_id_by_name.values()
         }
         model_box = QGroupBox("Models")
@@ -183,11 +203,15 @@ class ForecastDownloadOptions(QWidget):
         parameter_box = QGroupBox("Parameters")
         parameters = QVBoxLayout(parameter_box)
         self.fields = {}
-        for name, label in (
+        self._field_labels = (
             ("wind", "Wind at 10 m"),
             ("pressure", "Sea-level pressure"),
             ("gust", "Wind gust"),
-        ):
+            ("wave_height", "Significant wave height"),
+            ("wave_period", "Primary wave period"),
+            ("wave_direction", "Primary wave direction"),
+        )
+        for name, label in self._field_labels:
             check = QCheckBox(label)
             check.setChecked(name != "gust")
             if name == "gust":
@@ -278,7 +302,8 @@ class ForecastDownloadOptions(QWidget):
         for selected_model, row in self.model_rows_by_id.items():
             row.set_selected(selected_model == model_id)
         capability = MODEL_CAPABILITIES[model_id]
-        self.fields["gust"].setVisible(bool(capability.available_steps(None, "gust")))
+        for field, check in self.fields.items():
+            check.setVisible(bool(capability.available_steps(None, field)))
         values = self._fields_by_model[model_id]
         for field, check in self.fields.items():
             previous = check.blockSignals(True)
@@ -390,49 +415,32 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
             "A saved region is reused until you capture a new one."
         )
         self.region_status = QLabel("Region not set")
-        self.region_status.setWordWrap(True)
         self.active_model = QComboBox()
-        self.analysis_status = QLabel("Select models, then capture a shared region.")
-        self.analysis_status.setWordWrap(True)
-        self.model_selection_hint = QLabel()
-        self.model_selection_hint.setWordWrap(True)
-        self.refresh_hint = QLabel()
-        self.refresh_hint.setWordWrap(True)
-        self.size_estimate = QLabel("Download size will be estimated after selection.")
+        self.active_model.setAccessibleName("Routing forecast model")
+        self.active_model.setToolTip(
+            "Choose which downloaded weather model routing uses."
+        )
+        self.size_estimate = QLabel("Download estimate pending.")
         self.size_estimate.setWordWrap(True)
         self.download_progress = QProgressBar()
         self.download_progress.setRange(0, 100)
         self.download_progress.setValue(0)
         self.download_progress.setFormat("%p%")
         self.download_progress.hide()
-        self.global_notice = QLabel()
-        self.global_notice.setWordWrap(True)
-        self.global_notice.setOpenExternalLinks(True)
-        self.refresh_button = QPushButton("Download selected models and use")
+        self.refresh_button = QPushButton("Download and use selected")
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.hide()
         extra = QVBoxLayout()
-        extra.addWidget(
-            QLabel(
-                "1. Choose models, parameters, hours. 2. Capture map region. "
-                "3. Download and use."
-            )
-        )
         region_row = QHBoxLayout()
         region_row.addWidget(self.region_button)
         region_row.addWidget(self.region_status, 1)
         extra.addLayout(region_row)
-        extra.addWidget(self.global_notice)
-        extra.addWidget(QLabel("Currently published model"))
         extra.addWidget(self.active_model)
-        extra.addWidget(self.model_selection_hint)
-        extra.addWidget(self.analysis_status)
         extra.addWidget(self.download_progress)
         actions = QHBoxLayout()
         for button in (self.refresh_button, self.cancel_button):
             actions.addWidget(button)
         extra.addLayout(actions)
-        extra.addWidget(self.refresh_hint)
         extra.addWidget(self.size_estimate)
         self.layout().addLayout(extra)
 
@@ -443,7 +451,6 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
         self.changed.connect(self._save_intent)
         for check in self.models.values():
             check.toggled.connect(self._sync_interval)
-        self._update_global_notice()
         self._update_active_status()
         self._update_refresh_availability()
         self._schedule_size_estimate()
@@ -563,10 +570,15 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
                     interval,
                 )
             )
+        if not any(
+            MODEL_CAPABILITIES[item.model_id].routing_eligible for item in result
+        ):
+            raise ValueError(
+                "Include a wind forecast model; GFS-Wave supplies wave fields only."
+            )
         return tuple(result)
 
     def _save_intent(self, *_args):
-        self._update_global_notice()
         if self._loading:
             return
         if self.region is None:
@@ -575,20 +587,25 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
         try:
             configurations = self._configurations()
             current = self.analysis.configuration if self.analysis is not None else None
-            ids = {item.model_id for item in configurations}
+            routing_models = tuple(
+                item.model_id
+                for item in configurations
+                if MODEL_CAPABILITIES[item.model_id].routing_eligible
+            )
+            if not routing_models:
+                raise ValueError(
+                    "Include a wind forecast model; GFS-Wave supplies wave fields only."
+                )
             refresh_model = (
                 current.refresh_model_id
-                if current is not None and current.refresh_model_id in ids
-                else configurations[0].model_id
+                if current is not None and current.refresh_model_id in routing_models
+                else routing_models[0]
             )
             signature = (configurations, refresh_model)
             self.on_shown()
             if signature != self._saved_signature:
                 self.analysis.configure(configurations, refresh_model)
                 self._saved_signature = signature
-            self.analysis_status.setText(
-                "Model intent saved; published selection unchanged"
-            )
             self._update_refresh_availability()
             self._schedule_size_estimate()
         except (TypeError, ValueError) as exc:
@@ -613,9 +630,7 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
         try:
             self.region = next(iter(regions))
             self.region_button.setText("Update region from current map")
-            self.region_status.setText(
-                "Using saved region; moving the map does not change it"
-            )
+            self.region_status.setText("Using saved region")
             by_model = {item.model_id: item for item in saved.configurations}
             for model_id, capability in MODEL_CAPABILITIES.items():
                 row = self.models.get(capability.provider_name)
@@ -652,27 +667,6 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
         if not self.analysis.busy:
             self._schedule_size_estimate()
 
-    def _update_global_notice(self):
-        capabilities = [
-            capability
-            for capability in MODEL_CAPABILITIES.values()
-            if capability.provider_name in self.names() and capability.global_download
-        ]
-        if not capabilities:
-            self.global_notice.clear()
-            return
-        sources = []
-        for capability in capabilities:
-            links = [f'<a href="{capability.data_url}">public source</a>']
-            if capability.license_url:
-                links.append(f'<a href="{capability.license_url}">CC BY 4.0</a>')
-            sources.append(capability.attribution + " (" + ", ".join(links) + ")")
-        self.global_notice.setText(
-            "Global field messages are downloaded for "
-            + ", ".join(sources)
-            + ". The shared region is checked for coverage but does not filter network downloads."
-        )
-
     def refresh_models(self):
         self._save_intent()
         if self.analysis is None or not self._saved_signature:
@@ -701,23 +695,31 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
             self._estimate_cancel.set()
             self._estimate_cancel = None
         if error:
-            self.size_estimate.setText(f"Download size unavailable: {error}")
+            self._set_size_estimate_error(error)
             return
         if self.analysis is None or self.analysis.busy:
-            self.size_estimate.setText(
-                "Download size unavailable while a forecast operation is running."
-            )
+            self.size_estimate.setText("Download estimate paused while busy.")
+            return
+        if self.analysis.error:
             return
         configuration = self.analysis.configuration
         if configuration is None:
-            self.size_estimate.setText(
-                "Select models and capture a region to estimate download size."
-            )
+            self.size_estimate.setText("Select models and a region for an estimate.")
             return
-        self.size_estimate.setText(
-            "Checking latest runs and local data for download-size estimate…"
-        )
+        self.size_estimate.setText("Checking run availability and download size…")
         self._estimate_timer.start()
+
+    def _set_size_estimate_error(self, error):
+        detail = str(error) or type(error).__name__
+        if "Expected HTTP " in detail and ", got " in detail:
+            status = detail.split(", got ", 1)[1].split(" ", 1)[0]
+            summary = f"provider returned HTTP {status}"
+        else:
+            summary = detail.split(" for ", 1)[0]
+            if len(summary) > 96:
+                summary = summary[:93] + "…"
+        self.size_estimate.setText(f"Estimate unavailable: {summary}.")
+        self.size_estimate.setToolTip(detail)
 
     def _start_size_estimate(self):
         if self.analysis is None or self.analysis.busy:
@@ -726,7 +728,7 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
         state = getattr(self.analysis, "state", None)
         coordinator = getattr(state, "coordinator", None)
         if configuration is None or coordinator is None:
-            self.size_estimate.setText("Download-size estimate unavailable.")
+            self.size_estimate.setText("Download estimate unavailable.")
             return
         generation = self._estimate_generation
         cancel = Event()
@@ -756,15 +758,11 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
             return
         result, error = payload
         if error:
-            self.size_estimate.setText(f"Download-size estimate unavailable: {error}")
+            self._set_size_estimate_error(error)
             return
         total_bytes, model_sizes, reusable = result
         if not model_sizes:
-            reused = ", ".join(reusable)
-            self.size_estimate.setText(
-                "No download needed; reusing local data"
-                + (f" for {reused}." if reused else ".")
-            )
+            self.size_estimate.setText("Local forecasts already cover this request.")
             return
         amount = total_bytes / (1024 * 1024)
         display_size = (
@@ -772,6 +770,11 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
         )
         approximate = any(item[2] for item in model_sizes)
         text = f"Download: {'~' if approximate else ''}{display_size}"
+        if any(
+            MODEL_CAPABILITIES[model_id].global_download
+            for model_id, _, _ in model_sizes
+        ):
+            text += " · includes full global files"
         if reusable:
             text += f" · reusing {', '.join(reusable)}"
         self.size_estimate.setText(text)
@@ -786,63 +789,28 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
         if active is None:
             self.active_model.addItem("No published model selection", "")
         else:
-            for entry in active.tranche.entries:
-                self.active_model.addItem(entry.model_id, entry.model_id)
-            self.active_model.setCurrentIndex(
-                self.active_model.findData(active.entry.model_id)
+            routable_entries = tuple(
+                entry
+                for entry in active.tranche.entries
+                if MODEL_CAPABILITIES.get(entry.model_id)
+                and MODEL_CAPABILITIES[entry.model_id].routing_eligible
             )
+            for entry in routable_entries:
+                self.active_model.addItem(entry.model_id, entry.model_id)
+            selected_index = self.active_model.findData(active.entry.model_id)
+            if selected_index >= 0:
+                self.active_model.setCurrentIndex(selected_index)
+            elif routable_entries:
+                self.active_model.setCurrentIndex(0)
+            else:
+                self.active_model.addItem("No wind model available", "")
         self.active_model.blockSignals(False)
         busy = self.analysis.busy
         self.download_progress.setVisible(busy)
         self.download_progress.setValue(getattr(self.analysis, "progress", 0))
-        if active is None:
-            self.model_selection_hint.setText(
-                "No published model yet. Choose models and click Download and use."
-            )
-            self.analysis_status.setText(self.analysis.error or self.analysis.status)
-        else:
-            model_ids = [entry.model_id for entry in active.tranche.entries]
-            entry = active.entry
-            if busy:
-                self.model_selection_hint.setText(
-                    f"{entry.model_id} active while new models download."
-                )
-                self.analysis_status.setText(
-                    f"{self.analysis.status} · still showing {entry.model_id}"
-                )
-            elif self.analysis.error:
-                self.model_selection_hint.setText(
-                    f"Published: {entry.model_id}. Checked models not yet published."
-                )
-                detail = self.analysis.error.removeprefix(
-                    "refresh preparation failed: "
-                )
-                for model_id in MODEL_CAPABILITIES:
-                    prefix = f"{model_id} validation failed: "
-                    if detail.startswith(prefix):
-                        detail = f"{model_id}: {detail[len(prefix):]}"
-                        break
-                self.analysis_status.setText(
-                    f"Download failed: {detail}. Still using {entry.model_id}."
-                )
-            elif len(model_ids) == 1:
-                self.model_selection_hint.setText(
-                    f"Published: {model_ids[0]}. Check another model above to publish it."
-                )
-            else:
-                self.model_selection_hint.setText(
-                    f"Published: {entry.model_id}. Select any above to switch."
-                )
-            age = max(
-                0, (datetime.now(timezone.utc) - entry.run_time).total_seconds() / 3600
-            )
-            active_description = (
-                f"{entry.model_id} run {entry.run_time:%Y-%m-%d %H:%M UTC} "
-                f"({age:.1f} h old); downloaded "
-                f"{entry.acquired_at:%Y-%m-%d %H:%M UTC}"
-            )
-            if not busy and not self.analysis.error:
-                self.analysis_status.setText(active_description)
+        if self.analysis.error:
+            self.size_estimate.setText("Download estimate unavailable.")
+            self.size_estimate.setToolTip(self.analysis.error)
 
     def _update_refresh_availability(self, error=""):
         reason = error
@@ -863,12 +831,6 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
         self.refresh_button.setToolTip(
             reason or "Download and publish the selected models."
         )
-        if reason:
-            self.refresh_hint.setText(reason)
-        elif self.analysis is not None and self.analysis.error:
-            self.refresh_hint.setText("Previous refresh failed; you can retry.")
-        else:
-            self.refresh_hint.setText("Ready to download the selected models.")
 
     def closeEvent(self, event):
         self._estimate_timer.stop()

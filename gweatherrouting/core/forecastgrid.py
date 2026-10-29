@@ -82,7 +82,7 @@ def validate_grid(dataset, model, requested):
                 "GFS grid is not the supported 0.25 degree geographic grid"
             )
         resolution = "0.25deg"
-    elif model in ("IFS", "AIFS", "AIGFS"):
+    elif model in ("IFS", "AIFS", "AIGFS", "GFSWAVE"):
         if (
             not MODEL_CAPABILITIES[model].global_download
             or not geographic

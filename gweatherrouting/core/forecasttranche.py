@@ -7,7 +7,14 @@ import re
 
 VERSION = 1
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_FIELDS = {"wind", "pressure", "gust"}
+_FIELDS = {
+    "wind",
+    "pressure",
+    "gust",
+    "wave_height",
+    "wave_period",
+    "wave_direction",
+}
 # Importing DownloadOptions here would execute gribsources/__init__.py, which
 # imports every network provider. Keep its small pure validation contract local.
 

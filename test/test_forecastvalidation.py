@@ -19,6 +19,7 @@ from test.forecastvalidation_fixtures import (
     Band,
     Dataset,
     GlobalDataset,
+    GFSWaveGlobalDataset,
     ProjectedDataset,
     RotatedDataset,
     band,
@@ -248,6 +249,34 @@ def test_accepts_full_longitude_gfs_grid_with_zero_to_360_axis():
     )
     result = inspect_fake("fake.grib", request, ds)
     assert result.region == (-1.0, -180.0, 1.0, 180.0)
+
+
+def test_inspects_gfswave_as_separate_wave_only_model():
+    request = planned(
+        ("wave_height", "wave_period", "wave_direction"),
+        {
+            "wave_height": (0, 3),
+            "wave_period": (0, 3),
+            "wave_direction": (0, 3),
+        },
+        model="GFSWAVE",
+    )
+    dataset = GFSWaveGlobalDataset(
+        [
+            band(element, hour, model="GFSWAVE")
+            for hour in (0, 3)
+            for element in ("HTSGW", "PERPW", "DIRPW")
+        ]
+    )
+
+    result = inspect_fake("wave.grib2", request, dataset)
+
+    assert result.model_id == "GFSWAVE"
+    assert result.fields == ("wave_height", "wave_period", "wave_direction")
+    assert result.levels == ("1-SFC",)
+    assert dict(result.field_times) == {
+        field: (RUN, RUN + timedelta(hours=3)) for field in result.fields
+    }
 
 
 def test_supported_grid_relative_vectors_and_unknown_flags():

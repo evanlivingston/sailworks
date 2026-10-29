@@ -4,7 +4,13 @@ import json
 from dataclasses import dataclass
 
 DEFAULT_FIELDS = ("wind", "pressure")
-FIELDS = (*DEFAULT_FIELDS, "gust")
+FIELDS = (
+    *DEFAULT_FIELDS,
+    "gust",
+    "wave_height",
+    "wave_period",
+    "wave_direction",
+)
 
 
 @dataclass(frozen=True)

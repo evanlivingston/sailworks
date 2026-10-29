@@ -39,6 +39,9 @@ _LEVELS = {
     "MSLMA": "0-MSL",
     "PRES": "0-MSL",
     "GUST": "0-SFC",
+    "HTSGW": "1-SFC",
+    "PERPW": "1-SFC",
+    "DIRPW": "1-SFC",
 }
 _FIELD_BY_ELEMENT = {
     "UGRD": "wind",
@@ -47,6 +50,9 @@ _FIELD_BY_ELEMENT = {
     "MSLMA": "pressure",
     "PRES": "pressure",
     **{element: "gust" for element in GUST_ELEMENTS},
+    "HTSGW": "wave_height",
+    "PERPW": "wave_period",
+    "DIRPW": "wave_direction",
 }
 
 
@@ -239,6 +245,17 @@ def inspect_download(path, planned, cancel=None, *, opener=None, vector_reader=N
                 _fail("unsupported pressure units")
             if field == "gust" and unit not in ("[m/s]", "m/s", "m s-1"):
                 _fail("unsupported gust units")
+            if field == "wave_height" and unit not in ("[m]", "m"):
+                _fail("unsupported wave-height units")
+            if field == "wave_period" and unit not in ("[s]", "s"):
+                _fail("unsupported wave-period units")
+            if field == "wave_direction" and unit not in (
+                "[Degree true]",
+                "Degree true",
+                "[deg]",
+                "deg",
+            ):
+                _fail("unsupported wave-direction units")
             reference = _utc_epoch(metadata.get("GRIB_REF_TIME"), "reference time")
             if reference != run:
                 _fail("forecast bands contain mixed or unexpected run times")
@@ -281,8 +298,14 @@ def inspect_download(path, planned, cancel=None, *, opener=None, vector_reader=N
                 elif field == "pressure":
                     if len(found) != 1 or not found <= set(PRESSURE_ELEMENTS):
                         _fail(f"missing or duplicate pressure at hour {hour}")
-                elif found != {"GUST"}:
+                elif field == "gust" and found != {"GUST"}:
                     _fail(f"missing or duplicate gust at hour {hour}")
+                elif field == "wave_height" and found != {"HTSGW"}:
+                    _fail(f"missing or duplicate wave height at hour {hour}")
+                elif field == "wave_period" and found != {"PERPW"}:
+                    _fail(f"missing or duplicate wave period at hour {hour}")
+                elif field == "wave_direction" and found != {"DIRPW"}:
+                    _fail(f"missing or duplicate wave direction at hour {hour}")
             times = tuple(
                 run + timedelta(hours=hour) for hour in sorted(expected[field])
             )

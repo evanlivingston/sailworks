@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QGroupBox, QTabWidget, QWidget
 
@@ -47,7 +48,7 @@ def test_forecasts_page_reuses_existing_model_parameters_and_hours_ui(tmp_path):
         options.active_model.itemData(index)
         for index in range(options.active_model.count())
     } == {"GFS", "HRRR"}
-    assert "published" in options.model_selection_hint.text().lower()
+    assert options.active_model.currentData() == "GFS"
     assert {"ECMWF IFS", "ECMWF AIFS Single", "NOAA AI-GFS"} <= set(options.models)
     assert options.fields["wind"].text() == "Wind at 10 m"
     assert options.fields["gust"].text() == "Wind gust"
@@ -80,7 +81,7 @@ def test_forecasts_page_reuses_existing_model_parameters_and_hours_ui(tmp_path):
     options.region = None
     options._update_refresh_availability()
     assert not options.refresh_button.isEnabled()
-    assert "capture" in options.refresh_hint.text().lower()
+    assert "capture" in options.refresh_button.toolTip().lower()
     options.region = capture()
     options._save_intent()
     assert options.refresh_button.isEnabled()
@@ -154,6 +155,35 @@ def test_gust_selection_is_limited_to_models_with_supported_products(tmp_path):
     library.close()
 
 
+def test_gfswave_is_a_separate_wave_only_download_model(tmp_path):
+    app()
+    library, _, _ = forecast_page(tmp_path, capture_region=lambda: (-2, -2, 2, 2))
+    options = library.forecast_options
+    options.region = (-2, -2, 2, 2)
+
+    assert options.models["NOAA GFS-Wave"].isChecked() is False
+    assert options.fields["wave_height"].isHidden()
+    options.models["NOAA GFS-Wave"].setChecked(True)
+    options.model_rows["NOAA GFS-Wave"].selected.emit("GFSWAVE")
+
+    assert not options.fields["wave_height"].isHidden()
+    assert not options.fields["wave_period"].isHidden()
+    assert not options.fields["wave_direction"].isHidden()
+    configurations = {item.model_id: item for item in options._configurations()}
+    assert configurations["GFS"].fields == ("wind",)
+    assert configurations["GFSWAVE"].fields == (
+        "wave_height",
+        "wave_period",
+        "wave_direction",
+    )
+    assert options.active_model.currentData() == "GFS"
+
+    options.models["NOAA GFS"].setChecked(False)
+    with pytest.raises(ValueError, match="wind forecast model"):
+        options._configurations()
+    library.close()
+
+
 def test_refresh_failure_is_visible_while_previous_model_remains_active(tmp_path):
     app()
     library, _, analysis = forecast_page(
@@ -164,9 +194,8 @@ def test_refresh_failure_is_visible_while_previous_model_remains_active(tmp_path
 
     options._update_active_status()
 
-    assert "Download failed" in options.analysis_status.text()
-    assert "missing wind coverage" in options.analysis_status.text()
-    assert "Still using GFS" in options.analysis_status.text()
+    assert options.size_estimate.text() == "Download estimate unavailable."
+    assert "missing wind coverage" in options.size_estimate.toolTip()
     assert options.active_model.currentData() == "GFS"
     library.close()
 

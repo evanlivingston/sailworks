@@ -23,10 +23,15 @@ class ModelCapabilities:
     grib_pdt: str = "0"
     cycles: tuple[int, ...] = (0, 6, 12, 18)
 
+    @property
+    def routing_eligible(self):
+        """Whether this model supplies the wind needed by route calculations."""
+        return bool(self.available_steps(None, "wind"))
+
     def max_horizon(self, run_hour=None):
         if run_hour is not None and run_hour not in self.cycles:
             raise ValueError(f"Unsupported {self.model_id} cycle {run_hour}")
-        if self.model_id == "GFS":
+        if self.model_id in ("GFS", "GFSWAVE"):
             return 384
         if self.model_id == "HRRR":
             return 48 if run_hour is None or run_hour in (0, 6, 12, 18) else 18
@@ -39,11 +44,17 @@ class ModelCapabilities:
         raise ValueError(f"No forecast horizon defined for {self.model_id}")
 
     def available_steps(self, run_hour, field):
-        if field not in ("wind", "pressure") and not (
+        wave_fields = ("wave_height", "wave_period", "wave_direction")
+        if self.model_id == "GFSWAVE":
+            if field not in wave_fields:
+                return ()
+        elif field not in ("wind", "pressure") and not (
             field == "gust" and self.model_id in ("GFS", "HRRR")
         ):
             return ()
         maximum = self.max_horizon(run_hour)
+        if self.model_id == "GFSWAVE":
+            return tuple(range(121)) + tuple(range(123, 385, 3))
         if self.model_id == "GFS":
             return tuple(range(121)) + tuple(range(123, 385, 3))
         if self.model_id == "IFS":
@@ -113,6 +124,20 @@ MODEL_CAPABILITIES = MappingProxyType(
             grib_center="7",
             grib_subcenter="0",
             grib_product=(2, 0, 137),
+            grib_type=1,
+        ),
+        "GFSWAVE": ModelCapabilities(
+            "GFSWAVE",
+            "NOAA GFS-Wave",
+            "0.25deg",
+            default_hours=120,
+            intervals=(0, 1, 3, 6, 12),
+            global_download=True,
+            attribution="NOAA/NCEP GFS-Wave public data",
+            data_url="https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/",
+            grib_center="7",
+            grib_subcenter="0",
+            grib_product=(2, 0, 11),
             grib_type=1,
         ),
     }

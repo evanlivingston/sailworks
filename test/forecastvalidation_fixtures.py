@@ -125,20 +125,42 @@ class RotatedDataset(Dataset):
 
 
 def band(element, hour, *, model="GFS", unit=None, level=None):
-    process = {"GFS": "81", "HRRR": "83", "HRDPS": "50"}[model]
+    process = {
+        "GFS": "81",
+        "HRRR": "83",
+        "HRDPS": "50",
+        "GFSWAVE": "11",
+    }[model]
     center = "54" if model == "HRDPS" else "7"
-    default_unit = "[m/s]" if element in ("UGRD", "VGRD", "GUST") else "[Pa]"
+    default_unit = {
+        "UGRD": "[m/s]",
+        "VGRD": "[m/s]",
+        "GUST": "[m/s]",
+        "HTSGW": "[m]",
+        "PERPW": "[s]",
+        "DIRPW": "[Degree true]",
+    }.get(element, "[Pa]")
     return {
         "GRIB_ELEMENT": element,
         "GRIB_SHORT_NAME": level
         or (
             "10-HTGL"
             if element in ("UGRD", "VGRD")
-            else "0-SFC" if element == "GUST" else "0-MSL"
+            else (
+                "0-SFC"
+                if element == "GUST"
+                else "1-SFC" if element in ("HTSGW", "PERPW", "DIRPW") else "0-MSL"
+            )
         ),
         "GRIB_UNIT": unit or default_unit,
-        "GRIB_IDS": f"CENTER={center}",
-        "GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES": f"0 0 0 0 {process}",
+        "GRIB_IDS": (
+            f"CENTER={center} SUBCENTER=0 TYPE=1"
+            if model == "GFSWAVE"
+            else f"CENTER={center}"
+        ),
+        "GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES": (
+            f"0 0 2 0 {process}" if model == "GFSWAVE" else f"0 0 0 0 {process}"
+        ),
         "GRIB_PDS_PDTN": "0",
         "GRIB_REF_TIME": str(int(RUN.timestamp())),
         "GRIB_FORECAST_SECONDS": str(hour * 3600),
@@ -206,6 +228,20 @@ def dataset_for(fields=("wind",), hours=(0, 3), **kwargs):
                 )
             elif field == "gust":
                 bands.append(band("GUST", hour, **kwargs))
+            elif field == "wave_height":
+                bands.append(band("HTSGW", hour, **kwargs))
+            elif field == "wave_period":
+                bands.append(band("PERPW", hour, **kwargs))
+            elif field == "wave_direction":
+                bands.append(band("DIRPW", hour, **kwargs))
             else:
                 bands.append(band("PRMSL", hour, **kwargs))
     return Dataset(bands)
+
+
+class GFSWaveGlobalDataset(Dataset):
+    RasterXSize = 1440
+    RasterYSize = 721
+
+    def GetGeoTransform(self):
+        return (-180.125, 0.25, 0.0, 90.125, 0.0, -0.25)
