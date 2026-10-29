@@ -25,6 +25,7 @@ from typing import Callable, List
 import requests
 
 from gweatherrouting.core.gribsources.base import GribSource
+from .parallel import write_ordered_forecasts
 from .options import DEFAULT_FIELDS, FIELDS, custom_rows, filtered_parameters, selection
 
 logger = logging.getLogger("gweatherrouting")
@@ -251,27 +252,20 @@ class NOAAHRRRSource(GribSource):
         )
         try:
             with temporary as outfile:
-                bytes_written = 0
-                for i, fhour in enumerate(forecast_steps):
-                    check_cancel()
+
+                def request(fhour):
                     params = self._build_filter_url(date_str, cycle, fhour, fields)
-                    response = requests.get(
+                    return requests.get(
                         HRRR_FILTER_URL, params=params, stream=True, timeout=(10, 60)
                     )
-                    try:
-                        response.raise_for_status()
-                        for chunk in response.iter_content(chunk_size=8192):
-                            check_cancel()
-                            outfile.write(chunk)
-                            bytes_written += len(chunk)
-                            if bytes_written > 256 * 1024 * 1024:
-                                raise ValueError(
-                                    "Forecast download exceeded 256 MiB; "
-                                    "choose a smaller route area"
-                                )
-                    finally:
-                        response.close()
-                    percentage_callback(int(100 * (i + 1) / total_steps))
+
+                bytes_written = write_ordered_forecasts(
+                    outfile,
+                    forecast_steps,
+                    request,
+                    check_cancel,
+                    percentage_callback,
+                )
             check_cancel()
             if bytes_written == 0:
                 raise RuntimeError(

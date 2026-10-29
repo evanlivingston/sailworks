@@ -4,13 +4,22 @@ import json
 import tempfile
 import unittest
 from datetime import datetime, timezone
+from io import BytesIO
 from pathlib import Path
+from threading import Barrier, Event, Lock
 from unittest.mock import patch, MagicMock
 
 from gweatherrouting.core.gribsources.options import DownloadOptions, selection
 from gweatherrouting.core.gribsources.noaagfs import NOAAGFSSource
 from gweatherrouting.core.gribsources.noaahrrr import NOAAHRRRSource
 from gweatherrouting.core.gribsources.eccchrdps import ECCHRDPSource
+from gweatherrouting.core.gribsources.parallel import write_ordered_forecasts
+
+
+def response_with(content=b"GRIB-fixture"):
+    response = MagicMock()
+    response.iter_content.return_value = [content]
+    return response
 
 
 class DownloadSelectionTests(unittest.TestCase):
@@ -21,13 +30,11 @@ class DownloadSelectionTests(unittest.TestCase):
         row = source.get_download_list(options)[0]
         config = json.loads(row[4])
         self.assertEqual(config["fields"], ["gust"])
-        response = MagicMock()
-        response.iter_content.return_value = [b"GRIB-fixture"]
         with (
             tempfile.TemporaryDirectory() as directory,
             patch(
                 "gweatherrouting.core.gribsources.noaagfs.requests.get",
-                return_value=response,
+                side_effect=lambda *_args, **_kwargs: response_with(),
             ) as get,
         ):
             source.download(row[4], directory, lambda _: None)
@@ -47,13 +54,11 @@ class DownloadSelectionTests(unittest.TestCase):
             row = source.get_download_list(DownloadOptions(3, 3, ("gust",), (0, 3)))[0]
         config = json.loads(row[4])
         self.assertEqual(config["fields"], ["gust"])
-        response = MagicMock()
-        response.iter_content.return_value = [b"GRIB-fixture"]
         with (
             tempfile.TemporaryDirectory() as directory,
             patch(
                 "gweatherrouting.core.gribsources.noaahrrr.requests.get",
-                return_value=response,
+                side_effect=lambda *_args, **_kwargs: response_with(),
             ) as get,
         ):
             source.download(row[4], directory, lambda _: None)
@@ -79,20 +84,21 @@ class DownloadSelectionTests(unittest.TestCase):
         row = source.get_download_list(options)[0]
         config = json.loads(row[4])
         self.assertEqual(config["steps"], [0, 9, 24])
-        response = MagicMock()
-        response.iter_content.return_value = [b"GRIB-fixture"]
         with (
             tempfile.TemporaryDirectory() as directory,
             patch(
                 "gweatherrouting.core.gribsources.noaagfs.requests.get",
-                return_value=response,
+                side_effect=lambda *_args, **kwargs: response_with(
+                    kwargs["params"]["file"][-3:].encode()
+                ),
             ) as get,
         ):
             output = source.download(row[4], directory, lambda _: None)
             self.assertTrue(Path(output).is_file())
             self.assertEqual(get.call_count, 3)
             requests = [call.kwargs["params"] for call in get.call_args_list]
-            self.assertEqual([r["file"][-3:] for r in requests], ["000", "009", "024"])
+            self.assertEqual({r["file"][-3:] for r in requests}, {"000", "009", "024"})
+            self.assertEqual(Path(output).read_bytes(), b"000009024")
             for params in requests:
                 self.assertIn("var_PRMSL", params)
                 self.assertNotIn("var_UGRD", params)
@@ -115,13 +121,11 @@ class DownloadSelectionTests(unittest.TestCase):
         configs = [json.loads(row[4]) for row in rows]
         self.assertEqual([c["hours"] for c in configs], [18, 48])
         self.assertEqual(configs[1]["steps"], list(range(0, 49, 6)))
-        response = MagicMock()
-        response.iter_content.return_value = [b"GRIB-fixture"]
         with (
             tempfile.TemporaryDirectory() as directory,
             patch(
                 "gweatherrouting.core.gribsources.noaahrrr.requests.get",
-                return_value=response,
+                side_effect=lambda *_args, **_kwargs: response_with(),
             ) as get,
         ):
             source.download(rows[0][4], directory, lambda _: None)
@@ -129,6 +133,61 @@ class DownloadSelectionTests(unittest.TestCase):
             for call in get.call_args_list:
                 self.assertIn("var_VGRD", call.kwargs["params"])
                 self.assertNotIn("var_MSLMA", call.kwargs["params"])
+
+    def test_parallel_forecasts_are_bounded_and_written_in_step_order(self):
+        barrier = Barrier(4)
+        second_step_done = Event()
+        active_lock = Lock()
+        active = 0
+        peak_active = 0
+
+        class Response:
+            def __init__(self, step):
+                self.step = step
+
+            def raise_for_status(self):
+                pass
+
+            def iter_content(self, chunk_size):
+                if self.step == 0:
+                    self.assert_second_step_completed()
+                yield bytes((self.step,))
+
+            @staticmethod
+            def assert_second_step_completed():
+                if not second_step_done.wait(timeout=3):
+                    raise AssertionError("forecast requests did not run concurrently")
+
+            def close(self):
+                nonlocal active
+                with active_lock:
+                    active -= 1
+                if self.step == 1:
+                    second_step_done.set()
+
+        def request(step):
+            nonlocal active, peak_active
+            with active_lock:
+                active += 1
+                peak_active = max(peak_active, active)
+            if step < 4:
+                barrier.wait(timeout=3)
+            return Response(step)
+
+        output = BytesIO()
+        progress = []
+        written = write_ordered_forecasts(
+            output,
+            tuple(range(5)),
+            request,
+            lambda: None,
+            progress.append,
+        )
+
+        self.assertEqual(peak_active, 4)
+        self.assertEqual(written, 5)
+        self.assertEqual(output.getvalue(), bytes(range(5)))
+        self.assertEqual(progress, [20, 40, 60, 80, 100])
 
     def test_hrdps_pressure_cadence_and_download_plan(self):
         source = ECCHRDPSource()
