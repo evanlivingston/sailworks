@@ -72,6 +72,38 @@ def _seeds(view, density):
     return candidates
 
 
+def _trace_half(view, grid, sx, sy, sign, segment_limit, used, cancelled):
+    x, y = sx, sy
+    part = []
+    visited = {(round(x / STEP), round(y / STEP))}
+    for step in range(MAX_STEPS):
+        if cancelled() or used >= segment_limit:
+            break
+        vel = grid.velocity(x, y)
+        if vel is None:
+            break
+        dx, dy, _ = vel
+        mid = grid.velocity(x + sign * dx * STEP / 2, y + sign * dy * STEP / 2)
+        if mid is None:
+            break
+        dx, dy, speed = mid
+        nx, ny = x + sign * dx * STEP, y + sign * dy * STEP
+        if (
+            not (0 <= nx < view.width and 0 <= ny < view.height)
+            or grid.velocity(nx, ny) is None
+        ):
+            break
+        key = (round(nx / STEP), round(ny / STEP))
+        if key in visited:
+            break
+        visited.add(key)
+        a, b = _screen_geo(view, x, y), _screen_geo(view, nx, ny)
+        part.append((a, b, speed, step % 20 == 10))
+        used += 1
+        x, y = nx, ny
+    return part, used
+
+
 def trace_streamline_paths(
     view, columns, on_ground, cancelled=lambda: False, density="standard"
 ):
@@ -98,34 +130,9 @@ def trace_streamline_paths(
         start = _screen_geo(view, sx, sy)
         halves = []
         for sign in (1, -1):
-            x, y = sx, sy
-            part = []
-            visited = {(round(x / STEP), round(y / STEP))}
-            for step in range(MAX_STEPS):
-                if cancelled() or used >= segment_limit:
-                    break
-                vel = grid.velocity(x, y)
-                if vel is None:
-                    break
-                dx, dy, _ = vel
-                mid = grid.velocity(x + sign * dx * STEP / 2, y + sign * dy * STEP / 2)
-                if mid is None:
-                    break
-                dx, dy, speed = mid
-                nx, ny = x + sign * dx * STEP, y + sign * dy * STEP
-                if (
-                    not (0 <= nx < view.width and 0 <= ny < view.height)
-                    or grid.velocity(nx, ny) is None
-                ):
-                    break
-                key = (round(nx / STEP), round(ny / STEP))
-                if key in visited:
-                    break
-                visited.add(key)
-                a, b = _screen_geo(view, x, y), _screen_geo(view, nx, ny)
-                part.append((a, b, speed, step % 20 == 10))
-                used += 1
-                x, y = nx, ny
+            part, used = _trace_half(
+                view, grid, sx, sy, sign, segment_limit, used, cancelled
+            )
             halves.append(part)
         ordered = [(b, a, speed, arrow) for a, b, speed, arrow in reversed(halves[1])]
         ordered.extend(halves[0])
@@ -184,7 +191,13 @@ def paths_to_render_buffers(paths, over_land):
     holding normalized Mercator endpoints. Projection and viewport clipping
     are deliberately left to the renderer.
     """
-    grouped = {}
+    grouped: dict[
+        int,
+        tuple[
+            list[tuple[float, float, float, float]],
+            list[tuple[float, float, float, float]],
+        ],
+    ] = {}
     bucket_count = len(barb_bucket_colors())
     for path in paths or ():
         for index, meta in enumerate(path.segments):

@@ -326,7 +326,7 @@ class ViewportStreamlineModel:
                 time_window,
             )
 
-        sources = []
+        sources: list[DisplayWeatherSource] = []
         sampler = None
         initialization_error = ""
         try:
@@ -339,7 +339,10 @@ class ViewportStreamlineModel:
                         self._condition.wait()
                     if self._closed:
                         return
-                    camera, cancel = self._pending
+                    pending = self._pending
+                    if pending is None:
+                        continue
+                    camera, cancel = pending
                     self._pending = None
                     self._active = (camera, cancel)
                 paths, error = None, initialization_error

@@ -403,6 +403,146 @@ class SessionController(QObject):
             self.log_progress = None
             self.log_progress_changed.emit()
 
+    def _load_progress_reporter(self, token, path, index, count, phase):
+        last = None
+        last_total = None
+
+        def report(done, total):
+            nonlocal last, last_total
+            now = time.monotonic()
+            # Bound the Qt event queue even on fast local disks.
+            if (
+                last is not None
+                and total == last_total
+                and 0 < done < total
+                and now - last < 0.1
+            ):
+                return
+            last = now
+            last_total = total
+            if not self.closed:
+                self.load_progress.emit(
+                    token,
+                    dict(
+                        path=str(path),
+                        index=index,
+                        count=count,
+                        phase=phase,
+                        done=done,
+                        total=total,
+                    ),
+                )
+
+        return report
+
+    def _load_one_path_group(self, token, path, index, count, group):
+        item = None
+        try:
+            copy_progress = SessionController._load_progress_reporter(
+                self, token, path, index, count, "copy"
+            )
+            # Announce even before path validation or a metadata-lock
+            # wait, using the original filename rather than its UUID.
+            copy_progress(0, 0)
+            item = self.log_library.import_paths(
+                group,
+                progress=copy_progress,
+                decode_progress=SessionController._load_progress_reporter(
+                    self, token, path, index, count, "decode"
+                ),
+            )[0]
+            existing_info = item.get("file_info", {})
+            candidate = item.get("_decoded_log")
+            if candidate is None:
+                candidate = read_nmea_log(
+                    self.log_library.path(item["id"]),
+                    progress=SessionController._load_progress_reporter(
+                        self, token, path, index, count, "decode"
+                    ),
+                    frame_count=existing_info.get("frame_count"),
+                    devices=tuple(
+                        (captured_device_from_dict(d) if isinstance(d, dict) else d)
+                        for d in existing_info.get("devices", [])
+                    ),
+                    device_metadata_available=existing_info.get(
+                        "device_metadata_available", False
+                    ),
+                    timestamp_origin=(
+                        datetime.fromisoformat(existing_info["timestamp_origin"])
+                        if existing_info.get("timestamp_origin")
+                        else None
+                    ),
+                )
+            # Use original EBL format for status if this was decoded from EBL
+            original_format = existing_info.get("format", candidate.format)
+            original_frame_count = existing_info.get("frame_count")
+            self.log_library.update(
+                item["id"],
+                status=(
+                    (
+                        f"{original_format}: {original_frame_count:,} raw CAN frames; "
+                        f"{len(candidate.entries):,} replay entries"
+                    )
+                    if candidate.entries and original_frame_count is not None
+                    else (
+                        f"{candidate.format}: {len(candidate.entries):,} replay entries"
+                        if candidate.entries
+                        else "Archive only — no supported replay data"
+                    )
+                ),
+                diagnostics=list(candidate.diagnostics),
+                file_info=(
+                    {
+                        "path": str(self.log_library.path(item["id"])),
+                        "format": candidate.format,
+                        "entries": len(candidate.entries),
+                        "duration": candidate.duration,
+                        "timestamped": candidate.timestamped,
+                        "skipped": candidate.skipped,
+                        "frame_count": candidate.frame_count,
+                        "source_tracks": list(candidate.source_tracks),
+                        "device_metadata_available": (
+                            candidate.device_metadata_available
+                            or existing_info.get("device_metadata_available", False)
+                        ),
+                        "devices": (
+                            [asdict(device) for device in candidate.devices]
+                            if candidate.devices
+                            else existing_info.get("devices", [])
+                        ),
+                        "diagnostics": list(candidate.diagnostics),
+                    }
+                    if candidate.device_metadata_available
+                    or not existing_info.get("devices")
+                    else existing_info
+                ),
+            )
+            return candidate, None
+        except Exception as exc:
+            if item is not None:
+                try:
+                    self.log_library.update(item["id"], status=f"Cannot replay: {exc}")
+                except Exception:
+                    pass
+            return None, f"{path}: {exc}"
+
+    def _read_path_groups(self, token, groups):
+        log, errors = None, []
+        for index, group in enumerate(groups, 1):
+            path = group[0]
+            if self.closed:
+                return
+            candidate, error = SessionController._load_one_path_group(
+                self, token, path, index, len(groups), group
+            )
+            if error is not None:
+                errors.append(error)
+            elif candidate is not None:
+                log = candidate
+        error = ValueError("\n".join(errors)) if errors else None
+        if not self.closed:
+            self.load_finished.emit(token, log, error)
+
     def load_paths(self, paths, replay=False):
         """Import each log/EBL stack; only the latest request selects or replays."""
         if self.closed or not paths:
@@ -435,140 +575,7 @@ class SessionController(QObject):
         )
 
         def read():
-            log, errors = None, []
-            for index, group in enumerate(groups, 1):
-                path = group[0]
-                if self.closed:
-                    return
-                item = None
-
-                def reporter(phase):
-                    last = None
-                    last_total = None
-
-                    def report(done, total):
-                        nonlocal last, last_total
-                        now = time.monotonic()
-                        # Bound the Qt event queue even on fast local disks.
-                        if (
-                            last is not None
-                            and total == last_total
-                            and 0 < done < total
-                            and now - last < 0.1
-                        ):
-                            return
-                        last = now
-                        last_total = total
-                        if not self.closed:
-                            self.load_progress.emit(
-                                token,
-                                dict(
-                                    path=str(path),
-                                    index=index,
-                                    count=len(groups),
-                                    phase=phase,
-                                    done=done,
-                                    total=total,
-                                ),
-                            )
-
-                    return report
-
-                try:
-                    copy_progress = reporter("copy")
-                    # Announce even before path validation or a metadata-lock
-                    # wait, using the original filename rather than its UUID.
-                    copy_progress(0, 0)
-                    item = self.log_library.import_paths(
-                        group,
-                        progress=copy_progress,
-                        decode_progress=reporter("decode"),
-                    )[0]
-                    existing_info = item.get("file_info", {})
-                    candidate = item.get("_decoded_log")
-                    if candidate is None:
-                        candidate = read_nmea_log(
-                            self.log_library.path(item["id"]),
-                            progress=reporter("decode"),
-                            frame_count=existing_info.get("frame_count"),
-                            devices=tuple(
-                                (
-                                    captured_device_from_dict(d)
-                                    if isinstance(d, dict)
-                                    else d
-                                )
-                                for d in existing_info.get("devices", [])
-                            ),
-                            device_metadata_available=existing_info.get(
-                                "device_metadata_available", False
-                            ),
-                            timestamp_origin=(
-                                datetime.fromisoformat(
-                                    existing_info["timestamp_origin"]
-                                )
-                                if existing_info.get("timestamp_origin")
-                                else None
-                            ),
-                        )
-                    # Use original EBL format for status if this was decoded from EBL
-                    original_format = existing_info.get("format", candidate.format)
-                    original_frame_count = existing_info.get("frame_count")
-                    self.log_library.update(
-                        item["id"],
-                        status=(
-                            (
-                                f"{original_format}: {original_frame_count:,} raw CAN frames; "
-                                f"{len(candidate.entries):,} replay entries"
-                            )
-                            if candidate.entries and original_frame_count is not None
-                            else (
-                                f"{candidate.format}: {len(candidate.entries):,} replay entries"
-                                if candidate.entries
-                                else "Archive only — no supported replay data"
-                            )
-                        ),
-                        diagnostics=list(candidate.diagnostics),
-                        file_info=(
-                            {
-                                "path": str(self.log_library.path(item["id"])),
-                                "format": candidate.format,
-                                "entries": len(candidate.entries),
-                                "duration": candidate.duration,
-                                "timestamped": candidate.timestamped,
-                                "skipped": candidate.skipped,
-                                "frame_count": candidate.frame_count,
-                                "source_tracks": list(candidate.source_tracks),
-                                "device_metadata_available": (
-                                    candidate.device_metadata_available
-                                    or existing_info.get(
-                                        "device_metadata_available", False
-                                    )
-                                ),
-                                "devices": (
-                                    [asdict(device) for device in candidate.devices]
-                                    if candidate.devices
-                                    else existing_info.get("devices", [])
-                                ),
-                                "diagnostics": list(candidate.diagnostics),
-                            }
-                            if candidate.device_metadata_available
-                            or not existing_info.get("devices")
-                            else existing_info
-                        ),
-                    )
-                    log = candidate
-                except Exception as exc:
-                    errors.append(f"{path}: {exc}")
-                    if item is not None:
-                        try:
-                            self.log_library.update(
-                                item["id"], status=f"Cannot replay: {exc}"
-                            )
-                        except Exception:
-                            pass
-            error = ValueError("\n".join(errors)) if errors else None
-            if not self.closed:
-                self.load_finished.emit(token, log, error)
+            SessionController._read_path_groups(self, token, groups)
 
         try:
             Thread(target=read, daemon=True).start()

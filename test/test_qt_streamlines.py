@@ -460,7 +460,7 @@ class TestStreamlineShaderStructure(unittest.TestCase):
         self.assertIn("2.5 : -2.5", vertex)
         self.assertIn("abs(marker - round(marker)) > 0.00001", fragment)
         self.assertIn(
-            "Math.max(1, batch.segmentCount * (batch.arrow ? 4 : 2) - 1)", qml
+            "Math.max(1, segmentCount * (arrow ? 4 : 2) - 1)", qml
         )
         self.assertIn("required property var modelData", qml)
         self.assertIn("effect.status === ShaderEffect.Compiled", qml)
@@ -511,11 +511,10 @@ class TestStreamlineShaderPixels(unittest.TestCase):
         )
         try:
             layer.setParentItem(window.contentItem())
-            layer.setWidth(window.contentItem().width())
-            layer.setHeight(window.contentItem().height())
+            layer.setWidth(120)
+            layer.setHeight(100)
             window.show()
-            layer.setWidth(window.contentItem().width())
-            layer.setHeight(window.contentItem().height())
+            self._pump()
             self.assertGreater(layer.width(), 0)
             self.assertGreater(layer.height(), 0)
             self._pump()

@@ -1286,7 +1286,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             super().__init__(parent)
             self._model = model
             self._gpu_streamlines_enabled = bool(gpu_streamlines)
-            self._gpu_streamlines_item = None
+            self._gpu_streamlines_item: Any = None
             self._source_generation = 0
             self._disposed = False
             self._wind_opacity = 1.0
@@ -1415,7 +1415,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._marine_layer.stateChanged.connect(self.marineStateChanged.emit)
             self._icoads_layer = IcoadsQuickLayer(self._weather, self)
             self._barbs = self._weather
-            self._fill = None
+            self._fill: Any = None
             if self._gpu_weather_fill or self._chart_layer:
                 # The layered scenes carry the barbs as their own item.
                 self._barbs = cast(
@@ -1557,12 +1557,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             )
             self._streamline_model.on_change = self.streamlinesPrepared.emit
             self._streamline_publication = None
-            self._streamline_display_camera = None
+            self._streamline_display_camera: ViewportCamera | None = None
             self._streamline_last_camera = None
             self._streamline_urls = ()
-            self._pending_streamline_groups = []
+            self._pending_streamline_groups: list[dict[str, Any]] = []
             self._pending_streamline_urls = ()
-            self._pending_streamline_camera = None
+            self._pending_streamline_camera: ViewportCamera | None = None
             self._pending_streamline_publication = None
             self._pending_streamline_buffer = -1
             self._streamline_settle = QTimer(self)
@@ -1572,7 +1572,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self.streamlinesPrepared.connect(
                 self._refresh_streamlines, Qt.ConnectionType.QueuedConnection
             )
-            self._streamlines = self._weather.findChild(QObject, "weatherStreamlines")
+            self._streamlines: Any = self._weather.findChild(
+                QObject, "weatherStreamlines"
+            )
             if self._streamlines is None:
                 raise RuntimeError("The weather scene has no GPU streamline layer")
             self._streamlines.setProperty("buffer0Groups", [])
@@ -2159,11 +2161,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             debug_streamlines = os.environ.get("GWR_STREAMLINE_DEBUG")
             enabled = self._wind_style == "streamlines" and self._wind_opacity > 0
             gpu_enabled = getattr(self, "_gpu_streamlines_enabled", False)
-            gpu_item = getattr(self, "_gpu_streamlines_item", None)
+            gpu_item = cast(Any, getattr(self, "_gpu_streamlines_item", None))
             self._update_streamline_camera(camera)
             camera_changed = camera != self._streamline_last_camera
             self._streamline_last_camera = camera
-            prior = self._streamline_display_camera
+            prior: ViewportCamera | None = cast(
+                ViewportCamera | None, self._streamline_display_camera
+            )
+            prior_time = prior.time if prior is not None else camera.time
             if gpu_item is not None:
                 if not enabled:
                     gpu_item.set_trace_input(None)
@@ -2225,13 +2230,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 else:
                     self._streamlines.setVisible(enabled)
                     self._streamlines.setOpacity(
-                        self._wind_opacity * (0.6 if prior.time != camera.time else 1.0)
+                        self._wind_opacity * (0.6 if prior_time != camera.time else 1.0)
                     )
                     if not camera_changed:
                         self._streamline_readiness_changed()
                         return "ready"
                     self._streamline_settle.start()
-                    if prior.time == camera.time:
+                    if prior_time == camera.time:
                         self._streamline_readiness_changed()
                         return "ready"
             else:
@@ -2311,7 +2316,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     and source is not None
                     and source.over_land == camera.over_land
                 )
-                if retain_previous:
+                if retain_previous and source is not None:
                     self._streamlines.setOpacity(
                         self._wind_opacity
                         * (0.6 if source.time != camera.time else 1.0)
@@ -2328,7 +2333,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     self._streamlines.setVisible(False)
                 if self._wind_style == "streamlines":
                     self._show_state(state)
-                    if retain_previous:
+                    if retain_previous and source is not None:
                         self._status.setText(
                             "Updating streamlines — previous forecast time"
                             if source.time != camera.time
@@ -2384,7 +2389,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     )
                     gpu_item.set_trace_input(
                         replace(paths, opacity=self._wind_opacity),
-                        transition=same_layout and prior.time != camera.time,
+                        transition=same_layout and prior_time != camera.time,
                     )
                     gpu_item.setVisible(enabled)
                     self._streamline_publication = publication

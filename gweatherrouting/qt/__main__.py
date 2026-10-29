@@ -65,7 +65,8 @@ def main(argv=None):
     )
     window = PreviewWindow(controller)
     app.aboutToQuit.connect(window.workspace.close)
-    app.aboutToQuit.connect(window.timeline.dispose)
+    if window.timeline is not None:
+        app.aboutToQuit.connect(window.timeline.dispose)
     app.aboutToQuit.connect(window.dispose_marine)
     app.aboutToQuit.connect(controller.close)
     window.show()

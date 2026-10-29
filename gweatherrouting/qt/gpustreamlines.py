@@ -195,10 +195,18 @@ class _TraceNode(QSGRenderNode):
         pipeline.setShaderResourceBindings(bindings)
         blend = QRhiGraphicsPipeline.TargetBlend()
         blend.enable = True
-        blend.srcColor = QRhiGraphicsPipeline.BlendFactor.One
-        blend.dstColor = QRhiGraphicsPipeline.BlendFactor.OneMinusSrcAlpha
-        blend.srcAlpha = QRhiGraphicsPipeline.BlendFactor.One
-        blend.dstAlpha = QRhiGraphicsPipeline.BlendFactor.OneMinusSrcAlpha
+        setattr(blend, "srcColor", QRhiGraphicsPipeline.BlendFactor.One)
+        setattr(
+            blend,
+            "dstColor",
+            QRhiGraphicsPipeline.BlendFactor.OneMinusSrcAlpha,
+        )
+        setattr(blend, "srcAlpha", QRhiGraphicsPipeline.BlendFactor.One)
+        setattr(
+            blend,
+            "dstAlpha",
+            QRhiGraphicsPipeline.BlendFactor.OneMinusSrcAlpha,
+        )
         pipeline.setTargetBlends([blend])
         pipeline.setRenderPassDescriptor(self.renderTarget().renderPassDescriptor())
         if not pipeline.create():
@@ -216,6 +224,8 @@ class _TraceNode(QSGRenderNode):
                 self.release_pipeline()
                 self._create_pipeline()
             command_buffer = self.commandBuffer()
+            if self.pipeline is None or self.bindings is None:
+                raise RuntimeError("GPU streamline graphics pipeline unavailable")
             command_buffer.setGraphicsPipeline(self.pipeline)
             command_buffer.setShaderResources(self.bindings)
             command_buffer.draw(self.state["seed_count"] * SEGMENTS_PER_SEED * 6)
