@@ -91,6 +91,18 @@ def test_the_viewport_owns_its_camera_and_time_state():
     assert other.view()._center_lon == 0.7
 
 
+def test_weather_preview_is_only_allowed_for_time_only_camera_changes():
+    viewport = gribviewport._viewport_widget_class()
+    first = _camera()
+    assert viewport._same_weather_view(
+        first, replace(first, time=first.time + timedelta(hours=1))
+    )
+    assert not viewport._same_weather_view(
+        first, replace(first, center_lon=first.center_lon + 0.01)
+    )
+    assert not viewport._same_weather_view(first, replace(first, density="all"))
+
+
 @pytest.mark.parametrize(
     "source,target",
     [
@@ -1047,6 +1059,32 @@ def test_the_fill_is_a_separate_layer_behind_the_barbs():
     assert 'objectName: "weatherFill"' in scene
     assert 'objectName: "weatherBarbs"' in scene
     assert "visible: root.fillEnabled" in scene
+
+
+def test_weather_textures_stay_displayable_while_replacements_load():
+    shaders = Path(gribviewport.__file__).parent / "shaders"
+    for name in ("WeatherBarbs.qml", "WeatherFill.qml"):
+        layer = (shaders / name).read_text()
+        assert "retainWhileLoading: true" in layer
+        assert "property bool hadReady: false" in layer
+        assert "visible: root.displayable" in layer
+
+
+def test_native_weather_scenes_keep_a_separate_hidden_replacement_layer():
+    shaders = Path(gribviewport.__file__).parent / "shaders"
+    for name in (
+        "WeatherBufferedBarbs.qml",
+        "WeatherScene.qml",
+        "ViewportChartScene.qml",
+    ):
+        scene = (shaders / name).read_text()
+        assert 'objectName: "weatherBarbsBack"' in scene
+        assert scene.index('objectName: "weatherBarbs"') < scene.index(
+            'objectName: "weatherBarbsBack"'
+        )
+        assert "visible: false" in scene
+    for name in ("WeatherScene.qml", "ViewportChartScene.qml"):
+        assert 'objectName: "weatherFillBack"' in (shaders / name).read_text()
 
 
 def test_a_selection_change_never_restages_the_fill():

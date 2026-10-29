@@ -43,21 +43,47 @@ Item {
     property bool imagesReady: nativeFields ? nativeReady
                          : imageU0.status === Image.Ready && imageV0.status === Image.Ready
                          && imageU1.status === Image.Ready && imageV1.status === Image.Ready
+    function canDisplay(image) {
+        return image.status === Image.Ready
+                || (image.status === Image.Loading && image.hadReady)
+    }
+    readonly property bool displayable: nativeFields ? nativeReady
+                         : canDisplay(imageU0) && canDisplay(imageV0)
+                         && canDisplay(imageU1) && canDisplay(imageV1)
     property bool ready: imagesReady && (nativeFields
-                         ? nativeFrameObserved && effect.status !== ShaderEffect.Error
+                          ? nativeFrameObserved && effect.status !== ShaderEffect.Error
+                          : effect.status === ShaderEffect.Compiled)
+    property bool prepared: imagesReady && (nativeFields
+                         ? effect.status !== ShaderEffect.Error
                          : effect.status === ShaderEffect.Compiled)
     property string shaderError: effect.status === ShaderEffect.Error ? effect.log : ""
-    Image { id: imageU0; visible: false; smooth: false; cache: false }
-    Image { id: imageV0; visible: false; smooth: false; cache: false }
-    Image { id: imageU1; visible: false; smooth: false; cache: false }
-    Image { id: imageV1; visible: false; smooth: false; cache: false }
+    Image {
+        id: imageU0; visible: false; smooth: false; cache: false
+        retainWhileLoading: true; property bool hadReady: false
+        onStatusChanged: if (status === Image.Ready) hadReady = true
+    }
+    Image {
+        id: imageV0; visible: false; smooth: false; cache: false
+        retainWhileLoading: true; property bool hadReady: false
+        onStatusChanged: if (status === Image.Ready) hadReady = true
+    }
+    Image {
+        id: imageU1; visible: false; smooth: false; cache: false
+        retainWhileLoading: true; property bool hadReady: false
+        onStatusChanged: if (status === Image.Ready) hadReady = true
+    }
+    Image {
+        id: imageV1; visible: false; smooth: false; cache: false
+        retainWhileLoading: true; property bool hadReady: false
+        onStatusChanged: if (status === Image.Ready) hadReady = true
+    }
     ShaderEffect {
         id: effect
         x: root.gridWidth > 0 ? root.gridX : 0
         y: root.gridWidth > 0 ? root.gridY : 0
         width: root.gridWidth > 0 ? root.gridWidth : root.width
         height: root.gridWidth > 0 ? root.gridHeight : root.height
-        visible: root.imagesReady
+        visible: root.displayable
         property variant u0: root.nativeFields ? root.nativeU0 : imageU0
         property variant v0: root.nativeFields ? root.nativeV0 : imageV0
         property variant u1: root.nativeFields ? root.nativeU1 : imageU1

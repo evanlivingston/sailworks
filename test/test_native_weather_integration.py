@@ -91,6 +91,15 @@ class Layer:
     def setProperty(self, name, value):
         self.values[name] = value
 
+    def setVisible(self, visible):
+        self.values["visible"] = visible
+
+    def setOpacity(self, opacity):
+        self.values["opacity"] = opacity
+
+    def property(self, name):
+        return self.values.get(name)
+
 
 class Context:
     ready = False
@@ -105,22 +114,26 @@ class Context:
 
 def test_native_binding_reuses_current_ready_identity_and_separates_layers():
     cls = _viewport_widget_class()
-    contexts = {role: Context() for role in ("barbs", "fill")}
+    contexts = {(role, 0): Context() for role in ("barbs", "fill")}
     host = SimpleNamespace(
         _barbs=Layer(),
+        _barbs_back=None,
         _fill=Layer(),
+        _fill_back=None,
+        _native_front_index=0,
         _native_contexts=contexts,
         _native_bindings={},
         counters={"native_field_requests": 0},
     )
+    host._native_item = lambda role, slot: cls._native_item(host, role, slot)
     cls._bind_native_layer(host, "barbs", "A", (1, 2, 3, 4))
     assert host._barbs.values == {"nativeFrameObserved": False, "nativeReady": False}
-    contexts["barbs"].ready = True
+    contexts["barbs", 0].ready = True
     cls._bind_native_layer(host, "barbs", "A", (1, 2, 3, 4))
-    assert len(contexts["barbs"].requests) == 1
+    assert len(contexts["barbs", 0].requests) == 1
     cls._bind_native_layer(host, "fill", "A", (5, 6, 7, 8))
-    assert contexts["fill"].requests == [("A", (5, 6, 7, 8), "grid")]
-    assert contexts["barbs"].requests == [("A", (1, 2, 3, 4), "nodes")]
+    assert contexts["fill", 0].requests == [("A", (5, 6, 7, 8), "grid")]
+    assert contexts["barbs", 0].requests == [("A", (1, 2, 3, 4), "nodes")]
     assert host.counters["native_field_requests"] == 2
 
 
@@ -129,17 +142,93 @@ def test_unready_same_identity_is_retried_and_readiness_reset():
     context = Context()
     host = SimpleNamespace(
         _barbs=Layer(),
+        _barbs_back=None,
         _fill=None,
-        _native_contexts={"barbs": context},
-        _native_bindings={"barbs": "A"},
+        _fill_back=None,
+        _native_front_index=0,
+        _native_contexts={("barbs", 0): context},
+        _native_bindings={("barbs", 0): "A"},
         counters={"native_field_requests": 0},
     )
+    host._native_item = lambda role, slot: cls._native_item(host, role, slot)
     cls._bind_native_layer(host, "barbs", "A", (1, 2, 3, 4))
     assert len(context.requests) == 1
     context.ready = True
     cls._bind_native_layer(host, "barbs", "B", (5, 6, 7, 8))
     assert host._barbs.values["nativeFrameObserved"] is False
-    assert host._native_bindings["barbs"] == "B"
+    assert host._native_bindings["barbs", 0] == "B"
+
+
+def test_pending_native_binding_does_not_mutate_visible_layer():
+    cls = _viewport_widget_class()
+    front, back = Layer(), Layer()
+    host = SimpleNamespace(
+        _barbs=front,
+        _barbs_back=back,
+        _fill=None,
+        _fill_back=None,
+        _native_front_index=0,
+        _native_contexts={("barbs", 0): Context(), ("barbs", 1): Context()},
+        _native_bindings={},
+        counters={"native_field_requests": 0},
+    )
+    host._native_item = lambda role, slot: cls._native_item(host, role, slot)
+    cls._bind_native_layer(host, "barbs", "later", (1, 2, 3, 4), pending=True)
+    assert front.values == {}
+    assert back.values == {"nativeFrameObserved": False, "nativeReady": False}
+    assert host._native_bindings == {("barbs", 1): "later"}
+
+
+def test_native_weather_swap_keeps_front_until_pending_layers_are_ready():
+    cls = _viewport_widget_class()
+    front, back = Layer(), Layer()
+    front_fill, back_fill = Layer(), Layer()
+    contexts = {
+        (role, index): SimpleNamespace(clear=lambda: None)
+        for role in ("barbs", "fill")
+        for index in (0, 1)
+    }
+    pinned = []
+    host = SimpleNamespace(
+        _barbs=front,
+        _barbs_back=back,
+        _fill=front_fill,
+        _fill_back=back_fill,
+        _native_front_index=0,
+        _native_pending_camera="new time",
+        _native_active_camera="old time",
+        _native_pending_identity="new field",
+        _native_active_identity="old field",
+        _native_pending_selection_urls=("image://weather/new",),
+        _native_publishing=False,
+        _weather_display_camera="old time",
+        _native_contexts=contexts,
+        _provider=SimpleNamespace(pin_selection=pinned.append),
+        _wind_opacity=0.88,
+        _wind_style="barbs",
+        _disposed=False,
+        _camera="new time",
+        _model=SimpleNamespace(state="ready"),
+        _state="loading",
+    )
+    host._commit_native_weather = lambda: cls._commit_native_weather(host)
+    host._show_state = lambda state: setattr(host, "_state", state)
+    front.values["ready"] = front_fill.values["ready"] = True
+    back.values["prepared"] = True
+    back_fill.values["prepared"] = False
+    cls._update_native_state(host)
+    assert host._barbs is front and host._fill is front_fill
+    assert host._native_active_camera == "old time"
+    back_fill.values["prepared"] = True
+    cls._update_native_state(host)
+    assert host._barbs is back and host._fill is back_fill
+    assert front.values["visible"] is False
+    assert front_fill.values["visible"] is False
+    assert back.values["visible"] is True
+    assert back_fill.values["visible"] is True
+    assert host._native_active_camera == host._weather_display_camera == "new time"
+    assert host._state == "loading"
+    assert pinned == [("image://weather/new",)]
 
 
 def test_trace_attribution_is_unavailable_not_zero_without_current_handles():

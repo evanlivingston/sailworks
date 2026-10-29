@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import os
 from threading import RLock
 
-NATIVE_WEATHER_BYTES = 32 * 1024 * 1024
+NATIVE_WEATHER_BYTES = 64 * 1024 * 1024
 
 
 def native_weather_fields_enabled(override=None):

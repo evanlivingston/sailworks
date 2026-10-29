@@ -28,11 +28,24 @@ Item {
                          && imageU1.status === Image.Ready && imageV1.status === Image.Ready)
                          && imageX.status === Image.Ready && imageY.status === Image.Ready
                          && (!root.nodeIdIndirection || imageId.status === Image.Ready)
+    // Keep drawing the prior textures while replacement sources load. `ready`
+    // still reports only the current inputs, so Python does not mark a new
+    // forecast ready until every replacement has arrived.
+    function canDisplay(image) {
+        return image.status === Image.Ready
+                || (image.status === Image.Loading && image.hadReady)
+    }
+    readonly property bool displayable: (nativeFields ? nativeReady
+                         : canDisplay(imageU0) && canDisplay(imageV0)
+                         && canDisplay(imageU1) && canDisplay(imageV1))
+                         && canDisplay(imageX) && canDisplay(imageY)
+                         && (!root.nodeIdIndirection || canDisplay(imageId))
     // Bound each mesh, not the selection: all-point selections may contain
     // arbitrarily many coincident symbols within the resident field budget.
     property int batchRows: Math.max(1, Math.floor(8192 / columns))
     property int batchRevision: 0
     property bool ready: imagesReady && batchesReady()
+    property bool prepared: imagesReady && batchesPrepared()
     property string shaderError: batchError()
     function batchesReady() {
         let revision = batchRevision
@@ -43,6 +56,16 @@ Item {
         }
         return batches.count > 0 && (!nativeFields || nativeFrameObserved)
     }
+    function batchesPrepared() {
+        let revision = batchRevision
+        if (batches.count === 0) return false
+        for (let i = 0; i < batches.count; ++i) {
+            let item = batches.itemAt(i)
+            if (!item || item.status === ShaderEffect.Error
+                || (!nativeFields && item.status !== ShaderEffect.Compiled)) return false
+        }
+        return true
+    }
     function batchError() {
         let revision = batchRevision
         for (let i = 0; i < batches.count; ++i) {
@@ -51,13 +74,41 @@ Item {
         }
         return ""
     }
-    Image { id: imageU0; objectName: "fieldU0"; visible: false; smooth: false; cache: false }
-    Image { id: imageV0; objectName: "fieldV0"; visible: false; smooth: false; cache: false }
-    Image { id: imageU1; objectName: "fieldU1"; visible: false; smooth: false; cache: false }
-    Image { id: imageV1; objectName: "fieldV1"; visible: false; smooth: false; cache: false }
-    Image { id: imageX; objectName: "selectionX"; visible: false; smooth: false; cache: false }
-    Image { id: imageY; objectName: "selectionY"; visible: false; smooth: false; cache: false }
-    Image { id: imageId; objectName: "selectionId"; visible: false; smooth: false; cache: false }
+    Image {
+        id: imageU0; objectName: "fieldU0"; visible: false; smooth: false; cache: false
+        retainWhileLoading: true; property bool hadReady: false
+        onStatusChanged: if (status === Image.Ready) hadReady = true
+    }
+    Image {
+        id: imageV0; objectName: "fieldV0"; visible: false; smooth: false; cache: false
+        retainWhileLoading: true; property bool hadReady: false
+        onStatusChanged: if (status === Image.Ready) hadReady = true
+    }
+    Image {
+        id: imageU1; objectName: "fieldU1"; visible: false; smooth: false; cache: false
+        retainWhileLoading: true; property bool hadReady: false
+        onStatusChanged: if (status === Image.Ready) hadReady = true
+    }
+    Image {
+        id: imageV1; objectName: "fieldV1"; visible: false; smooth: false; cache: false
+        retainWhileLoading: true; property bool hadReady: false
+        onStatusChanged: if (status === Image.Ready) hadReady = true
+    }
+    Image {
+        id: imageX; objectName: "selectionX"; visible: false; smooth: false; cache: false
+        retainWhileLoading: true; property bool hadReady: false
+        onStatusChanged: if (status === Image.Ready) hadReady = true
+    }
+    Image {
+        id: imageY; objectName: "selectionY"; visible: false; smooth: false; cache: false
+        retainWhileLoading: true; property bool hadReady: false
+        onStatusChanged: if (status === Image.Ready) hadReady = true
+    }
+    Image {
+        id: imageId; objectName: "selectionId"; visible: false; smooth: false; cache: false
+        retainWhileLoading: true; property bool hadReady: false
+        onStatusChanged: if (status === Image.Ready) hadReady = true
+    }
     Repeater {
         id: batches
         model: Math.ceil(root.rows / root.batchRows)
@@ -65,8 +116,9 @@ Item {
         onItemRemoved: root.batchRevision++
         ShaderEffect {
         required property int index
+        onStatusChanged: root.batchRevision++
         anchors.fill: parent
-        visible: root.imagesReady
+        visible: root.displayable
         property variant u0: root.nativeFields ? root.nativeU0 : imageU0
         property variant v0: root.nativeFields ? root.nativeV0 : imageV0
         property variant u1: root.nativeFields ? root.nativeU1 : imageU1
