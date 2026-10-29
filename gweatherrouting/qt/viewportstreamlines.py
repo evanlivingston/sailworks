@@ -7,7 +7,6 @@ import numpy as np
 from PySide6.QtGui import QImage
 from PySide6.QtQuick import QQuickImageProvider
 
-from gweatherrouting.rendering.streamlinepaths import trace_streamline_paths
 from gweatherrouting.rendering.weatherbarbs import _view_bounds
 
 MAX_TEXTURE_SIZE = 16384
@@ -148,10 +147,10 @@ def wind_columns(sampler, camera, cancelled, uv=None, lattice=None):
 class ViewportStreamlineModel:
     """Latest-camera-only worker; forecast handles never leave its thread."""
 
-    def __init__(self, paths, display_identity=None, gpu_trace=False):
+    def __init__(self, paths, display_identity=None, gpu_trace=True):
         self.paths = tuple(paths)
         self.display_identity = display_identity
-        self.gpu_trace = gpu_trace
+        self.gpu_trace = True
         self.on_change = None
         self.error = ""
         self._condition = Condition()
@@ -318,13 +317,12 @@ class ViewportStreamlineModel:
             DisplayWeatherSource,
         )
 
-        if self.gpu_trace:
-            from .gpustreamlines import make_gpu_trace_input
-            from gweatherrouting.rendering.weatherstaging import (
-                blend_streamline_endpoints,
-                stage_streamline_endpoints,
-                time_window,
-            )
+        from .gpustreamlines import make_gpu_trace_input
+        from gweatherrouting.rendering.weatherstaging import (
+            blend_streamline_endpoints,
+            stage_streamline_endpoints,
+            time_window,
+        )
 
         sources: list[DisplayWeatherSource] = []
         sampler = None
@@ -352,11 +350,11 @@ class ViewportStreamlineModel:
                         camera,
                         cancel,
                         wind_columns,
-                        make_gpu_trace_input if self.gpu_trace else None,
-                        trace_streamline_paths,
-                        time_window if self.gpu_trace else None,
-                        stage_streamline_endpoints if self.gpu_trace else None,
-                        blend_streamline_endpoints if self.gpu_trace else None,
+                        make_gpu_trace_input,
+                        None,
+                        time_window,
+                        stage_streamline_endpoints,
+                        blend_streamline_endpoints,
                     )
                 self._complete(camera, cancel, paths, error)
                 with self._condition:
@@ -405,34 +403,24 @@ class ViewportStreamlineModel:
         cancel,
         wind_columns,
         make_gpu_trace_input,
-        trace_streamline_paths,
+        _unused_cpu_tracer,
         time_window,
         stage_streamline_endpoints,
         blend_streamline_endpoints,
     ):
         try:
-            if self.gpu_trace:
-                lattice, camera, uv = self._gpu_endpoint_input(
-                    sampler,
-                    camera,
-                    cancel,
-                    time_window,
-                    stage_streamline_endpoints,
-                    blend_streamline_endpoints,
-                )
-                columns = wind_columns(
-                    sampler, camera, cancel.is_set, uv=uv, lattice=lattice
-                )
-                paths = make_gpu_trace_input(camera.view(), columns, camera.density)
-            else:
-                columns = wind_columns(sampler, camera, cancel.is_set)
-                paths = trace_streamline_paths(
-                    camera.view(),
-                    columns,
-                    lambda *_: False,
-                    cancel.is_set,
-                    density=camera.density,
-                )
+            lattice, camera, uv = self._gpu_endpoint_input(
+                sampler,
+                camera,
+                cancel,
+                time_window,
+                stage_streamline_endpoints,
+                blend_streamline_endpoints,
+            )
+            columns = wind_columns(
+                sampler, camera, cancel.is_set, uv=uv, lattice=lattice
+            )
+            paths = make_gpu_trace_input(camera.view(), columns, camera.density)
             error = ""
             if paths is None and not cancel.is_set():
                 error = "No traceable wind cells in selected forecast"
