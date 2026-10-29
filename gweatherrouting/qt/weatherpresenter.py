@@ -263,6 +263,9 @@ class WeatherPresenter(QObject):
     def _label(self):  # noqa: C901 - status composition spans independent fallbacks
         if self.closed:
             return
+        if not self.canvas.controller.settings.get("developerMode", False):
+            self.status.hide()
+            return
         selection = self.canvas.controller.display_forecast
         if self.reason:
             mode = (
@@ -303,9 +306,12 @@ class WeatherPresenter(QObject):
         self.status.setToolTip(selection.error)
         self.status.setFixedWidth(max(80, min(530, self.canvas.width() - 16)))
         self.status.adjustSize()
-        self.status.move(8, max(8, self.canvas.height() - self.status.height() - 8))
+        self.status.move(8, 8)
         self.status.show()
         self.status.raise_()
+
+    def refresh_status(self):
+        self._label()
 
     def _model_status(self, selection):
         model_id = ""
@@ -469,6 +475,8 @@ class WeatherPresenter(QObject):
         timeline = getattr(self.canvas, "timeline", None)
         if timeline is not None:
             timeline.raise_()
+        # Keep the status label above the timeline after interaction refreshes.
+        self.status.raise_()
 
     def source_changed(self):
         # Hide old weather synchronously, before the coalesced GUI refresh.

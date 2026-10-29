@@ -179,9 +179,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.tabs)
         connections = QWidget()
         content = QVBoxLayout(connections)
-        hint = QLabel(
-            "Add or edit instruments, then apply to save and reconnect."
-        )
+        hint = QLabel("Add or edit instruments, then apply to save and reconnect.")
         hint.setWordWrap(True)
         content.addWidget(hint)
         self.connections = QListWidget()
@@ -220,6 +218,14 @@ class SettingsDialog(QDialog):
                 lambda value, key=key: self.set_preference(key, value)
             )
             form.addRow(checkbox)
+        self.developer_mode = QCheckBox("Developer mode")
+        self.developer_mode.setChecked(
+            bool(controller.settings.get("developerMode", False))
+        )
+        self.developer_mode.toggled.connect(
+            lambda value: self.set_preference("developerMode", value)
+        )
+        form.addRow(self.developer_mode)
         self.gpu_rendering = QCheckBox("GPU rendering (experimental)")
         self.gpu_rendering.setChecked(
             controller.settings.get("mapRenderer", "cpu") == "gpu"
@@ -324,6 +330,11 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Unable to save setting", str(exc))
         if key != "mapRenderer":
             self.controller.data.redraw()
+        if key == "developerMode":
+            for canvas in list(self.controller.charts.maps):
+                presenter = getattr(canvas, "_weather_presenter", None)
+                if presenter is not None:
+                    presenter.refresh_status()
 
     def set_gpu_rendering(self, enabled):
         self.set_preference("mapRenderer", "gpu" if enabled else "cpu")

@@ -35,6 +35,7 @@ class SettingsManager(Storage):
         self.rasterCharts = []
         self.mbtilesCharts = []
         self.chartPalette = "cm93"
+        self.developerMode = False
         self.smoothZoom = True
         self.panInertia = True
         self.mapRenderer = "cpu"

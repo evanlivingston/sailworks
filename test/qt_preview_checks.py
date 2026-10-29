@@ -1309,6 +1309,34 @@ class QtPreviewChecks(unittest.TestCase):
             any("Canadian" in box.text() for box in settings.findChildren(QCheckBox))
         )
 
+    def test_developer_mode_controls_viewport_status_and_persists(self):
+        from gweatherrouting.core.settings import SettingsManager
+
+        settings = self.controller.settings
+        presenter = self.window.map._weather_presenter
+        self.assertFalse(settings.developerMode)
+        presenter.status.show()
+        presenter._label()
+        self.assertTrue(presenter.status.isHidden())
+
+        self.window.show_settings()
+        dialog = self.window.settings_dialog
+        self.assertFalse(dialog.developer_mode.isChecked())
+        with (
+            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+            patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
+        ):
+            object.__setattr__(settings, "_Storage__init", True)
+            dialog.developer_mode.setChecked(True)
+            self.assertTrue(settings.developerMode)
+            self.assertTrue(presenter.status.isVisible())
+            with patch.object(Storage, "load_or_save_default", ORIGINAL_STORAGE_LOAD):
+                reloaded = SettingsManager()
+            self.assertTrue(reloaded.developerMode)
+
+        dialog.developer_mode.setChecked(False)
+        self.assertFalse(presenter.status.isVisible())
+
     def test_qt_overlay_completes_without_glib_and_shutdown_discards_callbacks(self):
         import cairo
 
@@ -3134,6 +3162,21 @@ class QtPreviewChecks(unittest.TestCase):
             self.controller.time_control.time, start + timedelta(minutes=40)
         )
         self.assertFalse(timeline.commit_timer.isActive())
+
+        presenter = self.window.map._weather_presenter
+        raise_order = []
+        with (
+            patch.object(
+                timeline, "raise_", side_effect=lambda: raise_order.append("timeline")
+            ),
+            patch.object(
+                presenter.status,
+                "raise_",
+                side_effect=lambda: raise_order.append("status"),
+            ),
+        ):
+            presenter._raise_interactive_children()
+        self.assertLess(raise_order.index("timeline"), raise_order.index("status"))
         timeline.slider.setValue(2700)
         self.wait_for_cursor(
             lambda: self.controller.time_control.time == start + timedelta(minutes=45)
