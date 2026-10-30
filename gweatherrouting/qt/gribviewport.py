@@ -1313,6 +1313,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._source_generation = 0
             self._disposed = False
             self._wind_opacity = 1.0
+            self._wind_gradient_enabled = True
+            self._wind_gradient_opacity = 0.12
             self._wind_style = "barbs"
             self._camera = None
             self._weather_display_camera = None
@@ -1441,7 +1443,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._marine_layer.stateChanged.connect(self.marineStateChanged.emit)
             self._icoads_layer = IcoadsQuickLayer(self._weather, self)
             self._barbs = self._weather
-            self._fill: Any = None
+            self._fill = cast(
+                Any,
+                self._weather.findChild(QObject, "weatherFill"),
+            )
             if (
                 self._gpu_weather_fill
                 or self._chart_layer
@@ -1457,12 +1462,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                         "The GRIB viewport could not load its weather scene"
                     )
             if self._gpu_weather_fill:
-                self._fill = self._weather.findChild(QObject, "weatherFill")
                 if self._fill is None:
                     raise RuntimeError(
                         "The GRIB viewport could not load its weather scene"
                     )
-                self._weather.setProperty("fillEnabled", True)
+            if self._fill is not None:
+                self._weather.setProperty("fillEnabled", False)
             self._barbs_back = (
                 self._weather.findChild(QObject, "weatherBarbsBack")
                 if self._native_weather_fields
@@ -2019,8 +2024,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._native_pending_identity = None
             self._barbs.setVisible(True)
             if self._fill is not None:
-                self._fill.setOpacity(1)
-                self._fill.setVisible(True)
+                self._fill.setOpacity(
+                    self._wind_gradient_opacity if self._wind_gradient_enabled else 0.0
+                )
+                self._fill.setVisible(self._wind_gradient_enabled)
             for role in ("barbs", "fill"):
                 context = self._native_contexts.get((role, old_index))
                 if context is not None:
@@ -2141,6 +2148,36 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._streamlines.setVisible(False)
                 if self._camera is not None:
                     self.set_camera(self._camera)
+
+        def set_wind_gradient(self, enabled):
+            self._wind_gradient_enabled = bool(enabled)
+            self._weather.setProperty("fillEnabled", self._wind_gradient_enabled)
+            if self._fill is not None:
+                self._fill.setOpacity(
+                    self._wind_gradient_opacity if self._wind_gradient_enabled else 0.0
+                )
+                self._fill.setVisible(self._wind_gradient_enabled)
+            if self._fill_back is not None:
+                self._fill_back.setOpacity(
+                    0.01
+                    if self._wind_gradient_enabled and self._wind_gradient_opacity > 0
+                    else 0.0
+                )
+
+        def set_wind_gradient_opacity(self, opacity):
+            self._wind_gradient_opacity = max(0.0, min(1.0, float(opacity)))
+            if self._fill is not None:
+                self._fill.setOpacity(
+                    self._wind_gradient_opacity if self._wind_gradient_enabled else 0.0
+                )
+            if self._fill_back is not None and not self._wind_gradient_enabled:
+                self._fill_back.setOpacity(0.0)
+
+        def set_wind_gradient_style(self, smooth, levels):
+            for fill in (self._fill, self._fill_back):
+                if fill is not None:
+                    fill.setProperty("gradientSmooth", bool(smooth))
+                    fill.setProperty("gradientLevels", max(2, min(15, int(levels))))
 
         def _refresh_streamlines(self):
             if (
@@ -2727,7 +2764,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._weather.setVisible(True)
                 self._barbs.setVisible(visible)
                 if self._fill is not None:
-                    self._fill.setVisible(visible)
+                    self._fill.setVisible(visible and self._wind_gradient_enabled)
                 if not visible and self._native_weather_fields:
                     self._barbs_back.setVisible(False)
                     if self._fill_back is not None:
@@ -2891,7 +2928,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._barbs_back.setOpacity(0.01)
                 self._barbs_back.setVisible(True)
                 if self._fill_back is not None:
-                    self._fill_back.setOpacity(0.01)
+                    self._fill_back.setOpacity(
+                        0.01 if self._wind_gradient_enabled else 0.0
+                    )
                     self._fill_back.setVisible(True)
             if self._native_weather_fields:
                 self._native_pending_identity = field.identity

@@ -7,6 +7,8 @@ layout(std140, binding = 0) uniform buf {
     float qt_Opacity;
     float blend;
     float outputMode;
+    int gradientLevels;
+    int gradientSmooth;
 };
 layout(binding = 1) uniform sampler2D u0;
 layout(binding = 2) uniform sampler2D v0;
@@ -18,6 +20,24 @@ float decodeField(sampler2D field, ivec2 cell) {
     uvec3 low = uvec3(round(texelFetch(field, ivec2(cell.x * 2, cell.y), 0).rgb * 255.0));
     uint high = uint(round(texelFetch(field, ivec2(cell.x * 2 + 1, cell.y), 0).r * 255.0));
     return uintBitsToFloat(low.r | (low.g << 8) | (low.b << 16) | (high << 24));
+}
+
+vec3 windColor(float speed) {
+    const vec3 colors[15] = vec3[15](
+        vec3(0,0,204), vec3(0,102,255), vec3(0,255,255), vec3(0,255,102),
+        vec3(0,204,0), vec3(102,255,51), vec3(204,255,51), vec3(255,255,102),
+        vec3(255,204,0), vec3(255,153,0), vec3(255,102,0), vec3(255,51,0),
+        vec3(255,0,0), vec3(204,102,0), vec3(204,0,0));
+    float palettePosition = clamp(speed / 2.0, 0.0, 14.0);
+    if (gradientSmooth != 0) {
+        int lower = int(floor(palettePosition));
+        int upper = min(lower + 1, 14);
+        return mix(colors[lower], colors[upper], fract(palettePosition)) / 255.0;
+    }
+    int levels = clamp(gradientLevels, 2, 15);
+    int level = min(int(floor(palettePosition / 14.0 * float(levels))), levels - 1);
+    int paletteIndex = int(round(float(level) * 14.0 / float(levels - 1)));
+    return colors[paletteIndex] / 255.0;
 }
 
 vec2 vectorAt(ivec2 cell) {
@@ -58,10 +78,8 @@ void main() {
     } else if (outputMode > 0.5) {
         fragColor = vec4((uv + 128.0) / 256.0, 0, 1) * qt_Opacity;
     } else {
-        // A continuous wind-speed wash beneath the barbs. Keep the existing
-        // speed ramp translucent so chart and other map layers show through.
-        float speed = clamp(length(uv) / 32.0, 0.0, 1.0);
-        vec3 color = vec3(speed, 1.0 - abs(2.0 * speed - 1.0), 1.0 - speed);
-        fragColor = vec4(color, 0.35) * qt_Opacity;
+        // Match the speed palette used by barbs and streamline speed groups.
+        // Keep the field fill translucent beneath either glyph style.
+        fragColor = vec4(windColor(length(uv)), 1.0) * qt_Opacity;
     }
 }

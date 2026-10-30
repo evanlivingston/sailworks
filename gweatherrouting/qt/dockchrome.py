@@ -13,16 +13,18 @@ from PySide6.QtCore import (
     Qt,
     QTimer,
 )
-from PySide6.QtGui import QCursor, QMouseEvent
+from PySide6.QtGui import QContextMenuEvent, QCursor, QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractScrollArea,
     QAbstractSpinBox,
     QComboBox,
+    QSlider,
     QDockWidget,
     QMainWindow,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QScrollArea,
     QTabBar,
     QToolButton,
@@ -110,6 +112,18 @@ class _EmptyTitleBar(QWidget):
         return QSize(0, 0)
 
 
+def _dock_context_menu(dock: QDockWidget) -> QMenu:
+    menu = QMenu(dock)
+    close_action = menu.addAction("Close panel")
+    close_action.triggered.connect(dock.close)
+    return menu
+
+
+def _show_dock_context_menu(dock: QDockWidget, position):
+    menu = _dock_context_menu(dock)
+    menu.exec(position)
+
+
 class DockDragController(QObject):
     """Keep Qt's tab reordering, but own tear-off and panel drop operations.
 
@@ -176,6 +190,13 @@ class DockDragController(QObject):
         ):
             return True
         if isinstance(watched, QTabBar) and watched.parentWidget() is self.window:
+            if kind == QEvent.Type.ContextMenu:
+                index = watched.tabAt(event.pos())
+                dock = self._tab_dock(watched, index)
+                if dock is not None:
+                    _show_dock_context_menu(dock, event.globalPos())
+                    event.accept()
+                    return True
             if self._tab_press(watched, kind, event):
                 return True
         if self._pressed is not None and self._pressed_event(
@@ -581,6 +602,10 @@ class DockTitleBar(QWidget):
         else:
             super().mouseDoubleClickEvent(event)
 
+    def contextMenuEvent(self, event: QContextMenuEvent):  # noqa: N802
+        _show_dock_context_menu(self._dock, event.globalPos())
+        event.accept()
+
     # -- edge snap -------------------------------------------------------
     def _manager(self):
         """The drag controller of the window that owns this title bar.
@@ -706,10 +731,11 @@ class _ScrollActivity(QObject):
 class _WheelGuard(QObject):
     """Stop mouse-wheel hover from changing dropdown/spinner values.
 
-    Scrolling a panel with the wheel over a QComboBox (or spin box) would
+    Scrolling a panel with the wheel over a QComboBox, spin box, or slider would
     otherwise change that control instead of scrolling. The guard eats
     hover-wheel ticks and redirects them to the nearest enclosing scroll
-    area; a focused control or an open popup keeps normal wheel behavior.
+    area; wheel events over controls are always redirected or consumed, even
+    when the control has focus or a combo-box popup is open.
     """
 
     def eventFilter(self, watched, event):  # noqa: N802 - Qt virtual method name
@@ -717,17 +743,10 @@ class _WheelGuard(QObject):
             return False
         control = watched
         while control is not None and not isinstance(
-            control, (QComboBox, QAbstractSpinBox)
+            control, (QComboBox, QAbstractSpinBox, QSlider)
         ):
             control = control.parent()
         if control is None:
-            return False
-        if isinstance(control, QComboBox) and control.view().isVisible():
-            return False
-        focused = QApplication.focusWidget()
-        if focused is not None and (
-            focused is control or control.isAncestorOf(focused)
-        ):
             return False
         area = control.parent()
         while area is not None and not isinstance(area, QAbstractScrollArea):
