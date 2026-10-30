@@ -244,3 +244,23 @@ class TestBatchCurrents(unittest.TestCase):
         )
         self.assertEqual(provider.points_validity([]), [])
         self.assertEqual(provider.lines_validity([]), [])
+
+    def test_coastline_clearance_rejects_nearby_segment_in_metres(self):
+        from osgeo import ogr
+        from gweatherrouting.rendering.gshhs import GSHHSVectorChart
+
+        data = ogr.GetDriverByName("Memory").CreateDataSource("")
+        layer = data.CreateLayer("land", geom_type=ogr.wkbPolygon)
+        feature = ogr.Feature(layer.GetLayerDefn())
+        feature.SetGeometry(
+            ogr.CreateGeometryFromWkt(
+                "POLYGON ((0 -0.01, 0.01 -0.01, 0.01 0, 0 0, 0 -0.01))"
+            )
+        )
+        layer.CreateFeature(feature)
+        provider = GSHHSVectorChart.__new__(GSHHSVectorChart)
+        provider.lpvFile = data
+        line = [[0.001, -0.01, 0.001, 0.02]]
+        self.assertEqual(provider.lines_validity(line), [True])
+        provider.coastline_clearance_distance_m = 150
+        self.assertEqual(provider.lines_validity(line), [False])

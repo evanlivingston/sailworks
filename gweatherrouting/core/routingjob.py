@@ -408,8 +408,14 @@ class RouteRequest:
     motor_speed_kn: float = 5.0
     wave_correct: bool = False
     land_avoidance: Optional[bool] = None
+    coastline_clearance_distance_m: float = 0.0
 
     def __post_init__(self):
+        if (
+            not math.isfinite(self.coastline_clearance_distance_m)
+            or self.coastline_clearance_distance_m < 0
+        ):
+            raise ValueError("Coastline clearance distance must be nonnegative")
         if self.land_avoidance is None:
             object.__setattr__(self, "land_avoidance", self.coastline_checks)
         else:
@@ -522,6 +528,8 @@ def create_requested_routing(core, request, providers, wind, current_selection):
         polar_efficiency=request.polar_efficiency,
         safety_policy=safety_policy,
     )
+    for provider in providers if request.coastline_checks else ():
+        provider.coastline_clearance_distance_m = request.coastline_clearance_distance_m
     if request.use_currents:
         options.update(
             use_currents=True,
@@ -618,6 +626,7 @@ def run_requested_routing(core, routing, request, wind, progress, report, save_f
         or request.polar_efficiency != 1
         or request.wind_speed_pct
         or request.wind_dir_offset
+        or request.coastline_clearance_distance_m
         or request.tws_max_kn is not None
         or request.min_sailing_speed_kn is not None
         or request.wave_correct
@@ -630,6 +639,7 @@ def run_requested_routing(core, routing, request, wind, progress, report, save_f
             wind_speed_pct=request.wind_speed_pct,
             wind_dir_offset=request.wind_dir_offset,
             coastline_checks=request.coastline_checks,
+            coastline_clearance_distance_m=request.coastline_clearance_distance_m,
             waypoints=request.waypoints,
             tws_max_kn=request.tws_max_kn,
             min_sailing_speed_kn=request.min_sailing_speed_kn,

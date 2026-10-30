@@ -25,7 +25,7 @@ try:
     import shapely
 except ImportError:
     shapely = None
-from osgeo import ogr
+from osgeo import ogr, osr
 
 from gweatherrouting.common import resource_path
 from gweatherrouting.core.core import LinePointValidityProvider
@@ -178,8 +178,8 @@ class GSHHSVectorChart(ChartLayer, LinePointValidityProvider):
                     valid[i] = False
         return valid.tolist()
 
-    def lines_validity(self, latlons):
-        """Screen envelopes without weakening the exact segment intersection."""
+    def lines_validity(self, latlons, clearance_distance_m=None):
+        """Reject land intersections and, when configured, near-shore segments."""
         if not len(latlons):
             return []
         lines = np.asarray(latlons, dtype=float)
@@ -187,9 +187,26 @@ class GSHHSVectorChart(ChartLayer, LinePointValidityProvider):
         right = np.maximum(lines[:, 1], lines[:, 3])
         bottom = np.minimum(lines[:, 0], lines[:, 2])
         top = np.maximum(lines[:, 0], lines[:, 2])
-        land = self._routing_land(left.min(), bottom.min(), right.max(), top.max())
+        if clearance_distance_m is None:
+            clearance_distance_m = getattr(self, "coastline_clearance_distance_m", 0)
+        distance = float(clearance_distance_m or 0)
+        lat_margin = distance / 110_000.0
+        max_latitude = min(89.999, max(abs(bottom.min()), abs(top.max())) + lat_margin)
+        lon_margin = min(
+            180.0, lat_margin / max(math.cos(math.radians(max_latitude)), 1e-6)
+        )
+        land = self._routing_land(
+            left.min() - lon_margin,
+            bottom.min() - lat_margin,
+            right.max() + lon_margin,
+            top.max() + lat_margin,
+        )
         valid = np.ones(len(lines), dtype=bool)
-        if shapely is not None and getattr(self, "use_native_geometry", True):
+        if (
+            not distance
+            and shapely is not None
+            and getattr(self, "use_native_geometry", True)
+        ):
             segments = None
             for west, east, south, north, native in self._native_routing_land(land):
                 possible = np.flatnonzero(
@@ -209,18 +226,42 @@ class GSHHSVectorChart(ChartLayer, LinePointValidityProvider):
             west, east, south, north = geometry.GetEnvelope()
             possible = np.flatnonzero(
                 valid
-                & (right >= west)
-                & (left <= east)
-                & (top >= south)
-                & (bottom <= north)
+                & (right + lon_margin >= west)
+                & (left - lon_margin <= east)
+                & (top + lat_margin >= south)
+                & (bottom - lat_margin <= north)
             )
             for i in possible:
                 lat1, lon1, lat2, lon2 = lines[i]
                 line = ogr.Geometry(ogr.wkbLineString)
                 line.AddPoint(float(lon1), float(lat1))
                 line.AddPoint(float(lon2), float(lat2))
-                if (prepared or geometry).Intersects(line):
+                if not distance and (prepared or geometry).Intersects(line):
                     valid[i] = False
+                elif distance:
+                    lat0 = (lat1 + lat2) / 2
+                    lon0 = (lon1 + lon2) / 2
+                    source = osr.SpatialReference()
+                    source.ImportFromEPSG(4326)
+                    source.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+                    projected = osr.SpatialReference()
+                    projected.SetFromUserInput(
+                        f"+proj=aeqd +lat_0={lat0} +lon_0={lon0} "
+                        "+datum=WGS84 +units=m +no_defs"
+                    )
+                    projected.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+                    transform = osr.CoordinateTransformation(source, projected)
+                    local_land = geometry.Clone()
+                    local_line = line.Clone()
+                    if (
+                        local_land.Transform(transform) != 0
+                        or local_line.Transform(transform) != 0
+                    ):
+                        raise ValueError(
+                            "Unable to project coastline for clearance check"
+                        )
+                    if local_land.Distance(local_line) <= distance:
+                        valid[i] = False
         return valid.tolist()
 
     def do_draw(self, gpsmap, cr):

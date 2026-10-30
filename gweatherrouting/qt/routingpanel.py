@@ -97,6 +97,18 @@ class RoutingPanel(QWidget):
         self.coastlines = QCheckBox("Check coastlines")
         self.coastlines.setChecked(True)
         form.addRow(self.coastlines)
+        self.coastline_clearance = QDoubleSpinBox()
+        self.coastline_clearance.setRange(0, 100)
+        self.coastline_clearance.setDecimals(1)
+        self.coastline_clearance.setSingleStep(0.5)
+        self.coastline_clearance.setSuffix(" nm")
+        self.coastline_clearance.setToolTip(
+            "Reject route legs within this distance of the coastline."
+        )
+        form.addRow("Keep off coast", self.coastline_clearance)
+        self.coastline_clearance.valueChanged.connect(
+            lambda *_: self.options_changed.emit()
+        )
         setup_layout.addLayout(form)
         hint = QLabel(
             "Choose a waypoint track or saved POI. "
@@ -135,6 +147,7 @@ class RoutingPanel(QWidget):
             self.destination,
             self.start_mode,
             self.coastlines,
+            self.coastline_clearance,
         )
         self.routing.confirm = self._confirm_current
         self.routing.changed.connect(self.refresh)
@@ -389,6 +402,7 @@ class RoutingPanel(QWidget):
             parameters=cache,
             use_currents=self.use_currents.isChecked(),
             current_priority=self.current_priority.currentData(),
+            coastline_clearance_nm=self.coastline_clearance.value(),
             safety={
                 key: (
                     getattr(self, key).isChecked()
@@ -427,6 +441,15 @@ class RoutingPanel(QWidget):
         # Preserve the validated cache while replacing the initially displayed defaults.
         self.parameter_name = ""
         self.use_currents.setChecked(saved.get("use_currents") is True)
+        clearance_nm = saved.get("coastline_clearance_nm")
+        if (
+            type(clearance_nm) in (int, float)
+            and math.isfinite(clearance_nm)
+            and self.coastline_clearance.minimum()
+            <= clearance_nm
+            <= self.coastline_clearance.maximum()
+        ):
+            self.coastline_clearance.setValue(clearance_nm)
         priority = saved.get("current_priority")
         self.current_priority.setCurrentIndex(
             max(0, self.current_priority.findData(priority))
@@ -603,6 +626,7 @@ class RoutingPanel(QWidget):
             ),
             motor_speed_kn=self.motor_speed.value(),
             wave_correct=self.wave_proxy.isChecked(),
+            coastline_clearance_distance_m=self.coastline_clearance.value() * 1852,
         )
         axes = {
             key: values.text()
