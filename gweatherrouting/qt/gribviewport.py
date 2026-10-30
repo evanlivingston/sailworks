@@ -316,6 +316,8 @@ class GribViewportModel:
         self._window = None
         self._window_started = False
         self._prepared_by = {}
+        self._selection_cache = {}
+        self._selection_cache_order = []
         self._prepare_target = None
         self._bands = None
         # Two prepared-resource slots: the front slot is what the viewport may
@@ -455,13 +457,33 @@ class GribViewportModel:
                         self._front_index = index
                         break
         if field is not None and _covers(field, camera):
-            try:
-                selection = select_resident(
-                    field, camera.stamp(), camera.view()
-                ).selection
-            except Exception as exc:  # coverage or time escape
-                logger.debug("Resident selection unavailable: %s", exc)
-                selection = None
+            view = camera.view()
+            cache_key = (
+                field.generation,
+                field.identity.key(),
+                camera.stamp(),
+                view.width,
+                view.height,
+                view._center_lat,
+                view._center_lon,
+                view._zoom,
+                view.density,
+            )
+            cached = self._selection_cache.get(cache_key)
+            if cached is not None:
+                selection = cached
+            else:
+                try:
+                    selection = select_resident(field, camera.stamp(), view).selection
+                except Exception as exc:  # coverage or time escape
+                    logger.debug("Resident selection unavailable: %s", exc)
+                    selection = None
+                if selection is not None:
+                    if len(self._selection_cache) >= 16:
+                        oldest = self._selection_cache_order.pop(0)
+                        self._selection_cache.pop(oldest, None)
+                    self._selection_cache[cache_key] = selection
+                    self._selection_cache_order.append(cache_key)
             if selection is not None:
                 with self._condition:
                     self.counters["covered_reuses"] += 1

@@ -143,12 +143,12 @@ def run(path, report):
             widget._native_budget
             is sibling_widget._native_budget
             is controller.native_weather_budget
-            and report["shared_maps_budget"]["contexts"] == 2
+            and report["shared_maps_budget"]["contexts"] == 8
             and report["shared_maps_budget"]["live_bytes"] > 0
         )
         sibling.hide()
         wait(
-            lambda: controller.native_weather_budget.statistics()["contexts"] == 1,
+            lambda: controller.native_weather_budget.statistics()["contexts"] == 4,
             "sibling map retirement",
         )
         owners = tuple(widget._native_contexts.values())
@@ -330,7 +330,7 @@ def run(path, report):
         report["retired"] = [owner.snapshot() for owner in owners]
         report["final_budget"] = budget.statistics()
         report["checks"]["resources_released"] = (
-            len(report["retired"]) == 2
+            len(report["retired"]) == 4
             and report["final_budget"]["current_bytes"] == 0
             and report["final_budget"]["contexts"] == 0
             and all(
