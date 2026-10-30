@@ -78,6 +78,58 @@ class QtPreviewChecks(unittest.TestCase):
 
     def drain(self):
         self.app.processEvents()
+
+    def test_navigation_remove_undo_restores_objects_order_and_selection(self):
+        from PySide6.QtCore import QItemSelection, QItemSelectionModel
+
+        panel = self.window.navigation_panel
+        tracks = self.controller.core.trackManager
+        first = tracks.new_element(points=[(1, 2)])
+        second = tracks.new_element(points=[(3, 4)])
+        third = tracks.new_element(points=[(5, 6)])
+        tracks.set_active(second)
+        panel.refresh()
+        panel.tracks.selectionModel().select(
+            QItemSelection(
+                panel.tracks.model().index(0, 0),
+                panel.tracks.model().index(1, panel.tracks.columnCount() - 1),
+            ),
+            QItemSelectionModel.SelectionFlag.ClearAndSelect
+            | QItemSelectionModel.SelectionFlag.Rows,
+        )
+        active_track = tracks.get_active()
+        panel.remove_track()
+        self.assertEqual(list(tracks), [third])
+        self.assertEqual(self.window.undo_action.shortcut().toString(), "Ctrl+Z")
+        self.window.undo_stack.undo()
+        self.assertEqual(list(tracks), [first, second, third])
+        self.assertIs(tracks.get_active(), active_track)
+        self.window.undo_stack.redo()
+        self.assertEqual(list(tracks), [third])
+        self.window.undo_stack.undo()
+        self.assertEqual(list(tracks), [first, second, third])
+
+        routes = self.controller.core.routingManager
+        first_route = routes.new_element(points=[])
+        second_route = routes.new_element(points=[])
+        third_route = routes.new_element(points=[])
+        panel.route = second_route
+        panel.refresh()
+        panel.routes.selectionModel().select(
+            QItemSelection(
+                panel.routes.model().index(0, 0),
+                panel.routes.model().index(1, panel.routes.columnCount() - 1),
+            ),
+            QItemSelectionModel.SelectionFlag.ClearAndSelect
+            | QItemSelectionModel.SelectionFlag.Rows,
+        )
+        selected_route = panel.route
+        panel.remove_route()
+        self.window.undo_stack.undo()
+        self.assertEqual(list(routes), [first_route, second_route, third_route])
+        self.assertIs(panel.route, selected_route)
+        self.window.undo_stack.redo()
+        self.assertEqual(list(routes), [third_route])
         self.app.processEvents()
 
     def load(self, lines=None):
@@ -2546,6 +2598,56 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(panel.track_points.rowCount(), 0)
         self.assertIsNone(self.window.map.navigation.hl_poi)
 
+    def test_track_extended_selection_context_click_and_multi_delete(self):
+        from PySide6.QtCore import QItemSelection, QItemSelectionModel
+        from PySide6.QtWidgets import QTableWidget
+        from gweatherrouting.core.geo.track import Track
+        from gweatherrouting.qt.navigationpanel import NavigationPanel
+
+        panel = self.window.navigation_panel
+        manager = self.controller.core.trackManager
+        manager.append(Track("First", [(0, 0, None)]))
+        manager.append(Track("Second", [(1, 1, None)]))
+        manager.append(Track("Third", [(2, 2, None)]))
+        panel.refresh()
+
+        self.assertEqual(
+            panel.tracks.selectionMode(), QTableWidget.SelectionMode.ExtendedSelection
+        )
+        panel.tracks.selectionModel().select(
+            QItemSelection(
+                panel.tracks.model().index(0, 0),
+                panel.tracks.model().index(1, panel.tracks.columnCount() - 1),
+            ),
+            QItemSelectionModel.SelectionFlag.ClearAndSelect
+            | QItemSelectionModel.SelectionFlag.Rows,
+        )
+        self.assertEqual(
+            {index.row() for index in panel.tracks.selectionModel().selectedRows()},
+            {0, 1},
+        )
+        NavigationPanel._select_context_item(panel.tracks, panel.tracks.item(0, 0))
+        self.assertEqual(
+            {index.row() for index in panel.tracks.selectionModel().selectedRows()},
+            {0, 1},
+        )
+        NavigationPanel._select_context_item(panel.tracks, panel.tracks.item(2, 0))
+        self.assertEqual(
+            {index.row() for index in panel.tracks.selectionModel().selectedRows()},
+            {2},
+        )
+
+        panel.tracks.selectionModel().select(
+            QItemSelection(
+                panel.tracks.model().index(0, 0),
+                panel.tracks.model().index(1, panel.tracks.columnCount() - 1),
+            ),
+            QItemSelectionModel.SelectionFlag.ClearAndSelect
+            | QItemSelectionModel.SelectionFlag.Rows,
+        )
+        panel.remove_track()
+        self.assertEqual([track.name for track in manager], ["Third"])
+
     def test_navigation_gpx_native_picker_import_export_and_invalid_input(self):
         import gpxpy
         from gweatherrouting.qt.navigationpanel import gpx_document
@@ -2653,6 +2755,52 @@ class QtPreviewChecks(unittest.TestCase):
         panel.refresh_ais()
         self.assertFalse(panel.tabs.isTabVisible(3))
         self.assertFalse(self.window.map.ais_targets)
+
+    def test_navigation_routes_support_multi_selection_and_removal(self):
+        from PySide6.QtCore import QItemSelection, QItemSelectionModel
+        from PySide6.QtWidgets import QTableWidget
+        from gweatherrouting.core.geo.routing import Routing
+
+        panel = self.window.navigation_panel
+        manager = self.controller.core.routingManager
+        routes = [
+            Routing(
+                name,
+                [(48.4 + offset, -123.4, "2026-10-14T10:00:00Z", 45, 10, 5, 0)],
+                collection=manager,
+            )
+            for name, offset in (
+                ("Remove A", 0),
+                ("Remove B", 0.1),
+                ("Keep A", 0.2),
+                ("Keep B", 0.3),
+            )
+        ]
+        for route in routes:
+            manager.append(route)
+        panel.route = routes[0]
+        panel.refresh()
+
+        self.assertEqual(
+            panel.routes.selectionMode(), QTableWidget.SelectionMode.ExtendedSelection
+        )
+        panel.routes.selectionModel().select(
+            QItemSelection(
+                panel.routes.model().index(0, 0),
+                panel.routes.model().index(1, panel.routes.columnCount() - 1),
+            ),
+            QItemSelectionModel.SelectionFlag.ClearAndSelect
+            | QItemSelectionModel.SelectionFlag.Rows,
+        )
+        self.assertEqual(
+            {index.row() for index in panel.routes.selectionModel().selectedRows()},
+            {0, 1},
+        )
+
+        panel.remove_route()
+
+        self.assertEqual(manager.elements, routes[2:])
+        self.assertIs(panel.route, routes[3])
 
     def test_navigation_route_controls_and_collection_persistence(self):
         from gweatherrouting.core.geo.routing import Routing

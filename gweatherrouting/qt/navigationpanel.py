@@ -6,7 +6,7 @@ from pathlib import Path
 import dateutil.parser
 import gpxpy
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QUndoCommand, QUndoStack
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -88,13 +88,57 @@ def distance_nm(lat1, lon1, lat2, lon2):
     return 3440.065 * 2 * math.atan2(math.sqrt(a), math.sqrt(max(0, 1 - a)))
 
 
+class RemoveNavigationCommand(QUndoCommand):
+    """Undoable removal of one or more tracks or routes."""
+
+    def __init__(self, panel, manager, removed, current, point_index, kind):
+        label = "track" if kind == "track" else "route"
+        super().__init__(
+            f"Remove {len(removed)} {label}{'s' if len(removed) != 1 else ''}"
+        )
+        self.panel, self.manager = panel, manager
+        self.removed, self.current = removed, current
+        self.point_index, self.kind = point_index, kind
+
+    def redo(self):
+        for _, element in reversed(self.removed):
+            if element in self.manager.elements:
+                self.manager.remove(element)
+        if self.kind == "track":
+            if any(element is self.current for _, element in self.removed):
+                self.manager.set_active(self.manager[-1] if len(self.manager) else None)
+            self.panel.point_index = -1
+        elif any(element is self.current for _, element in self.removed):
+            self.panel.route = self.manager[-1] if len(self.manager) else None
+            self.panel.point_index = -1
+        self._refresh()
+
+    def undo(self):
+        for index, element in self.removed:
+            if element not in self.manager.elements:
+                self.manager.elements.insert(min(index, len(self.manager)), element)
+        self.manager.save()
+        if self.kind == "track":
+            self.manager.set_active(self.current)
+        else:
+            self.panel.route = self.current
+        self.panel.point_index = self.point_index
+        self._refresh()
+
+    def _refresh(self):
+        self.panel.refresh()
+        if self.kind == "route":
+            self.panel.route_selected.emit(self.panel.route)
+        self.panel.changed.emit()
+
+
 class NavigationPanel(QWidget):
     changed = Signal()
     route_selected = Signal(object)
     move_requested = Signal(object)
     ais_updated = Signal(object)
 
-    def __init__(self, controller, canvas, parent=None):
+    def __init__(self, controller, canvas, parent=None, *, undo_stack=None):
         super().__init__(parent)
         self.controller, self.core, self.canvas = controller, controller.core, canvas
         self.setMinimumWidth(280)
@@ -102,6 +146,7 @@ class NavigationPanel(QWidget):
         self.poi = None
         self.route = None
         self.point_index = -1
+        self.undo_stack = undo_stack or QUndoStack(self)
         self.ais_targets = []
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 12)
@@ -111,6 +156,7 @@ class NavigationPanel(QWidget):
         layout.addWidget(self.tabs)
         self.track_split = QSplitter(Qt.Orientation.Vertical)
         self.tracks = table(["Name", "POI", "Distance", "Visible"], True)
+        self.tracks.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         for column, width in enumerate((140, 45, 90, 65)):
             self.tracks.setColumnWidth(column, width)
         self._compact_columns(self.tracks)
@@ -133,6 +179,7 @@ class NavigationPanel(QWidget):
         self.tabs.addTab(tracks_page, "Tracks")
         self.route_split = QSplitter(Qt.Orientation.Vertical)
         self.routes = table(["Name", "Summary", "Visible"], True)
+        self.routes.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.route_points = table(["#", "Time", "TWA", "TWS", "Speed", "Brg"])
         self.route_split.addWidget(self.routes)
         self.route_split.addWidget(self.route_points)
@@ -241,13 +288,19 @@ class NavigationPanel(QWidget):
             item = widget.itemAt(position)
             if item is None:
                 return
-            widget.setCurrentItem(item)
+            self._select_context_item(widget, item)
             menu = QMenu(widget)
             for name, callback in actions:
                 menu.addAction(name, callback)
             menu.exec(widget.viewport().mapToGlobal(position))
 
         widget.customContextMenuRequested.connect(show)
+
+    @staticmethod
+    def _select_context_item(widget, item):
+        if item not in widget.selectedItems():
+            widget.clearSelection()
+            widget.setCurrentItem(item)
 
     def refresh(self):
         self.syncing = True
@@ -457,13 +510,32 @@ class NavigationPanel(QWidget):
         self.coordinates_dialog("Add POI", self.add_poi)
 
     def remove_track(self):
-        active = self.core.trackManager.get_active()
-        if active is not None:
-            self.core.trackManager.remove(active)
-            if len(self.core.trackManager):
-                self.core.trackManager.set_active(self.core.trackManager[-1])
-            self.refresh()
-            self.changed.emit()
+        tracks = self.core.trackManager
+        selected_rows = {
+            index.row() for index in self.tracks.selectionModel().selectedRows()
+        }
+        if not selected_rows:
+            active = tracks.get_active()
+            selected_rows = {row for row, track in enumerate(tracks) if track is active}
+        if not selected_rows:
+            return
+
+        removed = [
+            (row, tracks[row])
+            for row in sorted(selected_rows)
+            if 0 <= row < len(tracks)
+        ]
+        if removed and self.undo_stack is not None:
+            self.undo_stack.push(
+                RemoveNavigationCommand(
+                    self,
+                    tracks,
+                    removed,
+                    tracks.get_active(),
+                    self.point_index,
+                    "track",
+                )
+            )
 
     def remove_poi(self):
         if self.poi is not None and self.poi in self.core.poiManager.elements:
@@ -473,12 +545,30 @@ class NavigationPanel(QWidget):
             self.changed.emit()
 
     def remove_route(self):
-        if self.route is not None and self.route in self.core.routingManager.elements:
-            self.core.routingManager.remove(self.route)
-            self.route = None
-            self.refresh()
-            self.route_selected.emit(None)
-            self.changed.emit()
+        routes = self.core.routingManager
+        selected_rows = {
+            index.row() for index in self.routes.selectionModel().selectedRows()
+        }
+        if not selected_rows and self.route in routes.elements:
+            selected_rows = {
+                row for row, route in enumerate(routes) if route is self.route
+            }
+        if not selected_rows:
+            return
+
+        removed = [
+            (row, routes[row])
+            for row in sorted(selected_rows)
+            if 0 <= row < len(routes)
+        ]
+        if not removed:
+            return
+        if removed and self.undo_stack is not None:
+            self.undo_stack.push(
+                RemoveNavigationCommand(
+                    self, routes, removed, self.route, self.point_index, "route"
+                )
+            )
 
     def edit_point(self, operation):
         active = self.core.trackManager.get_active()

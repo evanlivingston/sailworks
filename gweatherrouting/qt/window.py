@@ -7,7 +7,15 @@ from datetime import timedelta
 from html import escape
 
 from PySide6.QtCore import QEvent, Qt, QTimer, QSize, QSignalBlocker
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QKeySequence, QAction
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QIcon,
+    QKeySequence,
+    QPainter,
+    QPixmap,
+    QUndoStack,
+)
 from PySide6.QtWidgets import (
     QComboBox,
     QDockWidget,
@@ -165,7 +173,10 @@ class PreviewWindow(QMainWindow):
         self.routing_dock.setWidget(self.routing_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.routing_dock)
         self.tabifyDockWidget(self.nmea_dock, self.routing_dock)
-        self.navigation_panel = NavigationPanel(controller, self.map, self)
+        self.undo_stack = QUndoStack(self)
+        self.navigation_panel = NavigationPanel(
+            controller, self.map, self, undo_stack=self.undo_stack
+        )
         navigation_scroll = NavigationScroll()
         style_scrollarea(navigation_scroll)
         navigation_scroll.setWidgetResizable(True)
@@ -214,6 +225,15 @@ class PreviewWindow(QMainWindow):
             [self.nmea_dock, self.routing_dock], [350, 350], Qt.Orientation.Horizontal
         )
         file_menu = self.menuBar().addMenu("File")
+        edit_menu = self.menuBar().addMenu("Edit")
+        self.undo_action = self.undo_stack.createUndoAction(self, "Undo")
+        self.undo_action.setShortcut(QKeySequence("Ctrl+Z"))
+        self.undo_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        self.redo_action = self.undo_stack.createRedoAction(self, "Redo")
+        self.redo_action.setShortcut(QKeySequence("Ctrl+Shift+Z"))
+        self.redo_action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        edit_menu.addAction(self.undo_action)
+        edit_menu.addAction(self.redo_action)
         open_log = file_menu.addAction(
             symbol_icon("document-open-symbolic"),
             "Open NMEA log…",
