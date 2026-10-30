@@ -30,6 +30,8 @@ Item {
     property var nativeV1: null
     property real blend: 0
     property real outputMode: 0
+    property int gradientLevels: 15
+    property bool gradientSmooth: true
     property string fragmentShader: "weather.frag.qsb"
     // The gridded field's rectangle in the scene's pixels.  The shader
     // interpolates its texture linearly across the item it draws on, so the
@@ -90,6 +92,8 @@ Item {
         property variant v1: root.nativeFields ? root.nativeV1 : imageV1
         property real blend: root.blend
         property real outputMode: root.outputMode
+        property int gradientLevels: root.gradientLevels
+        property int gradientSmooth: root.gradientSmooth ? 1 : 0
         fragmentShader: root.fragmentShader
     }
 }

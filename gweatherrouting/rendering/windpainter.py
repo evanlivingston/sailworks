@@ -246,7 +246,7 @@ class WindPainter:
         if scale < 1:
             scale = 1
 
-        if data:
+        if data and getattr(self.settings_manager, "gribWindGradient", True):
             # Draw color fill (smooth gradient between grid points).
             # A ragged multi-model union cannot form quads, so the caller
             # may supply a resampled regular grid for the fill while barbs

@@ -26,6 +26,10 @@ class SettingsManager(Storage):
         self.gribBarbDensity = "standard"
         self.marineCurrentDensity = "standard"
         self.gribWindStyle = "barbs"
+        self.gribWindGradient = True
+        self.gribWindGradientOpacity = 0.12
+        self.gribWindGradientSmooth = True
+        self.gribWindGradientLevels = 15
         self.weatherRenderer = "viewport"
         self.gribIsobarsVisible = True
         self.gribIsobarInterval = 4.0

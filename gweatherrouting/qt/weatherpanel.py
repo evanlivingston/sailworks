@@ -1,15 +1,18 @@
 """Weather overlay controls for the active chart or log map."""
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
+    QHBoxLayout,
+    QLabel,
     QMessageBox,
     QPushButton,
     QScrollArea,
-    QSpinBox,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -56,9 +59,24 @@ class WeatherPanel(QWidget):
                 "gribWindStyle", self.wind_style.currentData()
             )
         )
-        controls.addWidget(self.wind_style)
         form = QFormLayout()
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        form.addRow("Style", self.wind_style)
+        self.wind_gradient = self.checkbox("Gradient", "gribWindGradient")
+        form.addRow(self.wind_gradient)
+        self.wind_gradient_opacity = self.percent("gribWindGradientOpacity")
+        form.addRow("Gradient opacity", self.wind_gradient_opacity)
+        self.wind_gradient_style = QComboBox()
+        self.wind_gradient_style.addItem("Smooth", True)
+        self.wind_gradient_style.addItem("Hard transitions", False)
+        self.wind_gradient_style.currentIndexChanged.connect(
+            lambda _index: self.set_preference(
+                "gribWindGradientSmooth", self.wind_gradient_style.currentData()
+            )
+        )
+        form.addRow("Gradient style", self.wind_gradient_style)
+        self.wind_gradient_levels = self.integer_slider("gribWindGradientLevels", 2, 15)
+        form.addRow("Gradient levels", self.wind_gradient_levels)
         self.wind_opacity = self.percent("gribArrowOpacity")
         form.addRow("Wind opacity", self.wind_opacity)
         self.barb_density = QComboBox()
@@ -71,7 +89,7 @@ class WeatherPanel(QWidget):
                 "gribBarbDensity", self.barb_density.currentData()
             )
         )
-        form.addRow("Density", self.barb_density)
+        form.addRow("Line density", self.barb_density)
         controls.addLayout(form)
         controls.addWidget(self._section_divider())
         controls.addWidget(section_label("Ship weather observations"))
@@ -125,12 +143,56 @@ class WeatherPanel(QWidget):
         return widget
 
     def percent(self, key):
-        widget = QSpinBox()
-        widget.setRange(0, 100)
-        widget.setSuffix(" %")
-        widget.setValue(round(self.controller.settings[key] * 100))
-        widget.valueChanged.connect(lambda value: self.set_preference(key, value / 100))
-        return widget
+        control = QWidget()
+        layout = QHBoxLayout(control)
+        layout.setContentsMargins(0, 0, 0, 0)
+        slider = QSlider()
+        slider.setOrientation(Qt.Orientation.Horizontal)
+        slider.setRange(0, 100)
+        accessible_name = {
+            "gribArrowOpacity": "Wind opacity",
+            "gribWindGradientOpacity": "Gradient opacity",
+            "gribIsobarOpacity": "Isobar opacity",
+        }.get(key, key)
+        slider.setAccessibleName(accessible_name)
+        slider.setToolTip("Set opacity from 0% to 100%")
+        value_label = QLabel()
+        value_label.setAccessibleName(f"{accessible_name} value")
+        value_label.setMinimumWidth(42)
+        value_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        slider.setValue(round(self.controller.settings[key] * 100))
+        value_label.setText(f"{slider.value()} %")
+        slider.valueChanged.connect(lambda value: value_label.setText(f"{value} %"))
+        slider.valueChanged.connect(lambda value: self.set_preference(key, value / 100))
+        layout.addWidget(slider, 1)
+        layout.addWidget(value_label)
+        control.slider = slider
+        return control
+
+    def integer_slider(self, key, minimum, maximum):
+        control = QWidget()
+        layout = QHBoxLayout(control)
+        layout.setContentsMargins(0, 0, 0, 0)
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setRange(minimum, maximum)
+        slider.setAccessibleName("Gradient levels")
+        slider.setToolTip(f"Choose {minimum} to {maximum} gradient color levels")
+        value_label = QLabel()
+        value_label.setAccessibleName("Gradient levels value")
+        value_label.setMinimumWidth(24)
+        value_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        slider.setValue(self.controller.settings[key])
+        value_label.setText(str(slider.value()))
+        slider.valueChanged.connect(lambda value: value_label.setText(str(value)))
+        slider.valueChanged.connect(lambda value: self.set_preference(key, value))
+        layout.addWidget(slider, 1)
+        layout.addWidget(value_label)
+        control.slider = slider
+        return control
 
     def set_preference(self, key, value):
         settings = self.controller.settings
@@ -142,6 +204,9 @@ class WeatherPanel(QWidget):
             dict.__setitem__(settings, key, previous)
             QMessageBox.warning(self, "Unable to save setting", str(exc))
         self.refresh()
+        presenter = getattr(self.active_map(), "_weather_presenter", None)
+        if presenter is not None:
+            presenter.request()
         self.controller.data.redraw()
 
     def density_index(self):
@@ -193,12 +258,31 @@ class WeatherPanel(QWidget):
             max(0, self.wind_style.findData(self.controller.settings.gribWindStyle))
         )
         self.wind_style.blockSignals(False)
+        self.wind_gradient_style.blockSignals(True)
+        self.wind_gradient_style.setCurrentIndex(
+            max(
+                0,
+                self.wind_gradient_style.findData(
+                    self.controller.settings.gribWindGradientSmooth
+                ),
+            )
+        )
+        self.wind_gradient_style.blockSignals(False)
         self.barb_density.blockSignals(True)
         self.barb_density.setCurrentIndex(self.density_index())
         self.barb_density.blockSignals(False)
         self.refresh_density_labels()
         for widget, value in (
             (self.wind, self.active_map().wind_visible),
+            (self.wind_gradient, self.controller.settings.gribWindGradient),
+            (
+                self.wind_gradient_opacity,
+                round(self.controller.settings.gribWindGradientOpacity * 100),
+            ),
+            (
+                self.wind_gradient_levels,
+                self.controller.settings.gribWindGradientLevels,
+            ),
             (self.wind_opacity, round(self.controller.settings.gribArrowOpacity * 100)),
             (self.isobars, self.controller.settings.gribIsobarsVisible),
             (self.interval, self.controller.settings.gribIsobarInterval),
@@ -211,7 +295,15 @@ class WeatherPanel(QWidget):
             widget.blockSignals(True)
             if isinstance(widget, QCheckBox):
                 widget.setChecked(bool(value))
+            elif hasattr(widget, "slider"):
+                widget.slider.setValue(value)
             else:
                 widget.setValue(value)
             widget.blockSignals(False)
+        self.wind_gradient_opacity.setEnabled(self.wind_gradient.isChecked())
+        self.wind_gradient_style.setEnabled(self.wind_gradient.isChecked())
+        self.wind_gradient_levels.setEnabled(
+            self.wind_gradient.isChecked()
+            and not self.controller.settings.gribWindGradientSmooth
+        )
         self.isobar_options.setEnabled(self.isobars.isChecked())

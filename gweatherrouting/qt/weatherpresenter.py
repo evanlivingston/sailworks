@@ -401,6 +401,17 @@ class WeatherPresenter(QObject):
             else 0
         )
         widget.set_wind_style(self.canvas.controller.settings.gribWindStyle)
+        widget.set_wind_gradient(
+            self.canvas.controller.settings.gribWindGradient
+            and self.canvas.wind_visible
+        )
+        widget.set_wind_gradient_opacity(
+            self.canvas.controller.settings.gribWindGradientOpacity
+        )
+        widget.set_wind_gradient_style(
+            self.canvas.controller.settings.gribWindGradientSmooth,
+            self.canvas.controller.settings.gribWindGradientLevels,
+        )
         from gweatherrouting.rendering.marinepresentation import chart_instant
 
         marine = self.canvas.marine

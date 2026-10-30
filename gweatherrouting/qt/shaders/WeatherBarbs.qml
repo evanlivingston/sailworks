@@ -2,6 +2,7 @@ import QtQuick
 
 Item {
     id: root
+    property bool fillEnabled: false
     property alias u0Source: imageU0.source
     property alias v0Source: imageV0.source
     property alias u1Source: imageU1.source
@@ -47,6 +48,11 @@ Item {
     property bool ready: imagesReady && batchesReady()
     property bool prepared: imagesReady && batchesPrepared()
     property string shaderError: batchError()
+    WeatherFill {
+        objectName: "weatherFill"
+        anchors.fill: parent
+        visible: root.fillEnabled
+    }
     function batchesReady() {
         let revision = batchRevision
         for (let i = 0; i < batches.count; ++i) {
