@@ -456,8 +456,16 @@ class ForecastTimeline(QWidget):
     def _sync_time_axis_geometry(self, *_):
         if not hasattr(self, "day_strip") or not hasattr(self, "source_overview"):
             return
+        # The drawer may be hidden and keep stale child geometry. Reserve the
+        # scrollbar width from its content height and the drawer's max height,
+        # both of which remain valid while collapsed.
+        scroll_width = 0
+        if self.source_overview.plot.height() > 240:
+            scroll_width = (
+                self.source_overview.scroll.verticalScrollBar().sizeHint().width()
+            )
         self.day_strip.axis_right_margin = max(
-            0, self.day_strip.width() - self.source_overview.plot.width()
+            0, scroll_width
         )
         self.day_strip.update()
 

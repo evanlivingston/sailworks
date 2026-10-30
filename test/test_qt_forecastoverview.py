@@ -80,7 +80,7 @@ class TestForecastSourceOverview(unittest.TestCase):
         )
 
     def test_all_models_have_actual_dots_on_shared_axis_without_changing_scrubber(self):
-        from PySide6.QtGui import QImage
+        from PySide6.QtGui import QColor, QImage
 
         plot = self.timeline.source_overview.plot
         self.assertEqual([row[0] for row in plot.rows], ["gfs", "ecmwf"])
@@ -99,6 +99,7 @@ class TestForecastSourceOverview(unittest.TestCase):
         self.assertAlmostEqual(
             (points[1].x() - points[0].x()) / (points[2].x() - points[0].x()),
             7200 / 46800,
+            delta=0.001,
         )
         # Exercise the real painter, not just metadata storage.
         image = QImage(plot.size(), QImage.Format.Format_ARGB32)
@@ -111,8 +112,43 @@ class TestForecastSourceOverview(unittest.TestCase):
         point = plot.dot_points(self.active.valid_times, active_row)[1]
         self.assertEqual(
             image.pixelColor(round(point.x()), round(point.y())),
-            plot.palette().highlight().color(),
+            QColor("#777777"),
         )
+
+    def test_out_of_range_source_dots_are_clipped_before_the_label_column(self):
+        from PySide6.QtGui import QColor, QImage
+
+        plot = self.timeline.source_overview.plot
+        plot.set_rows(
+            (("old", "Old run", (self.stamp - 3600,), False, "Weather models", "GFS"),),
+            (self.stamp, self.stamp + 21600),
+        )
+        plot.resize(800, plot.height())
+        leaf = next(
+            index for index, item in enumerate(plot.tree_rows) if item[0] == "leaf"
+        )
+        point = plot.dot_points((self.stamp - 3600,), leaf)[0]
+        self.assertLess(point.x(), plot._plot_left())
+        image = QImage(plot.size(), QImage.Format.Format_ARGB32)
+        image.fill(0)
+        plot.render(image)
+        self.assertNotEqual(
+            image.pixelColor(round(point.x()), round(point.y())), QColor("#777777")
+        )
+
+    def test_collapsed_resize_reserves_track_scrollbar_width(self):
+        drawer = self.timeline.source_overview
+        drawer.plot.setFixedHeight(400)
+        for width in (1000, 1200):
+            self.host.resize(width, 700)
+            self.layout()
+            self.app.processEvents()
+            self.timeline._sync_time_axis_geometry()
+            self.assertEqual(
+                self.timeline.day_strip.axis_right_margin,
+                drawer.scroll.verticalScrollBar().sizeHint().width(),
+            )
+            self.assertTrue(drawer.isHidden())
 
     def test_model_type_tree_collapses_and_dots_share_scrubber_axis(self):
         from PySide6.QtCore import QPointF

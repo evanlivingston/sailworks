@@ -261,8 +261,14 @@ class SourceTimePlot(QWidget):
             painter.setPen(QPen(point_color, 1))
             painter.setBrush(point_color)
             times = row[2] if kind == "leaf" else row
+            painter.save()
+            painter.setClipRect(
+                self._plot_left(), top,
+                max(0, self.width() - self._plot_left()), self.ROW_HEIGHT,
+            )
             for point in self.dot_points(times, index):
                 painter.drawEllipse(point, 1.5, 1.5)
+            painter.restore()
             if kind == "leaf" and not times:
                 painter.setPen(palette.text().color())
                 painter.drawText(label_width + 12, top + 21, "No valid times")
