@@ -45,6 +45,9 @@ classifiers = [
 qt = [] # Compatibility extra: Qt is now installed by default.
 marine-global = ["copernicusmarine>=2.2,<3"]
 
+[dependency-groups]
+dev = ["black", "pytest", "pytest-qt"]
+
 [project.urls]
 Homepage = "https://github.com/dakk/gweatherrouting"
 "Bug Tracker" = "https://github.com/dakk/gweatherrouting/issues/"
@@ -95,4 +98,5 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools_scm]
 
 [tool.pytest.ini_options]
+pythonpath = ["."]
 markers = ["network: opt-in tests downloading live forecasts (GWR_NETWORK_TESTS=1)"]
