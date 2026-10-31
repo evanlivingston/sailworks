@@ -23,3 +23,4 @@ flatpak/wheels
 .flatpak-builder
 .coverage
 coverage.xml
+.opencode/
