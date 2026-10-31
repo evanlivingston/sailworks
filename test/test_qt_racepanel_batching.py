@@ -66,14 +66,27 @@ class _TrackManager(list):
 
 
 def test_show_race_tracks_uses_batched_remove_and_append(qtbot):
+    from unittest.mock import patch
     app = QApplication.instance() or QApplication([])
     manager = _TrackManager()
-    controller = SimpleNamespace(
-        time_control=SimpleNamespace(time=None),
-        core=SimpleNamespace(trackManager=manager),
-    )
-    panel = racepanel.RacesPanel(controller)
-    qtbot.addWidget(panel)
+    
+    # Create a fully mocked core with only our mock trackManager
+    class MockCore(SimpleNamespace):
+        def __init__(self):
+            super().__init__()
+            self.trackManager = manager
+            self.routingManager = []
+            self.poiManager = []
+    
+    # Mock load_saved_races to return empty to prevent loading real tracks
+    with patch("gweatherrouting.qt.racepanel.load_saved_races", return_value=[]):
+        controller = SimpleNamespace(
+            time_control=SimpleNamespace(time=None),
+            core=MockCore(),
+        )
+        panel = racepanel.RacesPanel(controller)
+        qtbot.addWidget(panel)
+    
     race = _sample_race()
 
     # Pre-populate manager with an old race track name.

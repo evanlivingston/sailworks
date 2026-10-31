@@ -49,6 +49,15 @@ def test_boats_at_current_time_follows_scrubbed_time(qtbot):
         def set_active(self, track):
             self.active = track
 
+        def remove_by_names(self, names):
+            wanted = set(names or ())
+            self[:] = [track for track in self if getattr(track, "name", None) not in wanted]
+
+        def append_many(self, tracks):
+            for track in tracks:
+                track.collection = self
+                self.append(track)
+
     manager = TrackManager()
     controller = SimpleNamespace(
         time_control=TimeControl(), core=SimpleNamespace(trackManager=manager)
@@ -77,13 +86,24 @@ def test_window_race_time_changed_publishes_all_boat_positions(qtbot):
         for p in race.boat(1).positions
     ]
 
+    # Mock track manager that supports iteration and get_active
+    class TrackManager(list):
+        def get_active(self):
+            # Return a track with the expected name
+            for track in self:
+                if track.name == track_name:
+                    return track
+            return None
+
+        def get_unique_name(self, name):
+            return name
+
+    track_manager = TrackManager()
+    track_manager.append(SimpleNamespace(name=track_name))
+
     controller = SimpleNamespace(
         time_control=TimeControl(),
-        core=SimpleNamespace(
-            trackManager=SimpleNamespace(
-                get_active=lambda: SimpleNamespace(name=track_name)
-            )
-        ),
+        core=SimpleNamespace(trackManager=track_manager),
     )
     canvas_map = Mock()
     canvas_log = Mock()
@@ -93,6 +113,7 @@ def test_window_race_time_changed_publishes_all_boat_positions(qtbot):
         map=canvas_map,
         log_map=canvas_log,
         _race_track_times=dict(race_panel.race_track_times),
+        _race_track_names={track_name},
         _race_boat_positions=[],
     )
     window._race_time_changed = lambda when: PreviewWindow._race_time_changed(
@@ -187,13 +208,25 @@ def test_navigation_overlay_drives_race_scrub_markers(qtbot):
     class Host(SimpleNamespace):
         pass
 
+    # Mock track manager that supports iteration and get_active
+    class TrackManager(list):
+        def get_active(self):
+            for track in self:
+                if track.name == track_name:
+                    return track
+            return None
+
+        def get_unique_name(self, name):
+            return name
+
+    track_manager = TrackManager()
+    track_manager.append(SimpleNamespace(name=track_name))
+
     host = Host()
     host.controller = SimpleNamespace(
         core=SimpleNamespace(
             routingManager=[],
-            trackManager=SimpleNamespace(
-                get_active=lambda: SimpleNamespace(name=track_name)
-            ),
+            trackManager=track_manager,
             poiManager=[],
         )
     )
@@ -240,6 +273,7 @@ def test_navigation_overlay_drives_race_scrub_markers(qtbot):
         map=host,
         log_map=host,
         _race_track_times={track_name: times},
+        _race_track_names={track_name},
         _race_boat_positions=[],
     )
 

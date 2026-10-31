@@ -124,6 +124,15 @@ def test_review_from_start_sets_race_time_and_selects_race_track(qtbot):
         def set_active(self, track):
             self.active = track
 
+        def remove_by_names(self, names):
+            wanted = set(names or ())
+            self[:] = [track for track in self if getattr(track, "name", None) not in wanted]
+
+        def append_many(self, tracks):
+            for track in tracks:
+                track.collection = self
+                self.append(track)
+
     manager = TrackManager()
     controller = SimpleNamespace(
         time_control=TimeControl(), core=SimpleNamespace(trackManager=manager)

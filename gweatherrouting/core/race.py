@@ -84,14 +84,32 @@ def _normalize_point(value: Any) -> Optional[tuple[float, float]]:
     return (lat, lon)
 
 
-@dataclass
 class RacePosition:
-    timestamp: datetime
-    latitude: float
-    longitude: float
-    speed: Optional[float] = None
-    course: Optional[float] = None
-    distance_to_finish: Optional[float] = None
+    """Race position with timestamp."""
+
+    def __init__(
+        self,
+        timestamp: Optional[datetime] = None,
+        latitude: float = 0.0,
+        longitude: float = 0.0,
+        speed: Optional[float] = None,
+        course: Optional[float] = None,
+        distance_to_finish: Optional[float] = None,
+    ):
+        self.latitude = latitude
+        self.longitude = longitude
+        self.speed = speed
+        self.course = course
+        self.distance_to_finish = distance_to_finish
+        self._timestamp = timestamp if timestamp is not None else datetime.utcnow()
+
+    @property
+    def timestamp(self) -> datetime:
+        return self._timestamp
+
+    @timestamp.setter
+    def timestamp(self, value: datetime):
+        self._timestamp = value
 
     @property
     def epoch(self) -> int:
