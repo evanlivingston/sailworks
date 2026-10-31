@@ -18,10 +18,63 @@ from gweatherrouting.core import utils
 from gweatherrouting.core.geo.element import Element
 
 
+class _TrackedPoints(list):
+    """List of points that bumps its owner's revision on every mutation.
+
+    Mutations are O(1) bookkeeping; no point data is scanned, so cache keys
+    can use the owner's revision instead of hashing or walking the points.
+    """
+
+    def __init__(self, owner, items=()):
+        super().__init__(items)
+        self._owner = owner
+
+
+def _tracked_mutator(name):
+    base = getattr(list, name)
+
+    def method(self, *args, **kwargs):
+        result = base(self, *args, **kwargs)
+        owner = getattr(self, "_owner", None)
+        if owner is not None:
+            owner.touch()
+        return result
+
+    method.__name__ = name
+    return method
+
+
+for _name in (
+    "__setitem__",
+    "__delitem__",
+    "__iadd__",
+    "__imul__",
+    "append",
+    "extend",
+    "insert",
+    "pop",
+    "remove",
+    "clear",
+    "sort",
+    "reverse",
+):
+    setattr(_TrackedPoints, _name, _tracked_mutator(_name))
+del _name
+
+
 class ElementMultiPoint(Element):
     def __init__(self, name, points=None, visible=True, collection=None):
         super().__init__(name, visible, collection)
         self.points = [] if points is None else points
+
+    @property
+    def points(self):
+        return self._points
+
+    @points.setter
+    def points(self, value):
+        self._points = _TrackedPoints(self, [] if value is None else value)
+        self.touch()
 
     def to_gpx_object(self):
         raise Exception("Not implemented")

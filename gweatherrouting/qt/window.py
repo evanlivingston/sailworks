@@ -3,7 +3,7 @@
 import os
 import sys
 from bisect import bisect_right
-from datetime import timedelta
+from datetime import timedelta, timezone
 from html import escape
 
 from PySide6.QtCore import QEvent, Qt, QTimer, QSize, QSignalBlocker
@@ -51,6 +51,7 @@ from .workspace import WorkspacePreferences
 from .polarworkspace import PolarWorkspace
 from .polarlibrary import PolarLibrary
 from .navigationpanel import NavigationPanel
+from .racepanel import RacesPanel
 from .marinepanel import MarinePanel
 from .weatherpanel import WeatherPanel
 from .modelregion import region_from_visible_workspace
@@ -198,6 +199,27 @@ class PreviewWindow(QMainWindow):
         self.navigation_panel.move_requested.connect(self._move_navigation_point)
         self.navigation_panel.ais_updated.connect(self._ais_updated)
         self._ais_updated(tuple(self.navigation_panel.ais_targets))
+        self._race_track_times = {}
+        self._race_boat_positions = []
+        self._race_timeline_bounds = None
+        self.race_panel = RacesPanel(controller)
+        self.race_panel.tracks_changed.connect(self._race_tracks_changed)
+        self.race_panel.race_selected.connect(self._race_selected)
+        controller.display_forecast.changed.connect(self._apply_race_timeline_bounds)
+        controller.time_control.connect("time_change", self._race_time_changed)
+        # RacesPanel loads persisted races in its constructor, before these
+        # window signals can be connected. Reapply the loaded race/track state.
+        self._race_tracks_changed()
+        if getattr(self.race_panel, "race", None) is not None:
+            self._race_selected(self.race_panel.race)
+        race_scroll = NavigationScroll()
+        style_scrollarea(race_scroll)
+        race_scroll.setWidgetResizable(True)
+        race_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        race_scroll.setWidget(self.race_panel)
+        self.race_dock = self._dock("Races", "races", race_scroll)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.race_dock)
+        self.race_dock.hide()
         self.map.navigation_request.connect(self._navigation_request)
         self.log_map.navigation_request.connect(self._navigation_request)
         self.setTabPosition(
@@ -287,6 +309,7 @@ class PreviewWindow(QMainWindow):
         view_menu.addAction(self.performance_dock.toggleViewAction())
         view_menu.addAction(self.polar_manager_dock.toggleViewAction())
         view_menu.addAction(self.navigation_dock.toggleViewAction())
+        view_menu.addAction(self.race_dock.toggleViewAction())
         view_menu.addAction(self.weather_dock.toggleViewAction())
         view_menu.addAction(self.chart_debug_dock.toggleViewAction())
         view_menu.addAction(header.toggleViewAction())
@@ -301,6 +324,7 @@ class PreviewWindow(QMainWindow):
         window_menu = self.menuBar().addMenu("Window")
         window_menu.addSection("Panels")
         window_menu.addAction(self.navigation_dock.toggleViewAction())
+        window_menu.addAction(self.race_dock.toggleViewAction())
         window_menu.addAction(self.weather_dock.toggleViewAction())
         window_menu.addAction(self.nmea_dock.toggleViewAction())
         window_menu.addAction(self.routing_dock.toggleViewAction())
@@ -475,6 +499,7 @@ class PreviewWindow(QMainWindow):
     def _drawer_dock_pool(self):
         return (
             self.navigation_dock,
+            self.race_dock,
             self.nmea_dock,
             self.routing_dock,
             self.polar_selector_dock,
@@ -653,6 +678,9 @@ class PreviewWindow(QMainWindow):
             and not self._drawer_collapsed["left"]
         )
         self.navigation_syncing = False
+        self.race_dock.setVisible(
+            current in (self.map, self.logs_view) and not self._drawer_collapsed["left"]
+        )
         self.marine_syncing = True
         for kind, dock in self.marine_docks.items():
             dock.setVisible(
@@ -788,6 +816,109 @@ class PreviewWindow(QMainWindow):
             self._expand_drawer("left")
             self.views.setCurrentWidget(self.map)
         self.navigation_dock.setVisible(checked)
+
+    def _race_selected(self, race):
+        self._race_timeline_bounds = None
+        if getattr(race, "start_time", None) and getattr(race, "end_time", None):
+            self._race_timeline_bounds = (
+                race.start_time.replace(tzinfo=timezone.utc).timestamp(),
+                race.end_time.replace(tzinfo=timezone.utc).timestamp(),
+                tuple(
+                    p.timestamp.replace(tzinfo=timezone.utc).timestamp()
+                    for boat in getattr(race, "boats", ())
+                    for p in boat.positions
+                ),
+            )
+        self._apply_race_timeline_bounds()
+
+    def _apply_race_timeline_bounds(self):
+        bounds = getattr(self, "_race_timeline_bounds", None)
+        timeline = getattr(self.map, "timeline", None)
+        if timeline is None:
+            return
+        if bounds is None:
+            timeline.clear_bounds_override()
+            return
+        start, end, valid_times = bounds
+        timeline.set_bounds_override(start, end, valid_times)
+
+    def _race_tracks_changed(self):
+        self._race_track_times = dict(getattr(self.race_panel, "race_track_times", {}))
+        self._race_track_names = set(getattr(self.race_panel, "_race_track_names", []))
+        self.navigation_panel.refresh()
+        self._navigation_changed()
+        self._race_time_changed(self.controller.time_control.time)
+
+    def _race_time_changed(self, when):
+        if not getattr(self, "_race_track_times", None):
+            # No imported race is active; make sure stale boat markers disappear.
+            self._race_boat_positions = []
+            for canvas in (self.map, self.log_map):
+                try:
+                    canvas.race_boat_positions = []
+                    canvas.race_positions = []
+                except Exception:
+                    pass
+                try:
+                    canvas.invalidate_navigation()
+                except Exception:
+                    pass
+                try:
+                    canvas.update()
+                except Exception:
+                    pass
+            return
+        active = self.controller.core.trackManager.get_active()
+        if active is not None and active.name in self._race_track_times:
+            offsets = self._race_track_times[active.name]
+            if offsets:
+                try:
+                    position = when.replace(tzinfo=timezone.utc).timestamp()
+                except Exception:
+                    position = None
+                if position is not None:
+                    for canvas in (self.map, self.log_map):
+                        canvas.offsets = tuple(offsets)
+                        canvas.position = position
+        # Keep every imported race boat visible at the scrubbed time, not just
+        # the currently active track. Only show boats that still have
+        # their tracks in the trackManager (user may have deleted some).
+        try:
+            position_ts = when.replace(tzinfo=timezone.utc).timestamp()
+        except Exception:
+            position_ts = None
+        race = getattr(getattr(self, "race_panel", None), "race", None)
+        track_manager = getattr(getattr(self.controller, "core", None), "trackManager", None)
+        positions = []
+        if race is not None and track_manager is not None:
+            try:
+                when_dt = when
+                # Build set of boat IDs that have visible tracks in trackManager
+                visible_boat_ids = set()
+                track_names = getattr(self, "_race_track_names", {})
+                for track in track_manager:
+                    if track.name in track_names:
+                        # Find which boat this track belongs to
+                        for boat in race.boats:
+                            if f"{race.name} - {boat.name or boat.boat_id}" in track.name:
+                                visible_boat_ids.add(boat.boat_id)
+                                break
+                for boat_id, boat_position in race.positions_at(when_dt).items():
+                    if boat_id in visible_boat_ids:
+                        positions.append(
+                            [float(boat_position.latitude), float(boat_position.longitude)]
+                        )
+            except Exception:
+                positions = []
+        self._race_boat_positions = positions
+        for canvas in (self.map, self.log_map):
+            try:
+                canvas.race_boat_positions = positions
+                canvas.race_positions = positions
+            except Exception:
+                pass
+            canvas.invalidate_navigation()
+            canvas.update()
 
     def _navigation_changed(self):
         self.routing_panel.refresh_destinations()

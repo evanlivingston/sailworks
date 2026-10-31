@@ -23,8 +23,30 @@ logger = logging.getLogger("gweatherrouting")
 class Element:
     def __init__(self, name="any", visible=True, collection=None):
         self.name = name
+        self._revision = 0
         self.visible = visible
         self.collection = collection
+
+    @property
+    def visible(self):
+        return self._visible
+
+    @visible.setter
+    def visible(self, value):
+        self._visible = value
+        self.touch()
+
+    @property
+    def revision(self):
+        """Monotonic counter bumped on any edit that affects drawn geometry.
+
+        Read in O(1) by cache keys; never derived from point data.
+        """
+        return self._revision
+
+    def touch(self):
+        """Mark this element as changed so cached geometry is invalidated."""
+        self._revision = getattr(self, "_revision", 0) + 1
 
     def to_gpx_object(self):
         raise Exception("Not implemented")

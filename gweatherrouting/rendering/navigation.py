@@ -216,6 +216,11 @@ class NavigationRenderer:
         for tr in self.core.trackManager:
             if not tr.visible:
                 continue
+            # Race tracks are drawn separately (and cached) so scrubbing does
+            # not redraw their geometry; skip them here, including their
+            # per-fix number labels.
+            if getattr(tr, "race_track", False):
+                continue
 
             active = self.core.trackManager.is_active(tr)
 
@@ -277,12 +282,59 @@ class NavigationRenderer:
                 prevx = x
                 prevy = y
 
+    def draw_race_tracks(self, gpsmap, cr):  # noqa: C901
+        """Draw race-track geometry without per-fix number labels."""
+        for tr in self.core.trackManager:
+            if not tr.visible or not getattr(tr, "race_track", False):
+                continue
+
+            active = self.core.trackManager.is_active(tr)
+
+            prevx = None
+            prevy = None
+
+            for p in tr:
+                x, y = gpsmap.convert_geographic_to_screen(
+                    MapPoint.new_degrees(p[0], p[1])
+                )
+
+                if prevx is None:
+                    if active:
+                        Style.Track.TrackActiveFont.apply(cr)
+                    else:
+                        Style.Track.TrackInactiveFont.apply(cr)
+
+                    cr.move_to(x - 10, y - 10)
+                    cr.show_text(tr.name)
+                    cr.stroke()
+
+                if prevx is not None and prevy is not None:
+                    if active:
+                        Style.Track.TrackActive.apply(cr)
+                    else:
+                        Style.Track.TrackInactive.apply(cr)
+
+                    cr.move_to(prevx, prevy)
+                    cr.line_to(x, y)
+                    cr.stroke()
+
+                if active:
+                    Style.Track.TrackActive.apply(cr)
+                else:
+                    Style.Track.TrackInactive.apply(cr)
+
+                Style.reset_dash(cr)
+                cr.arc(x, y, 5, 0, 2 * math.pi)
+                cr.stroke()
+
+                prevx = x
+                prevy = y
+
         for tr in self.core.poiManager:
             if not tr.visible:
                 continue
 
             poi_hl = tr.name == self.hl_poi
-
             x, y = gpsmap.convert_geographic_to_screen(
                 MapPoint.new_degrees(tr.position[0], tr.position[1])
             )
