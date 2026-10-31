@@ -30,6 +30,7 @@ from gweatherrouting.core.forecasttimeline import (
     step_forecast_time,
 )
 from .theme import symbol_icon
+from .forecastoverview import ForecastSourceDrawer, source_rows
 
 logger = logging.getLogger("gweatherrouting")
 
@@ -44,6 +45,7 @@ class DayStripWidget(QWidget):
     """
 
     time_selected = Signal(float)
+    now_changed = Signal(float)
 
     CELL_HEIGHT = 40
     TRACK_HEIGHT = 6
@@ -55,6 +57,8 @@ class DayStripWidget(QWidget):
         self.marker = None  # optional reference time (red marker)
         self.now = datetime.now(timezone.utc).timestamp()
         self.valid_times = ()  # forecast valid-time timestamps (dot markers)
+        self.axis_left_margin = 0
+        self.axis_right_margin = 0
         self.setMinimumHeight(self.CELL_HEIGHT + self.TRACK_HEIGHT + 10)
         self.setMouseTracking(True)
         self._cell_rects = []  # list of (QRect, noon_timestamp)
@@ -67,6 +71,7 @@ class DayStripWidget(QWidget):
     def _update_now(self):
         self.now = datetime.now(timezone.utc).timestamp()
         self.update()
+        self.now_changed.emit(self.now)
 
     def set_bounds(self, start, end):
         if start is None or end is None:
@@ -101,14 +106,15 @@ class DayStripWidget(QWidget):
             day += timedelta(days=1)
         if not days:
             return []
-        width = self.width()
+        width = self.width() - self.axis_left_margin - self.axis_right_margin
         if width <= 0:
             return []
         cell_width = width / len(days)
         cells = []
         for i, day_ts in enumerate(days):
             rect = QRect(
-                int(i * cell_width), 0, max(1, int(cell_width)), self.CELL_HEIGHT
+                self.axis_left_margin + int(i * cell_width), 0,
+                max(1, int(cell_width)), self.CELL_HEIGHT
             )
             cells.append((rect, day_ts + 12 * 3600))
         return cells
@@ -147,14 +153,15 @@ class DayStripWidget(QWidget):
             # Separator line under the cells.
             track_y = self.CELL_HEIGHT + 4
             painter.setPen(QPen(QColor("#999999"), 1))
-            painter.drawLine(0, track_y, self.width(), track_y)
+            axis_right = self.width() - self.axis_right_margin
+            painter.drawLine(self.axis_left_margin, track_y, axis_right, track_y)
 
             # Tick marks below the track, one per day boundary.
             if self._cell_rects:
-                width = self.width()
+                width = self.width() - self.axis_left_margin - self.axis_right_margin
                 cell_width = width / len(self._cell_rects)
-                x = cell_width
-                while x < width:
+                x = self.axis_left_margin + cell_width
+                while x < self.width() - self.axis_right_margin:
                     painter.drawLine(
                         int(x), track_y, int(x), track_y + self.TRACK_HEIGHT
                     )
@@ -170,8 +177,12 @@ class DayStripWidget(QWidget):
                 for stamp in self.valid_times:
                     if not math.isfinite(stamp) or stamp < start or stamp > end:
                         continue
+                    plot_width = max(
+                        0,
+                        self.width() - self.axis_left_margin - self.axis_right_margin - 1,
+                    )
                     px = (
-                        round((stamp - start) / span * (self.width() - 1))
+                        self.axis_left_margin + round((stamp - start) / span * plot_width)
                         if span > 0
                         else (self.width() - 1) / 2
                     )
@@ -181,17 +192,29 @@ class DayStripWidget(QWidget):
 
             # Vertical markers.
             if self.now is not None and start <= self.now <= end and span > 0:
-                now_x = round((self.now - start) / span * (self.width() - 1))
+                now_x = self.axis_left_margin + round(
+                    (self.now - start)
+                    / span
+                    * max(0, self.width() - self.axis_left_margin - self.axis_right_margin - 1)
+                )
                 painter.setPen(QPen(QColor("#e6c229"), 2))
                 painter.drawLine(now_x, 0, now_x, self.height())
 
             if self.position is not None and span > 0:
-                px = int((self.position - start) / span * self.width())
+                px = self.axis_left_margin + round(
+                    (self.position - start)
+                    / span
+                    * max(0, self.width() - self.axis_left_margin - self.axis_right_margin - 1)
+                )
                 painter.setPen(QPen(QColor("#0066cc"), 2))
                 painter.drawLine(px, 0, px, self.height())
 
             if self.marker is not None and span > 0:
-                mx = int((self.marker - start) / span * self.width())
+                mx = self.axis_left_margin + round(
+                    (self.marker - start)
+                    / span
+                    * max(0, self.width() - self.axis_left_margin - self.axis_right_margin - 1)
+                )
                 painter.setPen(QPen(QColor("#cc0000"), 2))
                 painter.drawLine(mx, 0, mx, self.height())
         except Exception as exc:  # Never let a paint error crash the app
@@ -213,7 +236,10 @@ class DayStripWidget(QWidget):
                 or end < start
             ):
                 return False
-            fraction = max(0.0, min(1.0, x / width))
+            plot_width = width - self.axis_left_margin - self.axis_right_margin - 1
+            if plot_width <= 0:
+                return False
+            fraction = max(0.0, min(1.0, (x - self.axis_left_margin) / plot_width))
             stamp = start + fraction * (end - start)
             self.time_selected.emit(stamp)
             return True
@@ -259,6 +285,7 @@ class DayStripWidget(QWidget):
 
 class ForecastTimeline(QWidget):
     step_changed = Signal()
+    expansion_changed = Signal()
 
     def __init__(self, controller, parent=None):
         super().__init__(parent)
@@ -270,6 +297,7 @@ class ForecastTimeline(QWidget):
         self._signature = None
         self._syncing = False
         self._pending = None
+        self._expanded = False
         self.closed = False
         self.seconds = 900
         self.setMinimumWidth(520)
@@ -353,7 +381,24 @@ class ForecastTimeline(QWidget):
         )
         row.addWidget(self.end_month_label)
 
+        self.overview_button = QToolButton()
+        self.overview_button.setText("⌃")
+        self.overview_button.setAccessibleName("Expand forecast source overview")
+        self.overview_button.setToolTip("Show valid times by forecast source")
+        self.overview_button.setCheckable(True)
+        self.overview_button.setAutoRaise(True)
+        self.overview_button.toggled.connect(self._set_expanded)
+        row.addWidget(self.overview_button)
+
         layout.addLayout(row)
+
+        # The track drawer follows the scrubber; the viewport pins this widget
+        # to its bottom edge, so expanding the drawer grows the full overlay up.
+        self.source_overview = ForecastSourceDrawer(self)
+        self.source_overview.geometry_changed.connect(self.expansion_changed)
+        self.source_overview.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
 
         # Caption / status line.
         self.caption = QLabel()
@@ -368,7 +413,12 @@ class ForecastTimeline(QWidget):
         self.day_strip.setAccessibleName("Forecast day timeline")
         self.day_strip.setToolTip("Click and drag to scrub forecast time")
         self.day_strip.time_selected.connect(self._seek_to_stamp)
+        self.day_strip.now_changed.connect(self.source_overview.set_now_cursor)
+        self.source_overview.plot.axis_width_changed.connect(
+            self._sync_time_axis_geometry
+        )
         layout.addWidget(self.day_strip)
+        layout.addWidget(self.source_overview)
 
         # Hidden slider keeps the value model for steps/playback.
         self.slider = QSlider(Qt.Orientation.Horizontal)
@@ -398,6 +448,27 @@ class ForecastTimeline(QWidget):
         self.pause()
         self.refresh()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "day_strip") and hasattr(self, "source_overview"):
+            QTimer.singleShot(0, self._sync_time_axis_geometry)
+
+    def _sync_time_axis_geometry(self, *_):
+        if not hasattr(self, "day_strip") or not hasattr(self, "source_overview"):
+            return
+        # The drawer may be hidden and keep stale child geometry. Reserve the
+        # scrollbar width from its content height and the drawer's max height,
+        # both of which remain valid while collapsed.
+        scroll_width = 0
+        if self.source_overview.plot.height() > 240:
+            scroll_width = (
+                self.source_overview.scroll.verticalScrollBar().sizeHint().width()
+            )
+        self.day_strip.axis_right_margin = max(
+            0, scroll_width
+        )
+        self.day_strip.update()
+
     @staticmethod
     def _button(row, icon, title, callback):
         button = QToolButton()
@@ -420,6 +491,17 @@ class ForecastTimeline(QWidget):
             self.seconds = TIME_UNITS[label]
             self.step_changed.emit()
 
+    def _set_expanded(self, expanded):
+        self._expanded = bool(expanded)
+        self.source_overview.set_expanded(self._expanded)
+        self.overview_button.setText("⌄" if self._expanded else "⌃")
+        self.overview_button.setAccessibleName(
+            "Collapse forecast source overview"
+            if self._expanded
+            else "Expand forecast source overview"
+        )
+        self.expansion_changed.emit()
+
     def _marine_changed(self, *_):
         self.controller.scheduler.submit(self.refresh)
 
@@ -437,37 +519,49 @@ class ForecastTimeline(QWidget):
             valid_times = tuple(
                 sorted({stamp for source in sources for stamp in source.valid_times})
             )
+            candidate_bounds = forecast_bounds(intervals)
             signature = (intervals, valid_times)
-            if signature == self._signature:
-                return
-            self._signature = signature
-            self.bounds = forecast_bounds(intervals)
-            self.cancel_commit()
-            self._syncing = True
-            if self.bounds:
-                start, end = self.bounds
-                # Relative seconds avoid Qt's signed-32-bit epoch limit after 2038.
-                self.slider.setRange(0, max(1, min(2**31 - 1, math.ceil(end - start))))
-                self.slider.setSingleStep(60)
-                self.slider.setPageStep(3600)
-                self.slider.setEnabled(end > start)
-                # Month/year labels at the edges.
-                start_local = datetime.fromtimestamp(start).astimezone()
-                end_local = datetime.fromtimestamp(end).astimezone()
-                self.start_month_label.setText(start_local.strftime("%b %Y"))
-                self.end_month_label.setText(end_local.strftime("%b %Y"))
-                self.start_month_label.setToolTip(start_local.isoformat())
-                self.end_month_label.setToolTip(end_local.isoformat())
-                self.day_strip.set_bounds(start, end)
-                self.day_strip.set_valid_times(valid_times)
-            else:
-                self.slider.setEnabled(False)
-                self.start_month_label.clear()
-                self.end_month_label.clear()
-                self.day_strip.set_bounds(None, None)
-                self.day_strip.set_valid_times(())
-            self._syncing = False
-            self._time_changed(self.clock.time)
+            if signature != self._signature:
+                self._signature = signature
+                self.bounds = candidate_bounds
+                self.cancel_commit()
+                self._syncing = True
+                if self.bounds:
+                    start, end = self.bounds
+                    # Relative seconds avoid Qt's signed-32-bit epoch limit after 2038.
+                    self.slider.setRange(0, max(1, min(2**31 - 1, math.ceil(end - start))))
+                    self.slider.setSingleStep(60)
+                    self.slider.setPageStep(3600)
+                    self.slider.setEnabled(end > start)
+                    # Month/year labels at the edges.
+                    start_local = datetime.fromtimestamp(start).astimezone()
+                    end_local = datetime.fromtimestamp(end).astimezone()
+                    self.start_month_label.setText(start_local.strftime("%b %Y"))
+                    self.end_month_label.setText(end_local.strftime("%b %Y"))
+                    self.start_month_label.setToolTip(start_local.isoformat())
+                    self.end_month_label.setToolTip(end_local.isoformat())
+                    self.day_strip.set_bounds(start, end)
+                    self.day_strip.set_valid_times(valid_times)
+                else:
+                    self.slider.setEnabled(False)
+                    self.start_month_label.clear()
+                    self.end_month_label.clear()
+                    self.day_strip.set_bounds(None, None)
+                    self.day_strip.set_valid_times(())
+                self._syncing = False
+                self._time_changed(self.clock.time)
+
+            # Overview is optional: a marine/catalog failure must never abort
+            # the selected-model timeline refresh above.
+            try:
+                self.source_overview.set_rows(
+                    source_rows(self.controller.display_forecast, self.marine), candidate_bounds
+                )
+                self.day_strip.axis_left_margin = self.source_overview.plot.label_width
+                self._sync_time_axis_geometry()
+                self.day_strip.update()
+            except Exception as exc:
+                logger.warning("Forecast source overview refresh error: %s", exc)
         except Exception as exc:  # Never let a refresh crash the app
             logger.warning("ForecastTimeline refresh error: %s", exc)
             self._syncing = False
@@ -493,6 +587,9 @@ class ForecastTimeline(QWidget):
                 self.slider.setValue(max(0, min(self.slider.maximum(), value)))
                 self.day_strip.set_position(instant.timestamp())
                 self.day_strip.set_marker(start)
+                self.source_overview.set_cursors(
+                    self.day_strip.now, instant.timestamp()
+                )
                 self.caption.setText(
                     "Selected time is outside the loaded forecast range"
                     if not start <= instant.timestamp() <= end
@@ -501,6 +598,7 @@ class ForecastTimeline(QWidget):
             else:
                 self.day_strip.set_position(None)
                 self.day_strip.set_marker(None)
+                self.source_overview.set_cursors(self.day_strip.now, None)
                 self.caption.setText(
                     "Choose a display forecast in Weather, or download tides / currents"
                 )
@@ -635,6 +733,7 @@ class ForecastTimeline(QWidget):
             return
         try:
             self.closed = True
+            self.source_overview.stop()
             self.pause()
             self.cancel_commit()
             self.poll_timer.stop()

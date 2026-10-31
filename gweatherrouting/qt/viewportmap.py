@@ -148,6 +148,7 @@ class ViewportMap(
 
             self.timeline = ForecastTimeline(controller, self)
             self.timeline.setAutoFillBackground(True)
+            self.timeline.expansion_changed.connect(self._layout_timeline)
             self._layout_timeline()
 
     def _layout_timeline(self):
