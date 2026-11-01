@@ -143,6 +143,7 @@ class GridIndex:
             is_pressure = is_mean_sea_level_pressure(metadata)
             if not (is_wind or is_gust or is_pressure):
                 continue
+            accepted_levels: tuple[str, ...]
             if is_wind:
                 expected = "10-HTGL"
                 accepted_levels = (expected,)

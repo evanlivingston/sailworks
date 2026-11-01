@@ -345,7 +345,7 @@ class Era5DownloadService:
                 raise
 
 
-_catalog_locks = {}
+_catalog_locks: dict[str, threading.Lock] = {}
 _catalog_locks_guard = threading.Lock()
 
 

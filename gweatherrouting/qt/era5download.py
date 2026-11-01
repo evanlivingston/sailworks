@@ -219,7 +219,11 @@ class Era5DownloadTab(QWidget):
 
     def poll(self):
         if self.job is not None and not self.job.is_alive():
-            key = (self.plan.start, self.plan.end, self.plan.area)
+            plan = self.plan
+            if plan is None:
+                self.job = None
+                return
+            key = (plan.start, plan.end, plan.area)
             error = self.service.errors.pop(key, None)
             self.status.setText(error or "ERA5 historical request complete.")
             self.job = None
