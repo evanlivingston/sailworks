@@ -12,6 +12,7 @@ dependencies = [
     "PySide6-Essentials>=6.8,<7",
     "pycairo",
     "requests",
+    "cdsapi>=0.7,<1",
     "keyring>=25,<26",
     "copernicusmarine>=2.2,<3; python_version >= '3.10'",
     "colorlog",

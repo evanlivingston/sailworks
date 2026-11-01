@@ -121,12 +121,29 @@ class GridIndex:
         for band_id in range(1, self.dataset.RasterCount + 1):
             metadata = self.dataset.GetRasterBand(band_id).GetMetadata()
             element = metadata.get("GRIB_ELEMENT")
+            # ERA5 single-level CDS GRIB uses ecCodes short aliases. Normalize
+            # only those unambiguous element/level pairs for the shared sampler.
+            level = metadata.get("GRIB_SHORT_NAME", "")
+            era5_element = {
+                ("10U", "0-SFC"): "UGRD",
+                ("10V", "0-SFC"): "VGRD",
+                ("MSL", "0-MSL"): "PRMSL",
+                ("MSL", "0-SFC"): "PRMSL",
+            }.get((element, level))
+            if era5_element:
+                element = era5_element
+                if element in FIELDS["wind"]:
+                    # Normalize the sampler's paired identity as well as the
+                    # element; otherwise the normal 10-HTGL check drops CDS data.
+                    level = "10-HTGL"
+                elif element == "PRMSL":
+                    level = "0-MSL"
             is_wind = element in FIELDS["wind"]
             is_gust = element in FIELDS["gust"]
             is_pressure = is_mean_sea_level_pressure(metadata)
             if not (is_wind or is_gust or is_pressure):
                 continue
-            level = metadata.get("GRIB_SHORT_NAME", "")
+            accepted_levels: tuple[str, ...]
             if is_wind:
                 expected = "10-HTGL"
                 accepted_levels = (expected,)
