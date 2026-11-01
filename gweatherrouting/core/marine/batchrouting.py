@@ -7,7 +7,7 @@ import numpy as np
 from weatherrouting import IsoPoint
 
 from .chs import DownloadCancelledError
-from .routing import ARRIVAL_METRES, GEOD, KNOT, RoutingDataGapError
+from .routing import GEOD, KNOT, RoutingDataGapError
 
 
 def move_many(positions, velocities, duration):

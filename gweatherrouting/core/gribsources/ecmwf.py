@@ -6,11 +6,11 @@ Source attribution: ECMWF, licensed under CC BY 4.0
 (https://creativecommons.org/licenses/by/4.0/).
 """
 
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 import json
 import os
 import tempfile
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin
 from uuid import uuid4
 
 from .base import GribSource
@@ -19,7 +19,6 @@ from .ecmwfcatalog import (
     DATE_PATTERN,
     cycle_hour,
     listed_names,
-    optional_catalog_text,
     parse_pinned_identifier,
     session_for,
 )

@@ -8,7 +8,7 @@ the frontends run in separate processes and never share GUI event loops.
 
 ## Try it
 
-Use Python 3.10 or newer in the development environment:
+Use Python 3.11 or newer in the development environment:
 
 ```sh
 .venv/bin/python -m pip install -e .
@@ -23,7 +23,7 @@ The equivalent module command is:
 
 Instrument connections are managed from **File → Settings → Connections**. Choose **Live data source** in the NMEA panel to read from them, or **Loaded log** to inspect a saved log. Import logs and open File Info from the **Log library**. Canadian chart tiles (CHS) are enabled by default and can be toggled in the chart visibility settings. Close GTK's live connections before opening the same serial device or listening port in Qt.
 
-PySide6 Essentials is a base dependency and Python 3.10+ is required. The `[qt]`
+PySide6 Essentials is a base dependency and Python 3.11+ is required. The `[qt]`
 extra and `gweatherrouting-qt` command remain compatibility aliases. Use
 `gweatherrouting-gtk` or `python -m gweatherrouting.gtk` for GTK. Base dependencies include
 PyGObject because GTK remains supported. The Qt frontend does not import GTK

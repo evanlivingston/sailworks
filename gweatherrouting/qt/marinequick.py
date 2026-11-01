@@ -6,7 +6,7 @@ from threading import Condition, Thread
 import numpy as np
 from shiboken6 import delete
 from PySide6.QtCore import QObject, QTimer, Signal, Qt
-from PySide6.QtGui import QFont, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QFont, QPainterPath, QPen
 from PySide6.QtQuick import (
     QQuickItem,
     QQuickPaintedItem,

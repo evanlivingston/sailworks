@@ -7,9 +7,8 @@ import os
 import tempfile
 import threading
 import fcntl
-import time
 from dataclasses import dataclass
-from datetime import date, datetime, time as daytime, timedelta, timezone
+from datetime import datetime, time as daytime, timedelta, timezone
 from pathlib import Path
 
 DATASET = "reanalysis-era5-single-levels"
@@ -66,6 +65,22 @@ def plan_request(start, end, area, *, now=None, max_days=MAX_DAYS):
         raise ValueError(
             "ERA5 data is not considered available until five days after valid time"
         )
+    north, west, south, east = _validate_area_and_limits(start, end, area, max_days)
+    req = {
+        "product_type": ["reanalysis"],
+        "variable": list(VARIABLES),
+        "year": sorted({f"{d.year:04d}" for d in _dates(start.date(), end.date())}),
+        "month": sorted({f"{d.month:02d}" for d in _dates(start.date(), end.date())}),
+        "day": sorted({f"{d.day:02d}" for d in _dates(start.date(), end.date())}),
+        "time": [f"{h:02d}:00" for h in range(24)],
+        "area": [north, west, south, east],
+        "data_format": "grib",
+        "download_format": "unarchived",
+    }
+    return Era5Request(start, end, (north, west, south, east), req)
+
+
+def _validate_area_and_limits(start, end, area, max_days):
     try:
         north, west, south, east = (float(v) for v in area)
     except (TypeError, ValueError):
@@ -83,18 +98,7 @@ def plan_request(start, end, area, *, now=None, max_days=MAX_DAYS):
         raise ValueError(f"request spans {days} UTC days; maximum is {max_days}")
     if hours > MAX_REQUEST_HOURS:
         raise ValueError(f"request spans {hours} hours; maximum is {MAX_REQUEST_HOURS}")
-    req = {
-        "product_type": ["reanalysis"],
-        "variable": list(VARIABLES),
-        "year": sorted({f"{d.year:04d}" for d in _dates(start.date(), end.date())}),
-        "month": sorted({f"{d.month:02d}" for d in _dates(start.date(), end.date())}),
-        "day": sorted({f"{d.day:02d}" for d in _dates(start.date(), end.date())}),
-        "time": [f"{h:02d}:00" for h in range(24)],
-        "area": [north, west, south, east],
-        "data_format": "grib",
-        "download_format": "unarchived",
-    }
-    return Era5Request(start, end, (north, west, south, east), req)
+    return north, west, south, east
 
 
 def _dates(first, last):
@@ -195,7 +199,8 @@ def validate_grib(path, piece, *, dataset_opener=None):
         ]
         if missing:
             raise Era5Error(
-                f"GRIB is missing required ERA5 fields/UTC times (first missing: {missing[0][0]} at {missing[0][1].isoformat()})"
+                "GRIB is missing required ERA5 fields/UTC times (first missing: "
+                f"{missing[0][0]} at {missing[0][1].isoformat()})"
             )
         return {
             "fields": sorted(fields),
@@ -247,12 +252,18 @@ class Era5DownloadService:
                 word in raw_message.lower()
                 for word in ("401", "403", "unauthor", "credential", "token")
             ):
-                message = "CDS API authentication failed. Check ~/.cdsapirc and accept the ERA5 dataset terms at cds.climate.copernicus.eu."
+                message = (
+                    "CDS API authentication failed. Check ~/.cdsapirc and accept "
+                    "the ERA5 dataset terms at cds.climate.copernicus.eu."
+                )
             elif isinstance(exc, Era5Error):
                 message = raw_message
             else:
                 # Third-party errors may embed CDS request headers or tokens.
-                message = f"ERA5 download failed ({type(exc).__name__}). Check CDS API credentials and dataset terms, then retry."
+                message = (
+                    f"ERA5 download failed ({type(exc).__name__}). Check CDS API "
+                    "credentials and dataset terms, then retry."
+                )
             with self._lock:
                 self.errors[key] = message[:1000]
 
@@ -260,89 +271,93 @@ class Era5DownloadService:
         root = Path(self.store.root)
         catalog = root / "era5-history.json"
         staged_chunks = []
-        registered = []
         with tempfile.TemporaryDirectory(prefix="era5-") as staging:
-            try:
-                for n, piece in enumerate(split_request(plan)):
-                    if cancel.is_set():
-                        raise Era5Error("ERA5 download canceled")
-                    path = Path(staging) / f"chunk-{n}.grib"
-                    attempts = 2 if retry else 1
-                    for attempt in range(attempts):
-                        try:
-                            self.client_factory().retrieve(
-                                DATASET, piece.request, str(path)
-                            )
-                            break
-                        except Exception:
-                            if attempt + 1 == attempts:
-                                raise
-                            if cancel.wait(min(2**attempt, 8)):
-                                raise Era5Error("ERA5 download canceled")
-                    if cancel.is_set():
-                        raise Era5Error("ERA5 download canceled")
-                    if self.validator is None:
-                        raise Era5Error(
-                            "No GRIB validator configured; refusing to import unverified ERA5 data"
-                        )
-                    provenance = self.validator(path, piece)
-                    if not provenance:
-                        raise Era5Error(
-                            "Downloaded GRIB is missing required ERA5 fields, levels, or UTC times"
-                        )
-                    staged_chunks.append((path, piece, provenance))
+            for n, piece in enumerate(split_request(plan)):
                 if cancel.is_set():
                     raise Era5Error("ERA5 download canceled")
-                # Publish only after every chunk passed validation.
-                records = []
-                for path, piece, provenance in staged_chunks:
-                    # register_file is idempotent; only artifacts absent before this
-                    # invocation belong to this transaction and may be rolled back.
-                    digest = _sha256(path)
-                    destination = root / "artifacts" / digest
-                    existed = destination.exists()
-                    artifact = self.store.register_file(path)
-                    if not existed:
-                        registered.append(artifact)
-                    record = {
-                        "dataset": DATASET,
-                        "source": "CDS ERA5 hourly single levels reanalysis",
-                        "artifact": artifact.path,
-                        "sha256": artifact.sha256,
-                        "size": artifact.size,
-                        "start": piece.start.isoformat(),
-                        "end": piece.end.isoformat(),
-                        "area": list(piece.area),
-                        "variables": list(VARIABLES),
-                        "provenance": provenance,
-                    }
-                    records.append(record)
-                if cancel.is_set():
-                    raise Era5Error("ERA5 import canceled before catalog publication")
-                with _catalog_lock(catalog):
-                    entries = (
-                        json.loads(catalog.read_text()) if catalog.exists() else []
-                    )
-                    known = {e.get("sha256") for e in entries}
-                    entries.extend(
-                        record for record in records if record["sha256"] not in known
-                    )
-                    fd2, staged = tempfile.mkstemp(prefix=".era5-catalog-", dir=root)
-                    try:
-                        with os.fdopen(fd2, "w", encoding="utf8") as stream:
-                            json.dump(entries, stream, sort_keys=True)
-                            stream.flush()
-                            os.fsync(stream.fileno())
-                        os.replace(staged, catalog)
-                    finally:
-                        if os.path.exists(staged):
-                            os.unlink(staged)
-            except BaseException:
-                # Remove newly published but unreferenced artifacts on any failed import.
-                for artifact in registered:
-                    target = root / artifact.path
-                    target.unlink(missing_ok=True)
-                raise
+                staged_chunks.append(
+                    self._stage_chunk(staging, n, piece, cancel, retry)
+                )
+            if cancel.is_set():
+                raise Era5Error("ERA5 download canceled")
+            self._publish_chunks(root, catalog, staged_chunks, cancel)
+
+    def _publish_chunks(self, root, catalog, staged_chunks, cancel):
+        registered = []
+        try:
+            # Publish only after every chunk passed validation.
+            records = []
+            for path, piece, provenance in staged_chunks:
+                # register_file is idempotent; only artifacts absent before this
+                # invocation belong to this transaction and may be rolled back.
+                digest = _sha256(path)
+                destination = root / "artifacts" / digest
+                existed = destination.exists()
+                artifact = self.store.register_file(path)
+                if not existed:
+                    registered.append(artifact)
+                record = {
+                    "dataset": DATASET,
+                    "source": "CDS ERA5 hourly single levels reanalysis",
+                    "artifact": artifact.path,
+                    "sha256": artifact.sha256,
+                    "size": artifact.size,
+                    "start": piece.start.isoformat(),
+                    "end": piece.end.isoformat(),
+                    "area": list(piece.area),
+                    "variables": list(VARIABLES),
+                    "provenance": provenance,
+                }
+                records.append(record)
+            if cancel.is_set():
+                raise Era5Error("ERA5 import canceled before catalog publication")
+            with _catalog_lock(catalog):
+                entries = json.loads(catalog.read_text()) if catalog.exists() else []
+                known = {e.get("sha256") for e in entries}
+                entries.extend(
+                    record for record in records if record["sha256"] not in known
+                )
+                fd2, staged = tempfile.mkstemp(prefix=".era5-catalog-", dir=root)
+                try:
+                    with os.fdopen(fd2, "w", encoding="utf8") as stream:
+                        json.dump(entries, stream, sort_keys=True)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    os.replace(staged, catalog)
+                finally:
+                    if os.path.exists(staged):
+                        os.unlink(staged)
+        except BaseException:
+            # Remove newly published but unreferenced artifacts on any failed import.
+            for artifact in registered:
+                target = root / artifact.path
+                target.unlink(missing_ok=True)
+            raise
+
+    def _stage_chunk(self, staging, n, piece, cancel, retry):
+        path = Path(staging) / f"chunk-{n}.grib"
+        attempts = 2 if retry else 1
+        for attempt in range(attempts):
+            try:
+                self.client_factory().retrieve(DATASET, piece.request, str(path))
+                break
+            except Exception:
+                if attempt + 1 == attempts:
+                    raise
+                if cancel.wait(min(2**attempt, 8)):
+                    raise Era5Error("ERA5 download canceled")
+        if cancel.is_set():
+            raise Era5Error("ERA5 download canceled")
+        if self.validator is None:
+            raise Era5Error(
+                "No GRIB validator configured; refusing to import unverified ERA5 data"
+            )
+        provenance = self.validator(path, piece)
+        if not provenance:
+            raise Era5Error(
+                "Downloaded GRIB is missing required ERA5 fields, levels, or UTC times"
+            )
+        return path, piece, provenance
 
 
 _catalog_locks: dict[str, threading.Lock] = {}

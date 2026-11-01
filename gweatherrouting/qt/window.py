@@ -1,6 +1,5 @@
 """Small Qt frontend for evaluating NMEA, plotting, docking, and map integration."""
 
-import os
 import sys
 from bisect import bisect_right
 from datetime import timedelta, timezone
@@ -19,7 +18,6 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QComboBox,
     QDockWidget,
-    QFileDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -883,12 +881,10 @@ class PreviewWindow(QMainWindow):
         # Keep every imported race boat visible at the scrubbed time, not just
         # the currently active track. Only show boats that still have
         # their tracks in the trackManager (user may have deleted some).
-        try:
-            position_ts = when.replace(tzinfo=timezone.utc).timestamp()
-        except Exception:
-            position_ts = None
         race = getattr(getattr(self, "race_panel", None), "race", None)
-        track_manager = getattr(getattr(self.controller, "core", None), "trackManager", None)
+        track_manager = getattr(
+            getattr(self.controller, "core", None), "trackManager", None
+        )
         positions = []
         if race is not None and track_manager is not None:
             try:
@@ -900,13 +896,19 @@ class PreviewWindow(QMainWindow):
                     if track.name in track_names:
                         # Find which boat this track belongs to
                         for boat in race.boats:
-                            if f"{race.name} - {boat.name or boat.boat_id}" in track.name:
+                            if (
+                                f"{race.name} - {boat.name or boat.boat_id}"
+                                in track.name
+                            ):
                                 visible_boat_ids.add(boat.boat_id)
                                 break
                 for boat_id, boat_position in race.positions_at(when_dt).items():
                     if boat_id in visible_boat_ids:
                         positions.append(
-                            [float(boat_position.latitude), float(boat_position.longitude)]
+                            [
+                                float(boat_position.latitude),
+                                float(boat_position.longitude),
+                            ]
                         )
             except Exception:
                 positions = []

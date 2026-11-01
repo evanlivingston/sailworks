@@ -3,7 +3,7 @@ name = "gweatherrouting"
 dynamic = ["version"]
 description = "Sailing routing and navigation software"
 readme = "README.md"
-requires-python = ">= 3.10"
+requires-python = ">= 3.11"
 license = {text = "GPLv3"}
 authors = [
     {name = "Davide Gessa", email = "gessadavide@gmail.com"},
@@ -14,7 +14,7 @@ dependencies = [
     "requests",
     "cdsapi>=0.7,<1",
     "keyring>=25,<26",
-    "copernicusmarine>=2.2,<3; python_version >= '3.10'",
+    "copernicusmarine>=2.2,<3",
     "colorlog",
     "geojson_utils",
     "bs4",
@@ -35,7 +35,6 @@ dependencies = [
 ]
 classifiers = [
     "Programming Language :: Python",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",

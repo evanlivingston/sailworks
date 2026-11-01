@@ -8,7 +8,10 @@ import re
 
 import numpy as np
 
-BASE = "https://www.ncei.noaa.gov/data/international-comprehensive-ocean-atmosphere/v3/archive/nrt/daily"
+BASE = (
+    "https://www.ncei.noaa.gov/data/international-comprehensive-ocean-atmosphere/"
+    "v3/archive/nrt/daily"
+)
 _NETCDF_LOCK = Lock()
 
 

@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import os
-from pathlib import Path
 import tempfile
 from threading import RLock
 from uuid import uuid4
@@ -18,7 +17,7 @@ from .forecasttranche import (
     shared_requested_region,
 )
 from .forecastvalidation import inspect_download
-from .tranchestore import ResolvedForecast, TrancheStore
+from .tranchestore import TrancheStore
 
 
 class NoActiveForecastError(RuntimeError):
@@ -274,7 +273,7 @@ class ForecastAnalysisState:
                 f"Model {model_id!r} is not present in the active tranche"
             )
         target = AnalysisSelection(tranche.tranche_id, entry.entry_id)
-        resolved = self._validate_analysis(self.store.resolve(target), entry.fields)
+        self._validate_analysis(self.store.resolve(target), entry.fields)
         return self.store.activate(
             target,
             commit_guard=self._action_guard(generation, expected, cancel),

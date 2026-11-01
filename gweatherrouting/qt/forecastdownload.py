@@ -1,6 +1,5 @@
 """Custom GRIB selections, with provider limits visible before downloading."""
 
-from datetime import datetime, timezone
 from threading import Event, Thread
 
 from PySide6.QtCore import QTimer, Qt, Signal, Slot

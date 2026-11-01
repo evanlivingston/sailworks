@@ -23,13 +23,16 @@ from typing import Optional, Tuple
 import numpy as np
 
 from .forecastcapabilities import model_from_grib_metadata
-from .gribfields import PRESSURE_ELEMENTS, is_mean_sea_level_pressure
+from .gribfields import PRESSURE_ELEMENTS as _PRESSURE_ELEMENTS
+from .gribfields import is_mean_sea_level_pressure
 from .gribsampling import GridIndex, WeatherSampler, number
 
 import weatherrouting
 from osgeo import gdal
 
 logger = logging.getLogger("gweatherrouting")
+
+PRESSURE_ELEMENTS = _PRESSURE_ELEMENTS
 
 # Mean-sea-level pressure elements (Pa) used for isobars. GFS downloads
 # request PRMSL; other models may already carry one of these bands.

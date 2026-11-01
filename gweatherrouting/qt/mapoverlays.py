@@ -345,7 +345,7 @@ class RetainedOverlayMixin:
                 )
                 # Retain references in locals so the wrapped buffer cannot be
                 # collected while Cairo reads it during painting.
-                _race_composition_refs = (
+                _race_composition_refs = (  # noqa: F841
                     cached_race_image,
                     cached_bits,
                     cached_surface,

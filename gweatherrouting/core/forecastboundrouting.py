@@ -1,6 +1,5 @@
 """Route using only the immutable weather binding captured by analysis state."""
 
-from datetime import timedelta
 import hashlib
 from threading import Event, RLock
 from types import SimpleNamespace

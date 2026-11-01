@@ -110,7 +110,7 @@ account is restored when the application starts; **Forget account** removes it.
 Credentials are passed to the download process through standard input and
 excluded from saved dataset metadata. Previously configured Copernicus Toolbox
 credentials can also be used. The Copernicus client is included in normal
-installations on Python 3.10 and newer. An existing development environment can
+installations on Python 3.11 and newer. An existing development environment can
 install it with `pip install -e '.[marine-global]'`.
 
 The coverage list shows model, resolution and actual valid interval. Downloads

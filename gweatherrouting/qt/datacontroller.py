@@ -1,7 +1,6 @@
 """Qt data-library operations using the shared forecast and chart models."""
 
 import os
-import shutil
 from pathlib import Path
 from types import SimpleNamespace
 

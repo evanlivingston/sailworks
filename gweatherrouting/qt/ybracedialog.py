@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import json
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QObject, QThread, Qt, Signal, QTimer
+from PySide6.QtCore import QThread, Qt, Signal, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -17,10 +16,8 @@ from PySide6.QtWidgets import (
 )
 
 from gweatherrouting.core.race import (
-    YBRaceError,
     download_yb_race,
     normalize_yb_race_slug,
-    parse_race,
 )
 
 _ORIGINAL_DOWNLOAD_YB = download_yb_race

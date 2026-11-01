@@ -7,12 +7,9 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
     QFileDialog,
-    QFormLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
-    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QTableWidget,
@@ -23,7 +20,6 @@ from PySide6.QtWidgets import (
 
 from gweatherrouting.core.loglibrary import LOG_SUFFIXES
 from .loginfo import LogInfoDialog
-
 
 LOG_FILTER = "Instrument logs (*.log *.nmea *.txt *.ebl *.EBL);;All files (*)"
 
@@ -155,8 +151,6 @@ class LogLibraryDialog(QDialog):
         self.selected()
 
     def selected(self, *_):
-        identifier = self.identifier()
-        entry = next((e for e in self.library.entries() if e["id"] == identifier), None)
         self.sync_busy()
 
     def sync_busy(self):

@@ -60,7 +60,7 @@ Install this fork from source. The former GTK-only portable build recipes have b
 
 ### From source
 
-1. Make sure to have Python >= 3.10 installed and the `pip` package manager.
+1. Make sure to have Python >= 3.11 installed and the `pip` package manager.
 2. Install the following dependencies using your OS package manager (e.g: archlinux=pacman, debian=apt, macos=homebrew). Be aware that some packages have different names with different package managers.
    - GDAL and its Python bindings (built against the same native GDAL version)
    - Cairo (used by the shared chart renderer)

@@ -1,7 +1,6 @@
 """Display-source adapter bound only to an analysis controller snapshot."""
 
 from dataclasses import dataclass
-from datetime import timezone
 from threading import Thread
 
 from PySide6.QtCore import QObject, Signal, Slot

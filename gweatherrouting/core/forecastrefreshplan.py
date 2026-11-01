@@ -7,7 +7,7 @@ Catalogue freshness is provider-dependent and is not asserted to be latest-publi
 from datetime import datetime, timezone
 import json
 
-from .forecastcapabilities import MODEL_CAPABILITIES, ModelCapabilities
+from .forecastcapabilities import MODEL_CAPABILITIES
 from .forecastrefreshcontracts import ForecastRefreshPlan, PlannedModel
 from .forecasttranche import ModelConfiguration, shared_requested_region
 
@@ -31,7 +31,6 @@ def default_provider_factories():
     from .gribsources.noaagfs import NOAAGFSSource
     from .gribsources.noaagfswave import NOAAGFSWaveSource
     from .gribsources.noaahrrr import NOAAHRRRSource
-    from .gribsources.noaaaigfs import NOAAAIGFSSource
     from .gribsources.noaaaigfs import NOAAAIGFSSource
 
     return {
@@ -72,7 +71,8 @@ def create_source(planned_or_configuration, factories=None):
     source = factory()
     if getattr(source, "name", None) != capability.provider_name:
         raise RefreshPlanningError(
-            f"{configuration.model_id}: provider name does not match {capability.provider_name}"
+            f"{configuration.model_id}: provider name does not match "
+            f"{capability.provider_name}"
         )
     if hasattr(source, "bounds"):
         source.bounds = tuple(configuration.region)
@@ -94,11 +94,13 @@ def _validate_configuration(configuration):
         )
     if configuration.resolution not in ("native", capability.native_resolution):
         raise UnsupportedConfigurationError(
-            f"{configuration.model_id}: unsupported resolution {configuration.resolution!r}"
+            f"{configuration.model_id}: unsupported resolution "
+            f"{configuration.resolution!r}"
         )
     if configuration.interval not in capability.intervals:
         raise UnsupportedConfigurationError(
-            f"{configuration.model_id}: unsupported native forecast interval {configuration.interval}"
+            f"{configuration.model_id}: unsupported native forecast interval "
+            f"{configuration.interval}"
         )
     if (
         configuration.model_id in ("GFS", "HRRR")

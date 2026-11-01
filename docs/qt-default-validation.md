@@ -1,7 +1,7 @@
 # Qt default launcher validation
 
 Qt is the default for `gweatherrouting` and `python -m gweatherrouting`.
-`gweatherrouting-qt` remains an alias. Python 3.10+ and PySide6 Essentials are
+`gweatherrouting-qt` remains an alias. Python 3.11+ and PySide6 Essentials are
 normal installation requirements; the old `[qt]` extra remains compatible.
 GTK is explicit: `gweatherrouting-gtk` or `python -m gweatherrouting.gtk`.
 
@@ -76,6 +76,6 @@ Still required before claiming full platform/hardware parity:
   fixture results do not establish current provider service availability.
 
 Legacy CI dependency/lint/type failures are a separate known task. This pass
-adds self-contained Qt validation and drops Python 3.9 from the install/test
-matrix because the default Qt application requires Python 3.10+; it does not
+adds self-contained Qt validation and drops Python 3.10 from the install/test
+matrix because the default Qt application requires Python 3.11+; it does not
 claim to clean up the other legacy CI jobs.

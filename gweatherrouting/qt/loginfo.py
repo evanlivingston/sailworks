@@ -17,7 +17,6 @@ from gweatherrouting.core.n2kdevices import (
 )
 from gweatherrouting.core.n2kmanufacturers import manufacturer_name
 
-
 UNKNOWN = "Unknown / not captured"
 
 _NETWORK_PGNS = {
@@ -164,7 +163,8 @@ class LogInfoDialog(QDialog):
         else:
             notice = (
                 "Captured devices (not necessarily GPS receivers). Select a row for details.\n"
-                "The CANboat class comes from the captured NAME; PGN descriptions show observed traffic, not guaranteed hardware identity.\n"
+                "The CANboat class comes from the captured NAME; PGN descriptions show "
+                "observed traffic, not guaranteed hardware identity.\n"
                 "Epochs separate observed identity changes at an address; reused or ambiguous "
                 "addresses keep Source N track labels. Missing claims cannot be inferred."
             )

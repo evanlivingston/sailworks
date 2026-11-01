@@ -272,7 +272,7 @@ def inspect_download(path, planned, cancel=None, *, opener=None, vector_reader=N
                 or forecast_seconds % 3600
             ):
                 _fail("forecast band has inconsistent valid time")
-            valid = reference + timedelta(seconds=forecast_seconds)
+            reference + timedelta(seconds=forecast_seconds)
             hour = forecast_seconds // 3600
             if hour not in expected[field]:
                 _fail("download contains an unplanned forecast time")

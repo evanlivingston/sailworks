@@ -104,7 +104,8 @@ class RoutingDataGapError(ValueError):
             else (
                 "Choose another current source or adjust the route."
                 if first.reason == "masked_or_missing"
-                else "Enable automatic downloads or load current data for this area and time."
+                else "Enable automatic downloads or load current data for this area "
+                "and time."
             )
         )
         super().__init__(
@@ -361,12 +362,14 @@ class FrozenRoutingWind:
                 for g in self.gribs
             ],
             actual_sources=sorted(self.used),
-            selection_policy="newest enabled model run with valid wind; load order breaks ties",
+            selection_policy=(
+                "newest enabled model run with valid wind; load order breaks ties"
+            ),
         )
 
 
 class CurrentIsoRouter(LinearBestIsoRouter):
-    """Reuse the engine's isochrone interface; never use its wind-only final shortcut."""
+    """Reuse the engine's isochrone interface, not its wind-only final shortcut."""
 
     PARAMS: dict = {}
     use_numpy = True
@@ -739,7 +742,8 @@ def step_with_coverage(  # noqa: C901
             report(str(error))
             if any(g.kind == "wind" for g in error.gaps):
                 report(
-                    "The published model forecast does not cover this route point and time."
+                    "The published model forecast does not cover this route point "
+                    "and time."
                 )
                 raise
             if (
@@ -755,12 +759,14 @@ def step_with_coverage(  # noqa: C901
                 len(current_gaps),
                 len({gap_request_key(g) for g in current_gaps}),
                 ",".join(
-                    f"{g.position[0]:.3f},{g.position[1]:.3f}@{routing_utc(g.time):%Y-%m-%dT%H:%MZ}"
+                    f"{g.position[0]:.3f},{g.position[1]:.3f}@"
+                    f"{routing_utc(g.time):%Y-%m-%dT%H:%MZ}"
                     for g in current_gaps[:3]
                 ),
             )
             report(
-                "Missing current data; downloading coverage and retrying this routing step…"
+                "Missing current data; downloading coverage and retrying this "
+                "routing step…"
             )
             started = monotonic()
             try:
@@ -780,7 +786,8 @@ def step_with_coverage(  # noqa: C901
                 raise
             elapsed = monotonic() - started
             logger.info(
-                "Current coverage recovery retrieval finished: elapsed=%.3fs fields=%d issues=%d",
+                "Current coverage recovery retrieval finished: "
+                "elapsed=%.3fs fields=%d issues=%d",
                 elapsed,
                 len(fields),
                 len(issues),
@@ -798,7 +805,8 @@ def step_with_coverage(  # noqa: C901
             )
             if not added or not improved:
                 logger.warning(
-                    "Current coverage recovery failed: elapsed=%.3fs fields=%d installed=%d improved=%s",
+                    "Current coverage recovery failed: "
+                    "elapsed=%.3fs fields=%d installed=%d improved=%s",
                     elapsed,
                     len(fields),
                     len(added),
@@ -811,7 +819,8 @@ def step_with_coverage(  # noqa: C901
                 )
                 raise ValueError(str(error) + detail) from error
             logger.info(
-                "Current coverage recovery retrying: elapsed=%.3fs fields=%d installed=%d improved=%s",
+                "Current coverage recovery retrying: "
+                "elapsed=%.3fs fields=%d installed=%d improved=%s",
                 elapsed,
                 len(fields),
                 len(added),

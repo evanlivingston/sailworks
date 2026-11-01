@@ -270,7 +270,8 @@ class Era5DownloadTab(QWidget):
             return
         artifact = self.catalog.item(row, 3)
         self.history_status.setText(
-            f"Selected history artifact {artifact.text() if artifact else ''}; choose any inclusive UTC sample-hour range."
+            f"Selected history artifact {artifact.text() if artifact else ''}; "
+            "choose any inclusive UTC sample-hour range."
         )
 
     def sample_selected(self):
@@ -290,37 +291,12 @@ class Era5DownloadTab(QWidget):
         try:
             path = self.service.store.root / artifact.text()
             grib = Grib.parse(str(path))
-            start = self.sample_start.dateTime().toPython().replace(tzinfo=timezone.utc)
-            end = self.sample_end.dateTime().toPython().replace(tzinfo=timezone.utc)
-            if start != end:
-                raise ValueError("Sample one explicitly selected UTC hour at a time.")
-            entry = self._catalog_entries[row]
-            coverage_start = datetime.fromisoformat(
-                entry["start"].replace("Z", "+00:00")
-            )
-            coverage_end = datetime.fromisoformat(entry["end"].replace("Z", "+00:00"))
-            if coverage_start.tzinfo is None:
-                coverage_start = coverage_start.replace(tzinfo=timezone.utc)
-            if coverage_end.tzinfo is None:
-                coverage_end = coverage_end.replace(tzinfo=timezone.utc)
-            if not coverage_start <= start <= coverage_end:
-                raise ValueError(
-                    "Selected hour is outside this history artifact's UTC coverage."
-                )
+            start = self._sample_hour(row)
             lat, lon = self.sample_lat.value(), self.sample_lon.value()
             sampler = grib.sampler()
             wind = sampler.sample("wind", start, lat, lon)
             pressure = sampler.sample("pressure", start, lat, lon)
-            if wind is None or pressure is None:
-                raise ValueError("No wind and pressure data at this hour/location.")
-            if wind.shape != (1, 2):
-                raise ValueError("Wind sample did not contain u and v components.")
-            if pressure.shape != (1, 1):
-                raise ValueError("Pressure sample did not contain one value.")
-            u, v = float(wind[0, 0]), float(wind[0, 1])
-            pressure = float(pressure[0, 0])
-            if not all(map(math.isfinite, (u, v, pressure))):
-                raise ValueError("Sample returned a non-finite wind or pressure value.")
+            u, v, pressure = self._sample_values(wind, pressure)
             self.history_status.setText(
                 f"{start:%Y-%m-%d %H:00 UTC} at {lat:.2f}, {lon:.2f}: "
                 f"wind u={u:.2f}, v={v:.2f} m/s; pressure={pressure:.1f} hPa"
@@ -330,3 +306,35 @@ class Era5DownloadTab(QWidget):
         finally:
             if grib is not None:
                 grib.close()
+
+    def _sample_hour(self, row):
+        start = self.sample_start.dateTime().toPython().replace(tzinfo=timezone.utc)
+        end = self.sample_end.dateTime().toPython().replace(tzinfo=timezone.utc)
+        if start != end:
+            raise ValueError("Sample one explicitly selected UTC hour at a time.")
+        entry = self._catalog_entries[row]
+        coverage_start = datetime.fromisoformat(entry["start"].replace("Z", "+00:00"))
+        coverage_end = datetime.fromisoformat(entry["end"].replace("Z", "+00:00"))
+        if coverage_start.tzinfo is None:
+            coverage_start = coverage_start.replace(tzinfo=timezone.utc)
+        if coverage_end.tzinfo is None:
+            coverage_end = coverage_end.replace(tzinfo=timezone.utc)
+        if not coverage_start <= start <= coverage_end:
+            raise ValueError(
+                "Selected hour is outside this history artifact's UTC coverage."
+            )
+        return start
+
+    @staticmethod
+    def _sample_values(wind, pressure):
+        if wind is None or pressure is None:
+            raise ValueError("No wind and pressure data at this hour/location.")
+        if wind.shape != (1, 2):
+            raise ValueError("Wind sample did not contain u and v components.")
+        if pressure.shape != (1, 1):
+            raise ValueError("Pressure sample did not contain one value.")
+        u, v = float(wind[0, 0]), float(wind[0, 1])
+        pressure = float(pressure[0, 0])
+        if not all(map(math.isfinite, (u, v, pressure))):
+            raise ValueError("Sample returned a non-finite wind or pressure value.")
+        return u, v, pressure
