@@ -162,6 +162,37 @@ class TestGribSampling(unittest.TestCase):
         metadata["GRIB_PDS_TEMPLATE_ASSEMBLED_VALUES"] = "2 2 2 0 999"
         self.assertEqual(forecast_model_name(dataset, metadata), "Unknown")
 
+    def test_era5_single_level_aliases_reach_sampler_for_two_hours(self):
+        records = []
+        for hour in (0, 1):
+            for element, alias, value in (
+                ("10U", "0-SFC", 3.0 + hour),
+                ("10V", "0-SFC", 4.0 + hour),
+                ("MSL", "0-SFC", 100000.0 + 100.0 * hour),
+            ):
+                records.append(
+                    (
+                        element,
+                        hour,
+                        np.full((2, 2), value),
+                        {"GRIB_SHORT_NAME": alias},
+                    )
+                )
+        source = self.file(records, end=1)
+        sampler = WeatherSampler([source])
+
+        for hour, u, v, pressure in (
+            (0, 3.0, 4.0, 1000.0),
+            (1, 4.0, 5.0, 1001.0),
+        ):
+            instant = START + timedelta(hours=hour)
+            self.assert_uv(sampler, instant, 0, 0, u, v)
+            sampled_pressure = sampler.sample(
+                "pressure", instant, np.array([0.0]), np.array([0.0])
+            )
+            self.assertTrue(np.isfinite(sampled_pressure[0, 0]))
+            self.assertAlmostEqual(sampled_pressure[0, 0], pressure)
+
     def test_bilinear_and_fractional_time_have_analytical_answers(self):
         source = self.file(self.field(0) + self.field(3))
         sampler = source.sampler()
