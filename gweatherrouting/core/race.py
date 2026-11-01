@@ -8,6 +8,7 @@ import math
 import os
 import re
 import tempfile
+import weakref
 
 try:
     import requests
@@ -102,6 +103,7 @@ class RacePosition:
         self.course = course
         self.distance_to_finish = distance_to_finish
         self._timestamp = timestamp if timestamp is not None else datetime.utcnow()
+        self._boats = []
 
     @property
     def timestamp(self) -> datetime:
@@ -109,7 +111,16 @@ class RacePosition:
 
     @timestamp.setter
     def timestamp(self, value: datetime):
+        if self._timestamp == value:
+            return
         self._timestamp = value
+        live = []
+        for ref in self._boats:
+            boat = ref()
+            if boat is not None:
+                live.append(ref)
+                boat._position_index_dirty = True
+        self._boats[:] = live
 
     @property
     def epoch(self) -> int:
@@ -128,6 +139,56 @@ class RacePosition:
         }
 
 
+class _TrackedPositions(list):
+    def __init__(self, values, changed):
+        super().__init__(values)
+        self._changed = changed
+
+    def _notify(self, removed=(), added=()):
+        self._changed(removed, added)
+
+    def _mutate(method):
+        def call(self, *args, **kwargs):
+            old = list(self)
+            result = method(self, *args, **kwargs)
+            self._notify(old, self)
+            return result
+        return call
+
+    def append(self, value):
+        list.append(self, value)
+        self._notify((), (value,))
+
+    def extend(self, values):
+        additions = []
+        try:
+            for value in values:
+                list.append(self, value)
+                additions.append(value)
+        except BaseException:
+            # list.extend retains values yielded before iterator failure.
+            # Keep derived indexes and reverse position links in sync too.
+            if additions:
+                self._notify((), additions)
+            raise
+        if additions:
+            self._notify((), additions)
+
+    def insert(self, index, value):
+        list.insert(self, index, value)
+        self._notify((), (value,))
+
+    pop = _mutate(list.pop)
+    remove = _mutate(list.remove)
+    clear = _mutate(list.clear)
+    reverse = _mutate(list.reverse)
+    sort = _mutate(list.sort)
+    __setitem__ = _mutate(list.__setitem__)
+    __delitem__ = _mutate(list.__delitem__)
+    __iadd__ = _mutate(list.__iadd__)
+    __imul__ = _mutate(list.__imul__)
+
+
 @dataclass
 class RaceBoat:
     boat_id: Any
@@ -137,14 +198,43 @@ class RaceBoat:
     status: str = ""
     positions: list[RacePosition] = field(default_factory=list)
 
+    def _positions_changed(self, removed=(), added=()):
+        self._position_index_dirty = True
+        added_ids = {id(position) for position in added}
+        for position in removed:
+            if id(position) not in added_ids:
+                position._boats[:] = [
+                    ref for ref in position._boats
+                    if ref() is not None and ref() is not self
+                ]
+        for position in added:
+            if not any(ref() is self for ref in position._boats):
+                position._boats.append(weakref.ref(self))
+
+    def __setattr__(self, name, value):
+        if name == "positions" and hasattr(self, "_position_index_dirty"):
+            old = getattr(self, "positions", ())
+            value = _TrackedPositions(value or [], self._positions_changed)
+            object.__setattr__(self, name, value)
+            self._positions_changed(old, value)
+            return
+        object.__setattr__(self, name, value)
+
+    def _attach_positions(self):
+        for position in self.positions:
+            if not any(ref() is self for ref in position._boats):
+                position._boats.append(weakref.ref(self))
+
     def __post_init__(self):
         # Keep the caller's list (and its original report order) untouched.
-        self.positions = list(self.positions or [])
+        self.positions = _TrackedPositions(self.positions or [], self._positions_changed)
         self._position_sorted_times = []
         self._position_sorted_indices = []
         self._indexed_positions = self.positions
         self._indexed_length = len(self.positions)
         self._indexed_times = [p.timestamp for p in self.positions]
+        self._position_index_dirty = True
+        self._attach_positions()
         self._rebuild_position_index()
 
     def _rebuild_position_index(self):
@@ -161,6 +251,7 @@ class RaceBoat:
         self._indexed_positions = positions
         self._indexed_length = len(positions)
         self._indexed_times = [p.timestamp for p in positions]
+        self._position_index_dirty = False
 
     # The index is rebuilt when the positions list identity, length, or
     # timestamps change. In-place replacement that preserves both the
@@ -169,9 +260,10 @@ class RaceBoat:
     def _ensure_position_index(self):
         positions = self.positions
         if (
+            self._position_index_dirty
+            or
             self._indexed_positions is not positions
             or len(positions) != self._indexed_length
-            or [p.timestamp for p in positions] != self._indexed_times
         ):
             self._rebuild_position_index()
 

@@ -5,6 +5,8 @@ import json
 from datetime import datetime, timezone
 
 from gweatherrouting.core.race import (
+    RaceBoat,
+    RacePosition,
     parse_race,
     parse_yb_race,
     weather_download_request,
@@ -52,6 +54,31 @@ def _sample_race():
             ]
         },
     }
+
+
+def test_tracked_positions_extend_keeps_partial_additions_on_iterator_error():
+    boat = RaceBoat(1)
+    first = RacePosition(datetime(2023, 1, 1), 1.0, 2.0, 0.0, 0.0)
+    second = RacePosition(datetime(2023, 1, 2), 3.0, 4.0, 0.0, 0.0)
+
+    def failing_positions():
+        yield first
+        yield second
+        raise RuntimeError("iterator failed")
+
+    try:
+        boat.positions.extend(failing_positions())
+    except RuntimeError as exc:
+        assert str(exc) == "iterator failed"
+    else:
+        raise AssertionError("expected iterator failure")
+
+    assert boat.positions == [first, second]
+    assert boat._position_index_dirty
+    assert any(ref() is boat for ref in first._boats)
+    assert any(ref() is boat for ref in second._boats)
+    boat._rebuild_position_index()
+    assert boat._position_sorted_times == [first.timestamp, second.timestamp]
 
 
 def test_parse_race_basic():
@@ -141,6 +168,31 @@ def test_raceboat_position_at_duplicate_timestamps():
     assert boat.position_at(datetime(2024, 1, 1, 2, 0)).latitude == 4.0
     # index semantics
     assert boat.position_index_at(datetime(2024, 1, 1, 1, 0)) == 2
+
+
+def test_raceboat_shared_positions_and_mutation_reassignment():
+    from gweatherrouting.core.race import RaceBoat, RacePosition
+    from datetime import datetime, timedelta
+
+    first = datetime(2024, 1, 1)
+    shared = RacePosition(first, 1, 1)
+    later = RacePosition(first + timedelta(hours=1), 2, 2)
+    a = RaceBoat(1, positions=[shared, later, shared])
+    b = RaceBoat(2, positions=[shared])
+    assert a.position_at(first).latitude == 1
+    assert b.position_at(first).latitude == 1
+
+    shared.timestamp = first + timedelta(hours=2)
+    assert a.position_at(first).latitude == 2
+    assert b.position_at(first) is None
+
+    a.positions = [shared]
+    assert a.position_at(first) is None
+    assert a.position_at(first + timedelta(hours=2)) is shared
+    # A removed position no longer retains a stale callback to the boat.
+    a.positions.clear()
+    assert not any(ref() is a for ref in shared._boats)
+    assert b.position_at(first + timedelta(hours=2)) is shared
 
 
 import pytest
@@ -556,3 +608,21 @@ def test_raceboat_position_index_supports_list_mutations():
     boat.positions = [RacePosition(datetime(2024, 1, 1, 0, 45), 4.0, 4.0)]
     assert boat.position_at(datetime(2024, 1, 1, 0, 45)).latitude == 4.0
     assert boat.position_index_at(datetime(2024, 1, 1, 0, 45)) == 0
+
+
+def test_raceboat_cached_index_tracks_timestamp_and_list_mutations():
+    from datetime import datetime
+    from gweatherrouting.core.race import RaceBoat, RacePosition
+
+    t0 = datetime(2024, 1, 1)
+    p0 = RacePosition(t0, 1.0, 1.0)
+    boat = RaceBoat(1, positions=[p0])
+    assert boat.position_at(t0) is p0
+    p0.timestamp = datetime(2024, 1, 1, 1)
+    assert boat.position_at(t0) is None
+    p1 = RacePosition(datetime(2024, 1, 1, 2), 2.0, 2.0)
+    boat.positions.extend([p1])
+    boat.positions.reverse()
+    assert boat.position_at(datetime(2024, 1, 1, 2)) is p0
+    del boat.positions[0]
+    assert boat.position_at(datetime(2024, 1, 1, 2)) is p1
