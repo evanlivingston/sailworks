@@ -262,6 +262,7 @@ class RetainedOverlayMixin:
             self.navigation.hl_routing,
             self.navigation.hl_poi,
             self.navigation.hl_track_item,
+            id(self.navigation.edit_track),
             id(self.points),
             len(self.points),
             self.position,

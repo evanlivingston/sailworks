@@ -114,6 +114,7 @@ class NavigationRenderer:
         self.hl_routing = None
         self.hl_poi = None
         self.hl_track_item = None
+        self.edit_track = None
 
     def draw_routes(self, gpsmap, cr, display_time):  # noqa: C901
         # Legacy route times and the map clock are local and naive; newer
@@ -276,8 +277,9 @@ class NavigationRenderer:
 
                 Style.reset_dash(cr)
 
-                cr.arc(x, y, 7 if item_hl else 5, 0, 2 * math.pi)
-                cr.stroke()
+                if self.edit_track is tr:
+                    cr.arc(x, y, 7 if item_hl else 5, 0, 2 * math.pi)
+                    cr.stroke()
 
                 prevx = x
                 prevy = y

@@ -6,6 +6,7 @@ from pathlib import Path
 import dateutil.parser
 import gpxpy
 from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QEvent
 from PySide6.QtGui import QColor, QUndoCommand, QUndoStack
 from PySide6.QtWidgets import (
     QDialog,
@@ -208,6 +209,7 @@ class NavigationPanel(QWidget):
         self.task.finished.connect(self._import_finished)
         self.task.changed.connect(self._task_changed)
         self.tracks.currentCellChanged.connect(self._select_track)
+        self._wire_track_selection()
         self.track_points.currentCellChanged.connect(self._select_point)
         self.pois.currentCellChanged.connect(self._select_poi)
         self.routes.currentCellChanged.connect(self._select_route)
@@ -224,12 +226,13 @@ class NavigationPanel(QWidget):
             lambda item: self._edit(item, self.routes, self.core.routingManager, 2)
         )
         self.ais.cellDoubleClicked.connect(self.fit_ais)
-        self.tracks.cellDoubleClicked.connect(lambda *_: self.fit_track())
         self.pois.cellDoubleClicked.connect(lambda *_: self.fit_poi())
         self.routes.cellDoubleClicked.connect(lambda *_: self.fit_route())
         self._menu(
             self.tracks,
             [
+                ("Select", self.select_track),
+                ("Edit", self.edit_track),
                 ("Fit", self.fit_track),
                 ("Remove", self.remove_track),
                 ("Export…", self.export_track),
@@ -256,6 +259,7 @@ class NavigationPanel(QWidget):
             ],
         )
         self.refresh()
+        self.tracks.installEventFilter(self)
         self.timer = QTimer(self)
         self.timer.setInterval(3000)
         self.timer.timeout.connect(self.refresh_ais)
@@ -269,6 +273,10 @@ class NavigationPanel(QWidget):
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         for column in range(1, widget.columnCount()):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+
+    def _wire_track_selection(self):
+        self.tracks.cellClicked.connect(lambda row, *_: self._select_track(row))
+        self.tracks.cellDoubleClicked.connect(lambda *_: self.edit_track())
 
     @staticmethod
     def _buttons(layout, actions):
@@ -369,10 +377,39 @@ class NavigationPanel(QWidget):
             if 0 <= row < len(self.core.trackManager)
             else None
         )
+        self._set_track_editing(False)
         self.point_index = -1
         self.canvas.navigation.hl_track_item = None
         self.refresh_points()
         self.canvas.update()
+
+    def _set_track_editing(self, editing):
+        track = self.core.trackManager.get_active()
+        editing = bool(editing and track is not None and not track.race_track)
+        self.canvas.navigation.edit_track = track if editing else None
+        self.track_buttons[1].setEnabled(editing)
+        self._invalidate_race_geometry()
+        self.canvas.update()
+
+    def _invalidate_race_geometry(self):
+        for widget in (self.canvas, getattr(self.canvas, "_weather_presenter", None)):
+            invalidate = getattr(widget, "invalidate_race_geometry", None)
+            if callable(invalidate):
+                invalidate()
+
+    def select_track(self):
+        self._set_track_editing(False)
+
+    def edit_track(self):
+        self._set_track_editing(True)
+
+    def eventFilter(self, watched, event):
+        if (watched is self.tracks and event.type() == QEvent.Type.KeyPress
+                and event.key() == Qt.Key.Key_Escape):
+            self.select_track()
+            event.accept()
+            return True
+        return super().eventFilter(watched, event)
 
     def refresh_points(self):
         active = self.core.trackManager.get_active()
@@ -450,6 +487,7 @@ class NavigationPanel(QWidget):
     def new_track(self):
         track = self.core.trackManager.new_element(points=[])
         self.core.trackManager.set_active(track)
+        self._set_track_editing(True)
         self.point_index = -1
         self.refresh()
         self.tabs.setCurrentIndex(0)
@@ -458,6 +496,10 @@ class NavigationPanel(QWidget):
 
     def add_point(self, coordinates):
         active = self.core.trackManager.get_active()
+        if active is not None and (
+            self.canvas.navigation.edit_track is not active or active.race_track
+        ):
+            return
         if active is None:
             if len(self.core.trackManager) > 1:
                 self.status.setText("Select a track before adding a point.")
@@ -468,7 +510,11 @@ class NavigationPanel(QWidget):
                 else self.new_track()
             )
             self.core.trackManager.set_active(active)
+            self._set_track_editing(True)
+        if active.race_track:
+            return
         active.add(*coordinates)
+        self._invalidate_race_geometry()
         self.point_index = len(active) - 1
         self.refresh()
         self.tabs.setCurrentIndex(0)
@@ -573,7 +619,12 @@ class NavigationPanel(QWidget):
 
     def edit_point(self, operation):
         active = self.core.trackManager.get_active()
-        if active is None or not 0 <= self.point_index < len(active):
+        if (
+            active is None
+            or self.canvas.navigation.edit_track is not active
+            or active.race_track
+            or not 0 <= self.point_index < len(active)
+        ):
             return
         index = self.point_index
         getattr(active, operation)(index)
@@ -600,7 +651,12 @@ class NavigationPanel(QWidget):
 
     def move_point(self):
         active, index = self.core.trackManager.get_active(), self.point_index
-        if active is None or not 0 <= index < len(active):
+        if (
+            active is None
+            or self.canvas.navigation.edit_track is not active
+            or active.race_track
+            or not 0 <= index < len(active)
+        ):
             return
         point = active.points[index]
 
