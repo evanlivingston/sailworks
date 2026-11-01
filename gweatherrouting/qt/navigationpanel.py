@@ -117,6 +117,7 @@ class RemoveNavigationCommand(QUndoCommand):
         for index, element in self.removed:
             if element not in self.manager.elements:
                 self.manager.elements.insert(min(index, len(self.manager)), element)
+        self.manager.touch()
         self.manager.save()
         if self.kind == "track":
             self.manager.set_active(self.current)

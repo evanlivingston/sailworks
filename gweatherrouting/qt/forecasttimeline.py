@@ -113,8 +113,10 @@ class DayStripWidget(QWidget):
         cells = []
         for i, day_ts in enumerate(days):
             rect = QRect(
-                self.axis_left_margin + int(i * cell_width), 0,
-                max(1, int(cell_width)), self.CELL_HEIGHT
+                self.axis_left_margin + int(i * cell_width),
+                0,
+                max(1, int(cell_width)),
+                self.CELL_HEIGHT,
             )
             cells.append((rect, day_ts + 12 * 3600))
         return cells
@@ -179,10 +181,14 @@ class DayStripWidget(QWidget):
                         continue
                     plot_width = max(
                         0,
-                        self.width() - self.axis_left_margin - self.axis_right_margin - 1,
+                        self.width()
+                        - self.axis_left_margin
+                        - self.axis_right_margin
+                        - 1,
                     )
                     px = (
-                        self.axis_left_margin + round((stamp - start) / span * plot_width)
+                        self.axis_left_margin
+                        + round((stamp - start) / span * plot_width)
                         if span > 0
                         else (self.width() - 1) / 2
                     )
@@ -195,7 +201,13 @@ class DayStripWidget(QWidget):
                 now_x = self.axis_left_margin + round(
                     (self.now - start)
                     / span
-                    * max(0, self.width() - self.axis_left_margin - self.axis_right_margin - 1)
+                    * max(
+                        0,
+                        self.width()
+                        - self.axis_left_margin
+                        - self.axis_right_margin
+                        - 1,
+                    )
                 )
                 painter.setPen(QPen(QColor("#e6c229"), 2))
                 painter.drawLine(now_x, 0, now_x, self.height())
@@ -204,7 +216,13 @@ class DayStripWidget(QWidget):
                 px = self.axis_left_margin + round(
                     (self.position - start)
                     / span
-                    * max(0, self.width() - self.axis_left_margin - self.axis_right_margin - 1)
+                    * max(
+                        0,
+                        self.width()
+                        - self.axis_left_margin
+                        - self.axis_right_margin
+                        - 1,
+                    )
                 )
                 painter.setPen(QPen(QColor("#0066cc"), 2))
                 painter.drawLine(px, 0, px, self.height())
@@ -213,7 +231,13 @@ class DayStripWidget(QWidget):
                 mx = self.axis_left_margin + round(
                     (self.marker - start)
                     / span
-                    * max(0, self.width() - self.axis_left_margin - self.axis_right_margin - 1)
+                    * max(
+                        0,
+                        self.width()
+                        - self.axis_left_margin
+                        - self.axis_right_margin
+                        - 1,
+                    )
                 )
                 painter.setPen(QPen(QColor("#cc0000"), 2))
                 painter.drawLine(mx, 0, mx, self.height())
@@ -294,6 +318,7 @@ class ForecastTimeline(QWidget):
         self.clock = controller.time_control
         self.marine = controller.core.marine_manager
         self.bounds = None
+        self._bounds_override = None
         self._signature = None
         self._syncing = False
         self._pending = None
@@ -464,9 +489,7 @@ class ForecastTimeline(QWidget):
             scroll_width = (
                 self.source_overview.scroll.verticalScrollBar().sizeHint().width()
             )
-        self.day_strip.axis_right_margin = max(
-            0, scroll_width
-        )
+        self.day_strip.axis_right_margin = max(0, scroll_width)
         self.day_strip.update()
 
     @staticmethod
@@ -519,8 +542,13 @@ class ForecastTimeline(QWidget):
             valid_times = tuple(
                 sorted({stamp for source in sources for stamp in source.valid_times})
             )
-            candidate_bounds = forecast_bounds(intervals)
-            signature = (intervals, valid_times)
+            forecast_range = forecast_bounds(intervals)
+            candidate_bounds = (
+                self._bounds_override[:2] if self._bounds_override else forecast_range
+            )
+            if self._bounds_override:
+                valid_times = self._bounds_override[2]
+            signature = (intervals, valid_times, self._bounds_override)
             if signature != self._signature:
                 self._signature = signature
                 self.bounds = candidate_bounds
@@ -529,7 +557,9 @@ class ForecastTimeline(QWidget):
                 if self.bounds:
                     start, end = self.bounds
                     # Relative seconds avoid Qt's signed-32-bit epoch limit after 2038.
-                    self.slider.setRange(0, max(1, min(2**31 - 1, math.ceil(end - start))))
+                    self.slider.setRange(
+                        0, max(1, min(2**31 - 1, math.ceil(end - start)))
+                    )
                     self.slider.setSingleStep(60)
                     self.slider.setPageStep(3600)
                     self.slider.setEnabled(end > start)
@@ -555,7 +585,8 @@ class ForecastTimeline(QWidget):
             # the selected-model timeline refresh above.
             try:
                 self.source_overview.set_rows(
-                    source_rows(self.controller.display_forecast, self.marine), candidate_bounds
+                    source_rows(self.controller.display_forecast, self.marine),
+                    forecast_range,
                 )
                 self.day_strip.axis_left_margin = self.source_overview.plot.label_width
                 self._sync_time_axis_geometry()
@@ -565,6 +596,23 @@ class ForecastTimeline(QWidget):
         except Exception as exc:  # Never let a refresh crash the app
             logger.warning("ForecastTimeline refresh error: %s", exc)
             self._syncing = False
+
+    def set_bounds_override(self, start, end, valid_times=()):
+        """Temporarily make the timeline span an imported race's time range."""
+        self._bounds_override = (
+            float(start),
+            float(end),
+            tuple(sorted(set(valid_times))),
+        )
+        self._signature = None
+        self.refresh()
+
+    def clear_bounds_override(self):
+        if self._bounds_override is None:
+            return
+        self._bounds_override = None
+        self._signature = None
+        self.refresh()
 
     def _time_changed(self, instant):
         if self.closed:

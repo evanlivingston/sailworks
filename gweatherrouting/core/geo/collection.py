@@ -36,6 +36,10 @@ class CollectionStorage(Storage):
 
 
 class Collection(Generic[T]):
+    # Bumped by every structural mutation (add/remove/reorder/replace) so cache
+    # keys can detect changes in O(1). Element-level edits bump Element.revision.
+    revision = 0
+
     def __init__(self, of, base_name):
         self.storage = CollectionStorage(base_name)
         self.of = of
@@ -57,11 +61,17 @@ class Collection(Generic[T]):
     def __getitem__(self, i):
         return self.elements[i]
 
+    def touch(self):
+        """Mark the collection as changed (structural edit or external mutation)."""
+        self.revision = self.revision + 1
+
     def __setitem__(self, i, v):
         self.elements[i] = v
+        self.touch()
 
     def __delitem__(self, i):
         del self.elements[i]
+        self.touch()
 
     def to_json(self):
         return {"elements": [x.to_json() for x in self.elements]}
@@ -90,14 +100,60 @@ class Collection(Generic[T]):
 
     def clear(self):
         self.elements = []
+        self.touch()
         self.save()
 
     def append(self, element):
         self.elements.append(element)
+        self.touch()
         self.save()
 
+    def append_many(self, elements):
+        """Append multiple elements with a single save."""
+        changed = False
+        for element in elements:
+            self.elements.append(element)
+            if getattr(element, "collection", None) is None:
+                element.collection = self
+            changed = True
+        if changed:
+            self.touch()
+            self.save()
+        return len(elements) if elements is not None else 0
+
+    def extend(self, elements):
+        return self.append_many(elements)
+
+    def remove_many(self, elements):
+        """Remove multiple elements with a single save."""
+        changed = False
+        for element in list(elements or ()):
+            try:
+                self.elements.remove(element)
+                changed = True
+            except ValueError:
+                continue
+        if changed:
+            self.touch()
+            self.save()
+
+    def remove_by_names(self, names):
+        """Remove elements by name with a single save."""
+        wanted = set(names or ())
+        before = len(self.elements)
+        self.elements = [
+            element for element in self.elements if element.name not in wanted
+        ]
+        if len(self.elements) != before:
+            self.touch()
+            self.save()
+
     def remove(self, element):
-        self.elements.remove(element)
+        try:
+            self.elements.remove(element)
+        except ValueError:
+            return
+        self.touch()
         self.save()
 
     def remove_by_name(self, name):
@@ -183,3 +239,15 @@ class CollectionWithActiveElement(Collection):
             self.activeElement = None
 
         Collection.remove(self, element)
+
+    def remove_many(self, elements):
+        for element in list(elements or ()):
+            if self.activeElement == element:
+                self.activeElement = None
+        Collection.remove_many(self, elements)
+
+    def remove_by_names(self, names):
+        wanted = set(names or ())
+        if self.activeElement is not None and self.activeElement.name in wanted:
+            self.activeElement = None
+        Collection.remove_by_names(self, names)

@@ -171,6 +171,9 @@ class MapHostMixin:
 
     @staticmethod
     def _collection_snapshot(manager):
+        # O(elements), never O(points): point and visibility edits are captured
+        # by the per-element revision counters (see Element.touch), and
+        # structural edits by the collection revision.
         snapshot = []
         for element in manager:
             position = getattr(element, "position", None)
@@ -184,9 +187,10 @@ class MapHostMixin:
                     bool(getattr(element, "visible", True)),
                     size,
                     tuple(position) if position is not None else None,
+                    getattr(element, "revision", 0),
                 )
             )
-        return tuple(snapshot)
+        return (getattr(manager, "revision", 0), tuple(snapshot))
 
     def get_scale_factor(self):
         return math.ceil(self.devicePixelRatioF())

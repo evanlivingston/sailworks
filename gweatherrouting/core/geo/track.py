@@ -22,13 +22,19 @@ from gweatherrouting.core.geo.elementmultipoint import ElementMultiPoint
 
 
 class Track(ElementMultiPoint):
-    def __init__(self, name, points=None, visible=True, collection=None):
+    def __init__(self, name, points=None, visible=True, collection=None, race_track=False):
         super().__init__(name, points, visible, collection)
+        self.race_track = bool(race_track)
+
+    def to_json(self):
+        c = super().to_json()
+        c["race_track"] = self.race_track
+        return c
 
     @staticmethod
     def from_json(j: Dict) -> "Track":
         d = ElementMultiPoint.from_json(j)
-        return Track(d.name, d.points, d.visible)
+        return Track(d.name, d.points, d.visible, race_track=j.get("race_track", False))
 
     def to_gpx_object(self):
         gpx_track = gpxpy.gpx.GPXTrack()
