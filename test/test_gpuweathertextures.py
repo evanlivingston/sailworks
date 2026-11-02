@@ -187,3 +187,51 @@ def test_cross_context_retirement_is_only_executed_by_owning_store():
     assert len(destroyed) == 4
     assert right.bind(key("demand"), [Image()] * 4) is not None
     right.clear()
+
+
+def test_queued_invalidation_cannot_clear_newer_request(monkeypatch):
+    pytest.importorskip("PySide6")
+    from PySide6.QtCore import QObject, Signal
+    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtQuick import QQuickItem
+
+    from sailworks.qt.gpuweathertextures import native_texture_context
+
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    app = QGuiApplication.instance() or QGuiApplication([])
+
+    class Window(QObject):
+        beforeSynchronizing = Signal()
+        afterSynchronizing = Signal()
+        afterRendering = Signal()
+        sceneGraphInvalidated = Signal()
+
+        def update(self):
+            pass
+
+    window, parent = Window(), QQuickItem()
+    context = native_texture_context(window, parent, NativeWeatherBudget(32))
+    queued, delivered = [], []
+    context._status.disconnect(context._accept_status)
+    context._status.connect(queued.append)
+    context.stateChanged.connect(delivered.append)
+
+    context.request("first", [Image()] * 4)
+    context._invalidated()
+    stale = queued.pop()
+    context.request("second", [Image()] * 4)
+    sequence, field = context._latest
+    normal = {"sequence": sequence, "key": field, "ready": True}
+    context._accept_status(normal)
+    context._accept_status(stale)
+    assert context.ready
+    assert delivered == [normal]
+
+    context._invalidated()
+    current = queued.pop()
+    context.ready = True
+    context._accept_status(current)
+    assert not context.ready
+    assert delivered == [normal, current]
+    context.close()
+    assert app is not None

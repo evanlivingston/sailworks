@@ -51,7 +51,12 @@ Item {
     WeatherFill {
         objectName: "weatherFill"
         anchors.fill: parent
-        visible: root.fillEnabled
+        visible: false
+    }
+    WeatherFill {
+        objectName: "weatherFillBack"
+        anchors.fill: parent
+        visible: false
     }
     function batchesReady() {
         let revision = batchRevision

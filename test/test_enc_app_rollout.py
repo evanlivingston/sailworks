@@ -258,6 +258,444 @@ def test_app_image_provider_namespace_matches_its_registration(presenter):
     assert provider.publish(17, Mock()) == "image://environment/17"
 
 
+def test_chart_provider_retains_only_front_and_latest_pending(presenter):
+    from PySide6.QtGui import QImage
+    from sailworks.qt.gribviewportchart import chart_image_provider
+
+    provider = chart_image_provider()
+    images = [QImage(n, 1, QImage.Format.Format_ARGB32) for n in range(1, 5)]
+    provider.publish_retained(1, images[0])
+    provider.publish_retained(2, images[1], 1)
+    assert provider.requestImage("1", None, None).width() == 1
+    assert provider.requestImage("2", None, None).width() == 2
+
+    provider.publish_retained(3, images[2], 1)
+    assert provider.requestImage("1", None, None).width() == 1
+    assert provider.requestImage("2", None, None).isNull()
+    assert provider.requestImage("3", None, None).width() == 3
+    provider.retain(3)
+    assert provider.requestImage("1", None, None).isNull()
+    provider.publish_retained(4, images[3], 3)
+    provider.retain(3)  # failed pending image
+    assert provider.requestImage("3", None, None).width() == 3
+    assert provider.requestImage("4", None, None).isNull()
+    provider.retain()
+    assert provider.requestImage("3", None, None).isNull()
+
+
+def test_chart_qml_status_follows_front_not_pending(presenter):
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QImage
+    from PySide6.QtQml import QQmlComponent, QQmlEngine
+    from sailworks.qt.gribviewportchart import chart_image_provider
+
+    engine = QQmlEngine()
+    provider = chart_image_provider()
+    engine.addImageProvider("chart", provider)
+    image = QImage(2, 2, QImage.Format.Format_ARGB32)
+    provider.publish_retained(1, image)
+    component = QQmlComponent(
+        engine,
+        QUrl.fromLocalFile(
+            str(
+                Path(__file__).resolve().parents[1]
+                / "sailworks/qt/shaders/ChartLayer.qml"
+            )
+        ),
+    )
+    chart = component.create()
+    assert chart is not None, component.errorString()
+    chart.setProperty("slot0Source", QUrl("image://chart/1"))
+    assert chart.property("ready")
+    chart.setProperty("slot1Source", QUrl("image://chart/missing"))
+    assert chart.property("ready")
+    assert chart.property("sourceError") == ""
+    chart.setProperty("frontSlot", 1)
+    assert not chart.property("ready")
+    assert chart.property("sourceError") == "chart image unavailable"
+    chart.setProperty("frontSlot", 0)
+    assert chart.property("ready")
+    assert chart.property("sourceError") == ""
+    chart.deleteLater()
+
+
+def test_chart_staging_ignores_stale_callbacks_and_adopts_metadata(presenter):
+    from types import MethodType
+    from PySide6.QtGui import QImage
+    from sailworks.qt.gribviewport import _viewport_widget_class
+    from sailworks.qt.gribviewportchart import chart_image_provider
+    from sailworks.qt.viewportpublication import LayerRole, PublicationBudget
+
+    cls = _viewport_widget_class()
+    properties = {}
+    manager = Mock()
+    manager.budget = PublicationBudget()
+    assert manager.budget.allocate(LayerRole.CHART, 2 * 2 * 4)
+    manager.stage_resources.return_value = True
+    manager.verify_and_adopt.return_value = (True, "")
+    old_viewport = object()
+    widget = SimpleNamespace(
+        _disposed=False,
+        _chart_payload_valid=Mock(return_value=True),
+        _publication_manager=manager,
+        _chart_front_slot=0,
+        _chart_pending=None,
+        _chart_attempt=1,
+        _chart_redelivery_generation=None,
+        _chart_visible_generation=1,
+        _chart_provider=chart_image_provider(),
+        _chart=SimpleNamespace(setProperty=properties.__setitem__),
+        _chart_viewport=old_viewport,
+        _chart_composition_camera="old camera",
+        _chart_composition_dpr=1,
+        _place_chart=Mock(),
+        _chart_state_now=Mock(return_value="ready"),
+        _update_enc_status=Mock(),
+        _enc_chart_layer=False,
+        _chart_ready_at=None,
+        counters={"chart_publications": 0},
+    )
+    for name in (
+        "_publish_chart",
+        "_reject_chart_pending",
+        "_chart_slot_result",
+        "_chart_state_changed",
+    ):
+        setattr(widget, name, MethodType(getattr(cls, name), widget))
+    image = QImage(2, 2, QImage.Format.Format_ARGB32)
+    widget._chart_provider.publish_retained(1, image)
+    first = {"viewport": object(), "camera": "first", "factor": 2}
+    final_viewport = object()
+    final = {"viewport": final_viewport, "camera": "final", "factor": 3}
+    widget._publish_chart((2, image, first))
+    assert widget._chart_viewport is old_viewport
+    assert widget._chart_visible_generation == 1
+    widget._publish_chart((3, image, final))
+    widget._chart_slot_result(1, "2", True)  # delayed superseded completion
+    assert widget._chart_pending[0] == 3
+    assert widget._chart_viewport is old_viewport
+    widget._chart_slot_result(1, "3", False)
+    assert properties["chartUnavailable"] is True
+    assert widget._chart_pending is None
+    assert widget._chart_visible_generation == 1
+    assert widget._chart_viewport is old_viewport
+    widget._publish_chart((4, image, final))
+    widget._chart_payload_valid.return_value = False
+    widget._chart_slot_result(1, "4", True)  # became stale while loading
+    assert widget._chart_visible_generation == 1
+    assert widget._chart_viewport is old_viewport
+    widget._chart_payload_valid.return_value = True
+    widget._publish_chart((5, image, final))
+    widget._chart_slot_result(1, "5", True)
+    assert widget._chart_visible_generation == 5
+    assert widget._chart_front_slot == 1
+    assert widget._chart_viewport is final_viewport
+    assert widget._chart_composition_camera == "final"
+    assert widget._chart_composition_dpr == 3
+    assert properties["frontSlot"] == 1
+    assert properties["chartUnavailable"] is False
+    assert widget.counters["chart_publications"] == 1
+    assert widget._chart_provider.requestImage("1", None, None).isNull()
+    assert not widget._chart_provider.requestImage("5", None, None).isNull()
+
+
+def test_chart_reuse_redelivers_rejected_cold_start_without_stale_adoption(
+    presenter, tmp_path
+):
+    from types import MethodType
+
+    from PySide6.QtGui import QImage
+    from sailworks.qt.gribviewport import _viewport_widget_class
+    from sailworks.qt.gribviewportchart import chart_image_provider
+    from sailworks.qt.viewportpublication import PublicationBudget
+
+    model = ViewportChartLayer((), tmp_path)
+    image = QImage(2, 2, QImage.Format.Format_ARGB32)
+    metadata = {"viewport": object()}
+    model._generation = 1
+    model._published = (1, image, metadata)
+    model._reusable = lambda camera: camera == "covered"
+    manager = Mock()
+    manager.budget = PublicationBudget()
+    manager.stage_resources.return_value = True
+    manager.verify_and_adopt.return_value = (True, "")
+    widget = SimpleNamespace(
+        _disposed=False,
+        _chart_model=model,
+        _camera="outside",
+        _chart_pending=None,
+        _chart_attempt=0,
+        _chart_redelivery_generation=None,
+        _chart_front_slot=0,
+        _chart_visible_generation=None,
+        _chart_provider=chart_image_provider(),
+        _chart=SimpleNamespace(setProperty=Mock()),
+        _publication_manager=manager,
+        _chart_camera_changed=0,
+        _weather_ready_at=1,
+        _enc_chart_layer=False,
+        _model=SimpleNamespace(busy=lambda: False),
+        _chart_state_now=Mock(),
+        _place_chart=Mock(),
+        _update_enc_status=Mock(),
+        _chart_ready_at=None,
+        counters={"chart_requests": 0, "chart_publications": 0},
+    )
+    cls = _viewport_widget_class()
+    for name in (
+        "_publish_chart",
+        "_chart_payload_valid",
+        "_reject_chart_pending",
+        "_chart_slot_result",
+        "_request_chart",
+    ):
+        setattr(widget, name, MethodType(getattr(cls, name), widget))
+    try:
+        widget._publish_chart(model._published)  # queued delivery after camera moved
+        assert widget._chart_pending is None
+        widget._camera = "covered"
+        widget._request_chart()
+        first_token = widget._chart_pending[3]
+        widget._request_chart()  # a valid pending delivery is not restaged
+        assert widget._chart_pending[3] == first_token
+        assert manager.stage_resources.call_count == 1
+        widget._camera = "outside"
+        widget._chart_slot_result(1, first_token, True)
+        assert widget._chart_pending is None
+        widget._camera = "covered"
+        widget._request_chart()
+        second_token = widget._chart_pending[3]
+        assert second_token != first_token
+        widget._chart_slot_result(1, first_token, True)
+        manager.verify_and_adopt.assert_not_called()
+        assert widget._chart_pending[3] == second_token
+        widget._chart_slot_result(1, second_token, True)
+        assert widget._chart_visible_generation == 1
+        assert widget.counters["chart_publications"] == 1
+        widget._request_chart()
+        assert manager.stage_resources.call_count == 2
+        assert model.counters["compositions"] == 0
+    finally:
+        model.close()
+
+
+def test_clearing_chart_withdraws_visible_manager_state(presenter):
+    from types import MethodType
+
+    from PySide6.QtGui import QImage
+
+    from sailworks.qt.gribviewport import _viewport_widget_class
+    from sailworks.qt.gribviewportchart import chart_image_provider
+
+    cls = _viewport_widget_class()
+    properties = {}
+    manager = Mock()
+    provider = chart_image_provider()
+    image = QImage(2, 2, QImage.Format.Format_ARGB32)
+    provider.publish_retained(1, image)
+    widget = SimpleNamespace(
+        _chart_pending=None,
+        _chart_attempt=0,
+        _chart_redelivery_generation=None,
+        _chart_front_slot=0,
+        _chart_visible_generation=1,
+        _chart_viewport=object(),
+        _chart_composition_camera=object(),
+        _chart_composition_dpr=2,
+        _chart=SimpleNamespace(setProperty=properties.__setitem__),
+        _chart_provider=provider,
+        _publication_manager=manager,
+    )
+    for name in ("_reject_chart_pending", "_clear_chart"):
+        setattr(widget, name, MethodType(getattr(cls, name), widget))
+    widget._clear_chart()
+    manager.withdraw_visible.assert_called_once()
+    assert widget._chart_visible_generation is None
+    assert widget._chart_viewport is None
+    assert widget._chart_composition_camera is None
+    assert widget._chart_composition_dpr is None
+    assert properties["slot0Source"].isEmpty()
+    assert provider.requestImage("1", None, None).isNull()
+
+
+def _budget_chart_widget(image):
+    from types import MethodType
+
+    from sailworks.qt.gribviewport import _viewport_widget_class
+    from sailworks.qt.gribviewportchart import chart_image_provider
+    from sailworks.qt.viewportpublication import (
+        LayerIdentity,
+        LayerPlacement,
+        LayerRole,
+        PublicationManager,
+        ResourceKind,
+    )
+
+    cls = _viewport_widget_class()
+    properties = {}
+    manager = PublicationManager()
+    provider = chart_image_provider()
+    provider.publish_retained(1, image)
+    assert manager.stage_resources(
+        LayerRole.CHART,
+        LayerIdentity(LayerRole.CHART, 1, (), "old"),
+        LayerPlacement(),
+        {ResourceKind.IMAGE: image},
+        image.sizeInBytes(),
+        completion_token="old",
+    )
+    assert manager.commit_pending(LayerRole.CHART, "old")[0]
+    widget = SimpleNamespace(
+        _disposed=False,
+        _chart_payload_valid=Mock(return_value=True),
+        _chart_pending=None,
+        _chart_attempt=0,
+        _chart_redelivery_generation=None,
+        _chart_front_slot=0,
+        _chart_visible_generation=1,
+        _chart_viewport=object(),
+        _chart_composition_camera=None,
+        _chart_composition_dpr=None,
+        _chart=SimpleNamespace(setProperty=properties.__setitem__),
+        _chart_provider=provider,
+        _publication_manager=manager,
+        _enc_chart_layer=False,
+        _update_enc_status=Mock(),
+        _place_chart=Mock(),
+        _chart_state_now=Mock(),
+        _chart_ready_at=None,
+        counters={"chart_publications": 0},
+    )
+    for name in (
+        "_reject_chart_pending",
+        "_clear_chart",
+        "_chart_state_changed",
+        "_publish_chart",
+        "_chart_slot_result",
+    ):
+        setattr(widget, name, MethodType(getattr(cls, name), widget))
+    return widget, properties, manager, provider
+
+
+def test_chart_budget_withdraws_front_and_stages_full_resolution(presenter):
+    from PySide6.QtGui import QImage
+
+    image = QImage(3424, 2624, QImage.Format.Format_ARGB32)
+    widget, properties, manager, provider = _budget_chart_widget(image)
+    widget._publish_chart((2, image, {"viewport": object()}))
+    assert widget._chart_visible_generation is None
+    assert properties["chartLoading"] is True
+    assert provider.requestImage("1", None, None).isNull()
+    assert manager.budget.current_usage["chart"] == image.sizeInBytes()
+    slot, token = widget._chart_pending[2:]
+    assert token == "2"
+    widget._chart_slot_result(slot, "1", True)
+    assert widget._chart_pending[3] == token
+    widget._chart_slot_result(slot, token, True)
+    assert widget._chart_visible_generation == 2
+    assert manager.budget.current_usage["chart"] == image.sizeInBytes()
+    assert not provider.requestImage("2", None, None).isNull()
+
+
+def test_chart_oversized_budget_refusal_is_terminal_for_generation(presenter):
+    from PySide6.QtGui import QImage
+
+    old = QImage(2, 2, QImage.Format.Format_ARGB32)
+    widget, properties, manager, provider = _budget_chart_widget(old)
+    image = QImage(4097, 4097, QImage.Format.Format_ARGB32)
+    payload = (2, image, {"viewport": object()})
+    widget._publish_chart(payload)
+    assert widget._chart_state == "unavailable"
+    assert properties["chartUnavailable"] is True
+    assert properties["chartLoading"] is False
+    assert widget._chart_visible_generation is None
+    assert manager.budget.current_usage["chart"] == 0
+    assert provider.requestImage("1", None, None).isNull()
+    assert provider.requestImage("2", None, None).isNull()
+    attempt = widget._chart_attempt
+    widget._publish_chart(payload)
+    assert widget._chart_attempt == attempt
+
+
+def test_chart_global_cap_reclaims_visible_when_layer_cap_allows_pair(presenter):
+    from PySide6.QtGui import QImage
+    from sailworks.qt.viewportpublication import LayerRole
+
+    image = QImage(4, 4, QImage.Format.Format_ARGB32)
+    widget, properties, manager, provider = _budget_chart_widget(image)
+    size = image.sizeInBytes()
+    manager.budget.global_cap = 2 * size
+    assert manager.budget.allocate(LayerRole.FILL, size // 2)
+    assert 2 * size <= manager.budget.layer_caps[LayerRole.CHART]
+
+    widget._publish_chart((2, image, {"viewport": object()}))
+    assert widget._chart_visible_generation is None
+    assert properties["chartLoading"] is True
+    slot, token = widget._chart_pending[2:]
+    assert token == "2"
+    widget._chart_slot_result(slot, "1", True)
+    assert widget._chart_pending[3] == token
+    widget._chart_slot_result(slot, token, True)
+    assert widget._chart_visible_generation == 2
+    assert provider.requestImage("2", None, None).size() == image.size()
+    assert manager.budget.total_used() <= manager.budget.global_cap
+
+
+def test_chart_refusal_retries_only_after_capacity_changes(presenter):
+    from types import MethodType
+    from PySide6.QtGui import QImage
+    from sailworks.qt.gribviewport import _viewport_widget_class
+    from sailworks.qt.viewportpublication import LayerRole
+
+    image = QImage(4, 4, QImage.Format.Format_ARGB32)
+    widget, properties, manager, provider = _budget_chart_widget(image)
+    size = image.sizeInBytes()
+    assert manager.budget.allocate(LayerRole.FILL, size + 1)
+    manager.budget.global_cap = 2 * size
+    payload = (2, image, {"viewport": object()})
+    widget._publish_chart(payload)
+    assert widget._chart_state == "unavailable"
+    assert properties["chartUnavailable"] is True
+    assert widget._chart_pending is None
+    attempt = widget._chart_attempt
+
+    widget._request_chart = MethodType(_viewport_widget_class()._request_chart, widget)
+    widget._camera = object()
+    widget._weather_ready_at = 1
+    widget._chart_camera_changed = 0
+    widget._model = SimpleNamespace(busy=Mock(return_value=False))
+    widget._chart_model = SimpleNamespace(
+        request=Mock(return_value=2), _condition=Condition(), _published=payload
+    )
+    widget.counters["chart_requests"] = 0
+    widget._request_chart()
+    widget._request_chart()
+    assert widget._chart_attempt == attempt
+
+    manager.budget.release(LayerRole.FILL, 1)
+    widget._request_chart()
+    assert widget._chart_attempt == attempt + 1
+    slot, token = widget._chart_pending[2:]
+    widget._chart_slot_result(slot, str(attempt), True)
+    assert widget._chart_pending[3] == token
+    widget._chart_slot_result(slot, token, True)
+    assert widget._chart_visible_generation == 2
+    assert provider.requestImage("2", None, None).size() == image.size()
+
+
+def test_chart_budget_fallback_revalidates_after_withdrawal(presenter):
+    from PySide6.QtGui import QImage
+
+    image = QImage(3424, 2624, QImage.Format.Format_ARGB32)
+    widget, _, manager, provider = _budget_chart_widget(image)
+    widget._chart_payload_valid.side_effect = [True, False]
+    widget._publish_chart((2, image, {"viewport": object()}))
+    assert widget._chart_pending is None
+    assert widget._chart_redelivery_generation == 2
+    assert manager.budget.current_usage["chart"] == 0
+    assert provider.requestImage("2", None, None).isNull()
+
+
 def test_missing_forecast_worker_is_terminal_not_permanently_busy():
     from sailworks.qt.gribviewport import GribViewportModel, ViewportCamera
 
@@ -422,6 +860,28 @@ def test_viewport_camera_handoff_is_encapsulated_by_the_map_host():
 
     assert not ViewportMap.adopt_viewport_camera(host, camera)
     assert changed.call_count == 1
+
+
+def test_map_host_keeps_navigation_cache_for_camera_only_pan():
+    from sailworks.qt.viewportmap import (
+        ViewportCameraState,
+        ViewportMapState,
+        ViewportMap,
+    )
+
+    camera_state = ViewportCameraState(48.0, -123.0, 8.0)
+    host = SimpleNamespace(
+        camera_state=camera_state,
+        _view_state=ViewportMapState(camera_state),
+        _cancel_cursor=Mock(),
+        invalidate_navigation=Mock(),
+        view_changed=SimpleNamespace(emit=Mock()),
+        _weather_presenter=SimpleNamespace(foreground=None),
+    )
+    camera = SimpleNamespace(center_lat=48.45, center_lon=-124.29, zoom=8.0)
+
+    assert ViewportMap.adopt_viewport_camera(host, camera)
+    host.invalidate_navigation.assert_not_called()
 
 
 def test_map_host_translates_app_state_to_the_viewport_camera_contract():
@@ -641,6 +1101,7 @@ def test_viewport_foreground_publishes_navigation_instead_of_legacy_painting():
         _nav_key=Mock(return_value="key"),
         _navigation_image=Mock(return_value=image),
         _paint_dashboard=Mock(),
+        _paint_measurement_overlay=Mock(),
         _paint_route_overlay=Mock(),
         _paint_track_overlay=Mock(),
         _paint_caption=Mock(),
@@ -653,6 +1114,7 @@ def test_viewport_foreground_publishes_navigation_instead_of_legacy_painting():
     )
     widget.set_navigation_overlay.assert_called_once_with(image, target)
     host._paint_dashboard.assert_called_once_with(painter)
+    host._paint_measurement_overlay.assert_called_once_with(painter)
     host._paint_route_overlay.assert_not_called()
     host._paint_track_overlay.assert_not_called()
     host._paint_caption.assert_not_called()

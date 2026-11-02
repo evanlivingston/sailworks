@@ -527,6 +527,7 @@ def native_texture_context(window, parent_item, budget):
                         self._closed
                         or status["source_epoch"] != self._source_epoch
                         or status["scene_epoch"] != self._scene_epoch
+                        or status["sequence"] != self._sequence
                     ):
                         return
                     self.ready = False
@@ -640,6 +641,12 @@ def native_texture_context(window, parent_item, budget):
                     self._scene_epoch += 1
                     self._latest = self._frame_ready = self._last_delivered = None
                     self.ready = False
+                    invalidation_status = {
+                        "invalidated": True,
+                        "source_epoch": self._source_epoch,
+                        "scene_epoch": self._scene_epoch,
+                        "sequence": self._sequence,
+                    }
                 self._store.clear()
                 for provider in self._providers:
                     if provider is not None and shiboken6.isValid(provider):
@@ -651,13 +658,7 @@ def native_texture_context(window, parent_item, budget):
                     self._registered = False
                 self._observe()
                 if not self._closed and shiboken6.isValid(self):
-                    self._status.emit(
-                        {
-                            "invalidated": True,
-                            "source_epoch": self._source_epoch,
-                            "scene_epoch": self._scene_epoch,
-                        }
-                    )
+                    self._status.emit(invalidation_status)
             except Exception as exc:
                 self._errors.append(str(exc))
 

@@ -179,7 +179,271 @@ def test_pending_native_binding_does_not_mutate_visible_layer():
     assert host._native_bindings == {("barbs", 1): "later"}
 
 
+def test_native_status_correlates_ready_and_invalidation_by_slot(monkeypatch):
+    import shiboken6
+    from sailworks.qt.viewportpublication import (
+        LayerPlacement,
+        PublicationManager,
+    )
+
+    monkeypatch.setattr(shiboken6, "isValid", lambda item: True)
+    cls = _viewport_widget_class()
+    manager = PublicationManager()
+    old, new = object(), object()
+    host = SimpleNamespace(
+        _disposed=False,
+        _barbs=Layer(),
+        _barbs_back=Layer(),
+        _fill=None,
+        _fill_back=None,
+        _native_front_index=0,
+        _native_bindings={("barbs", 0): "old", ("barbs", 1): "new"},
+        _native_publication_tokens={("barbs", 0): old, ("barbs", 1): new},
+        _publication_manager=manager,
+        _camera=None,
+        _set_weather_visible=lambda visible: None,
+        _update_native_state=lambda: None,
+    )
+    host._native_item = lambda role, slot: cls._native_item(host, role, slot)
+    assert manager.stage_resources("barbs", "new", LayerPlacement(), {}, 10, new)
+    cls._native_status(
+        host, "barbs", 0, {"key": SimpleNamespace(identity="old"), "ready": True}
+    )
+    assert manager.layers["barbs"].pending == "new"
+    assert manager.layers["barbs"].visible is None
+    cls._native_status(host, "barbs", 0, {"invalidated": True})
+    assert manager.layers["barbs"].pending == "new"
+    assert ("barbs", 0) not in host._native_publication_tokens
+    cls._native_status(
+        host, "barbs", 1, {"key": SimpleNamespace(identity="new"), "ready": True}
+    )
+    assert host._barbs_back.values["nativeReady"] is True
+    assert manager.layers["barbs"].visible is None
+    assert manager.layers["barbs"].pending == "new"
+
+
+@pytest.mark.parametrize("token_kind", ["matching", "older", "absent"])
+def test_native_error_retires_only_matching_pending_resources(monkeypatch, token_kind):
+    import shiboken6
+    from sailworks.qt.viewportpublication import (
+        LayerPlacement,
+        PublicationManager,
+    )
+
+    monkeypatch.setattr(shiboken6, "isValid", lambda item: True)
+    cls = _viewport_widget_class()
+    manager = PublicationManager()
+    visible_resources = {"visible": object()}
+    assert manager.stage_resources(
+        "barbs", "visible", LayerPlacement(), visible_resources, 5
+    )
+    assert manager.commit_pending("barbs") == (True, "adopted")
+    token, older_token = object(), object()
+    assert manager.stage_resources("barbs", "new", LayerPlacement(), {}, 10, token)
+    key = SimpleNamespace(identity="A")
+    slot = ("barbs", 1)
+    events = []
+    back = Layer()
+    back.values.update(nativeReady=True, nativeFrameObserved=True)
+    host = SimpleNamespace(
+        _disposed=False,
+        _barbs=Layer(),
+        _barbs_back=back,
+        _fill=None,
+        _fill_back=None,
+        _native_front_index=0,
+        _native_bindings={slot: "A"},
+        _native_requests={slot: (2, key)},
+        _native_images={slot: (object(),)},
+        _native_publication_tokens=(
+            {}
+            if token_kind == "absent"
+            else {slot: token if token_kind == "matching" else older_token}
+        ),
+        _publication_manager=manager,
+        _show_state=lambda state: events.append(state),
+        _set_weather_visible=lambda visible: events.append(visible),
+        nativeError=SimpleNamespace(emit=lambda error: events.append(error)),
+    )
+    host._native_item = lambda role, index: cls._native_item(host, role, index)
+    cls._native_status(host, "barbs", 1, {"sequence": 1, "key": key, "error": "old"})
+    assert manager.layers["barbs"].pending == "new"
+    assert host._native_requests[slot] == (2, key)
+    assert events == []
+
+    cls._native_status(host, "barbs", 1, {"sequence": 2, "key": key, "error": "failed"})
+    layer = manager.layers["barbs"]
+    assert layer.visible == "visible"
+    assert layer.visible_resources is visible_resources
+    assert layer.native_ready and layer.native_frame_observed
+    assert layer.pending == (None if token_kind == "matching" else "new")
+    assert manager.budget.total_used() == (5 if token_kind == "matching" else 15)
+    assert slot not in host._native_bindings
+    assert slot not in host._native_requests
+    assert slot not in host._native_images
+    assert slot not in host._native_publication_tokens
+    assert back.values == {"nativeReady": False, "nativeFrameObserved": False}
+    assert events == ["unavailable", "failed"]
+
+
+def test_same_identity_changed_images_and_stale_status(monkeypatch):
+    from threading import RLock
+    import shiboken6
+    from sailworks.qt.viewportpublication import (
+        LayerPlacement,
+        PublicationManager,
+    )
+
+    monkeypatch.setattr(shiboken6, "isValid", lambda item: True)
+    cls = _viewport_widget_class()
+
+    class SequencedContext(Context):
+        def __init__(self):
+            super().__init__()
+            self._lock = RLock()
+            self._latest = None
+
+        def request(self, identity, images, representation):
+            super().request(identity, images, representation)
+            self._latest = (len(self.requests), SimpleNamespace(identity=identity))
+            return False
+
+    context = SequencedContext()
+    manager = PublicationManager()
+    token = object()
+    host = SimpleNamespace(
+        _disposed=False,
+        _barbs=Layer(),
+        _barbs_back=Layer(),
+        _fill=None,
+        _fill_back=None,
+        _native_front_index=0,
+        _native_contexts={("barbs", 0): context},
+        _native_bindings={},
+        _native_publication_tokens={},
+        _publication_manager=manager,
+        counters={"native_field_requests": 0},
+        _camera=None,
+        _native_pending_identity="A",
+        _update_native_state=lambda: None,
+    )
+    host._native_item = lambda role, slot: cls._native_item(host, role, slot)
+    images = (object(),)
+    cls._bind_native_layer(host, "barbs", "A", images, completion_token=token)
+    old_sequence, old_key = context._latest
+    context.ready = True
+    assert manager.stage_resources("barbs", "new", LayerPlacement(), {}, 10, token)
+    cls._bind_native_layer(host, "barbs", "A", (object(),), completion_token=token)
+    assert len(context.requests) == 2
+    cls._native_status(
+        host, "barbs", 0, {"sequence": old_sequence, "key": old_key, "ready": True}
+    )
+    cls._native_status(
+        host, "barbs", 0, {"invalidated": True, "sequence": old_sequence}
+    )
+    assert host._native_bindings["barbs", 0] == "A"
+    assert host._barbs.values["nativeReady"] is False
+    assert manager.layers["barbs"].pending == "new"
+    assert manager.layers["barbs"].visible is None
+    sequence, key = context._latest
+    cls._native_status(
+        host, "barbs", 0, {"sequence": sequence, "key": key, "ready": True}
+    )
+    assert manager.layers["barbs"].visible == "new"
+
+
+def test_warm_back_binding_adopts_only_on_swap():
+    from sailworks.qt.viewportpublication import (
+        LayerPlacement,
+        PublicationManager,
+    )
+
+    cls = _viewport_widget_class()
+    context = Context()
+    context.ready = True
+    manager = PublicationManager()
+    token = object()
+    assert manager.stage_resources("barbs", "new", LayerPlacement(), {}, 10, token)
+    host = SimpleNamespace(
+        _barbs=Layer(),
+        _barbs_back=Layer(),
+        _fill=None,
+        _fill_back=None,
+        _native_front_index=0,
+        _native_contexts={("barbs", 1): context},
+        _native_bindings={},
+        _native_publication_tokens={},
+        _publication_manager=manager,
+        counters={"native_field_requests": 0},
+        _wind_opacity=1,
+        _native_pending_camera="camera",
+        _native_pending_identity="new",
+        _native_pending_selection_urls=(),
+        _provider=SimpleNamespace(pin_selection=lambda urls: None),
+    )
+    host._native_item = lambda role, slot: cls._native_item(host, role, slot)
+    images = (object(),)
+    cls._bind_native_layer(
+        host, "barbs", "A", images, pending=True, completion_token=token
+    )
+    cls._bind_native_layer(
+        host, "barbs", "A", images, pending=True, completion_token=token
+    )
+    assert len(context.requests) == 1
+    assert host._barbs_back.values["nativeReady"] is True
+    assert manager.layers["barbs"].visible is None
+    assert manager.layers["barbs"].pending == "new"
+    cls._commit_native_weather(host)
+    assert manager.layers["barbs"].visible == "new"
+
+
+def test_native_barbs_budget_refusal_still_binds():
+    from unittest.mock import Mock
+    from sailworks.qt.viewportpublication import (
+        LayerPlacement,
+        PublicationManager,
+    )
+
+    cls = _viewport_widget_class()
+    manager = PublicationManager()
+    assert manager.stage_resources("barbs", "visible", LayerPlacement(), {}, 5)
+    assert manager.commit_pending("barbs") == (True, "adopted")
+    token = object()
+    assert manager.stage_resources("barbs", "old", LayerPlacement(), {}, 10, token)
+    manager.stage_resources = Mock(return_value=False)
+    bind = Mock()
+    host = SimpleNamespace(
+        _barbs=Layer(),
+        _native_weather_fields=True,
+        _native_pending_camera=None,
+        _publication_manager=manager,
+        _bind_native_layer=bind,
+        _translate_selection_anchors=lambda selection, camera, urls: urls,
+        counters={"barbs_selection_publications": 0, "barbs_selection_uploads": 0},
+        _wind_opacity=1.0,
+    )
+    field = SimpleNamespace(
+        images=(1, 2),
+        generation=1,
+        identity="field",
+        staged=SimpleNamespace(weight=lambda _: 0),
+    )
+    selection = SimpleNamespace(shape=(1, 1))
+    camera = SimpleNamespace(stamp=lambda: 0)
+    cls._publish_barbs(host, field, selection, (), (), camera)
+    bind.assert_called_once_with(
+        "barbs", "field", (1, 2), pending=False, completion_token=None
+    )
+    assert manager.layers["barbs"].visible == "visible"
+    assert manager.layers["barbs"].pending is None
+    assert manager.layers["barbs"].completion_token is None
+    assert manager.budget.current_usage["barbs"] == 5
+    assert manager.commit_pending("barbs", token) == (False, "no pending resources")
+
+
 def test_native_weather_swap_keeps_front_until_pending_layers_are_ready():
+    from sailworks.qt.viewportpublication import PublicationManager
+
     cls = _viewport_widget_class()
     front, back = Layer(), Layer()
     front_fill, back_fill = Layer(), Layer()
@@ -204,8 +468,11 @@ def test_native_weather_swap_keeps_front_until_pending_layers_are_ready():
         _weather_display_camera="old time",
         _native_contexts=contexts,
         _provider=SimpleNamespace(pin_selection=pinned.append),
+        _publication_manager=PublicationManager(),
         _wind_opacity=0.88,
         _wind_style="barbs",
+        _wind_gradient_enabled=True,
+        _wind_gradient_opacity=0.12,
         _disposed=False,
         _camera="new time",
         _model=SimpleNamespace(state="ready"),

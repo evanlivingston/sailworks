@@ -101,3 +101,136 @@ def test_provider_keeps_displayed_selection_during_native_swap():
     provider.pin_selection(pending)
     assert provider.requestImage(old_id, None, QSize()).isNull()
     assert not provider.requestImage(new_id, None, QSize()).isNull()
+
+
+def test_two_fields_near_budget_document_front_eviction():
+    front = WeatherTexturePair.from_arrays(
+        START,
+        START + timedelta(hours=3),
+        *([[value, value + 1]] for value in range(1, 5)),
+    )
+    pending = WeatherTexturePair.from_arrays(
+        START,
+        START + timedelta(hours=3),
+        *([[value, value + 1]] for value in range(5, 9)),
+    )
+    for limit, front_retained in (
+        (front.nbytes + pending.nbytes, True),
+        (front.nbytes + pending.nbytes - 1, False),
+    ):
+        provider = WeatherImageProvider(byte_limit=limit)
+        front_urls = provider.publish_field(front.images, "front")
+        pending_urls = provider.publish_field(pending.images, "pending")
+        assert provider.field_bytes() <= limit
+        for url in front_urls:
+            image = provider.requestImage(
+                url.removeprefix("image://weather/"), None, QSize()
+            )
+            assert (not image.isNull()) is front_retained
+        for url in pending_urls:
+            assert not provider.requestImage(
+                url.removeprefix("image://weather/"), None, QSize()
+            ).isNull()
+
+
+def requested(provider, url):
+    return provider.requestImage(url.removeprefix("image://weather/"), None, QSize())
+
+
+@pytest.mark.parametrize("extra", [0, -1])
+def test_reserved_fields_budget_edge_preserves_bytes(extra):
+    front = tuple(encode_component([[value]]) for value in (1, 2))
+    pending = tuple(encode_component([[value]]) for value in (3, 4))
+    limit = sum(image.sizeInBytes() for image in front + pending) + extra
+    provider = WeatherImageProvider(byte_limit=limit)
+    front_urls = provider.reserve_field("map", front, "front")
+    provider.promote_field("map")
+    if extra < 0:
+        with pytest.raises(ValueError):
+            provider.reserve_field("map", pending, "pending")
+    else:
+        pending_urls = provider.reserve_field("map", pending, "pending")
+        for url, image in zip(pending_urls, pending):
+            assert (
+                requested(provider, url).constBits().tobytes()
+                == image.constBits().tobytes()
+            )
+    for url, image in zip(front_urls, front):
+        assert (
+            requested(provider, url).constBits().tobytes()
+            == image.constBits().tobytes()
+        )
+    assert provider.field_bytes() <= limit
+
+
+def test_reservation_cancel_promote_and_delayed_request():
+    images = [encode_component([[value]]) for value in (1, 2, 3)]
+    provider = WeatherImageProvider(byte_limit=2 * images[0].sizeInBytes())
+    front = provider.reserve_field("map", images[:1], "front")
+    provider.promote_field("map")
+    pending = provider.reserve_field("map", images[1:2], "pending")
+    provider.cancel_field("map")
+    replacement = provider.reserve_field("map", images[2:], "replacement")
+    assert requested(provider, pending[0]).isNull()
+    assert not requested(provider, front[0]).isNull()
+    provider.promote_field("map")
+    # A delayed loader request still succeeds for the newly displayed field.
+    assert (
+        requested(provider, replacement[0]).constBits().tobytes()
+        == images[2].constBits().tobytes()
+    )
+    provider.release_fields("map")
+
+
+def test_reservations_are_independent_and_count_distinct_images():
+    first, second, third = (encode_component([[value]]) for value in (1, 2, 3))
+    provider = WeatherImageProvider(byte_limit=2 * first.sizeInBytes())
+    one = provider.reserve_field("one", (first, first), "one")
+    provider.promote_field("one")
+    two = provider.reserve_field("two", (second,), "two")
+    provider.promote_field("two")
+    assert provider.field_bytes() == 2 * first.sizeInBytes()
+    with pytest.raises(ValueError):
+        provider.reserve_field("one", (third,), "three")
+    assert not requested(provider, one[0]).isNull()
+    assert not requested(provider, two[0]).isNull()
+    provider.release_fields("two")
+    provider.reserve_field("one", (third,), "three")
+    assert requested(provider, two[0]).isNull()
+    assert not requested(provider, one[0]).isNull()
+
+
+def test_barb_node_field_remains_servable_during_fill_reservation():
+    nodes = tuple(encode_component([[value]]) for value in (1, 2, 3, 4))
+    grid = tuple(encode_component([[value]]) for value in (5, 6, 7, 8))
+    size = sum(image.sizeInBytes() for image in nodes + grid)
+    provider = WeatherImageProvider(byte_limit=size)
+    node_urls = provider.reserve_field("barbs", nodes, "nodes")
+    provider.promote_field("barbs")
+    grid_urls = provider.reserve_field("fill", grid, "grid")
+    assert all(not requested(provider, url).isNull() for url in node_urls + grid_urls)
+    assert provider.field_bytes() == size
+    provider.promote_field("fill")
+    assert all(not requested(provider, url).isNull() for url in node_urls + grid_urls)
+
+    limited = WeatherImageProvider(byte_limit=size - 1)
+    old_nodes = limited.reserve_field("barbs", nodes, "nodes")
+    limited.promote_field("barbs")
+    with pytest.raises(ValueError):
+        limited.reserve_field("fill", grid, "grid")
+    assert all(not requested(limited, url).isNull() for url in old_nodes)
+    assert limited.field_bytes() <= limited.byte_limit
+
+
+def test_none_owner_pending_reservation_cannot_be_evicted_by_lookahead():
+    images = tuple(encode_component([[value]]) for value in (1, 2, 3))
+    provider = WeatherImageProvider(byte_limit=2 * images[0].sizeInBytes())
+    front = provider.reserve_field(None, images[:1], "front")
+    provider.promote_field(None)
+    pending = provider.reserve_field(None, images[1:2], "pending")
+    with pytest.raises(ValueError):
+        provider.publish_field(images[2:], "lookahead")
+    assert not requested(provider, front[0]).isNull()
+    assert not requested(provider, pending[0]).isNull()
+    assert "lookahead" not in provider._field_urls
+    assert provider.field_bytes() <= provider.byte_limit
