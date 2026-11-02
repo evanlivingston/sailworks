@@ -13,9 +13,17 @@ analysis tools and log replays.
 It is a fork of [GWeatherRouting](https://github.com/dakk/gweatherrouting) by Davide Gessa,
 built and extended as Sailworks since. See [NOTICE](NOTICE) for attribution and licensing.
 
-![Sailworks routing along a forecast](docs/source/_static/images/sailworks_levante.png)
+![Routing tracks over a wind forecast in Sailworks](docs/source/_static/images/readme-routing.png)
 
-![Boat polars and routing options](docs/source/_static/images/gww_polars.png)
+*Explore routes and race tracks alongside weather forecasts.*
+
+![Recorded boat track with speed and wind graphs in the log viewer](docs/source/_static/images/readme-logs.png)
+
+*Review a recorded sail with track and instrument graphs.*
+
+![Boat polar curves and recorded sailing data plotted by wind angle](docs/source/_static/images/readme-polars.png)
+
+*Compare boat polars with recorded sailing data.*
 
 ## What it does
 
