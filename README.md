@@ -3,76 +3,82 @@
 ![CI Status](https://github.com/evanlivingston/sailworks/actions/workflows/ci.yaml/badge.svg)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg?logo=gnu&logoColor=white)](https://www.gnu.org/licenses/gpl-3.0)
 
-Sailworks is an open-source sailing routing and navigation software written using Python and Qt.
+Sailworks plans sailing routes through real weather — on your own desktop, with your own
+charts, your own polars, and your own instrument feed.
 
-It is a fork of [GWeatherRouting](https://github.com/dakk/gweatherrouting) by
-Davide Gessa; see [NOTICE](NOTICE) for the fork point, attribution and licensing.
+Pick a boat, load a forecast, set where you want to go, and Sailworks works out when to
+leave and which way to go. Then watch it run on a live chart next to your instruments,
+analysis tools and log replays.
 
-![Sailworks](docs/source/_static/images/sailworks_levante.png)
+It is a fork of [GWeatherRouting](https://github.com/dakk/gweatherrouting) by Davide Gessa,
+built and extended as Sailworks since. See [NOTICE](NOTICE) for attribution and licensing.
 
-![Polars](docs/source/_static/images/gww_polars.png)
+![Sailworks routing along a forecast](docs/source/_static/images/sailworks_levante.png)
 
-![Log analysis](docs/source/_static/images/loganalysis.png)
+![Boat polars and routing options](docs/source/_static/images/gww_polars.png)
 
-## Features
+## What it does
 
-- Multi-point sailing weather routing
-- Boat / polar integrated database
-- Grib1 and Grib2 support, with downloader for OpenSkiron and NOAA
-- GPX support for importing and exporting POIs and tracks
-- Session manager for storing POIs, tracks and routings
-- Chart rendering: 
-    - GeoJSON (coastlines included)
-    - GSHHS basemap (download helper included)
-    - KAP, GeoTiff charts and other raster formats supported by GDAL
-    - OpenSeaMap seamarks rendering
-    - Canadian CHS chart imagery loads automatically as you browse Canadian waters.
-      Background PNG tile loading, Retina resolution, zoom previews, short
-      crossfades between detail levels, and a local
-      offline cache keep map interaction responsive. Toggle it under Settings →
-      Charts → Canadian charts (CHS). Cached tiles refresh after 14 days when online;
-      previously cached imagery stays available offline. This CHS viewing service
-      is not for navigation and does not supply depths to the routing engine.
-    - Zoom-aware ENC selection: overlapping charts use the compilation scale closest
-      to the current zoom, with other downloaded charts filling coverage gaps.
-    - On-demand NOAA ENC downloads: pause the pointer to check for a chart better
-      suited to the current zoom, even where another chart is already displayed.
-      The hover card offers to download it or use an existing disabled/cached copy.
-      Charts load immediately and remain available offline. Basic ENC rendering
-      includes depth soundings in meters, depth contours, and shallow-water shading.
-      Download discovery currently covers NOAA's U.S. chart catalog. Downloaded
-      charts are snapshots; automatic chart updates and depth-aware routing are
-      not yet implemented.
-- Qt Widgets interface
-- Display settings for smooth, cursor-centered zoom and gentle pan inertia;
-  both can be switched off independently and apply immediately.
-- Wind overlays crop GRIB samples to the view and render in the background;
-  cached images keep panning and zooming responsive while detail refreshes.
-- NMEA instruments support
-- NMEA / GPX log analysys
-- AIS rendering
-- Boat dashboard and other realtime navigation support
-- Customizable routing calculator
+**Routing**
+- Multi-point weather routing with configurable routing calculators
+- Current-aware routing using Copernicus Marine, NOS OFS and ROMS current models
+- Boat polar library with a built-in editor — import your own, or start from the bundled
+  polars (Class40, Mini 650, First 317, Bavaria 38, CAT 20 and more)
+- Route through a forecast, compare options, and keep the results in a session
 
+**Weather**
+- GRIB1 and GRIB2 support
+- Downloader for NOAA models (GFS, HRRR, GFS wave, AIGFS), ECCC RDPS and ECMWF
+- GPU-accelerated wind overlays that stay responsive while you pan, zoom and scrub time
+- Forecast timeline with per-model time ranges, so marine and wind data do not fight
 
+**Charts**
+- GSHHS world basemap with a download helper, and GeoJSON coastlines included
+- KAP, GeoTIFF and any other raster format GDAL can read
+- NOAA ENC with zoom-aware selection: the chart whose scale best matches your zoom owns the
+  screen, and other charts fill the gaps
+- On-demand ENC download from the hover card, so you can fetch the next scale while sailing
+- OpenSeaMap seamarks, and Canadian CHS chart imagery that loads as you browse Canadian waters
+- Offline caches for charts, ENC and imagery
+
+**Navigation and analysis**
+- NMEA instrument support (serial and network sources), configurable in Settings → Connections
+- AIS target rendering
+- Realtime boat dashboard
+- Session manager for POIs, tracks and routings, with GPX import and export
+- NMEA and GPX log analysis, with a log library to browse and replay recorded sessions
+
+**Desktop**
+- Native Qt Widgets interface on macOS, Linux and Windows
+- Smooth, cursor-centred zoom and gentle pan inertia, each switchable independently
+
+## What it does not do
+
+Sailworks is a planning and analysis aid, **not a primary navigation system**. Use official,
+up-to-date charts and your own seamanship for navigation.
+
+- ENC downloading currently covers NOAA's U.S. catalog; downloaded charts are snapshots
+- CHS imagery is a viewing service — it does not supply depths to the routing engine
+- Depth-aware routing and automatic chart updates are not implemented yet
 
 ## Installation
 
-Install this fork from source. The former GTK-only portable build recipes have been retired.
+Sailworks runs from source: Python 3.11 or newer, the GDAL Python bindings built against a
+matching native GDAL, and Cairo for the chart renderer.
 
-### From source
+Install those with your OS package manager first (Homebrew, apt, pacman — package names vary),
+then:
 
-1. Make sure to have Python >= 3.11 installed and the `pip` package manager.
-2. Install the following dependencies using your OS package manager (e.g: archlinux=pacman, debian=apt, macos=homebrew). Be aware that some packages have different names with different package managers.
-   - GDAL and its Python bindings (built against the same native GDAL version)
-   - Cairo (used by the shared chart renderer)
+```bash
+git clone https://github.com/evanlivingston/sailworks.git
+cd sailworks
+pip install .
+sailworks
+```
 
-3. Checkout the repository and run: ```pip install .```
-4. Start the software running: ```sailworks```
+### macOS
 
-### macOS development setup
-
-On macOS, install [Homebrew](https://brew.sh/) and run the setup script from the repository root:
+Homebrew and the repository's setup script do the whole thing:
 
 ```bash
 make setup-macos
@@ -80,11 +86,11 @@ source .venv/bin/activate
 sailworks
 ```
 
-The script installs the native GDAL dependency with Homebrew,
-creates a local `.venv`, and installs Sailworks and its Python dependencies. To install the
-Homebrew dependencies separately, run `brew bundle --file=tools/macos/Brewfile`.
+The script installs GDAL, creates a local `.venv`, and installs Sailworks and its Python
+dependencies. To install only the Homebrew dependencies, use
+`brew bundle --file=tools/macos/Brewfile`.
 
-### Launching the application
+### Launching
 
 Qt is the default for both the installed command and module launch:
 
@@ -93,112 +99,65 @@ sailworks
 python -m sailworks
 ```
 
-`--log FILE` opens an interpreted NMEA log. `sailworks-qt` remains an alias; the old `[qt]` install
-extra is compatible but no longer needed because PySide6 is a base dependency.
+`sailworks-qt` remains an alias, and the old `[qt]` install extra still works but is no longer
+needed — PySide6 is a base dependency.
 
-Instrument connections are managed from **Settings → Connections**. Choose **Live data source** in the NMEA panel to read from them; choose **Loaded log** to inspect a saved log. Import and inspect logs from the **Log library**.
+Useful options:
 
-For opt-in early-weather startup, use `python -m sailworks --early-weather`
-It defers unused log plots and stages chart initialization after weather preparation in the real map.
-The default startup and renderer selection are unchanged. See
-[early-weather startup](docs/early-weather-startup.md) for limits and validation.
+- `--log FILE` opens an interpreted NMEA log
+- `--early-weather` stages chart initialisation after weather preparation; the default
+  startup is unchanged. See [early-weather startup](docs/early-weather-startup.md) for limits.
 
-See [default-launcher validation](docs/qt-default-validation.md) for platform and hardware validation notes.
+## Getting started
 
-## Performance gate runner
+1. Open **Settings → Connections** and add an instrument source, or load a recorded log from
+   the **Log library**.
+2. Choose or import your boat polar.
+3. Download a forecast from the weather panel, or load a GRIB file you already have.
+4. Place your start and destination, add any waypoints you want to force, and run the router.
+5. Step through departure times and compare routes; save the ones worth keeping in a session.
 
-`tools/gate_runner.py` gates a rendering change with **one command**. It composes the
-existing benchmark harnesses — it does not replace or re-tune them — and evaluates the
-acceptance threshold from the JSON those tools already emit.
+Choose **Live data source** in the NMEA panel to read from your instruments, or **Loaded log**
+to replay one.
+
+## Development
+
+Run the test suite and linters with tox:
+
+```bash
+tox
+```
+
+The project also ships a rendering performance gate runner, `tools/gate_runner.py`, which
+evaluates one rendering change with one command and exits non-zero on failure so CI can use
+it:
 
 ```sh
-# list the registered gates (instant, no GDAL/Qt import)
 python tools/gate_runner.py --list
-
-# run one gate
 python tools/gate_runner.py --gate residency --snapshot <snapshot> --output <dir>
-
-# the whole matrix is opt-in and never the default
 python tools/gate_runner.py --gate validation --snapshot <snapshot> --output <dir> --full
-
-# prove the runner fails (non-zero) when a threshold is violated
-python tools/gate_runner.py --self-test
 ```
 
-The runner prints one summary line per gate, writes `<dir>/<gate>.result.json` next to the
-raw tool report, and exits non-zero on `FAIL` so CI can use it.
+Each gate prints one summary line, writes `<dir>/<gate>.result.json` next to the raw tool
+report, and returns one of four verdicts: `PASS` (exit 0), `PASS-WITH-OPEN-CHECKS` (exit 0),
+`FAIL` (exit 1, a ratified threshold was violated) or `NOT-EVALUATED` (exit 2, the gate could
+not run — never confused with a failure). The tools need PySide6, NumPy, Cairo and GDAL; if
+the current interpreter lacks them the runner re-executes itself under the project
+virtualenv, and reports `NOT-EVALUATED` with the interpreter to use if it cannot.
 
-### Verdicts
+The architecture these gates protect is in
+[`docs/adr-001-grib-rendering-architecture.md`](docs/adr-001-grib-rendering-architecture.md);
+the current renderer state and next decision are in
+[`docs/rendering-performance-plan.md`](docs/rendering-performance-plan.md). The rest of the
+project documentation is indexed in [`docs/README.md`](docs/README.md).
 
-The four outcomes are deliberately distinct, in the summary line and in the result JSON
-(`"verdict"` plus `"evaluated"`):
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Every commit needs a
+`Signed-off-by` trailer (`git commit -s`).
 
-| Verdict | Meaning | Exit |
-| --- | --- | --- |
-| `PASS` | The gate was evaluated and every ratified check passed. | 0 |
-| `PASS-WITH-OPEN-CHECKS` | The gate was evaluated and every ratified check passed, but some checks are unratified, not comparable or not evaluated. | 0 |
-| `FAIL` | The gate **was** evaluated and a ratified threshold was violated. Failing checks are prefixed with `!`. | 1 |
-| `NOT-EVALUATED` | The gate **could not be** evaluated — no usable interpreter, the tool crashed or timed out, or it wrote no report. No threshold was compared. | 2 |
-
-A `FAIL` and a `NOT-EVALUATED` must never be confused: the first is a real result about
-the change, the second means the gate did not run.
-
-### Interpreter
-
-The composed tools need the project's dependencies (PySide6, NumPy, Cairo, GDAL). The
-runner checks the interpreter **before** it invokes a tool, and never reports a missing
-dependency as a threshold failure:
-
-* if the current interpreter cannot import what the gate needs, the runner re-executes
-  itself under the project virtualenv (guarded so it cannot loop) and prints a note on
-  stderr;
-* if no usable interpreter is found, the gate is reported `NOT-EVALUATED` with the
-  interpreter to use.
-
-On this machine the project virtualenv is
-`/Users/elivingston/sailworks/.venv/bin/python`; the default `python` is a pyenv
-3.9.17 without PySide6 or GDAL, so use the virtualenv interpreter explicitly when the
-automatic re-exec is not wanted:
-
-```sh
-/Users/elivingston/sailworks/.venv/bin/python tools/gate_runner.py --gate residency --snapshot <snapshot> --output <dir>
-```
-
-| Option | Meaning |
-| --- | --- |
-| `--gate ID` | Gate to run. Repeat for several. |
-| `--list` | List the gates and exit. |
-| `--snapshot PATH` | Verified startup snapshot fixture the gate replays. |
-| `--output DIR` | Where reports and results are written (a temporary directory by default). |
-| `--reference PATH` | Baseline artifact for gates whose reference is a measured baseline. |
-| `--full` | Opt in to the full scenario matrix. |
-| `--frames`, `--repeats` | Override the workload size. |
-
-One gate per milestone of the GRIB rendering program:
-
-| Gate | Milestone | Tool | What it decides |
-| --- | --- | --- | --- |
-| `residency` | #64 | `benchmark_startup_rendering.py` | A resident field is not re-uploaded during a time scrub, and the decoded-band budget holds. |
-| `interpolation` | #65 | `experiment_float_textures.py` | GPU spatial sampling keeps the unchanged 2e-5 error bound. |
-| `pipeline` | #66 | `benchmark_startup_rendering.py` | Preparation overlaps presentation: no input is dropped before it renders. |
-| `scrub` | #67 | `benchmark_startup_rendering.py` | A forecast-time change inside the resident window uploads nothing. |
-| `fill` | #68 | `benchmark_startup_rendering.py` | The numerical path is active and the barb selection/count gate is unchanged. |
-| `chart-separation` | #69 | `check_early_weather_startup.py` | Weather is presented before chart readiness and survives the chart bind. |
-| `validation` | #70 | `benchmark_startup_rendering.py` | Per-layer GPU/loading/fallback reporting, no silent CPU fallback, no overlay errors. |
-
-Every threshold states where its reference value comes from — a **recorded evidence**
-document under `docs/`, or a **measured baseline** the caller supplies with `--reference`.
-The runner never re-measures a baseline on its own. Render callbacks are proxies, not
-presentation FPS, and readback is fidelity, not timing; every gate labels its endpoint.
-
-See [`docs/adr-001-grib-rendering-architecture.md`](docs/adr-001-grib-rendering-architecture.md)
-for the architecture these gates protect and
-[`docs/rendering-performance-plan.md`](docs/rendering-performance-plan.md) for the
-current renderer state, the invariants and the next decision.
-
-## License
+## License and attribution
 
 Sailworks is licensed under the GNU General Public License, version 3 or later
-(`GPL-3.0-or-later`). Read [LICENSE](LICENSE) for the full text and
-[NOTICE](NOTICE) for upstream attribution; bundled third-party assets are listed
-in [`sailworks/data/COPYRIGHT`](sailworks/data/COPYRIGHT).
+(`GPL-3.0-or-later`). Read [LICENSE](LICENSE) for the full text and [NOTICE](NOTICE) for the
+fork point and upstream attribution. Bundled third-party assets — chart symbols, icons,
+seamark data — are listed with their licenses in
+[`sailworks/data/COPYRIGHT`](sailworks/data/COPYRIGHT).
