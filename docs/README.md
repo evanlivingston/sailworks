@@ -48,7 +48,7 @@ Read the one that covers the area you are changing; skip the rest.
 | [rendering-streamlines.md](rendering-streamlines.md) | The static wind-streamline style, its presets and its density semantics. |
 | [rendering-wind-shoreline-mask.md](rendering-wind-shoreline-mask.md) | The windbarb land-visibility mask, and the rule that it must not change selection. |
 | [chart-layers.md](chart-layers.md) | Where the chart controls live in the Data Library, and what the old Chart Layers dock became. |
-| [chart-quilting-plan.md](chart-quilting-plan.md) | The the reference application-style chart quilting design plan. Not implemented. |
+| [chart-quilting-plan.md](chart-quilting-plan.md) | The detail-chart chart quilting design plan. Not implemented. |
 | [tides-currents-plan.md](tides-currents-plan.md) | The tides and currents implementation plan and its milestone status. |
 | [tides-currents-manager.md](tides-currents-manager.md) | The Tides & currents palette: its tabs, docking behaviour and controls. |
 | [marine-data-validation.md](marine-data-validation.md) | Marine data availability, the research probe, and the questions still open. |

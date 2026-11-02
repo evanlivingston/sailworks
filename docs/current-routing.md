@@ -260,7 +260,6 @@ average is invented to supply those inputs.
 
 - [OpenCPN vector addition, water-relative wind and Runge–Kutta propagation](https://github.com/seandepagnier/weather_routing_pi/blob/master/src/RouteMap.cpp).
 - [VISIR-2: ship weather routing in Python, graph routing and current composition](https://gmd.copernicus.org/articles/17/4355/2024/).
-- [the reference application ocean currents and waves](https://example.invalid/start/current.html).
 - [Copernicus direction conventions](https://help.marine.copernicus.eu/en/articles/5046685-direction-conventions-of-currents-wave-and-wind-in-copernicus-marine-products).
 - [Copernicus global product quality document, SMOC component composition](https://documentation.marine.copernicus.eu/QUID/CMEMS-GLO-QUID-001-024.pdf).
 - [ECCC published geographic CIOPS grids and depths](https://eccc-msc.github.io/open-data/msc-data/nwp_ciops/readme_ciops-datamart_en/).

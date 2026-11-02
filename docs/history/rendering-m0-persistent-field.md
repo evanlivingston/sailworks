@@ -21,7 +21,7 @@ The mechanism passed; adoption into the full renderer is **not yet justified**.
 This advances beyond E2b's worker cache: the field is actually retained on the GPU
 and selected through node-ID indirection. It does not translate already thinned
 symbols, and it does not publish four replacement endpoint images for each view.
-No inference about the reference application internals is needed for this result.
+No inference about reference internals is needed for this result.
 
 ## Model and ownership
 

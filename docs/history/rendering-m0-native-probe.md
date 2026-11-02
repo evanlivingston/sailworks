@@ -13,7 +13,7 @@
 The real embedded application can be driven without timed readback, retaining
 which input revisions were and were not observed at the render callback. This
 is sufficient for carefully controlled mechanism experiments. It is not a
-complete M0 baseline, a renderer optimization, or evidence of the reference application parity.
+complete M0 baseline, a renderer optimization, or evidence of feature parity.
 
 The two-iteration/two-native-attempt budget is consumed. The written review
 below closes this experiment rather than extending it into a larger matrix.

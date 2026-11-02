@@ -1,11 +1,11 @@
-# Chart quilting plan (the reference application-style), Qt first
+# Chart quilting plan (detail-chart), Qt first
 
 Status: design plan for review; no implementation yet. Target branch for
 implementation: `feature/chart-quilting` (worktree off `dev`).
 
 ## Goal
 
-Match the the reference application model: one detail chart "owns" each screen area — the
+Match the detail-chart model: one detail chart "owns" each screen area — the
 best-scaled chart whose coverage contains it — and everything else draws only
 where that coverage ends. The GSHHS/fallback world base stays underneath as
 land-fill, so holes fall through to the small-scale world view. A new
@@ -67,8 +67,7 @@ off.
 - Same algorithm as today's ENC quilt: best `chart_scale_rank` first,
   `chart_scale_visible` culling, coverage difference, clip-and-draw.
 - Charts with unknown coverage (GSHHS, country fallback) do not participate;
-  they stay in the base layer underneath, producing the the reference application
-  world-through-holes look.
+  they stay in the base layer underneath, producing the world-through-holes look.
 
 ### Raster scale metadata (`rendering/gdalrasterchart.py`)
 
@@ -93,7 +92,7 @@ Qt UI gets a settings checkbox in this round.
 
 - `chartQuilting` bool in `core/settings.py`, default `True`.
 - Display-tab checkbox in `qt/settingsdialog.py` (the `smoothZoom` /
-  `canadianCharts` pattern) with an the reference application-style tooltip: "Quilt charts —
+  `canadianCharts` pattern) with an tooltip: "Quilt charts —
   fill screen areas from the next scale-out chart where the best chart has no
   coverage. Off leaves gaps empty."
 - Off = today's list-order stack, no coverage subtraction (slow machines,

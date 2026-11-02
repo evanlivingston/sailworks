@@ -10,7 +10,7 @@
 **Persistent new-area loading, honest partial coverage, reference-empty wind and
 native A→B→A publication now pass the experiment's correctness gates.** Two runs
 with identical instrumentation repeat the complete workload successfully. This
-does **not** establish the reference application-like performance or accept the renderer architecture.
+does **not** establish reference-class performance or accept the renderer architecture.
 
 The top-line goal remains fluid pan, scrub, layer and zoom interaction on the
 actual forecast selection without routing changes or silent portrayal/source

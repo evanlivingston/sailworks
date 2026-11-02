@@ -523,7 +523,7 @@ is issues [#62–#70](../milestones.md).
   Record early-field availability separately from full interactive/map readiness.
 - Decision: if headless startup and exact resources pass, wire that service into
   independent numerical/chart publication in a separately bounded integration
-  slice; do not claim the reference application equivalence or production rollout from startup alone.
+  slice; do not claim performance equivalence or production rollout from startup alone.
 - Outcome: first attempted workload rejected snapshot identity before sandbox or
   process launch. Read-only inventory identifies 4,036 missing files, no changed
   or added files; expected hash 97cfda3c... vs observed 20d8f92c.... GRIB directory
@@ -571,7 +571,7 @@ is issues [#62–#70](../milestones.md).
   unavailable artifacts or exhaustion. Record decision before any scope change.
 - Gate decision: matched real-workload evidence, synthetic ownership correctness
   and architecture adoption stay separate. Do not start later milestones or claim
-  whole-application/the reference application performance from numerical worker timing alone.
+  whole-application/reference performance from numerical worker timing alone.
 - Iteration 1 / matched pair 1: 37 focused tests/30 subtests and Black on seven
   changed Python files passed. Reopen and resident controllers/producers exited 0;
   strict pair gate accepted identical fixed pan and A→B→A states, unchanged timed
@@ -778,7 +778,7 @@ is issues [#62–#70](../milestones.md).
 
 ### A0e follow-up contract — settle geometry, then prove destination publication
 
-- M0/A0 remains active. Local the reference application binary inspection supports separating
+- M0/A0 remains active. Local local static inspection supports separating
   camera redraw, asynchronous preparation and bounded publication; it does not
   establish our correctness/performance or require replacing Qt.
 - Scope: fix the preparation/oracle viewport lifecycle, retain exact geometry,
@@ -801,7 +801,7 @@ is issues [#62–#70](../milestones.md).
   fidelity disagreement or exhausted budget; reevaluate/narrow rather than expand
   into layer toggles/zoom or a backend rewrite. Prior failed runs remain separate.
 - Acceptance: actual destination publication + exact pixels is limited mechanism
-  support, not paired speedup, memory plateau, the reference application equivalence or rollout.
+  support, not paired speedup, memory plateau, performance equivalence or rollout.
 - Outcome: applying the requested view after initial layout/overlays settle passes
   the unchanged exact 710x735/zoom check; overlay preparation is then re-settled.
   Follow-up attempt 1 completed destination preparation and exact pixel checks,
@@ -854,7 +854,7 @@ is issues [#62–#70](../milestones.md).
   Synthetic scheduler/process tests do not use forecast/native attempts. Stop on
   fidelity disagreement, timeout or exhausted budget; record narrow/revise/stop.
 - Decision: mechanism support only if all gates pass. No paired performance win,
-  the reference application equivalence, memory plateau or architecture adoption from this probe.
+  performance equivalence, memory plateau or architecture adoption from this probe.
 - Outcome: 27 focused tests/ten subtests and Black on six changed Python files
   passed. Synthetic tests cover one-active/one-pending/latest-only publication,
   cancellation/reaping, explicit errors, identity/checksum/budget rejection, and

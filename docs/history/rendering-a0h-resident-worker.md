@@ -14,7 +14,7 @@ fidelity gates. Pair 2 reverses candidate/control launch order.
 Observed new-area preparation is **1.18–1.31 s with retained sources versus
 1.79–1.96 s reopening sources**, in the same no-oracle/no-explicit-readback protocol.
 This supports source residency in this workload, not whole-application speedup,
-presentation latency, statistical significance or the reference application equivalence.
+presentation latency, statistical significance or performance equivalence.
 
 The canonical contract/decision is in [the performance plan](../rendering-performance-plan.md).
 See [machine-readable evidence](../profiles/rendering/2026-10-18/a0h-resident-worker-summary.json).

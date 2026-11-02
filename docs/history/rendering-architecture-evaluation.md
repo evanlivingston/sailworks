@@ -65,7 +65,7 @@ as does native A→B→A generation rejection/coalescing. Two same-protocol repe
 pass; a final attributed run also passes. Still not an architecture adoption:
 startup is ~30–31 s, much per-request work is oracle validation/source reopening,
 and heartbeat tails reach ~295 ms. No presentation, global memory plateau or
-the reference application-equivalent performance acceptance exists. The overall unattended budget
+reference-class performance acceptance exists. The overall unattended budget
 is exhausted and all children are reaped. See the
 [progress/checkpoint](rendering-a0g-progress.md) and
 [machine-readable summary](../profiles/rendering/2026-10-18/a0g-unattended-summary.json).
@@ -334,7 +334,7 @@ app initialization and export; this is not an acceptable production cold-load
 target or an isolated decode measurement. Full-screen loading hides the map, so
 camera state processing does not establish visible panning or presentation.
 Cancellation/latest-only ownership has synthetic tests, not a native cancellation
-matrix. No memory plateau, repeated paired speedup or the reference application equivalence is
+matrix. No memory plateau, repeated paired speedup or performance equivalence is
 established. Qt remains suitable for this tested mechanism; no host rewrite is
 justified by these results.
 

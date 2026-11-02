@@ -83,9 +83,8 @@ display and routing; old jobs retain their binding. All models share one region 
 from the current map view, unchanged by later panning. Refresh intent stays separate.
 No legacy files are adopted, deleted or used as fallback. Profiles remain legacy until
 explicit Models opt-in; cleanup awaits validation. This is not viewport or
-performance acceptance. The [static trace](history/reference-architecture-analysis.md#2026-10-20-follow-up-file-selection-and-interpolation-boundary)
-does not prove whole-map pinning or multi-run containers; our coherence rule remains
-stricter.
+performance acceptance. Our static analysis does not prove whole-map pinning or
+multi-run containers; our coherence rule remains stricter.
 
 ### Policy
 
