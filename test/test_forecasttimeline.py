@@ -7,12 +7,12 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from gweatherrouting.core.forecasttimeline import (
+from sailworks.core.forecasttimeline import (
     forecast_bounds,
     forecast_intervals,
     step_forecast_time,
 )
-from gweatherrouting.core.timecontrol import TimeControl
+from sailworks.core.timecontrol import TimeControl
 
 
 class TestForecastTimeline(unittest.TestCase):

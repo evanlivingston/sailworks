@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from test.test_enc_app_rollout import presenter as _presenter_fixture
-from gweatherrouting.rendering.windpainter import WindPainter, barb_density_parameters
+from sailworks.rendering.windpainter import WindPainter, barb_density_parameters
 
 presenter = _presenter_fixture
 

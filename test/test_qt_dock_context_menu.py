@@ -2,8 +2,8 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QContextMenuEvent
 from PySide6.QtWidgets import QDockWidget, QLabel, QMainWindow, QTabBar
 
-import gweatherrouting.qt.dockchrome as dockchrome
-from gweatherrouting.qt.dockchrome import DockDragController, style_dock
+import sailworks.qt.dockchrome as dockchrome
+from sailworks.qt.dockchrome import DockDragController, style_dock
 
 
 def test_close_panel_context_action_hides_dock(qtbot):

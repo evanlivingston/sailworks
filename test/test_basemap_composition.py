@@ -4,8 +4,8 @@ import cairo
 import numpy as np
 import pytest
 
-from gweatherrouting.core.mapviewport import MapViewport, MercatorProjection
-from gweatherrouting.rendering.overlayrenderer import paint_viewport
+from sailworks.core.mapviewport import MapViewport, MercatorProjection
+from sailworks.rendering.overlayrenderer import paint_viewport
 
 
 class Canvas(MercatorProjection):

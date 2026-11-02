@@ -1,0 +1,75 @@
+"""Launch the Qt application; also retained as the sailworks-qt alias."""
+
+import argparse
+import sys
+from typing import cast
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Sailworks")
+    parser.add_argument("--log", help="Load an interpreted NMEA log")
+    parser.add_argument(
+        "--early-weather",
+        action="store_true",
+        help="Experimental: defer unused plots and initialize charts after weather preparation",
+    )
+    parser.add_argument(
+        "--map-renderer",
+        choices=("cpu", "gpu"),
+        help="Override the saved map renderer for this session (GPU is experimental)",
+    )
+
+    parser.add_argument(
+        "--gpu-resident-fields",
+        action="store_true",
+        help=(
+            "Experimental: keep decoded numerical fields resident in the GPU "
+            "presenter under a stable identity, with an explicit budget"
+        ),
+    )
+    parser.add_argument(
+        "--native-weather-fields",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Use the native weather texture cache (default: on); "
+            "--no-native-weather-fields restores Image sources"
+        ),
+    )
+    args = parser.parse_args(argv)
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ImportError:
+        parser.error("Qt requires PySide6; reinstall Sailworks with its dependencies")
+    from .controller import SessionController
+    from .window import PreviewWindow
+    from .theme import apply_theme
+
+    app = cast(QApplication, QApplication.instance()) or QApplication([sys.argv[0]])
+    app.setApplicationName("Sailworks")
+    app.setApplicationDisplayName("Sailworks")
+    apply_theme(app)
+    controller = SessionController(
+        map_renderer=args.map_renderer,
+        early_weather=args.early_weather,
+        gpu_resident_fields=args.gpu_resident_fields,
+        gpu_streamlines=True,
+        native_weather_fields=args.native_weather_fields,
+    )
+    window = PreviewWindow(controller)
+    app.aboutToQuit.connect(window.workspace.close)
+    if window.timeline is not None:
+        app.aboutToQuit.connect(window.timeline.dispose)
+    app.aboutToQuit.connect(window.dispose_marine)
+    app.aboutToQuit.connect(controller.close)
+    window.show()
+    if controller.chart_startup is not None:
+        controller.chart_startup.start(window._active_map())
+    controller.start_connections()
+    if args.log:
+        controller.load_path(args.log)
+    return app.exec()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from gweatherrouting.core.forecasttranche import Artifact, ModelEntry
+from sailworks.core.forecasttranche import Artifact, ModelEntry
 
 
 def entry(field_times):

@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from gweatherrouting.core.loglibrary import LogLibrary
+from sailworks.core.loglibrary import LogLibrary
 
 
 def test_import_preserves_bytes_and_metadata_across_restart(tmp_path):
@@ -53,7 +53,7 @@ def test_failed_index_commit_does_not_change_metadata_or_remove_original(tmp_pat
     other_source = tmp_path / "trip-copy.log"
     other_source.write_bytes(b"another original")
     with patch(
-        "gweatherrouting.core.loglibrary.os.replace", side_effect=OSError("disk full")
+        "sailworks.core.loglibrary.os.replace", side_effect=OSError("disk full")
     ):
         with pytest.raises(OSError):
             library.update(item["id"], vessel="Not saved")
@@ -159,7 +159,7 @@ def test_progress_callback_failure_cleans_up_partial_copy(tmp_path):
 
 def test_ebl_stack_streams_numeric_order_to_one_atomic_original(tmp_path, monkeypatch):
     from pathlib import Path
-    from gweatherrouting.core import loglibrary
+    from sailworks.core import loglibrary
 
     directory = tmp_path / "EBL000031"
     directory.mkdir()
@@ -235,7 +235,7 @@ def test_ebl_groups_never_cross_directories_ids_or_text_and_keep_import_order(tm
 
 
 def test_successful_ebl_stack_persists_decoded_log_not_transient_model(tmp_path):
-    from gweatherrouting.core.nmeasession import read_nmea_log
+    from sailworks.core.nmeasession import read_nmea_log
     from test.test_ebllog import VERSION, frame, timestamp
 
     directory = tmp_path / "EBL000031"
@@ -261,8 +261,8 @@ def test_successful_ebl_stack_persists_decoded_log_not_transient_model(tmp_path)
 
 
 def test_saved_ripple_edit_keeps_sentence_timestamps_and_managed_source_safe(tmp_path):
-    from gweatherrouting.core.nmeasession import NMEASession, read_nmea_log
-    from gweatherrouting.core.utils import EventDispatcher
+    from sailworks.core.nmeasession import NMEASession, read_nmea_log
+    from sailworks.core.utils import EventDispatcher
 
     source = tmp_path / "race.log"
     original = "\n".join(
@@ -306,7 +306,7 @@ def test_failed_stack_import_removes_temporary_and_managed_files(
     tmp_path, monkeypatch, failure
 ):
     from pathlib import Path
-    from gweatherrouting.core import loglibrary
+    from sailworks.core import loglibrary
 
     paths = [tmp_path / f"000031_{index}.ebl" for index in (1, 2)]
     for path in paths:

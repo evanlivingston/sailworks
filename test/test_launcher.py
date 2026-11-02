@@ -11,9 +11,9 @@ class TestDefaultLauncher(unittest.TestCase):
     def test_module_help_is_qt_cli_without_gtk_imports(self):
         code = """
 import runpy, sys
-sys.argv = ["gweatherrouting", "--help"]
+sys.argv = ["sailworks", "--help"]
 try:
-    runpy.run_module("gweatherrouting", run_name="__main__")
+    runpy.run_module("sailworks", run_name="__main__")
 except SystemExit as exc:
     assert exc.code == 0
 else:

@@ -3,28 +3,28 @@
 import unittest
 from unittest.mock import patch
 
-from gweatherrouting.core import Core
-from gweatherrouting.core.datasource import NMEADataPacket
+from sailworks.core import Core
+from sailworks.core.datasource import NMEADataPacket
 from test.test_nmeasession import rmc
 
 
 class TestCoreScheduling(unittest.TestCase):
     def setUp(self):
         for target in (
-            "gweatherrouting.core.storage.Storage.load_or_save_default",
-            "gweatherrouting.core.storage.Storage.save",
-            "gweatherrouting.core.gribmanager.GribManager.refresh_local_gribs",
-            "gweatherrouting.core.polarmanager.PolarManager.refresh_local_polars",
+            "sailworks.core.storage.Storage.load_or_save_default",
+            "sailworks.core.storage.Storage.save",
+            "sailworks.core.gribmanager.GribManager.refresh_local_gribs",
+            "sailworks.core.polarmanager.PolarManager.refresh_local_polars",
         ):
             mock = patch(target)
             mock.start()
             self.addCleanup(mock.stop)
         self.queued = []
         with patch(
-            "gweatherrouting.core.connectionmanager.ConnectionManager.plug_all"
+            "sailworks.core.connectionmanager.ConnectionManager.plug_all"
         ) as plug:
             with patch(
-                "gweatherrouting.core.connectionmanager.ConnectionManager.start_polling"
+                "sailworks.core.connectionmanager.ConnectionManager.start_polling"
             ) as start:
                 self.core = Core(
                     schedule=lambda callback, *args: self.queued.append(
@@ -65,7 +65,7 @@ class TestCoreScheduling(unittest.TestCase):
 class TestDefaultScheduling(unittest.TestCase):
     def test_default_delivers_synchronously_without_importing_gi(self):
         import sys
-        from gweatherrouting.core.scheduling import schedule_idle
+        from sailworks.core.scheduling import schedule_idle
 
         with patch.dict(sys.modules, {"gi": None, "gi.repository": None}):
             calls = []

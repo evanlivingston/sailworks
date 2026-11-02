@@ -24,8 +24,8 @@ def gate():
 
 @pytest.mark.parametrize("wind", [True, False])
 def test_oracle_opens_filtered_reader_and_closes_it(gate, monkeypatch, wind):
-    from gweatherrouting.core import grib, gribsampling
-    from gweatherrouting.rendering import weathercache
+    from sailworks.core import grib, gribsampling
+    from sailworks.rendering import weathercache
 
     choice = SimpleNamespace(path="fixture.grib2", display_identity=(123, ("member",)))
     metadata = SimpleNamespace(

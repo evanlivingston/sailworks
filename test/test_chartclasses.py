@@ -4,23 +4,23 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from gweatherrouting.common import resource_path
-from gweatherrouting.core.settings import SettingsManager
-from gweatherrouting.core.storage import Storage
-from gweatherrouting.rendering.chartclasses import (
+from sailworks.common import resource_path
+from sailworks.core.settings import SettingsManager
+from sailworks.core.storage import Storage
+from sailworks.rendering.chartclasses import (
     CHART_CLASSES,
     CLASS_SETTINGS,
     chart_class,
 )
-from gweatherrouting.rendering.chartcollection import ChartCollection
-from gweatherrouting.rendering.gdalrasterchart import GDALRasterChart
-from gweatherrouting.rendering.gdalvectorchart import GDALVectorChart
-from gweatherrouting.rendering.gshhs import GSHHSVectorChart
-from gweatherrouting.rendering.mbtilesrenderer import MBTilesChart
-from gweatherrouting.core.mbtiles import MBTilesInfo
-from gweatherrouting.rendering.vectordrawer.cm93chartdrawer import CM93ChartDrawer
-from gweatherrouting.rendering.vectordrawer.osmchartdrawer import OSMChartDrawer
-from gweatherrouting.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
+from sailworks.rendering.chartcollection import ChartCollection
+from sailworks.rendering.gdalrasterchart import GDALRasterChart
+from sailworks.rendering.gdalvectorchart import GDALVectorChart
+from sailworks.rendering.gshhs import GSHHSVectorChart
+from sailworks.rendering.mbtilesrenderer import MBTilesChart
+from sailworks.core.mbtiles import MBTilesInfo
+from sailworks.rendering.vectordrawer.cm93chartdrawer import CM93ChartDrawer
+from sailworks.rendering.vectordrawer.osmchartdrawer import OSMChartDrawer
+from sailworks.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
 from test.map_helpers import MapCanvas
 
 
@@ -69,7 +69,7 @@ class TestChartClasses(unittest.TestCase):
                 self.assertEqual(chart_class(self.charts[kind]), kind)
                 self.assertTrue(self.settings[key])
         countries = SimpleNamespace(
-            path=resource_path("gweatherrouting", "data/countries.geojson")
+            path=resource_path("sailworks", "data/countries.geojson")
         )
         self.assertEqual(chart_class(countries), "world")
 
@@ -139,7 +139,7 @@ class TestChartClasses(unittest.TestCase):
     def test_import_does_not_silently_disable_seamarks(self):
         self.manager.osmLayer = self.charts["seamarks"]
         with patch(
-            "gweatherrouting.rendering.chartcollection.GDALVectorChart",
+            "sailworks.rendering.chartcollection.GDALVectorChart",
             return_value=self.charts["vector"],
         ):
             self.manager.load_vector_layer("other.geojson")

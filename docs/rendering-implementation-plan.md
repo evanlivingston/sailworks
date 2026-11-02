@@ -3,7 +3,7 @@
 Historical specification: the current state, the invariants and the next
 decision are in
 [the canonical performance plan](rendering-performance-plan.md), tracking epic
-[#51](https://github.com/evanlivingston/gweatherrouting/issues/51). Preserve this
+[#51](https://github.com/evanlivingston/sailworks/issues/51). Preserve this
 document's invariants and historical R0–R5 context; its sequence is not an
 independent instruction to continue implementation. CPU remains the production
 default until explicit rollout approval and validation.
@@ -101,7 +101,7 @@ never publishes and stale content is never presented as current. See ADR-001 D3.
 
 * **Map scene controller:** owns camera, gestures, public map signals, lifecycle,
   selection/picking, and layer invalidation. Start with the existing contracts in
-  `gweatherrouting/qt/mapcanvas.py`; do not replace controller/navigation APIs at
+  `sailworks/qt/mapcanvas.py`; do not replace controller/navigation APIs at
   the same time as introducing presentation.
 * **ViewState:** center/world copy, fractional zoom, logical viewport, actual DPR,
   and view revision. Camera motion changes transforms immediately; it must not

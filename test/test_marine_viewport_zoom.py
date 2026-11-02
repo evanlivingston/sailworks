@@ -24,8 +24,8 @@ def test_wheel_reprojects_marine_and_renders_before_settling(gribs, monkeypatch)
     from PySide6.QtGui import QWheelEvent
     from PySide6.QtWidgets import QApplication
 
-    from gweatherrouting.qt import gribviewport, marinequick
-    from gweatherrouting.rendering.marinesnapshot import (
+    from sailworks.qt import gribviewport, marinequick
+    from sailworks.rendering.marinesnapshot import (
         CurrentArrow,
         MarineSnapshot,
         current_triangles,

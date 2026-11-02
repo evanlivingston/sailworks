@@ -94,11 +94,11 @@ class Tracer:
 def instrument(tracer):
     """Wrap the foreground, worker and geometry stages with the tracer."""
     # LEGACY-ONLY (TODO #86): TrackMap CPU painting/profiling probe; not retargeted.
-    from gweatherrouting.qt.mapcanvas import TrackMap  # LEGACY-ONLY (TODO #86)
-    from gweatherrouting.qt.basecharts import BaseChartRenderer
-    from gweatherrouting.rendering.encrenderer import ENCOverlayRenderer
-    from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
-    from gweatherrouting.rendering import windpainter
+    from sailworks.qt.mapcanvas import TrackMap  # LEGACY-ONLY (TODO #86)
+    from sailworks.qt.basecharts import BaseChartRenderer
+    from sailworks.rendering.encrenderer import ENCOverlayRenderer
+    from sailworks.rendering.windrenderer import WindOverlayRenderer
+    from sailworks.rendering import windpainter
 
     # LEGACY-ONLY (TODO #86): wrap legacy TrackMap painting methods only.
     for method in ("paintEvent", "_base_image", "_paint_wind_barbs"):

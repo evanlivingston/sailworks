@@ -15,15 +15,15 @@ import numpy as np
 import requests
 from osgeo import gdal
 
-from gweatherrouting.core.marine.coverage import CoveragePlanner
-from gweatherrouting.core.marine.fields import (
+from sailworks.core.marine.coverage import CoveragePlanner
+from sailworks.core.marine.fields import (
     Area,
     CurrentField,
     FieldStore,
     FieldSelection,
 )
-from gweatherrouting.core.marine.models import canonical_json
-from gweatherrouting.core.marine.spatialproviders import (
+from sailworks.core.marine.models import canonical_json
+from sailworks.core.marine.spatialproviders import (
     CopernicusProvider,
     CIOPSProvider,
     DATAMART_URL,
@@ -82,7 +82,7 @@ def netcdf(path):
 
 class TestSpatialCurrents(unittest.TestCase):
     def test_display_coverage_with_retained_order_matches_fresh_selection(self):
-        from gweatherrouting.core.marine.presentation import current_coverage
+        from sailworks.core.marine.presentation import current_coverage
 
         with tempfile.TemporaryDirectory() as directory:
             store = FieldStore(directory)
@@ -191,7 +191,7 @@ class TestSpatialCurrents(unittest.TestCase):
             self.assertEqual(session.get.call_count, 3)
             self.assertEqual(session.get.call_args.kwargs["headers"], {})
             b.cancel.set()
-            from gweatherrouting.core.marine.chs import DownloadCancelledError
+            from sailworks.core.marine.chs import DownloadCancelledError
 
             with self.assertRaises(DownloadCancelledError):
                 b.get(url)
@@ -346,7 +346,7 @@ class TestSpatialCurrents(unittest.TestCase):
 
             process.stdin.write.side_effect = write_report
             with patch(
-                "gweatherrouting.core.marine.spatialproviders.subprocess.Popen",
+                "sailworks.core.marine.spatialproviders.subprocess.Popen",
                 return_value=process,
             ):
                 with self.assertRaisesRegex(ValueError, "Worldwide account"):
@@ -383,7 +383,7 @@ class TestSpatialCurrents(unittest.TestCase):
             stale = Path(directory) / "subset-result.json"
             stale.write_text('{"file_path":"stale.nc"}')
             with patch(
-                "gweatherrouting.core.marine.spatialproviders.subprocess.Popen",
+                "sailworks.core.marine.spatialproviders.subprocess.Popen",
                 return_value=process,
             ):
                 with self.assertRaisesRegex(ValueError, "did not complete"):
@@ -613,7 +613,7 @@ class TestSpatialCurrents(unittest.TestCase):
         client = Mock()
         cancel = threading.Event()
         cancel.set()
-        from gweatherrouting.core.marine.chs import DownloadCancelledError
+        from sailworks.core.marine.chs import DownloadCancelledError
 
         with self.assertRaises(DownloadCancelledError):
             CopernicusProvider().download(

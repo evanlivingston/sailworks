@@ -17,7 +17,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 import unittest
 from unittest.mock import MagicMock
 
-from gweatherrouting.core.datasource import (
+from sailworks.core.datasource import (
     AISDataPacket,
     DataPacket,
     DataSource,

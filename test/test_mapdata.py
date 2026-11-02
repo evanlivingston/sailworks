@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from osgeo import ogr
 
-from gweatherrouting.core.mapdata import (
+from sailworks.core.mapdata import (
     download_file,
     install_map_data,
     MapDownloadCancelledError,
@@ -74,9 +74,7 @@ class TestMapData(unittest.TestCase):
     def test_unknown_length_stream_reports_progress_and_closes_response(self):
         response = Response(b"complete download")
         progress = []
-        with patch(
-            "gweatherrouting.core.mapdata.requests.get", return_value=response
-        ) as get:
+        with patch("sailworks.core.mapdata.requests.get", return_value=response) as get:
             download_file(
                 "https://fixture", self.path / "out", Event(), progress.append
             )
@@ -89,7 +87,7 @@ class TestMapData(unittest.TestCase):
     def test_cancel_stream_interrupts_even_without_content_length(self):
         cancel = Event()
         response = Response(b"long enough to cancel", cancel=cancel)
-        with patch("gweatherrouting.core.mapdata.requests.get", return_value=response):
+        with patch("sailworks.core.mapdata.requests.get", return_value=response):
             with self.assertRaises(MapDownloadCancelledError):
                 download_file("fixture", self.path / "out", cancel, lambda p: None)
         self.assertTrue(response.closed)
@@ -103,7 +101,7 @@ class TestMapData(unittest.TestCase):
         ):
             with self.subTest(response=response):
                 with patch(
-                    "gweatherrouting.core.mapdata.requests.get", return_value=response
+                    "sailworks.core.mapdata.requests.get", return_value=response
                 ):
                     installed, error = install_map_data(
                         ("seamarks",), self.path, Event(), lambda *args: None
@@ -119,7 +117,7 @@ class TestMapData(unittest.TestCase):
         (destination / "gshhs").mkdir(parents=True)
         (destination / "gshhs" / "previous").write_text("incomplete installation")
         with patch(
-            "gweatherrouting.core.mapdata.requests.get",
+            "sailworks.core.mapdata.requests.get",
             return_value=Response(body, len(body)),
         ):
             installed, error = install_map_data(
@@ -146,7 +144,7 @@ class TestMapData(unittest.TestCase):
         old = self.path / "gshhs" / "previous"
         old.write_bytes(b"keep me")
         with patch(
-            "gweatherrouting.core.mapdata.requests.get",
+            "sailworks.core.mapdata.requests.get",
             return_value=Response(b"invalid zip"),
         ):
             installed, error = install_map_data(
@@ -170,7 +168,7 @@ class TestMapData(unittest.TestCase):
     def test_batch_keeps_completed_dataset_when_next_download_fails(self):
         body = coastline_archive(self.path)
         with patch(
-            "gweatherrouting.core.mapdata.requests.get",
+            "sailworks.core.mapdata.requests.get",
             side_effect=[Response(body), Response(b"", error=ValueError("offline"))],
         ):
             installed, error = install_map_data(
@@ -195,7 +193,7 @@ class TestMapData(unittest.TestCase):
                 cancel.set()
 
         with patch(
-            "gweatherrouting.core.mapdata.requests.get",
+            "sailworks.core.mapdata.requests.get",
             return_value=Response(b"new data"),
         ):
             installed, error = install_map_data(
@@ -210,18 +208,14 @@ class TestMapData(unittest.TestCase):
             b'<osm version="0.6"><node id="1" lat="0" lon="0">'
             b'<tag k="seamark:type" v="buoy_lateral"/></node></osm>'
         )
-        with patch(
-            "gweatherrouting.core.mapdata.requests.get", return_value=Response(body)
-        ):
+        with patch("sailworks.core.mapdata.requests.get", return_value=Response(body)):
             installed, error = install_map_data(
                 ("seamarks",), self.path, Event(), lambda *a: None
             )
         self.assertEqual(installed, ("seamarks",))
         self.assertIsNone(error)
         self.assertEqual((self.path / "seamarks.pbf").read_bytes(), body)
-        with patch(
-            "gweatherrouting.core.mapdata.requests.get", return_value=Response(b"{}")
-        ):
+        with patch("sailworks.core.mapdata.requests.get", return_value=Response(b"{}")):
             installed, error = install_map_data(
                 ("seamarks",), self.path, Event(), lambda *a: None
             )
@@ -241,9 +235,7 @@ class TestMapData(unittest.TestCase):
             return real_replace(source, destination)
 
         with (
-            patch(
-                "gweatherrouting.core.mapdata.requests.get", return_value=Response(body)
-            ),
+            patch("sailworks.core.mapdata.requests.get", return_value=Response(body)),
             patch.object(Path, "replace", replace),
         ):
             installed, error = install_map_data(

@@ -12,11 +12,11 @@ from unittest.mock import Mock, patch
 import numpy as np
 import weatherrouting
 
-from gweatherrouting.core.marine.chs import DownloadCancelledError
-from gweatherrouting.core.marine.fields import CurrentField, FieldSelection
-from gweatherrouting.core.marine.manager import MarineManager
-from gweatherrouting.core.marine.models import canonical_json
-from gweatherrouting.core.marine.routing import (
+from sailworks.core.marine.chs import DownloadCancelledError
+from sailworks.core.marine.fields import CurrentField, FieldSelection
+from sailworks.core.marine.manager import MarineManager
+from sailworks.core.marine.models import canonical_json
+from sailworks.core.marine.routing import (
     ARRIVAL_METRES,
     KNOT,
     CurrentIsoRouter,
@@ -379,7 +379,7 @@ class TestCurrentRouting(unittest.TestCase):
                 ),
             )
             with patch(
-                "gweatherrouting.core.marine.routing.download_gap_coverage"
+                "sailworks.core.marine.routing.download_gap_coverage"
             ) as download:
                 with self.assertRaises(RoutingDataGapError):
                     step_with_coverage(routing, Mock(), auto, Mock())
@@ -421,8 +421,8 @@ class TestCurrentRouting(unittest.TestCase):
         self.assertEqual(wind.used, {"second"})
 
     def test_core_routes_use_current_adapter_only_when_enabled(self):
-        from gweatherrouting.core.core import Core
-        from gweatherrouting.core.geo.track import Track
+        from sailworks.core.core import Core
+        from sailworks.core.geo.track import Track
         from weatherrouting.routers.linearbestisorouter import LinearBestIsoRouter
 
         with tempfile.TemporaryDirectory() as directory:
@@ -431,9 +431,7 @@ class TestCurrentRouting(unittest.TestCase):
             wind = SimpleNamespace(gribs=[])
             core = SimpleNamespace(grib_manager=wind, marine_manager=manager)
             track = Track("test", [(0, 0), (0, 0.02)])
-            with patch(
-                "gweatherrouting.core.core.weatherrouting.Polar", return_value=Mock()
-            ):
+            with patch("sailworks.core.core.weatherrouting.Polar", return_value=Mock()):
                 route = Core.create_routing(
                     core,
                     CurrentIsoRouter,
@@ -461,7 +459,7 @@ class TestCurrentRouting(unittest.TestCase):
 
     def test_real_grib_fractional_time_and_forecast_bounds(self):
         from osgeo import gdal
-        from gweatherrouting.core.grib import Grib
+        from sailworks.core.grib import Grib
 
         data = gdal.GetDriverByName("MEM").Create("", 2, 2, 4, gdal.GDT_Float64)
         data.SetGeoTransform((-0.125, 0.25, 0, 0.375, 0, -0.25))
@@ -491,7 +489,7 @@ class TestCurrentRouting(unittest.TestCase):
 
     def test_local_grib_reads_match_legacy_sampling_and_reuse_windows(self):
         from osgeo import gdal
-        from gweatherrouting.core.grib import Grib
+        from sailworks.core.grib import Grib
 
         for transform in (
             (-0.625, 0.25, 0, 0.625, 0, -0.25),

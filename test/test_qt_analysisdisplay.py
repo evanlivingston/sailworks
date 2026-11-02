@@ -6,9 +6,9 @@ import pytest
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 
-from gweatherrouting.qt.analysiscontroller import AnalysisController
-from gweatherrouting.qt.analysisdisplay import BoundDisplayForecastSelection
-from gweatherrouting.rendering.displayforecast import DisplayForecast
+from sailworks.qt.analysiscontroller import AnalysisController
+from sailworks.qt.analysisdisplay import BoundDisplayForecastSelection
+from sailworks.rendering.displayforecast import DisplayForecast
 from test.analysis_qt_fixtures import FakeAnalysisState, make_snapshot
 
 RUN = datetime(2025, 1, 1, tzinfo=timezone.utc)
@@ -59,7 +59,7 @@ def display(path, version, valid_times=None):
 
 
 def test_sources_and_choice_follow_the_single_active_model(tmp_path, monkeypatch):
-    import gweatherrouting.qt.analysisdisplay as module
+    import sailworks.qt.analysisdisplay as module
 
     monkeypatch.setattr(
         module,
@@ -102,7 +102,7 @@ def test_sources_and_choice_follow_the_single_active_model(tmp_path, monkeypatch
 def test_display_refresh_rescans_current_artifacts_without_downloading(
     tmp_path, monkeypatch
 ):
-    import gweatherrouting.qt.analysisdisplay as module
+    import sailworks.qt.analysisdisplay as module
 
     monkeypatch.setattr(
         module,
@@ -144,7 +144,7 @@ def test_display_refresh_rescans_current_artifacts_without_downloading(
 def test_identical_artifact_in_new_tranche_rejects_old_scan_result(
     tmp_path, monkeypatch
 ):
-    import gweatherrouting.qt.analysisdisplay as module
+    import sailworks.qt.analysisdisplay as module
 
     entered, release = Event(), Event()
     calls = 0
@@ -197,7 +197,7 @@ def test_identical_artifact_in_new_tranche_rejects_old_scan_result(
 
 
 def test_multifile_entry_is_unavailable_not_stitched(tmp_path, monkeypatch):
-    import gweatherrouting.qt.analysisdisplay as module
+    import sailworks.qt.analysisdisplay as module
 
     monkeypatch.setattr(module, "inspect_forecasts", lambda entries: ((), ""))
     application = app()

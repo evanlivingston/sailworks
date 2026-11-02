@@ -9,16 +9,16 @@ from unittest.mock import Mock
 
 from osgeo import gdal, ogr, osr
 
-from gweatherrouting.core.enccharts import chart_scale_rank
-from gweatherrouting.rendering.chartcollection import ChartCollection
-from gweatherrouting.rendering.gdalrasterchart import (
+from sailworks.core.enccharts import chart_scale_rank
+from sailworks.rendering.chartcollection import ChartCollection
+from sailworks.rendering.gdalrasterchart import (
     GDALRasterChart,
     GDALSingleRasterChart,
     dataset_bbox,
     header_scale,
     native_scale_from_bbox,
 )
-from gweatherrouting.rendering.gdalvectorchart import GDALVectorChart
+from sailworks.rendering.gdalvectorchart import GDALVectorChart
 
 # Display metres-per-pixel that yields the given nominal scale at 96 dpi.
 HARBOR_MPP = 5000 / 3779.527559  # ~1:5,000 harbor zoom

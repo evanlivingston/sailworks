@@ -35,7 +35,7 @@ def disable_external_access():
 
     socket.socket.connect = blocked
     socket.socket.connect_ex = blocked
-    from gweatherrouting.core.marine.credentials import SystemCredentialStore
+    from sailworks.core.marine.credentials import SystemCredentialStore
 
     SystemCredentialStore.load = lambda _self: None
 
@@ -77,9 +77,9 @@ def verify_fixture(directory):
 def export_worker(config):
     disable_external_access()
     from PySide6.QtWidgets import QApplication
-    from gweatherrouting.qt.controller import SessionController
-    from gweatherrouting.qt.window import PreviewWindow
-    from gweatherrouting.qt.theme import apply_theme
+    from sailworks.qt.controller import SessionController
+    from sailworks.qt.window import PreviewWindow
+    from sailworks.qt.theme import apply_theme
     from datetime import datetime
 
     app = QApplication([])

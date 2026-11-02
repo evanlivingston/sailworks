@@ -16,9 +16,9 @@ from check_enc_viewport import _wait, _pump
 @contextmanager
 def selected_wind_sampler(choice):
     """Open an independent oracle reader, not the selection's metadata object."""
-    from gweatherrouting.core.grib import Grib
-    from gweatherrouting.core.gribsampling import WeatherSampler
-    from gweatherrouting.rendering.weathercache import (
+    from sailworks.core.grib import Grib
+    from sailworks.core.gribsampling import WeatherSampler
+    from sailworks.rendering.weathercache import (
         DecodedBandCache,
         DisplayWeatherSource,
     )
@@ -67,13 +67,13 @@ def current_forecast(controller, presenter, choice):
 def application(report, data, output, deadline):  # noqa: C901
     import numpy as np
     from PySide6.QtWidgets import QApplication
-    from gweatherrouting.core.marine.credentials import SystemCredentialStore
-    from gweatherrouting.qt.controller import SessionController
-    from gweatherrouting.qt.gribviewport import _source_key
-    from gweatherrouting.qt.viewportmap import ViewportMap
-    from gweatherrouting.qt.weatherpanel import WeatherPanel
-    from gweatherrouting.rendering.weatherbarbs import _native_points, _view_bounds
-    from gweatherrouting.rendering.windpainter import WindPainter, mercator_project_flat
+    from sailworks.core.marine.credentials import SystemCredentialStore
+    from sailworks.qt.controller import SessionController
+    from sailworks.qt.gribviewport import _source_key
+    from sailworks.qt.viewportmap import ViewportMap
+    from sailworks.qt.weatherpanel import WeatherPanel
+    from sailworks.rendering.weatherbarbs import _native_points, _view_bounds
+    from sailworks.rendering.windpainter import WindPainter, mercator_project_flat
 
     SystemCredentialStore.load = lambda self: None
     app = QApplication.instance() or QApplication([])

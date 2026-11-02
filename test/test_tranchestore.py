@@ -4,14 +4,14 @@ from threading import Barrier
 
 import pytest
 
-from gweatherrouting.core.forecasttranche import (
+from sailworks.core.forecasttranche import (
     AnalysisSelection,
     Artifact,
     ForecastTranche,
     ModelConfiguration,
     ModelEntry,
 )
-from gweatherrouting.core.tranchestore import TrancheStore
+from sailworks.core.tranchestore import TrancheStore
 
 
 def test_register_publish_activate_and_restart(tmp_path):
@@ -225,12 +225,12 @@ def test_pointer_precommit_failures_keep_binding_and_clean_staging(
             raise OSError("staged file fsync")
         return original_fsync(fd)
 
-    monkeypatch.setattr("gweatherrouting.core.tranchestore.os.fsync", fail_file_fsync)
+    monkeypatch.setattr("sailworks.core.tranchestore.os.fsync", fail_file_fsync)
     with pytest.raises(OSError):
         store.activate(selection)
     assert store.active_path.read_bytes() == previous
     assert not list(tmp_path.glob(".active-*"))
-    monkeypatch.setattr("gweatherrouting.core.tranchestore.os.fsync", original_fsync)
+    monkeypatch.setattr("sailworks.core.tranchestore.os.fsync", original_fsync)
 
     monkeypatch.setattr(
         store, "_fsync_dir", lambda _: (_ for _ in ()).throw(OSError("dir fsync"))
@@ -241,7 +241,7 @@ def test_pointer_precommit_failures_keep_binding_and_clean_staging(
     assert not list(tmp_path.glob(".active-*"))
     monkeypatch.undo()
 
-    import gweatherrouting.core.tranchestore as module
+    import sailworks.core.tranchestore as module
 
     monkeypatch.setattr(
         module.os, "replace", lambda *args: (_ for _ in ()).throw(OSError("replace"))

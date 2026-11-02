@@ -3,8 +3,8 @@
 import unittest
 from datetime import timedelta
 
-from gweatherrouting.core.grib import Grib
-from gweatherrouting.qt.weathercoverage import coverage_text
+from sailworks.core.grib import Grib
+from sailworks.qt.weathercoverage import coverage_text
 from test import test_grib_sampling as sampling_fixture
 from test.test_grib_sampling import START
 

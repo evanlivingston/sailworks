@@ -3,11 +3,11 @@ from pathlib import Path
 
 import pytest
 
-from gweatherrouting.core.gribsources.noaagfswave import (
+from sailworks.core.gribsources.noaagfswave import (
     GFSWAVE_HOURS,
     NOAAGFSWaveSource,
 )
-from gweatherrouting.core.gribsources.options import DownloadOptions
+from sailworks.core.gribsources.options import DownloadOptions
 
 
 _INDEX = """\
@@ -27,7 +27,7 @@ def test_gfswave_index_selects_requested_wave_parameters_and_bounded_spans():
     from unittest.mock import patch
 
     with patch(
-        "gweatherrouting.core.gribsources.noaagfswave.fetch_text", return_value=_INDEX
+        "sailworks.core.gribsources.noaagfswave.fetch_text", return_value=_INDEX
     ):
         spans = source._selected_index(
             "https://example.test/run/",
@@ -52,7 +52,7 @@ def test_gfswave_index_selects_requested_wave_parameters_and_bounded_spans():
     ],
 )
 def test_gfswave_index_rejects_incoherent_records(change, match):
-    from gweatherrouting.core.gribsources.gfswaveindex import parse_index
+    from sailworks.core.gribsources.gfswaveindex import parse_index
 
     with pytest.raises(ValueError, match=match):
         parse_index(change(_INDEX), "20261023", "12", 3)
@@ -136,7 +136,7 @@ def test_gfswave_download_writes_selected_messages_atomically(tmp_path, monkeypa
         source, "_selected_index", lambda *_args: ((100, 25), (125, 25))
     )
     monkeypatch.setattr(
-        "gweatherrouting.core.gribsources.noaagfswave.message_length",
+        "sailworks.core.gribsources.noaagfswave.message_length",
         lambda *_args, **_kwargs: 25,
     )
 
@@ -145,7 +145,7 @@ def test_gfswave_download_writes_selected_messages_atomically(tmp_path, monkeypa
         return length
 
     monkeypatch.setattr(
-        "gweatherrouting.core.gribsources.noaagfswave.append_message", append
+        "sailworks.core.gribsources.noaagfswave.append_message", append
     )
     progress = []
     result = Path(source.download(identifier, str(tmp_path), progress.append))

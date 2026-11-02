@@ -159,7 +159,7 @@ def run_scene(directory):
     from PySide6.QtQuickWidgets import QQuickWidget
     from PySide6.QtWidgets import QApplication
 
-    from gweatherrouting.qt.gpuweather import encode_component
+    from sailworks.qt.gpuweather import encode_component
 
     class Bank:
         def __init__(self):

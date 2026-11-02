@@ -3,27 +3,27 @@ import json
 
 import pytest
 
-from gweatherrouting.core.forecastcapabilities import MODEL_CAPABILITIES
-from gweatherrouting.core.forecastrefreshcontracts import (
+from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES
+from sailworks.core.forecastrefreshcontracts import (
     ForecastRefreshPlan,
     PlannedModel,
 )
-from gweatherrouting.core.forecastrefreshplan import (
+from sailworks.core.forecastrefreshplan import (
     UnsupportedConfigurationError,
     plan_refresh,
 )
-from gweatherrouting.core.forecaststate import (
+from sailworks.core.forecaststate import (
     ForecastAnalysisState,
     ForecastConfiguration,
 )
-from gweatherrouting.core.forecasttranche import (
+from sailworks.core.forecasttranche import (
     AnalysisSelection,
     Artifact,
     ForecastTranche,
     ModelConfiguration,
     ModelEntry,
 )
-from gweatherrouting.core.tranchestore import TrancheStore
+from sailworks.core.tranchestore import TrancheStore
 
 RUN = datetime(2025, 1, 1, tzinfo=timezone.utc)
 ACQUIRED = datetime(2025, 1, 2, tzinfo=timezone.utc)

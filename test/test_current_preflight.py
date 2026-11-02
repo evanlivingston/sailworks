@@ -8,10 +8,10 @@ from unittest.mock import Mock
 
 import numpy as np
 
-from gweatherrouting.core.marine.chs import DownloadCancelledError
-from gweatherrouting.core.marine.fields import FieldSelection
-from gweatherrouting.core.marine.preflight import check_current_coverage
-from gweatherrouting.core.marine.routing import CurrentRoutingEnvironment
+from sailworks.core.marine.chs import DownloadCancelledError
+from sailworks.core.marine.fields import FieldSelection
+from sailworks.core.marine.preflight import check_current_coverage
+from sailworks.core.marine.routing import CurrentRoutingEnvironment
 from test.test_current_routing import START, current_field
 
 

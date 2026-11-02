@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 from PySide6.QtGui import QImage
 
-from gweatherrouting.qt.mapoverlays import RetainedOverlayMixin
+from sailworks.qt.mapoverlays import RetainedOverlayMixin
 
 
 class _Host(RetainedOverlayMixin):
@@ -219,9 +219,9 @@ def test_navigation_image_composites_cached_race_geometry_pixels():
 # These tests use the real MapHostMixin snapshot and real Track/Collection
 # objects (the _Host stub above only tracks names and would hide regressions).
 
-from gweatherrouting.core.geo.collection import Collection
-from gweatherrouting.core.geo.track import Track
-from gweatherrouting.qt.maphost import MapHostMixin
+from sailworks.core.geo.collection import Collection
+from sailworks.core.geo.track import Track
+from sailworks.qt.maphost import MapHostMixin
 
 
 class _Saver(SimpleNamespace):

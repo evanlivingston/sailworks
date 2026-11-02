@@ -1,8 +1,8 @@
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 
-from gweatherrouting.qt.analysisdisplay import BoundDisplayForecastSelection
-from gweatherrouting.qt.controller import SessionController
+from sailworks.qt.analysisdisplay import BoundDisplayForecastSelection
+from sailworks.qt.controller import SessionController
 
 
 def test_session_starts_in_published_model_mode_without_legacy_fallback(tmp_path):

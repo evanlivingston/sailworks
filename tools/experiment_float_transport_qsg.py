@@ -1,13 +1,13 @@
 """E2x QSG float transport probe: can the application's scene graph carry a float texture?
 
 Experiment-only code.  Nothing here is imported by the application and nothing
-under ``gweatherrouting/`` is modified.  The probe answers the bounded question
+under ``sailworks/`` is modified.  The probe answers the bounded question
 of issue #71: does the render path the application actually uses --
 ``QQuickWidget`` + ``QQuickImageProvider`` + QML ``Image`` -> ``ShaderEffect``
 ``property variant`` -- carry a native float texture, or does the transport
 need a native bridge?
 
-The application shader ``gweatherrouting/qt/shaders/weather.frag`` is compiled
+The application shader ``sailworks/qt/shaders/weather.frag`` is compiled
 with three changes, each asserted here:
 
 * ``decodeField`` reads one float32 per texel instead of unpacking two
@@ -43,16 +43,16 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).parent))
 from experiment_float_textures import find_qsb  # noqa: E402
 
-APP_SHADERS = ROOT / "gweatherrouting/qt/shaders"
+APP_SHADERS = ROOT / "sailworks/qt/shaders"
 APPLICATION_SHADER = APP_SHADERS / "weather.frag"
-APPLICATION_PACKER = ROOT / "gweatherrouting/qt/gpuweather.py"
+APPLICATION_PACKER = ROOT / "sailworks/qt/gpuweather.py"
 
 # The application's numerical gate.  Unchanged; docs/history/rendering-m0-
 # float-textures.md records E1b at 2.384185791015625e-7 and the failed E1
 # hardware-filter run at 0.002604166666666824.
 NUMERICAL_LIMIT = 2e-5
 
-# Probe QML: the structure of gweatherrouting/qt/shaders/WeatherField.qml, with
+# Probe QML: the structure of sailworks/qt/shaders/WeatherField.qml, with
 # the probe's own shader switch, cell uniforms and texture-provider override.
 PROBE_QML = """import QtQuick
 

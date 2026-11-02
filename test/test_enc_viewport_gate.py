@@ -9,7 +9,7 @@ import numpy as np
 from PySide6.QtCore import QPoint, QPointF, Qt
 from types import SimpleNamespace
 
-from gweatherrouting.qt.gribviewport import _viewport_widget_class
+from sailworks.qt.gribviewport import _viewport_widget_class
 
 
 def tool():
@@ -143,7 +143,7 @@ def test_desktop_precise_scroll_pans_the_viewport_camera():
 def test_desktop_mouse_wheel_zoom_keeps_the_pointer_anchor():
     from datetime import datetime
 
-    from gweatherrouting.qt.gribviewport import ViewportCamera
+    from sailworks.qt.gribviewport import ViewportCamera
 
     method = _viewport_widget_class()._handle_desktop_wheel
     camera = ViewportCamera(48.45, -124.29, 9.0, 710, 743, datetime(2026, 10, 22))
@@ -270,7 +270,7 @@ def test_viewport_mouse_drag_inertia_is_bounded_and_cancelable():
     clock = [10.0]
     active = host(True)
     with patch(
-        "gweatherrouting.qt.gribviewport.time.monotonic", side_effect=lambda: clock[0]
+        "sailworks.qt.gribviewport.time.monotonic", side_effect=lambda: clock[0]
     ):
         viewport_type.mousePressEvent(active, event(0, 0))
         clock[0] += 0.05
@@ -290,7 +290,7 @@ def test_viewport_mouse_drag_inertia_is_bounded_and_cancelable():
     disabled = host(False)
     clock[0] = 20.0
     with patch(
-        "gweatherrouting.qt.gribviewport.time.monotonic", side_effect=lambda: clock[0]
+        "sailworks.qt.gribviewport.time.monotonic", side_effect=lambda: clock[0]
     ):
         viewport_type.mousePressEvent(disabled, event(0, 0))
         clock[0] += 0.05
@@ -303,7 +303,7 @@ def test_viewport_mouse_drag_inertia_is_bounded_and_cancelable():
 
 
 def test_viewport_motion_preferences_propagate_and_cancel_active_motion():
-    from gweatherrouting.qt.viewportmap import ViewportMap
+    from sailworks.qt.viewportmap import ViewportMap
 
     widget = SimpleNamespace(
         _smooth_zoom=True,
@@ -335,7 +335,7 @@ def test_desktop_smooth_wheel_zoom_eases_to_target_at_pointer_anchor():
     from datetime import datetime
     from unittest.mock import patch
 
-    from gweatherrouting.qt.gribviewport import ViewportCamera
+    from sailworks.qt.gribviewport import ViewportCamera
 
     viewport_type = _viewport_widget_class()
 
@@ -401,7 +401,7 @@ def test_desktop_smooth_wheel_zoom_eases_to_target_at_pointer_anchor():
         ),
     )
     with patch(
-        "gweatherrouting.qt.gribviewport.time.perf_counter",
+        "sailworks.qt.gribviewport.time.perf_counter",
         side_effect=lambda: clock[0],
     ):
         viewport_type._handle_desktop_wheel(widget, wheel)
@@ -494,7 +494,7 @@ def test_world_basemap_request_does_not_wait_for_weather():
 
 
 def test_text_size_observer_forwards_the_actual_draw(monkeypatch):
-    from gweatherrouting.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
+    from sailworks.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
 
     drawn = []
 
@@ -520,7 +520,7 @@ def test_text_size_observer_forwards_the_actual_draw(monkeypatch):
 
 
 def test_close_withdraws_retained_image_and_worker_releases_base_handles(tmp_path):
-    from gweatherrouting.qt.gribviewportchart import ViewportChartLayer
+    from sailworks.qt.gribviewportchart import ViewportChartLayer
 
     layer = ViewportChartLayer((), tmp_path)
     layer._published = (1, object(), {})

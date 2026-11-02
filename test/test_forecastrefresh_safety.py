@@ -1,10 +1,10 @@
 import pytest
 
-from gweatherrouting.core.forecastrefresh import (
+from sailworks.core.forecastrefresh import (
     RefreshCoordinator,
     RefreshExecutionError,
 )
-from gweatherrouting.core.tranchestore import TrancheStore
+from sailworks.core.tranchestore import TrancheStore
 from test.test_forecastrefresh import FakeSource, config, coordinator
 
 

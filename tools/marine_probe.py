@@ -71,7 +71,7 @@ class Cache:
             if self.last_request is not None:
                 time.sleep(max(0, 2.1 - (time.monotonic() - self.last_request)))
             self.last_request = time.monotonic()
-            request = Request(url, headers={"User-Agent": "gweatherrouting-research/1"})
+            request = Request(url, headers={"User-Agent": "sailworks-research/1"})
             with urlopen(request, timeout=30) as response:
                 payload = response.read(MAX_BYTES + 1)
                 if len(payload) > MAX_BYTES:

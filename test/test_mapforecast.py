@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from gweatherrouting.qt.mapforecast import MapForecastMixin
+from sailworks.qt.mapforecast import MapForecastMixin
 
 
 class _Signal:

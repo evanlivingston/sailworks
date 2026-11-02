@@ -6,11 +6,11 @@ from unittest.mock import patch
 
 import numpy as np
 
-from gweatherrouting.core.mapviewport import MapViewport
-from gweatherrouting.rendering.windpainter import WindPainter
-from gweatherrouting.rendering.windgeometry import stroke_mesh
+from sailworks.core.mapviewport import MapViewport
+from sailworks.rendering.windpainter import WindPainter
+from sailworks.rendering.windgeometry import stroke_mesh
 import cairo
-from gweatherrouting.rendering.streamlines import (
+from sailworks.rendering.streamlines import (
     WindGrid,
     trace_streamlines,
     geometry_for_view,
@@ -163,7 +163,7 @@ class TestStreamlines(unittest.TestCase):
         self.assertIsNone(WindGrid(self.view, data).velocity(200, 150))
 
     def test_work_is_bounded_and_cancellable(self):
-        with patch("gweatherrouting.rendering.streamlines.MAX_SEGMENTS", 20):
+        with patch("sailworks.rendering.streamlines.MAX_SEGMENTS", 20):
             flat = trace_streamlines(self.view, self.field(), lambda lat, lon: False)
             self.assertLessEqual(len(flat[0]), 20)
             xs, ys = self.view.convert_geographic_to_screen_batch(flat[0], flat[1])

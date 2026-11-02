@@ -2,13 +2,13 @@ from io import BytesIO
 
 import pytest
 
-from gweatherrouting.core.gribsources.ranged import (
+from sailworks.core.gribsources.ranged import (
     HTTPStatusError,
     append_message,
     fetch_text,
     message_length,
 )
-from gweatherrouting.core.marine.chs import DownloadCancelledError
+from sailworks.core.marine.chs import DownloadCancelledError
 
 
 def synthetic_grib(payload=b"data"):

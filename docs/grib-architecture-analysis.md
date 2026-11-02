@@ -1,4 +1,4 @@
-# Gweatherrouting GRIB Data Loading and Visualization Architecture Analysis
+# Sailworks GRIB Data Loading and Visualization Architecture Analysis
 
 **Read with:** [`adr-001-grib-rendering-architecture.md`](adr-001-grib-rendering-architecture.md)
 for the decisions and gap disposition, and
@@ -11,7 +11,7 @@ line citations, and the structural gaps that follow from it. It is evidence, not
 ## CURRENT IMPLEMENTATION
 
 ### 1. GRIB LOADING
-**Location:** `/gweatherrouting/core/grib.py`, `/gweatherrouting/core/gribmanager.py`
+**Location:** `/sailworks/core/grib.py`, `/sailworks/core/gribmanager.py`
 
 - **Backend:** Uses GDAL (`from osgeo import gdal`) to open GRIB files via `gdal.Open(path)`
 - **Threading Model:** 
@@ -33,7 +33,7 @@ line citations, and the structural gaps that follow from it. It is evidence, not
   - **L4 Cache:** `gpuweatherjobs.DecodedBandCache`: Worker-private band cache (128MB limit) used by `DisplayWeatherSource`
 
 ### 2. DATA STRUCTURES
-**Location:** `/gweatherrouting/core/gribsampling.py`, `/gweatherrouting/rendering/windrenderer.py`
+**Location:** `/sailworks/core/gribsampling.py`, `/sailworks/rendering/windrenderer.py`
 
 - **Decoded Field Representation:**
   - **CPU-side:** NumPy float64 arrays (from `band.ReadAsArray()` → `np.asarray(..., dtype=np.float64)`)
@@ -49,7 +49,7 @@ line citations, and the structural gaps that follow from it. It is evidence, not
     - Final: Grouped by longitude into "columns" for rendering: `(lon, lats_array, dirs_array, speeds_array)`
 
 ### 3. GPU VISUALIZATION
-**Location:** `/gweatherrouting/qt/gpuweather.py`, `/gweatherrouting/qt/gpuscene.py`, `/gweatherrouting/qt/shaders/`, `/gweatherrouting/rendering/windrenderer.py`
+**Location:** `/sailworks/qt/gpuweather.py`, `/sailworks/qt/gpuscene.py`, `/sailworks/qt/shaders/`, `/sailworks/rendering/windrenderer.py`
 
 - **Pipeline:** Qt Quick Scene Graph (QSG) via custom `QQuickItem` subclasses
   - `WindItem`: Renders wind barbs as `QSGGeometryNode` with `DrawTriangles`
@@ -68,7 +68,7 @@ line citations, and the structural gaps that follow from it. It is evidence, not
   - **Texture Uploads:** Happens on GUI thread via `QQuickWindow.createTextureFromImage()` in `ImageItem.updatePaintNode()`
 
 ### 4. INTERPOLATION
-**Location:** `/gweatherrouting/core/gribsampling.py`, `/gweatherrouting/qt/shaders/weather.frag`
+**Location:** `/sailworks/core/gribsampling.py`, `/sailworks/qt/shaders/weather.frag`
 
 - **Primary Location:** CPU (in worker threads)
   - **Method:** Bilinear interpolation in `GridIndex.sample()` (lines 198-240)
@@ -102,7 +102,7 @@ line citations, and the structural gaps that follow from it. It is evidence, not
   - Byte-based eviction when limits exceeded
 
 ### 6. TIME SCRUBBING (FORECAST-TIME CHANGES)
-**Location:** `/gweatherrouting/qt/gpuweatherjobs.py`, `/gweatherrouting/rendering/weatherstaging.py`
+**Location:** `/sailworks/qt/gpuweatherjobs.py`, `/sailworks/rendering/weatherstaging.py`
 
 - **Architecture:** 
   - **Temporal Staging:** Worker prepares pairs of timesteps (`before`/`after`)
@@ -123,7 +123,7 @@ line citations, and the structural gaps that follow from it. It is evidence, not
   - Stage preparation blocks worker thread (CPU-bound)
 
 ### 7. THREADING
-**Location:** `/gweatherrouting/rendering/overlayrenderer.py`, `/gweatherrouting/qt/gpuweatherjobs.py`
+**Location:** `/sailworks/rendering/overlayrenderer.py`, `/sailworks/qt/gpuweatherjobs.py`
 
 - **Worker Threads:**
   - **Overlay Renderer:** Dedicated thread per `OverlayRenderer` instance (daemon=True)
@@ -191,7 +191,7 @@ explicitly deferred (D5).
 
 ### VS MODERN GPU-OPTIMAL ARCHITECTURE
 
-| Aspect | Gweatherrouting | Modern GPU-Optimal | Gap Analysis |
+| Aspect | Sailworks | Modern GPU-Optimal | Gap Analysis |
 |--------|----------------|-------------------|--------------|
 | **Data Decoding** | CPU (GDAL → NumPy) | GPU-accelerated (compute shaders) | **Structural:** No offload of GRIB decoding to GPU; missing opportunity for parallel decompression |
 | **Data Residency** | CPU caches + periodic GPU uploads | Persistent GPU numerical textures | **Structural:** No retained GPU-resident weather fields; every timestep change requires full re-upload |

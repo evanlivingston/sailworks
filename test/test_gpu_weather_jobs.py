@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from PySide6.QtCore import Qt
 
-from gweatherrouting.qt.gpuweatherjobs import WeatherStager
+from sailworks.qt.gpuweatherjobs import WeatherStager
 from test.test_weather_staging import gribs, START  # noqa: F401
 
 
@@ -54,7 +54,7 @@ def test_time_scrub_keeps_one_active_job_and_drops_covered_pending(gribs):
     stager.completed.connect(complete, Qt.ConnectionType.DirectConnection)
     try:
         with patch(
-            "gweatherrouting.qt.gpuweatherjobs.stage_barbs", side_effect=stage
+            "sailworks.qt.gpuweatherjobs.stage_barbs", side_effect=stage
         ) as build:
             assert stager.request(canvas) is None
             assert entered.wait(5)
@@ -95,7 +95,7 @@ def test_view_change_cancels_stale_work_and_close_does_not_publish(gribs):
     stager.completed.connect(
         lambda *args: captured.append(args), Qt.ConnectionType.DirectConnection
     )
-    with patch("gweatherrouting.qt.gpuweatherjobs.stage_barbs", side_effect=stage):
+    with patch("sailworks.qt.gpuweatherjobs.stage_barbs", side_effect=stage):
         try:
             stager.request(canvas)
             assert entered.wait(5)
@@ -154,11 +154,11 @@ def test_potential_unread_cache_does_not_reject_selected_sources(gribs):
     try:
         with (
             patch(
-                "gweatherrouting.qt.gpuweatherjobs.WeatherSampler",
+                "sailworks.qt.gpuweatherjobs.WeatherSampler",
                 return_value=SimpleNamespace(indices=[index]),
             ),
             patch(
-                "gweatherrouting.qt.gpuweatherjobs.stage_barbs", return_value=atlas
+                "sailworks.qt.gpuweatherjobs.stage_barbs", return_value=atlas
             ) as build,
         ):
             stager.request(canvas)
@@ -174,7 +174,7 @@ def test_potential_unread_cache_does_not_reject_selected_sources(gribs):
 
 def test_worker_retains_only_bounded_private_arrays_and_releases_on_close(gribs):
     import numpy as np
-    from gweatherrouting.rendering.weathercache import (
+    from sailworks.rendering.weathercache import (
         DisplayGridIndex,
         DisplayWeatherSource,
     )
@@ -199,7 +199,7 @@ def test_worker_retains_only_bounded_private_arrays_and_releases_on_close(gribs)
 
     stager.completed.connect(complete, Qt.ConnectionType.DirectConnection)
     try:
-        with patch("gweatherrouting.qt.gpuweatherjobs.stage_barbs", side_effect=stage):
+        with patch("sailworks.qt.gpuweatherjobs.stage_barbs", side_effect=stage):
             stager.request(canvas)
             assert finished.wait(5)
             assert captured[-1][2] == ""
@@ -248,7 +248,7 @@ def test_shutdown_during_staging_does_not_release_arrays_under_worker(gribs):
         lambda *args: completions.append(args), Qt.ConnectionType.DirectConnection
     )
     try:
-        with patch("gweatherrouting.qt.gpuweatherjobs.stage_barbs", side_effect=stage):
+        with patch("sailworks.qt.gpuweatherjobs.stage_barbs", side_effect=stage):
             stager.request(canvas)
             assert entered.wait(5)
             stager.close()
@@ -269,7 +269,7 @@ def test_shutdown_during_staging_does_not_release_arrays_under_worker(gribs):
 
 
 def test_worker_oversized_band_falls_back_without_publishing_partial_atlas(gribs):
-    from gweatherrouting.rendering.weathercache import WeatherBandLimitError
+    from sailworks.rendering.weathercache import WeatherBandLimitError
 
     canvas = canvas_for(gribs.file(gribs.field(0) + gribs.field(3), end=3))
     stager = WeatherStager()
@@ -286,7 +286,7 @@ def test_worker_oversized_band_falls_back_without_publishing_partial_atlas(gribs
 
     stager.completed.connect(complete, Qt.ConnectionType.DirectConnection)
     try:
-        with patch("gweatherrouting.qt.gpuweatherjobs.stage_barbs", side_effect=stage):
+        with patch("sailworks.qt.gpuweatherjobs.stage_barbs", side_effect=stage):
             stager.request(canvas)
             assert finished.wait(5)
             key, atlas, error = captured[-1]

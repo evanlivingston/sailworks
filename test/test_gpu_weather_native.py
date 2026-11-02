@@ -21,15 +21,14 @@ def test_native_shader_interpolates_vectors_without_reloading_images():
     from PySide6.QtGui import QGuiApplication, QColor
     from PySide6.QtQuick import QQuickView, QSGRendererInterface
 
-    from gweatherrouting.qt.gpuweather import WeatherImageProvider, WeatherTexturePair
+    from sailworks.qt.gpuweather import WeatherImageProvider, WeatherTexturePair
 
     app = QGuiApplication.instance() or QGuiApplication([])
     view = QQuickView()
     provider = WeatherImageProvider()
     view.engine().addImageProvider("weather", provider)
     source = (
-        Path(__file__).resolve().parents[1]
-        / "gweatherrouting/qt/shaders/WeatherField.qml"
+        Path(__file__).resolve().parents[1] / "sailworks/qt/shaders/WeatherField.qml"
     )
     view.setSource(QUrl.fromLocalFile(str(source)))
     assert not view.errors(), str(view.errors())

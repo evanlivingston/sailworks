@@ -9,7 +9,7 @@ import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPainter
 
-from gweatherrouting.qt.controller import SessionController
+from sailworks.qt.controller import SessionController
 from test.qt_preview_checks import (
     QtPreviewChecks,
     ORIGINAL_STORAGE_LOAD,
@@ -26,7 +26,7 @@ class Fixture(unittest.TestCase):
         QtPreviewChecks.setUpClass.__func__(cls)
 
     def setUp(self):
-        from gweatherrouting.core.marine.credentials import SystemCredentialStore
+        from sailworks.core.marine.credentials import SystemCredentialStore
 
         guard = patch.object(SystemCredentialStore, "load", return_value=None)
         guard.start()
@@ -52,14 +52,14 @@ class Fixture(unittest.TestCase):
 
 class PreferenceChecks(Fixture):
     def test_default_cpu_and_saved_gpu_requires_restart(self):
-        from gweatherrouting.core.settings import SettingsManager
+        from sailworks.core.settings import SettingsManager
 
         self.assertEqual(self.controller.map_renderer, "cpu")
         self.assertIsNone(self.window.map._gpu)
         self.window.show_settings()
         dialog = self.window.settings_dialog
         with (
-            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+            patch("sailworks.core.storage.DATA_DIR", str(self.path)),
             patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
         ):
             ORIGINAL_STORAGE_LOAD(self.controller.settings)
@@ -94,7 +94,7 @@ class PreferenceChecks(Fixture):
         dialog = self.window.settings_dialog
         with (
             patch.object(Storage, "save", side_effect=OSError("disk full")),
-            patch("gweatherrouting.qt.settingsdialog.QMessageBox.warning") as warning,
+            patch("sailworks.qt.settingsdialog.QMessageBox.warning") as warning,
         ):
             dialog.gpu_rendering.setChecked(True)
         warning.assert_called_once()
@@ -103,12 +103,12 @@ class PreferenceChecks(Fixture):
         self.assertEqual(self.controller.map_renderer, "cpu")
 
     def test_unsupported_gpu_does_not_rewrite_renderer_choice(self):
-        from gweatherrouting.qt.viewportmap import ViewportMap
+        from sailworks.qt.viewportmap import ViewportMap
 
         self.controller.map_renderer = "gpu"
         self.controller.settings.mapRenderer = "gpu"
         with patch(
-            "gweatherrouting.qt.gpupresenter.QGuiApplication.platformName",
+            "sailworks.qt.gpupresenter.QGuiApplication.platformName",
             return_value="offscreen",
         ):
             canvas = ViewportMap(self.controller)
@@ -262,11 +262,11 @@ class NativeGpuChecks(Fixture):
         self.assertLessEqual(float(np.percentile(error, 99)), 8.0)
 
     def test_wind_images_match_raster_and_unchanged_layers_stay_on_gpu(self):
-        from gweatherrouting.core.mapviewport import MapViewport
-        from gweatherrouting.rendering.overlayrenderer import RenderJob, RenderState
-        from gweatherrouting.rendering.windpainter import flatten_wind_columns
-        from gweatherrouting.qt.mapframe import ImageFrame, MapFrame
-        from gweatherrouting.rendering.windpainter import WindPainter
+        from sailworks.core.mapviewport import MapViewport
+        from sailworks.rendering.overlayrenderer import RenderJob, RenderState
+        from sailworks.rendering.windpainter import flatten_wind_columns
+        from sailworks.qt.mapframe import ImageFrame, MapFrame
+        from sailworks.rendering.windpainter import WindPainter
 
         canvas, gpu = self.window.map, self.window.map._gpu
         width, height = canvas.width(), canvas.height()

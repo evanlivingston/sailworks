@@ -7,7 +7,7 @@ from importlib.util import find_spec
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from gweatherrouting.core.timecontrol import TimeControl
+from sailworks.core.timecontrol import TimeControl
 
 
 @unittest.skipUnless(find_spec("PySide6"), "Requires PySide6")
@@ -23,7 +23,7 @@ class TestForecastSourceOverview(unittest.TestCase):
         from PySide6.QtCore import QObject, Signal
         from PySide6.QtWidgets import QWidget
 
-        from gweatherrouting.qt.forecasttimeline import ForecastTimeline
+        from sailworks.qt.forecasttimeline import ForecastTimeline
 
         class Changes(QObject):
             changed = Signal()
@@ -220,7 +220,7 @@ class TestForecastSourceOverview(unittest.TestCase):
         )
 
     def test_marine_rows_use_samples_and_field_times_not_requested_bounds(self):
-        from gweatherrouting.core.marine.models import Dataset, Sample, Series, Station
+        from sailworks.core.marine.models import Dataset, Sample, Series, Station
 
         def series(code, offsets):
             return Series(

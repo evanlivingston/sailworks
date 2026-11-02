@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 from osgeo import ogr
 
-from gweatherrouting.rendering.chartcollection import ChartCollection
-from gweatherrouting.rendering.gdalvectorchart import GDALVectorChart
-from gweatherrouting.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
+from sailworks.rendering.chartcollection import ChartCollection
+from sailworks.rendering.gdalvectorchart import GDALVectorChart
+from sailworks.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
 
 
 class ChartDepthChecks(unittest.TestCase):

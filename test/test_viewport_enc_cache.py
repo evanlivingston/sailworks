@@ -18,11 +18,11 @@ from types import SimpleNamespace
 import cairo
 from osgeo import ogr, osr
 
-from gweatherrouting.core.mapviewport import MapViewport
-from gweatherrouting.qt import encgeometrycache, viewportenc
-from gweatherrouting.rendering.encrenderer import ENCOverlayRenderer
-from gweatherrouting.rendering.overlayrenderer import RenderJob
-from gweatherrouting.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
+from sailworks.core.mapviewport import MapViewport
+from sailworks.qt import encgeometrycache, viewportenc
+from sailworks.rendering.encrenderer import ENCOverlayRenderer
+from sailworks.rendering.overlayrenderer import RenderJob
+from sailworks.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
 from test.map_helpers import MapCanvas
 
 #: The cells of the synthetic library.
@@ -345,7 +345,7 @@ def test_the_source_release_keeps_the_prepared_geometry(tmp_path):
 
 def test_the_chart_worker_keeps_the_enc_source_across_compositions(tmp_path):
     """The worker's own release keeps the source, so the geometry survives."""
-    from gweatherrouting.qt import gribviewportchart
+    from sailworks.qt import gribviewportchart
 
     layer = gribviewportchart.ViewportChartLayer(
         paths=(), data_dir=tmp_path, enc_enabled=True

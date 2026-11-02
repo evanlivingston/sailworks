@@ -2,7 +2,7 @@
 
 from unittest.mock import Mock
 
-from gweatherrouting.core.mapviewport import MercatorProjection
+from sailworks.core.mapviewport import MercatorProjection
 
 
 class MapCanvas(MercatorProjection):

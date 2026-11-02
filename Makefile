@@ -4,10 +4,10 @@ install:
 	pip install .
 
 run:
-	gweatherrouting
+	sailworks
 
 build-standalone:
-	nuitka3 gweatherrouting/__main__.py --follow-imports --follow-stdlib 
+	nuitka3 sailworks/__main__.py --follow-imports --follow-stdlib
 
 setup-macos:
 	bash tools/macos/setup.sh

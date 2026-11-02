@@ -16,7 +16,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 
 import unittest
 
-from gweatherrouting.core.core import BoatInfo
+from sailworks.core.core import BoatInfo
 
 
 class TestBoatInfo(unittest.TestCase):

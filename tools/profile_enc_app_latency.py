@@ -18,10 +18,10 @@ SAVED_VIEW = (48.45003186114848, -124.28875762043288, 9.380182039882325)
 
 def application(report, data, output, deadline):  # noqa: C901 - one bounded session
     from PySide6.QtWidgets import QApplication
-    from gweatherrouting.core.marine.credentials import SystemCredentialStore
-    from gweatherrouting.qt.controller import SessionController
-    from gweatherrouting.qt.viewportmap import ViewportMap
-    from gweatherrouting.qt.weatherpanel import WeatherPanel
+    from sailworks.core.marine.credentials import SystemCredentialStore
+    from sailworks.qt.controller import SessionController
+    from sailworks.qt.viewportmap import ViewportMap
+    from sailworks.qt.weatherpanel import WeatherPanel
 
     SystemCredentialStore.load = lambda self: None
     app = QApplication.instance() or QApplication([])

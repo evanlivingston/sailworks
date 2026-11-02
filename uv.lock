@@ -920,7 +920,7 @@ wheels = [
 ]
 
 [[package]]
-name = "gweatherrouting"
+name = "sailworks"
 source = { editable = "." }
 dependencies = [
     { name = "appdirs" },

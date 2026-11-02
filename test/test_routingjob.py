@@ -11,10 +11,10 @@ import math
 
 import weatherrouting
 
-from gweatherrouting.core import Core
-from gweatherrouting.core.gribmanager import GribManager
-from gweatherrouting.core.geo.poi import POI
-from gweatherrouting.core.routingjob import (
+from sailworks.core import Core
+from sailworks.core.gribmanager import GribManager
+from sailworks.core.geo.poi import POI
+from sailworks.core.routingjob import (
     RouteRequest,
     RoutingCancelledError,
     RoutingWind,
@@ -23,7 +23,7 @@ from gweatherrouting.core.routingjob import (
     calculate_route,
     freeze_wind_sources,
 )
-from gweatherrouting.core.marine.routing import KNOT
+from sailworks.core.marine.routing import KNOT
 
 
 class ConstantWind:
@@ -46,7 +46,7 @@ class TestRoutingJob(unittest.TestCase):
             (0, 0),
             (0, 0.15),
             datetime(2026, 10, 1, 12),
-            str(Path(__file__).parents[1] / "gweatherrouting/data/polars/first317.pol"),
+            str(Path(__file__).parents[1] / "sailworks/data/polars/first317.pol"),
             weatherrouting.list_routing_algorithms()[0]["class"],
             False,
         )
@@ -117,7 +117,7 @@ class TestRoutingJob(unittest.TestCase):
             path=[candidate], position=candidate.pos, time=start, isochrones=[]
         )
         with patch(
-            "gweatherrouting.core.routingjob._original_linear_route",
+            "sailworks.core.routingjob._original_linear_route",
             return_value=result,
         ):
             completed = _linear_route_with_missing_destination_wind(
@@ -154,7 +154,7 @@ class TestRoutingJob(unittest.TestCase):
             line_validity=None,
         )
         with patch(
-            "gweatherrouting.core.routingjob._original_linear_route",
+            "sailworks.core.routingjob._original_linear_route",
             return_value=result,
         ):
             rejected = _linear_route_with_missing_destination_wind(
@@ -175,7 +175,7 @@ class TestRoutingJob(unittest.TestCase):
             path=[candidate], position=candidate.pos, time=start, isochrones=[]
         )
         with patch(
-            "gweatherrouting.core.routingjob._original_linear_route",
+            "sailworks.core.routingjob._original_linear_route",
             return_value=line_result,
         ):
             rejected_line = _linear_route_with_missing_destination_wind(
@@ -196,7 +196,7 @@ class TestRoutingJob(unittest.TestCase):
         )
         with (
             patch(
-                "gweatherrouting.core.routingjob._original_linear_route",
+                "sailworks.core.routingjob._original_linear_route",
                 return_value=missing_result,
             ),
             self.assertRaises(weatherrouting.RoutingNoWindError),
@@ -223,7 +223,7 @@ class TestRoutingJob(unittest.TestCase):
             path=[candidate], position=candidate.pos, time=start, isochrones=[]
         )
         with patch(
-            "gweatherrouting.core.routingjob._original_linear_route",
+            "sailworks.core.routingjob._original_linear_route",
             return_value=result,
         ):
             rejected = _linear_route_with_missing_destination_wind(
@@ -251,7 +251,7 @@ class TestRoutingJob(unittest.TestCase):
     def test_snapshot_keeps_legacy_forecast_sampling_with_private_dataset_handles(self):
         import numpy as np
         from osgeo import gdal
-        from gweatherrouting.core.grib import Grib
+        from sailworks.core.grib import Grib
 
         with TemporaryDirectory() as directory:
             path = str(Path(directory) / "wind.tif")

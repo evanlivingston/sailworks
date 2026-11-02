@@ -5,12 +5,12 @@ import tempfile
 import unittest
 from unittest.mock import Mock
 
-from gweatherrouting.core.marine.credentials import (
+from sailworks.core.marine.credentials import (
     CredentialStoreError,
     SystemCredentialStore,
 )
-from gweatherrouting.core.marine.manager import MarineManager
-from gweatherrouting.core.marine.spatialproviders import CopernicusProvider
+from sailworks.core.marine.manager import MarineManager
+from sailworks.core.marine.spatialproviders import CopernicusProvider
 
 
 class MemoryKeyring:

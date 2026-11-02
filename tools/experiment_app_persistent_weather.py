@@ -164,7 +164,7 @@ def shader_sources(app_root, directory, safe_missing=False):
     import PySide6
     from experiment_float_textures import find_qsb
 
-    shaders = app_root / "gweatherrouting/qt/shaders"
+    shaders = app_root / "sailworks/qt/shaders"
     vertex = (shaders / "barbs.vert").read_text()
     vertex = vertex.replace(
         "layout(binding = 6) uniform sampler2D anchorY;",
@@ -226,14 +226,14 @@ def install(config, directory):
     from PySide6.QtQml import QQmlComponent
     # LEGACY-ONLY (TODO #86): mapcanvas.TrackMap._gpu_frame is a legacy CPU-painting
     # hook; not retargeted to ViewportMap until the retained path replaces it.
-    from gweatherrouting.qt import (
+    from sailworks.qt import (
         gpuweatherjobs as jobs,
         gpuweather as images,
         gpuscene,
         mapcanvas,  # LEGACY-ONLY (TODO #86)
     )
-    from gweatherrouting.rendering import weatherbarbs as barbs
-    from gweatherrouting.rendering.weatherstaging import stage_wind
+    from sailworks.rendering import weatherbarbs as barbs
+    from sailworks.rendering.weatherstaging import stage_wind
 
     events, stagers = [], []
     originals = []
@@ -522,7 +522,7 @@ def install(config, directory):
             QUrl.fromLocalFile(
                 str(
                     Path(config["app_root"])
-                    / "gweatherrouting/qt/shaders/WeatherBarbs.qml"
+                    / "sailworks/qt/shaders/WeatherBarbs.qml"
                 )
             ),
         )

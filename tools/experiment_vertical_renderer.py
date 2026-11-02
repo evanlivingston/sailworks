@@ -163,10 +163,10 @@ def export_resources(
     validate_numeric=True,
     capture_oracle=True,
 ):
-    from gweatherrouting.qt import gpuweatherjobs as jobs, gpuweather as transport
-    from gweatherrouting.core.routingjob import freeze_wind_sources
-    from gweatherrouting.rendering import weatherbarbs as barbs
-    from gweatherrouting.rendering.weatherstaging import stage_wind
+    from sailworks.qt import gpuweatherjobs as jobs, gpuweather as transport
+    from sailworks.core.routingjob import freeze_wind_sources
+    from sailworks.rendering import weatherbarbs as barbs
+    from sailworks.rendering.weatherstaging import stage_wind
 
     initial = barbs.BarbView(
         canvas.width(),
@@ -574,8 +574,8 @@ def export_worker(config, directory):
                     apply_preparation_view,
                 )
             from resident_weather_worker import ResidentWeatherWorker
-            from gweatherrouting.qt import gpuweatherjobs as jobs
-            from gweatherrouting.core.routingjob import freeze_wind_sources
+            from sailworks.qt import gpuweatherjobs as jobs
+            from sailworks.core.routingjob import freeze_wind_sources
 
             sources = tuple(canvas.controller.core.grib_manager.gribs)
             signature = tuple(jobs.source_key(source) for source in sources)
@@ -714,8 +714,8 @@ def read_bundle(directory, expected=None, byte_limit=64 * 1024 * 1024):
 
 
 def prepared_fields(metadata, arrays):
-    from gweatherrouting.rendering.weatherbarbs import BarbView
-    from gweatherrouting.rendering.weatherstaging import StagedWind
+    from sailworks.rendering.weatherbarbs import BarbView
+    from sailworks.rendering.weatherstaging import StagedWind
 
     view = BarbView(**metadata["view"])
     result = []
@@ -807,10 +807,10 @@ def run_candidate(
     from PySide6.QtQml import QQmlComponent
     from PySide6.QtQuickWidgets import QQuickWidget
     from PySide6.QtWidgets import QApplication, QWidget, QLabel
-    from gweatherrouting.qt.gpuweather import WeatherImageProvider, encode_component
-    from gweatherrouting.qt.gpuscene import ImageItem
-    from gweatherrouting.rendering.weatherbarbs import BarbView
-    from gweatherrouting.rendering.weatherstaging import StagedWind
+    from sailworks.qt.gpuweather import WeatherImageProvider, encode_component
+    from sailworks.qt.gpuscene import ImageItem
+    from sailworks.rendering.weatherbarbs import BarbView
+    from sailworks.rendering.weatherstaging import StagedWind
 
     metadata, initial_arrays, _ = read_bundle(directory)
     initial = BarbView(**metadata["view"])
@@ -819,7 +819,7 @@ def run_candidate(
     clocks = [datetime.fromisoformat(c).timestamp() for c in metadata["clocks"]]
     prepared_sets = prepared_fields(metadata, initial_arrays)
 
-    from gweatherrouting.rendering import weatherbarbs as barbs
+    from sailworks.rendering import weatherbarbs as barbs
 
     # Missing-data/source preparation is OFFLINE for this first vertical slice.
     # Installing an explicit failure guard prevents a hidden warm GDAL cache

@@ -16,7 +16,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 
 import unittest
 
-from gweatherrouting.core.modifiedgrib import ModifiedGribManager
+from sailworks.core.modifiedgrib import ModifiedGribManager
 
 
 class MockGrib:

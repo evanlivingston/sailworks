@@ -8,21 +8,21 @@ from pathlib import Path
 
 import pytest
 
-from gweatherrouting.core.forecastboundrouting import (
+from sailworks.core.forecastboundrouting import (
     BoundForecastError,
     BoundWorkerGrib,
 )
-from gweatherrouting.core.forecastcapabilities import MODEL_CAPABILITIES
-from gweatherrouting.core.forecasttranche import (
+from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES
+from sailworks.core.forecasttranche import (
     AnalysisSelection,
     ForecastTranche,
     ModelConfiguration,
     ModelEntry,
 )
-from gweatherrouting.core.forecastvalidation import inspect_download
-from gweatherrouting.core.grib import Grib
-from gweatherrouting.core.tranchestore import TrancheStore
-from gweatherrouting.rendering.displayforecast import inspect_forecasts
+from sailworks.core.forecastvalidation import inspect_download
+from sailworks.core.grib import Grib
+from sailworks.core.tranchestore import TrancheStore
+from sailworks.rendering.displayforecast import inspect_forecasts
 
 MODELS = {
     "IFS": ("ifs-surface-0h.grib2", "ifs-metadata.json"),
@@ -91,7 +91,7 @@ def test_pressure_only_probe_validates_samples_and_stays_unroutable(model, tmp_p
         sort_keys=True,
         separators=(",", ":"),
     )
-    from gweatherrouting.core.forecastrefreshcontracts import PlannedModel
+    from sailworks.core.forecastrefreshcontracts import PlannedModel
 
     planned = PlannedModel(
         configuration,

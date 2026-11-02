@@ -7,23 +7,23 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gweatherrouting.core.actisense import (
+from sailworks.core.actisense import (
     ActisenseDecoder,
     frame,
 )
-from gweatherrouting.core.nmea2000 import (
+from sailworks.core.nmea2000 import (
     N2KMessage,
     instruments,
     number,
     N2KAsciiDecoder,
 )
-from gweatherrouting.core.actisensedatasource import ActisenseDataSource
-from gweatherrouting.core.nmea2000datasource import NMEA2000DataSource
-from gweatherrouting.core.connectionmanager import (
+from sailworks.core.actisensedatasource import ActisenseDataSource
+from sailworks.core.nmea2000datasource import NMEA2000DataSource
+from sailworks.core.connectionmanager import (
     ConnectionManager,
     create_data_source,
 )
-from gweatherrouting.core.instrumentrecording import InstrumentRecording
+from sailworks.core.instrumentrecording import InstrumentRecording
 
 NOW = datetime(2026, 10, 12, 23, 59, 59, 123000, tzinfo=timezone.utc)
 
@@ -207,7 +207,7 @@ def test_n2k_ascii_ignores_metadata_and_rejects_bad_payloads():
 
 def test_source_connect_and_disconnect():
     msg = message(130306, wind())
-    with patch("gweatherrouting.core.nmea2000datasource.serial.Serial") as factory:
+    with patch("sailworks.core.nmea2000datasource.serial.Serial") as factory:
         port = factory.return_value
         ds = ActisenseDataSource("actisense", "in", "fake")
         assert ds.connect()
@@ -228,7 +228,7 @@ def test_source_connect_and_disconnect():
 
 def test_n2k_ascii_serial_source_uses_shared_pgn_conversion():
     line = b"A173321.107 23FF2 1F112 001027FFFFFFFF00\r\n"
-    with patch("gweatherrouting.core.nmea2000datasource.serial.Serial") as factory:
+    with patch("sailworks.core.nmea2000datasource.serial.Serial") as factory:
         port = factory.return_value
         source = NMEA2000DataSource(
             {
@@ -252,9 +252,9 @@ def test_n2k_ascii_serial_source_uses_shared_pgn_conversion():
 def test_n2k_ascii_network_source_reads_tcp_stream():
     line = b"A173321.107 23FF2 1F112 001027FFFFFFFF00\r\n"
     with (
-        patch("gweatherrouting.core.nmea2000datasource.socket.socket") as factory,
+        patch("sailworks.core.nmea2000datasource.socket.socket") as factory,
         patch(
-            "gweatherrouting.core.nmea2000datasource.select.select",
+            "sailworks.core.nmea2000datasource.select.select",
             return_value=([factory.return_value], [], []),
         ),
     ):
@@ -351,7 +351,7 @@ def test_simulator_to_serial_instruments_and_recording(tmp_path):
     import tty
     from pathlib import Path
 
-    from gweatherrouting.core.core import Core
+    from sailworks.core.core import Core
 
     spec = importlib.util.spec_from_file_location(
         "sim", Path(__file__).parents[1] / "tools/simulate_actisense.py"
@@ -386,7 +386,7 @@ def test_simulator_to_serial_instruments_and_recording(tmp_path):
             "GLL",
         }
         core = object.__new__(Core)
-        from gweatherrouting.core.utils import DotDict
+        from sailworks.core.utils import DotDict
 
         core.boat_info = DotDict()
         for packet in packets:

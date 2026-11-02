@@ -4,21 +4,21 @@ from threading import Event
 
 import pytest
 
-from gweatherrouting.core.forecastcapabilities import MODEL_CAPABILITIES
-from gweatherrouting.core.forecastrefresh import RefreshSupersededError
-from gweatherrouting.core.forecaststate import (
+from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES
+from sailworks.core.forecastrefresh import RefreshSupersededError
+from sailworks.core.forecaststate import (
     ForecastAnalysisState,
     ForecastConfiguration,
     ForecastUnavailableError,
     NoActiveForecastError,
 )
-from gweatherrouting.core.forecasttranche import (
+from sailworks.core.forecasttranche import (
     AnalysisSelection,
     ForecastTranche,
     ModelConfiguration,
     ModelEntry,
 )
-from gweatherrouting.core.tranchestore import TrancheStore
+from sailworks.core.tranchestore import TrancheStore
 from test.test_forecastrefresh import (
     FakeSource,
     make_plan as make_refresh_plan,
@@ -132,9 +132,7 @@ def test_configuration_replace_failure_preserves_configuration_and_active(
             raise OSError("injected config replacement failure")
         return real_replace(source, destination)
 
-    monkeypatch.setattr(
-        "gweatherrouting.core.forecaststate.os.replace", fail_configuration
-    )
+    monkeypatch.setattr("sailworks.core.forecaststate.os.replace", fail_configuration)
     with pytest.raises(OSError):
         state.configure((config("HRRR"),), "HRRR")
     assert state.configuration == old

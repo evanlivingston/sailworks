@@ -18,7 +18,7 @@ import unittest
 
 import gpxpy
 
-from gweatherrouting.core.geo.poi import POI
+from sailworks.core.geo.poi import POI
 
 
 class TestPOI(unittest.TestCase):

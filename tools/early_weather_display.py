@@ -45,7 +45,7 @@ def validate_identity(meta, reference):
 
 def read_field(directory, reference):
     """Only NEW worker output is decoded here, not cached reference arrays."""
-    from gweatherrouting.qt.gpuweather import encode_component
+    from sailworks.qt.gpuweather import encode_component
 
     meta = json.loads((directory / "field.json").read_text())
     validate_identity(meta, reference)
@@ -228,10 +228,10 @@ def display(args, reference, directory, chart, thread, pool, launch):
     from PySide6.QtQml import QQmlComponent
     from PySide6.QtQuickWidgets import QQuickWidget
     from PySide6.QtWidgets import QApplication, QWidget, QLabel
-    from gweatherrouting.qt.gpuweather import WeatherImageProvider, encode_component
-    from gweatherrouting.qt.gpuscene import ImageItem
-    from gweatherrouting.rendering.weatherbarbs import BarbView
-    from gweatherrouting.rendering import weatherbarbs as barbs
+    from sailworks.qt.gpuweather import WeatherImageProvider, encode_component
+    from sailworks.qt.gpuscene import ImageItem
+    from sailworks.rendering.weatherbarbs import BarbView
+    from sailworks.rendering import weatherbarbs as barbs
 
     app = QApplication([])
     initial = BarbView(**reference["view"])

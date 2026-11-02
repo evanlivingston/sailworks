@@ -21,18 +21,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gweatherrouting.core.datasource import NMEADataPacket
-from gweatherrouting.core.nmeasession import (
+from sailworks.core.datasource import NMEADataPacket
+from sailworks.core.nmeasession import (
     NMEALog,
     NMEASession,
     NMEATrack,
     NumericFieldCollector,
 )
-from gweatherrouting.core.utils import EventDispatcher
-from gweatherrouting.qt.controller import SessionController
-from gweatherrouting.qt.logscrubber import LogScrubber
-from gweatherrouting.qt.plots import LogPlots
-from gweatherrouting.qt.window import PreviewWindow
+from sailworks.core.utils import EventDispatcher
+from sailworks.qt.controller import SessionController
+from sailworks.qt.logscrubber import LogScrubber
+from sailworks.qt.plots import LogPlots
+from sailworks.qt.window import PreviewWindow
 from test.test_polarperformance import water, wind
 
 
@@ -321,7 +321,7 @@ def test_delete_selected_range_ripple_updates_loaded_session(transport, monkeypa
         def exec(self, _position):
             self.actions[0].trigger()
 
-    monkeypatch.setattr("gweatherrouting.qt.plots.QMenu", Menu)
+    monkeypatch.setattr("sailworks.qt.plots.QMenu", Menu)
     plot = LogPlots(delete_range=session.delete_log_range)
     plot.set_points(plot_points(), (10, 20, 30), True)
     plot.set_time_bounds(0, before.duration, reset=True)
@@ -345,7 +345,7 @@ def test_delete_selected_range_ripple_updates_loaded_session(transport, monkeypa
 
 
 def test_controller_builds_large_log_trim_in_worker_then_commits_on_gui(transport):
-    from gweatherrouting.qt.controller import SessionController
+    from sailworks.qt.controller import SessionController
 
     app, scrub_controller, _ = transport
 
@@ -528,7 +528,7 @@ def test_plot_does_not_scrub_without_valid_log_axis(transport, invalid, monkeypa
 
 
 def test_lazy_plot_factory_injects_callbacks_into_nested_canvas(transport):
-    from gweatherrouting.qt.lazyplots import LazyLogPlots
+    from sailworks.qt.lazyplots import LazyLogPlots
 
     app, controller, _ = transport
     window = QWidget()
@@ -670,7 +670,7 @@ def test_source_dropdown_is_the_live_reading_control(transport):
 
 
 def test_gps_picker_updates_plot_both_maps_and_marker_without_replay(transport):
-    from gweatherrouting.core.n2kdevices import DeviceCollector
+    from sailworks.core.n2kdevices import DeviceCollector
     from test.test_n2kdevices import claim, fragments
 
     _, controller, _ = transport

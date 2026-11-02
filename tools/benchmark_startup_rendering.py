@@ -57,9 +57,9 @@ TOKEN = "@APPDATA@"
 
 def default_data_directory():
     if sys.platform == "darwin":
-        return Path.home() / "Library/Application Support/gweatherrouting"
+        return Path.home() / "Library/Application Support/sailworks"
     if sys.platform == "linux":
-        return Path(os.environ.get("XDG_DATA_HOME", Path.home())) / ".gweatherrouting"
+        return Path(os.environ.get("XDG_DATA_HOME", Path.home())) / ".sailworks"
     raise ValueError("Startup snapshots currently support macOS and Linux")
 
 
@@ -263,9 +263,9 @@ def verify_snapshot(path):
 
 def prepare_sandbox(snapshot, root):
     if sys.platform == "darwin":
-        data = root / "home/Library/Application Support/gweatherrouting"
+        data = root / "home/Library/Application Support/sailworks"
     elif sys.platform == "linux":
-        data = root / "xdg-data/.gweatherrouting"
+        data = root / "xdg-data/.sailworks"
     else:
         raise ValueError("Startup replay currently supports macOS and Linux")
     shutil.copytree(snapshot / "data", data, copy_function=clone_file)
@@ -297,10 +297,10 @@ def worker(config):
     from osgeo import gdal
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
-    from gweatherrouting.core.marine.credentials import SystemCredentialStore
-    from gweatherrouting.qt.controller import SessionController
-    from gweatherrouting.qt.window import PreviewWindow
-    from gweatherrouting.qt.theme import apply_theme
+    from sailworks.core.marine.credentials import SystemCredentialStore
+    from sailworks.qt.controller import SessionController
+    from sailworks.qt.window import PreviewWindow
+    from sailworks.qt.theme import apply_theme
 
     # The system keychain is shared even with an isolated HOME. Treat account
     # state as unavailable; no account is needed to render captured local data.
@@ -313,10 +313,10 @@ def worker(config):
             warnings.append(record.getMessage())
 
     handler = WarningCapture(logging.WARNING)
-    logger = logging.getLogger("gweatherrouting")
+    logger = logging.getLogger("sailworks")
     logger.addHandler(handler)
     app = QApplication([])
-    app.setApplicationName("GWeatherRouting")
+    app.setApplicationName("Sailworks")
     apply_theme(app)
     began = time.perf_counter()
     schedule_began = time.monotonic()

@@ -8,10 +8,10 @@ from unittest.mock import patch
 
 import numpy as np
 
-from gweatherrouting.core.marine.icoads import ShipReport, parse_dataset
-from gweatherrouting.qt.icoadsquick import IcoadsQuickItem, IcoadsQuickLayer
-from gweatherrouting.qt.icoadsstate import IcoadsState
-from gweatherrouting.qt.marinepanel import BusyButton
+from sailworks.core.marine.icoads import ShipReport, parse_dataset
+from sailworks.qt.icoadsquick import IcoadsQuickItem, IcoadsQuickLayer
+from sailworks.qt.icoadsstate import IcoadsState
+from sailworks.qt.marinepanel import BusyButton
 
 
 def setUpModule():

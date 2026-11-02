@@ -8,8 +8,8 @@ from unittest.mock import patch
 import cairo
 import numpy as np
 
-from gweatherrouting.core.mapviewport import MapViewport
-from gweatherrouting.rendering.windpainter import (
+from sailworks.core.mapviewport import MapViewport
+from sailworks.rendering.windpainter import (
     BARB_MAX_COUNT,
     BARB_DENSITIES,
     WindPainter,
@@ -17,7 +17,7 @@ from gweatherrouting.rendering.windpainter import (
     flatten_wind_columns,
     mercator_project_nodes,
 )
-from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
+from sailworks.rendering.windrenderer import WindOverlayRenderer
 
 
 class TestLiveWindBarbs(unittest.TestCase):
@@ -169,7 +169,7 @@ class TestLiveWindBarbs(unittest.TestCase):
     def test_projection_reused_for_pan_and_replaced_on_zoom_and_new_frame(self):
         flat = flatten_wind_columns([[(90, 5, (48.01, -123.02))]])
         renderer, canvas, job = self.renderer_frame(flat)
-        target = "gweatherrouting.rendering.windrenderer.mercator_project_nodes"
+        target = "sailworks.rendering.windrenderer.mercator_project_nodes"
         with patch(target, wraps=mercator_project_nodes) as project:
             for latitude in (48, 48.01, 48.02):
                 renderer.live_geometry_for_view(canvas, 800, 600, latitude, -123, 9)

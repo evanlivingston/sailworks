@@ -4,8 +4,8 @@ import pytest
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 
-from gweatherrouting.core.forecasttranche import ModelConfiguration
-from gweatherrouting.qt.analysiscontroller import AnalysisController
+from sailworks.core.forecasttranche import ModelConfiguration
+from sailworks.qt.analysiscontroller import AnalysisController
 from test.analysis_qt_fixtures import FakeAnalysisState, make_snapshot
 
 

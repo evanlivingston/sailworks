@@ -161,8 +161,8 @@ def probe(config):
     socket.socket.connect = blocked
     socket.socket.connect_ex = blocked
     import numpy as np
-    from gweatherrouting.core.gribsampling import WeatherSampler
-    from gweatherrouting.rendering.windrenderer import WindLandMask
+    from sailworks.core.gribsampling import WeatherSampler
+    from sailworks.rendering.windrenderer import WindLandMask
 
     stage_root = Path(config["staging_root"])
     modules, hashes = {}, {}
@@ -172,10 +172,10 @@ def probe(config):
         "rendering/weatherbarbs",
         "rendering/weathercache",
     ):
-        path = stage_root / "gweatherrouting" / (suffix + ".py")
+        path = stage_root / "sailworks" / (suffix + ".py")
         hashes[suffix] = startup.protocol.file_hash(path)
         modules[suffix] = support.load_file(
-            "gweatherrouting." + suffix.replace("/", "."), path
+            "sailworks." + suffix.replace("/", "."), path
         )
     staging, barbs, cache_module = (
         modules[name]
@@ -189,7 +189,7 @@ def probe(config):
     opened = json.loads((data / "grib-manager.json").read_text())["opened"]
     if not opened or any(Path(name).name != name for name in opened):
         raise ValueError("Expected managed selected forecast filenames")
-    from gweatherrouting.core.grib import Grib
+    from sailworks.core.grib import Grib
 
     sources = []
     cache = cache_module.DecodedBandCache(128 * 1024 * 1024)

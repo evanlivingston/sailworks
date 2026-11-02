@@ -5,8 +5,8 @@ from datetime import timedelta
 import numpy as np
 import pytest
 
-from gweatherrouting.core.gribsampling import WeatherSampler
-from gweatherrouting.rendering.weatherstaging import NodeSampleMemo, stage_wind
+from sailworks.core.gribsampling import WeatherSampler
+from sailworks.rendering.weatherstaging import NodeSampleMemo, stage_wind
 from test import test_grib_sampling as grib_fixtures
 
 START = grib_fixtures.START
@@ -120,9 +120,7 @@ def test_projected_grid_relative_vectors_are_rotated_by_existing_sampler(gribs):
         projection=crs.to_wkt(),
         end=3,
     )
-    with patch(
-        "gweatherrouting.core.gribsampling.vector_flags", return_value=[True] * 6
-    ):
+    with patch("sailworks.core.gribsampling.vector_flags", return_value=[True] * 6):
         sampler = WeatherSampler([source])
     xx, yy = np.meshgrid(x + np.array([500, 1500]), y + np.array([500, 1500]))
     lons, lats = to_world.transform(xx, yy)
@@ -132,7 +130,7 @@ def test_projected_grid_relative_vectors_are_rotated_by_existing_sampler(gribs):
 
 def test_node_memo_shifted_window_is_bit_identical_to_cold_staging(gribs):
     """A memoized shift is a pure function of the same inputs."""
-    from gweatherrouting.rendering.weatherbarbs import _node_key
+    from sailworks.rendering.weatherbarbs import _node_key
 
     sampler = WeatherSampler([gribs.file(gribs.field(0) + gribs.field(3), end=3)])
     stamp = (START + timedelta(hours=1.5)).timestamp()

@@ -18,7 +18,7 @@ import unittest
 
 import gpxpy
 
-from gweatherrouting.core.geo.track import Track
+from sailworks.core.geo.track import Track
 
 
 class TestTrack(unittest.TestCase):

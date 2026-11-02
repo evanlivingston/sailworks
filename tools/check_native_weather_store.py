@@ -105,8 +105,8 @@ def run(directory):
     from PySide6.QtQuickWidgets import QQuickWidget
     from PySide6.QtWidgets import QApplication, QHBoxLayout, QWidget
 
-    from gweatherrouting.qt.gpuweather import encode_component
-    from gweatherrouting.qt.gpuweathertextures import (
+    from sailworks.qt.gpuweather import encode_component
+    from sailworks.qt.gpuweathertextures import (
         NativeWeatherBudget,
         native_texture_context,
     )

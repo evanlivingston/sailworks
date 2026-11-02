@@ -66,7 +66,7 @@ def color_error(gpu, cpu, radius=3):
 def cpu_image(field, selection, blend, width, height, dpr, opacity):
     import cairo
     from PySide6.QtGui import QImage
-    from gweatherrouting.rendering.windpainter import WindPainter
+    from sailworks.rendering.windpainter import WindPainter
 
     picks = selection.reshape(-1, 3)
     picks = picks[picks[:, 0] >= 0]
@@ -129,7 +129,7 @@ def render(app, case, directory, output):
     from PySide6.QtGui import QSurfaceFormat
     from PySide6.QtQml import QQmlComponent
     from PySide6.QtQuickWidgets import QQuickWidget
-    from gweatherrouting.qt.gpuweather import WeatherImageProvider, encode_component
+    from sailworks.qt.gpuweather import WeatherImageProvider, encode_component
 
     name, field, selection, blend, width, height = case
     quick = QQuickWidget()

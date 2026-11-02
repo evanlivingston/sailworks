@@ -17,11 +17,11 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 import unittest
 from unittest.mock import patch
 
-from gweatherrouting.core.geo.collection import (
+from sailworks.core.geo.collection import (
     Collection,
     CollectionWithActiveElement,
 )
-from gweatherrouting.core.geo.element import Element
+from sailworks.core.geo.element import Element
 
 
 class TestCollection(unittest.TestCase):
@@ -30,9 +30,9 @@ class TestCollection(unittest.TestCase):
     def _make_collection(self):
         with (
             patch(
-                "gweatherrouting.core.geo.collection.CollectionStorage.load_or_save_default"
+                "sailworks.core.geo.collection.CollectionStorage.load_or_save_default"
             ),
-            patch("gweatherrouting.core.geo.collection.CollectionStorage.save"),
+            patch("sailworks.core.geo.collection.CollectionStorage.save"),
         ):
             return Collection(Element, "elem")
 
@@ -143,9 +143,9 @@ class TestCollectionWithActiveElement(unittest.TestCase):
     def _make_collection(self):
         with (
             patch(
-                "gweatherrouting.core.geo.collection.CollectionStorage.load_or_save_default"
+                "sailworks.core.geo.collection.CollectionStorage.load_or_save_default"
             ),
-            patch("gweatherrouting.core.geo.collection.CollectionStorage.save"),
+            patch("sailworks.core.geo.collection.CollectionStorage.save"),
         ):
             return CollectionWithActiveElement(Element, "elem")
 

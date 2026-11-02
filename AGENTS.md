@@ -5,7 +5,7 @@ we do not prepare upstream contributions or track upstream PRs.
 
 ## Branches
 
-- `origin` is our fork: `https://github.com/evanlivingston/gweatherrouting.git`.
+- `origin` is our fork: `https://github.com/evanlivingston/sailworks.git`.
 - `dev` is the integration branch. Feature branches start from `dev` and merge
   back into `dev` after validation.
 - Verify actual remotes and branches before using them.
@@ -66,7 +66,7 @@ we do not prepare upstream contributions or track upstream PRs.
 ## Scope-specific rules
 
 - Renderer, viewport, GPU or rendering-gate work anywhere in the repo: read
-  `gweatherrouting/rendering/AGENTS.md` and follow it. The Qt viewport lives in
-  `gweatherrouting/qt/`, so read that file even when the change is not under
-  `gweatherrouting/rendering/`.
-- Qt frontend work: read `gweatherrouting/qt/AGENTS.md` and follow it.
+  `sailworks/rendering/AGENTS.md` and follow it. The Qt viewport lives in
+  `sailworks/qt/`, so read that file even when the change is not under
+  `sailworks/rendering/`.
+- Qt frontend work: read `sailworks/qt/AGENTS.md` and follow it.

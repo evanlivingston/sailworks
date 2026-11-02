@@ -14,9 +14,9 @@ from unittest.mock import patch
 import numpy as np
 from netCDF4 import Dataset
 
-from gweatherrouting.core.marine import nosofs
-from gweatherrouting.core.marine.fields import Area
-from gweatherrouting.core.marine.nosofs import NOSOFSProvider
+from sailworks.core.marine import nosofs
+from sailworks.core.marine.fields import Area
+from sailworks.core.marine.nosofs import NOSOFSProvider
 
 START = datetime(2026, 10, 15, 4, tzinfo=timezone.utc)
 
@@ -98,8 +98,8 @@ class TestNOSOFSProvider(unittest.TestCase):
                 sys.executable,
                 "-c",
                 "import sys; sys.modules['netCDF4'] = None; "
-                "from gweatherrouting.core.marine.coverage import CoveragePlanner; "
-                "from gweatherrouting.core.marine.fields import Area; "
+                "from sailworks.core.marine.coverage import CoveragePlanner; "
+                "from sailworks.core.marine.fields import Area; "
                 "assert CoveragePlanner().plan(Area(-125,47,-124,48))",
             ],
             capture_output=True,

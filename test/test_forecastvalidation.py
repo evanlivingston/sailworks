@@ -4,13 +4,13 @@ import json
 
 import pytest
 
-from gweatherrouting.core.forecasttranche import ModelConfiguration
-from gweatherrouting.core.forecastrefreshplan import (
+from sailworks.core.forecasttranche import ModelConfiguration
+from sailworks.core.forecastrefreshplan import (
     MODEL_CAPABILITIES,
     RefreshCancelledError,
     plan_refresh,
 )
-from gweatherrouting.core.forecastvalidation import (
+from sailworks.core.forecastvalidation import (
     ForecastValidationError,
     inspect_download,
 )
@@ -306,7 +306,7 @@ def test_rejects_undecodable_or_truncated_bands_and_closes_dataset(
 
 
 def test_gdal_timestamp_strings_and_plan_refresh_integration():
-    from gweatherrouting.core.forecastrefreshplan import plan_refresh
+    from sailworks.core.forecastrefreshplan import plan_refresh
 
     capability = MODEL_CAPABILITIES["GFS"]
 

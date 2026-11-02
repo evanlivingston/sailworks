@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from gweatherrouting.core.gribvectors import vector_flags
+from sailworks.core.gribvectors import vector_flags
 
 
 def message(template, flag, fields=1):

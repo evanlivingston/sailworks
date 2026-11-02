@@ -223,7 +223,7 @@ class _AnnotationProbe:
         self._records = []
 
     def install(self):
-        from gweatherrouting.rendering.vectordrawer.s57chartdrawer import (
+        from sailworks.rendering.vectordrawer.s57chartdrawer import (
             S57ChartDrawer,
         )
 
@@ -309,7 +309,7 @@ def _cell_provenance(snapshot, data_dir, settings):
 
 def _reference_descriptors(data_dir, settings):
     """Enabled ENC cells read with GDAL, independently of the viewport's source."""
-    from gweatherrouting.rendering.gdalvectorchart import GDALVectorChart
+    from sailworks.rendering.gdalvectorchart import GDALVectorChart
     from osgeo import ogr
 
     descriptors = []
@@ -333,7 +333,7 @@ def _reference_descriptors(data_dir, settings):
 
 def _reference_selection(descriptors, camera_scale, viewport_envelope):
     """The application's selection rules, applied in the harness's own loop."""
-    from gweatherrouting.core.enccharts import chart_scale_rank, chart_scale_visible
+    from sailworks.core.enccharts import chart_scale_rank, chart_scale_visible
 
     min_lon, max_lon, min_lat, max_lat = viewport_envelope
     selected = []
@@ -352,9 +352,9 @@ def _reference_selection(descriptors, camera_scale, viewport_envelope):
 
 
 def _base_job(camera, dpr, palette, sources, cancel):
-    from gweatherrouting.core.mapviewport import MapViewport
-    from gweatherrouting.qt.gribviewportchart import ChartCamera
-    from gweatherrouting.rendering.overlayrenderer import MARGIN, RenderJob
+    from sailworks.core.mapviewport import MapViewport
+    from sailworks.qt.gribviewportchart import ChartCamera
+    from sailworks.rendering.overlayrenderer import MARGIN, RenderJob
 
     canvas = ChartCamera(camera, dpr)
     viewport = MapViewport(canvas, MARGIN, lambda: None)
@@ -372,11 +372,11 @@ def _base_job(camera, dpr, palette, sources, cancel):
 def _reference_composition(layer, camera, dpr, palette, data_dir, descriptors, probe):
     """Base, then ENC, then contours: the application's order, assembled here."""
     import cairo
-    from gweatherrouting.qt.gribviewportchart import _ChartComposer, base_sources
-    from gweatherrouting.rendering.encrenderer import ENCOverlayRenderer
-    from gweatherrouting.core.scheduling import schedule_idle
-    from gweatherrouting.rendering.overlayrenderer import MARGIN
-    from gweatherrouting.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
+    from sailworks.qt.gribviewportchart import _ChartComposer, base_sources
+    from sailworks.rendering.encrenderer import ENCOverlayRenderer
+    from sailworks.core.scheduling import schedule_idle
+    from sailworks.rendering.overlayrenderer import MARGIN
+    from sailworks.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
 
     class AnnotationDrawer(S57ChartDrawer):
         def _render_area(self, *args):
@@ -440,10 +440,10 @@ def _reference_composition(layer, camera, dpr, palette, data_dir, descriptors, p
 
 def _cell_masks(descriptors, camera, dpr, palette, data_dir):
     """One cell alone, drawn by the oracle: the per-cell ink used for multi-cell checks."""
-    from gweatherrouting.rendering.encrenderer import ENCOverlayRenderer
-    from gweatherrouting.core.scheduling import schedule_idle
-    from gweatherrouting.qt.gribviewportchart import base_sources
-    from gweatherrouting.rendering.overlayrenderer import MARGIN
+    from sailworks.rendering.encrenderer import ENCOverlayRenderer
+    from sailworks.core.scheduling import schedule_idle
+    from sailworks.qt.gribviewportchart import base_sources
+    from sailworks.rendering.overlayrenderer import MARGIN
 
     sources = base_sources(data_dir)
     job = _base_job(camera, dpr, palette, sources, Event())
@@ -545,16 +545,16 @@ def _measure(
     report, snapshot, data_dir, scenarios, repeats, frames, deadline, experience=False
 ):
     from PySide6.QtWidgets import QApplication
-    from gweatherrouting.qt.gribviewport import (
+    from sailworks.qt.gribviewport import (
         GribViewportModel,
         ViewportCamera,
         _viewport_widget_class,
         saved_selection,
     )
-    from gweatherrouting.qt.gribviewportchart import ChartCamera  # noqa: F401
-    from gweatherrouting.qt.gribviewport import saved_chart_palette
-    from gweatherrouting.qt.viewportenc import read_manifest  # noqa: F401
-    from gweatherrouting.rendering.windrenderer import WindLandMask
+    from sailworks.qt.gribviewportchart import ChartCamera  # noqa: F401
+    from sailworks.qt.gribviewport import saved_chart_palette
+    from sailworks.qt.viewportenc import read_manifest  # noqa: F401
+    from sailworks.rendering.windrenderer import WindLandMask
 
     app = QApplication.instance() or QApplication([])
     paths, settings = saved_selection(data_dir)
@@ -641,7 +641,7 @@ def _run_session(  # noqa: C901 - one session keeps the widget and worker togeth
     deadline,
 ):
     import numpy as np
-    from gweatherrouting.qt.gribviewport import ViewportCamera  # noqa: F401
+    from sailworks.qt.gribviewport import ViewportCamera  # noqa: F401
 
     dpr = int(round(widget.devicePixelRatio()))
     report["identity"]["platform"] = _platform(widget)
@@ -803,10 +803,10 @@ def _run_session(  # noqa: C901 - one session keeps the widget and worker togeth
 def _coverage_selection(descriptors, camera, dpr, palette):
     """Independently compute the oracle's clipped, non-overlapping regions."""
     from osgeo import ogr
-    from gweatherrouting.core.enccharts import chart_scale_rank, chart_scale_visible
-    from gweatherrouting.rendering.chartlayer import ChartLayer
-    from gweatherrouting.rendering.gdalvectorchart import GDALVectorChart
-    from gweatherrouting.qt.viewportenc import region_identity
+    from sailworks.core.enccharts import chart_scale_rank, chart_scale_visible
+    from sailworks.rendering.chartlayer import ChartLayer
+    from sailworks.rendering.gdalvectorchart import GDALVectorChart
+    from sailworks.qt.viewportenc import region_identity
 
     job = _base_job(camera, dpr, palette, (), Event())
     viewport = job.viewport
@@ -847,7 +847,7 @@ class _TextSizes:
         self.sizes = {}
 
     def install(self):
-        from gweatherrouting.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
+        from sailworks.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
 
         original = S57ChartDrawer._render_soundings
         observer = self
@@ -956,7 +956,7 @@ def _experience(report, widget, base_camera, deadline):  # noqa: C901
         _pump(80)
         meta = layer.enc_metadata
         camera_now = widget._camera
-        from gweatherrouting.rendering.overlayrenderer import MARGIN
+        from sailworks.rendering.overlayrenderer import MARGIN
 
         byte_bound = (
             (camera_now.width + 2 * MARGIN)
@@ -1074,7 +1074,7 @@ def _experience(report, widget, base_camera, deadline):  # noqa: C901
 
 def _behavior(report, widget, layer, deadline):  # noqa: C901 - four runtime checks
     """Stall, supersession and release.  Each check reads the layer's own records."""
-    from gweatherrouting.qt.gribviewportchart import HISTORY_LIMIT
+    from sailworks.qt.gribviewportchart import HISTORY_LIMIT
 
     def chart_source():
         if widget._chart is None:
@@ -1210,9 +1210,9 @@ def _platform(widget):
 
 
 def _viewport_envelope(camera):
-    from gweatherrouting.core.mapviewport import MapViewport
-    from gweatherrouting.qt.gribviewportchart import ChartCamera
-    from gweatherrouting.rendering.overlayrenderer import MARGIN
+    from sailworks.core.mapviewport import MapViewport
+    from sailworks.qt.gribviewportchart import ChartCamera
+    from sailworks.rendering.overlayrenderer import MARGIN
 
     viewport = MapViewport(ChartCamera(camera, 1), MARGIN, lambda: None)
     p1, p2 = viewport.get_bbox()
@@ -1222,9 +1222,9 @@ def _viewport_envelope(camera):
 
 
 def _camera_scale(camera):
-    from gweatherrouting.core.mapviewport import MapViewport
-    from gweatherrouting.qt.gribviewportchart import ChartCamera
-    from gweatherrouting.rendering.overlayrenderer import MARGIN
+    from sailworks.core.mapviewport import MapViewport
+    from sailworks.qt.gribviewportchart import ChartCamera
+    from sailworks.rendering.overlayrenderer import MARGIN
 
     return MapViewport(ChartCamera(camera, 1), MARGIN, lambda: None).get_scale()
 

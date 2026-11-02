@@ -107,7 +107,7 @@ def image_array(image):
 
 class Camera:
     def __init__(self, metadata):
-        from gweatherrouting.core.mapviewport import MercatorProjection
+        from sailworks.core.mapviewport import MercatorProjection
 
         class Projection(MercatorProjection):
             def get_allocated_width(self):
@@ -161,7 +161,7 @@ class Camera:
 
 class Payloads:
     def __init__(self, metadata, flat, base, navigation):
-        from gweatherrouting.rendering.windpainter import barb_density_parameters
+        from sailworks.rendering.windpainter import barb_density_parameters
 
         self.metadata, self.flat = metadata, flat
         self.base, self.navigation = base, navigation
@@ -170,7 +170,7 @@ class Payloads:
         self.cached_view, self.cached_geometry, self.cached_count = None, None, 0
 
     def frame(self, scenario, index, frames):
-        from gweatherrouting.rendering.windpainter import WindPainter
+        from sailworks.rendering.windpainter import WindPainter
 
         self.camera.set_frame(scenario, index, frames)
         p, m = self.camera.projection, self.metadata
@@ -195,13 +195,13 @@ class Payloads:
 def paint_wind(painter, geometry, metadata, mode):
     from PySide6.QtCore import QLineF, QPointF, Qt
     from PySide6.QtGui import QColor, QPainterPath, QPen
-    from gweatherrouting.rendering.windpainter import barb_bucket_colors
+    from sailworks.rendering.windpainter import barb_bucket_colors
 
     if mode == "cpu_current":
         # Invoke the actual production painting method, not a copied approximation.
         # LEGACY-ONLY (TODO #86): cpu_current invokes TrackMap._paint_wind_barbs
         # legacy CPU painting; not retargeted.
-        from gweatherrouting.qt.mapcanvas import TrackMap  # LEGACY-ONLY (TODO #86)
+        from sailworks.qt.mapcanvas import TrackMap  # LEGACY-ONLY (TODO #86)
 
         proxy = SimpleNamespace(
             wind_visible=True,
@@ -300,7 +300,7 @@ def make_scene(view, metadata, base, navigation, mode):
         QSGTexture,
     )
     import shiboken6
-    from gweatherrouting.rendering.windpainter import barb_bucket_colors
+    from sailworks.rendering.windpainter import barb_bucket_colors
 
     counters = {
         "texture_uploads": 0,

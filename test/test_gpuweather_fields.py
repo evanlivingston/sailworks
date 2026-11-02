@@ -9,20 +9,20 @@ from datetime import timedelta
 import numpy as np
 import pytest
 
-from gweatherrouting.core.gribsampling import WeatherSampler
-from gweatherrouting.qt.gpuweatherfields import (
+from sailworks.core.gribsampling import WeatherSampler
+from sailworks.qt.gpuweatherfields import (
     FieldIdentity,
     FieldStore,
     TEXTURE_BYTES_PER_FLOAT32,
     validate_binding,
 )
-from gweatherrouting.qt.gpuweatherjobs import source_key
-from gweatherrouting.rendering.weatherbarbs import (
+from sailworks.qt.gpuweatherjobs import source_key
+from sailworks.rendering.weatherbarbs import (
     BarbView,
     field_window,
     stage_barbs,
 )
-from gweatherrouting.rendering.weatherstaging import time_window
+from sailworks.rendering.weatherstaging import time_window
 from test.test_weather_barbs import Land
 from test.test_weather_staging import gribs, START  # noqa: F401
 
@@ -42,7 +42,7 @@ def identity(**overrides):
 
 def _stage(sampler, view, stamp, store=None, source=None, grid=False):
     if store is not None:
-        from gweatherrouting.rendering.weatherbarbs import _stage_with_field
+        from sailworks.rendering.weatherbarbs import _stage_with_field
 
         return _stage_with_field(
             sampler, stamp, view, Land(), lambda: False, store, source, grid
@@ -134,9 +134,9 @@ def test_allocation_eviction_and_release_are_bounded(gribs):
 def test_the_gridded_form_samples_once_and_keeps_the_samplers_values(gribs):
     """The gridded form costs no second sampling pass, and its values are
     the CPU sampler's values at the lattice's node positions."""
-    from gweatherrouting.rendering import weatherbarbs
-    from gweatherrouting.rendering.weatherbarbs import stage_field
-    from gweatherrouting.rendering.weatherstaging import stage_wind
+    from sailworks.rendering import weatherbarbs
+    from sailworks.rendering.weatherbarbs import stage_field
+    from sailworks.rendering.weatherstaging import stage_wind
 
     source, sampler, signature = _sources(gribs)
     view = BarbView(640, 480, 0.5, 0.5, 9, "standard", False)
@@ -272,7 +272,7 @@ def test_each_views_selection_matches_the_direct_reference(gribs):
 
 def test_field_texture_order_matches_shader_bindings(gribs):
     """Exercise transport, not just the CPU values used to create textures."""
-    from gweatherrouting.qt.gpuweather import decode_component
+    from sailworks.qt.gpuweather import decode_component
 
     source, sampler, signature = _sources(gribs)
     view = BarbView(640, 480, 0.5, 0.5, 9, "standard", False)
@@ -298,7 +298,7 @@ def test_viewport_rejects_stale_selection_before_publishing():
     from types import SimpleNamespace
     from unittest.mock import Mock
 
-    from gweatherrouting.qt.gribviewport import _viewport_widget_class
+    from sailworks.qt.gribviewport import _viewport_widget_class
 
     weather = Mock()
     provider = Mock()
@@ -315,8 +315,8 @@ def test_viewport_rejects_stale_selection_before_publishing():
 
 @pytest.mark.parametrize("over_land", [True, False])
 def test_covered_selection_needs_no_sampler_or_land_io(gribs, monkeypatch, over_land):
-    from gweatherrouting.qt.gpuweather import decode_component
-    from gweatherrouting.rendering.weatherbarbs import select_resident
+    from sailworks.qt.gpuweather import decode_component
+    from sailworks.rendering.weatherbarbs import select_resident
 
     source, sampler, signature = _sources(gribs)
     stamp = START.timestamp() + 3600
@@ -342,8 +342,8 @@ def test_covered_selection_needs_no_sampler_or_land_io(gribs, monkeypatch, over_
 
 
 def test_shared_grid_enumeration_is_deduplicated_without_dropping_sources(gribs):
-    from gweatherrouting.qt.gpuweather import decode_component
-    from gweatherrouting.rendering.weatherbarbs import select_resident
+    from sailworks.qt.gpuweather import decode_component
+    from sailworks.rendering.weatherbarbs import select_resident
 
     sources = [
         gribs.file(gribs.field(0) + gribs.field(3), end=3),
@@ -385,7 +385,7 @@ def test_a_missing_endpoint_stays_missing_in_the_field(gribs):
     values = np.asarray(atlas.field.staged.first[0]).reshape(-1, 2)
     assert np.any(np.isnan(values))
     # The published image carries the same NaN, so the shader discards it.
-    from gweatherrouting.qt.gpuweather import decode_component
+    from sailworks.qt.gpuweather import decode_component
 
     decoded = decode_component(atlas.field.images[0])
     assert np.isnan(decoded).any()
@@ -429,7 +429,7 @@ def test_a_stalled_preparation_does_not_block_the_caller(gribs):
     """The worker prepares on its own thread; the caller never waits."""
     from threading import Event
 
-    from gweatherrouting.qt.gpuweatherjobs import WeatherStager
+    from sailworks.qt.gpuweatherjobs import WeatherStager
 
     source, _sampler, _signature = _sources(gribs)
     canvas = type(
@@ -472,7 +472,7 @@ def test_a_stalled_preparation_does_not_block_the_caller(gribs):
     try:
         from unittest.mock import patch
 
-        with patch("gweatherrouting.qt.gpuweatherjobs.stage_barbs", side_effect=stage):
+        with patch("sailworks.qt.gpuweatherjobs.stage_barbs", side_effect=stage):
             # The call returns while the worker is still preparing.
             assert stager.request(canvas) is None
             assert entered.wait(5)
@@ -490,7 +490,7 @@ def test_the_default_path_keeps_the_historical_publication(gribs):
     atlas = _stage(sampler, view, stamp)
     assert atlas.field is None
     assert atlas.selection is None
-    from gweatherrouting.qt.gpuweather import WeatherImageProvider
+    from sailworks.qt.gpuweather import WeatherImageProvider
 
     provider = WeatherImageProvider()
     first = provider.publish(atlas)

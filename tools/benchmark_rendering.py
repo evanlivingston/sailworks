@@ -243,14 +243,14 @@ def worker(config):
     from PySide6.QtWidgets import QApplication
 
     # Import application code only AFTER the parent has isolated its storage paths.
-    from gweatherrouting.core.geo.track import Track
-    from gweatherrouting.core.mapviewport import MapViewport
-    from gweatherrouting.qt.controller import SessionController
-    from gweatherrouting.qt.datacontroller import read_forecast
-    from gweatherrouting.qt.mapcanvas import (
+    from sailworks.core.geo.track import Track
+    from sailworks.core.mapviewport import MapViewport
+    from sailworks.qt.controller import SessionController
+    from sailworks.qt.datacontroller import read_forecast
+    from sailworks.qt.mapcanvas import (
         TrackMap,
     )  # TODO #86: legacy CPU-rendering benchmark; retarget or replace before deleting mapcanvas.py
-    from gweatherrouting.rendering.overlayrenderer import RenderJob, RenderState
+    from sailworks.rendering.overlayrenderer import RenderJob, RenderState
 
     def no_network(*_args, **_kwargs):
         raise RuntimeError("Network is disabled in rendering benchmarks")

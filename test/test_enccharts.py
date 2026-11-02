@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 import requests
 
-from gweatherrouting.core.enccharts import (
+from sailworks.core.enccharts import (
     ENCCatalog,
     ENCCell,
     parse_catalog,
@@ -95,7 +95,7 @@ class TestENCDownloads(unittest.TestCase):
         self.catalog = ENCCatalog(self.temporary.name)
         self.cell = parse_catalog(catalog_xml())[0]
 
-    @patch("gweatherrouting.core.enccharts.requests.get")
+    @patch("sailworks.core.enccharts.requests.get")
     def test_preserves_updates_and_reuses_download(self, get):
         base = "ENC_ROOT/US5TEST1/US5TEST1"
         get.return_value = response_for_archive(
@@ -107,21 +107,21 @@ class TestENCDownloads(unittest.TestCase):
         self.assertEqual(self.catalog.download(self.cell), str(path))
         get.assert_called_once()
 
-    @patch("gweatherrouting.core.enccharts.requests.get")
+    @patch("sailworks.core.enccharts.requests.get")
     def test_rejects_path_traversal(self, get):
         get.return_value = response_for_archive({"../../escape": b"bad"})
         with self.assertRaisesRegex(ValueError, "archive path"):
             self.catalog.download(self.cell)
         self.assertEqual(list(Path(self.temporary.name).iterdir()), [])
 
-    @patch("gweatherrouting.core.enccharts.requests.get")
+    @patch("sailworks.core.enccharts.requests.get")
     def test_failed_download_leaves_no_installed_chart(self, get):
         get.return_value = response_for_archive({"wrong.000": b"bad"})
         with self.assertRaisesRegex(ValueError, "expected chart"):
             self.catalog.download(self.cell)
         self.assertEqual(list(Path(self.temporary.name).iterdir()), [])
 
-    @patch("gweatherrouting.core.enccharts.requests.get")
+    @patch("sailworks.core.enccharts.requests.get")
     def test_stale_catalog_available_offline(self, get):
         cache = Path(self.temporary.name) / "catalog.xml"
         cache.write_bytes(catalog_xml())
@@ -130,7 +130,7 @@ class TestENCDownloads(unittest.TestCase):
         self.catalog.load()
         self.assertEqual(self.catalog.chart_at(1, 1).name, "US5TEST1")
 
-    @patch("gweatherrouting.core.enccharts.requests.get")
+    @patch("sailworks.core.enccharts.requests.get")
     def test_fresh_cache_avoids_network(self, get):
         (Path(self.temporary.name) / "catalog.xml").write_bytes(catalog_xml())
         self.catalog.load()

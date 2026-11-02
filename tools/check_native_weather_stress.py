@@ -35,8 +35,8 @@ def run(path, report):
     from PySide6.QtCore import QCoreApplication, QEvent, QEventLoop, QTimer
     from PySide6.QtWidgets import QApplication
 
-    from gweatherrouting.qt.gpuweathertextures import NativeWeatherBudget
-    from gweatherrouting.qt.gribviewport import (
+    from sailworks.qt.gpuweathertextures import NativeWeatherBudget
+    from sailworks.qt.gribviewport import (
         GribViewportModel,
         ViewportCamera,
         _viewport_widget_class,

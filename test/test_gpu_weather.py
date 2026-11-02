@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from PySide6.QtCore import QSize
 
-from gweatherrouting.qt.gpuweather import (
+from sailworks.qt.gpuweather import (
     WeatherImageProvider,
     WeatherTexturePair,
     decode_component,

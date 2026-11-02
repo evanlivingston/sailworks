@@ -5,7 +5,7 @@ import numpy as np
 from PySide6.QtCore import QDate, QDateTime, QTime, Qt
 from PySide6.QtWidgets import QTableWidget, QTableWidgetItem, QWidget
 
-from gweatherrouting.qt.era5download import Era5DownloadTab
+from sailworks.qt.era5download import Era5DownloadTab
 from test.qt_analysis_fakes import app
 
 
@@ -40,7 +40,7 @@ def test_sample_selected_samples_explicit_hours_without_forecast_activation(
     tmp_path, monkeypatch
 ):
     app()
-    from gweatherrouting.core.grib import Grib
+    from sailworks.core.grib import Grib
 
     calls = []
     parsed = []
@@ -95,7 +95,7 @@ def test_sample_selected_samples_explicit_hours_without_forecast_activation(
 
 def test_sample_selected_rejects_hour_outside_history_coverage(tmp_path, monkeypatch):
     app()
-    from gweatherrouting.core.grib import Grib
+    from sailworks.core.grib import Grib
 
     parsed = []
     monkeypatch.setattr(

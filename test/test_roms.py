@@ -6,8 +6,8 @@ import unittest
 
 import numpy as np
 
-from gweatherrouting.core.marine.fields import Area
-from gweatherrouting.core.marine.roms import (
+from sailworks.core.marine.fields import Area
+from sailworks.core.marine.roms import (
     destagger_to_rho,
     locate,
     output_grid,

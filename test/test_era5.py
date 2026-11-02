@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from gweatherrouting.core.era5 import (
+from sailworks.core.era5 import (
     Era5DownloadService,
     Era5Error,
     plan_request,
@@ -177,7 +177,7 @@ def test_gdal_validator_accepts_live_msl_surface_alias(tmp_path):
 
 
 def test_shared_pressure_helper_recognizes_msl_surface_and_msl_aliases():
-    from gweatherrouting.core.gribfields import is_mean_sea_level_pressure
+    from sailworks.core.gribfields import is_mean_sea_level_pressure
 
     assert is_mean_sea_level_pressure(
         {"GRIB_ELEMENT": "MSL", "GRIB_SHORT_NAME": "0-SFC"}
@@ -221,8 +221,8 @@ def test_gdal_validator_rejects_unsupported_band_with_element_and_level(tmp_path
 def test_failed_multichunk_import_preserves_preexisting_content_addressed_artifact(
     tmp_path,
 ):
-    from gweatherrouting.core.era5 import split_request
-    from gweatherrouting.core.tranchestore import Artifact
+    from sailworks.core.era5 import split_request
+    from sailworks.core.tranchestore import Artifact
 
     root = tmp_path
     (root / "artifacts").mkdir()
@@ -263,7 +263,7 @@ def test_failed_multichunk_import_preserves_preexisting_content_addressed_artifa
 
 
 def test_successful_era5_import_publishes_catalog_and_artifact(tmp_path):
-    from gweatherrouting.core.tranchestore import TrancheStore
+    from sailworks.core.tranchestore import TrancheStore
 
     root = tmp_path
     store = TrancheStore(root)

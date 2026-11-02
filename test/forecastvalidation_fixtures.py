@@ -4,12 +4,12 @@ import json
 from osgeo import osr
 from pyproj import CRS
 
-from gweatherrouting.core.forecasttranche import ModelConfiguration
-from gweatherrouting.core.forecastrefreshplan import (
+from sailworks.core.forecasttranche import ModelConfiguration
+from sailworks.core.forecastrefreshplan import (
     MODEL_CAPABILITIES,
     PlannedModel,
 )
-from gweatherrouting.core.forecastvalidation import inspect_download
+from sailworks.core.forecastvalidation import inspect_download
 
 RUN = datetime(2025, 1, 1, tzinfo=timezone.utc)
 

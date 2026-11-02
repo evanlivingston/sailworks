@@ -5,14 +5,14 @@
 From the repository, using the project virtualenv:
 
 ```sh
-python -m gweatherrouting.qt.gribviewport
+python -m sailworks.qt.gribviewport
 ```
 
 No paths means **all saved selected forecasts, in saved order**. Nothing is
 downloaded or saved. To use another saved data directory or freeze the clock:
 
 ```sh
-python -m gweatherrouting.qt.gribviewport --data-dir /path/to/app-data --time 2026-10-19T08:00:00
+python -m sailworks.qt.gribviewport --data-dir /path/to/app-data --time 2026-10-19T08:00:00
 ```
 
 Explicit GRIB paths may also be supplied. Drag to pan, wheel to zoom at the
@@ -50,7 +50,7 @@ The experimental map path now draws **numerically interpolated wind barbs**.
 Enable it only with the existing GPU presenter:
 
 ```sh
-GWR_GPU_WEATHER=1 python -m gweatherrouting.qt --map-renderer gpu
+GWR_GPU_WEATHER=1 python -m sailworks.qt --map-renderer gpu
 ```
 
 It is not a fully GPU weather renderer: background wind fill and isobars still
@@ -156,14 +156,14 @@ Rebuild the checked-in shader pack with PySide6's `qsb` executable:
 
 ```sh
 qsb --qsbversion 65 --glsl '300 es,330,440' --hlsl 50 --msl 12 \
-  -o gweatherrouting/qt/shaders/weather.frag.qsb \
-  gweatherrouting/qt/shaders/weather.frag
+  -o sailworks/qt/shaders/weather.frag.qsb \
+  sailworks/qt/shaders/weather.frag
 qsb --qsbversion 65 --glsl '300 es,330,440' --hlsl 50 --msl 12 \
-  -o gweatherrouting/qt/shaders/barbs.vert.qsb \
-  gweatherrouting/qt/shaders/barbs.vert
+  -o sailworks/qt/shaders/barbs.vert.qsb \
+  sailworks/qt/shaders/barbs.vert
 qsb --qsbversion 65 --glsl '300 es,330,440' --hlsl 50 --msl 12 \
-  -o gweatherrouting/qt/shaders/barbs.frag.qsb \
-  gweatherrouting/qt/shaders/barbs.frag
+  -o sailworks/qt/shaders/barbs.frag.qsb \
+  sailworks/qt/shaders/barbs.frag
 ```
 
 ## Measurements and remaining work

@@ -5,10 +5,10 @@ from collections import Counter
 
 import pytest
 
-from gweatherrouting.core import ebllog
-from gweatherrouting.core.ebl import EBLDecoder
-from gweatherrouting.core.nmeasession import NMEASession, read_nmea_log
-from gweatherrouting.core.utils import EventDispatcher
+from sailworks.core import ebllog
+from sailworks.core.ebl import EBLDecoder
+from sailworks.core.nmeasession import NMEASession, read_nmea_log
+from sailworks.core.utils import EventDispatcher
 
 
 def timestamp(seconds):
@@ -240,7 +240,7 @@ def test_gps_auto_tie_uses_lowest_source_address(tmp_path):
 
 
 def test_late_product_metadata_names_gps_without_changing_tracks_or_replay(tmp_path):
-    from gweatherrouting.core.n2kdevices import source_label
+    from sailworks.core.n2kdevices import source_label
     from test.test_n2kdevices import fragments
 
     path = tmp_path / "named.ebl"
@@ -300,7 +300,7 @@ def test_frames_with_embedded_escape_and_pdu1_destination_decode_at_every_split(
 
 
 def test_read_ebl_log_segment_boundary_matches_concatenated_reference(tmp_path):
-    from gweatherrouting.core.ebllog import read_ebl_log
+    from sailworks.core.ebllog import read_ebl_log
 
     payload = b"\x00" + (400).to_bytes(2, "little") + b"\xff" * 5
     raw = timestamp(1704153600) + VERSION + frame(128259, payload, source=0x1B) * 3

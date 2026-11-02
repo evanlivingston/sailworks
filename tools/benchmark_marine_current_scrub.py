@@ -13,14 +13,14 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from gweatherrouting.core.mapviewport import MapPoint, MapViewport
-from gweatherrouting.core.marine.fields import FieldSelection, FieldStore
-from gweatherrouting.qt.gribviewport import ViewportCamera
-from gweatherrouting.rendering.marinepresentation import (
+from sailworks.core.mapviewport import MapPoint, MapViewport
+from sailworks.core.marine.fields import FieldSelection, FieldStore
+from sailworks.qt.gribviewport import ViewportCamera
+from sailworks.rendering.marinepresentation import (
     MarineSources,
     current_grid_spacing,
 )
-from gweatherrouting.rendering.marinesnapshot import (
+from sailworks.rendering.marinesnapshot import (
     CurrentArrow,
     MarineSnapshot,
     current_triangles,
@@ -33,7 +33,7 @@ def _legacy_land_mask(camera, data_dir):
     from shapely import STRtree, from_wkb, make_valid
     from shapely.geometry import shape
 
-    from gweatherrouting.core.utils import COUNTRY_SHAPES
+    from sailworks.core.utils import COUNTRY_SHAPES
 
     polygons = []
     detailed = False

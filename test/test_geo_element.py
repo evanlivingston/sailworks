@@ -17,9 +17,9 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 import unittest
 from unittest.mock import MagicMock
 
-from gweatherrouting.core.geo.element import Element
-from gweatherrouting.core.geo.elementpoint import ElementPoint
-from gweatherrouting.core.geo.elementmultipoint import ElementMultiPoint
+from sailworks.core.geo.element import Element
+from sailworks.core.geo.elementpoint import ElementPoint
+from sailworks.core.geo.elementmultipoint import ElementMultiPoint
 
 
 class TestElement(unittest.TestCase):

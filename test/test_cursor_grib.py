@@ -10,8 +10,8 @@ import unittest
 import numpy as np
 from osgeo import gdal
 
-from gweatherrouting.core.grib import Grib
-from gweatherrouting.rendering.windcursor import CursorGrib, WindCursorSampler
+from sailworks.core.grib import Grib
+from sailworks.rendering.windcursor import CursorGrib, WindCursorSampler
 
 
 class TestCursorGrib(unittest.TestCase):
@@ -115,7 +115,7 @@ class TestCursorGrib(unittest.TestCase):
     def test_cursor_sampling_starts_without_a_debounce_timer(self):
         sampler = WindCursorSampler(Mock())
         self.addCleanup(sampler.close)
-        with patch("gweatherrouting.rendering.windcursor.Thread") as thread:
+        with patch("sailworks.rendering.windcursor.Thread") as thread:
             sampler.request([self.source], self.start, 49, -123, Mock())
         thread.assert_called_once()
         thread.return_value.start.assert_called_once()

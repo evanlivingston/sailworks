@@ -10,10 +10,10 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QSlider, QWidget
 
-from gweatherrouting.core.race import parse_race
-from gweatherrouting.core.timecontrol import TimeControl
-from gweatherrouting.qt.mapoverlays import RetainedOverlayMixin
-from gweatherrouting.qt.window import PreviewWindow
+from sailworks.core.race import parse_race
+from sailworks.core.timecontrol import TimeControl
+from sailworks.qt.mapoverlays import RetainedOverlayMixin
+from sailworks.qt.window import PreviewWindow
 
 
 def _sample_race():
@@ -38,7 +38,7 @@ def _sample_race():
 
 
 def test_boats_at_current_time_follows_scrubbed_time(qtbot):
-    from gweatherrouting.qt import racepanel
+    from sailworks.qt import racepanel
 
     class TrackManager(list):
         active = None

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from gweatherrouting.core.forecastrefreshplan import (
+from sailworks.core.forecastrefreshplan import (
     MODEL_CAPABILITIES,
     ForecastRefreshPlan,
     PlannedModel,
@@ -14,7 +14,7 @@ from gweatherrouting.core.forecastrefreshplan import (
     create_source,
     plan_refresh,
 )
-from gweatherrouting.core.forecasttranche import ModelConfiguration
+from sailworks.core.forecasttranche import ModelConfiguration
 
 
 def config(

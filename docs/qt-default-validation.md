@@ -1,9 +1,9 @@
 # Qt default launcher validation
 
-Qt is the default for `gweatherrouting` and `python -m gweatherrouting`.
-`gweatherrouting-qt` remains an alias. Python 3.11+ and PySide6 Essentials are
+Qt is the default for `sailworks` and `python -m sailworks`.
+`sailworks-qt` remains an alias. Python 3.11+ and PySide6 Essentials are
 normal installation requirements; the old `[qt]` extra remains compatible.
-GTK is explicit: `gweatherrouting-gtk` or `python -m gweatherrouting.gtk`.
+GTK is explicit: `sailworks-gtk` or `python -m sailworks.gtk`.
 
 This pass covers the default launch and migration validation. App About/name
 identity and Qt distributable bundles are separate work. Existing GTK-only
@@ -15,7 +15,7 @@ Checked on macOS 26.6.2 arm64, Python 3.11 and PySide6/Qt 6.12.0, October 14, 20
 
 | Check | Result and evidence |
 | --- | --- |
-| Installed default command | Editable install regenerated the console scripts. `gweatherrouting --help` exposes `--log`; installed metadata includes Qt and Python 3.10+. |
+| Installed default command | Editable install regenerated the console scripts. `sailworks --help` exposes `--log`; installed metadata includes Qt and Python 3.10+. |
 | Native startup | The actual installed console script opened Qt at DPR 2 and did not import `gi.repository.Gtk`. Private settings/layout copies protected the original workspace. |
 | Full suite | `python -m pytest -q`: 826 tests and 106 subtests pass in 99.36s. This includes 99 isolated Qt checks; the POSIX pseudo-terminal check skips on Windows. |
 | Scoped checks | Black, Flake8 and mypy with silent imports pass for the changed production modules. Changed YAML parses and the AppImage shell recipe passes `bash -n`. |

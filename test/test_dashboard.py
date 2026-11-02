@@ -7,8 +7,8 @@ from unittest.mock import Mock
 
 import cairo
 
-from gweatherrouting.core.core import BoatInfo
-from gweatherrouting.rendering.dashboard import DashboardRenderer
+from sailworks.core.core import BoatInfo
+from sailworks.rendering.dashboard import DashboardRenderer
 
 
 class TestDashboard(unittest.TestCase):

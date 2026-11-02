@@ -8,9 +8,9 @@ from unittest.mock import patch
 
 import cairo
 
-from gweatherrouting.core.mapviewport import MercatorProjection, MapViewport
-from gweatherrouting.rendering.overlayrenderer import MARGIN, covers
-from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
+from sailworks.core.mapviewport import MercatorProjection, MapViewport
+from sailworks.rendering.overlayrenderer import MARGIN, covers
+from sailworks.rendering.windrenderer import WindOverlayRenderer
 
 
 class Canvas(MercatorProjection):
@@ -462,7 +462,7 @@ class TestOverlayScheduling(unittest.TestCase):
             clock = SimpleNamespace(now=0.0)
             renderer, canvas = Renderer(legacy, preserve=True), Canvas()
             with patch(
-                "gweatherrouting.rendering.overlayrenderer.time.monotonic",
+                "sailworks.rendering.overlayrenderer.time.monotonic",
                 side_effect=lambda: clock.now,
             ):
                 self.draw(renderer, canvas)

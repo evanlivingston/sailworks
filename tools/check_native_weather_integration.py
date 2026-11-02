@@ -46,9 +46,9 @@ def run(path, report):
     from PySide6.QtCore import QCoreApplication, QEvent, QEventLoop, QTimer, qVersion
     from PySide6.QtWidgets import QApplication
 
-    from gweatherrouting.qt.gpuweather import encode_component
-    from gweatherrouting.qt.gpuweathertextures import NativeWeatherBudget
-    from gweatherrouting.qt.gribviewport import (
+    from sailworks.qt.gpuweather import encode_component
+    from sailworks.qt.gpuweathertextures import NativeWeatherBudget
+    from sailworks.qt.gribviewport import (
         GribViewportModel,
         ViewportCamera,
         _viewport_widget_class,
@@ -118,7 +118,7 @@ def run(path, report):
         report["checks"]["presenter_real_barbs"] = (
             bool((pixels[..., 3] > 25).any()) and not presenter.reason
         )
-        from gweatherrouting.qt.viewportmap import ViewportMap
+        from sailworks.qt.viewportmap import ViewportMap
 
         sibling = ViewportMap(controller)
         fixture.addCleanup(sibling.close)

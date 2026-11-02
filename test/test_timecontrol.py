@@ -18,7 +18,7 @@ import datetime
 import unittest
 from unittest.mock import MagicMock
 
-from gweatherrouting.core.timecontrol import TimeControl, naive_wall_time
+from sailworks.core.timecontrol import TimeControl, naive_wall_time
 
 
 def test_naive_wall_time_preserves_wall_clock_for_aware_datetime():

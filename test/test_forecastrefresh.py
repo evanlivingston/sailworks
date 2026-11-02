@@ -6,20 +6,20 @@ import json
 import pytest
 from dataclasses import replace
 
-from gweatherrouting.core.forecastcapabilities import MODEL_CAPABILITIES
-from gweatherrouting.core.forecastrefresh import (
+from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES
+from sailworks.core.forecastrefresh import (
     RefreshCoordinator,
     RefreshCancelledError,
     RefreshExecutionError,
     RefreshSupersededError,
 )
-from gweatherrouting.core.forecastrefreshcontracts import (
+from sailworks.core.forecastrefreshcontracts import (
     ForecastRefreshPlan,
     PlannedModel,
 )
-from gweatherrouting.core.forecasttranche import AnalysisSelection, ModelConfiguration
-from gweatherrouting.core.forecastvalidation import ValidatedModel, inspect_download
-from gweatherrouting.core.tranchestore import TrancheStore
+from sailworks.core.forecasttranche import AnalysisSelection, ModelConfiguration
+from sailworks.core.forecastvalidation import ValidatedModel, inspect_download
+from sailworks.core.tranchestore import TrancheStore
 
 RUN = datetime(2025, 1, 1, tzinfo=timezone.utc)
 ACQUIRED = datetime(2025, 1, 2, tzinfo=timezone.utc)
@@ -414,7 +414,7 @@ def test_replace_failure_preserves_previous_binding(tmp_path, monkeypatch):
             raise OSError("injected pointer replacement failure")
         return original_replace(source, destination)
 
-    monkeypatch.setattr("gweatherrouting.core.tranchestore.os.replace", fail_replace)
+    monkeypatch.setattr("sailworks.core.tranchestore.os.replace", fail_replace)
     with pytest.raises(RefreshExecutionError, match="activation failed"):
         service.refresh()
     assert store.active_path.read_bytes() == previous

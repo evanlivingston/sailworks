@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from gweatherrouting.qt import gribviewport
-from gweatherrouting.qt.gribviewport import GribViewportModel, ViewportCamera
+from sailworks.qt import gribviewport
+from sailworks.qt.gribviewport import GribViewportModel, ViewportCamera
 from test.test_weather_barbs import Land
 from test.test_weather_staging import gribs, START  # noqa: F401
 
@@ -80,7 +80,7 @@ def test_the_viewport_does_not_use_the_application_frame_pipeline():
             imported.add(node.module or "")
     assert not any(name.startswith("tools") for name in imported), imported
     for name in imported:
-        assert not name.startswith("gweatherrouting.core.gribmanager"), name
+        assert not name.startswith("sailworks.core.gribmanager"), name
 
 
 def test_the_viewport_owns_its_camera_and_time_state():
@@ -139,9 +139,9 @@ def test_gpu_streamline_projection_maps_source_center_to_target_center(source, t
 @pytest.mark.parametrize("over_land", [True, False])
 def test_all_points_selects_every_native_node_at_current_time(gribs, over_land):
     import numpy as np
-    from gweatherrouting.core.gribsampling import WeatherSampler
-    from gweatherrouting.qt.gpuweather import decode_component
-    from gweatherrouting.rendering.weatherbarbs import _view_bounds
+    from sailworks.core.gribsampling import WeatherSampler
+    from sailworks.qt.gpuweather import decode_component
+    from sailworks.rendering.weatherbarbs import _view_bounds
 
     fields = gribs.field(0, size=101) + gribs.field(3, size=101)
     fields = [
@@ -254,7 +254,7 @@ def test_a_time_outside_the_resident_field_is_not_current(gribs):
 
 # ------------------------------------------------------------- bindings
 def test_a_selection_of_another_field_is_rejected(gribs):
-    from gweatherrouting.qt.gpuweatherfields import validate_binding
+    from sailworks.qt.gpuweatherfields import validate_binding
 
     paths, _source = _paths(gribs)
     model = GribViewportModel(paths, land_mask=Land())
@@ -350,9 +350,9 @@ def test_saved_selection_never_silently_prunes_unavailable_sources(tmp_path, ope
 
 
 def test_existing_app_cache_still_returns_an_exact_view_atlas(gribs):
-    from gweatherrouting.qt.gpuweatherfields import FieldStore
-    from gweatherrouting.rendering.weatherbarbs import stage_barbs
-    from gweatherrouting.core.gribsampling import WeatherSampler
+    from sailworks.qt.gpuweatherfields import FieldStore
+    from sailworks.rendering.weatherbarbs import stage_barbs
+    from sailworks.core.gribsampling import WeatherSampler
 
     paths, source = _paths(gribs)
     sampler = WeatherSampler([source])
@@ -630,7 +630,7 @@ def test_the_speculative_prefetcher_is_retired():
 
 
 def test_recentre_camera_advances_one_lattice_in_the_direction_of_motion():
-    from gweatherrouting.rendering.weatherbarbs import FIELD_LATTICE_PX
+    from sailworks.rendering.weatherbarbs import FIELD_LATTICE_PX
 
     camera = _camera()
     moved = replace(camera, center_lon=camera.center_lon + 0.01)
@@ -734,9 +734,9 @@ def test_a_stationary_ready_field_prepares_one_time_lookahead(gribs, monkeypatch
 def test_zoom_reuses_values_only_with_the_same_shoreline_policy(gribs):
     from dataclasses import replace
     import numpy as np
-    from gweatherrouting.qt.gpuweather import decode_component
-    from gweatherrouting.core.gribsampling import WeatherSampler
-    from gweatherrouting.rendering.weatherbarbs import stage_barbs
+    from sailworks.qt.gpuweather import decode_component
+    from sailworks.core.gribsampling import WeatherSampler
+    from sailworks.rendering.weatherbarbs import stage_barbs
 
     paths, source = _paths(gribs)
     model = GribViewportModel(paths, land_mask=Land())
@@ -763,9 +763,9 @@ def test_zoom_reuses_values_only_with_the_same_shoreline_policy(gribs):
 
 def test_exact_future_event_is_prepared_on_demand_without_blending_across_it(gribs):
     import numpy as np
-    from gweatherrouting.qt.gpuweather import decode_component
-    from gweatherrouting.core.gribsampling import WeatherSampler
-    from gweatherrouting.rendering.weatherbarbs import stage_barbs
+    from sailworks.qt.gpuweather import decode_component
+    from sailworks.core.gribsampling import WeatherSampler
+    from sailworks.rendering.weatherbarbs import stage_barbs
 
     paths, source = _paths(gribs)
     model = GribViewportModel(paths, land_mask=Land())
@@ -797,7 +797,7 @@ def test_exact_future_event_is_prepared_on_demand_without_blending_across_it(gri
 
 def test_speculative_store_cannot_evict_the_visible_field():
     from types import SimpleNamespace
-    from gweatherrouting.qt.gpuweatherfields import FieldStore
+    from sailworks.qt.gpuweatherfields import FieldStore
 
     store = FieldStore(100)
     current = SimpleNamespace(identity="visible", nbytes=70)
@@ -915,7 +915,7 @@ def test_the_window_fill_starts_only_where_the_field_was_prepared(gribs):
     ],
 )
 def test_zoom_mask_reuse_keeps_the_existing_scale_boundaries(scale, quality):
-    from gweatherrouting.rendering.windpainter import shoreline_quality
+    from sailworks.rendering.windpainter import shoreline_quality
 
     assert shoreline_quality(scale) == quality
 
@@ -960,7 +960,7 @@ def _fill_scene():
 def _field():
     from types import SimpleNamespace
 
-    from gweatherrouting.rendering.weathergrid import GridLattice
+    from sailworks.rendering.weathergrid import GridLattice
 
     lattice = GridLattice(
         origin_lon=0.0,
@@ -1230,9 +1230,9 @@ def test_the_default_path_does_not_load_the_chart_scene():
 
 def test_the_chart_composer_is_the_applications_own():
     """The chart layer reuses the application's chart composition."""
-    from gweatherrouting.qt.basecharts import BaseChartRenderer
-    from gweatherrouting.qt.gribviewportchart import _ChartComposer
-    from gweatherrouting.rendering.windpainter import WindPainter
+    from sailworks.qt.basecharts import BaseChartRenderer
+    from sailworks.qt.gribviewportchart import _ChartComposer
+    from sailworks.rendering.windpainter import WindPainter
 
     composer = _ChartComposer("cm93", ())
     assert isinstance(composer._renderer, BaseChartRenderer)
@@ -1240,14 +1240,14 @@ def test_the_chart_composer_is_the_applications_own():
 
 
 def _chart_layer(tmp_path, **kwargs):
-    from gweatherrouting.qt.gribviewportchart import ViewportChartLayer
+    from sailworks.qt.gribviewportchart import ViewportChartLayer
 
     return ViewportChartLayer(paths=(), data_dir=tmp_path, **kwargs)
 
 
 def _chart_metadata(camera):
-    from gweatherrouting.core.mapviewport import MapViewport
-    from gweatherrouting.qt.gribviewportchart import ChartCamera
+    from sailworks.core.mapviewport import MapViewport
+    from sailworks.qt.gribviewportchart import ChartCamera
 
     return {
         "viewport": MapViewport(ChartCamera(camera), 256, lambda: None),

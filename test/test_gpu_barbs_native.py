@@ -20,12 +20,12 @@ def test_barb_mesh_matches_cpu_geometry_and_reuses_textures(missing):
     from PySide6.QtCore import QUrl
     from PySide6.QtGui import QGuiApplication, QColor
     from PySide6.QtQuick import QQuickView, QSGRendererInterface
-    from gweatherrouting.qt.gpuweather import (
+    from sailworks.qt.gpuweather import (
         WeatherImageProvider,
         WeatherTexturePair,
         encode_component,
     )
-    from gweatherrouting.rendering.windpainter import WindPainter
+    from sailworks.rendering.windpainter import WindPainter
 
     app = QGuiApplication.instance() or QGuiApplication([])
     view = QQuickView()
@@ -35,7 +35,7 @@ def test_barb_mesh_matches_cpu_geometry_and_reuses_textures(missing):
         QUrl.fromLocalFile(
             str(
                 Path(__file__).resolve().parents[1]
-                / "gweatherrouting/qt/shaders/WeatherBarbs.qml"
+                / "sailworks/qt/shaders/WeatherBarbs.qml"
             )
         )
     )

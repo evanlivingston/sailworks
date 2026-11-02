@@ -9,12 +9,12 @@ from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from gweatherrouting.core.marine.chs import DownloadCancelledError
-from gweatherrouting.core.marine.fields import FieldSelection
-from gweatherrouting.core.marine.manager import MarineManager
-from gweatherrouting.core.marine.models import Sample, Series
-from gweatherrouting.core.marine.prefetch import CoveragePrefetch
-from gweatherrouting.core.marine.routing import (
+from sailworks.core.marine.chs import DownloadCancelledError
+from sailworks.core.marine.fields import FieldSelection
+from sailworks.core.marine.manager import MarineManager
+from sailworks.core.marine.models import Sample, Series
+from sailworks.core.marine.prefetch import CoveragePrefetch
+from sailworks.core.marine.routing import (
     CurrentRoutingEnvironment,
     DataGap,
     RoutingDataGapError,
@@ -23,7 +23,7 @@ from gweatherrouting.core.marine.routing import (
 from test.test_current_routing import START, current_field
 from test.test_marine import dataset
 from test.test_current_preflight import routing
-from gweatherrouting.core.marine.preflight import check_current_coverage
+from sailworks.core.marine.preflight import check_current_coverage
 
 
 def tide_data(hours=2):

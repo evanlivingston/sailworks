@@ -36,8 +36,8 @@ def selected_names(data):
 
 def prepare_field(resources, view, stamp, snapshot):
     import experiment_vertical_renderer as renderer
-    from gweatherrouting.rendering.weatherstaging import stage_wind
-    from gweatherrouting.rendering import weatherbarbs as barbs
+    from sailworks.rendering.weatherstaging import stage_wind
+    from sailworks.rendering import weatherbarbs as barbs
 
     points, _ = renderer.previous.native.retained_tool.support.native_points(
         resources.sampler,
@@ -106,10 +106,10 @@ def worker(config):
 
     socket.socket.connect = socket.socket.connect_ex = blocked
     from PySide6.QtCore import QCoreApplication
-    from gweatherrouting.core.grib import Grib
-    from gweatherrouting.core.routingjob import freeze_wind_sources
-    from gweatherrouting.qt import gpuweatherjobs as jobs
-    from gweatherrouting.rendering.weatherbarbs import BarbView
+    from sailworks.core.grib import Grib
+    from sailworks.core.routingjob import freeze_wind_sources
+    from sailworks.qt import gpuweatherjobs as jobs
+    from sailworks.rendering.weatherbarbs import BarbView
 
     root = Path(config["directory"])
     names = selected_names(config["data"])
@@ -184,10 +184,7 @@ def worker(config):
             time.sleep(0.005)
     finally:
         owner.close()
-    if (
-        QCoreApplication.instance() is not None
-        or "gweatherrouting.qt.window" in sys.modules
-    ):
+    if QCoreApplication.instance() is not None or "sailworks.qt.window" in sys.modules:
         raise ValueError(
             "Headless service acquired a GUI application/window dependency"
         )
@@ -204,8 +201,8 @@ def worker(config):
 
 def check_reference(directory, reference):
     import experiment_vertical_renderer as renderer
-    from gweatherrouting.rendering.weatherbarbs import BarbView
-    from gweatherrouting.rendering import weatherbarbs as barbs
+    from sailworks.rendering.weatherbarbs import BarbView
+    from sailworks.rendering import weatherbarbs as barbs
 
     metadata = json.loads((directory / "field.json").read_text())
     if protocol.file_hash(directory / "field.npz") != metadata["field_sha256"]:

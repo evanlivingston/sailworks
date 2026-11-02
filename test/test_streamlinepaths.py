@@ -2,9 +2,9 @@
 
 import numpy as np
 
-from gweatherrouting.core.mapviewport import MapViewport
-from gweatherrouting.rendering.streamlines import density_parameters
-from gweatherrouting.rendering.streamlinepaths import (
+from sailworks.core.mapviewport import MapViewport
+from sailworks.rendering.streamlines import density_parameters
+from sailworks.rendering.streamlinepaths import (
     PathSegment,
     StreamlinePath,
     _seeds,

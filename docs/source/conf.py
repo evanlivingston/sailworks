@@ -10,9 +10,9 @@ sys.path.append(os.path.abspath(os.path.join("..", "..")))
 
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
-project = "gweatherrouting"
-copyright = "2017-2026, Davide Gessa (dakk)"
-author = "Davide Gessa (dakk)"
+project = "sailworks"
+copyright = "2017-2026, Davide Gessa (dakk) and Sailworks contributors"
+author = "Davide Gessa (dakk) and Sailworks contributors"
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
@@ -39,7 +39,7 @@ myst_enable_extensions = [
 templates_path = ["_templates"]
 exclude_patterns = []
 autodoc_source_dir = [
-    "../gweatherrouting",
+    "../sailworks",
 ]
 pygments_style = "github-dark"
 default_dark_mode = True
@@ -47,7 +47,7 @@ default_dark_mode = True
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
-html_title = "GWeatherRouting"
+html_title = "Sailworks"
 html_theme = "pydata_sphinx_theme"
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
@@ -61,7 +61,7 @@ html_theme_options = {
     "icon_links": [
         {
             "name": "GitHub",
-            "url": "https://github.com/dakk/gweatherrouting",
+            "url": "https://github.com/evanlivingston/sailworks",
             "icon": "fa-brands fa-github",
         },
         # {
@@ -86,9 +86,9 @@ html_theme_options = {
     ],
 }
 html_context = {
-    "github_user": "dakk",
-    "github_repo": "gweatherrouting",
-    "github_version": "master",
+    "github_user": "evanlivingston",
+    "github_repo": "sailworks",
+    "github_version": "dev",
     "doc_path": "docs/source/",
     "default_mode": "dark",
 }

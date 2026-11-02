@@ -3,10 +3,10 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from gweatherrouting.core.gribsampling import WeatherSampler
-from gweatherrouting.qt.gpuweather import decode_component
-from gweatherrouting.rendering.weatherbarbs import BarbView, stage_barbs
-from gweatherrouting.rendering.windpainter import WindPainter, barb_density_parameters
+from sailworks.core.gribsampling import WeatherSampler
+from sailworks.qt.gpuweather import decode_component
+from sailworks.rendering.weatherbarbs import BarbView, stage_barbs
+from sailworks.rendering.windpainter import WindPainter, barb_density_parameters
 from test.test_weather_staging import gribs, START  # noqa: F401
 
 

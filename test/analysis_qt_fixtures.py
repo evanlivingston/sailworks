@@ -3,15 +3,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from gweatherrouting.core.forecaststate import NoActiveForecastError
-from gweatherrouting.core.forecasttranche import (
+from sailworks.core.forecaststate import NoActiveForecastError
+from sailworks.core.forecasttranche import (
     AnalysisSelection,
     Artifact,
     ForecastTranche,
     ModelConfiguration,
     ModelEntry,
 )
-from gweatherrouting.core.tranchestore import ResolvedForecast, TrancheStore
+from sailworks.core.tranchestore import ResolvedForecast, TrancheStore
 
 
 @dataclass(frozen=True)

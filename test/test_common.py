@@ -17,7 +17,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 import os
 import unittest
 
-from gweatherrouting.common import wind_color, resource_path
+from sailworks.common import wind_color, resource_path
 
 
 def _hex_to_tuple(hex_str):
@@ -120,19 +120,19 @@ class TestResourcePath(unittest.TestCase):
     """Test resource_path returns a valid filesystem path."""
 
     def test_returns_string(self):
-        path = resource_path("gweatherrouting", "data/countries.geojson")
+        path = resource_path("sailworks", "data/countries.geojson")
         self.assertIsInstance(path, str)
 
     def test_known_resource_exists(self):
-        path = resource_path("gweatherrouting", "data/countries.geojson")
+        path = resource_path("sailworks", "data/countries.geojson")
         self.assertTrue(os.path.exists(path), f"Expected resource to exist: {path}")
 
     def test_directory_path_ends_with_sep(self):
-        path = resource_path("gweatherrouting", "data/")
+        path = resource_path("sailworks", "data/")
         self.assertTrue(path.endswith(os.sep))
 
     def test_file_path_does_not_end_with_sep(self):
-        path = resource_path("gweatherrouting", "data/countries.geojson")
+        path = resource_path("sailworks", "data/countries.geojson")
         self.assertFalse(path.endswith(os.sep))
 
 

@@ -95,11 +95,11 @@ def run(snapshot, output, application=None):
 
 def _application(report, data, output, deadline):  # noqa: C901 - one native app session
     from PySide6.QtWidgets import QApplication
-    from gweatherrouting.core.marine.credentials import SystemCredentialStore
-    from gweatherrouting.core.storage import DATA_DIR
-    from gweatherrouting.qt.controller import SessionController
-    from gweatherrouting.qt.viewportmap import ViewportMap
-    from gweatherrouting.qt.weatherpanel import WeatherPanel
+    from sailworks.core.marine.credentials import SystemCredentialStore
+    from sailworks.core.storage import DATA_DIR
+    from sailworks.qt.controller import SessionController
+    from sailworks.qt.viewportmap import ViewportMap
+    from sailworks.qt.weatherpanel import WeatherPanel
 
     if Path(DATA_DIR) != data:
         raise RuntimeError("Application storage escaped the sandbox")

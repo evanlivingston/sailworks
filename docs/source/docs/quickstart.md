@@ -4,7 +4,7 @@ Quickstart
 Installation
 ------------
 
-Install this fork from source using the repository [README](https://github.com/evanlivingston/gweatherrouting#installation), then launch `gweatherrouting`. The former GTK portable build recipes have been retired.
+Install this fork from source using the repository [README](https://github.com/evanlivingston/sailworks#installation), then launch `sailworks`. The former GTK portable build recipes have been retired.
 
 ### Chart navigation on macOS
 
@@ -158,7 +158,7 @@ maximized state. Polar Manager's selected tab and ORC search text are remembered
 View changes are saved after a short idle period and again on normal exit.
 Saving waits while a map is being panned or zoomed. Workspace preferences use a
 separate versioned `workspace.json` in the app's data directory (on macOS,
-`~/Library/Application Support/gweatherrouting/`). Files are replaced atomically;
+`~/Library/Application Support/sailworks/`). Files are replaced atomically;
 missing or unreadable workspace files fall back to the default view. Saved
 windows are fitted onto the available monitors when the display arrangement changes.
 

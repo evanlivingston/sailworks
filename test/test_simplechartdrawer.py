@@ -5,9 +5,9 @@ import unittest
 import cairo
 from osgeo import ogr
 
-from gweatherrouting.core.mapviewport import MapPoint
-from gweatherrouting.rendering.style import CairoStyle
-from gweatherrouting.rendering.vectordrawer.simplechartdrawer import SimpleChartDrawer
+from sailworks.core.mapviewport import MapPoint
+from sailworks.rendering.style import CairoStyle
+from sailworks.rendering.vectordrawer.simplechartdrawer import SimpleChartDrawer
 from test.map_helpers import MapCanvas
 
 

@@ -8,12 +8,12 @@ from unittest.mock import Mock
 
 from osgeo import ogr
 
-from gweatherrouting.core.enccharts import ENCCatalog, ENCCell, chart_scale_rank
-from gweatherrouting.rendering.chartcollection import ChartCollection
-from gweatherrouting.rendering.encrenderer import ENCOverlayRenderer
-from gweatherrouting.rendering.overlayrenderer import RenderJob
-from gweatherrouting.rendering.gdalvectorchart import GDALVectorChart
-from gweatherrouting.core.mapviewport import MapViewport
+from sailworks.core.enccharts import ENCCatalog, ENCCell, chart_scale_rank
+from sailworks.rendering.chartcollection import ChartCollection
+from sailworks.rendering.encrenderer import ENCOverlayRenderer
+from sailworks.rendering.overlayrenderer import RenderJob
+from sailworks.rendering.gdalvectorchart import GDALVectorChart
+from sailworks.core.mapviewport import MapViewport
 from test.map_helpers import MapCanvas as TestMap
 
 PANEL = [(0, 0), (0, 4), (4, 4), (4, 0)]

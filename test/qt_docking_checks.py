@@ -7,7 +7,7 @@ from PySide6.QtGui import QMouseEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QDockWidget, QLabel, QMainWindow, QTabBar
 
-from gweatherrouting.qt.dockchrome import DockDragController, DockTitleBar, style_dock
+from sailworks.qt.dockchrome import DockDragController, DockTitleBar, style_dock
 
 
 class DockingChecks(unittest.TestCase):
@@ -277,7 +277,7 @@ class DockingChecks(unittest.TestCase):
         self.assertFalse(bar._preview.isVisible())
 
     def test_floating_edge_resize_still_works(self):
-        from gweatherrouting.qt.dockchrome import _FloatingFrame
+        from sailworks.qt.dockchrome import _FloatingFrame
 
         self.float_b()
         frame = self.b.findChild(_FloatingFrame)

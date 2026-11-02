@@ -5,8 +5,8 @@ from unittest.mock import Mock
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeyEvent
 
-from gweatherrouting.qt.mapinteraction import MapInteractionMixin
-from gweatherrouting.qt.viewportmap import ViewportMap
+from sailworks.qt.mapinteraction import MapInteractionMixin
+from sailworks.qt.viewportmap import ViewportMap
 
 
 class GeographicPoint:

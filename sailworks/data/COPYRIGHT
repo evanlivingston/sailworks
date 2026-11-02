@@ -1,0 +1,51 @@
+Files: data/symbols/
+Copyright: 2008-2018 David S Register <bdbcat@yahoo.com>
+           2008-2018 Contributors, see src/about.cpp AuthorText[]
+License: GPL-2+
+
+Files: data/icons/
+------------------------ WHITESUR ICON THEME ------------------------
+SOURCES:
+OSX_ONE: https://github.com/unc926/OSX_ONE
+zayronxio: https://github.com/zayronxio/Os-Catalina-icons
+
+CUSTOMIZER:
+Vince Liuice <vinceliuice@hotmail.com>: https://github.com/vinceliuice/WhiteSur-icon-theme
+------------------------ WHITESUR ICON THEME ------------------------
+License: GPL-3.0+
+
+
+Files: data/s57/
+Copyright: 2000-2001 Sylvain Duclos <sylvain_duclos@yahoo.com>
+           2010 David S. Register <bdbcat@yahoo.com>
+           2010 by Pavel Kalian" <pavel@kalian.cz>
+License: GPL-2.0+
+
+Files: data/coastlines.geojson
+Copyright: Natural Earth (https://www.naturalearthdata.com/)
+License: public domain
+Comment: Coastline vectors carrying Natural Earth `scalerank`/`featurecla`
+         attributes, converted to GeoJSON.
+
+Files: data/countries.geojson, data/countries_en.txt
+Copyright: not recorded in-tree
+License: GPL-3.0-or-later (inherited from the project license)
+Comment: Country outlines and names carried over from upstream GWeatherRouting
+         without per-file provenance. Confirm origin before redistributing these
+         files on their own.
+
+Files: data/polars/, data/regattas/, data/boats/
+Copyright: not recorded in-tree
+License: GPL-3.0-or-later (inherited from the project license)
+Comment: Boat polar tables and regatta definitions carried over from upstream
+         GWeatherRouting without per-file provenance. Polar data is often
+         supplied by designers or vendors; confirm terms before redistributing
+         these files on their own.
+
+Files: qt/shaders/
+License: GPL-3.0-or-later
+Comment: Authored in this repository.
+
+Files: CANBOAT-LICENSE.txt
+License: Apache-2.0
+Comment: License text for canboat-derived AIS definitions.

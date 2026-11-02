@@ -9,7 +9,7 @@ import unittest
 
 import numpy as np
 
-from gweatherrouting.rendering.windgeometry import stroke_mesh
+from sailworks.rendering.windgeometry import stroke_mesh
 
 
 class TestWindMeshes(unittest.TestCase):
@@ -29,7 +29,7 @@ class TestWindMeshes(unittest.TestCase):
     @unittest.skipUnless(importlib.util.find_spec("PySide6"), "Qt frame contracts")
     def test_frame_owns_image_snapshot_and_mutable_vertices_are_frozen(self):
         from PySide6.QtGui import QColor, QImage
-        from gweatherrouting.qt.mapframe import (
+        from sailworks.qt.mapframe import (
             ImageFrame,
             MapFrame,
             WindBatch,

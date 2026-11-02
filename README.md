@@ -1,16 +1,18 @@
-# GWeatherRouting
+# Sailworks
 
-![CI Status](https://github.com/dakk/gweatherrouting/actions/workflows/ci.yaml/badge.svg)
+![CI Status](https://github.com/evanlivingston/sailworks/actions/workflows/ci.yaml/badge.svg)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg?logo=gnu&logoColor=white)](https://www.gnu.org/licenses/gpl-3.0)
-[![GitHub Release](https://img.shields.io/github/v/release/dakk/gweatherrouting?logo=github&color=orange)](https://github.com/dakk/gweatherrouting/releases/latest)
 
-GWeatherRouting is an open-source sailing routing and navigation software written using Python and Qt.
+Sailworks is an open-source sailing routing and navigation software written using Python and Qt.
 
-![GWeatherRouting](https://github.com/dakk/gweatherrouting/raw/master/docs/source/_static/images/gweatherrouting_levante.png)
+It is a fork of [GWeatherRouting](https://github.com/dakk/gweatherrouting) by
+Davide Gessa; see [NOTICE](NOTICE) for the fork point, attribution and licensing.
 
-![Polars](https://github.com/dakk/gweatherrouting/raw/master/docs/source/_static/images/gww_polars.png)
+![Sailworks](docs/source/_static/images/sailworks_levante.png)
 
-![Log analysis](https://github.com/dakk/gweatherrouting/raw/master/docs/source/_static/images/loganalysis.png)
+![Polars](docs/source/_static/images/gww_polars.png)
+
+![Log analysis](docs/source/_static/images/loganalysis.png)
 
 ## Features
 
@@ -66,7 +68,7 @@ Install this fork from source. The former GTK-only portable build recipes have b
    - Cairo (used by the shared chart renderer)
 
 3. Checkout the repository and run: ```pip install .```
-4. Start the software running: ```gweatherrouting```
+4. Start the software running: ```sailworks```
 
 ### macOS development setup
 
@@ -75,11 +77,11 @@ On macOS, install [Homebrew](https://brew.sh/) and run the setup script from the
 ```bash
 make setup-macos
 source .venv/bin/activate
-gweatherrouting
+sailworks
 ```
 
 The script installs the native GDAL dependency with Homebrew,
-creates a local `.venv`, and installs GWeatherRouting and its Python dependencies. To install the
+creates a local `.venv`, and installs Sailworks and its Python dependencies. To install the
 Homebrew dependencies separately, run `brew bundle --file=tools/macos/Brewfile`.
 
 ### Launching the application
@@ -87,16 +89,16 @@ Homebrew dependencies separately, run `brew bundle --file=tools/macos/Brewfile`.
 Qt is the default for both the installed command and module launch:
 
 ```sh
-gweatherrouting
-python -m gweatherrouting
+sailworks
+python -m sailworks
 ```
 
-`--log FILE` opens an interpreted NMEA log. `gweatherrouting-qt` remains an alias; the old `[qt]` install
+`--log FILE` opens an interpreted NMEA log. `sailworks-qt` remains an alias; the old `[qt]` install
 extra is compatible but no longer needed because PySide6 is a base dependency.
 
 Instrument connections are managed from **Settings → Connections**. Choose **Live data source** in the NMEA panel to read from them; choose **Loaded log** to inspect a saved log. Import and inspect logs from the **Log library**.
 
-For opt-in early-weather startup, use `python -m gweatherrouting --early-weather`
+For opt-in early-weather startup, use `python -m sailworks --early-weather`
 It defers unused log plots and stages chart initialization after weather preparation in the real map.
 The default startup and renderer selection are unchanged. See
 [early-weather startup](docs/early-weather-startup.md) for limits and validation.
@@ -154,12 +156,12 @@ dependency as a threshold failure:
   interpreter to use.
 
 On this machine the project virtualenv is
-`/Users/elivingston/gweatherrouting/.venv/bin/python`; the default `python` is a pyenv
+`/Users/elivingston/sailworks/.venv/bin/python`; the default `python` is a pyenv
 3.9.17 without PySide6 or GDAL, so use the virtualenv interpreter explicitly when the
 automatic re-exec is not wanted:
 
 ```sh
-/Users/elivingston/gweatherrouting/.venv/bin/python tools/gate_runner.py --gate residency --snapshot <snapshot> --output <dir>
+/Users/elivingston/sailworks/.venv/bin/python tools/gate_runner.py --gate residency --snapshot <snapshot> --output <dir>
 ```
 
 | Option | Meaning |
@@ -196,4 +198,7 @@ current renderer state, the invariants and the next decision.
 
 ## License
 
-Read the LICENSE file.
+Sailworks is licensed under the GNU General Public License, version 3 or later
+(`GPL-3.0-or-later`). Read [LICENSE](LICENSE) for the full text and
+[NOTICE](NOTICE) for upstream attribution; bundled third-party assets are listed
+in [`sailworks/data/COPYRIGHT`](sailworks/data/COPYRIGHT).

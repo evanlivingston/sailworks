@@ -8,8 +8,8 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from gweatherrouting.core.gribsampling import WeatherSampler
-from gweatherrouting.rendering.weathercache import (
+from sailworks.core.gribsampling import WeatherSampler
+from sailworks.rendering.weathercache import (
     DecodedBandCache,
     DisplayGridIndex,
     DisplayWeatherSource,

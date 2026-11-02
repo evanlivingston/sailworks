@@ -8,17 +8,17 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from gweatherrouting.core.marine.manager import MarineManager
-from gweatherrouting.core.marine.models import Capability
-from gweatherrouting.core.settings import SettingsManager
-from gweatherrouting.core.timecontrol import TimeControl
-from gweatherrouting.rendering.marinepresentation import (
+from sailworks.core.marine.manager import MarineManager
+from sailworks.core.marine.models import Capability
+from sailworks.core.settings import SettingsManager
+from sailworks.core.timecontrol import TimeControl
+from sailworks.rendering.marinepresentation import (
     CURRENT_DENSITIES,
     MarineSources,
     current_grid_spacing,
 )
-from gweatherrouting.rendering.marinesnapshot import sample_currents
-from gweatherrouting.qt.gribviewport import ViewportCamera
+from sailworks.rendering.marinesnapshot import sample_currents
+from sailworks.qt.gribviewport import ViewportCamera
 from test import test_marine_display as display
 from test.test_marine import dataset
 from test.test_marine_fields import field
@@ -63,7 +63,7 @@ class TestCurrentDensity(unittest.TestCase):
                     status="available", values=(1, 0)
                 )
                 with patch(
-                    "gweatherrouting.rendering.marinesnapshot.FieldSelection",
+                    "sailworks.rendering.marinesnapshot.FieldSelection",
                     return_value=selection,
                 ):
                     snapshot = sample_currents(
@@ -103,7 +103,7 @@ class TestCurrentDensitySettings(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        storage = patch("gweatherrouting.core.storage.DATA_DIR", temporary.name)
+        storage = patch("sailworks.core.storage.DATA_DIR", temporary.name)
         storage.start()
         self.addCleanup(storage.stop)
         self.settings = SettingsManager()
@@ -118,7 +118,7 @@ class TestCurrentDensitySettings(unittest.TestCase):
         )
 
     def panel(self, kind="currents"):
-        from gweatherrouting.qt.marinepanel import MarinePanel
+        from sailworks.qt.marinepanel import MarinePanel
 
         # Coverage calculations are independent of the density control.
         with patch.object(MarinePanel, "refresh"):
@@ -128,7 +128,7 @@ class TestCurrentDensitySettings(unittest.TestCase):
         return panel
 
     def services(self):
-        from gweatherrouting.qt.mapoverlays import MapOverlayServices
+        from sailworks.qt.mapoverlays import MapOverlayServices
 
         with ExitStack() as stack:
             for module, name in (
@@ -137,7 +137,7 @@ class TestCurrentDensitySettings(unittest.TestCase):
                 ("dashboard", "DashboardRenderer"),
                 ("isochrones", "IsochronesRenderer"),
             ):
-                stack.enter_context(patch(f"gweatherrouting.rendering.{module}.{name}"))
+                stack.enter_context(patch(f"sailworks.rendering.{module}.{name}"))
             services = MapOverlayServices(self.controller, TimeControl())
         self.addCleanup(services.marine.close)
         return services
@@ -181,7 +181,7 @@ class TestCurrentDensitySettings(unittest.TestCase):
         panel = self.panel()
         with (
             patch.object(SettingsManager, "save", side_effect=OSError("disk full")),
-            patch("gweatherrouting.qt.marinepanel.QMessageBox.warning") as warning,
+            patch("sailworks.qt.marinepanel.QMessageBox.warning") as warning,
         ):
             panel.current_density.setCurrentIndex(
                 panel.current_density.findData("dense")
@@ -194,9 +194,9 @@ class TestCurrentDensitySettings(unittest.TestCase):
     def test_persisted_startup_and_live_density_reach_quick_snapshots(self):
         from PySide6.QtCore import QObject
         from PySide6.QtQuick import QQuickItem
-        from gweatherrouting.qt.gribviewport import ViewportCamera
-        from gweatherrouting.qt.marinequick import MarineQuickLayer
-        from gweatherrouting.rendering.marinesnapshot import MarineSnapshot
+        from sailworks.qt.gribviewport import ViewportCamera
+        from sailworks.qt.marinequick import MarineQuickLayer
+        from sailworks.rendering.marinesnapshot import MarineSnapshot
         from test.test_marine import START
         import time
 
@@ -214,9 +214,7 @@ class TestCurrentDensitySettings(unittest.TestCase):
         def sample(sources, instant, *_args):
             return MarineSnapshot(sources, instant, (), "available")
 
-        with patch(
-            "gweatherrouting.qt.marinequick.sample_currents", side_effect=sample
-        ):
+        with patch("sailworks.qt.marinequick.sample_currents", side_effect=sample):
             for density in ("dense", "maximum"):
                 self.controller.settings.marineCurrentDensity = density
                 layer.request(marine.sources, START, True, camera)
@@ -230,7 +228,7 @@ class TestCurrentDensitySettings(unittest.TestCase):
 
     def test_density_is_not_duplicated_in_settings_or_tides_panel(self):
         from PySide6.QtWidgets import QComboBox
-        from gweatherrouting.qt.marinesettings import MarineSettings
+        from sailworks.qt.marinesettings import MarineSettings
 
         dialog = MarineSettings(self.controller)
         self.addCleanup(dialog.deleteLater)

@@ -168,9 +168,9 @@ def prepare(config, output):
         raise RuntimeError("Network disabled in persistent-field probe")
 
     socket.socket.connect = socket.socket.connect_ex = blocked
-    from gweatherrouting.core.grib import Grib
-    from gweatherrouting.core.gribsampling import WeatherSampler
-    from gweatherrouting.rendering.windrenderer import WindLandMask
+    from sailworks.core.grib import Grib
+    from sailworks.core.gribsampling import WeatherSampler
+    from sailworks.rendering.windrenderer import WindLandMask
 
     app_root = Path(config["app_root"])
     modules = {}
@@ -181,8 +181,8 @@ def prepare(config, output):
         "rendering/weathercache",
     ):
         modules[name] = support.support.load_file(
-            "gweatherrouting." + name.replace("/", "."),
-            app_root / "gweatherrouting" / (name + ".py"),
+            "sailworks." + name.replace("/", "."),
+            app_root / "sailworks" / (name + ".py"),
         )
     barbs = modules["rendering/weatherbarbs"]
     transport = modules["qt/gpuweather"]

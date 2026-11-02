@@ -10,13 +10,13 @@ import numpy as np
 from osgeo import gdal
 from pyproj import Transformer
 
-from gweatherrouting.core.grib import Grib
-from gweatherrouting.core.gribmanager import GribManager
-from gweatherrouting.core.gribsampling import WeatherSampler
-from gweatherrouting.core.routingjob import RoutingWind, freeze_wind_sources
-from gweatherrouting.rendering.windcursor import WindCursorSampler
-from gweatherrouting.rendering.windrenderer import DisplayGrib, WindOverlayRenderer
-from gweatherrouting.rendering.weatherstaging import (
+from sailworks.core.grib import Grib
+from sailworks.core.gribmanager import GribManager
+from sailworks.core.gribsampling import WeatherSampler
+from sailworks.core.routingjob import RoutingWind, freeze_wind_sources
+from sailworks.rendering.windcursor import WindCursorSampler
+from sailworks.rendering.windrenderer import DisplayGrib, WindOverlayRenderer
+from sailworks.rendering.weatherstaging import (
     StreamlineEndpoints,
     blend_streamline_endpoints,
     stage_streamline_endpoints,
@@ -134,7 +134,7 @@ class TestGribSampling(unittest.TestCase):
     def test_local_forecast_model_uses_metadata_and_does_not_change_sampling_identity(
         self,
     ):
-        from gweatherrouting.core.grib import forecast_model_name
+        from sailworks.core.grib import forecast_model_name
         from types import SimpleNamespace
 
         source = self.file(self.field(0))
@@ -418,7 +418,7 @@ class TestGribSampling(unittest.TestCase):
             projection=crs.to_wkt(),
         )
         with patch(
-            "gweatherrouting.core.gribsampling.vector_flags", return_value=[True, True]
+            "sailworks.core.gribsampling.vector_flags", return_value=[True, True]
         ):
             sampler = source.sampler()
         corners = [
@@ -567,7 +567,7 @@ class TestGribSampling(unittest.TestCase):
         self.assert_uv(source.sampler(), START, 1.5, 1.25, 3, 0)
 
     def test_newest_run_is_shared_by_cursor_and_current_assisted_routing(self):
-        from gweatherrouting.core.marine.routing import FrozenRoutingWind
+        from sailworks.core.marine.routing import FrozenRoutingWind
 
         old = self.file(self.field(0) + self.field(3))
         new = self.file(
@@ -597,8 +597,8 @@ class TestGribSampling(unittest.TestCase):
         self.assertEqual(source.sampler().sample("pressure", START, 0, 0)[0, 0], 1013)
 
     def test_mixed_time_batch_matches_scalar_queries_and_source_provenance(self):
-        from gweatherrouting.core.marine.batchwind import ArrayWind
-        from gweatherrouting.core.marine.routing import FrozenRoutingWind
+        from sailworks.core.marine.batchwind import ArrayWind
+        from sailworks.core.marine.routing import FrozenRoutingWind
 
         sources = [self.file(self.field(0)), self.file(self.field(3))]
         wind = FrozenRoutingWind(SimpleNamespace(gribs=sources))

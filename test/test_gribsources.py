@@ -17,7 +17,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 import json
 import unittest
 
-from gweatherrouting.core.gribsources.noaagfs import (
+from sailworks.core.gribsources.noaagfs import (
     GFS_FORECAST_HOURS,
     NOAAGFSSource,
 )

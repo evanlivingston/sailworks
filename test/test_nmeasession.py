@@ -6,14 +6,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from gweatherrouting.core.datasource import NMEADataPacket
-from gweatherrouting.core.nmea2000 import N2KMessage, instruments
-from gweatherrouting.core.nmeasession import (
+from sailworks.core.datasource import NMEADataPacket
+from sailworks.core.nmea2000 import N2KMessage, instruments
+from sailworks.core.nmeasession import (
     NMEALog,
     NMEASession,
     read_nmea_log,
 )
-from gweatherrouting.core.utils import EventDispatcher
+from sailworks.core.utils import EventDispatcher
 from test.test_polarperformance import water, wind
 
 
@@ -211,7 +211,7 @@ class TestNMEASession(unittest.TestCase):
         stem = "nmea-20261013T123456.123456Z"
         orphan_raw = self.recording_directory / f"{stem}.log.n2k.log"
         orphan_raw.write_text("existing raw archive")
-        with patch("gweatherrouting.core.nmeasession.datetime") as clock:
+        with patch("sailworks.core.nmeasession.datetime") as clock:
             clock.now.return_value = stamp
             self.session.start_recording()
             first = self.session.recording_path
@@ -397,7 +397,7 @@ class TestNMEASession(unittest.TestCase):
         self.assertEqual(self.received, [log.entries[0][1]])
 
     def test_rudder_and_engine_pgns_are_instrument_fields(self):
-        from gweatherrouting.core.nmeasession import NumericFieldCollector
+        from sailworks.core.nmeasession import NumericFieldCollector
 
         now = datetime.now(timezone.utc)
         rudder = bytes([0]) + int(0.1 / 0.0001).to_bytes(2, "little", signed=True)

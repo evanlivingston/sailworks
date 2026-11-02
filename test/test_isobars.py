@@ -11,9 +11,9 @@ import cairo
 import numpy as np
 from osgeo import gdal
 
-from gweatherrouting.core.grib import Grib
-from gweatherrouting.rendering.windpainter import WindPainter
-from gweatherrouting.rendering.windrenderer import DisplayGrib, WindOverlayRenderer
+from sailworks.core.grib import Grib
+from sailworks.rendering.windpainter import WindPainter
+from sailworks.rendering.windrenderer import DisplayGrib, WindOverlayRenderer
 
 
 def make_grib(path, with_pressure=True):

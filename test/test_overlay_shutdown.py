@@ -5,7 +5,7 @@ import unittest
 
 import cairo
 
-from gweatherrouting.rendering.overlayrenderer import OverlayRenderer
+from sailworks.rendering.overlayrenderer import OverlayRenderer
 from test.test_overlay_scheduling import Canvas
 
 

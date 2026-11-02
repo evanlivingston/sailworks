@@ -11,13 +11,13 @@ from unittest.mock import Mock, patch
 
 import cairo
 
-from gweatherrouting.core.chscharts import (
+from sailworks.core.chscharts import (
     CHSTileSource,
     HALF_WORLD,
     tile_bbox,
     tile_in_canada,
 )
-from gweatherrouting.rendering.chsrenderer import CHSRenderer
+from sailworks.rendering.chsrenderer import CHSRenderer
 from test.map_helpers import MapCanvas as TestMap, QueuedScheduler
 
 
@@ -69,7 +69,7 @@ class TestCHSTileSource(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.source.path(key)
 
-    @patch("gweatherrouting.core.chscharts.requests.get")
+    @patch("sailworks.core.chscharts.requests.get")
     def test_fetch_is_atomic_and_retina_requests_keep_logical_scale(self, get):
         get.return_value = self.response(png(2))
         key = tile_key(factor=2)
@@ -82,7 +82,7 @@ class TestCHSTileSource(unittest.TestCase):
         self.assertEqual(params["transparent"], "true")
         self.assertFalse(list(Path(self.temporary.name).rglob("*.tmp")))
 
-    @patch("gweatherrouting.core.chscharts.requests.get")
+    @patch("sailworks.core.chscharts.requests.get")
     def test_rejects_errors_without_overwriting_cached_chart(self, get):
         path = self.source.path(self.key)
         path.parent.mkdir(parents=True)
@@ -173,7 +173,7 @@ class TestCHSBackgroundRendering(unittest.TestCase):
         self.drain(lambda: not self.renderer._inflight and not self.renderer._pending)
         self.draw()
         with patch(
-            "gweatherrouting.rendering.chsrenderer.time.monotonic",
+            "sailworks.rendering.chsrenderer.time.monotonic",
             return_value=time.monotonic() + 1,
         ):
             self.draw()
@@ -301,20 +301,14 @@ class TestCHSBackgroundRendering(unittest.TestCase):
         self.renderer._tiles[parent] = (old, time.time())
         new = cairo.ImageSurface(cairo.FORMAT_ARGB32, 256, 256)
         self.renderer._tiles[key] = (new, time.time())
-        with patch(
-            "gweatherrouting.rendering.chsrenderer.time.monotonic", return_value=10
-        ):
+        with patch("sailworks.rendering.chsrenderer.time.monotonic", return_value=10):
             self.draw()
             previous = self.renderer._blends[self.canvas][key][2]
             self.assertIsNotNone(previous)
             self.canvas.add_tick_callback.assert_called_once()
-        with patch(
-            "gweatherrouting.rendering.chsrenderer.time.monotonic", return_value=10.1
-        ):
+        with patch("sailworks.rendering.chsrenderer.time.monotonic", return_value=10.1):
             self.assertTrue(self.renderer._tick(self.canvas, None))
-        with patch(
-            "gweatherrouting.rendering.chsrenderer.time.monotonic", return_value=10.3
-        ):
+        with patch("sailworks.rendering.chsrenderer.time.monotonic", return_value=10.3):
             self.assertFalse(self.renderer._tick(self.canvas, None))
             self.draw()
             self.assertIsNone(self.renderer._blends[self.canvas][key][2])

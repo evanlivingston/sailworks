@@ -14,7 +14,7 @@ from check_enc_viewport import _wait
 
 def current_chart(canvas):
     """Require the displayed viewport publication, not the retired base cache."""
-    from gweatherrouting.qt.gribviewportchart import chart_placement
+    from sailworks.qt.gribviewportchart import chart_placement
 
     presenter = canvas._weather_presenter
     widget = presenter.widget
@@ -56,12 +56,12 @@ def application(report, data, output, deadline):
     import numpy as np
     from PySide6.QtGui import QImage
     from PySide6.QtWidgets import QApplication
-    from gweatherrouting.core.marine.credentials import SystemCredentialStore
-    from gweatherrouting.qt.controller import SessionController
-    from gweatherrouting.qt.window import PreviewWindow
-    from gweatherrouting.qt.theme import apply_theme
-    from gweatherrouting.core.mapviewport import MapPoint
-    from gweatherrouting.rendering.style import Style
+    from sailworks.core.marine.credentials import SystemCredentialStore
+    from sailworks.qt.controller import SessionController
+    from sailworks.qt.window import PreviewWindow
+    from sailworks.qt.theme import apply_theme
+    from sailworks.core.mapviewport import MapPoint
+    from sailworks.rendering.style import Style
 
     SystemCredentialStore.load = lambda _self: None
     app = QApplication.instance() or QApplication([])
@@ -203,7 +203,7 @@ def application(report, data, output, deadline):
         # than mutating the legacy chart collection which it no longer draws.
         presenter = canvas._weather_presenter
         presenter._retire_native_widget()
-        with patch("gweatherrouting.core.storage.DATA_DIR", str(data / "missing")):
+        with patch("sailworks.core.storage.DATA_DIR", str(data / "missing")):
             canvas.update()
             report["checks"]["missing_coastline_fallback"] = stage(
                 "missing-coastlines"
@@ -215,7 +215,7 @@ def application(report, data, output, deadline):
             )
         presenter._retire_native_widget()
         with patch(
-            "gweatherrouting.qt.gribviewportchart.base_sources",
+            "sailworks.qt.gribviewportchart.base_sources",
             side_effect=OSError("Unreadable basemap"),
         ):
             canvas.update()

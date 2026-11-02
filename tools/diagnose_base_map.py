@@ -18,12 +18,12 @@ sys.path.insert(0, str(ROOT))
 def application(report, output):  # noqa: C901 - one bounded diagnostic
     import numpy as np
     from PySide6.QtWidgets import QApplication
-    from gweatherrouting.core.marine.credentials import SystemCredentialStore
-    from gweatherrouting.qt.controller import SessionController
+    from sailworks.core.marine.credentials import SystemCredentialStore
+    from sailworks.qt.controller import SessionController
 
     # LEGACY-ONLY (TODO #86): diagnose_base_map probes TrackMap base-map internals
     # (_base_image, _sea_color, _invalidate_base, _base_chart_renderer); not retargeted.
-    from gweatherrouting.qt.mapcanvas import TrackMap  # LEGACY-ONLY (TODO #86)
+    from sailworks.qt.mapcanvas import TrackMap  # LEGACY-ONLY (TODO #86)
 
     SystemCredentialStore.load = lambda self: None
     app = QApplication.instance() or QApplication([])
@@ -31,9 +31,7 @@ def application(report, output):  # noqa: C901 - one bounded diagnostic
     canvas = TrackMap(controller)  # LEGACY-ONLY (TODO #86)
     canvas.resize(710, 743)
 
-    workspace = (
-        Path.home() / "Library/Application Support/gweatherrouting/workspace-qt.json"
-    )
+    workspace = Path.home() / "Library/Application Support/sailworks/workspace-qt.json"
     view = {
         "lat": 48.45003186114848,
         "lon": -124.28875762043288,
@@ -191,8 +189,8 @@ def application(report, output):  # noqa: C901 - one bounded diagnostic
         report["gshhs_direct_opaque_pixels"] = int((raw[:, :, 3] > 0).sum())
         # Draw with the same object the worker uses: a MapViewport over the
         # canvas, not the canvas itself.
-        from gweatherrouting.core.mapviewport import MapViewport
-        from gweatherrouting.rendering.overlayrenderer import MARGIN
+        from sailworks.core.mapviewport import MapViewport
+        from sailworks.rendering.overlayrenderer import MARGIN
 
         viewport = MapViewport(canvas, MARGIN, lambda: None)
         report["viewport_scale"] = viewport.get_scale()
@@ -232,8 +230,8 @@ def application(report, output):  # noqa: C901 - one bounded diagnostic
                 "factor": job.factor,
             }
             # Paint the finished frame by hand into a base-image-like surface.
-            from gweatherrouting.rendering.overlayrenderer import paint_viewport
-            from gweatherrouting.rendering.style import Style
+            from sailworks.rendering.overlayrenderer import paint_viewport
+            from sailworks.rendering.style import Style
 
             raw_frame = (
                 np.frombuffer(bytes(surface.get_data()), np.uint8)
@@ -310,7 +308,7 @@ def application(report, output):  # noqa: C901 - one bounded diagnostic
                 ).sum()
             )
             # Does the finished frame still match the key the canvas asks for?
-            from gweatherrouting.qt.basecharts import describe_sources
+            from sailworks.qt.basecharts import describe_sources
 
             current = describe_sources([gshhs])
             current_key = (
@@ -323,7 +321,7 @@ def application(report, output):  # noqa: C901 - one bounded diagnostic
             report["current_key"] = repr(current_key)[:400]
         report["gshhs_drawer_palette"] = getattr(gshhs.drawer, "palette", None)
         report["gshhs_palette_attribute"] = getattr(gshhs, "palette", None)
-        from gweatherrouting.rendering.chartclasses import chart_class_enabled
+        from sailworks.rendering.chartclasses import chart_class_enabled
 
         report["gshhs_class_switch_enabled"] = bool(
             chart_class_enabled(controller.settings, gshhs)

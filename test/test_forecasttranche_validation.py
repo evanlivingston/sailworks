@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from gweatherrouting.core.forecasttranche import (
+from sailworks.core.forecasttranche import (
     AnalysisSelection,
     Artifact,
     ForecastTranche,

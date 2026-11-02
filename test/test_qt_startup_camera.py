@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from gweatherrouting.qt.window import PreviewWindow
+from sailworks.qt.window import PreviewWindow
 
 
 def test_initial_data_refresh_does_not_fit_or_switch_from_saved_view():

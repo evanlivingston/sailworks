@@ -1,7 +1,7 @@
 # GPU weather texture interpolation (archived experiment)
 
 This directory archives an experiment that was never merged and is **not**
-part of the application. Nothing here is imported by `gweatherrouting/`, and
+part of the application. Nothing here is imported by `sailworks/`, and
 the application does not read it.
 
 ## What the experiment was

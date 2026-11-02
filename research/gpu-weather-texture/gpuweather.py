@@ -16,7 +16,7 @@ from osgeo import gdal
 from PySide6.QtGui import QImage
 from PySide6.QtQuick import QSGTexture, QQuickWindow
 
-logger = logging.getLogger("gweatherrouting")
+logger = logging.getLogger("sailworks")
 
 
 def _grib_number(value) -> float:

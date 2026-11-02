@@ -2,7 +2,7 @@ from pathlib import Path
 
 from PySide6.QtGui import QShader
 
-SHADERS = Path(__file__).parents[1] / "gweatherrouting" / "qt" / "shaders"
+SHADERS = Path(__file__).parents[1] / "sailworks" / "qt" / "shaders"
 
 
 def test_background_gradient_is_a_separate_layer_for_each_weather_scene():

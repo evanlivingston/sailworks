@@ -11,10 +11,10 @@ from unittest.mock import patch
 
 import cairo
 
-from gweatherrouting.core.mapviewport import MapViewport
-from gweatherrouting.core.mbtiles import MBTilesInfo, open_archive, read_info
-from gweatherrouting.rendering.mbtilesrenderer import MBTilesRenderer
-from gweatherrouting.rendering.overlayrenderer import RenderJob
+from sailworks.core.mapviewport import MapViewport
+from sailworks.core.mbtiles import MBTilesInfo, open_archive, read_info
+from sailworks.rendering.mbtilesrenderer import MBTilesRenderer
+from sailworks.rendering.overlayrenderer import RenderJob
 from test.map_helpers import MapCanvas, QueuedScheduler
 
 
@@ -195,7 +195,7 @@ class TestMBTilesPixels(unittest.TestCase):
 
         cr = cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 400, 300))
         with patch(
-            "gweatherrouting.rendering.mbtilesrenderer.open_archive", side_effect=opened
+            "sailworks.rendering.mbtilesrenderer.open_archive", side_effect=opened
         ):
             renderer.draw(self.canvas, cr, ((info,),), "cm93")
             deadline = time.monotonic() + 3
@@ -211,7 +211,7 @@ class TestMBTilesPixels(unittest.TestCase):
         make_mbtiles(self.path, tiles={(0, 0, 0): (0, 0, 1), (1, 0, 0): (1, 0, 0)})
         with sqlite3.connect(self.path) as db:
             db.execute("UPDATE tiles SET tile_data=? WHERE zoom_level=1", (b"bad PNG",))
-        with self.assertLogs("gweatherrouting", level="WARNING"):
+        with self.assertLogs("sailworks", level="WARNING"):
             image = self.render(read_info(self.path))
         self.assertEqual(self.pixel(image, 100, 50), (255, 0, 0, 255))
 
@@ -229,7 +229,7 @@ class TestMBTilesPixels(unittest.TestCase):
     def test_outside_archive_does_not_open_sqlite_in_render(self):
         make_mbtiles(self.path, metadata={"bounds": "-129,48,-123,51"})
         self.canvas._zoom = 10
-        with patch("gweatherrouting.rendering.mbtilesrenderer.open_archive") as opened:
+        with patch("sailworks.rendering.mbtilesrenderer.open_archive") as opened:
             image = self.render(read_info(self.path))
             opened.assert_not_called()
         self.assertEqual(self.pixel(image, 200, 150), (0, 0, 0, 0))
@@ -237,7 +237,7 @@ class TestMBTilesPixels(unittest.TestCase):
     def test_tile_enumeration_is_bounded_at_low_display_zoom(self):
         make_mbtiles(self.path, tiles={(16, 0, 0): (1, 0, 0)})
         info = read_info(self.path)
-        with patch("gweatherrouting.rendering.mbtilesrenderer.open_archive") as opened:
+        with patch("sailworks.rendering.mbtilesrenderer.open_archive") as opened:
             self.render(info)
             opened.assert_not_called()
 
@@ -246,7 +246,7 @@ class TestMBTilesPixels(unittest.TestCase):
         info = read_info(self.path)
         first = self.render(info)
         with patch(
-            "gweatherrouting.rendering.mbtilesrenderer.png_size",
+            "sailworks.rendering.mbtilesrenderer.png_size",
             side_effect=AssertionError("Decoded cached tile"),
         ):
             second = self.render(info)
@@ -264,6 +264,6 @@ class TestMBTilesPixels(unittest.TestCase):
         info = read_info(self.path)
         job = RenderJob((), MapViewport(self.canvas), ((info,),), 1, "cm93")
         job.cancel.set()
-        with patch("gweatherrouting.rendering.mbtilesrenderer.open_archive") as opened:
+        with patch("sailworks.rendering.mbtilesrenderer.open_archive") as opened:
             self.assertIsNone(self.renderer._render(job))
             opened.assert_not_called()

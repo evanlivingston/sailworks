@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from gweatherrouting.qt.gribviewport import ViewportCamera
-from gweatherrouting.rendering.marinepresentation import MarineSources
-from gweatherrouting.rendering.marinesnapshot import (
+from sailworks.qt.gribviewport import ViewportCamera
+from sailworks.rendering.marinepresentation import MarineSources
+from sailworks.rendering.marinesnapshot import (
     current_labels,
     current_triangles,
     sample_currents,
@@ -47,9 +47,9 @@ def run():
         "cairo_marine_modules_absent": all(
             importlib.util.find_spec(name) is None
             for name in (
-                "gweatherrouting.rendering.marinemaplayer",
-                "gweatherrouting.rendering.marinelandmask",
-                "gweatherrouting.qt.marineoverlay",
+                "sailworks.rendering.marinemaplayer",
+                "sailworks.rendering.marinelandmask",
+                "sailworks.qt.marineoverlay",
             )
         ),
     }

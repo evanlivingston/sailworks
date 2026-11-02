@@ -80,8 +80,8 @@ class TestRenderingBenchmark(unittest.TestCase):
             decoy = path / "parent-data"
             decoy.mkdir()
             sentinels = [
-                decoy / "Library/Application Support/gweatherrouting/settings.json",
-                decoy / ".gweatherrouting/settings.json",
+                decoy / "Library/Application Support/sailworks/settings.json",
+                decoy / ".sailworks/settings.json",
             ]
             for sentinel in sentinels:
                 sentinel.parent.mkdir(parents=True)

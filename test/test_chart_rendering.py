@@ -7,10 +7,10 @@ from weakref import WeakKeyDictionary
 
 import cairo
 
-from gweatherrouting.rendering.chartcollection import ChartCollection
-from gweatherrouting.rendering.gdalvectorchart import GDALVectorChart
-from gweatherrouting.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
-from gweatherrouting.core.mapviewport import MapPoint, MapViewport
+from sailworks.rendering.chartcollection import ChartCollection
+from sailworks.rendering.gdalvectorchart import GDALVectorChart
+from sailworks.rendering.vectordrawer.s57chartdrawer import S57ChartDrawer
+from sailworks.core.mapviewport import MapPoint, MapViewport
 from test.map_helpers import MapCanvas as TestMap, QueuedScheduler
 
 
@@ -180,7 +180,7 @@ class TestSoundingBatches(unittest.TestCase):
 
 class TestBackgroundENC(unittest.TestCase):
     def setUp(self):
-        from gweatherrouting.rendering.encrenderer import ENCOverlayRenderer
+        from sailworks.rendering.encrenderer import ENCOverlayRenderer
 
         self.canvas = TestMap()
         self.schedule = QueuedScheduler()
@@ -264,7 +264,7 @@ class TestBackgroundENC(unittest.TestCase):
         self.assertNotIn(self.canvas, self.renderer._states)
 
     def test_preview_stays_geographically_aligned_during_pan_and_zoom(self):
-        from gweatherrouting.rendering.overlayrenderer import MARGIN
+        from sailworks.rendering.overlayrenderer import MARGIN
 
         self.renderer._start_next = Mock()
         self.renderer.draw(self.canvas, self.cr, self.specs, "cm93")
@@ -308,7 +308,7 @@ class TestBackgroundENC(unittest.TestCase):
         manager._enc_renderer.forget(self.canvas)
 
     def test_background_surface_preserves_retina_resolution(self):
-        from gweatherrouting.rendering.overlayrenderer import MARGIN, RenderJob
+        from sailworks.rendering.overlayrenderer import MARGIN, RenderJob
 
         viewport = MapViewport(self.canvas, MARGIN, lambda: None)
         job = RenderJob((), viewport, (), 2, "cm93")

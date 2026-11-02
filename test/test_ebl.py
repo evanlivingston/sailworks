@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from gweatherrouting.core.ebl import EBLDecoder, FILETIME_EPOCH
+from sailworks.core.ebl import EBLDecoder, FILETIME_EPOCH
 
 
 def tag(identifier, data):

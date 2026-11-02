@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 import gpxpy.gpx
 
-from gweatherrouting.core.geo.poicollection import POICollection
+from sailworks.core.geo.poicollection import POICollection
 
 
 class TestPOICollection(unittest.TestCase):
@@ -28,9 +28,9 @@ class TestPOICollection(unittest.TestCase):
     def _make_collection(self):
         with (
             patch(
-                "gweatherrouting.core.geo.collection.CollectionStorage.load_or_save_default"
+                "sailworks.core.geo.collection.CollectionStorage.load_or_save_default"
             ),
-            patch("gweatherrouting.core.geo.collection.CollectionStorage.save"),
+            patch("sailworks.core.geo.collection.CollectionStorage.save"),
         ):
             return POICollection()
 

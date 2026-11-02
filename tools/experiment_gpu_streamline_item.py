@@ -13,12 +13,12 @@ def main():
     from PySide6.QtQuickWidgets import QQuickWidget
     from PySide6.QtWidgets import QApplication
 
-    from gweatherrouting.qt.gpustreamlines import (
+    from sailworks.qt.gpustreamlines import (
         GpuStreamlineItem,
         make_gpu_trace_input,
     )
-    from gweatherrouting.qt.gribviewport import ViewportCamera
-    from gweatherrouting.rendering.streamlinepaths import _world_geo
+    from sailworks.qt.gribviewport import ViewportCamera
+    from sailworks.rendering.streamlinepaths import _world_geo
 
     width, height, grid_columns, grid_rows = 800, 600, 216, 166
     camera = ViewportCamera(

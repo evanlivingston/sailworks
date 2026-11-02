@@ -18,7 +18,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from gweatherrouting.core.aismanager import (
+from sailworks.core.aismanager import (
     AISManager,
     AISTarget,
     SHIP_TYPE_CARGO,

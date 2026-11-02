@@ -11,10 +11,10 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
-from gweatherrouting.core import ebllog
-from gweatherrouting.core.loglibrary import LogLibrary
-from gweatherrouting.qt import controller as controller_module
-from gweatherrouting.qt.controller import SessionController
+from sailworks.core import ebllog
+from sailworks.core.loglibrary import LogLibrary
+from sailworks.qt import controller as controller_module
+from sailworks.qt.controller import SessionController
 from test.test_ebllog import VERSION, frame
 
 

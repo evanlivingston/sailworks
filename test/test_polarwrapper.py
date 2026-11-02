@@ -16,7 +16,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 
 import unittest
 
-from gweatherrouting.core.polarwrapper import PolarWrapper
+from sailworks.core.polarwrapper import PolarWrapper
 
 
 class MockPolar:

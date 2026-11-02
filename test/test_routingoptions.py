@@ -14,20 +14,20 @@ import unittest
 
 import weatherrouting
 
-from gweatherrouting.core import Core
-from gweatherrouting.core.geo.poi import POI
-from gweatherrouting.core.geo.track import Track
-from gweatherrouting.core.marine.chs import DownloadCancelledError
-from gweatherrouting.core.marine.manager import MarineManager
-from gweatherrouting.core.marine.routing import CurrentIsoRouter, step_with_coverage
-from gweatherrouting.core.modifiedgrib import ModifiedGribManager
-from gweatherrouting.core.routingjob import (
+from sailworks.core import Core
+from sailworks.core.geo.poi import POI
+from sailworks.core.geo.track import Track
+from sailworks.core.marine.chs import DownloadCancelledError
+from sailworks.core.marine.manager import MarineManager
+from sailworks.core.marine.routing import CurrentIsoRouter, step_with_coverage
+from sailworks.core.modifiedgrib import ModifiedGribManager
+from sailworks.core.routingjob import (
     RouteRequest,
     RoutingWind,
     calculate_route,
     serialize_routing_points,
 )
-from gweatherrouting.core.routingoptions import (
+from sailworks.core.routingoptions import (
     AXES,
     comparison_scenarios,
     configured_algorithm,
@@ -62,7 +62,7 @@ class TestRoutingOptions(unittest.TestCase):
             (0, 0),
             (0, 0.05),
             START.replace(tzinfo=None),
-            str(Path(__file__).parents[1] / "gweatherrouting/data/polars/first317.pol"),
+            str(Path(__file__).parents[1] / "sailworks/data/polars/first317.pol"),
             self.algorithm,
             False,
         )
@@ -215,7 +215,7 @@ class TestRoutingOptions(unittest.TestCase):
         self.assertEqual(self.core.marine_manager.fields.fields, {})
 
     def test_automatic_coverage_uses_existing_recovery_and_ui_commit_hooks(self):
-        from gweatherrouting.core.routingcoverage import prepare_coverage
+        from sailworks.core.routingcoverage import prepare_coverage
 
         cancel = Event()
         environment = SimpleNamespace(cancel=None, wind_recovery=None, prefetch=None)

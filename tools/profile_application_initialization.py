@@ -37,9 +37,9 @@ def main():
     profile.enable()
     began = time.perf_counter()
     from PySide6.QtWidgets import QApplication
-    from gweatherrouting.core.marine.credentials import SystemCredentialStore
-    from gweatherrouting.qt.controller import SessionController
-    from gweatherrouting.qt.window import PreviewWindow
+    from sailworks.core.marine.credentials import SystemCredentialStore
+    from sailworks.qt.controller import SessionController
+    from sailworks.qt.window import PreviewWindow
 
     SystemCredentialStore.load = lambda _self: None
     imported = time.perf_counter()

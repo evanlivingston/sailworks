@@ -16,7 +16,7 @@ class TestDayStrip(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
-        from gweatherrouting.qt.forecasttimeline import DayStripWidget
+        from sailworks.qt.forecasttimeline import DayStripWidget
 
         self.strip = DayStripWidget()
         self.strip.resize(400, 56)
@@ -124,7 +124,7 @@ class TestDayStrip(unittest.TestCase):
         from PySide6.QtTest import QTest
         from PySide6.QtWidgets import QHBoxLayout, QWidget
 
-        from gweatherrouting.qt.forecasttimeline import ForecastTimeline
+        from sailworks.qt.forecasttimeline import ForecastTimeline
 
         container = QWidget()
         self.addCleanup(container.deleteLater)

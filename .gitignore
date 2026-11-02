@@ -15,9 +15,9 @@ linuxdeploy*
 .pytest_cache
 .mypy_cache
 .tox
-gweatherrouting/build
-gweatherrouting/dist
-gweatherrouting/*.spec
+sailworks/build
+sailworks/dist
+sailworks/*.spec
 docs/build
 flatpak/wheels
 .flatpak-builder

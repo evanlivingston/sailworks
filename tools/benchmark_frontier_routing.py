@@ -2,7 +2,7 @@
 
 Example (run from the repository, with PYTHONPATH=.):
     .venv/bin/python tools/benchmark_frontier_routing.py \
-        --data-dir "$HOME/Library/Application Support/gweatherrouting" \
+        --data-dir "$HOME/Library/Application Support/sailworks" \
         --grib /path/to/forecast.grib2 --polar /path/to/boat.pol \
         --start 2026-10-12T04:55:00+00:00 --steps 15
 
@@ -23,15 +23,15 @@ import numpy as np
 import weatherrouting
 from osgeo import ogr
 
-from gweatherrouting.core.grib import Grib
-from gweatherrouting.core.marine.fields import FieldSelection, FieldStore
-from gweatherrouting.core.marine.models import utc_time
-from gweatherrouting.core.marine.routing import (
+from sailworks.core.grib import Grib
+from sailworks.core.marine.fields import FieldSelection, FieldStore
+from sailworks.core.marine.models import utc_time
+from sailworks.core.marine.routing import (
     CurrentIsoRouter,
     CurrentRoutingEnvironment,
     FrozenRoutingWind,
 )
-from gweatherrouting.rendering.gshhs import GSHHSVectorChart
+from sailworks.rendering.gshhs import GSHHSVectorChart
 
 
 def compare(actual, expected):

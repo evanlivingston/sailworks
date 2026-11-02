@@ -15,18 +15,18 @@ from unittest.mock import patch
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtWidgets import QApplication, QToolBar, QMessageBox
 
-from gweatherrouting.core.datasource import NMEADataPacket
-from gweatherrouting.core.storage import Storage
+from sailworks.core.datasource import NMEADataPacket
+from sailworks.core.storage import Storage
 
 ORIGINAL_STORAGE_SAVE = Storage.save
 ORIGINAL_STORAGE_LOAD = Storage.load_or_save_default
-from gweatherrouting.core.polarmanager import PolarManager
+from sailworks.core.polarmanager import PolarManager
 
 ORIGINAL_POLAR_REFRESH = PolarManager.refresh_local_polars
-from gweatherrouting.core.mapviewport import MapPoint, MapViewport, MercatorProjection
-from gweatherrouting.qt.controller import SessionController
-from gweatherrouting.qt.window import PreviewWindow
-from gweatherrouting.qt.theme import apply_theme
+from sailworks.core.mapviewport import MapPoint, MapViewport, MercatorProjection
+from sailworks.qt.controller import SessionController
+from sailworks.qt.window import PreviewWindow
+from sailworks.qt.theme import apply_theme
 from test.test_nmeasession import rmc
 from test.test_polarperformance import water, wind
 
@@ -41,10 +41,10 @@ class QtPreviewChecks(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name)
-        from gweatherrouting.core.marine.manager import MarineManager
+        from sailworks.core.marine.manager import MarineManager
 
         marine_factory = patch(
-            "gweatherrouting.core.core.MarineManager",
+            "sailworks.core.core.MarineManager",
             side_effect=lambda _path, **kwargs: MarineManager(
                 self.path / "marine", **kwargs
             ),
@@ -52,9 +52,9 @@ class QtPreviewChecks(unittest.TestCase):
         marine_factory.start()
         self.addCleanup(marine_factory.stop)
         for target in (
-            "gweatherrouting.core.storage.Storage.load_or_save_default",
-            "gweatherrouting.core.storage.Storage.save",
-            "gweatherrouting.core.polarmanager.PolarManager.refresh_local_polars",
+            "sailworks.core.storage.Storage.load_or_save_default",
+            "sailworks.core.storage.Storage.save",
+            "sailworks.core.polarmanager.PolarManager.refresh_local_polars",
         ):
             mock = patch(target)
             mock.start()
@@ -66,7 +66,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.controller.core.polar_manager.polars_files = ["first317.pol"]
         self.controller.core.polar_manager.polars = ["first317.pol"]
         self.controller.core.polar_manager.get_path = lambda name: str(
-            Path(__file__).parents[1] / "gweatherrouting/data/polars" / name
+            Path(__file__).parents[1] / "sailworks/data/polars" / name
         )
         self.controller.timer.stop()  # Deterministic playback steps in tests.
         self.window = PreviewWindow(
@@ -168,9 +168,9 @@ class QtPreviewChecks(unittest.TestCase):
         from PySide6.QtGui import QMouseEvent, QWheelEvent
         from PySide6.QtTest import QTest
 
-        from gweatherrouting.qt.marinequick import MarineCurrentItem
-        from gweatherrouting.rendering.marinepresentation import chart_instant
-        from gweatherrouting.rendering.marinesnapshot import (
+        from sailworks.qt.marinequick import MarineCurrentItem
+        from sailworks.rendering.marinepresentation import chart_instant
+        from sailworks.rendering.marinesnapshot import (
             CurrentArrow,
             MarineSnapshot,
             current_triangles,
@@ -355,9 +355,7 @@ class QtPreviewChecks(unittest.TestCase):
             return image
 
         with (
-            patch(
-                "gweatherrouting.qt.marinequick.sample_currents", side_effect=sampled
-            ),
+            patch("sailworks.qt.marinequick.sample_currents", side_effect=sampled),
             patch.object(MarineCurrentItem, "present", present),
             patch.object(MarineCurrentItem, "updatePaintNode", paint_node),
         ):
@@ -506,7 +504,7 @@ class QtPreviewChecks(unittest.TestCase):
                 def synthetic_style(speed):
                     # flow() reports speed in knots; directions and geometry
                     # still go through production current_triangles().
-                    from gweatherrouting.rendering.marinepresentation import flow
+                    from sailworks.rendering.marinepresentation import flow
 
                     speeds = [flow(i + 1, 0)[0] for i in range(len(palette))]
                     index = min(
@@ -560,7 +558,7 @@ class QtPreviewChecks(unittest.TestCase):
                         )
 
                 with patch(
-                    "gweatherrouting.rendering.marinesnapshot.current_style",
+                    "sailworks.rendering.marinesnapshot.current_style",
                     side_effect=synthetic_style,
                 ):
                     for index, (requested, latest) in enumerate(replacements.items()):
@@ -675,7 +673,7 @@ class QtPreviewChecks(unittest.TestCase):
                 quick_window.afterRendering.disconnect(rendered)
 
     def test_viewport_camera_state_compatibility_aliases(self):
-        from gweatherrouting.qt.viewportmap import ViewportMapState
+        from sailworks.qt.viewportmap import ViewportMapState
 
         canvas = self.window.map
         self.assertIsInstance(canvas._view_state, ViewportMapState)
@@ -734,8 +732,8 @@ class QtPreviewChecks(unittest.TestCase):
 
     def test_live_wind_barbs_keep_size_over_zoomed_base_and_retina(self):
         from PySide6.QtGui import QImage, QPainter
-        from gweatherrouting.rendering.overlayrenderer import RenderJob, RenderState
-        from gweatherrouting.rendering.windpainter import flatten_wind_columns
+        from sailworks.rendering.overlayrenderer import RenderJob, RenderState
+        from sailworks.rendering.windpainter import flatten_wind_columns
 
         canvas = self.window.map
         style = (
@@ -793,7 +791,7 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertEqual(live.call_count, 2)
 
     def test_floating_panels_redock_and_reset_without_losing_content(self):
-        from gweatherrouting.qt.dockchrome import DockTitleBar, DOCK_MIN_WIDTH
+        from sailworks.qt.dockchrome import DockTitleBar, DOCK_MIN_WIDTH
 
         dock = self.window.nmea_dock
         content = dock.widget()
@@ -818,7 +816,7 @@ class QtPreviewChecks(unittest.TestCase):
     def test_floating_panel_child_coordinates_do_not_trigger_edge_resize(self):
         from PySide6.QtTest import QTest
         from PySide6.QtCore import QPoint
-        from gweatherrouting.qt.dockchrome import _FloatingFrame
+        from sailworks.qt.dockchrome import _FloatingFrame
 
         dock = self.window.nmea_dock
         self.window._show_panel(dock)
@@ -1251,7 +1249,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(events)  # Queued position predates the source reset.
 
     def test_chart_layer_panel_switches_sources_on_both_maps_during_gesture(self):
-        from gweatherrouting.rendering.gdalrasterchart import GDALRasterChart
+        from sailworks.rendering.gdalrasterchart import GDALRasterChart
 
         object.__setattr__(self.controller.settings, "_Storage__init", True)
         self.window.show_library()
@@ -1274,7 +1272,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertTrue(panel.checkboxes["chartENCVisible"].isChecked())
 
     def test_chart_layer_panel_tracks_external_settings_and_persists_choices(self):
-        from gweatherrouting.core.settings import SettingsManager
+        from sailworks.core.settings import SettingsManager
 
         object.__setattr__(self.controller.settings, "_Storage__init", True)
         self.window.show_library()
@@ -1284,7 +1282,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.window.chart_debug_panel.refresh()
         self.assertIn("CHS tiles: off", self.window.chart_debug_panel.summary.text())
         with (
-            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+            patch("sailworks.core.storage.DATA_DIR", str(self.path)),
             patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
         ):
             panel.checkboxes["chartENCVisible"].setChecked(False)
@@ -1295,8 +1293,8 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertTrue(reloaded.chartWorldVisible)
 
     def test_mbtiles_import_toggle_persistence_and_remove_keeps_file(self):
-        from gweatherrouting.core.settings import SettingsManager
-        from gweatherrouting.rendering.mbtilesrenderer import MBTilesChart
+        from sailworks.core.settings import SettingsManager
+        from sailworks.rendering.mbtilesrenderer import MBTilesChart
         from test.test_mbtiles import make_mbtiles
 
         path = make_mbtiles(self.path / "offline.mbtiles")
@@ -1313,7 +1311,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertTrue(library.imported_chart(chart))
         self.assertEqual(library.charts.rowCount(), 1)
         with (
-            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+            patch("sailworks.core.storage.DATA_DIR", str(self.path)),
             patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
         ):
             object.__setattr__(self.controller.settings, "_Storage__init", True)
@@ -1362,7 +1360,7 @@ class QtPreviewChecks(unittest.TestCase):
         )
 
     def test_developer_mode_controls_viewport_status_and_persists(self):
-        from gweatherrouting.core.settings import SettingsManager
+        from sailworks.core.settings import SettingsManager
 
         settings = self.controller.settings
         presenter = self.window.map._weather_presenter
@@ -1375,7 +1373,7 @@ class QtPreviewChecks(unittest.TestCase):
         dialog = self.window.settings_dialog
         self.assertFalse(dialog.developer_mode.isChecked())
         with (
-            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+            patch("sailworks.core.storage.DATA_DIR", str(self.path)),
             patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
         ):
             object.__setattr__(settings, "_Storage__init", True)
@@ -1440,8 +1438,8 @@ class QtPreviewChecks(unittest.TestCase):
     def test_production_enc_renders_ogr_dataset_with_owned_qt_pixels(self):
         import cairo
         from osgeo import ogr
-        from gweatherrouting.rendering.encrenderer import ENCOverlayRenderer
-        from gweatherrouting.rendering.overlayrenderer import RenderJob
+        from sailworks.rendering.encrenderer import ENCOverlayRenderer
+        from sailworks.rendering.overlayrenderer import RenderJob
 
         path = str(self.path / "enc.gpkg")
         dataset = ogr.GetDriverByName("GPKG").CreateDataSource(path)
@@ -1468,7 +1466,7 @@ class QtPreviewChecks(unittest.TestCase):
     def test_raster_decode_runs_in_loader_without_spawn_and_keeps_palette(self):
         import numpy as np
         from osgeo import gdal, osr
-        from gweatherrouting.rendering.gdalrasterchart import GDALSingleRasterChart
+        from sailworks.rendering.gdalrasterchart import GDALSingleRasterChart
 
         path = str(self.path / "raster.tif")
         dataset = gdal.GetDriverByName("GTiff").Create(path, 2, 2, 1, gdal.GDT_Byte)
@@ -1520,7 +1518,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.drain()
 
     def plan_test_waypoints(self):
-        from gweatherrouting.core.geo.track import Track
+        from sailworks.core.geo.track import Track
 
         track = Track("Test course", [(0, 0, None), (0, 0.15, None)])
         self.controller.core.trackManager.append(track)
@@ -1532,8 +1530,8 @@ class QtPreviewChecks(unittest.TestCase):
     def test_qt_connection_edit_persists_legacy_n2k_offline_and_cancel_keeps_original(
         self,
     ):
-        from gweatherrouting.qt.settingsdialog import ConnectionDialog
-        from gweatherrouting.core.connectionmanager import ConnectionManagerStorage
+        from sailworks.qt.settingsdialog import ConnectionDialog
+        from sailworks.core.connectionmanager import ConnectionManagerStorage
 
         legacy = {
             "type": "serial",
@@ -1554,7 +1552,7 @@ class QtPreviewChecks(unittest.TestCase):
         settings.draft = [dialog.result_config]
         settings.reload()
         with (
-            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+            patch("sailworks.core.storage.DATA_DIR", str(self.path)),
             patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
             patch.object(self.controller.connections, "plug_all") as plug,
         ):
@@ -1577,7 +1575,7 @@ class QtPreviewChecks(unittest.TestCase):
     def test_chart_library_real_vector_and_raster_indexing_persistence_and_palette(
         self,
     ):
-        from gweatherrouting.core.settings import SettingsManager
+        from sailworks.core.settings import SettingsManager
 
         data = self.controller.data
         path = self.path / "coast.geojson"
@@ -1599,7 +1597,7 @@ class QtPreviewChecks(unittest.TestCase):
             )
         )
         with (
-            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+            patch("sailworks.core.storage.DATA_DIR", str(self.path)),
             patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
         ):
             ORIGINAL_STORAGE_LOAD(self.controller.settings)
@@ -1660,7 +1658,7 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertEqual(len(self.controller.charts.charts), 1)
 
     def test_noaa_chart_discovery_and_download_share_the_chart_library(self):
-        from gweatherrouting.core.enccharts import ENCCell
+        from sailworks.core.enccharts import ENCCell
 
         data = self.controller.data
         cell = ENCCell(
@@ -1880,7 +1878,7 @@ class QtPreviewChecks(unittest.TestCase):
     def test_workspace_roundtrip_keeps_layout_view_and_options_without_instrument_history(
         self,
     ):
-        from gweatherrouting.core.geo.routing import Routing
+        from sailworks.core.geo.routing import Routing
         from PySide6.QtCore import Qt
 
         old_routes = [
@@ -1928,7 +1926,7 @@ class QtPreviewChecks(unittest.TestCase):
         ):
             self.assertNotIn(key, payload["nmea"])
         with patch(
-            "gweatherrouting.qt.workspace.workareas", return_value=[(0, 0, 1600, 1000)]
+            "sailworks.qt.workspace.workareas", return_value=[(0, 0, 1600, 1000)]
         ):
             self.restart_workspace(routes=old_routes)
         self.assertEqual(self.window.size().width(), 1000)
@@ -1989,7 +1987,7 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertEqual(save.call_count, 1)
 
     def test_workspace_invalid_layout_and_removed_monitor_are_recoverable(self):
-        from gweatherrouting.core.workspacestate import WorkspaceStateStore
+        from sailworks.core.workspacestate import WorkspaceStateStore
 
         state = {
             "window": {"x": 9000, "y": -9000, "width": 5000, "height": 4000},
@@ -2011,7 +2009,7 @@ class QtPreviewChecks(unittest.TestCase):
             WorkspaceStateStore(path).save(state)
 
         with patch(
-            "gweatherrouting.qt.workspace.workareas", return_value=[(0, 0, 1280, 800)]
+            "sailworks.qt.workspace.workareas", return_value=[(0, 0, 1280, 800)]
         ):
             self.restart_workspace(write)
         self.assertEqual(self.window.width(), 1280)
@@ -2050,7 +2048,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertTrue(payload["window"]["maximized"])
         self.assertEqual(payload["window"]["width"], 1000)
         with patch(
-            "gweatherrouting.qt.workspace.workareas", return_value=[(0, 0, 1600, 1000)]
+            "sailworks.qt.workspace.workareas", return_value=[(0, 0, 1600, 1000)]
         ):
             self.restart_workspace()
         self.assertTrue(self.window.isMaximized())
@@ -2069,7 +2067,7 @@ class QtPreviewChecks(unittest.TestCase):
         previous = workspace.store.path.read_bytes()
         self.window.map._zoom += 1
         with patch(
-            "gweatherrouting.core.workspacestate.os.replace",
+            "sailworks.core.workspacestate.os.replace",
             side_effect=OSError("disk full"),
         ):
             workspace.save()
@@ -2086,10 +2084,10 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(workspace.timer.isActive())
 
     def polar_library(self):
-        from gweatherrouting.core.polarmanager import PolarManager
+        from sailworks.core.polarmanager import PolarManager
 
         refresh_patch = patch(
-            "gweatherrouting.core.polarmanager.PolarManager.refresh_local_polars",
+            "sailworks.core.polarmanager.PolarManager.refresh_local_polars",
             ORIGINAL_POLAR_REFRESH,
         )
         refresh_patch.start()
@@ -2097,13 +2095,13 @@ class QtPreviewChecks(unittest.TestCase):
         root = self.path / "polars"
         root.mkdir(exist_ok=True)
         for target in (
-            "gweatherrouting.core.polarmanager.POLAR_DIR",
-            "gweatherrouting.qt.polarcontroller.POLAR_DIR",
+            "sailworks.core.polarmanager.POLAR_DIR",
+            "sailworks.qt.polarcontroller.POLAR_DIR",
         ):
             mock = patch(target, str(root))
             mock.start()
             self.addCleanup(mock.stop)
-        mock = patch("gweatherrouting.core.storage.DATA_DIR", str(self.path))
+        mock = patch("sailworks.core.storage.DATA_DIR", str(self.path))
         mock.start()
         self.addCleanup(mock.stop)
         self.controller.polars.close()
@@ -2113,7 +2111,7 @@ class QtPreviewChecks(unittest.TestCase):
         ):
             manager = PolarManager()
         self.controller.core.polar_manager = manager
-        from gweatherrouting.qt.polarcontroller import PolarController
+        from sailworks.qt.polarcontroller import PolarController
 
         self.controller.polars = PolarController(self.controller)
         self.controller.polars.changed.connect(self.window.routing_panel.refresh_polars)
@@ -2122,7 +2120,7 @@ class QtPreviewChecks(unittest.TestCase):
         )
         self.controller.polars.use_requested.connect(self.window._use_polar)
         self.window.routing_panel.refresh_polars()
-        from gweatherrouting.qt.polarlibrary import PolarLibrary
+        from sailworks.qt.polarlibrary import PolarLibrary
 
         self.window.polar_manager_panel = PolarLibrary(self.controller, self.window)
         self.window.polar_manager_dock.setWidget(self.window.polar_manager_panel)
@@ -2144,18 +2142,18 @@ class QtPreviewChecks(unittest.TestCase):
         self,
     ):
         import shutil
-        from gweatherrouting.core.polarmanager import PolarManager
+        from sailworks.core.polarmanager import PolarManager
 
         root, panel = self.polar_library()
         source = self.path / "custom.pol"
         shutil.copyfile(
-            Path(__file__).parents[1] / "gweatherrouting/data/polars/first317.pol",
+            Path(__file__).parents[1] / "sailworks/data/polars/first317.pol",
             source,
         )
         with (
             patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
             patch(
-                "gweatherrouting.qt.polarlibrary.QFileDialog.getOpenFileName",
+                "sailworks.qt.polarlibrary.QFileDialog.getOpenFileName",
                 return_value=(str(source), ""),
             ) as picker,
         ):
@@ -2175,7 +2173,7 @@ class QtPreviewChecks(unittest.TestCase):
             preview = panel.preview_dialog
             self.assertIsNotNone(preview)
             self.assertTrue(preview.isVisible())
-            from gweatherrouting.core.polarfiles import read_polar
+            from sailworks.core.polarfiles import read_polar
 
             polar = read_polar(source)
             self.assertEqual(preview.table.rowCount(), len(polar.twa))
@@ -2226,7 +2224,7 @@ class QtPreviewChecks(unittest.TestCase):
             ["CAN/456", "Other yacht", "J/120"],
         ]
         with patch(
-            "gweatherrouting.core.polarfiles.requests.get",
+            "sailworks.core.polarfiles.requests.get",
             return_value=response(entries),
         ):
             panel.fetch_button.click()
@@ -2241,7 +2239,7 @@ class QtPreviewChecks(unittest.TestCase):
         with (
             patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
             patch(
-                "gweatherrouting.core.polarfiles.requests.get",
+                "sailworks.core.polarfiles.requests.get",
                 return_value=response(ORC_DATA),
             ),
         ):
@@ -2260,7 +2258,7 @@ class QtPreviewChecks(unittest.TestCase):
 
         previous = list(self.controller.core.polar_manager.polars)
         with patch(
-            "gweatherrouting.core.polarfiles.requests.get",
+            "sailworks.core.polarfiles.requests.get",
             side_effect=requests.ConnectionError("offline"),
         ):
             panel.download_button.click()
@@ -2284,7 +2282,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.controller.routing.busy = False
         self.controller.routing.changed.emit()
         with patch(
-            "gweatherrouting.qt.polarlibrary.QMessageBox.question",
+            "sailworks.qt.polarlibrary.QMessageBox.question",
             return_value=QMessageBox.StandardButton.Yes,
         ):
             panel.local.selectRow(panel.names.index(selected))
@@ -2371,7 +2369,7 @@ class QtPreviewChecks(unittest.TestCase):
     def test_gtk_performance_controls_use_shared_history_basis_band_and_clear_only_samples(
         self,
     ):
-        from gweatherrouting.core.polarperformance import PerformanceSample
+        from sailworks.core.polarperformance import PerformanceSample
 
         workspace = self.window.polar_workspace
         self.window.show_polar_workspace()
@@ -2421,7 +2419,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.controller.session.advance(5)
         self.drain()
         self.assertEqual(self.window.log_map.position, 5)
-        from gweatherrouting.core.timecontrol import naive_wall_time
+        from sailworks.core.timecontrol import naive_wall_time
 
         formatter = self.window.plots.axes[-1].xaxis.get_major_formatter()
         self.assertEqual(
@@ -2500,7 +2498,7 @@ class QtPreviewChecks(unittest.TestCase):
 
     def test_gtk_workspace_header_stays_above_context_toolbar_for_old_qt_layout(self):
         from PySide6.QtWidgets import QMainWindow
-        from gweatherrouting.core.workspacestate import WorkspaceStateStore
+        from sailworks.core.workspacestate import WorkspaceStateStore
 
         old = QMainWindow()
         toolbar = QToolBar("Navigation", old)
@@ -2601,8 +2599,8 @@ class QtPreviewChecks(unittest.TestCase):
     def test_track_extended_selection_context_click_and_multi_delete(self):
         from PySide6.QtCore import QItemSelection, QItemSelectionModel
         from PySide6.QtWidgets import QTableWidget
-        from gweatherrouting.core.geo.track import Track
-        from gweatherrouting.qt.navigationpanel import NavigationPanel
+        from sailworks.core.geo.track import Track
+        from sailworks.qt.navigationpanel import NavigationPanel
 
         panel = self.window.navigation_panel
         manager = self.controller.core.trackManager
@@ -2650,8 +2648,8 @@ class QtPreviewChecks(unittest.TestCase):
 
     def test_navigation_gpx_native_picker_import_export_and_invalid_input(self):
         import gpxpy
-        from gweatherrouting.qt.navigationpanel import gpx_document
-        from gweatherrouting.core.geo.routing import Routing
+        from sailworks.qt.navigationpanel import gpx_document
+        from sailworks.core.geo.routing import Routing
 
         panel = self.window.navigation_panel
         source = self.path / "course.gpx"
@@ -2661,7 +2659,7 @@ class QtPreviewChecks(unittest.TestCase):
             '<trkpt lat="48.2" lon="-123.2"/></trkseg></trk></gpx>'
         )
         with patch(
-            "gweatherrouting.qt.navigationpanel.QFileDialog.getOpenFileName",
+            "sailworks.qt.navigationpanel.QFileDialog.getOpenFileName",
             return_value=(str(source), ""),
         ) as picker:
             panel.import_gpx()
@@ -2696,7 +2694,7 @@ class QtPreviewChecks(unittest.TestCase):
         ):
             destination = self.path / filename
             with patch(
-                "gweatherrouting.qt.navigationpanel.QFileDialog.getSaveFileName",
+                "sailworks.qt.navigationpanel.QFileDialog.getSaveFileName",
                 return_value=(str(destination), ""),
             ) as picker:
                 method()
@@ -2727,8 +2725,8 @@ class QtPreviewChecks(unittest.TestCase):
         self.drain()
 
     def test_navigation_ais_sorting_visibility_expiry_and_map(self):
-        from gweatherrouting.core.aismanager import AISTarget, STALE_TIMEOUT
-        from gweatherrouting.qt.navigationpanel import distance_nm
+        from sailworks.core.aismanager import AISTarget, STALE_TIMEOUT
+        from sailworks.qt.navigationpanel import distance_nm
 
         panel = self.window.navigation_panel
         manager = self.controller.core.ais_manager
@@ -2759,7 +2757,7 @@ class QtPreviewChecks(unittest.TestCase):
     def test_navigation_routes_support_multi_selection_and_removal(self):
         from PySide6.QtCore import QItemSelection, QItemSelectionModel
         from PySide6.QtWidgets import QTableWidget
-        from gweatherrouting.core.geo.routing import Routing
+        from sailworks.core.geo.routing import Routing
 
         panel = self.window.navigation_panel
         manager = self.controller.core.routingManager
@@ -2803,9 +2801,9 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertIs(panel.route, routes[3])
 
     def test_navigation_route_controls_and_collection_persistence(self):
-        from gweatherrouting.core.geo.routing import Routing
-        from gweatherrouting.core.geo.trackcollection import TrackCollection
-        from gweatherrouting.core.geo.poicollection import POICollection
+        from sailworks.core.geo.routing import Routing
+        from sailworks.core.geo.trackcollection import TrackCollection
+        from sailworks.core.geo.poicollection import POICollection
 
         panel = self.window.navigation_panel
         manager = self.controller.core.routingManager
@@ -2830,7 +2828,7 @@ class QtPreviewChecks(unittest.TestCase):
         panel.routes.item(0, 2).setCheckState(Qt.CheckState.Unchecked)
         self.assertFalse(route.visible)
         with (
-            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+            patch("sailworks.core.storage.DATA_DIR", str(self.path)),
             patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
         ):
             for collection in (
@@ -2965,13 +2963,13 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertTrue(self.window.map.dashboard_visible)
 
     def test_weather_barb_density_updates_maps_and_persists(self):
-        from gweatherrouting.core.settings import SettingsManager
-        from gweatherrouting.rendering.windpainter import BARB_DENSITIES
+        from sailworks.core.settings import SettingsManager
+        from sailworks.rendering.windpainter import BARB_DENSITIES
 
         panel = self.window.weather_panel
         canvas = self.window.map
         with (
-            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+            patch("sailworks.core.storage.DATA_DIR", str(self.path)),
             patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
             patch.object(self.controller.data, "redraw") as redraw,
             patch.object(
@@ -2993,12 +2991,12 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(panel.barb_density.currentData(), "all")
 
     def test_weather_streamline_style_updates_render_key_and_persists(self):
-        from gweatherrouting.core.settings import SettingsManager
+        from sailworks.core.settings import SettingsManager
 
         panel, canvas = self.window.weather_panel, self.window.map
         before = canvas._wind_style_key()
         with (
-            patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
+            patch("sailworks.core.storage.DATA_DIR", str(self.path)),
             patch.object(Storage, "save", ORIGINAL_STORAGE_SAVE),
             patch.object(self.controller.data, "redraw") as redraw,
         ):
@@ -3205,8 +3203,8 @@ class QtPreviewChecks(unittest.TestCase):
 
     def test_forecast_timeline_enabled_metadata_updates_and_post_2038_slider(self):
         from datetime import datetime, timedelta
-        from gweatherrouting.core.marine.manager import MarineManager
-        from gweatherrouting.qt.forecasttimeline import ForecastTimeline
+        from sailworks.core.marine.manager import MarineManager
+        from sailworks.qt.forecasttimeline import ForecastTimeline
         from test.test_marine_fields import field
 
         marine = MarineManager(self.path / "timeline-marine")
@@ -3271,9 +3269,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(
             self.controller.time_control.time, start + timedelta(minutes=59, seconds=30)
         )
-        with patch(
-            "gweatherrouting.core.timecontrol.datetime.datetime"
-        ) as clock_datetime:
+        with patch("sailworks.core.timecontrol.datetime.datetime") as clock_datetime:
             clock_datetime.now.return_value = datetime(2026, 1, 5, 14, 32)
             timeline.now_button.click()
         self.assertEqual(self.controller.time_control.time, datetime(2026, 1, 5, 14))
@@ -3445,7 +3441,7 @@ class QtPreviewChecks(unittest.TestCase):
         from dataclasses import replace
         from test.test_marine_fields import field
         from test.test_marine import dataset, START
-        from gweatherrouting.core.marine.models import Sample, Series
+        from sailworks.core.marine.models import Sample, Series
 
         current = field()
         tide = dataset()
@@ -3542,7 +3538,7 @@ class QtPreviewChecks(unittest.TestCase):
             from datetime import timedelta, timezone
 
             with patch(
-                "gweatherrouting.qt.marinepanel.chart_instant",
+                "sailworks.qt.marinepanel.chart_instant",
                 return_value=self.controller.time_control.time.astimezone(timezone.utc)
                 + timedelta(hours=2),
             ):
@@ -3756,7 +3752,7 @@ class QtPreviewChecks(unittest.TestCase):
         start.set_time(tide.requested_start)
         points[:] = [(10, 179.8), (10, -179.8)]
         # The fixture covers 15 minutes, so use an explicit coherent hour window.
-        from gweatherrouting.core.marine.models import Series, Sample
+        from sailworks.core.marine.models import Series, Sample
         from datetime import timedelta
 
         end = tide.requested_start + timedelta(hours=1)
@@ -3861,8 +3857,8 @@ class QtPreviewChecks(unittest.TestCase):
 
     def test_marine_account_controls_use_system_store_without_saved_secrets(self):
         from test.test_marine_credentials import MemoryKeyring
-        from gweatherrouting.core.marine.credentials import SystemCredentialStore
-        from gweatherrouting.core.marine.spatialproviders import CopernicusProvider
+        from sailworks.core.marine.credentials import SystemCredentialStore
+        from sailworks.core.marine.spatialproviders import CopernicusProvider
 
         provider = CopernicusProvider(SystemCredentialStore(MemoryKeyring()))
         self.controller.core.marine_manager.coverage_planner.worldwide = provider
@@ -4000,7 +3996,7 @@ class QtPreviewChecks(unittest.TestCase):
     def test_routing_current_priority_defaults_finest_persists_and_reaches_request(
         self,
     ):
-        from gweatherrouting.core.routingjob import CalculatedRoute
+        from sailworks.core.routingjob import CalculatedRoute
 
         self.plan_test_waypoints()
         panel = self.window.routing_panel
@@ -4019,7 +4015,7 @@ class QtPreviewChecks(unittest.TestCase):
             return CalculatedRoute(((0, 0, "2026-10-01", 0, 1, 1, 0),), (), {})
 
         with patch(
-            "gweatherrouting.qt.routingcontroller.calculate_route",
+            "sailworks.qt.routingcontroller.calculate_route",
             side_effect=calculate,
         ):
             panel.calculate.click()
@@ -4060,9 +4056,7 @@ class QtPreviewChecks(unittest.TestCase):
 
     def test_frontend_does_not_import_gtk(self):
         self.assertNotIn("gi.repository.Gtk", sys.modules)
-        self.assertFalse(
-            any(name.startswith("gweatherrouting.gtk") for name in sys.modules)
-        )
+        self.assertFalse(any(name.startswith("sailworks.gtk") for name in sys.modules))
         self.assertFalse(hasattr(self.window, "save_button"))
         self.assertFalse(hasattr(self.window, "clear_button"))
         self.assertTrue(self.window.grab().width())
@@ -4112,8 +4106,8 @@ class QtPreviewChecks(unittest.TestCase):
         self,
     ):
         from test.test_mapdata import coastline_archive, Response
-        from gweatherrouting.rendering.chartlayer import ChartLayer
-        from gweatherrouting.common import resource_path
+        from sailworks.rendering.chartlayer import ChartLayer
+        from sailworks.common import resource_path
 
         body = coastline_archive(self.path)
         root = self.path / "base-map"
@@ -4126,10 +4120,10 @@ class QtPreviewChecks(unittest.TestCase):
         page = self.window.library_dialog.map_data
         other = ChartLayer("user-chart", "raster", self.controller.settings)
         other.enabled = False
-        with patch("gweatherrouting.rendering.chartcollection.DATA_DIR", str(root)):
+        with patch("sailworks.rendering.chartcollection.DATA_DIR", str(root)):
             self.controller.charts.load_base_chart()
             self.controller.charts.charts.append(other)
-            fallback = resource_path("gweatherrouting", "data/countries.geojson")
+            fallback = resource_path("sailworks", "data/countries.geojson")
             self.assertTrue(
                 any(c.path == fallback for c in self.controller.charts.charts)
             )
@@ -4142,7 +4136,7 @@ class QtPreviewChecks(unittest.TestCase):
 
             with (
                 patch(
-                    "gweatherrouting.core.mapdata.requests.get",
+                    "sailworks.core.mapdata.requests.get",
                     return_value=Response(body),
                 ),
                 patch.object(
@@ -4180,7 +4174,7 @@ class QtPreviewChecks(unittest.TestCase):
                 b'<tag k="seamark:type" v="buoy_lateral"/></node></osm>'
             )
             with patch(
-                "gweatherrouting.core.mapdata.requests.get", return_value=Response(body)
+                "sailworks.core.mapdata.requests.get", return_value=Response(body)
             ):
                 self.assertTrue(setup.start(("seamarks",)))
                 self.wait_for_routing_stage(lambda: not setup.task.busy)
@@ -4196,7 +4190,7 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertTrue(self.window.library_dialog.isVisible())
 
     def test_map_data_cancel_and_close_reject_late_chart_attachment(self):
-        from gweatherrouting.core.mapdata import MapDownloadCancelledError
+        from sailworks.core.mapdata import MapDownloadCancelledError
 
         setup = self.controller.map_data
         started, release = Event(), Event()
@@ -4208,9 +4202,7 @@ class QtPreviewChecks(unittest.TestCase):
             return (), MapDownloadCancelledError("Download cancelled")
 
         with (
-            patch(
-                "gweatherrouting.qt.mapdatasetup.install_map_data", side_effect=install
-            ),
+            patch("sailworks.qt.mapdatasetup.install_map_data", side_effect=install),
             patch.object(self.controller.charts, "reload_base_chart") as reload,
         ):
             self.assertTrue(setup.start(("coastlines",)))
@@ -4256,7 +4248,7 @@ class QtPreviewChecks(unittest.TestCase):
         setup = self.controller.map_data
         with (
             patch(
-                "gweatherrouting.qt.mapdatasetup.install_map_data",
+                "sailworks.qt.mapdatasetup.install_map_data",
                 return_value=(("coastlines",), ValueError("Sea marks unavailable")),
             ),
             patch.object(self.controller.charts, "reload_base_chart") as reload,
@@ -4834,7 +4826,7 @@ class QtPreviewChecks(unittest.TestCase):
     def _enable_motion_settings(self):
         # The common fixture skips disk loading; initialize notifications using
         # a private settings path before exercising real preference callbacks.
-        with patch("gweatherrouting.core.storage.DATA_DIR", str(self.path)):
+        with patch("sailworks.core.storage.DATA_DIR", str(self.path)):
             ORIGINAL_STORAGE_LOAD(self.controller.settings)
 
     @staticmethod

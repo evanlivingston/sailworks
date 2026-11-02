@@ -28,9 +28,6 @@ jobs:
       - name: Sphinx build
         run: |
           sphinx-build docs/source _build
-          echo "gweatherrouting.org" > _build/CNAME
-          mkdir _build/.well-known
-          echo "980c131e-0249-41e7-8506-406bee91de44" > _build/.well-known/org.flathub.VerifiedApps.txt
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}

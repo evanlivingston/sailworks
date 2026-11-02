@@ -9,11 +9,11 @@ from pathlib import Path
 from threading import Barrier, Event, Lock
 from unittest.mock import patch, MagicMock
 
-from gweatherrouting.core.gribsources.options import DownloadOptions, selection
-from gweatherrouting.core.gribsources.noaagfs import NOAAGFSSource
-from gweatherrouting.core.gribsources.noaahrrr import NOAAHRRRSource
-from gweatherrouting.core.gribsources.eccchrdps import ECCHRDPSource
-from gweatherrouting.core.gribsources.parallel import (
+from sailworks.core.gribsources.options import DownloadOptions, selection
+from sailworks.core.gribsources.noaagfs import NOAAGFSSource
+from sailworks.core.gribsources.noaahrrr import NOAAHRRRSource
+from sailworks.core.gribsources.eccchrdps import ECCHRDPSource
+from sailworks.core.gribsources.parallel import (
     write_ordered_forecasts,
     write_ordered_payloads,
 )
@@ -36,7 +36,7 @@ class DownloadSelectionTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             patch(
-                "gweatherrouting.core.gribsources.noaagfs.requests.get",
+                "sailworks.core.gribsources.noaagfs.requests.get",
                 side_effect=lambda *_args, **_kwargs: response_with(),
             ) as get,
         ):
@@ -60,7 +60,7 @@ class DownloadSelectionTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             patch(
-                "gweatherrouting.core.gribsources.noaahrrr.requests.get",
+                "sailworks.core.gribsources.noaahrrr.requests.get",
                 side_effect=lambda *_args, **_kwargs: response_with(),
             ) as get,
         ):
@@ -90,7 +90,7 @@ class DownloadSelectionTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             patch(
-                "gweatherrouting.core.gribsources.noaagfs.requests.get",
+                "sailworks.core.gribsources.noaagfs.requests.get",
                 side_effect=lambda *_args, **kwargs: response_with(
                     kwargs["params"]["file"][-3:].encode()
                 ),
@@ -127,7 +127,7 @@ class DownloadSelectionTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as directory,
             patch(
-                "gweatherrouting.core.gribsources.noaahrrr.requests.get",
+                "sailworks.core.gribsources.noaahrrr.requests.get",
                 side_effect=lambda *_args, **_kwargs: response_with(),
             ) as get,
         ):
@@ -223,7 +223,7 @@ class DownloadSelectionTests(unittest.TestCase):
 
     def test_generic_payload_writer_orders_progress_and_closes_submission_window(self):
         from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
-        from gweatherrouting.core.gribsources import parallel
+        from sailworks.core.gribsources import parallel
 
         second_done = Event()
         lock = Lock()
@@ -314,7 +314,7 @@ class DownloadSelectionTests(unittest.TestCase):
             )
 
     def test_generic_payload_writer_enforces_aggregate_size(self):
-        from gweatherrouting.core.gribsources import parallel
+        from sailworks.core.gribsources import parallel
 
         output = BytesIO()
         with patch.object(parallel, "MAX_DOWNLOAD_BYTES", 3):
@@ -395,7 +395,7 @@ class DownloadSelectionTests(unittest.TestCase):
 
         with (
             patch(
-                "gweatherrouting.core.gribsources.eccchrdps.requests.Session",
+                "sailworks.core.gribsources.eccchrdps.requests.Session",
                 return_value=Session(),
             ),
             tempfile.TemporaryDirectory() as directory,

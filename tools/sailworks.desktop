@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Name=Sailworks
+Exec=/usr/local/bin/sailworks
+Icon=
+StartupNotify=true
+Terminal=true
+Type=Application
+Categories=Education;Science;Geography
+Keywords=GPS;Navigation;Chart

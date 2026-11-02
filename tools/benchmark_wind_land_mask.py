@@ -10,8 +10,8 @@ from time import perf_counter
 
 import numpy as np
 
-from gweatherrouting.rendering.windpainter import WindPainter
-from gweatherrouting.rendering.windrenderer import WindLandMask
+from sailworks.rendering.windpainter import WindPainter
+from sailworks.rendering.windrenderer import WindLandMask
 
 
 def timed(call, repeats):

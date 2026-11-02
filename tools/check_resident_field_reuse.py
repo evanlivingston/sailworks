@@ -22,9 +22,9 @@ sys.path.insert(0, str(ROOT))
 
 
 def forecast(directory):
-    from gweatherrouting.core.grib import Grib
-    from gweatherrouting.core.gribsources.noaahrrr import NOAAHRRRSource
-    from gweatherrouting.core.modeldownloads import install_download
+    from sailworks.core.grib import Grib
+    from sailworks.core.gribsources.noaahrrr import NOAAHRRRSource
+    from sailworks.core.modeldownloads import install_download
 
     supplied = os.environ.get("GWR_RESIDENCY_FORECAST")
     if supplied:
@@ -47,8 +47,8 @@ def measure(source):
     from PySide6.QtWidgets import QApplication
     from viewport_texture_probe import TextureProbe
 
-    from gweatherrouting.rendering.weathercache import DisplayGridIndex
-    from gweatherrouting.qt.gribviewport import (
+    from sailworks.rendering.weathercache import DisplayGridIndex
+    from sailworks.qt.gribviewport import (
         GribViewportModel,
         ViewportCamera,
         _covers,

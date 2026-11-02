@@ -7,9 +7,9 @@ import pytest
 pytest.importorskip("PySide6")
 from PySide6.QtWidgets import QApplication, QPushButton, QWidget
 
-from gweatherrouting.core.n2kdevices import CapturedDevice, DeviceCollector
-from gweatherrouting.core.nmeasession import NMEALog
-from gweatherrouting.qt.loginfo import LogInfoDialog, device_details
+from sailworks.core.n2kdevices import CapturedDevice, DeviceCollector
+from sailworks.core.nmeasession import NMEALog
+from sailworks.qt.loginfo import LogInfoDialog, device_details
 from test.test_n2kdevices import claim, fragments, message
 
 
@@ -179,7 +179,7 @@ def test_file_info_dialog_can_use_cached_library_metadata(app):
 
 
 def test_nmea_panel_has_library_not_direct_load_or_file_info(app, tmp_path):
-    from gweatherrouting.qt.window import PreviewWindow
+    from sailworks.qt.window import PreviewWindow
 
     session = SimpleNamespace(log=None)
     window = QWidget()

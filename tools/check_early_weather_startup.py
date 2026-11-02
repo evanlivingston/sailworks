@@ -246,7 +246,7 @@ def block_network():
 
 def freeze_clock(manifest):
     """Freeze the application clock at the fixture's forecast time."""
-    from gweatherrouting.core.timecontrol import TimeControl
+    from sailworks.core.timecontrol import TimeControl
 
     original_time = TimeControl.__init__
 
@@ -259,7 +259,7 @@ def freeze_clock(manifest):
 
 def track_windows():
     """Record every window the application builds."""
-    from gweatherrouting.qt.window import PreviewWindow
+    from sailworks.qt.window import PreviewWindow
 
     windows = []
     original_window = PreviewWindow.__init__
@@ -292,8 +292,8 @@ def main():
     block_network()
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
-    from gweatherrouting.core.marine.credentials import SystemCredentialStore
-    from gweatherrouting.qt import __main__ as entry
+    from sailworks.core.marine.credentials import SystemCredentialStore
+    from sailworks.qt import __main__ as entry
 
     SystemCredentialStore.load = lambda _self: None
     freeze_clock(manifest)

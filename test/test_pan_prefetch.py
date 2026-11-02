@@ -2,7 +2,7 @@
 
 import unittest
 
-from gweatherrouting.rendering.panprefetch import (
+from sailworks.rendering.panprefetch import (
     PanPreparationTime,
     pan_prefetch_offset,
 )

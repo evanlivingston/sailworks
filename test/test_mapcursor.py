@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from gweatherrouting.qt.mapcursor import MapCursorMixin
+from sailworks.qt.mapcursor import MapCursorMixin
 
 
 class Position:

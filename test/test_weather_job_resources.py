@@ -8,11 +8,11 @@ from unittest.mock import patch
 
 import numpy as np
 
-from gweatherrouting.core.gribsampling import GridIndex, WeatherSampler
-from gweatherrouting.core.mapviewport import MapViewport
-from gweatherrouting.rendering.overlayrenderer import RenderJob, RenderState
-from gweatherrouting.rendering.windpainter import WindPainter
-from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
+from sailworks.core.gribsampling import GridIndex, WeatherSampler
+from sailworks.core.mapviewport import MapViewport
+from sailworks.rendering.overlayrenderer import RenderJob, RenderState
+from sailworks.rendering.windpainter import WindPainter
+from sailworks.rendering.windrenderer import WindOverlayRenderer
 from test import test_grib_sampling as fixture
 
 
@@ -333,7 +333,7 @@ class TestWeatherJobResources(unittest.TestCase):
         self.assertFalse(renderer._leased_providers)
 
     def test_contained_field_cache_reuses_return_views_without_overfetch(self):
-        from gweatherrouting.core.gribsampling import WeatherSampler
+        from sailworks.core.gribsampling import WeatherSampler
 
         sources = self.sources()
         renderer = self.renderer(source_limit=64)

@@ -140,7 +140,7 @@ def value_identity(values, provenance):
 
 def query_points(view, width, height):
     import numpy as np
-    from gweatherrouting.core.mapviewport import MercatorProjection
+    from sailworks.core.mapviewport import MercatorProjection
 
     class View(MercatorProjection):
         _center_lat = view["latitude"]
@@ -173,8 +173,8 @@ def probe(config):
     socket.socket.connect_ex = blocked
     import numpy as np
     from osgeo import gdal
-    from gweatherrouting.core.grib import Grib
-    from gweatherrouting.core.gribsampling import WeatherSampler
+    from sailworks.core.grib import Grib
+    from sailworks.core.gribsampling import WeatherSampler
 
     # Avoid reading account/instrument configuration or constructing a GUI.
     data = Path(config["data"])

@@ -4,9 +4,9 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QGroupBox, QTabWidget, QWidget
 
-from gweatherrouting.core.forecasttranche import ModelConfiguration
-from gweatherrouting.qt.datalibrary import DataLibrary
-from gweatherrouting.qt.forecastdownload import AnalysisForecastDownloadOptions
+from sailworks.core.forecasttranche import ModelConfiguration
+from sailworks.qt.datalibrary import DataLibrary
+from sailworks.qt.forecastdownload import AnalysisForecastDownloadOptions
 from test.analysis_qt_fixtures import make_published_snapshot
 from test.qt_analysis_fakes import FakeAnalysis, FakeSession, app
 

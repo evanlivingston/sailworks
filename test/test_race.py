@@ -4,7 +4,7 @@
 import json
 from datetime import datetime, timezone
 
-from gweatherrouting.core.race import (
+from sailworks.core.race import (
     RaceBoat,
     RacePosition,
     parse_race,
@@ -146,7 +146,7 @@ def test_time_range_aliases():
 
 
 def test_raceboat_position_at_duplicate_timestamps():
-    from gweatherrouting.core.race import RaceBoat, RacePosition
+    from sailworks.core.race import RaceBoat, RacePosition
     from datetime import datetime
 
     positions = [
@@ -171,7 +171,7 @@ def test_raceboat_position_at_duplicate_timestamps():
 
 
 def test_raceboat_shared_positions_and_mutation_reassignment():
-    from gweatherrouting.core.race import RaceBoat, RacePosition
+    from sailworks.core.race import RaceBoat, RacePosition
     from datetime import datetime, timedelta
 
     first = datetime(2024, 1, 1)
@@ -197,7 +197,7 @@ def test_raceboat_shared_positions_and_mutation_reassignment():
 
 import pytest
 
-from gweatherrouting.core.race import (
+from sailworks.core.race import (
     YBRaceError,
     fetch_yb_positions,
     download_yb_race,
@@ -254,7 +254,7 @@ def _valid_race_payload():
 
 def test_gpsAt_utc_seconds_and_milliseconds():
     payload = _valid_race_payload()
-    from gweatherrouting.core.race import parse_race
+    from sailworks.core.race import parse_race
 
     race = parse_race(payload)
     boat = race.boat(1)
@@ -280,7 +280,7 @@ def test_gpsAt_utc_timezone_offset():
             }
         ],
     }
-    from gweatherrouting.core.race import parse_race
+    from sailworks.core.race import parse_race
 
     race = parse_race(payload)
     pos = race.boat(1).positions[0]
@@ -421,7 +421,7 @@ def test_raceposition_epoch_non_utc_timezone():
     import os
     import time
 
-    from gweatherrouting.core.race import RacePosition
+    from sailworks.core.race import RacePosition
 
     old_tz = os.environ.get("TZ")
     try:
@@ -471,7 +471,7 @@ def test_fetch_does_not_follow_redirect_to_other_host():
 
 
 def test_raceboat_position_at_unsorted_preserves_caller_and_last_in_list_order():
-    from gweatherrouting.core.race import RaceBoat, RacePosition
+    from sailworks.core.race import RaceBoat, RacePosition
     from datetime import datetime
 
     positions = [
@@ -505,7 +505,7 @@ def _linear_index_at(positions, when):
 
 def test_raceboat_position_at_matches_linear_reference_under_mutations():
     import random
-    from gweatherrouting.core.race import RaceBoat, RacePosition
+    from sailworks.core.race import RaceBoat, RacePosition
     from datetime import datetime, timedelta
 
     base = datetime(2024, 1, 1)
@@ -572,7 +572,7 @@ def test_raceboat_position_at_matches_linear_reference_under_mutations():
 
 
 def test_raceboat_position_at_unsorted_duplicate_timestamps():
-    from gweatherrouting.core.race import RaceBoat, RacePosition
+    from sailworks.core.race import RaceBoat, RacePosition
     from datetime import datetime
 
     positions = [
@@ -589,7 +589,7 @@ def test_raceboat_position_at_unsorted_duplicate_timestamps():
 
 
 def test_raceboat_position_index_supports_list_mutations():
-    from gweatherrouting.core.race import RaceBoat, RacePosition
+    from sailworks.core.race import RaceBoat, RacePosition
     from datetime import datetime
 
     boat = RaceBoat(
@@ -612,7 +612,7 @@ def test_raceboat_position_index_supports_list_mutations():
 
 def test_raceboat_cached_index_tracks_timestamp_and_list_mutations():
     from datetime import datetime
-    from gweatherrouting.core.race import RaceBoat, RacePosition
+    from sailworks.core.race import RaceBoat, RacePosition
 
     t0 = datetime(2024, 1, 1)
     p0 = RacePosition(t0, 1.0, 1.0)

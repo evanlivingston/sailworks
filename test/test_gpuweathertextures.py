@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from gweatherrouting.qt.gpuweathertextures import (
+from sailworks.qt.gpuweathertextures import (
     NativeFieldKey,
     NativeFieldStore,
     NativeFieldTooLarge,
@@ -40,7 +40,7 @@ def key(name, source=0, scene=0, representation="nodes"):
 
 def test_policy_import_does_not_import_qt():
     import inspect
-    import gweatherrouting.qt.gpuweathertextures as module
+    import sailworks.qt.gpuweathertextures as module
 
     # Qt imports are inside the explicitly constructed adapter, not policy.
     prefix = inspect.getsource(module).split("def native_texture_context(")[0]

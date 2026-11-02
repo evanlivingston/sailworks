@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 from PySide6.QtWidgets import QApplication
 
-from gweatherrouting.core.race import parse_race
-from gweatherrouting.qt import racepanel
+from sailworks.core.race import parse_race
+from sailworks.qt import racepanel
 
 
 def _sample_race():
@@ -79,7 +79,7 @@ def test_show_race_tracks_uses_batched_remove_and_append(qtbot):
             self.poiManager = []
     
     # Mock load_saved_races to return empty to prevent loading real tracks
-    with patch("gweatherrouting.qt.racepanel.load_saved_races", return_value=[]):
+    with patch("sailworks.qt.racepanel.load_saved_races", return_value=[]):
         controller = SimpleNamespace(
             time_control=SimpleNamespace(time=None),
             core=MockCore(),

@@ -5,12 +5,12 @@ from dataclasses import asdict
 
 import pytest
 
-from gweatherrouting.core.n2kdevices import (
+from sailworks.core.n2kdevices import (
     DeviceCollector,
     captured_device_from_dict,
     source_label,
 )
-from gweatherrouting.core.nmea2000 import N2KMessage
+from sailworks.core.nmea2000 import N2KMessage
 
 
 STAMP = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -195,7 +195,7 @@ def test_missing_model_and_reserved_numeric_fields_stay_unknown():
 
 
 def test_manufacturer_fallback_is_offline_and_model_remains_preferred():
-    from gweatherrouting.core.n2kmanufacturers import manufacturer_name
+    from sailworks.core.n2kmanufacturers import manufacturer_name
 
     assert [manufacturer_name(code) for code in (229, 135, 358, 419)] == [
         "Garmin",

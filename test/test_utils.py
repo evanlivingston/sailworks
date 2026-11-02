@@ -16,7 +16,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 
 import unittest
 
-from gweatherrouting.core.utils import unique_name, EventDispatcher, DotDict
+from sailworks.core.utils import unique_name, EventDispatcher, DotDict
 
 
 # ---------------------------------------------------------------------------
@@ -164,14 +164,14 @@ class TestDotDict(unittest.TestCase):
 class TestPointValidity(unittest.TestCase):
     def test_ocean_point_is_valid(self):
         """A point in the middle of the Atlantic should be valid (not in a country)."""
-        from gweatherrouting.core.utils import point_validity
+        from sailworks.core.utils import point_validity
 
         # Roughly mid-Atlantic
         self.assertTrue(point_validity(30.0, -40.0))
 
     def test_land_point_is_invalid(self):
         """A point clearly on land should be invalid."""
-        from gweatherrouting.core.utils import point_validity
+        from sailworks.core.utils import point_validity
 
         # Roughly central France
         self.assertFalse(point_validity(46.6, 2.2))

@@ -8,12 +8,12 @@ import numpy as np
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QShader
 
-from gweatherrouting.qt.gpustreamlines import (
+from sailworks.qt.gpustreamlines import (
     GpuStreamlineItem,
     GpuTraceInput,
     jittered_seed_positions,
 )
-from gweatherrouting.rendering.streamlines import density_parameters
+from sailworks.rendering.streamlines import density_parameters
 
 
 class TestGpuStreamlineItemScheduling(unittest.TestCase):
@@ -63,8 +63,7 @@ class TestGpuStreamlineItemScheduling(unittest.TestCase):
 
     def test_trace_shader_uses_previous_endpoint_buffer_for_transition(self):
         shader = (
-            Path(__file__).parents[1]
-            / "gweatherrouting/qt/shaders/streamline_trace.vert"
+            Path(__file__).parents[1] / "sailworks/qt/shaders/streamline_trace.vert"
         ).read_text()
         self.assertIn("layout(std430, binding = 2)", shader)
         self.assertIn("mix(previous.endpoints, segment.endpoints, transition)", shader)
@@ -72,7 +71,7 @@ class TestGpuStreamlineItemScheduling(unittest.TestCase):
         self.assertIn("worldWidth > 0.0", shader)
 
     def test_gpu_filter_keeps_crossings_and_binds_visibility_by_generation(self):
-        shaders = Path(__file__).parents[1] / "gweatherrouting/qt/shaders"
+        shaders = Path(__file__).parents[1] / "sailworks/qt/shaders"
         filter_source = (shaders / "streamline_filter.comp").read_text()
         vertex = (shaders / "streamline_trace.vert").read_text()
         item = (shaders.parent / "gpustreamlines.py").read_text()

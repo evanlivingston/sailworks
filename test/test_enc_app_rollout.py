@@ -11,9 +11,9 @@ from pathlib import Path
 import pytest
 from PySide6.QtWidgets import QApplication, QWidget
 
-from gweatherrouting.qt import weatherpresenter
-from gweatherrouting.qt.gribviewportchart import ViewportChartLayer
-from gweatherrouting.rendering.chartcollection import ChartCollection
+from sailworks.qt import weatherpresenter
+from sailworks.qt.gribviewportchart import ViewportChartLayer
+from sailworks.rendering.chartcollection import ChartCollection
 
 
 @pytest.fixture
@@ -85,7 +85,7 @@ def test_chart_child_is_disposed_not_weather_only_replaced(presenter):
 
 
 def test_track_point_fit_action_fits_selected_point_only():
-    from gweatherrouting.qt.navigationpanel import NavigationPanel
+    from sailworks.qt.navigationpanel import NavigationPanel
 
     class Track:
         points = [(48.1, -123.1, None), (48.2, -123.2, None)]
@@ -200,7 +200,7 @@ def test_chart_split_does_not_double_draw_enc_or_mbtiles():
 def test_panning_keeps_the_retained_chart_while_zoom_or_time_clear_it():
     from datetime import datetime as _datetime
 
-    from gweatherrouting.qt.gribviewport import (
+    from sailworks.qt.gribviewport import (
         ViewportCamera,
         chart_withdrawn_on_camera_change,
     )
@@ -222,14 +222,14 @@ def test_panning_keeps_the_retained_chart_while_zoom_or_time_clear_it():
 def test_chart_placement_scales_the_retained_zoom_preview_about_its_center():
     from datetime import datetime as _datetime
 
-    from gweatherrouting.core.mapviewport import MapViewport
-    from gweatherrouting.qt.gribviewport import ViewportCamera
-    from gweatherrouting.qt.gribviewportchart import (
+    from sailworks.core.mapviewport import MapViewport
+    from sailworks.qt.gribviewport import ViewportCamera
+    from sailworks.qt.gribviewportchart import (
         CHART_SETTLE_MS,
         ChartCamera,
         chart_placement,
     )
-    from gweatherrouting.rendering.overlayrenderer import MARGIN
+    from sailworks.rendering.overlayrenderer import MARGIN
 
     camera = ViewportCamera(48.45, -124.29, 9.38, 710, 743, _datetime(2026, 10, 22))
     composed = MapViewport(ChartCamera(camera), MARGIN, lambda: None)
@@ -252,14 +252,14 @@ def test_chart_placement_scales_the_retained_zoom_preview_about_its_center():
 
 
 def test_app_image_provider_namespace_matches_its_registration(presenter):
-    from gweatherrouting.qt.gribviewportchart import chart_image_provider
+    from sailworks.qt.gribviewportchart import chart_image_provider
 
     provider = chart_image_provider("environment")
     assert provider.publish(17, Mock()) == "image://environment/17"
 
 
 def test_missing_forecast_worker_is_terminal_not_permanently_busy():
-    from gweatherrouting.qt.gribviewport import GribViewportModel, ViewportCamera
+    from sailworks.qt.gribviewport import GribViewportModel, ViewportCamera
 
     done = Event()
     model = GribViewportModel(())
@@ -328,10 +328,10 @@ def test_basemap_gate_checks_the_displayed_chart_not_legacy_cache():
     import sys
 
     from PySide6.QtCore import QUrl
-    from gweatherrouting.qt.gribviewport import ViewportCamera
-    from gweatherrouting.qt.gribviewportchart import chart_placement, ChartCamera
-    from gweatherrouting.core.mapviewport import MapViewport
-    from gweatherrouting.rendering.overlayrenderer import MARGIN
+    from sailworks.qt.gribviewport import ViewportCamera
+    from sailworks.qt.gribviewportchart import chart_placement, ChartCamera
+    from sailworks.core.mapviewport import MapViewport
+    from sailworks.rendering.overlayrenderer import MARGIN
 
     path = Path(__file__).resolve().parents[1] / "tools/check_desktop_basemap.py"
     sys.path.insert(0, str(path.parent))
@@ -386,7 +386,7 @@ def test_basemap_gate_checks_the_displayed_chart_not_legacy_cache():
 
 
 def test_viewport_camera_handoff_is_encapsulated_by_the_map_host():
-    from gweatherrouting.qt.viewportmap import (
+    from sailworks.qt.viewportmap import (
         ViewportCameraState,
         ViewportMapState,
         ViewportMap,
@@ -425,8 +425,8 @@ def test_viewport_camera_handoff_is_encapsulated_by_the_map_host():
 
 
 def test_map_host_translates_app_state_to_the_viewport_camera_contract():
-    from gweatherrouting.qt.gribviewport import ViewportCamera
-    from gweatherrouting.qt.viewportmap import (
+    from sailworks.qt.gribviewport import ViewportCamera
+    from sailworks.qt.viewportmap import (
         ViewportCameraState,
         ViewportMap,
     )
@@ -454,7 +454,7 @@ def test_map_host_translates_app_state_to_the_viewport_camera_contract():
 
 
 def test_weather_stager_prefers_viewport_camera_and_falls_back_to_trackmap_fields():
-    from gweatherrouting.qt.gpuweatherjobs import _camera_coordinates
+    from sailworks.qt.gpuweatherjobs import _camera_coordinates
 
     legacy = SimpleNamespace(_center_lat=1, _center_lon=2, _zoom=3)
     assert _camera_coordinates(legacy) == (1, 2, 3)
@@ -463,10 +463,10 @@ def test_weather_stager_prefers_viewport_camera_and_falls_back_to_trackmap_field
 
 
 def test_renderer_failure_reports_unavailable_for_desktop_and_generic_hosts():
-    from gweatherrouting.qt.controller import SessionController
+    from sailworks.qt.controller import SessionController
     from PySide6.QtWidgets import QWidget
-    from gweatherrouting.qt.viewportmap import ViewportMap
-    from gweatherrouting.qt.weatherpresenter import WeatherPresenter
+    from sailworks.qt.viewportmap import ViewportMap
+    from sailworks.qt.weatherpresenter import WeatherPresenter
 
     assert issubclass(ViewportMap, QWidget)
     canvas = SimpleNamespace(
@@ -526,7 +526,7 @@ def test_renderer_failure_reports_unavailable_for_desktop_and_generic_hosts():
 def test_fit_zoom_preserves_projection_bounds_policy():
     import math
 
-    from gweatherrouting.qt.mapstate import fit_zoom
+    from sailworks.qt.mapstate import fit_zoom
 
     assert fit_zoom(512, 256, 1104, 592) == 1
     assert fit_zoom(256, 256, 1104, 720) == math.log2(2.5)
@@ -535,7 +535,7 @@ def test_fit_zoom_preserves_projection_bounds_policy():
 
 
 def test_map_host_size_and_invalidation_helpers_preserve_dpr_contract():
-    from gweatherrouting.qt.maphost import MapHostMixin
+    from sailworks.qt.maphost import MapHostMixin
 
     host = SimpleNamespace(
         width=lambda: 320,
@@ -563,7 +563,7 @@ def test_map_host_size_and_invalidation_helpers_preserve_dpr_contract():
 def test_environment_layer_excludes_marine_and_weather_raster():
     from datetime import datetime
 
-    from gweatherrouting.qt.mapenvironment import MapEnvironmentMixin
+    from sailworks.qt.mapenvironment import MapEnvironmentMixin
 
     source = object()
     wind = SimpleNamespace(draw=Mock())
@@ -598,7 +598,7 @@ def test_environment_layer_excludes_marine_and_weather_raster():
 
 
 def test_map_state_isochrone_updates_keep_empty_and_nonempty_semantics():
-    from gweatherrouting.qt.mapstate import MapStateMixin
+    from sailworks.qt.mapstate import MapStateMixin
 
     host = SimpleNamespace(
         isochrones=SimpleNamespace(forget=Mock()),
@@ -626,7 +626,7 @@ def test_map_state_isochrone_updates_keep_empty_and_nonempty_semantics():
 
 
 def test_viewport_foreground_publishes_navigation_instead_of_legacy_painting():
-    from gweatherrouting.qt.viewportmap import ViewportMap
+    from sailworks.qt.viewportmap import ViewportMap
 
     image = object()
     target = object()
@@ -659,7 +659,7 @@ def test_viewport_foreground_publishes_navigation_instead_of_legacy_painting():
 
 
 def test_viewport_dashboard_publishes_or_clears_only_through_qml():
-    from gweatherrouting.qt.viewportmap import ViewportMap
+    from sailworks.qt.viewportmap import ViewportMap
 
     image = object()
     widget = SimpleNamespace(set_dashboard_overlay=Mock())
@@ -693,8 +693,8 @@ def test_viewport_dashboard_publishes_or_clears_only_through_qml():
 
 
 def test_retained_overlay_mixin_preserves_dpr_and_renderer_draw_calls():
-    from gweatherrouting.qt import mapoverlays
-    from gweatherrouting.qt.mapoverlays import RetainedOverlayMixin
+    from sailworks.qt import mapoverlays
+    from sailworks.qt.mapoverlays import RetainedOverlayMixin
 
     surfaces = []
 
@@ -773,7 +773,7 @@ def test_retained_overlay_mixin_preserves_dpr_and_renderer_draw_calls():
 
 
 def test_overlay_service_owns_hide_and_close_lifecycle():
-    from gweatherrouting.qt.mapoverlays import MapOverlayServices
+    from sailworks.qt.mapoverlays import MapOverlayServices
 
     host = object()
     service = object.__new__(MapOverlayServices)
@@ -791,7 +791,7 @@ def test_overlay_service_owns_hide_and_close_lifecycle():
 
 
 def test_map_host_publishes_existing_routes_to_the_viewport_overlay_layer():
-    from gweatherrouting.qt.viewportmap import (
+    from sailworks.qt.viewportmap import (
         ViewportCameraState,
         ViewportMapState,
         ViewportMap,
@@ -845,7 +845,7 @@ def test_map_host_publishes_existing_routes_to_the_viewport_overlay_layer():
 
 
 def test_log_boat_heading_falls_back_to_course_between_track_fixes():
-    from gweatherrouting.qt.viewportmap import (
+    from sailworks.qt.viewportmap import (
         ViewportCameraState,
         ViewportMapState,
         ViewportMap,
@@ -880,7 +880,7 @@ def test_log_boat_heading_falls_back_to_course_between_track_fixes():
 
 
 def test_route_overlay_is_drawn_above_weather_in_the_viewport_scene():
-    import gweatherrouting.qt.gribviewport as viewport_module
+    import sailworks.qt.gribviewport as viewport_module
 
     scene = (
         Path(viewport_module.__file__).parent / "shaders" / "ViewportChartScene.qml"
@@ -910,7 +910,7 @@ def test_route_overlay_is_drawn_above_weather_in_the_viewport_scene():
 def test_viewport_publishes_retained_navigation_images_without_reupload():
     from PySide6.QtCore import QRectF, QUrl
     from PySide6.QtGui import QImage
-    from gweatherrouting.qt.gribviewport import _viewport_widget_class
+    from sailworks.qt.gribviewport import _viewport_widget_class
 
     provider = SimpleNamespace(publish=Mock(return_value="image://navigation/4"))
     item = SimpleNamespace(setProperty=Mock())
@@ -943,7 +943,7 @@ def test_viewport_publishes_retained_navigation_images_without_reupload():
 def test_viewport_dashboard_layer_publishes_and_clears_the_cached_image():
     from PySide6.QtCore import QUrl
     from PySide6.QtGui import QImage
-    from gweatherrouting.qt.gribviewport import _viewport_widget_class
+    from sailworks.qt.gribviewport import _viewport_widget_class
 
     provider = SimpleNamespace(publish=Mock(return_value="image://dashboard/9"))
     item = SimpleNamespace(setProperty=Mock())

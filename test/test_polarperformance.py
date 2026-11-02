@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pynmea2
 
-from gweatherrouting.core.polarperformance import (
+from sailworks.core.polarperformance import (
     PerformanceHistory,
     load_nmea_performance,
     wind_band,

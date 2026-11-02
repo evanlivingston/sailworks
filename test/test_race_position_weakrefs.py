@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from gweatherrouting.core.race import RaceBoat, RacePosition
+from sailworks.core.race import RaceBoat, RacePosition
 
 
 def test_position_append_does_not_traverse_existing_positions(monkeypatch):

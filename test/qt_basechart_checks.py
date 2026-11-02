@@ -8,12 +8,12 @@ import cairo
 from osgeo import ogr
 from PySide6.QtCore import Qt, QTimer
 
-from gweatherrouting.core.mapviewport import MapViewport
-from gweatherrouting.qt.basecharts import BaseChartRenderer, describe_sources
-from gweatherrouting.rendering.gdalvectorchart import GDALVectorChart
-from gweatherrouting.rendering.gshhs import GSHHSVectorChart
-from gweatherrouting.rendering.overlayrenderer import MARGIN, RenderJob
-from gweatherrouting.rendering.vectordrawer.simplechartdrawer import SimpleChartDrawer
+from sailworks.core.mapviewport import MapViewport
+from sailworks.qt.basecharts import BaseChartRenderer, describe_sources
+from sailworks.rendering.gdalvectorchart import GDALVectorChart
+from sailworks.rendering.gshhs import GSHHSVectorChart
+from sailworks.rendering.overlayrenderer import MARGIN, RenderJob
+from sailworks.rendering.vectordrawer.simplechartdrawer import SimpleChartDrawer
 from test.qt_gpu_checks import Fixture
 
 
@@ -229,7 +229,7 @@ class BaseChartChecks(Fixture):
         self.wait(lambda: renderer._states[canvas].requested is None)
 
     def test_forgotten_chart_handles_release_only_after_worker_completion(self):
-        from gweatherrouting.rendering.overlayrenderer import RenderState
+        from sailworks.rendering.overlayrenderer import RenderState
 
         canvas = self.window.map
         renderer = canvas._base_chart_renderer
@@ -280,7 +280,7 @@ class BaseChartChecks(Fixture):
             )
 
     def test_release_velocity_triggers_bounded_directional_prefetch(self):
-        from gweatherrouting.rendering.overlayrenderer import RenderState
+        from sailworks.rendering.overlayrenderer import RenderState
 
         canvas = self.window.map
         renderer = canvas.wind
@@ -314,7 +314,7 @@ class BaseChartChecks(Fixture):
     def test_trackpad_stream_queues_mid_gesture_speculation_ahead(self):
         import time
 
-        from gweatherrouting.rendering.overlayrenderer import RenderState
+        from sailworks.rendering.overlayrenderer import RenderState
         from test.qt_preview_checks import QtPreviewChecks
 
         canvas = self.window.map

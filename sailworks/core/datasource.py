@@ -1,0 +1,145 @@
+# -*- coding: utf-8 -*-
+# Copyright (C) 2017-2026 Davide Gessa
+"""
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+For detail about GNU see <http://www.gnu.org/licenses/>.
+"""
+
+import logging
+from typing import List
+
+import pynmea2
+from pynmea2.nmea_utils import LatLonFix
+
+logger = logging.getLogger("sailworks")
+
+
+class DataPacket:
+    def __init__(self, t, sentence: pynmea2.NMEASentence):
+        self.t = t
+        self.data = sentence
+
+    def is_position(self):
+        return "latitude" in self.data and "longitude" in self.data
+
+    def is_heading(self):
+        try:
+            return getattr(self.data, "heading") is not None
+        except Exception:
+            return False
+
+    @staticmethod
+    def parse(data):
+        raise NotImplementedError
+
+    def serialize(self):
+        raise NotImplementedError
+
+
+class NMEADataPacket(DataPacket):
+    PROTOCOL = "nmea0183"
+
+    def __init__(self, sentence):
+        DataPacket.__init__(self, "nmea", sentence)
+
+    def is_position(self):
+        return (
+            isinstance(self.data, LatLonFix)
+            and self.data.latitude != 0.0
+            and self.data.longitude != 0.0
+        )
+
+    @staticmethod
+    def parse(data):
+        return NMEADataPacket(pynmea2.parse(data))
+
+    def serialize(self):
+        return str(self.data)
+
+
+class AISDataPacket(DataPacket):
+    """Data packet for raw AIS sentences (!AIVDM/!AIVDO)."""
+
+    def __init__(self, raw_sentence: str):
+        DataPacket.__init__(self, "ais", None)
+        self.raw_sentence = raw_sentence
+
+    def is_position(self):
+        return False
+
+    def is_heading(self):
+        return False
+
+    def serialize(self):
+        return self.raw_sentence
+
+
+class DataSource:
+    def __init__(self, protocol, direction):
+        self.protocol = protocol
+        self.direction = direction
+        self.connected = False
+
+        if self.protocol == "nmea0183":
+            self.parser = NMEADataPacket
+        else:
+            raise NotImplementedError
+
+    def connect(self):
+        return False
+
+    def close(self):
+        self.connected = False
+
+    def write(self, packet):
+        if not self.connected:
+            return False
+
+        if self.direction == "in":
+            return False
+
+        return self._write(packet.serialize())
+
+    def read(self) -> List[DataPacket]:
+        if not self.connected:
+            return []
+
+        if self.direction == "out":
+            return []
+
+        data = self._read()
+
+        if data is None:
+            return []
+
+        msgs: List[DataPacket] = []
+        for msg in data:
+            if len(msg) == 0:
+                continue
+
+            # AIS sentences start with '!' and cannot be parsed by pynmea2
+            stripped = msg.strip()
+            if stripped.startswith("!"):
+                msgs.append(AISDataPacket(stripped))
+                continue
+
+            try:
+                msgs.append(self.parser.parse(msg))
+            except Exception as e:
+                logger.warning(f"Unable to parse data: {e}")
+        return msgs
+
+    def _read(self):
+        raise NotImplementedError
+
+    def _write(self, data):
+        raise NotImplementedError

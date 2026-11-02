@@ -7,8 +7,8 @@ from PySide6.QtGui import QKeyEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton, QTableWidget, QTableWidgetItem
 
-from gweatherrouting.core.geo.track import Track
-from gweatherrouting.qt.navigationpanel import NavigationPanel
+from sailworks.core.geo.track import Track
+from sailworks.qt.navigationpanel import NavigationPanel
 
 
 class _Tracks(list):
@@ -247,7 +247,7 @@ def test_track_list_click_and_double_click_are_wired(qtbot):
 
 
 def test_only_edited_track_gets_point_handle_circles():
-    from gweatherrouting.rendering.navigation import NavigationRenderer
+    from sailworks.rendering.navigation import NavigationRenderer
 
     class TrackManager(list):
         def is_active(self, track):

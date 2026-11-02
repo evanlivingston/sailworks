@@ -15,18 +15,18 @@ from PySide6.QtQml import QQmlComponent, QQmlEngine
 from PySide6.QtQuick import QQuickWindow
 from PySide6.QtTest import QTest
 
-from gweatherrouting.qt.gribviewport import ViewportCamera, _viewport_widget_class
-from gweatherrouting.qt.viewportstreamlines import (
+from sailworks.qt.gribviewport import ViewportCamera, _viewport_widget_class
+from sailworks.qt.viewportstreamlines import (
     StreamlineImageProvider,
     ViewportStreamlineModel,
     encode_segments,
     clip_segments,
     wind_columns,
 )
-from gweatherrouting.qt.weatherpresenter import WeatherPresenter
-from gweatherrouting.rendering.streamlines import density_parameters, geometry_for_view
-from gweatherrouting.qt.gpustreamlines import GpuTraceInput, jittered_seed_positions
-from gweatherrouting.core.mapviewport import MapViewport
+from sailworks.qt.weatherpresenter import WeatherPresenter
+from sailworks.rendering.streamlines import density_parameters, geometry_for_view
+from sailworks.qt.gpustreamlines import GpuTraceInput, jittered_seed_positions
+from sailworks.core.mapviewport import MapViewport
 from test.map_helpers import MapCanvas
 
 
@@ -160,7 +160,7 @@ class TestStreamlineModel(unittest.TestCase):
         args = sampler.sample.call_args.args
         self.assertEqual(args[:2], ("wind", camera.time))
         self.assertIs(args[4], cancel)
-        from gweatherrouting.rendering.streamlinepaths import (
+        from sailworks.rendering.streamlinepaths import (
             paths_to_flat,
             trace_streamline_paths,
         )
@@ -448,7 +448,7 @@ class TestStreamlinePublicationScheduling(unittest.TestCase):
 
 class TestStreamlineShaderStructure(unittest.TestCase):
     def test_pixel_space_quads_and_connector_discard(self):
-        shader_dir = Path(__file__).parents[1] / "gweatherrouting/qt/shaders"
+        shader_dir = Path(__file__).parents[1] / "sailworks/qt/shaders"
         vertex = (shader_dir / "streamlines.vert").read_text()
         fragment = (shader_dir / "streamlines.frag").read_text()
         qml = (shader_dir / "WeatherStreamlines.qml").read_text()
@@ -487,7 +487,7 @@ class TestStreamlineShaderPixels(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def test_qquickwindow_draws_and_withdraws_streamlines(self):
-        shader_dir = Path(__file__).parents[1] / "gweatherrouting/qt/shaders"
+        shader_dir = Path(__file__).parents[1] / "sailworks/qt/shaders"
         engine = QQmlEngine()
         provider = StreamlineImageProvider()
         engine.addImageProvider("streamlines", provider)
@@ -628,7 +628,7 @@ class TestStreamlineShaderPixels(unittest.TestCase):
 
     def test_qquickwindow_draws_arrow_only_and_withdraws_it(self):
         """Measure arrow mode independently from the combined shader groups."""
-        shader_dir = Path(__file__).parents[1] / "gweatherrouting/qt/shaders"
+        shader_dir = Path(__file__).parents[1] / "sailworks/qt/shaders"
         engine = QQmlEngine()
         provider = StreamlineImageProvider()
         engine.addImageProvider("streamlines", provider)

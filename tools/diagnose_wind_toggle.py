@@ -9,12 +9,12 @@ from time import perf_counter
 from statistics import median
 from types import SimpleNamespace
 
-from gweatherrouting.core.grib import Grib
-from gweatherrouting.core.mapviewport import MapViewport
-from gweatherrouting.core.storage import DATA_DIR, GRIB_DIR
-from gweatherrouting.rendering.overlayrenderer import RenderJob, RenderState
-from gweatherrouting.rendering.windpainter import WindPainter
-from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
+from sailworks.core.grib import Grib
+from sailworks.core.mapviewport import MapViewport
+from sailworks.core.storage import DATA_DIR, GRIB_DIR
+from sailworks.rendering.overlayrenderer import RenderJob, RenderState
+from sailworks.rendering.windpainter import WindPainter
+from sailworks.rendering.windrenderer import WindOverlayRenderer
 
 
 def main():

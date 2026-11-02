@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import experiment_vertical_renderer as probe
-from gweatherrouting.core.mapviewport import MercatorProjection
+from sailworks.core.mapviewport import MercatorProjection
 
 
 @dataclass(frozen=True)

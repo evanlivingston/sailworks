@@ -10,10 +10,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from gweatherrouting.core.geo.routing import Routing
-from gweatherrouting.core.marine.chs import CHSProvider, DownloadCancelledError
-from gweatherrouting.core.marine.manager import MarineManager
-from gweatherrouting.core.marine.models import (
+from sailworks.core.geo.routing import Routing
+from sailworks.core.marine.chs import CHSProvider, DownloadCancelledError
+from sailworks.core.marine.manager import MarineManager
+from sailworks.core.marine.models import (
     Capability,
     Dataset,
     Sample,

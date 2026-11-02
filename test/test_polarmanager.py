@@ -11,15 +11,15 @@ from unittest.mock import MagicMock, patch
 import requests
 import weatherrouting
 
-from gweatherrouting.core.polarmanager import PolarManager, json_to_polars
-from gweatherrouting.core.polarfiles import (
+from sailworks.core.polarmanager import PolarManager, json_to_polars
+from sailworks.core.polarfiles import (
     install_polar,
     read_polar,
     orc_catalog,
     download_orc_file,
 )
 
-BUNDLED = Path(__file__).parents[1] / "gweatherrouting/data/polars/first317.pol"
+BUNDLED = Path(__file__).parents[1] / "sailworks/data/polars/first317.pol"
 ORC_DATA = {
     "name": "Test yacht",
     "sailnumber": "123",
@@ -49,8 +49,8 @@ class TestPolarManager(unittest.TestCase):
         self.root = self.path / "polars"
         self.root.mkdir()
         for target, value in (
-            ("gweatherrouting.core.storage.DATA_DIR", str(self.path)),
-            ("gweatherrouting.core.polarmanager.POLAR_DIR", str(self.root)),
+            ("sailworks.core.storage.DATA_DIR", str(self.path)),
+            ("sailworks.core.polarmanager.POLAR_DIR", str(self.root)),
         ):
             mock = patch(target, value)
             mock.start()
@@ -113,7 +113,7 @@ class TestPolarManager(unittest.TestCase):
                 self.manager.add_polar_file(path)
         self.assertEqual(sorted(p.name for p in self.root.iterdir()), before)
         with patch(
-            "gweatherrouting.core.polarfiles.shutil.copyfile",
+            "sailworks.core.polarfiles.shutil.copyfile",
             side_effect=OSError("copy failed"),
         ):
             with self.assertRaises(OSError):
@@ -128,7 +128,7 @@ class TestPolarManager(unittest.TestCase):
         self.manager.register_polar_file(name, {"name": "Test boat"})
         previous = (self.root / name).read_bytes()
         with patch(
-            "gweatherrouting.core.storage.Storage.save",
+            "sailworks.core.storage.Storage.save",
             side_effect=OSError("disk full"),
         ):
             with self.assertRaises(OSError):
@@ -149,7 +149,7 @@ class TestPolarManager(unittest.TestCase):
         expected = self.path / "expected.pol"
         json_to_polars(ORC_DATA["vpp"], expected)
         with patch(
-            "gweatherrouting.core.polarfiles.requests.get",
+            "sailworks.core.polarfiles.requests.get",
             return_value=response(ORC_DATA),
         ) as get:
             name = self.manager.download_orc_polar("USA/123")
@@ -161,7 +161,7 @@ class TestPolarManager(unittest.TestCase):
         self.assertEqual(restored.get_metadata(name)["name"], "Test yacht")
         self.assertIsNotNone(read_polar(self.root / name))
         with patch(
-            "gweatherrouting.core.polarfiles.requests.get",
+            "sailworks.core.polarfiles.requests.get",
             side_effect=requests.ConnectionError("offline"),
         ):
             with self.assertRaises(requests.ConnectionError):
@@ -176,12 +176,12 @@ class TestPolarManager(unittest.TestCase):
             "invalid",
         ]
         with patch(
-            "gweatherrouting.core.polarfiles.requests.get",
+            "sailworks.core.polarfiles.requests.get",
             return_value=response(entries),
         ):
             self.assertEqual(orc_catalog(), [("USA/123", "Test yacht", "First 31.7")])
         with patch(
-            "gweatherrouting.core.polarfiles.requests.get",
+            "sailworks.core.polarfiles.requests.get",
             return_value=response({"wrong": "shape"}),
         ):
             with self.assertRaises(ValueError):

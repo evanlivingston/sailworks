@@ -104,7 +104,7 @@ def _readback(images, blend, positions):
     tool = _load_tool(
         "float_transport_probe", ROOT / "tools/experiment_float_transport_qsg.py"
     )
-    source = (ROOT / "gweatherrouting/qt/shaders/weather.frag").read_text()
+    source = (ROOT / "sailworks/qt/shaders/weather.frag").read_text()
     variant = tool.shader_variant(source, float_transport=False)
     # The probe reads the interpolated U; the fill's value is the wind speed,
     # which the shader derives from the interpolated U and V.
@@ -116,7 +116,7 @@ def _readback(images, blend, positions):
     # The probe's default shader name is the application's own; keep the
     # scene's first load valid.
     shutil.copy(
-        ROOT / "gweatherrouting/qt/shaders/weather.frag.qsb",
+        ROOT / "sailworks/qt/shaders/weather.frag.qsb",
         directory / "weather.frag.qsb",
     )
     probe = tool.Probe(directory)
@@ -176,7 +176,7 @@ def _speed_comparison(images, blend, positions, reference):
     """
     import numpy as np
 
-    from gweatherrouting.qt.gpuweather import decode_component
+    from sailworks.qt.gpuweather import decode_component
 
     outcome = {"limit": NUMERICAL_LIMIT}
     planes = [decode_component(image) for image in images]
@@ -264,9 +264,9 @@ def _placement_observations(field, camera, blend):
     """
     import numpy as np
 
-    from gweatherrouting.qt.gribviewport import _grid_rect
-    from gweatherrouting.qt.gpuweather import decode_component
-    from gweatherrouting.rendering.weathergrid import mercator_lat
+    from sailworks.qt.gribviewport import _grid_rect
+    from sailworks.qt.gpuweather import decode_component
+    from sailworks.rendering.weathergrid import mercator_lat
 
     lattice = field.grid.lattice
     view = camera.view()
@@ -334,7 +334,7 @@ def fill_observations(widget, model, camera, pump):
     import numpy as np
     from PySide6.QtGui import QColor
 
-    from gweatherrouting.qt.gpuweather import encode_component
+    from sailworks.qt.gpuweather import encode_component
 
     out = {"enabled": widget._fill is not None}
     if widget._fill is None:
@@ -479,9 +479,9 @@ def _missing_neighbour_observations(widget, field, camera, blend, pump):
     """
     import numpy as np
 
-    from gweatherrouting.qt.gpuweather import decode_component, encode_component
-    from gweatherrouting.qt.gribviewport import _grid_rect
-    from gweatherrouting.rendering.weathergrid import mercator_lat
+    from sailworks.qt.gpuweather import decode_component, encode_component
+    from sailworks.qt.gribviewport import _grid_rect
+    from sailworks.rendering.weathergrid import mercator_lat
 
     lattice = field.grid.lattice
     # The widget's *current* camera: the independence observation above moved
@@ -715,11 +715,11 @@ def chart_supersession_observation(widget, model, camera, pump, layer):
 
 # The viewport's three declared retained budgets.  These are recorded values,
 # not thresholds invented for this issue: the field store's ceiling is the
-# 128 MiB decoded-band budget (gweatherrouting/qt/gribviewport.py
+# 128 MiB decoded-band budget (sailworks/qt/gribviewport.py
 # FIELD_BYTE_LIMIT; docs/history/gpu-weather-residency.md), the sampling
-# memo's is the 16 MiB memo limit (gweatherrouting/rendering/weatherstaging.py
+# memo's is the 16 MiB memo limit (sailworks/rendering/weatherstaging.py
 # SAMPLING_MEMO_BYTES) and the staging provider's is the 32 MiB staging limit
-# (gweatherrouting/qt/gpuweather.py WeatherImageProvider.byte_limit).
+# (sailworks/qt/gpuweather.py WeatherImageProvider.byte_limit).
 STORE_BUDGET_BYTES = 128 * 1024 * 1024
 MEMO_BUDGET_BYTES = 16 * 1024 * 1024
 PROVIDER_BUDGET_BYTES = 32 * 1024 * 1024
@@ -746,7 +746,7 @@ def _selection(snapshot):
     widget, so the measurements that need a different selection or camera
     read them here and open one session.
     """
-    from gweatherrouting.qt.gribviewport import saved_selection
+    from sailworks.qt.gribviewport import saved_selection
 
     fixture = _load_tool(
         "viewport_fixture", ROOT / "tools/benchmark_startup_rendering.py"
@@ -758,7 +758,7 @@ def _selection(snapshot):
 
 def _anchor_camera(manifest, settings, **overrides):
     """The recorded viewport camera at the saved selection's geography."""
-    from gweatherrouting.qt.gribviewport import ViewportCamera
+    from sailworks.qt.gribviewport import ViewportCamera
 
     camera = ViewportCamera(
         center_lat=ANCHOR_LAT,
@@ -966,13 +966,13 @@ class _Session:
     def __init__(
         self, snapshot, camera=None, paths=None, settings=None, fill=True, chart=True
     ):
-        from gweatherrouting.qt.gribviewport import (
+        from sailworks.qt.gribviewport import (
             GribViewportModel,
             ViewportCamera,
             _viewport_widget_class,
             saved_selection,
         )
-        from gweatherrouting.rendering.windrenderer import WindLandMask
+        from sailworks.rendering.windrenderer import WindLandMask
 
         fixture = _load_tool(
             "viewport_fixture", ROOT / "tools/benchmark_startup_rendering.py"
@@ -1797,7 +1797,7 @@ def run_once(snapshot):
     )
     fixture = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(fixture)
-    from gweatherrouting.qt.gribviewport import (
+    from sailworks.qt.gribviewport import (
         GribViewportModel,
         PreparedResource,
         ViewportCamera,
@@ -1806,7 +1806,7 @@ def run_once(snapshot):
         _viewport_widget_class,
         saved_selection,
     )
-    from gweatherrouting.rendering.windrenderer import WindLandMask
+    from sailworks.rendering.windrenderer import WindLandMask
 
     manifest = fixture.verify_snapshot(snapshot)
     paths, settings = saved_selection(snapshot / "data")

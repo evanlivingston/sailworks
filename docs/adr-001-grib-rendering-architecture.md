@@ -9,7 +9,7 @@
 - **Date:** 2026-10-19
 - **Supersedes:** nothing. **Amends:** [`rendering-implementation-plan.md`](rendering-implementation-plan.md)
   (the R0–R5 sequence and the invariants at lines 43–70), as recorded in §6.
-- **Related epic:** [#51](https://github.com/evanlivingston/gweatherrouting/issues/51)
+- **Related epic:** [#51](https://github.com/evanlivingston/sailworks/issues/51)
 
 This ADR is **not** a new architecture. The target architecture already exists in
 [`rendering-implementation-plan.md`](rendering-implementation-plan.md) — see "Architecture
@@ -37,7 +37,7 @@ presentation-latency program complete and does not change numerical sampling.
   [`history/rendering-decision-log.md`](history/rendering-decision-log.md).
   This ADR is the decision input to that roadmap.
 - **Implementation program:** epic #51, issues
-  [#62–#70](https://github.com/evanlivingston/gweatherrouting/issues/62); the
+  [#62–#70](https://github.com/evanlivingston/sailworks/issues/62); the
   local index is [`milestones.md`](milestones.md). One issue at a time; each
   states its own gate, evidence and validation command.
 - **R0–R5 implementation detail, invariants and measurement contract:**
@@ -115,12 +115,12 @@ The seven gaps, as named in [`grib-architecture-analysis.md`](grib-architecture-
 | # | Gap | Disposition | Decision | Issue |
 | --- | --- | --- | --- | --- |
 | G1 | Decode location: CPU (GDAL → NumPy) | **Deferred** | D5 | — |
-| G2 | Data residency: CPU-side caches, no GPU-resident field | **Closed** | D1 | [#64](https://github.com/evanlivingston/gweatherrouting/issues/64) |
-| G3 | Spatial interpolation: CPU Python loops | **Closed** | D2 | [#65](https://github.com/evanlivingston/gweatherrouting/issues/65) |
-| G4 | Pipeline model: strictly serial stages | **Closed** | D3 | [#66](https://github.com/evanlivingston/gweatherrouting/issues/66) |
-| G5 | Time scrubbing: two-timestep, view-specific restage | **Closed** | D4 | [#67](https://github.com/evanlivingston/gweatherrouting/issues/67) |
-| G6 | Memory management: per-worker CPU byte limits, no GPU budget | **Closed** | D1 | [#64](https://github.com/evanlivingston/gweatherrouting/issues/64) |
-| G7 | Threading model: serialized daemon threads, no overlap | **Closed** | D3 | [#66](https://github.com/evanlivingston/gweatherrouting/issues/66) |
+| G2 | Data residency: CPU-side caches, no GPU-resident field | **Closed** | D1 | [#64](https://github.com/evanlivingston/sailworks/issues/64) |
+| G3 | Spatial interpolation: CPU Python loops | **Closed** | D2 | [#65](https://github.com/evanlivingston/sailworks/issues/65) |
+| G4 | Pipeline model: strictly serial stages | **Closed** | D3 | [#66](https://github.com/evanlivingston/sailworks/issues/66) |
+| G5 | Time scrubbing: two-timestep, view-specific restage | **Closed** | D4 | [#67](https://github.com/evanlivingston/sailworks/issues/67) |
+| G6 | Memory management: per-worker CPU byte limits, no GPU budget | **Closed** | D1 | [#64](https://github.com/evanlivingston/sailworks/issues/64) |
+| G7 | Threading model: serialized daemon threads, no overlap | **Closed** | D3 | [#66](https://github.com/evanlivingston/sailworks/issues/66) |
 
 The analysis's comparison table additionally lists *resource granularity* (full-frame
 textures). That is a consequence of G2 and is addressed by D1, not tracked separately.
@@ -161,7 +161,7 @@ interpolation, replacing the current RGBA8888 bit-packing. Justification:
 visible content first and reduces speculation before it reduces selected-source
 fidelity, per lines 257–259.
 
-**Issue:** [#64](https://github.com/evanlivingston/gweatherrouting/issues/64)
+**Issue:** [#64](https://github.com/evanlivingston/sailworks/issues/64)
 
 ### 4.2 D2 — GPU spatial interpolation (**DECIDED 2026-10-19: option (a)**)
 
@@ -193,7 +193,7 @@ This is an **advance beyond the reference**, which samples on the CPU (T6). It m
 be described as parity. The CPU sampler remains the reference authority and the
 fallback path, and the 2e-5 gate is unchanged.
 
-**Issue:** [#65](https://github.com/evanlivingston/gweatherrouting/issues/65) — now
+**Issue:** [#65](https://github.com/evanlivingston/sailworks/issues/65) — now
 unblocked.
 
 ### 4.3 D3 — Frame N / N+1 overlap
@@ -220,7 +220,7 @@ preparations may be in flight, nor that a superseded request must not publish.
 **Revises:** the pipeline diagram (lines 77–93) and adds the generation/overlap
 requirements to R2 and R4.
 
-**Issue:** [#66](https://github.com/evanlivingston/gweatherrouting/issues/66)
+**Issue:** [#66](https://github.com/evanlivingston/sailworks/issues/66)
 
 ### 4.4 D4 — Resident time windows
 
@@ -242,7 +242,7 @@ Consequences:
 **Revises:** the `ContentKey` definition (line 103) and extends R3's reuse requirement
 (lines 212–215) from spatial to temporal reuse.
 
-**Issue:** [#67](https://github.com/evanlivingston/gweatherrouting/issues/67)
+**Issue:** [#67](https://github.com/evanlivingston/sailworks/issues/67)
 
 ### 4.5 D5 — GPU decode: explicitly deferred
 
@@ -261,7 +261,7 @@ against the new baseline. It is a separate decision, not a silent omission.
 ### 4.6 D6 — Independent viewport is the target weather interaction path
 
 **Decision (2026-10-19).** The independent GRIB viewport
-(`gweatherrouting/qt/gribviewport.py`) is the target weather interaction path.
+(`sailworks/qt/gribviewport.py`) is the target weather interaction path.
 The existing weather frame path (`TrackMap._gpu_frame` / MapFrame / MapScene /
 WeatherStager / ContentKey) is legacy and is retired once #69 and #70 complete the
 layer migration. The viewport owns camera/time state, field demand and
@@ -281,8 +281,8 @@ Consequences:
   fidelity remains a separate, currently deferred gate.
 
 **Revises:** the program target implied by §4.1–§4.4 and the issue mapping in §3.
-**Issues:** [#64](https://github.com/evanlivingston/gweatherrouting/issues/64)–[#70](https://github.com/evanlivingston/gweatherrouting/issues/70);
-review vehicle [#72](https://github.com/evanlivingston/gweatherrouting/pull/72).
+**Issues:** [#64](https://github.com/evanlivingston/sailworks/issues/64)–[#70](https://github.com/evanlivingston/sailworks/issues/70);
+review vehicle [#72](https://github.com/evanlivingston/sailworks/pull/72).
 
 ### 4.7 D7 — User-directed application use (2026-10-20; implemented in PR #91)
 
@@ -300,7 +300,7 @@ states remain explicit; routing calculations remain unchanged.
 **Original #70 recommendation, retained as evidence rather than the current usage
 decision:** keep the independent viewport **experimental**. Do **not** switch the
 application's default weather interaction path to it on the evidence recorded by
-[#70](https://github.com/evanlivingston/gweatherrouting/issues/70).
+[#70](https://github.com/evanlivingston/sailworks/issues/70).
 
 D6 named the viewport as the target interaction path and reserved the usage decision
 for the user. That decision is now recorded above; the evidence and limitations
@@ -344,8 +344,8 @@ start-up and draw path.
   instrument that can see the compositor, close or permanently record the
   marine and two-map cells, and decide the OpenGL backend.
 
-**Issues:** [#70](https://github.com/evanlivingston/gweatherrouting/issues/70),
-[#51](https://github.com/evanlivingston/gweatherrouting/issues/51).
+**Issues:** [#70](https://github.com/evanlivingston/sailworks/issues/70),
+[#51](https://github.com/evanlivingston/sailworks/issues/51).
 
 ### 4.8 D8 — Retire the legacy map without CPU recovery (2026-10-22)
 

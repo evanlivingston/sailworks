@@ -5,19 +5,19 @@ import numpy as np
 import pytest
 from osgeo import gdal, osr
 
-from gweatherrouting.core.forecastboundrouting import (
+from sailworks.core.forecastboundrouting import (
     BoundForecastError,
     BoundWorkerGrib,
     calculate_bound_route,
 )
-from gweatherrouting.core.forecasttranche import (
+from sailworks.core.forecasttranche import (
     AnalysisSelection,
     ForecastTranche,
     ModelConfiguration,
     ModelEntry,
 )
-from gweatherrouting.core.routingjob import CalculatedRoute, WorkerGrib
-from gweatherrouting.core.tranchestore import TrancheStore
+from sailworks.core.routingjob import CalculatedRoute, WorkerGrib
+from sailworks.core.tranchestore import TrancheStore
 
 RUN = datetime(2025, 1, 1, tzinfo=timezone.utc)
 ACQUIRED = datetime(2025, 1, 2, tzinfo=timezone.utc)
@@ -138,9 +138,9 @@ def patch_open(monkeypatch, dataset):
         opened.append(path)
         return dataset
 
-    monkeypatch.setattr("gweatherrouting.core.grib.gdal.Open", opener)
+    monkeypatch.setattr("sailworks.core.grib.gdal.Open", opener)
     monkeypatch.setattr(
-        "gweatherrouting.core.gribsampling.vector_flags",
+        "sailworks.core.gribsampling.vector_flags",
         lambda path: [False] * dataset.RasterCount,
     )
     return opened
@@ -190,7 +190,7 @@ def test_bound_worker_rejects_mixed_or_unplanned_records(
 
 
 def test_bound_api_pins_provenance_to_the_published_tranche(tmp_path, monkeypatch):
-    from gweatherrouting.core import forecastboundrouting as bound_module
+    from sailworks.core import forecastboundrouting as bound_module
 
     captured = binding(tmp_path)
     patch_open(monkeypatch, wind_dataset(captured.artifact_paths[0]))
@@ -229,7 +229,7 @@ def test_missing_bound_artifact_fails_before_any_reader_open(tmp_path, monkeypat
     missing = replace(captured, artifact_paths=(tmp_path / "absent.grib",))
     opened = []
     monkeypatch.setattr(
-        "gweatherrouting.core.grib.gdal.Open", lambda path: opened.append(path)
+        "sailworks.core.grib.gdal.Open", lambda path: opened.append(path)
     )
     with pytest.raises(BoundForecastError, match="missing or unsafe"):
         BoundWorkerGrib(missing)
@@ -249,7 +249,7 @@ def test_missing_component_at_planned_hour_is_not_borrowed_from_another_time(
 
 def test_bound_current_preflight_only_prefetches_current_fields(tmp_path, monkeypatch):
     from threading import Event
-    from gweatherrouting.core import routingcoverage
+    from sailworks.core import routingcoverage
 
     monkeypatch.setattr(
         routingcoverage,
@@ -280,9 +280,9 @@ def test_bound_frozen_current_wind_keeps_single_source_and_scenario_modifier(
 ):
     from threading import Event
 
-    from gweatherrouting.core.marine.routing import FrozenRoutingWind
-    from gweatherrouting.core.modifiedgrib import ModifiedGribManager
-    from gweatherrouting.core.forecastboundrouting import BoundRoutingWind
+    from sailworks.core.marine.routing import FrozenRoutingWind
+    from sailworks.core.modifiedgrib import ModifiedGribManager
+    from sailworks.core.forecastboundrouting import BoundRoutingWind
 
     captured = binding(tmp_path)
     patch_open(monkeypatch, wind_dataset(captured.artifact_paths[0]))

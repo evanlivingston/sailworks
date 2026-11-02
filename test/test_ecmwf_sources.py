@@ -7,13 +7,13 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from gweatherrouting.core.gribsources.ecmwf import (
+from sailworks.core.gribsources.ecmwf import (
     BASE_URL,
     ECMWFAIFSSource,
     ECMWFIFSSource,
 )
-from gweatherrouting.core.gribsources.options import DownloadOptions
-from gweatherrouting.core.gribsources.ranged import HTTPStatusError
+from sailworks.core.gribsources.options import DownloadOptions
+from sailworks.core.gribsources.ranged import HTTPStatusError
 
 
 def grib_message(data):
@@ -265,7 +265,7 @@ def test_download_concatenates_only_verified_selected_bytes(tmp_path):
 
 
 def test_indexed_ranges_complete_out_of_order_but_stage_in_order(tmp_path, monkeypatch):
-    import gweatherrouting.core.gribsources.ecmwf as module
+    import sailworks.core.gribsources.ecmwf as module
 
     session = DownloadSession()
     source = ECMWFIFSSource()
@@ -318,7 +318,7 @@ def test_indexed_ranges_complete_out_of_order_but_stage_in_order(tmp_path, monke
 
 
 def test_download_rejects_step_without_selected_messages(tmp_path, monkeypatch):
-    import gweatherrouting.core.gribsources.ecmwf as module
+    import sailworks.core.gribsources.ecmwf as module
 
     session = DownloadSession()
     source = ECMWFIFSSource(session=session)
@@ -340,7 +340,7 @@ def test_download_rejects_step_without_selected_messages(tmp_path, monkeypatch):
 
 
 def test_download_rejects_short_selected_message_write(tmp_path, monkeypatch):
-    import gweatherrouting.core.gribsources.ecmwf as module
+    import sailworks.core.gribsources.ecmwf as module
 
     session = DownloadSession()
     source = ECMWFIFSSource(session=session)
@@ -417,7 +417,7 @@ def test_download_failures_leave_no_installed_or_partial_file(tmp_path, failure)
 
 
 def test_ecmwf_size_estimate_sums_selected_indexed_ranges(monkeypatch):
-    import gweatherrouting.core.gribsources.ecmwf as module
+    import sailworks.core.gribsources.ecmwf as module
 
     source = ECMWFIFSSource(session=CatalogSession(None))
     identifier = json.dumps(

@@ -12,16 +12,16 @@ import numpy as np
 from weatherrouting import Polar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from gweatherrouting.core.marine.batchwind import ArrayWind, instant
-from gweatherrouting.core.marine.chs import DownloadCancelledError
-from gweatherrouting.core.marine.fields import FieldSelection
-from gweatherrouting.core.marine.frontierrouting import (
+from sailworks.core.marine.batchwind import ArrayWind, instant
+from sailworks.core.marine.chs import DownloadCancelledError
+from sailworks.core.marine.fields import FieldSelection
+from sailworks.core.marine.frontierrouting import (
     ArrayEnvironment,
     array_clock_compatible,
     polar_many,
 )
-from gweatherrouting.core.marine.routing import FrozenRoutingWind
-from gweatherrouting.core.polarwrapper import PolarWrapper
+from sailworks.core.marine.routing import FrozenRoutingWind
+from sailworks.core.polarwrapper import PolarWrapper
 from test.test_current_routing import START, current_field, setup_router
 
 
@@ -151,11 +151,9 @@ class TestFrontierRouting(unittest.TestCase):
         # A zero-time step returns at the starting position. Its ambiguous
         # clock still forces the legacy route, rather than the UTC array clock.
         from unittest.mock import patch
-        from gweatherrouting.core.marine.routing import RoutingDataGapError
+        from sailworks.core.marine.routing import RoutingDataGapError
 
-        with patch(
-            "gweatherrouting.core.marine.frontierrouting.route_frontier"
-        ) as batch:
+        with patch("sailworks.core.marine.frontierrouting.route_frontier") as batch:
             with self.assertRaises(RoutingDataGapError):
                 router.route(None, before.replace(fold=1), 0, (0, 0), (0, 0.5))
             batch.assert_not_called()
@@ -247,7 +245,7 @@ class TestFrontierRouting(unittest.TestCase):
 
     def test_fractional_wind_grouping_matches_cell_edges_and_forecast_hours(self):
         from osgeo import gdal
-        from gweatherrouting.core.grib import Grib
+        from sailworks.core.grib import Grib
 
         data = gdal.GetDriverByName("MEM").Create("", 4, 4, 6, gdal.GDT_Float64)
         data.SetGeoTransform((-1.125, 0.25, 0, 1.125, 0, -0.25))

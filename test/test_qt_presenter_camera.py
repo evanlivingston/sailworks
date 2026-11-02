@@ -3,9 +3,9 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from gweatherrouting.qt.gribviewport import ViewportCamera
-from gweatherrouting.qt.viewportmap import ViewportCameraState
-from gweatherrouting.qt.weatherpresenter import WeatherPresenter
+from sailworks.qt.gribviewport import ViewportCamera
+from sailworks.qt.viewportmap import ViewportCameraState
+from sailworks.qt.weatherpresenter import WeatherPresenter
 
 
 def test_sync_adopts_restored_camera_before_child_resize_or_show():

@@ -10,8 +10,8 @@ import unittest
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication, QWidget
 
-from gweatherrouting.qt.chartstartup import ChartStartup
-from gweatherrouting.qt.lazyplots import LazyLogPlots
+from sailworks.qt.chartstartup import ChartStartup
+from sailworks.qt.lazyplots import LazyLogPlots
 
 
 class FakeTask(QObject):

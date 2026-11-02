@@ -1,6 +1,6 @@
 # M0 measurement audit — 2026-10-17
 
-Part of [epic #51](https://github.com/evanlivingston/gweatherrouting/issues/51).
+Part of [epic #51](https://github.com/evanlivingston/sailworks/issues/51).
 See the [canonical plan](rendering-performance-plan.md) for current decisions.
 This is a source audit of `dev` commit `1f14649`, not a new performance result.
 

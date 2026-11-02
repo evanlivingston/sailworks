@@ -20,7 +20,7 @@ import unittest
 from datetime import date, datetime
 from unittest.mock import MagicMock
 
-from gweatherrouting.core.storage import Storage, json_serial
+from sailworks.core.storage import Storage, json_serial
 
 
 class TestJsonSerial(unittest.TestCase):
@@ -49,13 +49,13 @@ class TestStorage(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         # Patch DATA_DIR so save/load operate in our temp directory
-        import gweatherrouting.core.storage as storage_mod
+        import sailworks.core.storage as storage_mod
 
         self._orig_data_dir = storage_mod.DATA_DIR
         storage_mod.DATA_DIR = self.tmpdir
 
     def tearDown(self):
-        import gweatherrouting.core.storage as storage_mod
+        import sailworks.core.storage as storage_mod
 
         storage_mod.DATA_DIR = self._orig_data_dir
 

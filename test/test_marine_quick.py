@@ -13,12 +13,12 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from gweatherrouting.core.mapviewport import MapPoint, MapViewport
-from gweatherrouting.core.marine.manager import MarineManager
-from gweatherrouting.core.marine.models import Capability
-from gweatherrouting.qt.gribviewport import ViewportCamera
-from gweatherrouting.rendering.marinepresentation import MarineSources, chart_instant
-from gweatherrouting.rendering.marinesnapshot import (
+from sailworks.core.mapviewport import MapPoint, MapViewport
+from sailworks.core.marine.manager import MarineManager
+from sailworks.core.marine.models import Capability
+from sailworks.qt.gribviewport import ViewportCamera
+from sailworks.rendering.marinepresentation import MarineSources, chart_instant
+from sailworks.rendering.marinesnapshot import (
     CurrentArrow,
     MarineSnapshot,
     current_triangles,
@@ -108,7 +108,7 @@ class TestMarineQuick(unittest.TestCase):
             status="available", values=(3, 4)
         )
         with patch(
-            "gweatherrouting.rendering.marinesnapshot.FieldSelection",
+            "sailworks.rendering.marinesnapshot.FieldSelection",
             return_value=selected,
         ) as selection:
             result = sample_currents(self.sources, instant, camera, lambda: False)
@@ -185,7 +185,7 @@ class TestMarineQuick(unittest.TestCase):
             camera = replace(self.camera, center_lat=latitude, center_lon=179, zoom=2)
             selection.sample.reset_mock()
             with patch(
-                "gweatherrouting.rendering.marinesnapshot.FieldSelection",
+                "sailworks.rendering.marinesnapshot.FieldSelection",
                 return_value=selection,
             ):
                 snapshot = sample_currents(self.sources, START, camera, lambda: False)
@@ -229,7 +229,7 @@ class TestMarineQuick(unittest.TestCase):
 
     def test_qsg_colored_point_contract(self):
         from PySide6.QtQuick import QSGGeometry
-        from gweatherrouting.qt.marinequick import _ATTRIBUTES, _VERTEX
+        from sailworks.qt.marinequick import _ATTRIBUTES, _VERTEX
 
         geometry = QSGGeometry(_ATTRIBUTES, 3)
         self.assertEqual(geometry.sizeOfVertex(), _VERTEX.itemsize)
@@ -247,7 +247,7 @@ class TestMarineQuick(unittest.TestCase):
     def test_empty_content_deletes_and_detaches_previous_scenegraph_node(self):
         from PySide6.QtQuick import QQuickItem, QSGNode
         from shiboken6 import isValid
-        from gweatherrouting.qt.marinequick import MarineCurrentItem
+        from sailworks.qt.marinequick import MarineCurrentItem
 
         root = QQuickItem()
         item = MarineCurrentItem(root)
@@ -277,7 +277,7 @@ class TestMarineQuick(unittest.TestCase):
     def test_quick_scene_renders_grid_and_station_and_reprojects(self):
         from PySide6.QtGui import QColor
         from PySide6.QtQuick import QQuickWindow
-        from gweatherrouting.qt.marinequick import MarineCurrentItem
+        from sailworks.qt.marinequick import MarineCurrentItem
 
         window = QQuickWindow()
         window.resize(self.camera.width, self.camera.height)
@@ -327,7 +327,7 @@ class TestMarineQuick(unittest.TestCase):
     def test_time_request_keeps_previous_arrows_until_latest_frame_publishes(self):
         from PySide6.QtCore import QObject
         from PySide6.QtQuick import QQuickItem
-        from gweatherrouting.qt.marinequick import MarineQuickLayer
+        from sailworks.qt.marinequick import MarineQuickLayer
 
         parent, root = QObject(), QQuickItem()
         entered, release = Event(), Event()
@@ -339,9 +339,7 @@ class TestMarineQuick(unittest.TestCase):
             release.wait(2)
             return MarineSnapshot(sources, instant, (), "no valid data")
 
-        with patch(
-            "gweatherrouting.qt.marinequick.sample_currents", side_effect=sampling
-        ):
+        with patch("sailworks.qt.marinequick.sample_currents", side_effect=sampling):
             layer = MarineQuickLayer(root, parent)
             sources = replace(self.sources, fields=())
             old_snapshot = MarineSnapshot(
@@ -383,7 +381,7 @@ class TestMarineQuick(unittest.TestCase):
     def test_scene_failure_reports_unavailable_without_cairo_fallback(self):
         from PySide6.QtCore import QObject
         from PySide6.QtQuick import QQuickItem
-        from gweatherrouting.qt.marinequick import MarineQuickLayer
+        from sailworks.qt.marinequick import MarineQuickLayer
 
         parent, root = QObject(), QQuickItem()
         layer = MarineQuickLayer(root, parent)
@@ -396,7 +394,7 @@ class TestMarineQuick(unittest.TestCase):
 
     def test_quick_label_item_receives_station_annotations(self):
         from PySide6.QtQuick import QQuickItem
-        from gweatherrouting.qt.marinequick import MarineLabelItem
+        from sailworks.qt.marinequick import MarineLabelItem
 
         root = QQuickItem()
         item = MarineLabelItem(root)
@@ -407,7 +405,7 @@ class TestMarineQuick(unittest.TestCase):
     def test_worker_failure_relinquishes_ownership(self):
         from PySide6.QtCore import QObject
         from PySide6.QtQuick import QQuickItem
-        from gweatherrouting.qt.marinequick import MarineQuickLayer
+        from sailworks.qt.marinequick import MarineQuickLayer
 
         parent, root = QObject(), QQuickItem()
         layer = MarineQuickLayer(root, parent)
@@ -420,7 +418,7 @@ class TestMarineQuick(unittest.TestCase):
         layer.labels.present(old_snapshot, self.camera)
         self.assertTrue(layer.labels.labels)
         with patch(
-            "gweatherrouting.qt.marinequick.sample_currents",
+            "sailworks.qt.marinequick.sample_currents",
             side_effect=RuntimeError("injected sampling failure"),
         ):
             layer.request(sources, START + timedelta(minutes=5), True, self.camera)

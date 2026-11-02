@@ -16,12 +16,12 @@ from threading import Event
 import cairo
 from osgeo import ogr
 
-from gweatherrouting.core.enccharts import chart_scale_rank, chart_scale_visible
-from gweatherrouting.core.mapviewport import MapViewport
-from gweatherrouting.qt import gribviewport, gribviewportchart, viewportenc
-from gweatherrouting.qt.gribviewport import ViewportCamera
-from gweatherrouting.rendering.encrenderer import ENCOverlayRenderer
-from gweatherrouting.rendering.overlayrenderer import RenderJob
+from sailworks.core.enccharts import chart_scale_rank, chart_scale_visible
+from sailworks.core.mapviewport import MapViewport
+from sailworks.qt import gribviewport, gribviewportchart, viewportenc
+from sailworks.qt.gribviewport import ViewportCamera
+from sailworks.rendering.encrenderer import ENCOverlayRenderer
+from sailworks.rendering.overlayrenderer import RenderJob
 from test.map_helpers import MapCanvas
 
 #: The modules the viewport's own code is made of.
@@ -33,11 +33,11 @@ WORKER_MODULES = (viewportenc, gribviewportchart)
 
 #: The application's own settings and controllers: the worker never uses them.
 FORBIDDEN_IMPORTS = (
-    "gweatherrouting.core.settings",
-    "gweatherrouting.core.storage",
-    "gweatherrouting.qt.datacontroller",
-    "gweatherrouting.qt.datamanager",
-    "gweatherrouting.rendering.chartcollection",
+    "sailworks.core.settings",
+    "sailworks.core.storage",
+    "sailworks.qt.datacontroller",
+    "sailworks.qt.datamanager",
+    "sailworks.rendering.chartcollection",
 )
 
 
@@ -261,7 +261,7 @@ def test_a_broken_settings_file_is_reported_not_swallowed(tmp_path):
 
 def test_the_enc_switch_is_the_applications_own_switch(tmp_path):
     """The class switch is the application's own key, with its own meaning."""
-    from gweatherrouting.rendering.chartclasses import CLASS_SETTINGS
+    from sailworks.rendering.chartclasses import CLASS_SETTINGS
 
     assert viewportenc.CLASS_KEY == CLASS_SETTINGS["enc"]
     _settings(tmp_path, [], chartENCVisible=False)
@@ -698,7 +698,7 @@ def test_the_viewport_never_enables_the_enc_layer_by_itself():
 
 def test_the_chart_palette_is_the_users_own(tmp_path):
     """The palette is the user's own, and an unknown name falls back."""
-    from gweatherrouting.rendering.style import Style
+    from sailworks.rendering.style import Style
 
     settings = tmp_path / "settings.json"
     settings.write_text(json.dumps({"chartPalette": "dark"}))

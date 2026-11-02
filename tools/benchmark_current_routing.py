@@ -13,10 +13,10 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from gweatherrouting.core.grib import Grib
-from gweatherrouting.core.marine.fields import CurrentField, FieldSelection
-from gweatherrouting.core.marine.models import canonical_json
-from gweatherrouting.core.marine.routing import (
+from sailworks.core.grib import Grib
+from sailworks.core.marine.fields import CurrentField, FieldSelection
+from sailworks.core.marine.models import canonical_json
+from sailworks.core.marine.routing import (
     CurrentIsoRouter,
     CurrentRoutingEnvironment,
     FrozenRoutingWind,

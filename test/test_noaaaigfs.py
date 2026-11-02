@@ -6,16 +6,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from gweatherrouting.core.gribsources.noaaaigfs import (
+from sailworks.core.gribsources.noaaaigfs import (
     AIGFS_ROOT,
     AIGFS_NAME,
     NOAAAIGFSSource,
     _parse_index,
 )
-import gweatherrouting.core.gribsources.noaaaigfs as noaaaigfs
-from gweatherrouting.core.gribsources.options import DownloadOptions
-from gweatherrouting.core.gribsources.ranged import HTTPStatusError
-from gweatherrouting.core.marine.chs import DownloadCancelledError
+import sailworks.core.gribsources.noaaaigfs as noaaaigfs
+from sailworks.core.gribsources.options import DownloadOptions
+from sailworks.core.gribsources.ranged import HTTPStatusError
+from sailworks.core.marine.chs import DownloadCancelledError
 from test.aigfs_fixtures import index_for_hours, lead_fixture
 
 
@@ -60,7 +60,7 @@ def test_catalog_discovers_pinned_complete_runs_and_skips_partial_latest(
         hour = int(match.group(1))
         return indexes[hour][0]
 
-    monkeypatch.setattr("gweatherrouting.core.gribsources.noaaaigfs.fetch_text", fetch)
+    monkeypatch.setattr("sailworks.core.gribsources.noaaaigfs.fetch_text", fetch)
     rows = source.get_download_list(options())
     assert len(rows) == 1
     assert rows[0][1] == AIGFS_NAME
@@ -200,7 +200,7 @@ def test_download_concatenates_only_requested_bands_byte_for_byte(
 
     run_url = source._run_url("20261025", "12")
     monkeypatch.setattr(
-        "gweatherrouting.core.gribsources.noaaaigfs.fetch_text",
+        "sailworks.core.gribsources.noaaaigfs.fetch_text",
         index_fetch(indexes),
     )
 
@@ -220,12 +220,8 @@ def test_download_concatenates_only_requested_bands_byte_for_byte(
             progress(len(payload))
         return len(payload)
 
-    monkeypatch.setattr(
-        "gweatherrouting.core.gribsources.noaaaigfs.message_length", length
-    )
-    monkeypatch.setattr(
-        "gweatherrouting.core.gribsources.noaaaigfs.append_message", append
-    )
+    monkeypatch.setattr("sailworks.core.gribsources.noaaaigfs.message_length", length)
+    monkeypatch.setattr("sailworks.core.gribsources.noaaaigfs.append_message", append)
     identifier = json.dumps(
         {
             "source": AIGFS_NAME,
@@ -311,9 +307,7 @@ def test_pinned_download_fails_on_missing_index_without_fallback_or_final_file(
         response = SimpleNamespace(status_code=404)
         raise HTTPStatusError(200, response, url)
 
-    monkeypatch.setattr(
-        "gweatherrouting.core.gribsources.noaaaigfs.fetch_text", missing
-    )
+    monkeypatch.setattr("sailworks.core.gribsources.noaaaigfs.fetch_text", missing)
     identifier = json.dumps(
         {
             "source": AIGFS_NAME,
@@ -355,7 +349,7 @@ def test_existing_destination_is_never_overwritten(tmp_path, monkeypatch):
         pytest.fail("destination collision must be rejected before network access")
 
     monkeypatch.setattr(
-        "gweatherrouting.core.gribsources.noaaaigfs.fetch_text", unexpected_network
+        "sailworks.core.gribsources.noaaaigfs.fetch_text", unexpected_network
     )
     with pytest.raises(FileExistsError):
         source.download(identifier, str(tmp_path), lambda _: None)
@@ -388,11 +382,11 @@ def test_cancel_during_append_removes_stage_and_preserves_existing_file(
     existing = tmp_path / "installed-existing.grib2"
     existing.write_bytes(b"unchanged installed forecast")
     monkeypatch.setattr(
-        "gweatherrouting.core.gribsources.noaaaigfs.fetch_text",
+        "sailworks.core.gribsources.noaaaigfs.fetch_text",
         index_fetch(indexes),
     )
     monkeypatch.setattr(
-        "gweatherrouting.core.gribsources.noaaaigfs.message_length",
+        "sailworks.core.gribsources.noaaaigfs.message_length",
         lambda *_a, **_k: 64,
     )
     import threading
@@ -407,9 +401,7 @@ def test_cancel_during_append_removes_stage_and_preserves_existing_file(
             progress(message_size)
         return message_size
 
-    monkeypatch.setattr(
-        "gweatherrouting.core.gribsources.noaaaigfs.append_message", append
-    )
+    monkeypatch.setattr("sailworks.core.gribsources.noaaaigfs.append_message", append)
     identifier = json.dumps(
         {
             "source": AIGFS_NAME,

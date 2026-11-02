@@ -34,4 +34,4 @@ python -m pip install meson-python ninja
 python -m pip install --no-build-isolation --editable .
 
 echo "Setup complete. Activate the environment with: source .venv/bin/activate"
-echo "Then start the app with: gweatherrouting"
+echo "Then start the app with: sailworks"

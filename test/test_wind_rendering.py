@@ -13,12 +13,12 @@ import cairo
 import numpy as np
 from osgeo import gdal, ogr
 
-from gweatherrouting.core.grib import Grib
-from gweatherrouting.rendering.windpainter import (
+from sailworks.core.grib import Grib
+from sailworks.rendering.windpainter import (
     WindPainter,
     wind_on_ground,
 )
-from gweatherrouting.rendering.windrenderer import (
+from sailworks.rendering.windrenderer import (
     DisplayGrib,
     WindLandMask,
     WindOverlayRenderer,
@@ -100,7 +100,7 @@ class TestDisplayGrib(unittest.TestCase):
                 },
             }
         ]
-        with patch("gweatherrouting.rendering.windrenderer.COUNTRY_SHAPES", shapes):
+        with patch("sailworks.rendering.windrenderer.COUNTRY_SHAPES", shapes):
             mask = WindLandMask()
             self.assertTrue(mask.contains(0.5, 0.5))
             self.assertFalse(mask.contains(2, 2))
@@ -118,7 +118,7 @@ class TestDisplayGrib(unittest.TestCase):
         with TemporaryDirectory() as directory:
             mask = WindLandMask(directory)
             mask.refresh_source()
-            with patch("gweatherrouting.rendering.windrenderer.COUNTRY_SHAPES", []):
+            with patch("sailworks.rendering.windrenderer.COUNTRY_SHAPES", []):
                 self.assertFalse(mask.contains(0.2, 0.2))
                 path = Path(directory) / "gshhs/GSHHS_shp/f/GSHHS_f_L1.shp"
                 path.parent.mkdir(parents=True)
@@ -272,7 +272,7 @@ class TestWindOverlay(unittest.TestCase):
         self.assertNotIn(self.canvas, self.renderer._hidden_wind_frames)
 
     def test_streamlines_are_opt_in_cached_and_respect_visibility_toggles(self):
-        from gweatherrouting.rendering.streamlines import trace_streamlines
+        from sailworks.rendering.streamlines import trace_streamlines
 
         lats = np.linspace(47, 48.2, 9)
         lons = np.linspace(-123.2, -121.6, 9)
@@ -285,7 +285,7 @@ class TestWindOverlay(unittest.TestCase):
         )
         self.renderer._load_pressure = Mock(return_value=[])
         with patch(
-            "gweatherrouting.rendering.windrenderer.trace_streamlines",
+            "sailworks.rendering.windrenderer.trace_streamlines",
             wraps=trace_streamlines,
         ) as trace:
             self.draw()
@@ -730,7 +730,7 @@ class TestWindOverlay(unittest.TestCase):
         wind_on_ground.cache_clear()
         self.addCleanup(wind_on_ground.cache_clear)
         with patch(
-            "gweatherrouting.rendering.windpainter.point_in_country",
+            "sailworks.rendering.windpainter.point_in_country",
             return_value=True,
         ) as mask:
             self.assertTrue(wind_on_ground(49, -123))
@@ -747,7 +747,7 @@ class TestWindOverlay(unittest.TestCase):
         point = (180, 6, (47.6, -122.4))
         available.get_wind.return_value = [point]
         self.renderer._worker_grib = Mock(side_effect=[unavailable, available])
-        from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
+        from sailworks.rendering.windrenderer import WindOverlayRenderer
 
         result = WindOverlayRenderer._load_wind(self.renderer, job)
         self.assertEqual(len(result), 1)
@@ -758,7 +758,7 @@ class TestWindOverlay(unittest.TestCase):
         self.assertEqual(list(speeds), [point[1]])
 
     def test_overlapping_forecasts_use_newest_once_and_keep_older_gap_coverage(self):
-        from gweatherrouting.rendering.windrenderer import WindOverlayRenderer
+        from sailworks.rendering.windrenderer import WindOverlayRenderer
 
         old = SimpleNamespace(start_time=self.clock.time)
         new = SimpleNamespace(start_time=self.clock.time + timedelta(hours=6))

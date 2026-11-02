@@ -96,9 +96,9 @@ def probe(config):
     socket.socket.connect_ex = blocked
     import PySide6
     from osgeo import gdal
-    from gweatherrouting.core.grib import Grib
-    from gweatherrouting.core.gribsampling import WeatherSampler
-    from gweatherrouting.rendering.windrenderer import WindLandMask
+    from sailworks.core.grib import Grib
+    from sailworks.core.gribsampling import WeatherSampler
+    from sailworks.rendering.windrenderer import WindLandMask
 
     root = Path(config["staging_root"])
     modules = {}
@@ -108,9 +108,9 @@ def probe(config):
         "rendering/weatherstaging",
         "rendering/weatherbarbs",
     ):
-        path = root / "gweatherrouting" / (suffix + ".py")
+        path = root / "sailworks" / (suffix + ".py")
         hashes[suffix] = startup.protocol.file_hash(path)
-        modules[suffix] = load_file("gweatherrouting." + suffix.replace("/", "."), path)
+        modules[suffix] = load_file("sailworks." + suffix.replace("/", "."), path)
     staging = modules["rendering/weatherstaging"]
     barbs = modules["rendering/weatherbarbs"]
     data = Path(config["data"])

@@ -1,0 +1,34 @@
+Sailworks
+=========
+
+Copyright (C) 2017-2026 Davide Gessa <gessadavide@gmail.com>
+Copyright (C) 2025-2026 Sailworks contributors
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See LICENSE for the full text.
+
+Sailworks is a fork of GWeatherRouting
+(https://github.com/dakk/gweatherrouting), originally written by Davide Gessa
+and contributors. The fork point is commit 56cb20f on the `dev` branch. The
+complete record of changes since that commit is the project's git history.
+
+Since the fork point this project has been renamed from GWeatherRouting to
+Sailworks (Python package, distribution name, command line entry points and
+desktop files), its Qt front end and rendering pipeline have been largely
+rewritten, and its weather data handling, packaging and documentation have been
+modified. Files carried over from upstream keep their original copyright
+notices.
+
+The GPL grants rights in the software only. It does not grant rights to the
+GWeatherRouting name or logo (see GPLv3 section 7(e)), which remain with the
+upstream project. "Sailworks" and this project's own branding are separate from
+upstream.
+
+Bundled third-party components and assets, with their licenses and origins, are
+recorded in sailworks/data/COPYRIGHT.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.

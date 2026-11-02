@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock
 
-from gweatherrouting.core.gribmanager import GribManager
+from sailworks.core.gribmanager import GribManager
 
 
 class TestGribSelection(unittest.TestCase):

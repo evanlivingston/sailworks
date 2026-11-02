@@ -8,11 +8,11 @@ from unittest.mock import Mock, patch
 import numpy as np
 from osgeo import ogr
 
-from gweatherrouting.core.marine.fields import FieldSelection
-from gweatherrouting.rendering.gshhs import GSHHSVectorChart
+from sailworks.core.marine.fields import FieldSelection
+from sailworks.rendering.gshhs import GSHHSVectorChart
 from test.test_marine_fields import START, field
 from test.test_current_routing import setup_router, current_field
-from gweatherrouting.core.marine.chs import DownloadCancelledError
+from sailworks.core.marine.chs import DownloadCancelledError
 
 
 class TestCoastalBatch(unittest.TestCase):
@@ -41,7 +41,7 @@ class TestCoastalBatch(unittest.TestCase):
         selection = FieldSelection(
             [value], lambda *_: True, lambda a, b: np.ones(len(a), dtype=bool)
         )
-        from gweatherrouting.core.marine.nearestbatch import resolve_nearest
+        from sailworks.core.marine.nearestbatch import resolve_nearest
 
         cancel = Mock(side_effect=DownloadCancelledError)
         with self.assertRaises(DownloadCancelledError):
@@ -147,5 +147,5 @@ class TestCoastalBatch(unittest.TestCase):
         self.assertEqual(provider.points_validity(points), expected_points)
         self.assertEqual(provider.lines_validity(lines), expected_lines)
         # An existing installation can still use exact OGR checks without Shapely.
-        with patch("gweatherrouting.rendering.gshhs.shapely", None):
+        with patch("sailworks.rendering.gshhs.shapely", None):
             self.assertEqual(provider.lines_validity(lines), expected_lines)

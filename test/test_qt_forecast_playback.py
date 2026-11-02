@@ -6,7 +6,7 @@ from datetime import datetime
 from importlib.util import find_spec
 from unittest.mock import Mock
 
-from gweatherrouting.core.timecontrol import TimeControl
+from sailworks.core.timecontrol import TimeControl
 
 
 @unittest.skipUnless(find_spec("PySide6"), "Requires PySide6")
@@ -19,7 +19,7 @@ class TestForecastPlayback(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
-        from gweatherrouting.qt.forecasttimeline import ForecastTimeline
+        from sailworks.qt.forecasttimeline import ForecastTimeline
 
         self.start = datetime(2026, 1, 1, 12).timestamp()
         self.clock = TimeControl()
@@ -81,8 +81,8 @@ class TestForecastPlayback(unittest.TestCase):
                 self.assertEqual(self.clock.time.timestamp(), self.start)
 
     def test_playback_updates_marine_arrows_without_rebuilding_sources(self):
-        from gweatherrouting.qt.marinestate import MarineDisplayState
-        from gweatherrouting.rendering.marinepresentation import chart_instant
+        from sailworks.qt.marinestate import MarineDisplayState
+        from sailworks.rendering.marinepresentation import chart_instant
 
         manager = Mock()
         manager.fields.snapshot.return_value.fields = (Mock(),)

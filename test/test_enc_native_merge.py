@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from gweatherrouting.qt import weatherpresenter
+from sailworks.qt import weatherpresenter
 
 pytest_plugins = ["test.test_enc_app_rollout"]
 

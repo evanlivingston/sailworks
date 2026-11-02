@@ -19,10 +19,10 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
-from gweatherrouting.core.connectionmanager import ConnectionManager
-from gweatherrouting.core.datasource import DataSource
-from gweatherrouting.core.networkdatasource import MAX_LINE_LENGTH, NetworkDataSource
-from gweatherrouting.core.serialdatasource import SerialDataSource
+from sailworks.core.connectionmanager import ConnectionManager
+from sailworks.core.datasource import DataSource
+from sailworks.core.networkdatasource import MAX_LINE_LENGTH, NetworkDataSource
+from sailworks.core.serialdatasource import SerialDataSource
 
 # ---------------------------------------------------------------------------
 # Helpers

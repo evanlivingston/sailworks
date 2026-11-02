@@ -7,14 +7,14 @@ from unittest.mock import Mock
 
 import numpy as np
 
-from gweatherrouting.core.marine.fields import CurrentField, FieldSelection
-from gweatherrouting.core.marine.models import canonical_json
-from gweatherrouting.core.marine.routing import (
+from sailworks.core.marine.fields import CurrentField, FieldSelection
+from sailworks.core.marine.models import canonical_json
+from sailworks.core.marine.routing import (
     CurrentIsoRouter,
     CurrentRoutingEnvironment,
     InvalidMarineLegError,
 )
-from gweatherrouting.core.safetypolicy import SafetyPolar, SafetyPolicy, policy_of
+from sailworks.core.safetypolicy import SafetyPolar, SafetyPolicy, policy_of
 
 START = datetime(2026, 10, 11, 12, tzinfo=timezone.utc)
 
@@ -126,7 +126,7 @@ class TestRoutingSafety(unittest.TestCase):
     def test_scalar_and_whole_frontier_agree_with_motor_and_wave_proxy(self):
         from test.test_current_routing import setup_router as current_router
         from test.test_frontier_routing import table_polar
-        from gweatherrouting.core.polarwrapper import PolarWrapper
+        from sailworks.core.polarwrapper import PolarWrapper
         from types import SimpleNamespace
 
         results = []

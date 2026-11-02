@@ -1,6 +1,6 @@
 # Complete faithful ENC viewport integration (#78)
 
-Issue: https://github.com/evanlivingston/gweatherrouting/issues/78, under #51.
+Issue: https://github.com/evanlivingston/sailworks/issues/78, under #51.
 Experimental integration only; default use/rollout is separate from this issue.
 
 ## Implementation contract (before implementation/runs)
@@ -68,7 +68,7 @@ own scheduler, behind a **disabled-by-default** flag:
   never publishes a previous scale's image as current**, and re-prepares the
   faithful current-scale output asynchronously (latest-wins), with explicit
   loading/stale/coverage-miss states meanwhile;
-- no experiment tooling is imported into `gweatherrouting/`, no legacy worker
+- no experiment tooling is imported into `sailworks/`, no legacy worker
   scheduling is reused, and no custom vector/tessellator/stroker is introduced.
 
 Acceptance A/B/C, the fixed image bounds, the experimental status, the budget

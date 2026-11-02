@@ -11,11 +11,11 @@ from PySide6.QtCore import QMimeData, QObject, QPointF, Qt, QUrl, Signal
 from PySide6.QtGui import QDropEvent
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
-from gweatherrouting.core.loglibrary import LogLibrary
-from gweatherrouting.core.nmeasession import NMEASession
-from gweatherrouting.core.utils import EventDispatcher
-from gweatherrouting.qt.controller import SessionController
-from gweatherrouting.qt.loglibrary import LogLibraryDialog, dropped_log_paths
+from sailworks.core.loglibrary import LogLibrary
+from sailworks.core.nmeasession import NMEASession
+from sailworks.core.utils import EventDispatcher
+from sailworks.qt.controller import SessionController
+from sailworks.qt.loglibrary import LogLibraryDialog, dropped_log_paths
 
 
 class ImportController(QObject):
@@ -160,7 +160,7 @@ def test_dialog_import_edit_reload_open_paused_and_remove(
 def test_window_drop_imports_multiple_originals_with_honest_ebl_status(
     app, controller, tmp_path
 ):
-    from gweatherrouting.qt.window import PreviewWindow
+    from sailworks.qt.window import PreviewWindow
 
     source = text_log(tmp_path)
     archive = tmp_path / "unsupported.ebl"
@@ -219,8 +219,8 @@ def test_failed_text_import_is_retained_with_error_and_previous_replay_survives(
 def test_window_drop_stitches_stack_once_and_library_opens_whole_timeline_paused(
     app, controller, tmp_path, monkeypatch
 ):
-    from gweatherrouting.qt import controller as controller_module
-    from gweatherrouting.qt.window import PreviewWindow
+    from sailworks.qt import controller as controller_module
+    from sailworks.qt.window import PreviewWindow
     from test.test_ebllog import VERSION, frame, timestamp
 
     directory = tmp_path / "EBL000031"
@@ -314,7 +314,7 @@ def test_load_paths_interleaves_replay_intent_and_multiple_paths(
     def deferred_thread(*, target, daemon):
         return SimpleNamespace(start=lambda: workers.append(target))
 
-    monkeypatch.setattr("gweatherrouting.qt.controller.Thread", deferred_thread)
+    monkeypatch.setattr("sailworks.qt.controller.Thread", deferred_thread)
     paths = []
     for index in range(4):
         path = tmp_path / f"interleaved-{index}.log"
@@ -397,7 +397,7 @@ def test_overlapping_load_paths_latest_request_wins(
     def deferred_thread(*, target, daemon):
         return SimpleNamespace(start=lambda: workers.append(target))
 
-    monkeypatch.setattr("gweatherrouting.qt.controller.Thread", deferred_thread)
+    monkeypatch.setattr("sailworks.qt.controller.Thread", deferred_thread)
     set_playing = controller.session.set_playing
 
     def record_playing(active):
@@ -520,8 +520,8 @@ def test_worker_progress_is_queued_visible_and_stage_aware(
 ):
     from threading import Event, get_ident
 
-    from gweatherrouting.core.nmeasession import read_nmea_log
-    from gweatherrouting.qt.loglibrary import LogImportProgress
+    from sailworks.core.nmeasession import read_nmea_log
+    from sailworks.qt.loglibrary import LogImportProgress
 
     source = text_log(tmp_path)
     archive = tmp_path / "archive.ebl"
@@ -556,7 +556,7 @@ def test_worker_progress_is_queued_visible_and_stage_aware(
         return read_nmea_log(path, progress=progress)
 
     monkeypatch.setattr(controller.log_library, "import_path", copy)
-    monkeypatch.setattr("gweatherrouting.qt.controller.read_nmea_log", decode)
+    monkeypatch.setattr("sailworks.qt.controller.read_nmea_log", decode)
     dialog = LogLibraryDialog(controller)
     # The same view is installed in the main-window status bar; both instances
     # must map notifications identically, including when opened mid-import.
@@ -601,7 +601,7 @@ def test_stale_progress_and_completions_never_clear_newer_progress(
     app, controller, tmp_path, monkeypatch
 ):
     monkeypatch.setattr(
-        "gweatherrouting.qt.controller.Thread",
+        "sailworks.qt.controller.Thread",
         lambda **kwargs: SimpleNamespace(start=lambda: None),
     )
     source = text_log(tmp_path)
@@ -656,7 +656,7 @@ def test_worker_start_failure_resets_progress(controller, tmp_path, monkeypatch)
         raise RuntimeError("cannot start worker")
 
     monkeypatch.setattr(
-        "gweatherrouting.qt.controller.Thread",
+        "sailworks.qt.controller.Thread",
         lambda **kwargs: SimpleNamespace(start=fail_start),
     )
     assert not controller.load_paths([text_log(tmp_path)], replay=True)

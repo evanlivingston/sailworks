@@ -60,9 +60,9 @@ def worker(config):
 
     socket.socket.connect = no_network
     socket.socket.connect_ex = no_network
-    from gweatherrouting.qt import gpuweatherjobs as jobs
-    from gweatherrouting.rendering import weatherbarbs as barbs
-    from gweatherrouting.rendering.weatherstaging import stage_wind
+    from sailworks.qt import gpuweatherjobs as jobs
+    from sailworks.rendering import weatherbarbs as barbs
+    from sailworks.rendering.weatherstaging import stage_wind
 
     production_tool = load_file(
         "native_production_telemetry",
@@ -282,12 +282,12 @@ def main():
         manifest = startup.verify_snapshot(args.snapshot)
         app_root = args.app_root.resolve()
         files = (
-            "gweatherrouting/qt/gpuweatherjobs.py",
-            "gweatherrouting/qt/gpuscene.py",
-            "gweatherrouting/qt/mapcanvas.py",  # LEGACY-ONLY (TODO #86): deleted legacy file retained in historical reference identity  # LEGACY-ONLY (TODO #86): still hashed for reference-app identity
-            "gweatherrouting/rendering/weathercache.py",
-            "gweatherrouting/rendering/weatherstaging.py",
-            "gweatherrouting/rendering/weatherbarbs.py",
+            "sailworks/qt/gpuweatherjobs.py",
+            "sailworks/qt/gpuscene.py",
+            "sailworks/qt/mapcanvas.py",  # LEGACY-ONLY (TODO #86): deleted legacy file retained in historical reference identity  # LEGACY-ONLY (TODO #86): still hashed for reference-app identity
+            "sailworks/rendering/weathercache.py",
+            "sailworks/rendering/weatherstaging.py",
+            "sailworks/rendering/weatherbarbs.py",
             "tools/benchmark_startup_rendering.py",
         )
         app_identity = {

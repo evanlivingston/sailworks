@@ -3,9 +3,9 @@ from types import SimpleNamespace
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QAbstractButton, QComboBox, QDialog, QLabel
 
-from gweatherrouting.core.race import YBRaceError, parse_race
-from gweatherrouting.qt.ybracedialog import YBRaceDialog
-from gweatherrouting.qt import racepanel
+from sailworks.core.race import YBRaceError, parse_race
+from sailworks.qt.ybracedialog import YBRaceDialog
+from sailworks.qt import racepanel
 
 
 def test_dialog_simplified_local_only_controls(qtbot):
@@ -113,7 +113,7 @@ def test_local_json_selection_and_invalid_file_warning(qtbot, monkeypatch, tmp_p
 def test_review_from_start_sets_race_time_and_selects_race_track(qtbot):
     from datetime import datetime
 
-    from gweatherrouting.core.timecontrol import TimeControl
+    from sailworks.core.timecontrol import TimeControl
 
     class TrackManager(list):
         active = None
@@ -195,7 +195,7 @@ def test_download_success(qtbot, monkeypatch):
     def fake_download(slug, *args, **kwargs):
         return race
 
-    monkeypatch.setattr("gweatherrouting.core.race.download_yb_race", fake_download)
+    monkeypatch.setattr("sailworks.core.race.download_yb_race", fake_download)
     dialog.race_entry.setText("abc")
     with qtbot.waitSignal(dialog.download_finished, timeout=5000):
         dialog.start_download()
@@ -211,7 +211,7 @@ def test_download_failure(qtbot, monkeypatch):
     def fake_download(slug, *args, **kwargs):
         raise YBRaceError("boom")
 
-    monkeypatch.setattr("gweatherrouting.core.race.download_yb_race", fake_download)
+    monkeypatch.setattr("sailworks.core.race.download_yb_race", fake_download)
     dialog.race_entry.setText("abc")
     with qtbot.waitSignal(dialog.download_failed, timeout=5000):
         dialog.start_download()
@@ -235,7 +235,7 @@ def test_close_ignored_while_download_running(qtbot, monkeypatch):
         finished.wait(5)
         return race
 
-    monkeypatch.setattr("gweatherrouting.core.race.download_yb_race", fake_download)
+    monkeypatch.setattr("sailworks.core.race.download_yb_race", fake_download)
     dialog.race_entry.setText("abc")
     dialog.start_download()
     assert started.wait(5)
@@ -263,7 +263,7 @@ def test_reject_ignored_while_download_running(qtbot, monkeypatch):
         finished.wait(5)
         return race
 
-    monkeypatch.setattr("gweatherrouting.core.race.download_yb_race", fake_download)
+    monkeypatch.setattr("sailworks.core.race.download_yb_race", fake_download)
     dialog.race_entry.setText("abc")
     dialog.start_download()
     assert started.wait(5)

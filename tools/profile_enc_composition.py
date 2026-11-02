@@ -49,7 +49,7 @@ def main():
             report["snapshot"] = str(args.snapshot)
             report["sandbox"] = str(root)
         else:
-            from gweatherrouting.core.storage import DATA_DIR
+            from sailworks.core.storage import DATA_DIR
 
             data_dir = Path(args.data_dir or DATA_DIR)
         report["data_dir"] = str(data_dir)
@@ -71,11 +71,11 @@ def main():
 
 def _measure(report, data_dir, iterations):  # noqa: C901 - one bounded measurement
     import cairo
-    from gweatherrouting.core.mapviewport import MapViewport
-    from gweatherrouting.qt.gribviewport import ViewportCamera
-    from gweatherrouting.qt.gribviewportchart import ChartCamera
-    from gweatherrouting.qt.viewportenc import ViewportEncSource
-    from gweatherrouting.rendering.overlayrenderer import MARGIN, RenderJob
+    from sailworks.core.mapviewport import MapViewport
+    from sailworks.qt.gribviewport import ViewportCamera
+    from sailworks.qt.gribviewportchart import ChartCamera
+    from sailworks.qt.viewportenc import ViewportEncSource
+    from sailworks.rendering.overlayrenderer import MARGIN, RenderJob
     from threading import Event
 
     lat, lon, zoom = SAVED_VIEW

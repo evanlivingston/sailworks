@@ -10,10 +10,10 @@ import numpy as np
 from weatherrouting import IsoPoint
 import weatherrouting
 
-from gweatherrouting.core.marine.batchrouting import advance_headings
-from gweatherrouting.core.marine.chs import DownloadCancelledError
-from gweatherrouting.core.marine.fields import FieldSelection
-from gweatherrouting.core.marine.routing import (
+from sailworks.core.marine.batchrouting import advance_headings
+from sailworks.core.marine.chs import DownloadCancelledError
+from sailworks.core.marine.fields import FieldSelection
+from sailworks.core.marine.routing import (
     InvalidMarineLegError,
     RoutingDataGapError,
 )
@@ -189,7 +189,7 @@ class TestBatchCurrents(unittest.TestCase):
 
     def test_real_coastline_provider_accepts_batched_segments(self):
         from osgeo import ogr
-        from gweatherrouting.rendering.gshhs import GSHHSVectorChart
+        from sailworks.rendering.gshhs import GSHHSVectorChart
 
         data = ogr.GetDriverByName("Memory").CreateDataSource("")
         layer = data.CreateLayer("island", geom_type=ogr.wkbPolygon)
@@ -221,7 +221,7 @@ class TestBatchCurrents(unittest.TestCase):
 
     def test_coastline_repairs_invalid_land_and_checks_entire_segments(self):
         from osgeo import ogr
-        from gweatherrouting.rendering.gshhs import GSHHSVectorChart
+        from sailworks.rendering.gshhs import GSHHSVectorChart
 
         data = ogr.GetDriverByName("Memory").CreateDataSource("")
         layer = data.CreateLayer("land", geom_type=ogr.wkbPolygon)
@@ -247,7 +247,7 @@ class TestBatchCurrents(unittest.TestCase):
 
     def test_coastline_clearance_rejects_nearby_segment_in_metres(self):
         from osgeo import ogr
-        from gweatherrouting.rendering.gshhs import GSHHSVectorChart
+        from sailworks.rendering.gshhs import GSHHSVectorChart
 
         data = ogr.GetDriverByName("Memory").CreateDataSource("")
         layer = data.CreateLayer("land", geom_type=ogr.wkbPolygon)

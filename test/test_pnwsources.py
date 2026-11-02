@@ -9,8 +9,8 @@ import json
 import unittest
 from datetime import datetime, timezone
 
-from gweatherrouting.core.gribsources.eccchrdps import ECCHRDPSource
-from gweatherrouting.core.gribsources.noaahrrr import (
+from sailworks.core.gribsources.eccchrdps import ECCHRDPSource
+from sailworks.core.gribsources.noaahrrr import (
     HRRR_LONG_RANGE,
     HRRR_SHORT_RANGE,
     NOAAHRRRSource,

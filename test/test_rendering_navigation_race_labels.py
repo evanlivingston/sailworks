@@ -4,7 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from types import SimpleNamespace
 
-from gweatherrouting.rendering.navigation import NavigationRenderer
+from sailworks.rendering.navigation import NavigationRenderer
 
 
 class _FakeCr:

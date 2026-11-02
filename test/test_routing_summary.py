@@ -2,7 +2,7 @@
 
 import unittest
 
-from gweatherrouting.rendering.navigation import routing_summary
+from sailworks.rendering.navigation import routing_summary
 
 
 class FakeRoute(list):

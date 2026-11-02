@@ -10,28 +10,28 @@ import numpy as np
 import pytest
 from osgeo import osr
 
-from gweatherrouting.core.forecastcapabilities import (
+from sailworks.core.forecastcapabilities import (
     MODEL_CAPABILITIES,
     model_from_grib_metadata,
 )
-from gweatherrouting.core.forecastrefreshcontracts import PlannedModel
-from gweatherrouting.core.forecastrefreshplan import (
+from sailworks.core.forecastrefreshcontracts import PlannedModel
+from sailworks.core.forecastrefreshplan import (
     UnsupportedConfigurationError,
     default_provider_factories,
     plan_refresh,
 )
-from gweatherrouting.core.forecasttranche import (
+from sailworks.core.forecasttranche import (
     AnalysisSelection,
     ForecastTranche,
     ModelConfiguration,
     ModelEntry,
 )
-from gweatherrouting.core.forecastvalidation import inspect_download
-from gweatherrouting.core.forecastboundrouting import BoundWorkerGrib
-from gweatherrouting.core.grib import Grib, PRESSURE_ELEMENTS, forecast_model_name
-from gweatherrouting.core.gribfields import is_mean_sea_level_pressure
-from gweatherrouting.core.gribsampling import FIELDS, GridIndex, wind_value
-from gweatherrouting.core.tranchestore import TrancheStore
+from sailworks.core.forecastvalidation import inspect_download
+from sailworks.core.forecastboundrouting import BoundWorkerGrib
+from sailworks.core.grib import Grib, PRESSURE_ELEMENTS, forecast_model_name
+from sailworks.core.gribfields import is_mean_sea_level_pressure
+from sailworks.core.gribsampling import FIELDS, GridIndex, wind_value
+from sailworks.core.tranchestore import TrancheStore
 
 RUN = datetime(2026, 10, 24, tzinfo=timezone.utc)
 REQUESTED = (-1.0, -1.0, 1.0, 1.0)
@@ -284,9 +284,7 @@ def test_pres_alias_is_only_msl_and_sampling_indexes_only_that_level(monkeypatch
         key: value for key, value in base.items() if key != "GRIB_SHORT_NAME"
     }
     dataset = Dataset([base, wrong_level, missing_level])
-    monkeypatch.setattr(
-        "gweatherrouting.core.gribsampling.vector_flags", lambda path: []
-    )
+    monkeypatch.setattr("sailworks.core.gribsampling.vector_flags", lambda path: [])
     index = GridIndex(Source(dataset))
     assert [record.element for record in index.records] == ["PRES"]
 
@@ -299,7 +297,7 @@ def test_live_public_model_gribs_validate_sample_and_bind_when_probe_root_is_set
         pytest.skip("set GWR_TEST_PUBLIC_GRIB_ROOT to the supplied public GRIB probes")
     from osgeo import gdal
 
-    from gweatherrouting.core.forecastboundrouting import BoundWorkerGrib
+    from sailworks.core.forecastboundrouting import BoundWorkerGrib
 
     filenames = {
         "IFS": "ifs-surface-0h.grib2",

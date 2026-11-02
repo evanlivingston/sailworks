@@ -24,8 +24,8 @@ pytestmark = [
 
 @pytest.fixture(scope="module")
 def hrrr_grib(tmp_path_factory):
-    from gweatherrouting.core.gribsources.noaahrrr import NOAAHRRRSource
-    from gweatherrouting.core.grib import Grib
+    from sailworks.core.gribsources.noaahrrr import NOAAHRRRSource
+    from sailworks.core.grib import Grib
 
     source = NOAAHRRRSource()
     source.bounds = BOUNDS
@@ -44,7 +44,7 @@ def hrrr_grib(tmp_path_factory):
 
 
 def test_a_downloaded_hrrr_forecast_is_current_wind_in_the_viewport(hrrr_grib):
-    from gweatherrouting.qt.gribviewport import (
+    from sailworks.qt.gribviewport import (
         GribViewportModel,
         ViewportCamera,
         _covers,
@@ -79,7 +79,7 @@ def test_a_downloaded_hrrr_forecast_is_current_wind_in_the_viewport(hrrr_grib):
 def test_the_viewport_draws_the_real_forecast_as_barbs(hrrr_grib):
     from PySide6.QtWidgets import QApplication
 
-    from gweatherrouting.qt.gribviewport import (
+    from sailworks.qt.gribviewport import (
         GribViewportModel,
         ViewportCamera,
         _viewport_widget_class,

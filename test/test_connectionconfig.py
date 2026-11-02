@@ -3,8 +3,8 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from gweatherrouting.core.connectionconfig import connection_config
-from gweatherrouting.core.connectionmanager import ConnectionManager
+from sailworks.core.connectionconfig import connection_config
+from sailworks.core.connectionmanager import ConnectionManager
 
 
 def network(**updates):
@@ -50,8 +50,8 @@ class TestConnectionConfig(unittest.TestCase):
 
     def manager(self):
         with (
-            patch("gweatherrouting.core.storage.Storage.load_or_save_default"),
-            patch("gweatherrouting.core.storage.Storage.save"),
+            patch("sailworks.core.storage.Storage.load_or_save_default"),
+            patch("sailworks.core.storage.Storage.save"),
         ):
             manager = ConnectionManager()
         manager.storage = MagicMock()

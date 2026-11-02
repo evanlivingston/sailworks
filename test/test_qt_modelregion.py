@@ -1,11 +1,11 @@
 import pytest
 
-from gweatherrouting.qt.gribviewport import ViewportCamera
-from gweatherrouting.qt.modelregion import (
+from sailworks.qt.gribviewport import ViewportCamera
+from sailworks.qt.modelregion import (
     region_from_camera,
     region_from_visible_workspace,
 )
-from gweatherrouting.rendering.weatherbarbs import _view_bounds
+from sailworks.rendering.weatherbarbs import _view_bounds
 
 
 def test_region_helper_uses_actual_viewport_projection_and_wraps_longitude():

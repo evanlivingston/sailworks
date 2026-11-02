@@ -26,22 +26,22 @@ h3:not(#hero h3) {
 </style>
 
 (homepage)=
-# GWeatherRouting: Open-source sailing routing and navigation
+# Sailworks: Open-source sailing routing and navigation
 
 <div id="hero">
   <div id="hero-left">  <!-- Start Hero Left -->
-    <h2 style="font-size: 60px; font-weight: bold; margin: 2rem auto 0;">GWeatherRouting</h2>
+    <h2 style="font-size: 60px; font-weight: bold; margin: 2rem auto 0;">Sailworks</h2>
     <h3 style="font-weight: bold; margin-top: 0;">Open-source sailing routing and navigation</h3>
-    <p>GWeatherRouting is an open-source sailing routing and navigation software written using Python and Gtk4.</p>
+    <p>Sailworks is an open-source sailing routing and navigation software written using Python and Gtk4.</p>
     <div class="homepage-button-container">
       <div class="homepage-button-container-row">
-          <a href="https://flathub.org/apps/org.gweatherrouting.gweatherrouting" class="homepage-button primary-button"><i class="fa fa-download"></i> Install from Flathub</a>
+          <a href="https://flathub.org/apps/org.sailworks.sailworks" class="homepage-button primary-button"><i class="fa fa-download"></i> Install from Flathub</a>
       </div>
       <div class="homepage-button-container-row">
-          <a href="https://github.com/dakk/gweatherrouting/releases/latest" class="homepage-button-link"><i class="fa fa-linux"></i> Download AppImage →</a>
+          <a href="https://github.com/evanlivingston/sailworks/releases/latest" class="homepage-button-link"><i class="fa fa-linux"></i> Download AppImage →</a>
       </div>
       <div class="homepage-button-container-row">
-          <a href="https://github.com/dakk/gweatherrouting/releases/download/v0.2.7/GWeatherRouting-win64.zip" class="homepage-button-link"><i class="fa fa-windows"></i> Download for Windows →</a>
+          <a href="https://github.com/evanlivingston/sailworks/releases/latest" class="homepage-button-link"><i class="fa fa-windows"></i> Download for Windows →</a>
       </div>
       <div class="homepage-button-container-row">
           <a href="./docs/quickstart.html" class="homepage-button-link">Quickstart →</a>
@@ -49,7 +49,7 @@ h3:not(#hero h3) {
     </div>
   </div>
   <div id="hero-right">
-    <img src="./_static/images/gweatherrouting_levante.png">
+    <img src="./_static/images/sailworks_levante.png">
   </div>
 </div>
 
@@ -95,7 +95,7 @@ h3:not(#hero h3) {
 <h3>Contributions</h3>
 
 Contributions and issue reports are very welcome at the
-[GitHub repository](https://github.com/dakk/gweatherrouting).
+[GitHub repository](https://github.com/evanlivingston/sailworks).
 <!-- ::: -->
 
 :::{toctree}
@@ -103,5 +103,5 @@ Contributions and issue reports are very welcome at the
 :hidden:
 
 Documentation<docs/index>
-Source Code<https://github.com/dakk/gweatherrouting>
+Source Code<https://github.com/evanlivingston/sailworks>
 :::

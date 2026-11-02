@@ -9,7 +9,7 @@ the camera.  Headless and model-level; no GPU or window is needed.
 from dataclasses import replace
 from datetime import timedelta
 
-from gweatherrouting.qt.gribviewport import GribViewportModel, _covers
+from sailworks.qt.gribviewport import GribViewportModel, _covers
 from test.test_gribviewport import Land, _camera, _paths, _settle_window, _wait_ready
 from test.test_weather_staging import gribs, START  # noqa: F401
 
@@ -20,7 +20,7 @@ PAN_STEP_DEGREES = 0.0005
 def test_source_retirement_clears_barb_and_fill_qml_bindings():
     from types import SimpleNamespace
 
-    from gweatherrouting.qt.gribviewport import _viewport_widget_class
+    from sailworks.qt.gribviewport import _viewport_widget_class
 
     class Item:
         def __init__(self):

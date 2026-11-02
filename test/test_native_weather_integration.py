@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gweatherrouting.qt.gribviewport import _viewport_widget_class
+from sailworks.qt.gribviewport import _viewport_widget_class
 from test.test_native_weather_store_gate import load
 
 
@@ -22,7 +22,7 @@ def test_native_default_and_explicit_recovery(
     monkeypatch, environment, override, expected
 ):
     from unittest.mock import patch
-    from gweatherrouting.qt import controller, gpuweathertextures
+    from sailworks.qt import controller, gpuweathertextures
 
     if environment is None:
         monkeypatch.delenv("GWR_NATIVE_WEATHER_FIELDS", raising=False)
@@ -59,7 +59,7 @@ def test_entrypoints_default_native_and_offer_recovery(
 ):
     import argparse
     import inspect
-    from gweatherrouting.qt import __main__ as launcher, gribviewport
+    from sailworks.qt import __main__ as launcher, gribviewport
 
     parse_args = argparse.ArgumentParser.parse_args
     captured = []
@@ -276,12 +276,12 @@ def test_integration_tool_uses_standalone_viewport_host():
     tree = ast.parse(inspect.getsource(load("check_native_weather_integration").run))
     imports = [node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)]
     assert any(
-        node.module == "gweatherrouting.qt.viewportmap"
+        node.module == "sailworks.qt.viewportmap"
         and any(alias.name == "ViewportMap" for alias in node.names)
         for node in imports
     )
     assert not any(
-        node.module == "gweatherrouting.qt.mapcanvas"
+        node.module == "sailworks.qt.mapcanvas"
         or any(alias.name == "TrackMap" for alias in node.names)
         for node in imports
     )

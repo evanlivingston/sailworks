@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from gweatherrouting.core.workspacestate import WorkspaceStateStore, window_geometry
+from sailworks.core.workspacestate import WorkspaceStateStore, window_geometry
 
 
 class TestWorkspaceStateStore(unittest.TestCase):
@@ -32,7 +32,7 @@ class TestWorkspaceStateStore(unittest.TestCase):
         self.assertEqual(self.store.load(), state)
         self.assertEqual(json.loads(self.store.path.read_text())["version"], 1)
         with patch(
-            "gweatherrouting.core.workspacestate.os.replace",
+            "sailworks.core.workspacestate.os.replace",
             side_effect=OSError("disk error"),
         ):
             with self.assertRaises(OSError):

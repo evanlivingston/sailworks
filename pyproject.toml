@@ -1,12 +1,16 @@
 [project]
-name = "gweatherrouting"
+name = "sailworks"
 dynamic = ["version"]
 description = "Sailing routing and navigation software"
 readme = "README.md"
 requires-python = ">= 3.11"
-license = {text = "GPLv3"}
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE", "NOTICE"]
 authors = [
     {name = "Davide Gessa", email = "gessadavide@gmail.com"},
+]
+maintainers = [
+    {name = "Sailworks contributors"},
 ]
 dependencies = [
     "PySide6-Essentials>=6.8,<7",
@@ -49,35 +53,35 @@ marine-global = ["copernicusmarine>=2.2,<3"]
 dev = ["black", "pytest", "pytest-qt"]
 
 [project.urls]
-Homepage = "https://github.com/dakk/gweatherrouting"
-"Bug Tracker" = "https://github.com/dakk/gweatherrouting/issues/"
-Documentation = "https://github.com/dakk/gweatherrouting"
-Source = "https://github.com/dakk/gweatherrouting"
+Homepage = "https://github.com/evanlivingston/sailworks"
+"Bug Tracker" = "https://github.com/evanlivingston/sailworks/issues/"
+Documentation = "https://github.com/evanlivingston/sailworks#readme"
+Source = "https://github.com/evanlivingston/sailworks"
 
 [project.scripts]
-gweatherrouting = "gweatherrouting.__main__:main"
-gweatherrouting-qt = "gweatherrouting.qt.__main__:main"
+sailworks = "sailworks.__main__:main"
+sailworks-qt = "sailworks.qt.__main__:main"
 
 [tool.setuptools]
 packages = [
-    "gweatherrouting",
-    "gweatherrouting.core",
-    "gweatherrouting.core.utils",
-    "gweatherrouting.core.geo",
-    "gweatherrouting.core.gribsources",
-    "gweatherrouting.core.marine",
-    "gweatherrouting.common",
-    "gweatherrouting.qt",
-    "gweatherrouting.rendering",
-    "gweatherrouting.rendering.vectordrawer",
+    "sailworks",
+    "sailworks.core",
+    "sailworks.core.utils",
+    "sailworks.core.geo",
+    "sailworks.core.gribsources",
+    "sailworks.core.marine",
+    "sailworks.common",
+    "sailworks.qt",
+    "sailworks.rendering",
+    "sailworks.rendering.vectordrawer",
 ]
 zip-safe = false
 
 [tool.setuptools.dynamic]
-version = { attr = "gweatherrouting.__version__" }
+version = { attr = "sailworks.__version__" }
 
 [tool.setuptools.package-data]
-gweatherrouting = [
+sailworks = [
     "data/*",
     "data/boats/*",
     "data/polars/*",
@@ -92,7 +96,7 @@ gweatherrouting = [
 ]
 
 [build-system]
-requires = ["setuptools>=45", "setuptools_scm[toml]>=6.2"]
+requires = ["setuptools>=77", "setuptools_scm[toml]>=6.2"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools_scm]

@@ -6,24 +6,24 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from gweatherrouting.core.mapviewport import MapPoint
-from gweatherrouting.core.marine.manager import MarineManager
-from gweatherrouting.core.marine.models import Capability
-from gweatherrouting.core.timecontrol import TimeControl
-from gweatherrouting.rendering.marinepresentation import (
+from sailworks.core.mapviewport import MapPoint
+from sailworks.core.marine.manager import MarineManager
+from sailworks.core.marine.models import Capability
+from sailworks.core.timecontrol import TimeControl
+from sailworks.rendering.marinepresentation import (
     MarineSources,
     chart_instant,
     current_style,
     flow,
 )
-from gweatherrouting.rendering.marinesnapshot import (
+from sailworks.rendering.marinesnapshot import (
     CurrentArrow,
     MarineSnapshot,
     current_labels,
     current_triangles,
     sample_currents,
 )
-from gweatherrouting.qt.gribviewport import ViewportCamera
+from sailworks.qt.gribviewport import ViewportCamera
 from test.test_marine import START
 from test.test_marine_fields import field
 
