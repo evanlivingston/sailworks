@@ -583,7 +583,7 @@ measurements remain pre-integration evidence, not fresh merged-base runs.
   [`docs/milestones.md`](../milestones.md) for the index.
 - **Analysis evidence:** [`grib-architecture-analysis.md`](../grib-architecture-analysis.md)
   (current state, seven structural gaps) and
-  [`reference-architecture-analysis.md`](../reference-architecture-analysis.md)
+  [`reference-architecture-analysis.md`](reference-architecture-analysis.md)
   (reference techniques T1-T8).
 - **D2 decided 2026-10-19:** GPU spatial interpolation, bounded by the existing
   2e-5 gate. The R3 sampling invariant is amended, not relaxed — see ADR-001 §4.2

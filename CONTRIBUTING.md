@@ -53,6 +53,21 @@ under this project's license (`GPL-3.0-or-later`). Contributions without a `Sign
 6. Once you're happy with your changes, visit [sailworks github](https://github.com/evanlivingston/sailworks) and start a new pull request from `USERNAME:your-branch-name` into `evanlivingston:dev`. Maintainers will start reviewing your code and they may ask you to do some changes (in your branch): PR updates automatically every time you push to your working branch.
 
 
+### Third-party software and reverse engineering
+
+Studying how another product behaves is fine; shipping its expression is not. Do not
+commit, attach or paste any of the following:
+
+- application binaries, bundles, DLLs or installer contents from any third-party product;
+- decompiler, disassembler or debugger output, pseudocode, strings dumps or hex dumps;
+- extracted assets or data files (icons, palettes, polars, precomputed tables, sample data);
+- code transcribed from another product's implementation.
+
+Describe the observed behavior and the interface or file format involved, and implement it
+independently. Analysis notes belong in `docs/history/` with their evidence boundary stated;
+implementation must be written from the behavior, not from recovered code. If you are unsure
+whether a change crosses that line, ask before opening the pull request.
+
 ### Running CI locally
 
 Install `act` and run your workflow:

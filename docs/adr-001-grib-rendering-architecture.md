@@ -65,7 +65,7 @@ presentation-latency program complete and does not change numerical sampling.
 | Analysis | Result |
 | --- | --- |
 | [`grib-architecture-analysis.md`](grib-architecture-analysis.md) | Current-state architecture with file/line citations, and the structural gaps listed in §3. |
-| [`reference-architecture-analysis.md`](reference-architecture-analysis.md) | Reference techniques T1–T8 with explicit evidence labels and coverage limits. |
+| [`reference-architecture-analysis.md`](history/reference-architecture-analysis.md) | Reference techniques T1–T8 with explicit evidence labels and coverage limits. |
 
 Two conclusions from the reference analysis materially shape this ADR:
 
@@ -413,7 +413,7 @@ R5 (retention hardening, rollout). R0.2 is discharged by
 | Artifact | Used for |
 | --- | --- |
 | [`grib-architecture-analysis.md`](grib-architecture-analysis.md) | Current state; the seven gaps. |
-| [`reference-architecture-analysis.md`](reference-architecture-analysis.md) | Reference techniques T1–T8; T6 correction (CPU spatial interpolation). |
+| [`reference-architecture-analysis.md`](history/reference-architecture-analysis.md) | Reference techniques T1–T8; T6 correction (CPU spatial interpolation). |
 | [`rendering-implementation-plan.md`](rendering-implementation-plan.md) | The architecture being reconciled; invariants; R0–R5; measurement contract. |
 | [`gpu-embedded-rendering.md`](gpu-embedded-rendering.md) | Host decision; resource ledger; matched CPU/GPU baseline. |
 | [`rendering-m0-float-textures.md`](history/rendering-m0-float-textures.md) | E1/E1b: native float transport; hardware filtering fails 2e-5, explicit arithmetic passes. |

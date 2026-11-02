@@ -1,4 +1,4 @@
-"""the reference application-style forecast transport and day timeline scrubber.
+"""Forecast transport and day timeline scrubber.
 
 Shows month/year bounds at the top edges, a day-by-day cell strip
 in the middle, and vertical markers for the current forecast time.
@@ -36,7 +36,7 @@ logger = logging.getLogger("sailworks")
 
 
 class DayStripWidget(QWidget):
-    """Horizontal day-by-day timeline strip (the reference application style).
+    """Horizontal day-by-day timeline strip.
 
     Draws one equal-width cell per day across the forecast range, each
     labelled ``DD - DDD``.  Vertical markers indicate the current
@@ -534,7 +534,7 @@ class ForecastTimeline(QWidget):
         try:
             # Use only the selected display forecast's time range (weather model).
             # Marine (tides/currents) intervals are intentionally excluded so the
-            # slider reflects the loaded weather model's range, matching the reference application behavior.
+            # slider reflects the loaded weather model's range only.
             sources = self.controller.display_forecast.sources()
             intervals = tuple(
                 sorted((source.first_valid, source.last_valid) for source in sources)

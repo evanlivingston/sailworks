@@ -36,7 +36,7 @@ windows.
 | Document | Purpose |
 | --- | --- |
 | [`grib-architecture-analysis.md`](grib-architecture-analysis.md) | Current-state architecture with file/line citations; the seven structural gaps. |
-| [`reference-architecture-analysis.md`](reference-architecture-analysis.md) | Reference techniques T1–T8 with evidence labels and coverage limits. |
+| [`reference-architecture-analysis.md`](history/reference-architecture-analysis.md) | Reference techniques T1–T8 with evidence labels and coverage limits. |
 | [`rendering-performance-plan.md`](rendering-performance-plan.md) | Current renderer state, the invariants and the next decision; ratified targets. |
 | [`rendering-architecture-evaluation.md`](history/rendering-architecture-evaluation.md) | A0a–A0k findings, including negative results. |
 | [`gpu-weather-residency.md`](history/gpu-weather-residency.md) | What #50's bounded residency delivers, and its explicit limits. |

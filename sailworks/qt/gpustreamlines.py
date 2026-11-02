@@ -74,8 +74,8 @@ def make_gpu_trace_input(view, columns, density):
 def jittered_seed_positions(view, density):
     """Bound a stable world-cell seed grid and jitter its interior points.
 
-    the reference application's stored jitter table was not available in the supplied artifacts,
-    so this uses a fixed per-cell hash rather than claiming identical offsets.
+    The jitter is a fixed per-cell hash: deterministic, stable across frames, and
+    defined here rather than matched to a precomputed offset table.
     """
     spacing, seed_limit, _segment_limit = density_parameters(density)
     cx = view._lon_to_x(view._center_lon)

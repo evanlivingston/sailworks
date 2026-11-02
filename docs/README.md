@@ -39,7 +39,6 @@ Read the one that covers the area you are changing; skip the rest.
 | Document | What it is |
 | --- | --- |
 | [grib-architecture-analysis.md](grib-architecture-analysis.md) | Current-state GRIB loading and visualization architecture with file/line citations, and the seven structural gaps ADR-001 disposes of. |
-| [reference-architecture-analysis.md](reference-architecture-analysis.md) | Reference techniques T1-T8 from a read-only analysis of a locally installed the reference application build. A hypothesis source, not a benchmark. |
 | [profiling-priorities.md](profiling-priorities.md) | Already-measured cost slices and their limits. Do not re-measure what is recorded here. |
 | [rendering-m0-measurement-audit.md](rendering-m0-measurement-audit.md) | What the instrumentation can and cannot prove, and why readback is not presentation. |
 | [rendering-startup-baseline-2026-10-15.md](rendering-startup-baseline-2026-10-15.md) | The October 15 start-up baseline, kept as historical evidence. The reference workload is the October 16 snapshot identified in the plan; do not recapture either. |

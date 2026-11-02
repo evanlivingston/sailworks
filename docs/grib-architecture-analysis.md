@@ -2,7 +2,7 @@
 
 **Read with:** [`adr-001-grib-rendering-architecture.md`](adr-001-grib-rendering-architecture.md)
 for the decisions and gap disposition, and
-[`reference-architecture-analysis.md`](reference-architecture-analysis.md) for the
+[`reference-architecture-analysis.md`](history/reference-architecture-analysis.md) for the
 reference implementation's techniques.
 
 **What this document is:** a description of the code as it exists today, with file and
@@ -173,7 +173,7 @@ line citations, and the structural gaps that follow from it. It is evidence, not
 ## COMPARATIVE ANALYSIS
 
 The reference implementation's techniques are analysed separately in
-[`reference-architecture-analysis.md`](reference-architecture-analysis.md). Read that
+[`reference-architecture-analysis.md`](history/reference-architecture-analysis.md). Read that
 alongside this document.
 
 **The "Modern GPU-Optimal" column below is aspirational, not a parity target.** The
