@@ -43,8 +43,12 @@ Item {
     property real gridWidth: 0
     property real gridHeight: 0
     property bool imagesReady: nativeFields ? nativeReady
-                         : imageU0.status === Image.Ready && imageV0.status === Image.Ready
-                         && imageU1.status === Image.Ready && imageV1.status === Image.Ready
+                          : imageU0.status === Image.Ready && imageV0.status === Image.Ready
+                          && imageU1.status === Image.Ready && imageV1.status === Image.Ready
+    property string sourceError: !nativeFields && (
+        imageU0.status === Image.Error || imageV0.status === Image.Error
+        || imageU1.status === Image.Error || imageV1.status === Image.Error)
+        ? "weather image unavailable" : ""
     function canDisplay(image) {
         return image.status === Image.Ready
                 || (image.status === Image.Loading && image.hadReady)
@@ -59,6 +63,8 @@ Item {
                          ? effect.status !== ShaderEffect.Error
                          : effect.status === ShaderEffect.Compiled)
     property string shaderError: effect.status === ShaderEffect.Error ? effect.log : ""
+    readonly property int shaderStatus: effect.status
+    readonly property bool effectVisible: effect.visible
     Image {
         id: imageU0; visible: false; smooth: false; cache: false
         retainWhileLoading: true; property bool hadReady: false

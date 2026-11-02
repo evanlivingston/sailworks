@@ -115,6 +115,8 @@ class WeatherImageProvider(QQuickImageProvider):
         self._fields = {}
         self._field_urls = {}
         self._field_bytes = 0
+        # Each consumer has at most one displayed and one pending field.
+        self._reservations = {}
         self.requests = 0
         self.publishes = 0
         self.field_publications = 0
@@ -154,25 +156,109 @@ class WeatherImageProvider(QQuickImageProvider):
         A field that does not fit the budget is
         rejected: it is not published and not retained.
         """
-        size = sum(image.sizeInBytes() for image in images)
-        if size > self.byte_limit:
-            raise ValueError("Resident field exceeds the staging memory budget")
         with self._lock:
-            existing = self._field_urls.get(key)
-            if existing is not None:
-                # This CPU publication already exists. Returning stable URLs
-                # does not prove that Qt retained an inactive GPU texture.
-                return existing
-            self.field_publications += 1
-            names = [f"f/{key}/{_digest(image)}" for image in images]
-            for name, image in zip(names, images):
-                if name not in self._fields:
-                    self._field_bytes += image.sizeInBytes()
-                self._fields[name] = QImage(image)
-            urls = tuple(f"image://weather/{name}" for name in names)
-            self._field_urls[key] = urls
-            self._trim_fields()
+            return self._publish_field_locked(images, key, self._protected_fields())
+
+    def reserve_field(self, owner, images, key):
+        """Reserve a pending field without disturbing any consumer's front.
+
+        A successful replacement cancels that owner's previous pending field;
+        failure leaves both reservations and retained images unchanged.
+        """
+        with self._lock:
+            front, _pending = self._reservations.get(owner, (None, None))
+            protected = self._protected_fields(exclude_pending=owner)
+            urls = self._publish_field_locked(images, key, protected)
+            self._reservations[owner] = (front, key)
             return urls
+
+    def promote_field(self, owner):
+        """Promote the pending reservation to front after presentation swaps."""
+        with self._lock:
+            _front, pending = self._reservations.get(owner, (None, None))
+            if pending is None:
+                raise ValueError("No pending field reservation")
+            self._reservations[owner] = (pending, None)
+            self._trim_fields()
+
+    def cancel_field(self, owner):
+        """Cancel a pending reservation without releasing the front."""
+        with self._lock:
+            front, _pending = self._reservations.get(owner, (None, None))
+            if front is None:
+                self._reservations.pop(owner, None)
+            else:
+                self._reservations[owner] = (front, None)
+            self._trim_fields()
+
+    def release_fields(self, owner):
+        """Release both reservations belonging to a consumer."""
+        with self._lock:
+            self._reservations.pop(owner, None)
+            self._trim_fields()
+
+    _NO_OWNER = object()
+
+    def _protected_fields(self, exclude_pending=_NO_OWNER):
+        protected = set()
+        for owner, (front, pending) in self._reservations.items():
+            if front is not None:
+                protected.add(front)
+            if pending is not None and owner != exclude_pending:
+                protected.add(pending)
+        return protected
+
+    def _publish_field_locked(self, images, key, protected):
+        existing = self._field_urls.get(key)
+        names = (
+            [url.removeprefix("image://weather/") for url in existing]
+            if existing is not None
+            else [f"f/{key}/{_digest(image)}" for image in images]
+        )
+        new_images = dict(zip(names, images)) if existing is None else {}
+        required = set(names)
+        for protected_key in protected:
+            required.update(
+                url.removeprefix("image://weather/")
+                for url in self._field_urls[protected_key]
+            )
+        size = sum(
+            (
+                self._fields[name] if name in self._fields else new_images[name]
+            ).sizeInBytes()
+            for name in required
+        )
+        if size > self.byte_limit:
+            raise ValueError("Resident fields exceed the staging memory budget")
+        if existing is None:
+            additional = sum(
+                image.sizeInBytes()
+                for name, image in new_images.items()
+                if name not in self._fields
+            )
+            # Free unreserved fields *before* storing new images, so even the
+            # transient CPU footprint remains inside the configured limit.
+            while self._field_bytes + additional > self.byte_limit:
+                oldest = next(
+                    (
+                        old_key
+                        for old_key in self._field_urls
+                        if old_key not in protected and old_key != key
+                    ),
+                    None,
+                )
+                if oldest is None:
+                    raise ValueError("Resident fields exceed the staging memory budget")
+                self._drop_field(oldest)
+            self.field_publications += 1
+            for name, image in new_images.items():
+                if name not in self._fields:
+                    self._fields[name] = QImage(image)
+                    self._field_bytes += image.sizeInBytes()
+            existing = tuple(f"image://weather/{name}" for name in names)
+            self._field_urls[key] = existing
+        self._trim_fields(protected | {key})
+        return existing
 
     def publish_selection(self, images, key):
         """Publish the current-view selection; its URLs change with the view."""
@@ -198,20 +284,31 @@ class WeatherImageProvider(QQuickImageProvider):
             }
             self._images = dict(self._pinned_selection)
 
-    def _trim_fields(self):
+    def _trim_fields(self, protected=None):
         """Release the oldest retained field when over the budget.
 
         A field is released as a whole: its images are one GPU resource and
         must not be released one by one.
         """
-        while self._field_bytes > self.byte_limit and len(self._field_urls) > 1:
-            oldest = next(iter(self._field_urls))
-            self._field_urls.pop(oldest, None)
-            for name in [
-                name for name in self._fields if name.startswith(f"f/{oldest}/")
-            ]:
-                image = self._fields.pop(name)
-                self._field_bytes -= image.sizeInBytes()
+        protected = self._protected_fields() if protected is None else protected
+        while self._field_bytes > self.byte_limit:
+            oldest = next(
+                (key for key in self._field_urls if key not in protected), None
+            )
+            if oldest is None:
+                break
+            self._drop_field(oldest)
+
+    def _drop_field(self, key):
+        urls = self._field_urls.pop(key)
+        retained = {
+            url for field_urls in self._field_urls.values() for url in field_urls
+        }
+        for name in set(url.removeprefix("image://weather/") for url in urls):
+            if f"image://weather/{name}" in retained:
+                continue
+            image = self._fields.pop(name)
+            self._field_bytes -= image.sizeInBytes()
 
     def field_bytes(self):
         with self._lock:
@@ -224,6 +321,7 @@ class WeatherImageProvider(QQuickImageProvider):
             self._fields.clear()
             self._field_urls.clear()
             self._field_bytes = 0
+            self._reservations.clear()
 
     def requestImage(self, identifier, size, requested_size):  # noqa: N802
         with self._lock:

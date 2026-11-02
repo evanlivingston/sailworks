@@ -924,6 +924,7 @@ def test_zoom_mask_reuse_keeps_the_existing_scale_boundaries(scale, quality):
 def _fill_scene():
     """A stand-in for the render context's scene, without a window."""
     from types import SimpleNamespace
+    from sailworks.qt.viewportpublication import PublicationManager
 
     class Layer:
         def __init__(self):
@@ -945,6 +946,7 @@ def _fill_scene():
         ),
         _published=None,
         _published_fill=None,
+        _publication_manager=PublicationManager(),
         counters=dict(
             fill_publications=0,
             fill_uploads=0,
@@ -972,6 +974,7 @@ def _field():
     )
     return SimpleNamespace(
         generation="field-generation",
+        identity="field-identity",
         images=("u0", "v0", "u1", "v1"),
         staged=SimpleNamespace(weight=lambda stamp: 0.25),
         grid=SimpleNamespace(
@@ -1024,13 +1027,13 @@ def test_the_default_path_does_not_load_the_fill_scene():
                 scenes.append(node.value)
     assert "WeatherBarbs.qml" in scenes
     assert "WeatherScene.qml" in scenes
-    # The application's own component is unchanged by the fill: the fill is a
-    # separate file, never a part of the barbs.
+    # The barb component owns hidden fill slots for coherent publication,
+    # while its glyphs continue to use the separate barb shader.
     barbs = (
         Path(gribviewport.__file__).parent / "shaders" / "WeatherBarbs.qml"
     ).read_text()
-    assert "WeatherFill" not in barbs
-    assert "weather.frag" not in barbs
+    assert 'objectName: "weatherFillBack"' in barbs
+    assert 'fragmentShader: "barbs.frag.qsb"' in barbs
 
 
 def test_the_fill_runs_the_corrected_weather_shader():
@@ -1045,9 +1048,8 @@ def test_the_fill_runs_the_corrected_weather_shader():
     assert "fragColor = vec4(0);" in shader
     assert "if (any(isnan(value)) || any(isinf(value)))" in shader
     # U and V are interpolated first; the wind speed is derived afterwards.
-    assert "float speed = clamp(length(uv) / 32.0" in shader
-    assert "fragColor = vec4(color, 0.35) * qt_Opacity;" in shader
-    assert "continuous wind-speed wash" in shader
+    assert "float palettePosition = clamp(speed / 2.0, 0.0, 14.0);" in shader
+    assert "fragColor = vec4(windColor(length(uv)), 1.0) * qt_Opacity;" in shader
     assert shader.index("uv += value * weight;") < shader.index("length(uv)")
 
 
@@ -1116,42 +1118,89 @@ def test_a_selection_change_never_restages_the_fill():
 
 
 def test_the_fill_and_the_barbs_count_their_publications_apart():
-    """A fill publication moves the fill's counters and not the barbs'."""
-    scene = _fill_scene()
-    viewport = gribviewport._viewport_widget_class()
-    viewport._publish_fill(scene, _field(), ("u0", "v0", "u1", "v1"), _camera())
+    """A fill transaction never changes the independent barb layer."""
+    from test.test_image_fill_transaction import Scene, field, finish
+
+    scene = Scene()
+    scene.counters.update(barbs_field_publications=0, barbs_selection_publications=0)
+    front, back = scene._fill, scene._fill_back
+    barb_properties = scene._barbs.properties.copy()
+    image_field = field(1)
+    scene._publish_fill(image_field, (), _camera())
+    token = scene._publication_manager.layers["fill"].completion_token
+
+    assert scene.counters["fill_publications"] == 0
+    assert scene.counters["fill_uploads"] == 0
+    assert scene.counters["barbs_field_publications"] == 0
+    assert scene.counters["barbs_selection_publications"] == 0
+    assert scene._barbs.properties == barb_properties
+    assert scene._fill is front and front.visible and not back.visible
+    assert "u0Source" not in front.properties and "u0Source" in back.properties
+    assert scene._publication_manager.layers["fill"].visible is None
+
+    finish(scene, token)
+    assert scene._fill is back and back.visible and not front.visible
+    assert scene.counters["fill_publications"] == 1
+    assert scene.counters["fill_uploads"] == 1
+    scene._publish_fill(image_field, (), _camera())
     assert scene.counters["fill_publications"] == 1
     assert scene.counters["fill_uploads"] == 1
     assert scene.counters["barbs_field_publications"] == 0
     assert scene.counters["barbs_selection_publications"] == 0
-    assert scene._barbs.properties == {}
-    assert set(scene._fill.properties) == {
-        "u0Source",
-        "v0Source",
-        "u1Source",
-        "v1Source",
-        "blend",
-        "gridX",
-        "gridY",
-        "gridWidth",
-        "gridHeight",
-    }
-    # A second publication of the same field is not a restaging.
-    viewport._publish_fill(scene, _field(), ("u0", "v0", "u1", "v1"), _camera())
+    assert scene._barbs.properties == barb_properties
+
+
+def test_non_native_fill_publication_reserves_bounded_manager_resources():
+    from test.test_image_fill_transaction import Scene, field, finish
+
+    scene = Scene()
+    image_field = field(1)
+    manager = scene._publication_manager
+    scene._publish_fill(image_field, (), _camera())
+    token = manager.layers["fill"].completion_token
+    assert manager.layers["fill"].pending is not None
+    assert manager.layers["fill"].visible is None
+    assert not scene._fill_back.visible
+    staged_bytes = manager.budget.total_used()
+    assert (
+        0
+        < staged_bytes
+        <= 2 * sum(image.sizeInBytes() for image in image_field.grid.images)
+    )
+
+    finish(scene, token)
+    assert manager.layers["fill"].pending is None
+    assert manager.layers["fill"].visible.generation == 1
+    assert scene._published_fill == "1/grid"
+    committed_bytes = manager.budget.total_used()
+    assert 0 < committed_bytes <= staged_bytes
+    scene._publish_fill(image_field, (), _camera())
+    assert manager.budget.total_used() == committed_bytes
+    assert manager.layers["fill"].pending is None
     assert scene.counters["fill_publications"] == 1
+    assert scene.counters["fill_uploads"] == 1
 
 
 def test_a_fill_only_publication_leaves_the_barbs_untouched():
     """The fill's own publication path never restages the barbs."""
-    scene = _fill_scene()
+    from test.test_image_fill_transaction import Scene, field, finish
+
+    scene = Scene()
     viewport = gribviewport._viewport_widget_class()
-    urls = viewport.publish_fill(scene, ("u0", "v0", "u1", "v1"), "probe-key")
-    assert urls == ("u0", "u1", "u2", "u3")
+    images = field(1).grid.images
+    barbs_before = scene._barbs.properties.copy()
+    urls = viewport.publish_fill(scene, images, "probe-key")
+    assert len(urls) == 4
+    assert scene._publication_manager.layers["fill"].pending is not None
+    assert scene._fill.properties.get("u0Source") is None
+    assert not scene._fill_back.visible
+    assert scene.counters["fill_publications"] == 0
+    finish(scene, scene._publication_manager.layers["fill"].completion_token)
     assert scene.counters["fill_publications"] == 1
     assert scene.counters["fill_uploads"] == 1
-    assert scene.counters["barbs_field_publications"] == 0
-    assert scene.counters["barbs_selection_publications"] == 0
-    assert scene._barbs.properties == {}
+    assert scene._barbs.properties == barbs_before
+    assert viewport.publish_fill(scene, images, "probe-key") == urls
+    assert scene.counters["fill_publications"] == 1
 
 
 def test_the_application_never_imports_the_legacy_map():

@@ -438,6 +438,7 @@ class ViewportMap(
         current = self.camera_state
         if state == (current.center_lat, current.center_lon, current.zoom):
             return False
+        zoom_changed = current.zoom != camera.zoom
         current.center_lat, current.center_lon, current.zoom = state
         self._cancel_cursor()
         cursor_position = getattr(self, "_cursor_screen_position", None)
@@ -447,7 +448,10 @@ class ViewportMap(
             # inertia pan, or zoom has actually settled, even if the pointer
             # itself has not moved.
             cursor_timer.start(180)
-        self.invalidate_navigation()
+        # Navigation imagery is padded and can be repositioned across a pan;
+        # only a zoom change makes its existing raster unusable.
+        if zoom_changed:
+            self.invalidate_navigation()
         self.view_changed.emit()
         presenter = self._weather_presenter
         foreground = getattr(presenter, "foreground", None)

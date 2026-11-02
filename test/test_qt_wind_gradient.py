@@ -14,7 +14,12 @@ def test_background_gradient_is_a_separate_layer_for_each_weather_scene():
     ):
         source = (SHADERS / name).read_text()
         assert 'objectName: "weatherFill"' in source, name
-        assert "visible: root.fillEnabled" in source, name
+        if name in ("WeatherBarbs.qml", "WeatherBufferedBarbs.qml"):
+            # Buffer owners keep their fill hidden until publication.
+            assert 'objectName: "weatherFillBack"' in source, name
+            assert "visible: false" in source, name
+        else:
+            assert "visible: root.fillEnabled" in source, name
 
 
 def test_buffered_weather_scene_has_a_fill_back_buffer():
