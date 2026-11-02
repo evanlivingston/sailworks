@@ -56,6 +56,7 @@ from sailworks.qt.viewporttransform import (
     PanReference,
     CameraChange,
     PaddedPanWindow,
+    continuous_longitude,
 )
 
 logger = logging.getLogger("sailworks")
@@ -1405,6 +1406,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._map_pan_reference = None
             self._map_anchor_camera = None
             self._map_pan_window = None
+            self._base_placement = None
+            self._environment_placement = None
+            self._base_source_camera = None
+            self._environment_source_camera = None
+            self._base_preview_hidden = False
+            self._environment_preview_hidden = False
+            self._fill_placements = {}
             self._navigation_overlay = None
             self._navigation_key = None
             self._navigation_target = None
@@ -2038,12 +2046,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._chart.setProperty("imageWidth", width)
             self._chart.setProperty("imageHeight", height)
 
-        def set_base(self, image, target):
+        def set_base(self, image, target, source_camera=None):
             """Compose the app's basemap inside Quick, below ENC and weather.
 
-            The producer returns a padded target already translated to the
-            current camera. Keep that placement; subtracting the shared pan
-            offset here would apply the pan twice in the opposite direction.
+            The producer's target is current-camera-relative. Convert it once
+            to the map parent's reference; covered pans move the parent only.
             """
             if self._base is None or self._base_provider is None:
                 return
@@ -2052,17 +2059,20 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 url = self._base_provider.publish(key, image)
                 self._base.setProperty("source", QUrl(url))
                 self._base_key = key
-            for name, value in zip(
-                ("imageX", "imageY", "imageWidth", "imageHeight"),
-                (target.x(), target.y(), target.width(), target.height()),
-            ):
-                self._base.setProperty(name, value)
+                self._base_source_camera = None
+            if source_camera is not None:
+                size = image.deviceIndependentSize()
+                self._base_source_camera = (*source_camera, size.width(), size.height())
+            self._place_retained_image(self._base, "_base_placement", target)
+            if getattr(self, "_base_preview_hidden", False):
+                self._base.setProperty("chartLoading", False)
+                self._base.setVisible(True)
+                self._base_preview_hidden = False
 
-        def set_environment(self, image, target):
+        def set_environment(self, image, target, source_camera=None):
             """Present the app's retained above-ENC layers without changing order.
 
-            The producer returns a padded target already translated to the
-            current camera, matching the basemap placement convention.
+            The producer returns a current-camera target, as for the basemap.
             """
             if self._environment is None or self._environment_provider is None:
                 return
@@ -2071,11 +2081,152 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 url = self._environment_provider.publish(key, image)
                 self._environment.setProperty("source", QUrl(url))
                 self._environment_key = key
-            for name, value in zip(
-                ("imageX", "imageY", "imageWidth", "imageHeight"),
-                (target.x(), target.y(), target.width(), target.height()),
+                self._environment_source_camera = None
+            if source_camera is not None:
+                size = image.deviceIndependentSize()
+                self._environment_source_camera = (
+                    *source_camera,
+                    size.width(),
+                    size.height(),
+                )
+            self._place_retained_image(
+                self._environment, "_environment_placement", target
+            )
+            if getattr(self, "_environment_preview_hidden", False):
+                self._environment.setVisible(True)
+                self._environment_preview_hidden = False
+
+        def _preview_retained_imagery(self, camera):
+            """Reproject the existing padded images during a zoom camera tick.
+
+            The host renders/replaces them independently; its callback may not
+            run until after this camera is displayed. Never scale a previous
+            placement incrementally: project the original image's geographic
+            centre at the current zoom, as the chart preview does.
+            """
+            view = camera.view()
+            for item, source, attribute, hidden_attribute in (
+                (
+                    getattr(self, "_base", None),
+                    getattr(self, "_base_source_camera", None),
+                    "_base_placement",
+                    "_base_preview_hidden",
+                ),
+                (
+                    getattr(self, "_environment", None),
+                    getattr(self, "_environment_source_camera", None),
+                    "_environment_placement",
+                    "_environment_preview_hidden",
+                ),
             ):
-                self._environment.setProperty(name, value)
+                if item is None or source is None:
+                    continue
+                lat, lon, zoom, width, height = source
+                scale = 2.0 ** (camera.zoom - zoom)
+                x = (
+                    camera.width / 2.0
+                    + view._lon_to_x(continuous_longitude(lon, camera.center_lon))
+                    - view._lon_to_x(camera.center_lon)
+                    - width * scale / 2.0
+                )
+                y = (
+                    camera.height / 2.0
+                    + view._lat_to_y(lat)
+                    - view._lat_to_y(camera.center_lat)
+                    - height * scale / 2.0
+                )
+                if (
+                    x > 0
+                    or y > 0
+                    or x + width * scale < camera.width
+                    or y + height * scale < camera.height
+                ):
+                    # The cached pixels cannot cover this camera. The normal
+                    # host update selects/rebuilds its replacement; do not
+                    # stretch a clipped preview as if it were current.
+                    item.setVisible(False)
+                    if item is getattr(self, "_base", None):
+                        item.setProperty("chartLoading", True)
+                    setattr(self, hidden_attribute, True)
+                    continue
+                self._place_retained_image(
+                    item, attribute, QRectF(x, y, width * scale, height * scale)
+                )
+                if getattr(self, hidden_attribute, False):
+                    if item is getattr(self, "_base", None):
+                        item.setProperty("chartLoading", False)
+                    item.setVisible(True)
+                    setattr(self, hidden_attribute, False)
+
+        def _place_retained_image(self, item, attribute, target):
+            reference = getattr(self, "_map_pan_reference", None)
+            camera = getattr(self, "_camera", None)
+            if reference is not None and camera is not None:
+                dx, dy = reference.translation_to(camera, reference.dpr)
+            else:
+                dx = dy = 0.0
+            placement = (
+                target.x() - dx,
+                target.y() - dy,
+                target.width(),
+                target.height(),
+            )
+            previous = getattr(self, attribute, None)
+            if previous is None or any(
+                abs(a - b) > 1e-6 for a, b in zip(previous, placement)
+            ):
+                for name, value in zip(
+                    ("imageX", "imageY", "imageWidth", "imageHeight"), placement
+                ):
+                    item.setProperty(name, value)
+                setattr(self, attribute, placement)
+
+        def _rebase_retained_imagery(self, dx, dy):
+            """Preserve the on-screen anchors when the bounded parent resets."""
+            for item, attribute in (
+                (getattr(self, "_base", None), "_base_placement"),
+                (getattr(self, "_environment", None), "_environment_placement"),
+            ):
+                placement = getattr(self, attribute, None)
+                if item is not None and placement is not None:
+                    placement = (
+                        placement[0] + dx,
+                        placement[1] + dy,
+                        *placement[2:],
+                    )
+                    item.setProperty("imageX", placement[0])
+                    item.setProperty("imageY", placement[1])
+                    setattr(self, attribute, placement)
+            for item in (
+                getattr(self, "_fill", None),
+                getattr(self, "_fill_back", None),
+            ):
+                if item is not None:
+                    item.setProperty("gridX", float(item.property("gridX")) + dx)
+                    item.setProperty("gridY", float(item.property("gridY")) + dy)
+                    placement = getattr(self, "_fill_placements", {}).get(id(item))
+                    if placement is not None:
+                        self._fill_placements[id(item)] = (
+                            placement[0] + dx,
+                            placement[1] + dy,
+                            *placement[2:],
+                        )
+
+        def _place_fill_rect(self, item, rect):
+            placement = (rect.x(), rect.y(), rect.width(), rect.height())
+            placements = getattr(self, "_fill_placements", None)
+            if placements is not None:
+                previous = placements.get(id(item))
+                if previous is not None and all(
+                    abs(a - b) <= 1e-6 for a, b in zip(previous, placement)
+                ):
+                    return
+            for name, value in zip(
+                ("gridX", "gridY", "gridWidth", "gridHeight"), placement
+            ):
+                item.setProperty(name, value)
+            if placements is not None:
+                placements[id(item)] = placement
 
         def set_route_overlay(self, overlay):
             """Present retained route geometry over a padded pan window."""
@@ -3322,8 +3473,17 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             began = time.perf_counter()
             state = "loading"
             try:
+                previous_camera = self._camera
                 self._camera = camera
                 map_anchor_changed = self._update_shared_map_pan(camera)
+                if previous_camera is not None and (
+                    previous_camera.zoom != camera.zoom
+                    or previous_camera.width != camera.width
+                    or previous_camera.height != camera.height
+                ):
+                    preview = getattr(self, "_preview_retained_imagery", None)
+                    if preview is not None:
+                        preview(camera)
                 self._marine_layer.set_camera(camera)
                 self._icoads_layer.set_camera(camera)
                 if self._chart_model is not None:
@@ -3465,6 +3625,16 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     reference, 0.5 * max(float(camera.width), float(camera.height))
                 )
             elif reference.classify(camera, dpr) != CameraChange.PAN:
+                if (
+                    reference.zoom == camera.zoom
+                    and reference.width == camera.width
+                    and reference.height == camera.height
+                ):
+                    # A DPR-only invalidation changes the pixel resources,
+                    # not the geographic placement. Preserve the retained
+                    # image/fill anchors until the host supplies new DPR data.
+                    dx, dy = reference.translation_to(camera, reference.dpr)
+                    self._rebase_retained_imagery(dx, dy)
                 reference = PanReference.from_camera(camera, dpr)
                 self._map_pan_reference = reference
                 self._map_anchor_camera = camera
@@ -3475,6 +3645,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             else:
                 _dx, _dy, rebase = self._map_pan_window.placement(camera, dpr)
                 if rebase:
+                    # Compensate front and pending placements before resetting
+                    # the parent. Do not invalidate the unrelated weather/barb
+                    # publication generation on a translation-only pan.
+                    self._rebase_retained_imagery(_dx, _dy)
                     reference = PanReference.from_camera(camera, dpr)
                     self._map_pan_reference = reference
                     self._map_anchor_camera = camera
@@ -3706,8 +3880,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 if token is not None:
                     item.setVisible(False)
                 item.setProperty("blend", field.staged.weight(camera.stamp()))
+                map_camera = getattr(self, "_map_anchor_camera", None)
                 reference = self._publication_manager.reference_camera
-                if reference is not None:
+                if map_camera is not None:
+                    rect = _grid_rect(map_camera.view(), grid.lattice)
+                elif reference is not None:
                     ref_pan = PanReference.from_camera(
                         reference, getattr(reference, "dpr", 1.0)
                     )
@@ -3718,13 +3895,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     )
                 else:
                     rect = _grid_rect(camera.view(), grid.lattice)
-                for name, value in (
-                    ("gridX", rect.x()),
-                    ("gridY", rect.y()),
-                    ("gridWidth", rect.width()),
-                    ("gridHeight", rect.height()),
-                ):
-                    item.setProperty(name, value)
+                self._place_fill_rect(item, rect)
                 if token is not None:
                     for name, url in zip(
                         ("u0Source", "v0Source", "u1Source", "v1Source"), urls
@@ -3872,28 +4043,22 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 )
             item.setProperty("blend", field.staged.weight(camera.stamp()))
             # Use reference camera for grid placement (shared pan)
+            map_camera = getattr(self, "_map_anchor_camera", None)
             reference = self._publication_manager.reference_camera
-            if reference is not None:
+            if map_camera is not None:
+                rect = _grid_rect(map_camera.view(), grid.lattice)
+            elif reference is not None:
                 ref_pan = PanReference.from_camera(
                     reference, getattr(reference, "dpr", 1.0)
                 )
                 dx, dy = ref_pan.translation_to(camera)
-                # Compute grid rect using reference camera, then apply translation
-                ref_view = reference.view()
-                rect = _grid_rect(ref_view, grid.lattice)
+                rect = _grid_rect(reference.view(), grid.lattice)
                 rect = type(rect)(
                     rect.x() + dx, rect.y() + dy, rect.width(), rect.height()
                 )
             else:
                 rect = _grid_rect(camera.view(), grid.lattice)
-            for name, value in (
-                ("gridX", rect.x()),
-                ("gridY", rect.y()),
-                ("gridWidth", rect.width()),
-                ("gridHeight", rect.height()),
-            ):
-                if item.setProperty(name, value) is False:
-                    logger.warning("The numerical fill rejected %s", name)
+            self._place_fill_rect(item, rect)
 
         def publish_fill(self, images, key):
             """Publish an image set to the fill layer alone.

@@ -319,6 +319,10 @@ class TestRealSceneMapContentStationarity(unittest.TestCase):
                 "mapContent",
                 "baseBand",
                 "chartLayer",
+                "environmentFillBand",
+                "environmentLayer",
+                "weatherFill",
+                "weatherFillBack",
                 "weatherBand",
                 "weatherBarbs",
                 "navigationOverlay",
@@ -333,19 +337,32 @@ class TestRealSceneMapContentStationarity(unittest.TestCase):
             for name in (
                 "baseBand",
                 "chartLayer",
+                "environmentFillBand",
                 "weatherBand",
                 "navigationOverlay",
                 "routeOverlay",
             ):
                 self.assertIs(items[name].parentItem(), items["mapContent"], name)
             self.assertIs(items["weatherBarbs"].parentItem(), items["weatherBand"])
+            for name in ("environmentLayer", "weatherFill", "weatherFillBack"):
+                self.assertIs(
+                    items[name].parentItem(), items["environmentFillBand"], name
+                )
             self.assertIs(items["dashboardOverlay"].parentItem(), root)
 
             def scene_pos(item):
                 return item.mapToItem(root, QPointF(0, 0))
 
-            stationary = ("baseBand", "weatherBarbs", "dashboardOverlay", "mapClip")
-            moving = ("chartLayer", "navigationOverlay", "routeOverlay")
+            stationary = ("weatherBarbs", "dashboardOverlay", "mapClip")
+            moving = (
+                "baseBand",
+                "chartLayer",
+                "environmentLayer",
+                "weatherFill",
+                "weatherFillBack",
+                "navigationOverlay",
+                "routeOverlay",
+            )
             before = {name: scene_pos(items[name]) for name in stationary + moving}
             items["mapContent"].setX(items["mapContent"].x() + 12)
             items["mapContent"].setY(items["mapContent"].y() + 7)

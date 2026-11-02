@@ -190,7 +190,7 @@ def test_route_canvas_rebases_after_declared_padding_is_exhausted():
     assert ("panY", 0.0) in calls
 
 
-def test_padded_basemap_targets_are_not_translated_a_second_time():
+def test_padded_basemap_targets_keep_current_camera_placement_without_shared_parent():
     viewport_class = _viewport_widget_class()
     target = SimpleNamespace(
         x=lambda: -24.0,
@@ -211,7 +211,8 @@ def test_padded_basemap_targets_are_not_translated_a_second_time():
     ):
         calls = []
         item = SimpleNamespace(
-            setProperty=lambda name, value: calls.append((name, value))
+            setProperty=lambda name, value: calls.append((name, value)),
+            setVisible=lambda visible: None,
         )
         widget = SimpleNamespace(
             **{
@@ -222,10 +223,13 @@ def test_padded_basemap_targets_are_not_translated_a_second_time():
                 key_name: None,
             }
         )
+        widget._place_retained_image = MethodType(
+            viewport_class._place_retained_image, widget
+        )
 
         getattr(viewport_class, method_name)(widget, image, target)
 
-        assert calls[-4:] == [
+        assert [entry for entry in calls if entry[0].startswith("image")][-4:] == [
             ("imageX", -24.0),
             ("imageY", 18.0),
             ("imageWidth", 960.0),
@@ -416,6 +420,9 @@ def test_shared_scene_pan_translates_parent_and_reanchors_retained_children():
     )
     widget._place_chart = MethodType(widget_class._place_chart, widget)
     widget._place_route_overlay = MethodType(widget_class._place_route_overlay, widget)
+    widget._rebase_retained_imagery = MethodType(
+        widget_class._rebase_retained_imagery, widget
+    )
     widget._update_shared_map_pan(camera)
     widget._place_chart()
     widget_class.set_route_overlay(widget, _overlay())

@@ -72,6 +72,9 @@ def _make_widget(composed, current, viewport, reference, dpr=1.0):
     widget._update_shared_map_pan = MethodType(
         widget_class._update_shared_map_pan, widget
     )
+    widget._rebase_retained_imagery = MethodType(
+        widget_class._rebase_retained_imagery, widget
+    )
     return widget, calls
 
 

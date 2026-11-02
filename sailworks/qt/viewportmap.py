@@ -456,7 +456,14 @@ class ViewportMap(
         presenter = self._weather_presenter
         foreground = getattr(presenter, "foreground", None)
         if foreground is not None:
-            foreground.update()
+            if zoom_changed:
+                # The chart preview is placed in the viewport's camera pass.
+                # Repaint navigation at that same camera before the Quick
+                # scene renders; a queued QWidget update otherwise leaves the
+                # old-scale navigation raster over the newly scaled world map.
+                foreground.repaint()
+            else:
+                foreground.update()
         widget = getattr(presenter, "widget", None)
         if widget is not None:
             widget.set_route_overlay(self.viewport_route_overlay())

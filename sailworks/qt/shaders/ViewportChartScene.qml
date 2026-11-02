@@ -37,8 +37,6 @@ Item {
 
             Item {
                 objectName: "baseBand"
-                x: -mapContent.x
-                y: -mapContent.y
                 width: mapClip.width
                 height: mapClip.height
                 ChartLayer {
@@ -51,14 +49,12 @@ Item {
                 objectName: "chartLayer"
                 anchors.fill: parent
             }
+            // Images and numerical fill are reference-local. The weather band
+            // below still cancels the parent motion for unmigrated barbs.
             Item {
-                objectName: "weatherBand"
-                x: -mapContent.x
-                y: -mapContent.y
+                objectName: "environmentFillBand"
                 width: mapClip.width
                 height: mapClip.height
-                // Application-owned MBTiles/weather background/marine stay above ENC,
-                // below wind barbs. Standalone use leaves this image empty.
                 ChartLayer {
                     objectName: "environmentLayer"
                     anchors.fill: parent
@@ -76,6 +72,13 @@ Item {
                     visible: false
                     fragmentShader: Qt.resolvedUrl("weather-fill-back.frag.qsb")
                 }
+            }
+            Item {
+                objectName: "weatherBand"
+                x: -mapContent.x
+                y: -mapContent.y
+                width: mapClip.width
+                height: mapClip.height
                 WeatherBarbs {
                     id: barbs
                     objectName: "weatherBarbs"

@@ -434,7 +434,7 @@ class WeatherPresenter(QObject):
                 self.canvas._base_image,
             )
             self.canvas._base_cache = cache
-            widget.set_base(cache[4], target)
+            widget.set_base(cache[4], target, cache[1:4])
         if widget._environment is not None:
             cache, target = self.canvas._resolve_reusable_layer(
                 self.canvas._environment_cache,
@@ -442,7 +442,7 @@ class WeatherPresenter(QObject):
                 self.canvas._environment_image,
             )
             self.canvas._environment_cache = cache
-            widget.set_environment(cache[4], target)
+            widget.set_environment(cache[4], target, cache[1:4])
         if not self._rendered and not self.deadline.isActive():
             self.deadline.start()
         foreground.show()

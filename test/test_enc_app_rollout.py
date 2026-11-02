@@ -111,6 +111,10 @@ def test_app_supplies_basemap_inside_quick_before_weather(presenter):
     canvas = presenter.canvas
     settings = canvas.controller.settings
     settings.gribBarbDensity, settings.gribArrowOpacity = "standard", 1
+    settings.gribWindGradient = False
+    settings.gribWindGradientOpacity = 1.0
+    settings.gribWindGradientSmooth = True
+    settings.gribWindGradientLevels = 15
     canvas._center_lat, canvas._center_lon, canvas._zoom = 48.4, -123.4, 9
     canvas.time_control = SimpleNamespace(time=datetime(2026, 10, 22))
     canvas.marine = SimpleNamespace(
@@ -120,6 +124,7 @@ def test_app_supplies_basemap_inside_quick_before_weather(presenter):
         watch=Mock(),
     )
     canvas.wind_visible = True
+    canvas.ship_observations = SimpleNamespace(reports=[], visible=False)
     canvas._base_key = Mock(return_value="base")
     canvas._base_cache = canvas._environment_cache = None
     canvas._base_image, canvas._environment_image = Mock(), Mock()
@@ -132,8 +137,10 @@ def test_app_supplies_basemap_inside_quick_before_weather(presenter):
     widget = Mock(_chart_palette="dark")
     presenter.widget, presenter.foreground = widget, Mock()
     presenter._sync_active(None)
-    widget.set_base.assert_called_once_with(base, base_target)
-    widget.set_environment.assert_called_once_with(environment, environment_target)
+    widget.set_base.assert_called_once_with(base, base_target, (None, None, None))
+    widget.set_environment.assert_called_once_with(
+        environment, environment_target, (None, None, None)
+    )
     assert canvas._base_cache is base_cache
     assert canvas._environment_cache is environment_cache
     calls = [entry[0] for entry in widget.mock_calls]
@@ -831,7 +838,7 @@ def test_viewport_camera_handoff_is_encapsulated_by_the_map_host():
     )
 
     changed = Mock()
-    foreground = SimpleNamespace(update=Mock())
+    foreground = SimpleNamespace(update=Mock(), repaint=Mock())
     camera_state = ViewportCameraState(48.0, -123.0, 8.0)
     host = SimpleNamespace(
         camera_state=camera_state,
@@ -856,7 +863,8 @@ def test_viewport_camera_handoff_is_encapsulated_by_the_map_host():
     host._cancel_cursor.assert_called_once_with()
     host.invalidate_navigation.assert_called_once_with()
     changed.assert_called_once_with()
-    foreground.update.assert_called_once_with()
+    foreground.repaint.assert_called_once_with()
+    foreground.update.assert_not_called()
 
     assert not ViewportMap.adopt_viewport_camera(host, camera)
     assert changed.call_count == 1
@@ -882,6 +890,36 @@ def test_map_host_keeps_navigation_cache_for_camera_only_pan():
 
     assert ViewportMap.adopt_viewport_camera(host, camera)
     host.invalidate_navigation.assert_not_called()
+
+
+def test_zoom_repaints_navigation_after_host_adopts_viewport_camera():
+    from sailworks.qt.viewportmap import (
+        ViewportCameraState,
+        ViewportMapState,
+        ViewportMap,
+    )
+
+    camera_state = ViewportCameraState(48.0, -123.0, 8.0)
+    observed = []
+    foreground = SimpleNamespace(
+        update=Mock(),
+        repaint=lambda: observed.append((camera_state.zoom, host._nav_cache)),
+    )
+    host = SimpleNamespace(
+        camera_state=camera_state,
+        _view_state=ViewportMapState(camera_state),
+        _nav_cache=object(),
+        _cancel_cursor=Mock(),
+        view_changed=SimpleNamespace(emit=Mock()),
+        _weather_presenter=SimpleNamespace(foreground=foreground, widget=None),
+        viewport_route_overlay=Mock(),
+    )
+    host.invalidate_navigation = lambda: setattr(host, "_nav_cache", None)
+    camera = SimpleNamespace(center_lat=48.2, center_lon=-123.1, zoom=8.35)
+
+    assert ViewportMap.adopt_viewport_camera(host, camera)
+    assert observed == [(camera.zoom, None)]
+    foreground.update.assert_not_called()
 
 
 def test_map_host_translates_app_state_to_the_viewport_camera_contract():
