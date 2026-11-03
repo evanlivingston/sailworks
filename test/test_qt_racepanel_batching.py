@@ -45,7 +45,16 @@ class _TrackManager(list):
         self.active = None
 
     def get_unique_name(self, name):
-        return name
+        candidate = name
+        suffix = 1
+        while any(t.name == candidate for t in self):
+            candidate = f"{name}-{suffix}"
+            suffix += 1
+        return candidate
+
+    def remove_many(self, tracks, save=True):
+        ids = {id(track) for track in tracks}
+        self[:] = [track for track in self if id(track) not in ids]
 
     def remove_by_names(self, names, save=True):
         self.removed_names.append(list(names))
@@ -96,14 +105,8 @@ def test_show_race_tracks_uses_batched_remove_and_append(qtbot):
     race = _sample_race()
     panel._defer_heavy = False
 
-    # Pre-populate manager with an old race track name.
-    panel._race_track_names = ["old track"]
-    manager.append(SimpleNamespace(name="old track"))
-
     panel._show_race_tracks(race)
 
-    assert len(manager.removed_names) == 1
-    assert manager.removed_names[0] == ["old track"]
     assert len(manager.appended_batches) == 1
     assert len(manager.appended_batches[0]) == 2
     assert all(
@@ -116,6 +119,65 @@ def test_show_race_tracks_uses_batched_remove_and_append(qtbot):
     assert (
         manager.active is manager[-2] or manager.active in manager.appended_batches[0]
     )
+    original = list(manager)
+    panel._show_race_tracks(race)
+    assert all(a is b for a, b in zip(manager, original))
+    assert len(manager) == 2
+
+
+def test_restart_change_and_stale_tracks(qtbot, monkeypatch):
+    import json
+    from sailworks.core.geo.track import Track
+
+    monkeypatch.setattr(racepanel, "load_saved_races", lambda: [])
+    manager = _TrackManager()
+    panel = racepanel.RacesPanel(
+        SimpleNamespace(core=SimpleNamespace(trackManager=manager))
+    )
+    qtbot.addWidget(panel)
+    panel._defer_heavy = False
+    race = _sample_race()
+    panel._show_race_tracks(race)
+    saved = json.loads(json.dumps([t.to_json() for t in manager]))
+    assert all("race_times" not in track for track in saved)
+    manager[:] = [Track.from_json(t) for t in saved]
+    for track in manager:
+        track.collection = manager
+    original = list(manager)
+    panel._race_track_names = []
+    panel.race_track_times = {}
+    panel._show_race_tracks(race)
+    assert len(manager) == 2 and all(a is b for a, b in zip(manager, original))
+    assert len(panel._race_track_names) == len(panel.race_track_times) == 2
+    revision = manager[0]._revision
+    race.boats[0].positions[0].latitude += 1
+    race.boats.pop()
+    panel._show_race_tracks(race)
+    assert len(manager) == 1 and manager[0] is original[0]
+    assert manager[0]._revision > revision
+    assert manager[0].points[0][0] == race.boats[0].positions[0].latitude
+
+
+def test_legacy_adoption_and_ambiguity(qtbot, monkeypatch):
+    from sailworks.core.geo.track import Track
+
+    monkeypatch.setattr(racepanel, "load_saved_races", lambda: [])
+    manager = _TrackManager()
+    panel = racepanel.RacesPanel(
+        SimpleNamespace(core=SimpleNamespace(trackManager=manager))
+    )
+    qtbot.addWidget(panel)
+    panel._defer_heavy = False
+    race = _sample_race()
+    a = Track(f"{race.name} - Boat A", race_track=True)
+    b = Track(f"{race.name} - Boat B", race_track=True)
+    duplicate = Track(b.name, race_track=True)
+    manager.extend([a, b, duplicate])
+    panel._show_race_tracks(race)
+    assert a.race_key and a.race_boat_key
+    assert b.race_key is None and duplicate.race_key is None
+    assert len(manager) == 4
+    assert len(set(panel._race_track_names)) == 2
 
 
 def test_tracks_changed_precedes_persistence(qtbot, monkeypatch):

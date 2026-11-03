@@ -22,16 +22,32 @@ from sailworks.core.geo.elementmultipoint import ElementMultiPoint
 
 
 class Track(ElementMultiPoint):
-    def __init__(self, name, points=None, visible=True, collection=None, race_track=False, color=None):
+    def __init__(
+        self,
+        name,
+        points=None,
+        visible=True,
+        collection=None,
+        race_track=False,
+        color=None,
+        race_key=None,
+        race_boat_key=None,
+    ):
         super().__init__(name, points, visible, collection)
         self.race_track = bool(race_track)
         self.color = color
+        self.race_key = race_key
+        self.race_boat_key = race_boat_key
 
     def to_json(self):
         c = super().to_json()
         c["race_track"] = self.race_track
         if self.color is not None:
             c["color"] = self.color
+        for key in ("race_key", "race_boat_key"):
+            value = getattr(self, key)
+            if value is not None:
+                c[key] = value
         return c
 
     @staticmethod
@@ -43,6 +59,8 @@ class Track(ElementMultiPoint):
             d.visible,
             race_track=j.get("race_track", False),
             color=j.get("color"),
+            race_key=j.get("race_key"),
+            race_boat_key=j.get("race_boat_key"),
         )
 
     def to_gpx_object(self):
