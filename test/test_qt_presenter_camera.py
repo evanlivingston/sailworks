@@ -54,6 +54,32 @@ def test_sync_adopts_restored_camera_before_child_resize_or_show():
     widget.set_camera.assert_called_once()
 
 
+def test_loading_child_retries_the_same_camera():
+    state = ViewportCameraState(47.2, -122.1, 9.5)
+    canvas = Mock()
+    canvas._desktop_viewport = True
+    canvas.controller.settings.chartPalette = "day"
+    canvas.requested_viewport_camera.side_effect = lambda: ViewportCamera(
+        state.center_lat, state.center_lon, state.zoom
+    )
+    widget = Mock()
+    widget._camera = ViewportCamera(47.2, -122.1, 9.5)
+    widget._state = "loading"
+    widget._chart_palette = "day"
+    widget._environment = None
+    presenter = SimpleNamespace(
+        canvas=canvas,
+        widget=widget,
+        foreground=Mock(),
+        _source=None,
+        _rendered=True,
+    )
+    presenter.closed = False
+    canvas.disposed = False
+    WeatherPresenter._sync_active(presenter, None)
+    widget.set_camera.assert_called_once_with(widget._camera)
+
+
 def test_uninitialized_child_cannot_overwrite_host_camera():
     canvas = Mock(disposed=False)
     presenter = SimpleNamespace(

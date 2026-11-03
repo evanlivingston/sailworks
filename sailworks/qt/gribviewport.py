@@ -2658,11 +2658,16 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             pending = self._native_pending_camera is not None
             if pending and self._native_publishing:
                 return
+            fill_needed = self._fill is not None and self._wind_gradient_enabled
             items = (
                 [self._barbs_back]
-                + ([self._fill_back] if self._fill_back is not None else [])
+                + (
+                    [self._fill_back]
+                    if fill_needed and self._fill_back is not None
+                    else []
+                )
                 if pending
-                else [self._barbs] + ([self._fill] if self._fill is not None else [])
+                else [self._barbs] + ([self._fill] if fill_needed else [])
             )
             error = next(
                 (

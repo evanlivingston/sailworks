@@ -83,6 +83,65 @@ def test_the_viewport_does_not_use_the_application_frame_pipeline():
         assert not name.startswith("sailworks.core.gribmanager"), name
 
 
+def test_native_readiness_ignores_unused_gradient_fill():
+    from types import SimpleNamespace
+
+    class _Item:
+        def __init__(self, ready):
+            self.ready = ready
+
+        def property(self, name):
+            if name == "shaderError":
+                return ""
+            if name in ("ready", "prepared"):
+                return self.ready
+            return None
+
+    class _Provider:
+        def __init__(self):
+            self.pinned = None
+
+        def pin_selection(self, urls):
+            self.pinned = urls
+
+    class _Widget:
+        _wind_style = "barbs"
+        _disposed = False
+        _camera = object()
+        _native_pending_camera = None
+        _native_publishing = False
+        _barbs = _Item(True)
+        _barbs_back = _Item(True)
+        _fill = _Item(False)
+        _fill_back = _Item(False)
+        _wind_gradient_enabled = False
+        _model = SimpleNamespace(state="ready")
+        _native_active_camera = None
+        _native_pending_identity = None
+        _native_pending_selection = None
+        _native_pending_selection_urls = ()
+        _native_active_dpr = None
+        _native_pending_dpr = None
+        _state = "loading"
+        _provider = _Provider()
+
+        def _native_publication_dpr(self):
+            return 2.0
+
+        def _adopt_shared_anchor_front(self):
+            pass
+
+        def _clear_barb_zoom_preview(self):
+            pass
+
+        def _show_state(self, state):
+            self._state = state
+
+    widget = _Widget()
+    gribviewport._viewport_widget_class()._update_native_state(widget)
+    assert widget._state == "ready"
+
+
 def test_the_viewport_owns_its_camera_and_time_state():
     camera = _camera()
     assert camera.view()._center_lat == camera.center_lat
