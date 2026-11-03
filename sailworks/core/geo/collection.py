@@ -126,14 +126,12 @@ class Collection(Generic[T]):
 
     def remove_many(self, elements):
         """Remove multiple elements with a single save."""
-        changed = False
-        for element in list(elements or ()):
-            try:
-                self.elements.remove(element)
-                changed = True
-            except ValueError:
-                continue
-        if changed:
+        remove_ids = {id(element) for element in (elements or ())}
+        before = len(self.elements)
+        self.elements = [
+            element for element in self.elements if id(element) not in remove_ids
+        ]
+        if len(self.elements) != before:
             self.touch()
             self.save()
 
