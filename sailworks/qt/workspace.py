@@ -82,6 +82,7 @@ class WorkspacePreferences(QObject):
             dock.visibilityChanged.connect(self.changed)
         window.tabifiedDockWidgetActivated.connect(self._dock_activated)
         window.views.currentChanged.connect(self.changed)
+        window.source.currentIndexChanged.connect(self.changed)
         window.map.view_changed.connect(self.changed)
         window.log_map.view_changed.connect(self.changed)
         window.logs_view.splitterMoved.connect(self.changed)
@@ -167,6 +168,7 @@ class WorkspacePreferences(QObject):
             "active_dock": self.active_dock,
             "view": window.views.tabText(window.views.currentIndex()),
             "polars_visited": window.polars_visited,
+            "nmea_source": window.session.source,
             "forecast": {"step": window.timeline.step_combo.currentText()},
             "weather": {"open": window.weather_open},
             "marine": {
@@ -239,6 +241,9 @@ class WorkspacePreferences(QObject):
 
     def restore(self, value):
         state = mapping(value)
+        source = state.get("nmea_source")
+        if source in ("live", "log", "none"):
+            self.window.source.setCurrentIndex({"live": 0, "log": 1, "none": 2}[source])
         self._restore_docks(state)
         self.window._order_toolbars()
         self._restore_window(mapping(state.get("window")))
