@@ -317,6 +317,11 @@ class LogLibrary:
                     "format": "NMEA 0183 (decoded from EBL)",
                     "entries": len(log.entries),
                     "duration": log.duration,
+                    "timestamp_origin": (
+                        log.timestamp_origin.isoformat()
+                        if getattr(log, "timestamp_origin", None) is not None
+                        else None
+                    ),
                     "timestamped": log.timestamped,
                     "skipped": log.skipped,
                     "frame_count": log.frame_count,
