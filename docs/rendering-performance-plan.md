@@ -265,6 +265,36 @@ python tools/benchmark_startup_rendering.py \
   <candidate>.json --output <comparison>.json
 ```
 
+### After-rendering latency trace
+
+- Report: [`profiles/rendering/2026-11-02/latency-trace-baseline.json`](profiles/rendering/2026-11-02/latency-trace-baseline.json)
+- Harness: `tools/trace_viewport_latency.py`
+- Snapshot content: `d2cca530d9401b391a45c1d798208d5fe4272c4cf863494fbca61403d8deafcd`
+- Workload: `pan`, `trackpad_pan`, `wheel_zoom`, `zoom_out`; 180 frames, 3
+  repeated native processes, 1000x700.
+- Endpoint: input dispatch → `QQuickWindow.afterRendering`. This is a
+  render-signal proxy, not input-to-photon or presentation FPS.
+
+| Scenario | latency p50 | p95 | p99 | dispatch-late p95 | handler p95 | model p95 | publish p95 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `pan` | 16.1 ms | 25.2 ms | 33.8 ms | 33.8 ms | 3.21 ms | 2.87 ms | 0.14 ms |
+| `trackpad_pan` | 14.3 ms | 25.6 ms | 31.2 ms | 27.7 ms | 3.16 ms | 2.76 ms | 0.11 ms |
+| `wheel_zoom` | 11.7 ms | 22.7 ms | 29.0 ms | 123.9 ms | 4.41 ms | 3.35 ms | 0.53 ms |
+| `zoom_out` | 13.2 ms | 26.5 ms | 46.2 ms | 146.5 ms | 6.01 ms | 4.97 ms | 0.45 ms |
+
+The camera/selection/publish work is small. The dominant signal is queued GUI
+dispatch during zoom: inputs arrive more than 100 ms late at p95. Camera
+coalescing (#13) and upload auditing (#14) are therefore not justified from
+this trace; the next investigation is what blocks the GUI/render loop during
+zoom.
+
+```bash
+python tools/trace_viewport_latency.py \
+  --snapshot <private-snapshot> --output <trace>.json \
+  --scenarios pan,trackpad_pan,wheel_zoom,zoom_out \
+  --frames 180 --repeats 3
+```
+
 ### Model-side selection replay
 
 - Report: [`profiles/rendering/2026-11-02/selection-pan-baseline.json`](profiles/rendering/2026-11-02/selection-pan-baseline.json)
