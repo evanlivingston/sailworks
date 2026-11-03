@@ -171,6 +171,7 @@ Item {
                 property var routes: []
                 property var aisTargets: []
                 property var isochrones: null
+                property var dashboardGauges: []
                 property string captionText: ""
                 property bool dashboardVisible: true
                 property real centerLatitude: 0
@@ -201,6 +202,20 @@ Item {
                     else { r = 1.0; g = 0.3; b = 0.1 }
                     return `rgba(${Math.round(r * 255)},${Math.round(g * 255)},` +
                            `${Math.round(b * 255)},${alpha})`
+                }
+
+                function roundedRect(context, x, y, w, h, r) {
+                    context.beginPath()
+                    context.moveTo(x + r, y)
+                    context.lineTo(x + w - r, y)
+                    context.arcTo(x + w, y, x + w, y + r, r)
+                    context.lineTo(x + w, y + h - r)
+                    context.arcTo(x + w, y + h, x + w - r, y + h, r)
+                    context.lineTo(x + r, y + h)
+                    context.arcTo(x, y + h, x, y + h - r, r)
+                    context.lineTo(x, y + r)
+                    context.arcTo(x, y, x + r, y, r)
+                    context.closePath()
                 }
 
                 function drawRoute(context, points, color) {
@@ -588,6 +603,74 @@ Item {
                         context.stroke()
                     }
                     drawTrackMarker(context)
+                    if (dashboardGauges && dashboardGauges.length) {
+                        const gaugeWidth = 110
+                        const gaugeHeight = 56
+                        const gap = 4
+                        const pad = 6
+                        const cols = Math.max(1, Math.min(
+                            dashboardGauges.length,
+                            Math.floor((viewportWidth - pad * 2 + gap) /
+                                       (gaugeWidth + gap))))
+                        const rows = Math.ceil(dashboardGauges.length / cols)
+                        const totalWidth = cols * gaugeWidth + (cols - 1) * gap
+                        const totalHeight = rows * gaugeHeight + (rows - 1) * gap
+                        const panelX = panPadding +
+                            (viewportWidth - totalWidth) / 2 - pad
+                        const panelY = panPadding + viewportHeight -
+                            totalHeight - pad * 2 - 12
+                        roundedRect(context, panelX, panelY,
+                                    totalWidth + pad * 2,
+                                    totalHeight + pad * 2, 8)
+                        context.fillStyle = "rgba(8,8,8,0.55)"
+                        context.fill()
+                        for (let i = 0; i < dashboardGauges.length; ++i) {
+                            const gauge = dashboardGauges[i]
+                            const gx = panelX + pad +
+                                (i % cols) * (gaugeWidth + gap)
+                            const gy = panelY + pad +
+                                Math.floor(i / cols) * (gaugeHeight + gap)
+                            roundedRect(context, gx, gy, gaugeWidth, gaugeHeight, 6)
+                            context.fillStyle = "rgba(26,26,26,0.75)"
+                            context.fill()
+                            context.lineWidth = 0.8
+                            context.strokeStyle = "rgba(89,89,89,0.6)"
+                            context.stroke()
+                            const accent = gauge.color || [0.4, 0.6, 0.9]
+                            context.fillStyle =
+                                `rgba(${Math.round(accent[0] * 255)},` +
+                                `${Math.round(accent[1] * 255)},` +
+                                `${Math.round(accent[2] * 255)},0.9)`
+                            context.fillRect(gx, gy, gaugeWidth, 3)
+                            context.font = "9px sans-serif"
+                            context.textAlign = "center"
+                            context.fillStyle = "rgba(153,153,153,1)"
+                            context.fillText(gauge.label, gx + gaugeWidth / 2,
+                                             gy + 15)
+                            context.font = "20px sans-serif"
+                            const valueWidth =
+                                context.measureText(gauge.text).width
+                            context.font = "9px sans-serif"
+                            const unitWidth = gauge.unit
+                                ? context.measureText(gauge.unit).width + 3
+                                : 0
+                            const startX = gx +
+                                (gaugeWidth - valueWidth - unitWidth) / 2
+                            context.font = "20px sans-serif"
+                            context.textAlign = "left"
+                            context.fillStyle = "rgba(255,255,255,1)"
+                            context.fillText(gauge.text, startX,
+                                             gy + gaugeHeight - 10)
+                            if (gauge.unit) {
+                                context.font = "9px sans-serif"
+                                context.fillStyle = "rgba(140,140,140,1)"
+                                context.fillText(gauge.unit,
+                                                 startX + valueWidth + 3,
+                                                 gy + gaugeHeight - 10)
+                            }
+                        }
+                        context.textAlign = "left"
+                    }
                 }
                 onRoutePlanChanged: requestPaint()
                 onRoutePreviewChanged: requestPaint()
@@ -598,6 +681,7 @@ Item {
                 onRoutesChanged: requestPaint()
                 onAisTargetsChanged: requestPaint()
                 onIsochronesChanged: requestPaint()
+                onDashboardGaugesChanged: requestPaint()
                 onTrackPointsChanged: requestPaint()
                 onTrackPositionChanged: requestPaint()
                 onTrackHeadingChanged: requestPaint()

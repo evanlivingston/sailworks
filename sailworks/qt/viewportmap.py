@@ -205,6 +205,7 @@ class ViewportMap(
         self._qml_race_overlay = False
         self._qml_ais_overlay = False
         self._qml_isochrone_overlay = False
+        self._qml_dashboard_overlay = False
         presenter = self._weather_presenter
         if presenter is None or not presenter.active or presenter.widget is None:
             return
@@ -214,6 +215,7 @@ class ViewportMap(
         self._qml_race_overlay = True
         self._qml_ais_overlay = True
         self._qml_isochrone_overlay = True
+        self._qml_dashboard_overlay = True
         self._nav_cache, target = self._resolve_reusable_layer(
             self._nav_cache, self._nav_key(), self._navigation_image
         )
@@ -262,6 +264,9 @@ class ViewportMap(
                 widget.set_dashboard_overlay(None)
             return
         if presenter is None or not presenter.active or widget is None:
+            return
+        if getattr(self, "_qml_dashboard_overlay", False):
+            widget.set_dashboard_overlay(None)
             return
         key = self._dash_key()
         if self._dash_cache is None or self._dash_cache[0] != key:
@@ -609,6 +614,9 @@ class ViewportMap(
                 else []
             ),
             "isochrones": isochrone_overlay_data(self.isochrone_frame),
+            "dashboard": (
+                self.dashboard.overlay_data() if self.dashboard_visible else []
+            ),
             "caption": _viewport_caption(
                 self.move_callback, self.controller.chart_errors
             ),
