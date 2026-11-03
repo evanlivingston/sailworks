@@ -207,14 +207,15 @@ class WeatherNextSource(GribSource):
             raise ValueError("WeatherNext selection has no grid points")
         return selected[variable].values
 
-    def _select_many(self, dataset, variable, steps, latitude, longitude):
-        """Read leads concurrently: the store chunks per lead, so this is latency-bound."""
+    def _select_many(self, dataset, variable, steps, latitude, longitude, on_done=None):
+        """Read leads concurrently: each lead is one 26 MB remote chunk."""
         workers = min(8, max(1, len(steps)))
 
         def one(step):
-            return step, self._select(
-                dataset, variable, None, step, latitude, longitude
-            )
+            value = self._select(dataset, variable, None, step, latitude, longitude)
+            if on_done is not None:
+                on_done()
+            return step, value
 
         with ThreadPoolExecutor(max_workers=workers) as pool:
             return dict(pool.map(one, steps))
@@ -252,16 +253,26 @@ class WeatherNextSource(GribSource):
             raise ValueError("WeatherNext selection is smaller than a GRIB grid")
 
         wind_u = wind_v = pressure = {}
+        total_reads = len(steps) * (2 if "wind" in fields else 0)
+        total_reads += len(steps) if "pressure" in fields else 0
+        read_done = 0
+
+        def read_progress():
+            # Reads are ~90% of the wall time; move the bar while they land.
+            nonlocal read_done
+            read_done += 1
+            percentage_callback(min(90, round(90 * read_done / max(1, total_reads))))
+
         if "wind" in fields:
             wind_u = self._select_many(
-                dataset, U_WIND, steps, (south, north), (west, east)
+                dataset, U_WIND, steps, (south, north), (west, east), read_progress
             )
             wind_v = self._select_many(
-                dataset, V_WIND, steps, (south, north), (west, east)
+                dataset, V_WIND, steps, (south, north), (west, east), read_progress
             )
         if "pressure" in fields:
             pressure = self._select_many(
-                dataset, PRESSURE, steps, (south, north), (west, east)
+                dataset, PRESSURE, steps, (south, north), (west, east), read_progress
             )
 
         # Published runs can still be uploading, leaving some leads blank.
@@ -333,7 +344,7 @@ class WeatherNextSource(GribSource):
             eccodes.codes_write(gid, handle)
             eccodes.codes_release(gid)
             done += 1
-            percentage_callback(min(100, round(100 * done / max(1, total))))
+            percentage_callback(90 + min(10, round(10 * done / max(1, total))))
 
         with path.open("wb") as handle:
             for step in steps:
