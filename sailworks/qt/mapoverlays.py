@@ -210,7 +210,9 @@ class RetainedOverlayMixin:
         )
         surface.set_device_scale(factor, factor)
         cr = cairo.Context(surface)
-        self.navigation.draw_race_tracks(self, cr)
+        self.navigation.draw_race_tracks(
+            self, cr, draw_pois=not getattr(self, "_qml_navigation_overlay", False)
+        )
         surface.flush()
         image = QImage(
             surface.get_data(),
@@ -355,7 +357,9 @@ class RetainedOverlayMixin:
                 cr.paint()
                 cached_surface.flush()
         elif navigation is not None and hasattr(navigation, "draw_race_tracks"):
-            navigation.draw_race_tracks(self, cr)
+            navigation.draw_race_tracks(
+                self, cr, draw_pois=not getattr(self, "_qml_navigation_overlay", False)
+            )
         if getattr(self, "ais_visible", False):
             ais_renderer = getattr(self, "ais_renderer", None)
             ais_targets = getattr(self, "ais_targets", ())

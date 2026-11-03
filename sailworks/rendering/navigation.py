@@ -285,7 +285,7 @@ class NavigationRenderer:
                 prevx = x
                 prevy = y
 
-    def draw_race_tracks(self, gpsmap, cr):  # noqa: C901
+    def draw_race_tracks(self, gpsmap, cr, draw_pois=True):  # noqa: C901
         """Draw race-track geometry without per-fix number labels."""
         for tr in self.core.trackManager:
             if not tr.visible or not getattr(tr, "race_track", False):
@@ -329,41 +329,42 @@ class NavigationRenderer:
                 prevx = x
                 prevy = y
 
-        for tr in self.core.poiManager:
-            if not tr.visible:
-                continue
+        if draw_pois:
+            for tr in self.core.poiManager:
+                if not tr.visible:
+                    continue
 
-            poi_hl = tr.name == self.hl_poi
-            x, y = gpsmap.convert_geographic_to_screen(
-                MapPoint.new_degrees(tr.position[0], tr.position[1])
-            )
+                poi_hl = tr.name == self.hl_poi
+                x, y = gpsmap.convert_geographic_to_screen(
+                    MapPoint.new_degrees(tr.position[0], tr.position[1])
+                )
 
-            if poi_hl:
-                Style.Poi.QuadHL.apply(cr)
-            else:
-                Style.Poi.Quad.apply(cr)
-            cr.rectangle(x + 3, y - 5, len(tr.name) * 6.7, 12)
-            cr.stroke_preserve()
-            if poi_hl:
-                Style.Poi.QuadIntHL.apply(cr)
-            else:
-                Style.Poi.QuadInt.apply(cr)
-            cr.fill()
+                if poi_hl:
+                    Style.Poi.QuadHL.apply(cr)
+                else:
+                    Style.Poi.Quad.apply(cr)
+                cr.rectangle(x + 3, y - 5, len(tr.name) * 6.7, 12)
+                cr.stroke_preserve()
+                if poi_hl:
+                    Style.Poi.QuadIntHL.apply(cr)
+                else:
+                    Style.Poi.QuadInt.apply(cr)
+                cr.fill()
 
-            if poi_hl:
-                Style.Poi.FontHL.apply(cr)
-            else:
-                Style.Poi.Font.apply(cr)
-            cr.move_to(x + 5, y + 5)
-            cr.show_text(tr.name)
-            cr.stroke()
+                if poi_hl:
+                    Style.Poi.FontHL.apply(cr)
+                else:
+                    Style.Poi.Font.apply(cr)
+                cr.move_to(x + 5, y + 5)
+                cr.show_text(tr.name)
+                cr.stroke()
 
-            if poi_hl:
-                Style.Poi.DotHL.apply(cr)
-            else:
-                Style.Poi.Dot.apply(cr)
-            cr.arc(x, y, 4 if poi_hl else 2, 0, 2 * math.pi)
-            cr.fill()
+                if poi_hl:
+                    Style.Poi.DotHL.apply(cr)
+                else:
+                    Style.Poi.Dot.apply(cr)
+                cr.arc(x, y, 4 if poi_hl else 2, 0, 2 * math.pi)
+                cr.fill()
 
             # Triangle
             # cr.move_to(x-5, y-5)

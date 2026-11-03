@@ -165,6 +165,7 @@ Item {
                 property var trackPosition: []
                 property var trackHeading: null
                 property var trackAwa: null
+                property var pois: []
                 property string captionText: ""
                 property bool dashboardVisible: true
                 property real centerLatitude: 0
@@ -285,6 +286,36 @@ Item {
                         context.stroke()
                         context.globalAlpha = 1
                     }
+                    if (pois && pois.length) {
+                        for (let i = 0; i < pois.length; ++i) {
+                            const poi = pois[i]
+                            const point = screenPoint([poi[0], poi[1]])
+                            if (!isFinite(point.x) || !isFinite(point.y))
+                                continue
+                            const label = String(poi[2] || "")
+                            const highlight = Boolean(poi[3])
+                            const boxWidth = Math.max(12, label.length * 6.7)
+                            context.beginPath()
+                            context.rect(point.x + 3, point.y - 5, boxWidth, 12)
+                            context.lineWidth = highlight ? 1.5 : 0.3
+                            context.strokeStyle = highlight ? "#ff0000" : "#111111"
+                            context.stroke()
+                            context.fillStyle = highlight
+                                ? "rgba(255,229,229,0.7)"
+                                : "rgba(255,255,255,0.5)"
+                            context.fill()
+                            context.beginPath()
+                            context.arc(point.x, point.y,
+                                        highlight ? 4 : 2, 0, Math.PI * 2)
+                            context.fillStyle = highlight ? "#ff0000" : "#111111"
+                            context.fill()
+                            context.font = "10px sans-serif"
+                            context.fillStyle = highlight
+                                ? "rgba(255,0,0,0.9)"
+                                : "rgba(17,17,17,0.7)"
+                            context.fillText(label, point.x + 5, point.y + 5)
+                        }
+                    }
                     if (routePlan && routePlan.length) {
                         const labels = ["Start", "Destination"]
                         for (let i = 0; i < Math.min(2, routePlan.length); ++i) {
@@ -317,6 +348,7 @@ Item {
                 onRoutePlanChanged: requestPaint()
                 onRoutePreviewChanged: requestPaint()
                 onSelectedPointChanged: requestPaint()
+                onPoisChanged: requestPaint()
                 onTrackPointsChanged: requestPaint()
                 onTrackPositionChanged: requestPaint()
                 onTrackHeadingChanged: requestPaint()

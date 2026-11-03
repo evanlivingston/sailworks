@@ -149,6 +149,24 @@ def test_set_camera_moves_route_canvas_in_camera_pass_without_content_callback()
     assert ("panY", 0.0) in calls
 
 
+def test_route_overlay_publishes_pois_to_the_qml_layer():
+    calls = []
+    item = SimpleNamespace(setProperty=lambda name, value: calls.append((name, value)))
+    widget = SimpleNamespace(
+        _route_overlay=item,
+        _camera=_camera(),
+        _route_pan_window=None,
+        _route_content_key=None,
+        devicePixelRatio=lambda: 1.0,
+    )
+    widget_class = _viewport_widget_class()
+    widget._place_route_overlay = MethodType(widget_class._place_route_overlay, widget)
+    overlay = _overlay()
+    overlay["pois"] = [[48.3, -123.1, "Harbor", False]]
+    widget_class.set_route_overlay(widget, overlay)
+    assert ("pois", [[48.3, -123.1, "Harbor", False]]) in calls
+
+
 def test_route_content_mutation_republishes_and_rebases_canvas():
     calls = []
     item = SimpleNamespace(setProperty=lambda name, value: calls.append((name, value)))

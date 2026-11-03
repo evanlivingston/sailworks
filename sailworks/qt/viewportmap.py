@@ -199,9 +199,13 @@ class ViewportMap(
     def _paint_foreground(self, painter):
         """Publish shared foreground imagery to the active desktop viewport."""
         self._paint_measurement_overlay(painter)
+        self._qml_navigation_overlay = False
         presenter = self._weather_presenter
         if presenter is None or not presenter.active or presenter.widget is None:
             return
+        # POIs are drawn by the viewport's QML overlay; the Cairo navigation
+        # image keeps the remaining layers until they migrate.
+        self._qml_navigation_overlay = True
         self._nav_cache, target = self._resolve_reusable_layer(
             self._nav_cache, self._nav_key(), self._navigation_image
         )
@@ -528,6 +532,16 @@ class ViewportMap(
             "track_position": track_position,
             "track_heading": track_heading,
             "track_awa": track_awa,
+            "pois": [
+                [
+                    float(poi.position[0]),
+                    float(poi.position[1]),
+                    str(poi.name),
+                    poi.name == self.navigation.hl_poi,
+                ]
+                for poi in self.controller.core.poiManager
+                if poi.visible and poi.position is not None
+            ],
             "caption": _viewport_caption(
                 self.move_callback, self.controller.chart_errors
             ),

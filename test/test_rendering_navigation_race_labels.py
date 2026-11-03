@@ -34,6 +34,33 @@ class _TrackManager(list):
         return True
 
 
+class _Poi:
+    name = "Harbor"
+    visible = True
+    position = (48.0, -123.0)
+
+
+def test_draw_race_tracks_can_skip_pois_for_qml_overlay():
+    core = SimpleNamespace(
+        trackManager=_TrackManager([]),
+        poiManager=[_Poi()],
+        routingManager=[],
+    )
+    nav = NavigationRenderer(core)
+
+    class _GpsMap:
+        def convert_geographic_to_screen(self, point):
+            return (10.0, 20.0)
+
+    skipped = _FakeCr()
+    nav.draw_race_tracks(_GpsMap(), skipped, draw_pois=False)
+    assert "Harbor" not in skipped.texts
+
+    drawn = _FakeCr()
+    nav.draw_race_tracks(_GpsMap(), drawn, draw_pois=True)
+    assert "Harbor" in drawn.texts
+
+
 def test_draw_race_tracks_omits_per_fix_point_numbers():
     track = _Track("Race A", [(48.0, -123.0), (48.1, -123.1)])
     core = SimpleNamespace(
