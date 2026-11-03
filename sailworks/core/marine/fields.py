@@ -118,7 +118,7 @@ class CurrentField:
     north: np.ndarray
 
     def __post_init__(self):
-        metadata = json.loads(self.metadata_json)
+        metadata = self._metadata
         if (
             metadata.get("schema_version") != 1
             or metadata.get("vector_reference") != "true_east_north"
@@ -160,6 +160,10 @@ class CurrentField:
             raise ValueError("Invalid geographic grid")
 
     @cached_property
+    def _metadata(self):
+        return json.loads(self.metadata_json)
+
+    @cached_property
     def id(self):
         digest = hashlib.sha256(self.metadata_json.encode())
         for array in (
@@ -175,7 +179,7 @@ class CurrentField:
 
     def manifest(self):
         return dict(
-            json.loads(self.metadata_json),
+            self._metadata,
             dataset_id=self.id,
             valid_start=datetime.fromtimestamp(self.times[0], timezone.utc).isoformat(),
             valid_end=datetime.fromtimestamp(self.times[-1], timezone.utc).isoformat(),
@@ -189,12 +193,13 @@ class CurrentField:
 
     @cached_property
     def resolution_m(self):
-        return json.loads(self.metadata_json)["resolution_m"]
+        return self._metadata["resolution_m"]
 
     @cached_property
     def content_key(self):
         """Identify the same forecast without changing saved provenance IDs."""
-        metadata = json.loads(self.metadata_json)
+        metadata = dict(self._metadata)
+        metadata["sources"] = [dict(source) for source in metadata["sources"]]
         metadata.pop("retrieved_at", None)
         for source in metadata["sources"]:
             source.pop("retrieved_at", None)
