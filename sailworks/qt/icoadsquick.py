@@ -12,6 +12,9 @@ class IcoadsQuickItem(QQuickPaintedItem):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._reports = ()
+        self._positions_key = None
+        self._positions_cache = ()
+        self._positions_camera = None
         self._camera = None
         self._ref_camera = None
         self._offset_x = 0.0
@@ -25,6 +28,7 @@ class IcoadsQuickItem(QQuickPaintedItem):
 
     def set_reports(self, reports, camera=None, on_select=None):
         self._reports = tuple(reports or ())
+        self._positions_key = None
         if camera is not None:
             self._camera = camera
             if self._ref_camera is None:
@@ -81,6 +85,28 @@ class IcoadsQuickItem(QQuickPaintedItem):
     def _positions(self):
         if self._ref_camera is None:
             return ()
+        camera = self._ref_camera
+        key = (
+            id(self._reports),
+            len(self._reports),
+            id(camera),
+            *(
+                getattr(camera, name, None)
+                for name in (
+                    "center_lat",
+                    "center_lon",
+                    "zoom",
+                    "width",
+                    "height",
+                    "time",
+                )
+            ),
+            self._padding,
+            self.width(),
+            self.height(),
+        )
+        if camera is self._positions_camera and key == self._positions_key:
+            return self._positions_cache
         from sailworks.core.mapviewport import MapPoint
 
         result = []
@@ -97,7 +123,10 @@ class IcoadsQuickItem(QQuickPaintedItem):
                     result.append((local_x, local_y, report))
             except (AttributeError, TypeError, ValueError):
                 continue
-        return tuple(result)
+        self._positions_cache = tuple(result)
+        self._positions_key = key
+        self._positions_camera = camera
+        return self._positions_cache
 
     def paint(self, painter):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
