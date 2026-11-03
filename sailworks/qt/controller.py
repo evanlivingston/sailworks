@@ -241,25 +241,34 @@ class SessionController(QObject):
             )
 
     def _forecast_selection_changed(self):
-        """Keep the map clock inside a newly selected forecast's valid range."""
+        """Keep the map clock inside the active forecast's valid range."""
         active = getattr(self.analysis, "active", None)
         if active is None:
             return
         key = (active.tranche.tranche_id, active.entry.entry_id)
-        if key == getattr(self, "_last_forecast_selection", None):
-            return
-        self._last_forecast_selection = key
+        if key != getattr(self, "_last_forecast_selection", None):
+            self._last_forecast_selection = key
+            for canvas in list(getattr(self.charts, "maps", ())):
+                timeline = getattr(canvas, "timeline", None)
+                clear = getattr(timeline, "clear_bounds_override", None)
+                if callable(clear):
+                    clear()
+        self._align_clock_to_forecast(active)
+
+    def _align_clock_to_forecast(self, active):
         times = getattr(active.entry, "time_steps", ())
         if not times:
             return
         current = self.time_control.time
         try:
-            if current is None or not (
+            inside = current is not None and (
                 times[0].timestamp() <= current.timestamp() <= times[-1].timestamp()
-            ):
-                self.time_control.set_time(times[0])
+            )
         except Exception:
-            self.time_control.set_time(times[0])
+            inside = False
+        if not inside:
+            # TimeControl shows naive wall time, so convert from UTC stamps.
+            self.time_control.set_time(datetime.fromtimestamp(times[0].timestamp()))
 
     def _changed(self, _):
         seek_timer = getattr(self, "seek_timer", None)
