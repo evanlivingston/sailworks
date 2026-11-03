@@ -1,10 +1,13 @@
 """Weather overlay controls for the active chart or log map."""
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -105,6 +108,21 @@ class WeatherPanel(QWidget):
         self.ship_refresh.clicked.connect(self.ship_observations.refresh)
         controls.addWidget(self.ship_refresh)
         self.ship_observations.changed.connect(self._ship_observations_changed)
+        controls.addWidget(self._section_divider())
+        controls.addWidget(section_label("WeatherNext 3"))
+        self.weathernext_credentials = controller.weathernext_credentials
+        self.weathernext_status = QLabel()
+        self.weathernext_status.setWordWrap(True)
+        controls.addWidget(self.weathernext_status)
+        weathernext_row = QHBoxLayout()
+        self.weathernext_choose = QPushButton("Choose credentials JSON…")
+        self.weathernext_adc = QPushButton("Use ADC")
+        self.weathernext_choose.clicked.connect(self._choose_weathernext_credentials)
+        self.weathernext_adc.clicked.connect(self._use_weathernext_adc)
+        weathernext_row.addWidget(self.weathernext_choose)
+        weathernext_row.addWidget(self.weathernext_adc)
+        controls.addLayout(weathernext_row)
+        self._refresh_weathernext_status()
         controls.addWidget(self._section_divider())
         controls.addWidget(section_label("Isobars"))
         self.isobars = self.checkbox("Show isobars", "gribIsobarsVisible")
@@ -251,6 +269,37 @@ class WeatherPanel(QWidget):
             self.ship_observations.changed.disconnect(self._ship_observations_changed)
         except (RuntimeError, TypeError):
             pass
+
+    def _refresh_weathernext_status(self):
+        path = self.weathernext_credentials.path
+        if not path:
+            self.weathernext_status.setText(
+                "Application Default Credentials (GOOGLE_APPLICATION_CREDENTIALS "
+                "or gcloud auth application-default login)"
+            )
+            return
+        if Path(path).expanduser().is_file():
+            self.weathernext_status.setText(f"Credentials file: {path}")
+        else:
+            self.weathernext_status.setText(f"Credentials file missing: {path}")
+
+    def _choose_weathernext_credentials(self):
+        path, _filter = QFileDialog.getOpenFileName(
+            self,
+            "WeatherNext service-account credentials",
+            "",
+            "JSON credentials (*.json)",
+        )
+        if not path:
+            return
+        self.weathernext_credentials.path = path
+        self.set_preference("weatherNextCredentialsPath", path)
+        self._refresh_weathernext_status()
+
+    def _use_weathernext_adc(self):
+        self.weathernext_credentials.path = ""
+        self.set_preference("weatherNextCredentialsPath", "")
+        self._refresh_weathernext_status()
 
     def refresh(self):
         self.wind_style.blockSignals(True)

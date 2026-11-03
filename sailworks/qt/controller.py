@@ -78,6 +78,11 @@ class SessionController(QObject):
         )
         self.time_control = TimeControl()
         self.settings = SettingsManager()
+        from sailworks.core.weathernextcredentials import WeatherNextCredentials
+
+        self.weathernext_credentials = WeatherNextCredentials(
+            self.settings.get("weatherNextCredentialsPath")
+        )
         self.closed = False
         if analysis_root is not None and analysis_state is not None:
             raise ValueError("provide analysis_root or analysis_state, not both")
