@@ -222,6 +222,84 @@ All numerical/source-selection and portrayal invariants in the historical
 remain applicable. Intentional display approximations need documented bounds
 and explicit review. Routing remains unchanged.
 
+## Pan/zoom baseline (2026-11-02)
+
+Two committed references cover the current viewport. Neither is presentation
+FPS or GPU-completion timing.
+
+### App/viewport replay
+
+- Report: [`profiles/rendering/2026-11-02/app-pan-zoom-baseline.json`](profiles/rendering/2026-11-02/app-pan-zoom-baseline.json)
+- Harness: `tools/benchmark_startup_rendering.py`
+- Snapshot content: `259e0fef6ad5bb6d7a05eee12dbbe688614658019b9b8a7e1000c4e1e4bbcdc3`
+  (314 files, 322063633 bytes; private snapshot not committed)
+- Workload: `pan`, `trackpad_pan`, `wheel_zoom`, `zoom_out`; 180 frames, 3
+  repeated processes, 1000x700, GPU renderer, saved 3-source forecast
+  selection.
+- Reference on this host, aggregated across three repeats:
+
+| Scenario | p50 | p95 | p99 | max |
+| --- | ---: | ---: | ---: | ---: |
+| `pan` | 18.88 ms | 31.09 ms | 35.96 ms | 40.62 ms |
+| `trackpad_pan` | 16.89 ms | 30.13 ms | 36.39 ms | 41.97 ms |
+| `wheel_zoom` | 12.22 ms | 18.13 ms | 20.79 ms | 24.88 ms |
+| `zoom_out` | 14.02 ms | 23.40 ms | 28.40 ms | 34.35 ms |
+
+Selection uploads (three repeats): `pan` 29, `trackpad_pan` 17, `wheel_zoom`
+540, `zoom_out` 87. Field publications, fill uploads, barbs field uploads and
+chart publications were 0 in these covered scenarios. The Cairo overlay
+rebuild counters are 0 because the replay measures the viewport widget; the
+app-host overlay path is not exercised by this fallback.
+
+The replay uses the current `SessionController` and viewport widget. The
+`PreviewWindow` host currently leaves the native viewport in `loading` while
+the analysis source settles, so the harness falls back to the same standalone
+viewport widget with the same model, flags and snapshot data. Fixing that host
+transition is separate from this measurement contract.
+
+```bash
+python tools/benchmark_startup_rendering.py \
+  --snapshot <private-snapshot> --output <candidate>.json \
+  --scenarios pan,trackpad_pan,wheel_zoom,zoom_out \
+  --frames 180 --repeats 3 --map-renderer gpu
+python tools/benchmark_startup_rendering.py \
+  --compare docs/profiles/rendering/2026-11-02/app-pan-zoom-baseline.json \
+  <candidate>.json --output <comparison>.json
+```
+
+### Model-side selection replay
+
+- Report: [`profiles/rendering/2026-11-02/selection-pan-baseline.json`](profiles/rendering/2026-11-02/selection-pan-baseline.json)
+- Harness: `tools/benchmark_viewport_selection_pan.py`
+- Comparison: `tools/compare_viewport_selection_baseline.py`
+- Snapshot content: `b7f81f650aa9ed1e08cf10febffb5e6031904d21d694867eb4faa67ab3a64b97`
+- Workload: 120 frames, 8 px/frame westward pan, camera `48.308879,
+  -123.094731`, zoom `9.837591`, 900x700, 3 saved sources, HRDPS-driven
+  selection.
+- Reference on this host: `update` p50 `2.86 ms`, p95 `14.35 ms`, p99
+  `21.72 ms`; `stage_selection` p95 `14.03 ms`; 121 selection calls and 0
+  anchor-atlas rebuilds. Counters: 121 covered reuses, 56 misses, 6 field
+  preparations, 10 slot handoffs, 79 time-window blocked.
+
+Evaluation rule: rerun the matching harness on the candidate and compare the
+same fields. A ticket passes when its targeted metric improves and no other
+committed metric regresses by more than 2% without an explained cause.
+
+```bash
+python tools/benchmark_viewport_selection_pan.py \
+  --snapshot <private-snapshot> --output <candidate>.json
+python tools/compare_viewport_selection_baseline.py \
+  docs/profiles/rendering/2026-11-02/selection-pan-baseline.json <candidate>.json \
+  --output <comparison>.json
+```
+
+Optimisation tickets: [#11](https://github.com/evanlivingston/sailworks/issues/11)
+(selection reuse), [#12](https://github.com/evanlivingston/sailworks/issues/12)
+(LOD), [#13](https://github.com/evanlivingston/sailworks/issues/13) (gesture
+coalescing), [#14](https://github.com/evanlivingston/sailworks/issues/14)
+(upload audit), [#15](https://github.com/evanlivingston/sailworks/issues/15)
+(Cairo overlay migration).
+
 ## Milestones
 
 | Milestone | Exit gate | Status |

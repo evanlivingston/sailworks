@@ -9,6 +9,7 @@ import json
 import math
 import os
 from pathlib import Path
+import platform
 import shutil
 import socket
 import subprocess
@@ -39,7 +40,15 @@ SCENARIOS = (
     "wheel_zoom_reverse",
     "pan_zoom_reverse",
 )
-DIRECTORIES = ("gshhs", "grib", "enc", "marine", "polars", "chs-tiles")
+DIRECTORIES = (
+    "gshhs",
+    "grib",
+    "enc",
+    "marine",
+    "polars",
+    "chs-tiles",
+    "forecast-analysis",
+)
 FILES = (
     "settings.json",
     "workspace-qt.json",
@@ -320,9 +329,7 @@ def worker(config):
     apply_theme(app)
     began = time.perf_counter()
     schedule_began = time.monotonic()
-    controller = SessionController(
-        offline=True, map_renderer=config.get("map_renderer")
-    )
+    controller = SessionController(map_renderer=config.get("map_renderer"))
     controller.timer.stop()
     configure_wind_workload(controller.settings, config)
     controller.time_control.set_time(datetime.fromisoformat(config["forecast_time"]))
@@ -350,6 +357,8 @@ def worker(config):
         raise ValueError(
             "Saved startup view is not a map; refusing to substitute a different view"
         )
+    if getattr(canvas, "wind", None) is None:
+        return replay_viewport(controller, app, window, canvas, config, began)
     renderers = {
         "base_charts": canvas._base_chart_renderer,
         "enc": controller.charts._enc_renderer,
@@ -1126,6 +1135,334 @@ def cpu_fallback_probe(snapshot, args, workload):
             "scenario as the GPU run"
         ),
     }
+
+
+def _standalone_viewport(canvas, config):
+    """Build the same viewport widget without the PreviewWindow host.
+
+    The application host currently leaves the native viewport in ``loading``
+    when it is created before the analysis source is active. The standalone
+    widget uses the same model, widget class, flags and snapshot data, so the
+    pan/zoom metrics remain the viewport's own.
+    """
+    from dataclasses import replace
+
+    from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+    from sailworks.core.storage import DATA_DIR
+    from sailworks.qt.gribviewport import (
+        GribViewportModel,
+        ViewportCamera,
+        _viewport_widget_class,
+        saved_selection,
+    )
+    from sailworks.rendering.windrenderer import WindLandMask
+
+    data = Path(DATA_DIR)
+    paths, settings = saved_selection(data)
+    model = GribViewportModel(
+        paths,
+        land_mask=WindLandMask(data),
+        resident_time_window=True,
+        grid=True,
+    )
+    widget = _viewport_widget_class()(
+        model,
+        gpu_weather_fill=True,
+        chart_layer=True,
+        enc_chart_layer=True,
+        chart_without_weather=True,
+        chart_data_dir=data,
+        native_weather_fields=True,
+    )
+    container = QWidget()
+    layout = QVBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.addWidget(widget)
+    container.resize(1000, 700)
+    container.show()
+    presenter = getattr(canvas, "_weather_presenter", None)
+    app_widget = getattr(presenter, "widget", None)
+    camera = getattr(app_widget, "_camera", None)
+    if camera is None:
+        camera = ViewportCamera(
+            center_lat=canvas._center_lat,
+            center_lon=canvas._center_lon,
+            zoom=canvas._zoom,
+            width=widget.width(),
+            height=widget.height(),
+            time=datetime.fromisoformat(config["forecast_time"]),
+            density=settings.get("gribBarbDensity", "dense"),
+            over_land=settings.get("gribArrowOnGround", False),
+        )
+    else:
+        camera = replace(camera, width=widget.width(), height=widget.height())
+    widget.set_camera(camera)
+    return widget, model, container
+
+
+def replay_viewport(controller, app, window, canvas, config, began):
+    """Measure the current ViewportMap/GPU path without the retired CPU wind API."""
+    from PySide6.QtCore import QEventLoop, QTimer
+
+    scenario = config["scenario"]
+    if scenario not in (
+        "stationary",
+        "pan",
+        "reverse_pan",
+        "trackpad_pan",
+        "wheel_zoom",
+        "zoom_out",
+    ):
+        raise ValueError(f"Unsupported viewport scenario: {scenario}")
+
+    presenter = canvas._weather_presenter
+    window.resize(1000, 700)
+    window.show()
+
+    def pump(milliseconds=0):
+        app.processEvents()
+        if milliseconds > 0:
+            loop = QEventLoop()
+            QTimer.singleShot(milliseconds, loop.quit)
+            loop.exec()
+
+    def wait(predicate, label, timeout=config["settle_timeout_s"]):
+        deadline = time.perf_counter() + timeout
+        while time.perf_counter() < deadline:
+            pump()
+            if predicate():
+                return
+            time.sleep(0.005)
+        raise TimeoutError(f"Viewport {label} did not settle")
+
+    standalone = None
+    try:
+        wait(
+            lambda: controller.analysis is not None
+            and controller.analysis.active is not None
+            and not controller.analysis.error,
+            "analysis",
+            timeout=15,
+        )
+    except TimeoutError:
+        pass
+    widget = None
+    try:
+        wait(lambda: presenter.widget is not None, "widget", timeout=5)
+        widget = presenter.widget
+        wait(lambda: widget._state == "ready", "weather", timeout=5)
+    except TimeoutError:
+        widget = None
+    if widget is None:
+        window.hide()
+        widget, model, container = _standalone_viewport(canvas, config)
+        standalone = (widget, model, container)
+        wait(lambda: widget._state == "ready", "standalone weather", timeout=30)
+    model = widget._model
+    observed = {"count": 0}
+    widget.quickWindow().afterRendering.connect(
+        lambda: observed.__setitem__("count", observed["count"] + 1)
+    )
+
+    stages = {
+        name: []
+        for name in (
+            "_base_image",
+            "_navigation_image",
+            "_dashboard_image",
+            "_paint_foreground",
+        )
+        if hasattr(canvas, name)
+    }
+    all_stage_names = (
+        "_base_image",
+        "_navigation_image",
+        "_dashboard_image",
+        "_paint_foreground",
+    )
+    originals = {}
+
+    def instrument(name, original):
+        def wrapped(*args, **kwargs):
+            started = time.perf_counter()
+            try:
+                return original(*args, **kwargs)
+            finally:
+                stages[name].append((time.perf_counter() - started) * 1000)
+
+        return wrapped
+
+    for name in stages:
+        originals[name] = getattr(canvas, name)
+        setattr(canvas, name, instrument(name, originals[name]))
+
+    def grab():
+        started = time.perf_counter()
+        image = widget.grabFramebuffer()
+        if image.isNull():
+            app.processEvents()
+            image = widget.grabFramebuffer()
+        if image.isNull():
+            raise RuntimeError("Embedded GPU frame readback failed")
+        return (time.perf_counter() - started) * 1000
+
+    samples = {
+        key: [] for key in ("grab_ms", "queued_callback_ms", "start_interval_ms")
+    }
+    rebuilds, uploads, surfaces = [], [], []
+    upload_keys = (
+        "field_publications",
+        "selection_publications",
+        "fill_publications",
+        "fill_uploads",
+        "barbs_field_publications",
+        "barbs_field_uploads",
+        "barbs_selection_publications",
+        "barbs_selection_uploads",
+        "chart_publications",
+    )
+    try:
+        first_grab = grab()
+        startup_to_first_frame_ms = (time.perf_counter() - began) * 1000
+        startup_to_worker_idle_ms = startup_to_first_frame_ms
+        for _ in range(config["warmup_frames"]):
+            grab()
+            pump()
+        for values in stages.values():
+            values.clear()
+        camera = widget._camera
+        center_x, center_y = camera.width / 2, camera.height / 2
+        previous_publication = widget.publication_counters()
+        last_start = None
+        for index in range(config["frames"]):
+            started = time.perf_counter()
+            if last_start is not None:
+                samples["start_interval_ms"].append((started - last_start) * 1000)
+            last_start = started
+            if scenario == "pan":
+                widget.pan_pixels(-8, 0)
+            elif scenario == "trackpad_pan":
+                widget.pan_pixels(-4, 0)
+            elif scenario == "reverse_pan":
+                direction = -1 if index >= config["frames"] // 2 else 1
+                widget.pan_pixels(-8 * direction, 0)
+            elif scenario == "wheel_zoom":
+                widget.zoom_at(
+                    0.02 if index < config["frames"] // 2 else -0.02,
+                    center_x,
+                    center_y,
+                )
+            elif scenario == "zoom_out":
+                widget.zoom_at(-0.02, center_x, center_y)
+            QTimer.singleShot(
+                0,
+                lambda posted=time.perf_counter(): samples["queued_callback_ms"].append(
+                    (time.perf_counter() - posted) * 1000
+                ),
+            )
+            before = {name: len(values) for name, values in stages.items()}
+            samples["grab_ms"].append(grab())
+            pump()
+            frame = {name: 0 for name in all_stage_names}
+            frame.update({name: len(stages[name]) - before[name] for name in stages})
+            rebuilds.append(frame)
+            publication = widget.publication_counters()
+            uploads.append(
+                {
+                    key: publication.get(key, 0) - previous_publication.get(key, 0)
+                    for key in upload_keys
+                }
+            )
+            previous_publication = publication
+            surfaces.append(widget._provider.field_bytes())
+            remaining = config["interval_ms"] / 1000 - (time.perf_counter() - started)
+            if remaining > 0:
+                pump(int(remaining * 1000))
+        widget.finish_motion()
+        settle_began = time.perf_counter()
+        grab()
+        pump()
+        grab()
+        settle_ms = (time.perf_counter() - settle_began) * 1000
+        import resource
+
+        import cairo
+        import numpy as np
+        import PySide6
+        from osgeo import gdal
+
+        high_water = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return {
+            "scenario": scenario,
+            "environment": {
+                "platform": platform.platform(),
+                "machine": platform.machine(),
+                "host": platform.node(),
+                "cpu_count": os.cpu_count(),
+                "python": platform.python_version(),
+                "qt": PySide6.__version__,
+                "numpy": np.__version__,
+                "cairo": cairo.cairo_version_string(),
+                "gdal": gdal.VersionInfo("RELEASE_NAME"),
+                "qt_platform": app.platformName(),
+                "qt_style": app.style().objectName(),
+                "dpr": widget.devicePixelRatioF(),
+                "available_screen": [
+                    app.primaryScreen().size().width(),
+                    app.primaryScreen().size().height(),
+                ],
+                "refresh_rate_hz": app.primaryScreen().refreshRate(),
+                "timezone": list(time.tzname),
+            },
+            "startup_to_first_frame_ms": startup_to_first_frame_ms,
+            "startup_to_worker_idle_ms": startup_to_worker_idle_ms,
+            "post_gesture_worker_idle_ms": settle_ms,
+            "samples": samples,
+            "summary": {
+                key: protocol.summary(values) for key, values in samples.items()
+            },
+            "stages_ms": stages,
+            "rebuilds_per_frame": rebuilds,
+            "uploads_per_frame": uploads,
+            "tracked_surface_bytes_per_frame": surfaces,
+            "process_peak_rss_bytes": high_water
+            * (1 if sys.platform == "darwin" else 1024),
+            "render_observations": observed["count"],
+            "startup": {
+                "view": (
+                    window.views.tabText(window.views.currentIndex())
+                    if hasattr(window, "views")
+                    else ""
+                ),
+                "map": {
+                    "latitude": widget._camera.center_lat,
+                    "longitude": widget._camera.center_lon,
+                    "zoom": widget._camera.zoom,
+                },
+                "wind": canvas.wind_visible,
+                "dashboard": canvas.dashboard_visible,
+                "forecasts": len(controller.display_forecast.sources()),
+                "tracks": len(controller.core.trackManager),
+                "routes": len(controller.core.routingManager),
+                "charts": len(controller.charts.charts),
+            },
+            "model_counters": dict(model.counters),
+            "publication_counters": widget.publication_counters(),
+            "field_statistics": model.field_statistics(),
+        }
+    finally:
+        try:
+            widget.quickWindow().afterRendering.disconnect()
+        except (RuntimeError, TypeError):
+            pass
+        for name, original in originals.items():
+            setattr(canvas, name, original)
+        if standalone is not None:
+            standalone_widget, standalone_model, container = standalone
+            standalone_widget.close()
+            container.close()
+            standalone_model.close()
 
 
 def run(args):
