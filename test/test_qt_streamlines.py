@@ -1,5 +1,9 @@
 """Focused viewport streamline ownership, invalidation and display checks."""
 
+import os
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
@@ -15,7 +19,10 @@ from PySide6.QtQml import QQmlComponent, QQmlEngine
 from PySide6.QtQuick import QQuickWindow
 from PySide6.QtTest import QTest
 
-from sailworks.qt.gribviewport import ViewportCamera, _viewport_widget_class
+from sailworks.qt.gribviewport import (
+    ViewportCamera,
+    _viewport_widget_class,
+)
 from sailworks.qt.viewportstreamlines import (
     StreamlineImageProvider,
     ViewportStreamlineModel,
@@ -27,6 +34,7 @@ from sailworks.qt.weatherpresenter import WeatherPresenter
 from sailworks.rendering.streamlines import density_parameters, geometry_for_view
 from sailworks.qt.gpustreamlines import GpuTraceInput, jittered_seed_positions
 from sailworks.core.mapviewport import MapViewport
+from sailworks.qt.viewporttransform import PanReference, _world_x
 from test.map_helpers import MapCanvas
 
 
@@ -198,7 +206,13 @@ class TestStreamlineModel(unittest.TestCase):
 
     def test_presenter_selects_quick_style_without_muting_streamline_opacity(self):
         settings = SimpleNamespace(
-            chartPalette="dark", gribArrowOpacity=0.7, gribWindStyle="streamlines"
+            chartPalette="dark",
+            gribArrowOpacity=0.7,
+            gribWindStyle="streamlines",
+            gribWindGradient=True,
+            gribWindGradientOpacity=0.12,
+            gribWindGradientSmooth=True,
+            gribWindGradientLevels=15,
         )
         canvas, widget, presenter = Mock(), Mock(), Mock()
         canvas.controller.settings = settings
@@ -248,6 +262,7 @@ class TestStreamlinePublicationScheduling(unittest.TestCase):
             _show_state=Mock(),
             _status=Mock(),
             _streamline_readiness_changed=Mock(),
+            _gpu_streamlines_error=False,
         )
         host._update_streamline_camera = (
             lambda camera: self.widget_class._update_streamline_camera(host, camera)
@@ -279,14 +294,14 @@ class TestStreamlinePublicationScheduling(unittest.TestCase):
         host._streamline_model.update.assert_not_called()
         host._streamline_provider.publish.assert_not_called()
 
-    def test_loading_new_time_retains_prior_groups_dimmed(self):
+    def test_loading_new_time_retains_prior_groups_at_full_opacity(self):
         prior = self.camera()
         camera = replace(prior, time=prior.time + timedelta(seconds=37))
         host = self.make_host(prior, (1, prior))
         host._streamline_model.update.return_value = ("loading", None)
         self.widget_class._publish_streamlines(host, camera)
         host._streamline_model.update.assert_called_once_with(camera, True)
-        host._streamlines.setOpacity.assert_any_call(0.6)
+        host._streamlines.setOpacity.assert_any_call(1.0)
         host._streamlines.setVisible.assert_called_with(True)
         host._status.setText.assert_called_with(
             "Updating streamlines — previous forecast time"
@@ -446,6 +461,134 @@ class TestStreamlinePublicationScheduling(unittest.TestCase):
         host._streamline_model.update.assert_called_once_with(camera, True)
 
 
+class TestStreamlineSharedPan(unittest.TestCase):
+    """Streamlines lock to the shared pan reference: pan, rebase, wrap, identity."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.widget_class = _viewport_widget_class()
+
+    def camera(self, center_lon=0.0, zoom=3.0, width=120, height=100):
+        return ViewportCamera(
+            center_lat=0.0,
+            center_lon=center_lon,
+            zoom=zoom,
+            width=width,
+            height=height,
+        )
+
+    def make_camera_host(self, reference):
+        streamlines = Mock()
+        streamlines.property.side_effect = lambda name: {
+            "ready": True,
+            "shaderError": "",
+            "frontBuffer": -1,
+            "pendingBuffer": -1,
+        }.get(name)
+        host = SimpleNamespace(_streamlines=streamlines, _map_pan_reference=reference)
+        host._update_streamline_camera = (
+            lambda camera: self.widget_class._update_streamline_camera(host, camera)
+        )
+        return host
+
+    def camera_center_and_zoom(self, host, camera):
+        host._update_streamline_camera(camera)
+        calls = host._streamlines.setProperty.call_args_list
+        center = None
+        zoom = None
+        for call in calls:
+            if call.args[0] == "cameraCenter":
+                center = call.args[1]
+            elif call.args[0] == "cameraZoom":
+                zoom = call.args[1]
+        return center, zoom
+
+    def test_pan_lock_derives_camera_from_shared_pan_reference(self):
+        ref = PanReference.from_camera(self.camera())
+        camera = replace(self.camera(), center_lon=10.0)
+        host = self.make_camera_host(ref)
+        center, zoom = self.camera_center_and_zoom(host, camera)
+        self.assertEqual(zoom, ref.zoom)
+        # Reference centre (lon 0) is west of camera (lon 10), so the
+        # streamline origin sits left of screen centre: cameraCenter.x > 0.5.
+        self.assertGreater(center.x(), 0.5)
+        self.assertAlmostEqual(center.y(), 0.5)
+
+    def test_pan_lock_keeps_streamlines_at_same_screen_place_on_pan(self):
+        ref = PanReference.from_camera(self.camera())
+        camera = replace(self.camera(), center_lon=10.0)
+        host = self.make_camera_host(ref)
+        center, _ = self.camera_center_and_zoom(host, camera)
+        # Translating the reference to the camera places the streamline origin
+        # at the reference's geographic location, which is 10 deg west of
+        # screen centre. Normalized offset at zoom 3 is 10/360.
+        size = 256.0 * 2.0**ref.zoom
+        expected_x = 0.5 - (_world_x(0.0, ref.zoom) - _world_x(10.0, ref.zoom)) / size
+        self.assertAlmostEqual(center.x(), expected_x, places=6)
+
+    def test_rebase_uses_new_reference_camera(self):
+        ref1 = PanReference.from_camera(self.camera(center_lon=0.0))
+        ref2 = PanReference.from_camera(self.camera(center_lon=10.0))
+        camera = self.camera(center_lon=5.0)
+        host = self.make_camera_host(ref1)
+        center1, _ = self.camera_center_and_zoom(host, camera)
+        host._map_pan_reference = ref2
+        center2, _ = self.camera_center_and_zoom(host, camera)
+        self.assertNotAlmostEqual(center1.x(), center2.x())
+
+    def test_antimeridian_wrap_does_not_jump_world_width(self):
+        ref = PanReference.from_camera(self.camera(center_lon=170.0))
+        camera = self.camera(center_lon=-170.0)  # continuous with lon 190
+        host = self.make_camera_host(ref)
+        center, _ = self.camera_center_and_zoom(host, camera)
+        # Continuous longitude keeps the offset small; no world-width jump.
+        self.assertLess(abs(center.x() - 0.5), 0.1)
+
+    def test_no_reference_falls_back_to_current_camera(self):
+        host = self.make_camera_host(None)
+        camera = self.camera(center_lon=5.0)
+        center, zoom = self.camera_center_and_zoom(host, camera)
+        self.assertEqual(zoom, camera.zoom)
+        view = camera.view()
+        size = 256.0 * 2.0**camera.zoom
+        expected_x = view._lon_to_x(camera.center_lon) / size
+        expected_y = view._lat_to_y(camera.center_lat) / size
+        self.assertAlmostEqual(center.x(), expected_x)
+        self.assertAlmostEqual(center.y(), expected_y)
+
+    def test_identity_preserved_reuses_without_retrace(self):
+        prior = self.camera()
+        camera = replace(prior, center_lon=1.0)
+        host = TestStreamlinePublicationScheduling.make_host(self, prior, (1, prior))
+        self.widget_class._publish_streamlines(host, camera)
+        host._streamline_model.update.assert_not_called()
+        host._streamline_provider.publish.assert_not_called()
+
+    def test_identity_time_change_triggers_retrace(self):
+        prior = self.camera()
+        camera = replace(prior, time=prior.time + timedelta(seconds=37))
+        host = TestStreamlinePublicationScheduling.make_host(self, prior, (1, prior))
+        host._streamline_model.update.return_value = ("ready", ())
+        self.widget_class._publish_streamlines(host, camera, force=True)
+        host._streamline_model.update.assert_called_once_with(camera, True)
+
+    def test_identity_density_change_triggers_retrace(self):
+        prior = self.camera()
+        camera = replace(prior, density="dense")
+        host = TestStreamlinePublicationScheduling.make_host(self, prior, (1, prior))
+        host._streamline_model.update.return_value = ("ready", ())
+        self.widget_class._publish_streamlines(host, camera, force=True)
+        host._streamline_model.update.assert_called_once_with(camera, True)
+
+    def test_identity_over_land_change_triggers_retrace(self):
+        prior = self.camera()
+        camera = replace(prior, over_land=False)
+        host = TestStreamlinePublicationScheduling.make_host(self, prior, (1, prior))
+        host._streamline_model.update.return_value = ("ready", ())
+        self.widget_class._publish_streamlines(host, camera, force=True)
+        host._streamline_model.update.assert_called_once_with(camera, True)
+
+
 class TestStreamlineShaderStructure(unittest.TestCase):
     def test_pixel_space_quads_and_connector_discard(self):
         shader_dir = Path(__file__).parents[1] / "sailworks/qt/shaders"
@@ -459,9 +602,7 @@ class TestStreamlineShaderStructure(unittest.TestCase):
         self.assertIn("b - 5.0*direction", vertex)
         self.assertIn("2.5 : -2.5", vertex)
         self.assertIn("abs(marker - round(marker)) > 0.00001", fragment)
-        self.assertIn(
-            "Math.max(1, segmentCount * (arrow ? 4 : 2) - 1)", qml
-        )
+        self.assertIn("Math.max(1, segmentCount * (arrow ? 4 : 2) - 1)", qml)
         self.assertIn("required property var modelData", qml)
         self.assertIn("effect.status === ShaderEffect.Compiled", qml)
         self.assertIn("property vector2d cameraCenter", qml)
