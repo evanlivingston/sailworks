@@ -2968,22 +2968,31 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._publish_streamlines(self._camera, force=True)
 
         def _update_streamline_camera(self, camera):
-            # Use reference camera for stable streamline positioning
-            reference = self._publication_manager.reference_camera
+            # Use shared pan reference so streamlines move with the map.
+            reference = getattr(self, "_map_pan_reference", None)
             if reference is not None:
-                # Use reference camera for stable streamline positioning
-                ref_view = reference.view()
-                size = ref_view.TILE_SIZE * 2.0**reference.zoom
-                center = QVector2D(
-                    ref_view._lon_to_x(reference.center_lon) / size,
-                    ref_view._lat_to_y(reference.center_lat) / size,
-                )
+                try:
+                    dx, dy = reference.translation_to(camera)
+                except ValueError:
+                    # Zoom/size/DPR changed - reference cannot be translated;
+                    # fall back to the current camera until it is rebased.
+                    view = camera.view()
+                    size = 256.0 * 2.0**camera.zoom
+                    center = QVector2D(
+                        view._lon_to_x(camera.center_lon) / size,
+                        view._lat_to_y(camera.center_lat) / size,
+                    )
+                    self._streamlines.setProperty("cameraCenter", center)
+                    self._streamlines.setProperty("cameraZoom", camera.zoom)
+                    return
+                size = 256.0 * 2.0**reference.zoom
+                center = QVector2D(0.5 - dx / size, 0.5 - dy / size)
                 self._streamlines.setProperty("cameraCenter", center)
                 self._streamlines.setProperty("cameraZoom", reference.zoom)
             else:
-                # No reference yet, use current camera
+                # No shared pan reference yet, use current camera
                 view = camera.view()
-                size = view.TILE_SIZE * 2.0**camera.zoom
+                size = 256.0 * 2.0**camera.zoom
                 center = QVector2D(
                     view._lon_to_x(camera.center_lon) / size,
                     view._lat_to_y(camera.center_lat) / size,
@@ -3194,9 +3203,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                         return "ready"
                 else:
                     self._streamlines.setVisible(enabled)
-                    self._streamlines.setOpacity(
-                        self._wind_opacity * (0.6 if prior_time != camera.time else 1.0)
-                    )
+                    self._streamlines.setOpacity(self._wind_opacity)
                     if not camera_changed:
                         self._streamline_readiness_changed()
                         return "ready"
@@ -3282,10 +3289,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     and source.over_land == camera.over_land
                 )
                 if retain_previous and source is not None:
-                    self._streamlines.setOpacity(
-                        self._wind_opacity
-                        * (0.6 if source.time != camera.time else 1.0)
-                    )
+                    self._streamlines.setOpacity(self._wind_opacity)
                     self._streamlines.setVisible(True)
                 else:
                     self._streamline_publication = None
@@ -3408,15 +3412,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._pending_streamline_buffer = pending_buffer
             self._streamlines.setProperty("pendingBuffer", pending_buffer)
             self._streamlines.setProperty(f"buffer{pending_buffer}Groups", groups)
-            self._streamlines.setOpacity(
-                self._wind_opacity
-                * (
-                    0.6
-                    if self._streamline_display_camera
-                    and self._streamline_display_camera.time != camera.time
-                    else 1.0
-                )
-            )
+            self._streamlines.setOpacity(self._wind_opacity)
             self._streamlines.setVisible(enabled)
             if not groups:
                 self._streamlines.setProperty("buffer0Groups", [])
