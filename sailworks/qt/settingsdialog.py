@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from sailworks.core.connectionconfig import connection_config, connection_key
 from sailworks.core.nmea2000datasource import N2K_FORMATS
 from sailworks.core.serialdatasource import SerialDataSource
+from sailworks.core.weathernextcredentials import describe_access_error
 from .marinesettings import CurrentsAccount
 
 
@@ -410,7 +411,9 @@ class SettingsDialog(QDialog):
             )
             self.weathernext_source.setText(f"Access OK · {runs} runs")
         except Exception as exc:
-            self.weathernext_source.setText(f"Access failed: {exc}")
+            self.weathernext_source.setText(
+                f"Access failed: {describe_access_error(exc)}"
+            )
         finally:
             self.weathernext_test.setEnabled(True)
 

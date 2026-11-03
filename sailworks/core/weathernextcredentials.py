@@ -6,6 +6,55 @@ import os
 from pathlib import Path
 
 SCOPES = ("https://www.googleapis.com/auth/devstorage.read_only",)
+QUOTA_PROJECT_HINT = (
+    "Quota project not set. Run: gcloud auth application-default "
+    "set-quota-project <PROJECT_ID>, or use a service-account JSON in Settings."
+)
+API_DISABLED_HINT = (
+    "Cloud Storage API is not enabled for this project. Enable it, or set a "
+    "quota project: gcloud auth application-default set-quota-project <PROJECT_ID>."
+)
+
+
+def describe_access_error(error) -> str:
+    """Return a short actionable message for known Google Cloud access failures."""
+    try:
+        original = str(error)
+    except Exception:
+        original = "Unknown error"
+    parts = [original]
+    for attribute in ("reason", "response"):
+        try:
+            value = getattr(error, attribute, "")
+            parts.append(str(value))
+            if attribute == "response":
+                parts.append(str(getattr(value, "content", "")))
+                parts.append(str(getattr(value, "text", "")))
+        except Exception:
+            pass
+    detail = " ".join(parts).lower()
+    if any(
+        signal in detail
+        for signal in (
+            "quota project",
+            "user_project_denied",
+            "quota_project",
+            "requires a quota project",
+        )
+    ):
+        return QUOTA_PROJECT_HINT
+    if any(
+        signal in detail
+        for signal in (
+            "service_disabled",
+            "api not enabled",
+            "has not been enabled",
+            "has not been used in project",
+        )
+    ):
+        return API_DISABLED_HINT
+    compact = " ".join(original.split())
+    return compact if len(compact) <= 300 else compact[:299] + "…"
 
 
 class WeatherNextCredentialsError(RuntimeError):

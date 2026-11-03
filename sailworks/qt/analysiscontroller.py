@@ -7,6 +7,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from sailworks.core.forecaststate import NoActiveForecastError
 from sailworks.core.forecastrefresh import RefreshCancelledError
 from sailworks.core.forecasttranche import ModelConfiguration
+from sailworks.core.weathernextcredentials import describe_access_error
 
 
 class AnalysisController(QObject):
@@ -190,6 +191,10 @@ class AnalysisController(QObject):
         self.progress = 100 if error is None else self.progress
         if error is not None:
             self.error = str(error) or type(error).__name__
+            if action == "refresh" and (
+                "WEATHERNEXT:" in self.error or "WEATHERNEXT " in self.error
+            ):
+                self.error = describe_access_error(error)
             if reconciliation_error is not None:
                 self.error += "; current published forecast could not be resolved: " + (
                     str(reconciliation_error) or type(reconciliation_error).__name__
