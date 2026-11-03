@@ -23,6 +23,11 @@ class WeatherNextCredentials:
         return not bool(self.path)
 
     @property
+    def token(self) -> str:
+        """The gcsfs token/path; safe to serialize into zarr storage options."""
+        return self.path or "google_default"
+
+    @property
     def description(self) -> str:
         if self.using_adc:
             return "Application Default Credentials"
@@ -58,4 +63,4 @@ class WeatherNextCredentials:
         """A gcsfs client for the configured credentials."""
         import gcsfs
 
-        return gcsfs.GCSFileSystem(token=self.credentials())
+        return gcsfs.GCSFileSystem(token=self.token)

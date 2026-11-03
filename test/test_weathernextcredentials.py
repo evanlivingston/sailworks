@@ -37,18 +37,15 @@ def test_adc_uses_google_auth_default(monkeypatch):
     assert WeatherNextCredentials("").credentials() is marker
 
 
-def test_gcs_filesystem_passes_credentials(monkeypatch):
-    marker = object()
+def test_gcs_filesystem_passes_the_token(monkeypatch):
     captured = {}
 
     class _Filesystem:
         def __init__(self, token):
             captured["token"] = token
 
-    monkeypatch.setattr(
-        "sailworks.core.weathernextcredentials.WeatherNextCredentials.credentials",
-        lambda self: marker,
-    )
     monkeypatch.setattr("gcsfs.GCSFileSystem", _Filesystem)
+    WeatherNextCredentials("/tmp/key.json").gcs_filesystem()
+    assert captured["token"] == "/tmp/key.json"
     WeatherNextCredentials("").gcs_filesystem()
-    assert captured["token"] is marker
+    assert captured["token"] == "google_default"

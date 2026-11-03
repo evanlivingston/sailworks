@@ -46,14 +46,16 @@ def open_statistics_store(url: str, opener: Callable | None = None, credentials=
     if opener is not None:
         return opener(url)
     try:
-        import gcsfs
         import xarray as xr
     except ImportError as exc:
         raise RuntimeError(
             "Opening WeatherNext requires xarray, zarr and gcsfs"
         ) from exc
-    filesystem = gcsfs.GCSFileSystem(token=credentials or "google_default")
-    return xr.open_zarr(filesystem.get_mapper(url), chunks={})
+    return xr.open_zarr(
+        url,
+        storage_options={"token": credentials or "google_default"},
+        chunks={},
+    )
 
 
 def _bounds(bounds, name, low, high):
