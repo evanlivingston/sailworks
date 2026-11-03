@@ -7,6 +7,7 @@ gestures to the Qt Quick viewport. It does not depend on the retired map widget.
 from bisect import bisect_right
 from dataclasses import dataclass
 import math
+import random
 
 from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import QWidget
@@ -200,12 +201,14 @@ class ViewportMap(
         """Publish shared foreground imagery to the active desktop viewport."""
         self._paint_measurement_overlay(painter)
         self._qml_navigation_overlay = False
+        self._qml_race_overlay = False
         presenter = self._weather_presenter
         if presenter is None or not presenter.active or presenter.widget is None:
             return
-        # POIs are drawn by the viewport's QML overlay; the Cairo navigation
-        # image keeps the remaining layers until they migrate.
+        # POIs, tracks and race tracks are drawn by the viewport's QML overlay;
+        # the Cairo navigation image keeps the remaining layers until they migrate.
         self._qml_navigation_overlay = True
+        self._qml_race_overlay = True
         self._nav_cache, target = self._resolve_reusable_layer(
             self._nav_cache, self._nav_key(), self._navigation_image
         )
@@ -524,6 +527,22 @@ class ViewportMap(
             track_position = [point.lat, point.lon]
             track_heading = _track_point_heading(state.points, marker_index)
             track_awa = getattr(point, "awa", None)
+        race_tracks = []
+        for track in self.controller.core.trackManager:
+            if not track.visible or not getattr(track, "race_track", False):
+                continue
+            color = getattr(track, "color", None)
+            if color is None:
+                rng = random.Random(str(track.name))
+                color = [rng.random(), rng.random(), rng.random()]
+            race_tracks.append(
+                {
+                    "name": str(track.name),
+                    "points": [[float(point[0]), float(point[1])] for point in track],
+                    "color": [float(channel) for channel in color],
+                    "active": bool(self.controller.core.trackManager.is_active(track)),
+                }
+            )
         return {
             "route_plan": [list(point) for point in state.route_plan],
             "route_preview": [list(point) for point in state.route_preview],
@@ -558,6 +577,7 @@ class ViewportMap(
                 for track in self.controller.core.trackManager
                 if track.visible and not getattr(track, "race_track", False)
             ],
+            "race_tracks": race_tracks,
             "caption": _viewport_caption(
                 self.move_callback, self.controller.chart_errors
             ),
