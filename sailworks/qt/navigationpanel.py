@@ -358,7 +358,40 @@ class NavigationPanel(QWidget):
             return
         element = collection[item.row()]
         if item.column() == visible_column:
-            element.visible = item.checkState() == Qt.CheckState.Checked
+            checked = item.checkState() == Qt.CheckState.Checked
+            # When several rows are selected, a visibility toggle applies to
+            # all of them, not just the row whose checkbox was clicked.
+            if widget is self.tracks:
+                selection_model = getattr(widget, "selectionModel", None)
+                selection_model = (
+                    selection_model() if callable(selection_model) else None
+                )
+                selected_rows = (
+                    {index.row() for index in selection_model.selectedRows()}
+                    if selection_model is not None
+                    else set()
+                )
+                if item.row() not in selected_rows:
+                    selected_rows = {item.row()}
+                selected_rows = {
+                    row for row in selected_rows if 0 <= row < len(collection)
+                }
+                if not selected_rows:
+                    selected_rows = {item.row()}
+                widget.blockSignals(True)
+                for row in selected_rows:
+                    collection[row].visible = checked
+                    cell = widget.item(row, visible_column)
+                    if cell is not None:
+                        cell.setCheckState(
+                            Qt.CheckState.Checked
+                            if checked
+                            else Qt.CheckState.Unchecked
+                        )
+                widget.blockSignals(False)
+                element = collection[item.row()]
+            else:
+                element.visible = checked
         elif item.column() == 0:
             name = item.text().strip()
             if name and name != element.name:
@@ -404,8 +437,11 @@ class NavigationPanel(QWidget):
         self._set_track_editing(True)
 
     def eventFilter(self, watched, event):
-        if (watched is self.tracks and event.type() == QEvent.Type.KeyPress
-                and event.key() == Qt.Key.Key_Escape):
+        if (
+            watched is self.tracks
+            and event.type() == QEvent.Type.KeyPress
+            and event.key() == Qt.Key.Key_Escape
+        ):
             self.select_track()
             event.accept()
             return True
