@@ -64,7 +64,7 @@ MODELS = (
         "WeatherNext 3",
         "0.1° grid",
         "15 days",
-        "Global AI ensemble means",
+        "Global ensemble means · Google Cloud terms apply",
         "WEATHERNEXT",
     ),
 )
@@ -196,7 +196,13 @@ class ForecastDownloadOptions(QWidget):
                 forecast,
                 checked=name == "NOAA GFS",
             )
-            row.download_check.setToolTip(region)
+            capability = MODEL_CAPABILITIES[model_id]
+            tooltip = region
+            if capability.attribution:
+                tooltip += f" · {capability.attribution}"
+            if capability.license_url:
+                tooltip += f" · {capability.license_url}"
+            row.download_check.setToolTip(tooltip)
             self.models[name] = row.download_check
             self.model_rows[name] = row
             self.model_rows_by_id[model_id] = row

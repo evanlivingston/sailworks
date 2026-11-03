@@ -36,7 +36,8 @@ built and extended as Sailworks since. See [NOTICE](NOTICE) for attribution and 
 
 **Weather**
 - GRIB1 and GRIB2 support
-- Downloader for NOAA models (GFS, HRRR, GFS wave, AIGFS), ECCC RDPS and ECMWF
+- Downloader for NOAA models (GFS, HRRR, GFS wave, AIGFS), ECCC RDPS, ECMWF and optional
+  Google WeatherNext 3 statistics (Zarr; Google Cloud credentials required)
 - GPU-accelerated wind overlays that stay responsive while you pan, zoom and scrub time
 - Forecast timeline with per-model time ranges, so marine and wind data do not fight
 
@@ -82,6 +83,14 @@ git clone https://github.com/evanlivingston/sailworks.git
 cd sailworks
 pip install .
 sailworks
+```
+
+For WeatherNext 3, install the optional Zarr/GRIB dependencies and configure Google Cloud
+credentials:
+
+```bash
+pip install ".[weathernext]"
+# then use Application Default Credentials or choose a service-account JSON in Settings
 ```
 
 ### macOS

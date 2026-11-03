@@ -22,11 +22,11 @@ def _dataset():
         {
             U_WIND: (
                 ("lead_time", "lat_0p1", "lon_0p1"),
-                np.zeros((1, 3, 3), dtype=np.float32),
+                np.full((1, 3, 3), 5.0, dtype=np.float32),
             ),
             V_WIND: (
                 ("lead_time", "lat_0p1", "lon_0p1"),
-                np.ones((1, 3, 3), dtype=np.float32),
+                np.zeros((1, 3, 3), dtype=np.float32),
             ),
             PRESSURE: (
                 ("lead_time", "lat_0p1", "lon_0p1"),
@@ -99,3 +99,48 @@ def test_weathernext_is_registered_in_capabilities_and_download_ui():
     assert capability.native_resolution == "0.1deg"
     assert capability.max_horizon() == 360
     assert any(row[0] == "Google WeatherNext 3" for row in MODELS)
+
+
+def test_written_artifact_feeds_the_routing_sampler(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+
+    from sailworks.core.grib import Grib
+
+    dataset = _dataset()
+    monkeypatch.setattr(
+        "sailworks.core.gribsources.weathernext.open_statistics_store",
+        lambda *args, **kwargs: dataset,
+    )
+    monkeypatch.setattr(
+        "sailworks.core.gribsources.weathernext.WeatherNextCredentials.credentials",
+        lambda self: None,
+    )
+    source = WeatherNextSource()
+    source.bounds = (47.0, -124.0, 49.0, -122.0)
+    identifier = json.dumps(
+        {
+            "date": "20261103",
+            "cycle": "12",
+            "steps": [6],
+            "fields": ["wind", "pressure"],
+            "run_tag": "01_preds",
+        }
+    )
+    path = source.download(identifier, str(tmp_path), lambda _percent: None)
+    run = datetime(2026, 11, 3, 12, tzinfo=timezone.utc)
+    grib = Grib(
+        path,
+        "WeatherNext",
+        "250",
+        (-124.0, 47.0, -122.0, 49.0),
+        run,
+        6,
+        "Google WeatherNext 3",
+    )
+    valid = datetime(2026, 11, 3, 18, tzinfo=timezone.utc)
+    direction, speed = grib.get_wind_at(valid, 48.0, -123.0)
+    assert round(speed, 3) == 5.0
+    assert round(direction, 3) == 270.0
+    pressure = grib.get_pressure(valid, ((47.0, -124.0), (49.0, -122.0)))
+    assert pressure
+    assert all(abs(value[2] - 1013.25) < 0.01 for value in pressure)
