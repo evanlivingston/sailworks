@@ -259,13 +259,6 @@ class SettingsDialog(QDialog):
         weathernext_buttons.addWidget(self.weathernext_choose)
         weathernext_buttons.addWidget(self.weathernext_adc)
         weathernext_form.addRow(weathernext_buttons)
-        note = QLabel(
-            "Application Default Credentials use GOOGLE_APPLICATION_CREDENTIALS "
-            "or `gcloud auth application-default login`. A service-account JSON "
-            "can be selected instead."
-        )
-        note.setWordWrap(True)
-        weathernext_form.addRow(note)
         self._refresh_weathernext()
         self.tabs.addTab(weathernext, "WeatherNext")
         self.currents = CurrentsAccount(controller.core.marine_manager.coverage_planner)
@@ -368,10 +361,10 @@ class SettingsDialog(QDialog):
     def _refresh_weathernext(self):
         path = self.weathernext_credentials.path
         if not path:
-            self.weathernext_source.setText("Using Application Default Credentials")
-            self.weathernext_path.setText("No service-account file selected")
+            self.weathernext_source.setText("Application Default Credentials")
+            self.weathernext_path.setText("No file selected")
             return
-        self.weathernext_source.setText("Using a service-account credentials file")
+        self.weathernext_source.setText("Service-account file")
         self.weathernext_path.setText(
             path if Path(path).expanduser().is_file() else f"Missing: {path}"
         )
