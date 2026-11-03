@@ -133,6 +133,8 @@ class SessionController(QObject):
         from .analysisdisplay import BoundDisplayForecastSelection
 
         self.display_forecast = BoundDisplayForecastSelection(self.analysis, self)
+        self._last_forecast_selection = None
+        self.analysis.changed.connect(self._forecast_selection_changed)
         self.polars = PolarController(self)
         self.map_data = MapDataController(self)
         self.points = []
@@ -237,6 +239,27 @@ class SessionController(QObject):
             self.connection_task.start(
                 "Disconnecting instruments…", lambda _: self.connections.stop_polling()
             )
+
+    def _forecast_selection_changed(self):
+        """Keep the map clock inside a newly selected forecast's valid range."""
+        active = getattr(self.analysis, "active", None)
+        if active is None:
+            return
+        key = (active.tranche.tranche_id, active.entry.entry_id)
+        if key == getattr(self, "_last_forecast_selection", None):
+            return
+        self._last_forecast_selection = key
+        times = getattr(active.entry, "time_steps", ())
+        if not times:
+            return
+        current = self.time_control.time
+        try:
+            if current is None or not (
+                times[0].timestamp() <= current.timestamp() <= times[-1].timestamp()
+            ):
+                self.time_control.set_time(times[0])
+        except Exception:
+            self.time_control.set_time(times[0])
 
     def _changed(self, _):
         seek_timer = getattr(self, "seek_timer", None)

@@ -32,6 +32,7 @@ def default_provider_factories():
     from .gribsources.noaagfswave import NOAAGFSWaveSource
     from .gribsources.noaahrrr import NOAAHRRRSource
     from .gribsources.noaaaigfs import NOAAAIGFSSource
+    from .gribsources.weathernext import WeatherNextSource
 
     return {
         "GFS": NOAAGFSSource,
@@ -41,7 +42,7 @@ def default_provider_factories():
         "IFS": ECMWFIFSSource,
         "AIFS": ECMWFAIFSSource,
         "AIGFS": NOAAAIGFSSource,
-        "AIGFS": NOAAAIGFSSource,
+        "WEATHERNEXT": WeatherNextSource,
     }
 
 

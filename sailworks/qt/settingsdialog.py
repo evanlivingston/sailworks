@@ -1,11 +1,14 @@
 """Instrument connection editing and shared display preferences."""
 
+from pathlib import Path
+
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QLabel,
@@ -239,6 +242,25 @@ class SettingsDialog(QDialog):
         controller.renderer_changed.connect(self.refresh_renderer_status)
         self.refresh_renderer_status()
         self.tabs.addTab(display, "Display")
+        weathernext = QWidget()
+        weathernext_form = QFormLayout(weathernext)
+        self.weathernext_credentials = controller.weathernext_credentials
+        self.weathernext_source = QLabel()
+        self.weathernext_source.setWordWrap(True)
+        weathernext_form.addRow("Current source", self.weathernext_source)
+        self.weathernext_path = QLabel()
+        self.weathernext_path.setWordWrap(True)
+        weathernext_form.addRow("Credentials file", self.weathernext_path)
+        weathernext_buttons = QHBoxLayout()
+        self.weathernext_choose = QPushButton("Choose credentials JSON…")
+        self.weathernext_adc = QPushButton("Use ADC")
+        self.weathernext_choose.clicked.connect(self.choose_weathernext_credentials)
+        self.weathernext_adc.clicked.connect(self.use_weathernext_adc)
+        weathernext_buttons.addWidget(self.weathernext_choose)
+        weathernext_buttons.addWidget(self.weathernext_adc)
+        weathernext_form.addRow(weathernext_buttons)
+        self._refresh_weathernext()
+        self.tabs.addTab(weathernext, "WeatherNext")
         self.currents = CurrentsAccount(controller.core.marine_manager.coverage_planner)
         self.tabs.addTab(self.currents, "Currents")
         self.status = QLabel()
@@ -335,6 +357,35 @@ class SettingsDialog(QDialog):
                 presenter = getattr(canvas, "_weather_presenter", None)
                 if presenter is not None:
                     presenter.refresh_status()
+
+    def _refresh_weathernext(self):
+        path = self.weathernext_credentials.path
+        if not path:
+            self.weathernext_source.setText("Application Default Credentials")
+            self.weathernext_path.setText("No file selected")
+            return
+        self.weathernext_source.setText("Service-account file")
+        self.weathernext_path.setText(
+            path if Path(path).expanduser().is_file() else f"Missing: {path}"
+        )
+
+    def choose_weathernext_credentials(self):
+        path, _filter = QFileDialog.getOpenFileName(
+            self,
+            "WeatherNext service-account credentials",
+            "",
+            "JSON credentials (*.json)",
+        )
+        if not path:
+            return
+        self.weathernext_credentials.path = path
+        self.set_preference("weatherNextCredentialsPath", path)
+        self._refresh_weathernext()
+
+    def use_weathernext_adc(self):
+        self.weathernext_credentials.path = ""
+        self.set_preference("weatherNextCredentialsPath", "")
+        self._refresh_weathernext()
 
     def set_gpu_rendering(self, enabled):
         self.set_preference("mapRenderer", "gpu" if enabled else "cpu")
