@@ -170,6 +170,7 @@ Item {
                 property var raceTracks: []
                 property var routes: []
                 property var aisTargets: []
+                property var isochrones: null
                 property string captionText: ""
                 property bool dashboardVisible: true
                 property real centerLatitude: 0
@@ -286,6 +287,66 @@ Item {
                 onPaint: {
                     const context = getContext("2d")
                     context.clearRect(0, 0, width, height)
+                    if (isochrones && isochrones.frontiers) {
+                        for (let f = 0; f < isochrones.frontiers.length; ++f) {
+                            const frontier = isochrones.frontiers[f]
+                            context.strokeStyle = "rgba(0,0,204,0.5)"
+                            context.lineWidth = 1.5
+                            context.setLineDash([])
+                            for (let s = 0; s < frontier.segments.length; ++s) {
+                                const segment = frontier.segments[s]
+                                const first = screenPoint(segment[0])
+                                const second = screenPoint(segment[1])
+                                context.beginPath()
+                                context.moveTo(first.x, first.y)
+                                context.lineTo(second.x, second.y)
+                                context.stroke()
+                            }
+                            context.fillStyle = "rgba(0,0,204,0.5)"
+                            for (let p = 0; p < frontier.points.length; ++p) {
+                                const point = screenPoint(frontier.points[p])
+                                context.beginPath()
+                                context.arc(point.x, point.y, 1.5, 0, Math.PI * 2)
+                                context.fill()
+                            }
+                        }
+                        if (isochrones.path && isochrones.path.length) {
+                            context.strokeStyle = "rgba(255,0,0,0.8)"
+                            context.lineWidth = 1
+                            for (let i = 1; i < isochrones.path.length; ++i) {
+                                const previous = screenPoint(isochrones.path[i - 1])
+                                const point = screenPoint(isochrones.path[i])
+                                context.beginPath()
+                                context.moveTo(previous.x, previous.y)
+                                context.lineTo(point.x, point.y)
+                                context.stroke()
+                            }
+                            context.strokeStyle = "rgba(255,255,255,1)"
+                            for (let i = 0; i < isochrones.path.length; ++i) {
+                                const point = screenPoint(isochrones.path[i])
+                                context.beginPath()
+                                context.arc(point.x, point.y, 5, 0, Math.PI * 2)
+                                context.stroke()
+                            }
+                        }
+                        if (isochrones.exclusions && isochrones.exclusions.length) {
+                            context.fillStyle = "rgba(230,13,13,0.18)"
+                            context.strokeStyle = "rgba(217,5,5,0.9)"
+                            context.lineWidth = 1.5
+                            for (let i = 0; i < isochrones.exclusions.length; ++i) {
+                                const point = screenPoint(isochrones.exclusions[i])
+                                context.beginPath()
+                                context.arc(point.x, point.y, 7, 0, Math.PI * 2)
+                                context.fill()
+                                context.beginPath()
+                                context.moveTo(point.x - 3, point.y - 3)
+                                context.lineTo(point.x + 3, point.y + 3)
+                                context.moveTo(point.x - 3, point.y + 3)
+                                context.lineTo(point.x + 3, point.y - 3)
+                                context.stroke()
+                            }
+                        }
+                    }
                     drawRoute(context, routePlan, "#5295d2")
                     drawRoute(context, routePreview, "#ef5a8c")
                     if (trackPoints && trackPoints.length > 1) {
@@ -536,6 +597,7 @@ Item {
                 onRaceTracksChanged: requestPaint()
                 onRoutesChanged: requestPaint()
                 onAisTargetsChanged: requestPaint()
+                onIsochronesChanged: requestPaint()
                 onTrackPointsChanged: requestPaint()
                 onTrackPositionChanged: requestPaint()
                 onTrackHeadingChanged: requestPaint()

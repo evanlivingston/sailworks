@@ -88,3 +88,44 @@ def render_isochrones(view, cr, frame, cancel):
         previous = x, y
     if not cancel.is_set():
         draw_current_exclusions(view, cr, frame.exclusions)
+
+
+def isochrone_overlay_data(frame):
+    """Serialise isochrones for the QML overlay, preserving the 3 km joins."""
+    geod = Geod(ellps="WGS84")
+    frontiers = []
+    for frontier in frame.isochrones:
+        if not frontier:
+            continue
+        positions = np.array(
+            [p.pos if hasattr(p, "pos") else p[:2] for p in frontier], dtype=float
+        )
+        if len(positions) < 2:
+            frontiers.append({"segments": [], "points": positions.tolist()})
+            continue
+        _, _, distance = geod.inv(
+            positions[:-1, 1],
+            positions[:-1, 0],
+            positions[1:, 1],
+            positions[1:, 0],
+        )
+        joined = np.flatnonzero(distance <= 3000)
+        connected = np.zeros(len(positions), dtype=bool)
+        connected[joined] = connected[joined + 1] = True
+        frontiers.append(
+            {
+                "segments": [
+                    [positions[index].tolist(), positions[index + 1].tolist()]
+                    for index in joined
+                ],
+                "points": positions[~connected].tolist(),
+            }
+        )
+    path = [
+        list(point.pos if hasattr(point, "pos") else point[:2]) for point in frame.path
+    ]
+    exclusions = [
+        [float(sample["latitude"]), float(sample["longitude"])]
+        for sample in frame.exclusions
+    ]
+    return {"frontiers": frontiers, "path": path, "exclusions": exclusions}

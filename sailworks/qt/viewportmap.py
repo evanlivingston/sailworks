@@ -14,7 +14,7 @@ from PySide6.QtWidgets import QWidget
 
 from sailworks.core.aismanager import SHIP_TYPE_COLORS
 from sailworks.core.mapviewport import MercatorProjection
-from sailworks.rendering.isochrones import IsochroneFrame
+from sailworks.rendering.isochrones import IsochroneFrame, isochrone_overlay_data
 from .mapcoverage import MapCoverageMixin
 from .mapcursor import MapCursorMixin
 from .mapenvironment import MapEnvironmentMixin
@@ -204,6 +204,7 @@ class ViewportMap(
         self._qml_navigation_overlay = False
         self._qml_race_overlay = False
         self._qml_ais_overlay = False
+        self._qml_isochrone_overlay = False
         presenter = self._weather_presenter
         if presenter is None or not presenter.active or presenter.widget is None:
             return
@@ -212,6 +213,7 @@ class ViewportMap(
         self._qml_navigation_overlay = True
         self._qml_race_overlay = True
         self._qml_ais_overlay = True
+        self._qml_isochrone_overlay = True
         self._nav_cache, target = self._resolve_reusable_layer(
             self._nav_cache, self._nav_key(), self._navigation_image
         )
@@ -606,6 +608,7 @@ class ViewportMap(
                 if self.ais_visible
                 else []
             ),
+            "isochrones": isochrone_overlay_data(self.isochrone_frame),
             "caption": _viewport_caption(
                 self.move_callback, self.controller.chart_errors
             ),
