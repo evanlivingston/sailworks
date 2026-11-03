@@ -1544,7 +1544,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             if self._chart_layer:
                 chart_weather_band = self._weather.findChild(QObject, "weatherBand")
                 if chart_weather_band is not None:
-                    marine_parent = chart_weather_band
+                    marine_parent = chart_weather_band.findChild(QObject, "marineBand")
+                    if marine_parent is None:
+                        marine_parent = chart_weather_band
 
             self._marine_layer = MarineQuickLayer(marine_parent, self)
             self._marine_layer.stateChanged.connect(self.marineStateChanged.emit)

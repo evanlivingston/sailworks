@@ -57,6 +57,136 @@ class TestMarineQuick(unittest.TestCase):
             sources or self.sources, instant, self.camera, lambda: False
         )
 
+    def test_candidate_membership_key_agrees_with_current_view_sampling(self):
+        from sailworks.qt.marinequick import _membership_key
+
+        for density in ("sparse", "standard", "dense", "maximum"):
+            sources = replace(self.sources, density=density)
+            seen = {}
+            for delta in (0, 0.00001, 0.001, 0.01, -0.01, 0.1):
+                camera = replace(self.camera, center_lon=self.camera.center_lon + delta)
+                key = _membership_key(sources, camera)
+                snapshot = sample_currents(sources, START, camera, lambda: False)
+                if key in seen:
+                    self.assertEqual(snapshot.arrows, seen[key])
+                else:
+                    seen[key] = snapshot.arrows
+
+    def test_covered_pan_with_identical_candidates_reuses_current_portrayal(self):
+        from PySide6.QtCore import QObject
+        from PySide6.QtQuick import QQuickItem
+        from sailworks.qt.marinequick import MarineQuickLayer, _membership_key
+
+        moved = replace(self.camera, center_lon=self.camera.center_lon + 0.00001)
+        self.assertEqual(
+            _membership_key(self.sources, self.camera),
+            _membership_key(self.sources, moved),
+        )
+        parent, root = QObject(), QQuickItem()
+        parent._map_content = root
+        parent._map_anchor_camera = self.camera
+        layer = MarineQuickLayer(root, parent)
+        try:
+            layer.camera = self.camera
+            layer._ref_camera = self.camera
+            layer._content = (self.sources, START, True)
+            layer.snapshot = self.sample()
+            layer._key = (
+                id(self.sources),
+                START,
+                True,
+                self.camera.zoom,
+                self.camera.width,
+                self.camera.height,
+                _membership_key(self.sources, self.camera),
+            )
+            with patch.object(layer, "_present") as present:
+                layer.set_camera(moved)
+                present.assert_not_called()
+            self.assertIsNone(layer._pending)
+            self.assertEqual(layer.camera, moved)
+        finally:
+            layer.close()
+            layer._thread.join(2)
+
+    def test_current_geometry_follows_viewport_reference_across_rebase(self):
+        from PySide6.QtCore import QObject
+        from PySide6.QtQuick import QQuickItem
+        from sailworks.qt.marinequick import MarineQuickLayer
+        from sailworks.qt.viewporttransform import PanReference
+
+        parent, root = QObject(), QQuickItem()
+        root.setWidth(self.camera.width)
+        root.setHeight(self.camera.height)
+        parent._map_content = root
+        parent._map_anchor_camera = self.camera
+        layer = MarineQuickLayer(root, parent)
+        self.addCleanup(lambda root=root, parent=parent: layer.close())
+        snapshot = MarineSnapshot(
+            self.sources,
+            START,
+            (CurrentArrow(49.5, -125.5, 1, 0),),
+            "available",
+        )
+        layer.snapshot = snapshot
+        layer.set_camera(self.camera)
+        moved = replace(self.camera, center_lon=self.camera.center_lon + 0.01)
+        dx, dy = PanReference.from_camera(self.camera).translation_to(moved)
+        root.setX(dx)
+        root.setY(dy)
+        layer.set_camera(moved)
+        # Vertices live in the item's padded surface, so add the item origin.
+        actual = (
+            layer.item.vertices["position"].astype(float)
+            + (layer.item.x(), layer.item.y())
+            + (dx, dy)
+        )
+        expected = np.asarray(current_triangles(snapshot, moved))[:, :2]
+        np.testing.assert_allclose(actual, expected, rtol=0, atol=0.001)
+
+        # Once the viewport rebases, its parent returns to zero and both
+        # marine geometry and the map must use the new anchor camera.
+        parent._map_anchor_camera = moved
+        root.setX(0)
+        root.setY(0)
+        layer.set_camera(moved)
+        np.testing.assert_allclose(
+            layer.item.vertices["position"].astype(float)
+            + (layer.item.x(), layer.item.y()),
+            expected,
+            rtol=0,
+            atol=0.001,
+        )
+
+    def test_reference_projection_includes_current_view_edge_after_pan(self):
+        from PySide6.QtQuick import QQuickItem
+        from sailworks.qt.marinequick import MarineCurrentItem
+        from sailworks.qt.viewporttransform import PanReference
+
+        current = replace(self.camera, center_lon=self.camera.center_lon + 0.3)
+        longitude = current.center_lon + 0.15
+        snapshot = MarineSnapshot(
+            self.sources,
+            START,
+            (CurrentArrow(current.center_lat, longitude, 1, 0),),
+            "available",
+        )
+        # At the old reference this point is outside its normal 40px margin,
+        # yet it is visible in the current camera after a covered pan.
+        assert not current_triangles(snapshot, self.camera)
+        expected = np.asarray(current_triangles(snapshot, current))[:, :2]
+        assert len(expected)
+        parent = QQuickItem()
+        item = MarineCurrentItem(parent)
+        item.present(snapshot, self.camera, current)
+        dx, dy = PanReference.from_camera(self.camera).translation_to(current)
+        np.testing.assert_allclose(
+            item.vertices["position"].astype(float) + (item.x(), item.y()) + (dx, dy),
+            expected,
+            rtol=0,
+            atol=0.001,
+        )
+
     def test_marine_density_grid_and_station_batches(self):
         for density, spacing in (
             ("sparse", 128),
@@ -229,9 +359,9 @@ class TestMarineQuick(unittest.TestCase):
 
     def test_qsg_colored_point_contract(self):
         from PySide6.QtQuick import QSGGeometry
-        from sailworks.qt.marinequick import _ATTRIBUTES, _VERTEX
+        from sailworks.qt.marinequick import _ATTRIBS, _VERTEX
 
-        geometry = QSGGeometry(_ATTRIBUTES, 3)
+        geometry = QSGGeometry(_ATTRIBS, 3)
         self.assertEqual(geometry.sizeOfVertex(), _VERTEX.itemsize)
         vertices = np.zeros(3, dtype=_VERTEX)
         vertices["position"] = ((1, 2), (3, 4), (5, 6))
@@ -377,6 +507,53 @@ class TestMarineQuick(unittest.TestCase):
             layer.close()
             layer._thread.join(2)
             self.assertFalse(layer._thread.is_alive())
+
+    def test_pan_keeps_previous_view_visible_while_current_sample_is_loading(self):
+        from PySide6.QtCore import QObject
+        from PySide6.QtQuick import QQuickItem
+        from sailworks.qt.marinequick import MarineQuickLayer, _membership_key
+
+        parent, root = QObject(), QQuickItem()
+        entered, release = Event(), Event()
+        sources = self.sources
+        old_snapshot = MarineSnapshot(
+            sources, START, (CurrentArrow(49.5, -125.5, 1, 0),), "available"
+        )
+
+        def sampling(sources, instant, camera, cancelled):
+            entered.set()
+            release.wait(2)
+            return MarineSnapshot(sources, instant, (), "no valid data")
+
+        with patch("sailworks.qt.marinequick.sample_currents", side_effect=sampling):
+            layer = MarineQuickLayer(root, parent)
+            try:
+                layer._content = (sources, START, True)
+                layer._key = (
+                    id(sources),
+                    START,
+                    True,
+                    self.camera.zoom,
+                    self.camera.width,
+                    self.camera.height,
+                    _membership_key(sources, self.camera),
+                )
+                layer.snapshot = old_snapshot
+                layer.item.present(old_snapshot, self.camera)
+                moved = replace(self.camera, center_lon=self.camera.center_lon + 0.1)
+                self.assertNotEqual(
+                    _membership_key(sources, self.camera),
+                    _membership_key(sources, moved),
+                )
+                layer.set_camera(moved)
+                self.assertTrue(entered.wait(2))
+                self.assertIs(layer.snapshot, old_snapshot)
+                self.assertGreater(len(layer.item.vertices), 0)
+                self.assertEqual(layer.state, "loading (showing previous frame)")
+            finally:
+                release.set()
+                layer.close()
+                layer._thread.join(2)
 
     def test_scene_failure_reports_unavailable_without_cairo_fallback(self):
         from PySide6.QtCore import QObject

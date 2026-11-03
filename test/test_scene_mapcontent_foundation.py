@@ -324,6 +324,7 @@ class TestRealSceneMapContentStationarity(unittest.TestCase):
                 "weatherFill",
                 "weatherFillBack",
                 "weatherBand",
+                "marineBand",
                 "weatherBarbs",
                 "navigationOverlay",
                 "routeOverlay",
@@ -344,6 +345,11 @@ class TestRealSceneMapContentStationarity(unittest.TestCase):
             ):
                 self.assertIs(items[name].parentItem(), items["mapContent"], name)
             self.assertIs(items["weatherBarbs"].parentItem(), items["weatherBand"])
+            self.assertIs(items["marineBand"].parentItem(), items["weatherBand"])
+            self.assertLess(
+                items["weatherBand"].childItems().index(items["marineBand"]),
+                items["weatherBand"].childItems().index(items["weatherBarbs"]),
+            )
             for name in ("environmentLayer", "weatherFill", "weatherFillBack"):
                 self.assertIs(
                     items[name].parentItem(), items["environmentFillBand"], name
@@ -360,6 +366,7 @@ class TestRealSceneMapContentStationarity(unittest.TestCase):
                 "environmentLayer",
                 "weatherFill",
                 "weatherFillBack",
+                "marineBand",
                 "weatherBarbs",
                 "navigationOverlay",
                 "routeOverlay",

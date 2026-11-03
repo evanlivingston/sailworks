@@ -137,7 +137,7 @@ def sample_currents(sources, instant, camera, cancelled):
     return MarineSnapshot(sources, instant, tuple(arrows), state)
 
 
-def current_triangles(snapshot, camera):
+def current_triangles(snapshot, camera, margin=40):
     """Reproject geographic anchors; glyph dimensions remain screen pixels.
 
     Returns triangles with per-vertex RGBA, suitable for one colored QSG batch.
@@ -155,7 +155,10 @@ def current_triangles(snapshot, camera):
             camera.center_lon + (arrow.longitude - camera.center_lon + 180) % 360 - 180
         )
         x, y = view.convert_geographic_to_screen(MapPoint(arrow.latitude, lon))
-        if not (-40 <= x <= camera.width + 40 and -40 <= y <= camera.height + 40):
+        if not (
+            -margin <= x <= camera.width + margin
+            and -margin <= y <= camera.height + margin
+        ):
             continue
         speed, bearing = flow(arrow.east, arrow.north)
         length, rgb = current_style(speed)
@@ -214,7 +217,7 @@ def current_triangles(snapshot, camera):
     return tuple(vertices)
 
 
-def current_labels(snapshot, camera):
+def current_labels(snapshot, camera, margin=32):
     """Project station annotations into screen-space label positions."""
     view = camera.view()
     labels = []
@@ -225,7 +228,10 @@ def current_labels(snapshot, camera):
             camera.center_lon + (arrow.longitude - camera.center_lon + 180) % 360 - 180
         )
         x, y = view.convert_geographic_to_screen(MapPoint(arrow.latitude, lon))
-        if not (-32 <= x <= camera.width + 32 and -32 <= y <= camera.height + 32):
+        if not (
+            -margin <= x <= camera.width + margin
+            and -margin <= y <= camera.height + margin
+        ):
             continue
         labels.append(
             (
