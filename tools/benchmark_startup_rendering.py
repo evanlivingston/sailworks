@@ -1539,6 +1539,17 @@ def replay_viewport(controller, app, window, canvas, config, began):
             standalone_model.close()
 
 
+def require_native_probe(measured):
+    probe = measured.get("native_render_probe")
+    if not isinstance(probe, dict) or not isinstance(probe.get("inputs"), list):
+        raise RuntimeError(
+            "Native-render probe unavailable or invalid in worker result: the "
+            "startup Qt viewport replay path does not support this probe; "
+            "use --measurement-mode grab instead."
+        )
+    return probe
+
+
 def run(args):
     snapshot = args.snapshot.resolve(strict=True)
     manifest = verify_snapshot(snapshot)
@@ -1676,6 +1687,8 @@ def run(args):
                         f"Worker exited {result.returncode}; completed runs: {checkpoint}; diagnostics: {diagnostics}"
                     )
                 measured = json.loads(output.read_text())
+                if args.measurement_mode == "native-render":
+                    require_native_probe(measured)
                 environment = measured.pop("environment")
                 if "environment" in report and report["environment"] != environment:
                     raise ValueError("Environment changed between runs")
