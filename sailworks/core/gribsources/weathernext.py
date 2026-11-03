@@ -6,6 +6,7 @@ import json
 import math
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Callable, List
 
@@ -23,8 +24,9 @@ from sailworks.core.weathernextcredentials import WeatherNextCredentials
 
 PRESSURE = "mean_sea_level_pressure_mean"
 _RUN = re.compile(r"^(\d{8})_(\d{2})hr_(\d{2})_preds$")
-# Listing the bucket costs ~190 round trips, so share one catalogue per process.
-_CATALOGUE_TTL = 600.0
+# Listing the bucket prefix costs ~1 minute (7360 entries), so share one
+# catalogue per process and keep it for the whole session.
+_CATALOGUE_TTL = 1800.0
 _CATALOGUE = ()
 _CATALOGUE_AT = 0.0
 
@@ -77,17 +79,32 @@ class WeatherNextSource(GribSource):
         filesystem = WeatherNextCredentials().gcs_filesystem()
         entries = filesystem.ls(BASE_URL.rstrip("/"), detail=False)
         names = sorted(entry.rstrip("/").rsplit("/", 1)[-1] for entry in entries)
-        runs = []
+        candidates = []
         for name in names[-96:]:
             match = _RUN.fullmatch(name)
-            if match is None:
-                continue
-            date, cycle, tag = match.groups()
-            store = f"{BASE_URL}{name}/predictions.zarr"
-            if not (
-                filesystem.exists(f"{store}/zarr.json")
-                or filesystem.exists(f"{store}/.zgroup")
-            ):
+            if match is not None:
+                candidates.append((name, match.groups()))
+        stores = {
+            name: f"{BASE_URL}{name}/predictions.zarr" for name, _groups in candidates
+        }
+
+        def complete(name):
+            store = stores[name]
+            return filesystem.exists(f"{store}/zarr.json") or filesystem.exists(
+                f"{store}/.zgroup"
+            )
+
+        # ~190 HEAD requests: run them concurrently or the first plan stalls a minute.
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            ready = {
+                name
+                for name, complete in zip(stores, pool.map(complete, stores))
+                if complete
+            }
+
+        runs = []
+        for name, (date, cycle, tag) in candidates:
+            if name not in ready:
                 continue
             runs.append(
                 (

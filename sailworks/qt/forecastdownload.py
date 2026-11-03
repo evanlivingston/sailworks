@@ -698,7 +698,9 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
             self._set_size_estimate_error(error)
             return
         if self.analysis is None or self.analysis.busy:
-            self.size_estimate.setText("Download estimate paused while busy.")
+            self.size_estimate.setText(
+                "Waiting for the current forecast task to finish…"
+            )
             return
         if self.analysis.error:
             return

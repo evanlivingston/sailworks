@@ -327,6 +327,8 @@ class RefreshCoordinator:
         configurations, selected_model_id, revision, ticket = capture
         combined = _CombinedCancel(self, revision, ticket, cancel)
         self._raise_if_stale_or_cancelled(revision, ticket, cancel)
+        # Show movement during planning; the run catalogue can take seconds.
+        self._progress(progress, selected_model_id, 1)
         try:
             plan = self.planner(
                 configurations,
