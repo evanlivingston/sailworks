@@ -23,7 +23,7 @@ class RouteScenario:
 
 
 def comparison_scenarios(axes, efficiency=100):
-    """GTK's Cartesian product/order, with explicit validation before launching."""
+    """Cartesian product/order, with explicit validation before launching."""
     if not axes:
         return ()
     values = []

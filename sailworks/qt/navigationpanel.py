@@ -1,4 +1,4 @@
-"""GTK-style navigation tabs over the shared POI, track, route and AIS models."""
+"""Navigation tabs over the shared POI, track, route and AIS models."""
 
 import math
 from pathlib import Path
@@ -78,7 +78,7 @@ def gpx_document(tracks=(), routes=(), waypoints=()):
 
 
 def distance_nm(lat1, lon1, lat2, lon2):
-    # Match GTK ChartStackAIS's radius and haversine, in nautical miles.
+    # Match the legacy AIS radius and haversine, in nautical miles.
     dlat, dlon = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
     a = (
         math.sin(dlat / 2) ** 2
@@ -820,7 +820,7 @@ class NavigationPanel(QWidget):
         if error is not None:
             self.status.setText("Could not import GPX: " + str(error))
             return
-        # Same GPX tracks/waypoints semantics as GTK; routes are not imported.
+        # Same GPX tracks/waypoints semantics as the legacy importer; routes are not imported.
         for source in gpx.tracks:
             source.name = self.core.trackManager.get_unique_name(source.name or "track")
             self.core.trackManager.import_from_gpx(gpx_document(tracks=[source]))

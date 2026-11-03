@@ -1,4 +1,4 @@
-"""GTK-aligned route setup, comparison and current-aware routing controls."""
+"""Route setup, comparison and current-aware routing controls."""
 
 from pathlib import Path
 from datetime import datetime

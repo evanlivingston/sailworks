@@ -1,4 +1,4 @@
-"""GTK-shaped Polars workspace using the shared Cairo renderer and NMEA history."""
+"""Polars workspace using the shared Cairo renderer and NMEA history."""
 
 import math
 from threading import Thread

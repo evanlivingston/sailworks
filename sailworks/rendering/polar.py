@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # Copyright (C) 2017-2026 Davide Gessa
-"""Toolkit-independent polar drawing and hit testing, shared by GTK and Qt.
+"""Toolkit-independent polar drawing and hit testing for Qt hosts.
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -182,7 +182,7 @@ class PolarRenderer:
         self._draw_hover(cr, width, height)
 
     def _draw_hover(self, cr, width, height):
-        # Draw on pointer motion instead of waiting for GTK's tooltip timeout.
+        # Draw on pointer motion instead of waiting for a tooltip timeout.
         if self.hover_text is None or self.mousePos is None:
             return
         cr.save()

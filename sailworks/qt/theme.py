@@ -1,4 +1,4 @@
-"""Dark application styling aligned with the GTK workspace."""
+"""Dark application styling for the Qt workspace."""
 
 import logging
 import sys

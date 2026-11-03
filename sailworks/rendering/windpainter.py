@@ -162,7 +162,7 @@ def wind_on_ground(lat, lon):
 
 
 class WindPainter:
-    """Draw a frozen set of wind samples without accessing GTK or live settings."""
+    """Draw a frozen set of wind samples without accessing the GUI or live settings."""
 
     def __init__(self, settings_manager, on_ground=wind_on_ground):
         self.settings_manager = settings_manager

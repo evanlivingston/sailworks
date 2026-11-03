@@ -1,4 +1,4 @@
-"""Time-based map motion, independent of GTK and display refresh rate."""
+"""Time-based map motion, independent of the GUI and display refresh rate."""
 
 import math
 from collections import deque

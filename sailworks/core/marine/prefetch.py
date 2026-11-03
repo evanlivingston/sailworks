@@ -1,6 +1,6 @@
 """Bounded current downloads that run ahead of the routing worker.
 
-The download worker never touches GTK, shoreline datasets or the live routing
+The download worker never touches the GUI, shoreline datasets or the live routing
 selection. Completed immutable fields are installed at the next step boundary.
 One I/O worker overlaps the calculation without concurrent NetCDF parsing or
 multiplying provider request rates.
