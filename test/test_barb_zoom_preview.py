@@ -224,6 +224,39 @@ def test_zoom_preview_persists_through_pending_staging():
     assert widget._barbs.props["anchorOffsetY"] == 0.0
 
 
+def test_continued_zoom_ticks_keep_the_preview_armed():
+    """Every wheel tick changes the zoom, so the preview must be renewed.
+
+    Dropping it between ticks leaves the front anchor-invalid until the
+    replacement commits, which is the visible zoom flash.
+    """
+    active = _camera(48.3, -123.1, 9.5)
+    first_target = _camera(48.3, -123.1, 9.8)
+    anchor_reference = (48.3, -123.1, 9.5, 900, 700)
+    widget = _preview_widget(
+        active, first_target, anchor_reference, PanReference.from_camera(first_target)
+    )
+    assert widget._maybe_arm_barb_zoom_preview(active, first_target, 1.0, 1.0) is True
+
+    second_target = _camera(48.3, -123.1, 9.9)
+    widget._map_pan_reference = PanReference.from_camera(second_target, 1.0)
+    widget._camera = second_target
+    # The committed frame is still the pre-zoom camera, not the previous tick.
+    assert (
+        widget._maybe_arm_barb_zoom_preview(first_target, second_target, 1.0, 1.0)
+        is True
+    )
+    assert widget._barb_zoom_preview is not None
+    expected = zoom_preview_transform(
+        PanReference(*anchor_reference, dpr=1.0),
+        widget._map_pan_reference,
+    )
+    assert widget._barbs.props["previewScale"] == pytest.approx(expected[0])
+    assert widget._barbs.props["previewOffsetX"] == pytest.approx(expected[1])
+    assert widget._barbs.props["previewOffsetY"] == pytest.approx(expected[2])
+    assert widget._barbs.props["anchorFrameValid"] is True
+
+
 def test_retire_keeps_the_preview_but_retires_other_frames():
     active = _camera(48.3, -123.1, 9.5)
     target = _camera(48.3, -123.1, 9.8)
