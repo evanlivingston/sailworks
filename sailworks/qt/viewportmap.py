@@ -537,22 +537,55 @@ class ViewportMap(
             track_position = [point.lat, point.lon]
             track_heading = _track_point_heading(state.points, marker_index)
             track_awa = getattr(point, "awa", None)
-        race_tracks = []
-        for track in self.controller.core.trackManager:
-            if not track.visible or not getattr(track, "race_track", False):
-                continue
-            color = getattr(track, "color", None)
-            if color is None:
-                rng = random.Random(str(track.name))
-                color = [rng.random(), rng.random(), rng.random()]
-            race_tracks.append(
-                {
-                    "name": str(track.name),
-                    "points": [[float(point[0]), float(point[1])] for point in track],
-                    "color": [float(channel) for channel in color],
-                    "active": bool(self.controller.core.trackManager.is_active(track)),
-                }
-            )
+        manager = self.controller.core.trackManager
+        visible_race_tracks = tuple(
+            track
+            for track in manager
+            if track.visible and getattr(track, "race_track", False)
+        )
+        # Structural revision and ordered visible identities cover collection and
+        # visibility edits; names, colors and active flags also affect styling.
+        # Coordinate edits must bump Element.revision (touch); this matches the
+        # length cache contract.
+        race_key = (
+            id(manager),
+            manager.revision,
+            tuple(
+                (
+                    id(track),
+                    track.revision,
+                    str(track.name),
+                    (
+                        tuple(track.color)
+                        if getattr(track, "color", None) is not None
+                        else None
+                    ),
+                    bool(manager.is_active(track)),
+                )
+                for track in visible_race_tracks
+            ),
+        )
+        cache = getattr(self, "_viewport_race_tracks_cache", None)
+        if cache is None or cache[0] != race_key:
+            race_tracks = []
+            for track in visible_race_tracks:
+                color = getattr(track, "color", None)
+                if color is None:
+                    rng = random.Random(str(track.name))
+                    color = [rng.random(), rng.random(), rng.random()]
+                race_tracks.append(
+                    {
+                        "name": str(track.name),
+                        "points": [
+                            [float(point[0]), float(point[1])] for point in track
+                        ],
+                        "color": [float(channel) for channel in color],
+                        "active": bool(manager.is_active(track)),
+                    }
+                )
+            cache = (race_key, race_tracks, object())
+            self._viewport_race_tracks_cache = cache
+        race_tracks = cache[1]
         return {
             "route_plan": [list(point) for point in state.route_plan],
             "route_preview": [list(point) for point in state.route_preview],
@@ -588,6 +621,7 @@ class ViewportMap(
                 if track.visible and not getattr(track, "race_track", False)
             ],
             "race_tracks": race_tracks,
+            "_race_tracks_key": cache[2],
             "routes": self.navigation.route_overlay_data(
                 self.time_control.time.timestamp()
             ),

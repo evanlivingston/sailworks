@@ -42,6 +42,10 @@ class RacesPanel(QWidget):
         self._races: list[Race] = []
         self._race_track_names: list[str] = []
         self.race_track_times: dict[str, list[float]] = {}
+        manager = getattr(getattr(controller, "core", None), "trackManager", None)
+        flush = getattr(manager, "flush_async", None)
+        if flush is not None:
+            self.destroyed.connect(lambda *_: flush())
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -76,6 +80,13 @@ class RacesPanel(QWidget):
         layout.addWidget(self.status)
         self._defer_heavy = True
         self._load_saved_races()
+
+    def closeEvent(self, event):
+        manager = getattr(getattr(self.controller, "core", None), "trackManager", None)
+        flush = getattr(manager, "flush_async", None)
+        if flush is not None:
+            flush()
+        super().closeEvent(event)
 
     def import_race(self):
         dialog = YBRaceDialog(self)
@@ -175,9 +186,9 @@ class RacesPanel(QWidget):
             # Make an imported boat visible immediately, so timeline scrubbing
             # can move its marker without requiring the separate Review action.
             track_manager.set_active(new_tracks[0], save=False)
-        if had_old_tracks or new_tracks:
-            track_manager.save()
         self.tracks_changed.emit()
+        if had_old_tracks or new_tracks:
+            track_manager.save_async()
 
     def _show_race(self, race: Race):
         start, end = race.time_range()

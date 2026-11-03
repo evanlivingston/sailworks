@@ -3,7 +3,7 @@
 from sailworks.common import resource_path
 
 from .gdalrasterchart import GDALRasterChart
-from .gdalvectorchart import GDALVectorChart
+from .gdalvectorchart import GDALVectorChart, vector_driver_name
 from .gshhs import GSHHSVectorChart
 from .mbtilesrenderer import MBTilesChart
 from .vectordrawer.cm93chartdrawer import CM93ChartDrawer
@@ -20,6 +20,19 @@ CHART_CLASSES = (
     ("vector", "chartVectorVisible", "Other vector charts"),
 )
 CLASS_SETTINGS = {kind: setting for kind, setting, _ in CHART_CLASSES}
+
+
+def saved_chart_enabled(settings, kind, entry):
+    """Whether a configured chart's source is on, ignoring per-file enabled."""
+    if kind == "vector":
+        path = entry["path"]
+        if path == resource_path("sailworks", "data/countries.geojson"):
+            kind = "world"
+        else:
+            kind = {"S57": "enc", "CM93": "cm93", "OSM": "seamarks"}.get(
+                vector_driver_name(path), "vector"
+            )
+    return bool(settings.get(CLASS_SETTINGS[kind], True))
 
 
 def chart_class(chart):

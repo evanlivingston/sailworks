@@ -32,26 +32,35 @@ from .vectordrawer import (
 )
 
 
+def vector_driver_name(path):
+    """Choose the driver without opening the chart, as the loader does."""
+    if path.find("geojson") != -1:
+        return "GeoJSON"
+    if path.find("shp") != -1:
+        return "ESRI Shapefile"
+    if path.find(".000") != -1:
+        return "S57"
+    if path.find("Cm93") != -1:
+        return "CM93"
+    if path.find("osm") != -1 or path.find("pbf") != -1:
+        return "OSM"
+    return None
+
+
 class GDALVectorChart(ChartLayer):
     def __init__(self, path, settings_manager, metadata=None, enabled=True):
         super().__init__(path, "vector", settings_manager, metadata, enabled)
 
         self.drawer: VectorChartDrawer
 
-        if path.find("geojson") != -1:
-            drv_name = "GeoJSON"
+        drv_name = vector_driver_name(path)
+        if drv_name in ("GeoJSON", "ESRI Shapefile"):
             self.drawer = SimpleChartDrawer(settings_manager)
-        elif path.find("shp") != -1:
-            drv_name = "ESRI Shapefile"
-            self.drawer = SimpleChartDrawer(settings_manager)
-        elif path.find(".000") != -1:
-            drv_name = "S57"
+        elif drv_name == "S57":
             self.drawer = S57ChartDrawer(settings_manager)
-        elif path.find("Cm93") != -1:
-            drv_name = "CM93"
+        elif drv_name == "CM93":
             self.drawer = CM93ChartDrawer(settings_manager)
-        elif path.find("osm") != -1 or path.find("pbf") != -1:
-            drv_name = "OSM"
+        elif drv_name == "OSM":
             self.drawer = OSMChartDrawer(self.settings_manager)
         else:
             raise Exception("Invalid format")

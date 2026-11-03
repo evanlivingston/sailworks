@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QMessageBox, QWidget
 from sailworks.core import Core, TimeControl
 from sailworks.core.settings import SettingsManager
 from sailworks.rendering.chartcollection import ChartCollection
+from sailworks.rendering.chartclasses import saved_chart_enabled
 from sailworks.core.nmeasession import read_nmea_log, ripple_delete_log
 from sailworks.core.n2kdevices import captured_device_from_dict
 from sailworks.core.loglibrary import LogLibrary
@@ -100,11 +101,17 @@ class SessionController(QObject):
         )
         self.charts = ChartCollection(self.settings, self.scheduler.submit)
         self.chart_errors = []
+        self.charts.load_saved_on_change = load_charts
+        self.charts.chart_load_error = lambda path, exc: self.chart_errors.append(
+            f"{path}: {exc}"
+        )
         if load_charts and not early_weather:
             self.charts.load_base_chart()
             for kind in ("vector", "raster", "mbtiles"):
                 loader = getattr(self.charts, "load_" + kind + "_layer")
                 for entry in self.settings[kind + "Charts"]:
+                    if not saved_chart_enabled(self.settings, kind, entry):
+                        continue
                     try:
                         loader(
                             entry["path"],
@@ -129,6 +136,7 @@ class SessionController(QObject):
         self.routing = RoutingController(self)
         self.connection_task = BackgroundTask(self)
         self.data = DataController(self)
+        self.charts.chart_sources_changed = self.data.changed.emit
         self.analysis = self.prepare_model_analysis()
         from .analysisdisplay import BoundDisplayForecastSelection
 
@@ -686,6 +694,10 @@ class SessionController(QObject):
         if self.closed:
             return
         self.closed = True
+        track_manager = getattr(self.core, "trackManager", None)
+        flush_tracks = getattr(track_manager, "flush_async", None)
+        if flush_tracks is not None:
+            flush_tracks()
         if self._load_error_dialog is not None:
             self._load_error_dialog.close()
             self._load_error_dialog = None
