@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from datetime import datetime, timezone
 
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -184,6 +185,8 @@ class RacesPanel(QWidget):
         self.race_track_times = {}
         new_tracks = []
         used = set()
+        legacy_stale = []
+        legacy_stale_ids = set()
         changed = False
         for (index, boat), base_name in zip(boats, expected_names):
             boat_key = str(getattr(boat, "boat_id", None) or boat.name or index)
@@ -195,16 +198,29 @@ class RacesPanel(QWidget):
             matches = [t for t in keyed.get(boat_key, []) if id(t) not in used]
             track = matches[0] if matches else None
             if track is None and expected_names.count(base_name) == 1:
+                # One-time cleanup of duplicates created before race keys existed.
+                pattern = re.compile(rf"{re.escape(base_name)}-(\d+)")
                 legacy = [
                     t
                     for t in existing
                     if not getattr(t, "race_key", None)
-                    and t.name == base_name
+                    and (t.name == base_name or pattern.fullmatch(t.name))
                     and id(t) not in used
+                    and id(t) not in legacy_stale_ids
                 ]
-                if len(legacy) == 1:
-                    track = legacy[0]
+                if legacy:
+                    track = min(
+                        legacy,
+                        key=lambda t: (
+                            (0, 0)
+                            if t.name == base_name
+                            else (1, int(pattern.fullmatch(t.name).group(1)))
+                        ),
+                    )
                     track.race_key, track.race_boat_key = race_key, boat_key
+                    duplicates = [t for t in legacy if t is not track]
+                    legacy_stale.extend(duplicates)
+                    legacy_stale_ids.update(id(t) for t in duplicates)
                     changed = True
             if track is None:
                 name = track_manager.get_unique_name(base_name)
@@ -235,6 +251,7 @@ class RacesPanel(QWidget):
             self._race_track_names.append(track.name)
             self.race_track_times[track.name] = times
         stale = [t for tracks in keyed.values() for t in tracks if id(t) not in used]
+        stale.extend(legacy_stale)
         if stale:
             track_manager.remove_many(stale, save=False)
             changed = True

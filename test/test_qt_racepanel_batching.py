@@ -42,6 +42,8 @@ class _TrackManager(list):
         super().__init__()
         self.removed_names = []
         self.appended_batches = []
+        self.removed_batches = []
+        self.saves = 0
         self.active = None
 
     def get_unique_name(self, name):
@@ -53,6 +55,7 @@ class _TrackManager(list):
         return candidate
 
     def remove_many(self, tracks, save=True):
+        self.removed_batches.append((list(tracks), save))
         ids = {id(track) for track in tracks}
         self[:] = [track for track in self if id(track) not in ids]
 
@@ -73,7 +76,7 @@ class _TrackManager(list):
         self.active = track
 
     def save_async(self):
-        pass
+        self.saves += 1
 
     def get_active(self):
         return self.active
@@ -158,7 +161,7 @@ def test_restart_change_and_stale_tracks(qtbot, monkeypatch):
     assert manager[0].points[0][0] == race.boats[0].positions[0].latitude
 
 
-def test_legacy_adoption_and_ambiguity(qtbot, monkeypatch):
+def test_legacy_duplicate_migration(qtbot, monkeypatch):
     from sailworks.core.geo.track import Track
 
     monkeypatch.setattr(racepanel, "load_saved_races", lambda: [])
@@ -171,13 +174,51 @@ def test_legacy_adoption_and_ambiguity(qtbot, monkeypatch):
     race = _sample_race()
     a = Track(f"{race.name} - Boat A", race_track=True)
     b = Track(f"{race.name} - Boat B", race_track=True)
-    duplicate = Track(b.name, race_track=True)
-    manager.extend([a, b, duplicate])
+    duplicate1 = Track(f"{a.name}-1", race_track=True)
+    duplicate2 = Track(f"{a.name}-2", race_track=True)
+    unrelated = Track("Another race - Boat A-1", race_track=True)
+    manager.extend([duplicate2, duplicate1, a, b, unrelated])
     panel._show_race_tracks(race)
     assert a.race_key and a.race_boat_key
-    assert b.race_key is None and duplicate.race_key is None
+    assert b.race_key and b.race_boat_key
+    assert manager == [a, b, unrelated]
+    assert manager.removed_batches == [([duplicate2, duplicate1], False)]
+    assert manager.saves == 1
+    panel._show_race_tracks(race)
+    assert manager == [a, b, unrelated]
+    assert len(manager.removed_batches) == 1
+    assert manager.saves == 1
+
+
+def test_legacy_suffix_order_and_ambiguous_names(qtbot, monkeypatch):
+    from sailworks.core.geo.track import Track
+
+    monkeypatch.setattr(racepanel, "load_saved_races", lambda: [])
+    manager = _TrackManager()
+    panel = racepanel.RacesPanel(
+        SimpleNamespace(core=SimpleNamespace(trackManager=manager))
+    )
+    qtbot.addWidget(panel)
+    panel._defer_heavy = False
+    race = _sample_race()
+    base = f"{race.name} - Boat A"
+    later = Track(f"{base}-10", race_track=True)
+    earlier = Track(f"{base}-2", race_track=True)
+    manager.extend([later, earlier])
+    panel._show_race_tracks(race)
+    assert earlier.race_key and later not in manager
+
+    manager.clear()
+    manager.removed_batches.clear()
+    race.boats[1].name = race.boats[0].name
+    legacy = Track(base, race_track=True)
+    duplicate = Track(f"{base}-1", race_track=True)
+    manager.extend([legacy, duplicate])
+    panel._show_race_tracks(race)
+    assert legacy.race_key is None and duplicate.race_key is None
+    assert legacy in manager and duplicate in manager
     assert len(manager) == 4
-    assert len(set(panel._race_track_names)) == 2
+    assert not manager.removed_batches
 
 
 def test_tracks_changed_precedes_persistence(qtbot, monkeypatch):
