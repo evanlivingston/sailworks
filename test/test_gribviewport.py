@@ -875,6 +875,41 @@ def test_selection_restages_across_land_policy_and_geographic_layout(gribs):
         model.close()
 
 
+def test_pan_inside_selection_margin_reuses_the_padded_selection(gribs):
+    paths, _source = _paths(gribs)
+    model = GribViewportModel(paths, land_mask=Land())
+    camera = _camera()
+    try:
+        field, first = _wait_ready(model, camera=camera)
+        reference = camera.view()
+        step = 8 * 360.0 / (256.0 * 2.0**camera.zoom)
+        moved = replace(camera, center_lon=camera.center_lon - step)
+        state, same, reused = model.update(moved, reference=reference)
+        assert state == "ready" and same is field
+        assert reused is first
+        far = replace(camera, center_lon=camera.center_lon - 8 * step)
+        state, same, restaged = model.update(far, reference=reference)
+        assert state == "ready" and same is field
+        assert restaged is not first
+    finally:
+        model.close()
+
+
+def test_zoom_change_restages_the_padded_selection(gribs):
+    paths, _source = _paths(gribs)
+    model = GribViewportModel(paths, land_mask=Land())
+    camera = _camera()
+    try:
+        _field, first = _wait_ready(model, camera=camera)
+        reference = camera.view()
+        zoomed = replace(camera, zoom=camera.zoom + 1)
+        state, _same, restaged = model.update(zoomed, reference=reference)
+        assert state == "ready"
+        assert restaged is not first
+    finally:
+        model.close()
+
+
 def test_an_incompatible_reference_does_not_reuse_a_previous_atlas_frame(gribs):
     import numpy as np
 
