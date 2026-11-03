@@ -2388,17 +2388,37 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             race_key = overlay.get("_race_tracks_key")
             if race_key is None:
                 race_key = repr(content[9])
-            content_key = (repr(content[:9] + content[10:]), race_key)
+            tracks_key = overlay.get("_tracks_key")
+            if tracks_key is None:
+                tracks_key = repr(content[8])
+            pois_key = overlay.get("_pois_key")
+            if pois_key is None:
+                pois_key = repr(content[7])
+            routes_key = overlay.get("_routes_key")
+            if routes_key is None:
+                routes_key = repr(content[10])
+            content_key = (
+                repr(content[:7] + content[11:]),
+                pois_key,
+                tracks_key,
+                race_key,
+                routes_key,
+            )
             content_changed = content_key != self._route_content_key
             if self._route_pan_window is None or content_changed:
                 race_changed = self._route_pan_window is None or race_key != getattr(
                     self, "_route_race_key", None
+                )
+                tracks_changed = (
+                    self._route_pan_window is None
+                    or tracks_key != getattr(self, "_route_tracks_key", None)
                 )
                 reference = PanReference.from_camera(camera, self.devicePixelRatio())
                 padding = 0.5 * max(float(camera.width), float(camera.height))
                 self._route_pan_window = PaddedPanWindow(reference, padding)
                 self._route_content_key = content_key
                 self._route_race_key = race_key
+                self._route_tracks_key = tracks_key
                 for name, value in zip(
                     (
                         "routePlan",
@@ -2421,6 +2441,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     content,
                 ):
                     if name == "raceTracks" and not race_changed:
+                        continue
+                    if name == "tracks" and not tracks_changed:
                         continue
                     item.setProperty(name, value)
                 item.setProperty("centerLatitude", camera.center_lat)
