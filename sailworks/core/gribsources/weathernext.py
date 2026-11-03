@@ -208,6 +208,18 @@ class WeatherNextSource(GribSource):
             raise ValueError("WeatherNext selection has no grid points")
         return selected[variable].values
 
+    def _select_many(self, dataset, variable, steps, latitude, longitude):
+        """Read leads concurrently: the store chunks per lead, so this is latency-bound."""
+        workers = min(8, max(1, len(steps)))
+
+        def one(step):
+            return step, self._select(
+                dataset, variable, None, step, latitude, longitude
+            )
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            return dict(pool.map(one, steps))
+
     def download(
         self,
         identifier: str,
@@ -240,6 +252,37 @@ class WeatherNextSource(GribSource):
         if len(selected_lat) < 2 or len(selected_lon) < 2:
             raise ValueError("WeatherNext selection is smaller than a GRIB grid")
 
+        wind_u = wind_v = pressure = {}
+        if "wind" in fields:
+            wind_u = self._select_many(
+                dataset, U_WIND, steps, (south, north), (west, east)
+            )
+            wind_v = self._select_many(
+                dataset, V_WIND, steps, (south, north), (west, east)
+            )
+        if "pressure" in fields:
+            pressure = self._select_many(
+                dataset, PRESSURE, steps, (south, north), (west, east)
+            )
+
+        # Published runs can still be uploading, leaving some leads blank.
+        # Drop them so the artifact never carries an empty frame.
+        usable = tuple(
+            step
+            for step in steps
+            if any(
+                np.isfinite(arrays[step]).any()
+                for arrays in (wind_u, wind_v, pressure)
+                if arrays
+            )
+        )
+        if not usable:
+            raise ValueError(
+                "WeatherNext returned no data for this region and run; "
+                "the run may still be uploading, try another run"
+            )
+        steps = usable
+
         Path(dest_dir).mkdir(parents=True, exist_ok=True)
         path = Path(dest_dir) / (
             f"weathernext_{run_time:%Y%m%d_%H}_{min(steps)}_{max(steps)}.grib2"
@@ -247,9 +290,10 @@ class WeatherNextSource(GribSource):
         total = len(steps) * (2 if "wind" in fields else 0)
         total += len(steps) if "pressure" in fields else 0
         done = 0
+        written_any = False
 
         def write_message(short_name, level_type, level, values):
-            nonlocal done
+            nonlocal done, written_any
             gid = eccodes.codes_grib_new_from_samples("regular_ll_sfc_grib2")
             keys = {
                 "shortName": short_name,
@@ -283,6 +327,8 @@ class WeatherNextSource(GribSource):
             for key, value in keys.items():
                 eccodes.codes_set(gid, key, value)
             encoded = np.asarray(values, dtype=float).ravel()
+            if np.isfinite(encoded).any():
+                written_any = True
             encoded[~np.isfinite(encoded)] = 9999.0
             eccodes.codes_set_values(gid, encoded)
             eccodes.codes_write(gid, handle)
@@ -295,44 +341,14 @@ class WeatherNextSource(GribSource):
                 if cancel is not None and cancel.is_set():
                     raise RuntimeError("WeatherNext download cancelled")
                 if "wind" in fields:
-                    write_message(
-                        "10u",
-                        "heightAboveGround",
-                        10,
-                        self._select(
-                            dataset,
-                            U_WIND,
-                            run_time,
-                            step,
-                            (south, north),
-                            (west, east),
-                        ),
-                    )
-                    write_message(
-                        "10v",
-                        "heightAboveGround",
-                        10,
-                        self._select(
-                            dataset,
-                            V_WIND,
-                            run_time,
-                            step,
-                            (south, north),
-                            (west, east),
-                        ),
-                    )
+                    write_message("10u", "heightAboveGround", 10, wind_u[step])
+                    write_message("10v", "heightAboveGround", 10, wind_v[step])
                 if "pressure" in fields:
-                    write_message(
-                        "prmsl",
-                        "meanSea",
-                        0,
-                        self._select(
-                            dataset,
-                            PRESSURE,
-                            run_time,
-                            step,
-                            (south, north),
-                            (west, east),
-                        ),
-                    )
+                    write_message("prmsl", "meanSea", 0, pressure[step])
+        if done and not written_any:
+            path.unlink(missing_ok=True)
+            raise ValueError(
+                "WeatherNext returned no data for this region and run; "
+                "the run may still be uploading, try another run"
+            )
         return str(path)
