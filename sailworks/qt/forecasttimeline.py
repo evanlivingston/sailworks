@@ -738,6 +738,11 @@ class ForecastTimeline(QWidget):
         try:
             self.pause()
             self.cancel_commit()
+            # Leaving a race/imported bounds override in place would keep the
+            # scrubber pinned to that (often historical) range, so "Now" could
+            # never reach the current time. Drop it and restore the loaded
+            # forecast range first.
+            self.clear_bounds_override()
             self.clock.now()
         except Exception as exc:  # Never let a now crash the app
             logger.warning("ForecastTimeline now error: %s", exc)
