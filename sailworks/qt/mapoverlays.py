@@ -375,7 +375,9 @@ class RetainedOverlayMixin:
                     cr,
                     draw_pois=not getattr(self, "_qml_navigation_overlay", False),
                 )
-        if getattr(self, "ais_visible", False):
+        if getattr(self, "ais_visible", False) and not getattr(
+            self, "_qml_ais_overlay", False
+        ):
             ais_renderer = getattr(self, "ais_renderer", None)
             ais_targets = getattr(self, "ais_targets", ())
             if ais_renderer is not None:

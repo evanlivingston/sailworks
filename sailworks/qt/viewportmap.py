@@ -12,6 +12,7 @@ import random
 from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import QWidget
 
+from sailworks.core.aismanager import SHIP_TYPE_COLORS
 from sailworks.core.mapviewport import MercatorProjection
 from sailworks.rendering.isochrones import IsochroneFrame
 from .mapcoverage import MapCoverageMixin
@@ -202,6 +203,7 @@ class ViewportMap(
         self._paint_measurement_overlay(painter)
         self._qml_navigation_overlay = False
         self._qml_race_overlay = False
+        self._qml_ais_overlay = False
         presenter = self._weather_presenter
         if presenter is None or not presenter.active or presenter.widget is None:
             return
@@ -209,6 +211,7 @@ class ViewportMap(
         # the Cairo navigation image keeps the remaining layers until they migrate.
         self._qml_navigation_overlay = True
         self._qml_race_overlay = True
+        self._qml_ais_overlay = True
         self._nav_cache, target = self._resolve_reusable_layer(
             self._nav_cache, self._nav_key(), self._navigation_image
         )
@@ -580,6 +583,28 @@ class ViewportMap(
             "race_tracks": race_tracks,
             "routes": self.navigation.route_overlay_data(
                 self.time_control.time.timestamp()
+            ),
+            "ais_targets": (
+                [
+                    {
+                        "lat": float(target.latitude),
+                        "lon": float(target.longitude),
+                        "angle": float(
+                            target.cog
+                            if target.cog is not None
+                            else (target.heading or 0.0)
+                        ),
+                        "sog": float(target.sog or 0.0),
+                        "color": list(
+                            SHIP_TYPE_COLORS.get(target.category, (0.5, 0.5, 0.5))
+                        ),
+                        "label": target.name or str(target.mmsi),
+                    }
+                    for target in self.ais_targets
+                    if target.has_valid_position()
+                ]
+                if self.ais_visible
+                else []
             ),
             "caption": _viewport_caption(
                 self.move_callback, self.controller.chart_errors

@@ -169,6 +169,7 @@ Item {
                 property var tracks: []
                 property var raceTracks: []
                 property var routes: []
+                property var aisTargets: []
                 property string captionText: ""
                 property bool dashboardVisible: true
                 property real centerLatitude: 0
@@ -392,6 +393,55 @@ Item {
                             }
                         }
                     }
+                    if (aisTargets && aisTargets.length) {
+                        for (let a = 0; a < aisTargets.length; ++a) {
+                            const target = aisTargets[a]
+                            const point = screenPoint([target.lat, target.lon])
+                            if (!isFinite(point.x) || !isFinite(point.y))
+                                continue
+                            const color = target.color || [0.5, 0.5, 0.5]
+                            const fill = `rgba(${Math.round(color[0] * 255)},` +
+                                `${Math.round(color[1] * 255)},` +
+                                `${Math.round(color[2] * 255)},0.7)`
+                            const stroke = `rgba(${Math.round(color[0] * 255)},` +
+                                `${Math.round(color[1] * 255)},` +
+                                `${Math.round(color[2] * 255)},1)`
+                            const size = 7
+                            context.save()
+                            context.translate(point.x, point.y)
+                            context.rotate((target.angle || 0) * Math.PI / 180)
+                            context.beginPath()
+                            context.moveTo(0, -size * 2)
+                            context.lineTo(size * 0.8, size)
+                            context.lineTo(0, size * 0.6)
+                            context.lineTo(-size * 0.8, size)
+                            context.closePath()
+                            context.fillStyle = fill
+                            context.fill()
+                            context.lineWidth = 1
+                            context.strokeStyle = stroke
+                            context.stroke()
+                            if ((target.sog || 0) > 0.5) {
+                                const length = Math.min((target.sog || 0) * 3, 40)
+                                context.beginPath()
+                                context.moveTo(0, -size * 2)
+                                context.lineTo(0, -size * 2 - length)
+                                context.lineWidth = 0.8
+                                context.strokeStyle = fill
+                                context.stroke()
+                            }
+                            context.restore()
+                            const label = String(target.label || "")
+                            const lx = point.x + size + 4
+                            const ly = point.y + 4
+                            context.font = "10px sans-serif"
+                            const width = context.measureText(label).width
+                            context.fillStyle = "rgba(0,0,0,0.5)"
+                            context.fillRect(lx - 2, ly - 12, width + 4, 14)
+                            context.fillStyle = "rgba(255,255,255,0.95)"
+                            context.fillText(label, lx, ly)
+                        }
+                    }
                     if (raceTracks && raceTracks.length) {
                         for (let t = 0; t < raceTracks.length; ++t) {
                             const track = raceTracks[t]
@@ -485,6 +535,7 @@ Item {
                 onTracksChanged: requestPaint()
                 onRaceTracksChanged: requestPaint()
                 onRoutesChanged: requestPaint()
+                onAisTargetsChanged: requestPaint()
                 onTrackPointsChanged: requestPaint()
                 onTrackPositionChanged: requestPaint()
                 onTrackHeadingChanged: requestPaint()

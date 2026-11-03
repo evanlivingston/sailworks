@@ -157,6 +157,26 @@ def test_navigation_image_skips_cached_race_geometry_when_qml_owns_it():
     assert calls == []
 
 
+def test_navigation_image_skips_ais_when_qml_owns_it():
+    host = _Host()
+    calls = []
+    host.navigation = type("Navigation", (), {})()
+    host.navigation.draw_race_tracks = lambda *args, **kwargs: None
+    host.navigation.draw_routes = lambda *args, **kwargs: None
+    host.navigation.draw_navigation = lambda *args, **kwargs: None
+    host.ais_visible = True
+    host.ais_targets = ()
+    host.ais_renderer = type(
+        "AIS", (), {"draw_targets": lambda *args, **kwargs: calls.append(1)}
+    )()
+    host._qml_ais_overlay = True
+    host._center_lat = 48.0
+    host._center_lon = -123.0
+    host._zoom = 6.0
+    host._navigation_image()
+    assert calls == []
+
+
 def test_navigation_image_reuses_cached_race_geometry_on_marker_change():
     host = _Host()
     calls = []
