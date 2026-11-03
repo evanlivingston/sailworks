@@ -222,6 +222,47 @@ All numerical/source-selection and portrayal invariants in the historical
 remain applicable. Intentional display approximations need documented bounds
 and explicit review. Routing remains unchanged.
 
+## Pan/zoom baseline (2026-11-02)
+
+The first committed pan/zoom reference is model-side: it measures
+`GribViewportModel.update()` and the resident selection over a captured app
+snapshot. It is not presentation FPS, GPU upload timing or a full-app replay.
+
+- Report: [`profiles/rendering/2026-11-02/selection-pan-baseline.json`](profiles/rendering/2026-11-02/selection-pan-baseline.json)
+- Harness: `tools/benchmark_viewport_selection_pan.py`
+- Comparison: `tools/compare_viewport_selection_baseline.py`
+- Snapshot content: `b7f81f650aa9ed1e08cf10febffb5e6031904d21d694867eb4faa67ab3a64b97`
+- Workload: 120 frames, 8 px/frame westward pan, camera `48.308879,
+  -123.094731`, zoom `9.837591`, 900x700, 3 saved sources, HRDPS-driven
+  selection.
+- Reference on this host: `update` p50 `2.86 ms`, p95 `14.35 ms`, p99
+  `21.72 ms`; `stage_selection` p95 `14.03 ms`; 121 selection calls and 0
+  anchor-atlas rebuilds. Counters: 121 covered reuses, 56 misses, 6 field
+  preparations, 10 slot handoffs, 79 time-window blocked.
+
+Evaluation rule: rerun the harness on the candidate and compare the same
+fields. A ticket passes when its targeted metric improves and no other
+committed metric regresses by more than 2% without an explained cause. The
+app-level replay in `benchmark_startup_rendering.py` remains the wider
+reference once its stale viewport API is repaired
+([#10](https://github.com/evanlivingston/sailworks/issues/10)); presentation
+latency and GPU uploads stay unmeasured until then.
+
+```bash
+python tools/benchmark_viewport_selection_pan.py \
+  --snapshot <private-snapshot> --output <candidate>.json
+python tools/compare_viewport_selection_baseline.py \
+  docs/profiles/rendering/2026-11-02/selection-pan-baseline.json <candidate>.json \
+  --output <comparison>.json
+```
+
+Optimisation tickets: [#11](https://github.com/evanlivingston/sailworks/issues/11)
+(selection reuse), [#12](https://github.com/evanlivingston/sailworks/issues/12)
+(LOD), [#13](https://github.com/evanlivingston/sailworks/issues/13) (gesture
+coalescing), [#14](https://github.com/evanlivingston/sailworks/issues/14)
+(upload audit), [#15](https://github.com/evanlivingston/sailworks/issues/15)
+(Cairo overlay migration).
+
 ## Milestones
 
 | Milestone | Exit gate | Status |
