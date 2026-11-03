@@ -335,6 +335,11 @@ class LogLibrary:
                     "format": "NMEA 0183 (decoded from EBL)",
                     "entries": len(session_log.entries),
                     "duration": session_log.duration,
+                    "timestamp_origin": (
+                        session_log.timestamp_origin.isoformat()
+                        if getattr(session_log, "timestamp_origin", None) is not None
+                        else None
+                    ),
                     "timestamped": session_log.timestamped,
                     "skipped": session_log.skipped,
                     "frame_count": session_log.frame_count,

@@ -498,6 +498,11 @@ class SessionController(QObject):
                         "format": candidate.format,
                         "entries": len(candidate.entries),
                         "duration": candidate.duration,
+                        "timestamp_origin": (
+                            candidate.timestamp_origin.isoformat()
+                            if candidate.timestamp_origin is not None
+                            else existing_info.get("timestamp_origin")
+                        ),
                         "timestamped": candidate.timestamped,
                         "skipped": candidate.skipped,
                         "frame_count": candidate.frame_count,
