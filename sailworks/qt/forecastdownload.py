@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from sailworks.core.gribsources.options import DownloadOptions
-from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES
+from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES, display_model_name
 from sailworks.core.forecasttranche import ModelConfiguration
 from sailworks.core.weathernextcredentials import describe_access_error
 
@@ -62,7 +62,7 @@ MODELS = (
     ),
     (
         "Google WeatherNext 3",
-        "WeatherNext 3",
+        "WN3",
         "0.1° grid",
         "15 days",
         "Global ensemble means · Google Cloud terms apply",
@@ -429,11 +429,6 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
             "A saved region is reused until you capture a new one."
         )
         self.region_status = QLabel("Region not set")
-        self.active_model = QComboBox()
-        self.active_model.setAccessibleName("Routing forecast model")
-        self.active_model.setToolTip(
-            "Choose which downloaded weather model routing uses."
-        )
         self.size_estimate = QLabel("Download estimate pending.")
         self.size_estimate.setWordWrap(True)
         self.download_progress = QProgressBar()
@@ -449,7 +444,6 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
         region_row.addWidget(self.region_button)
         region_row.addWidget(self.region_status, 1)
         extra.addLayout(region_row)
-        extra.addWidget(self.active_model)
         extra.addWidget(self.download_progress)
         actions = QHBoxLayout()
         for button in (self.refresh_button, self.cancel_button):
@@ -461,7 +455,6 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
         self.region_button.clicked.connect(self._capture_region)
         self.refresh_button.clicked.connect(self.refresh_models)
         self.cancel_button.clicked.connect(self.cancel_refresh)
-        self.active_model.currentIndexChanged.connect(self._select_model)
         self.changed.connect(self._save_intent)
         for check in self.models.values():
             check.toggled.connect(self._sync_interval)
@@ -690,13 +683,6 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
     def cancel_refresh(self):
         return bool(self.analysis and self.analysis.cancel())
 
-    def _select_model(self, index):
-        if self.analysis is None or index < 0:
-            return
-        model_id = self.active_model.itemData(index)
-        if model_id:
-            self.analysis.select_model(model_id)
-
     def _analysis_changed(self):
         self._update_active_status()
         self._update_refresh_availability()
@@ -712,7 +698,7 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
             self._set_size_estimate_error(error)
             return
         if self.analysis is None or self.analysis.busy:
-            self.size_estimate.setText("Download estimate paused while busy.")
+            # _update_active_status already shows the live download status.
             return
         if self.analysis.error:
             return
@@ -803,34 +789,19 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
         if self.analysis is None:
             self.on_shown()
             return
-        active = self.analysis.active
-        self.active_model.blockSignals(True)
-        self.active_model.clear()
-        if active is None:
-            self.active_model.addItem("No published model selection", "")
-        else:
-            routable_entries = tuple(
-                entry
-                for entry in active.tranche.entries
-                if MODEL_CAPABILITIES.get(entry.model_id)
-                and MODEL_CAPABILITIES[entry.model_id].routing_eligible
-            )
-            for entry in routable_entries:
-                self.active_model.addItem(entry.model_id, entry.model_id)
-            selected_index = self.active_model.findData(active.entry.model_id)
-            if selected_index >= 0:
-                self.active_model.setCurrentIndex(selected_index)
-            elif routable_entries:
-                self.active_model.setCurrentIndex(0)
-            else:
-                self.active_model.addItem("No wind model available", "")
-        self.active_model.blockSignals(False)
         busy = self.analysis.busy
         self.download_progress.setVisible(busy)
-        self.download_progress.setValue(getattr(self.analysis, "progress", 0))
+        progress = int(getattr(self.analysis, "progress", 0) or 0)
+        self.download_progress.setValue(progress)
         if self.analysis.error:
             self.size_estimate.setText("Download estimate unavailable.")
             self.size_estimate.setToolTip(self.analysis.error)
+        elif busy:
+            status = str(getattr(self.analysis, "status", "") or "").strip()
+            self.size_estimate.setText(status or "Updating forecast…")
+            self.size_estimate.setToolTip(
+                "Current step of the forecast task. The size estimate returns when it finishes."
+            )
 
     def _update_refresh_availability(self, error=""):
         reason = error

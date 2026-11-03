@@ -101,6 +101,26 @@ def test_weathernext_is_registered_in_capabilities_and_download_ui():
     assert any(row[0] == "Google WeatherNext 3" for row in MODELS)
 
 
+def test_weathernext_interim_runs_publish_only_48_leads():
+    capability = MODEL_CAPABILITIES["WEATHERNEXT"]
+    # Synoptic cycles carry the full horizon; every other hour is an interim run.
+    for hour in (0, 6, 12, 18):
+        assert capability.max_horizon(hour) == 360
+        assert capability.available_steps(hour, "wind")[-1] == 360
+    for hour in (1, 5, 7, 13, 14, 23):
+        assert capability.max_horizon(hour) == 48
+        assert capability.available_steps(hour, "wind")[-1] == 48
+
+
+def test_weathernext_display_name_is_short_but_identity_is_stable():
+    from sailworks.core.forecastcapabilities import display_model_name
+
+    assert display_model_name("WEATHERNEXT") == "WN3"
+    assert MODEL_CAPABILITIES["WEATHERNEXT"].provider_name == "Google WeatherNext 3"
+    # Unknown models fall back to their identifier.
+    assert display_model_name("NOT_A_MODEL") == "NOT_A_MODEL"
+
+
 def test_written_artifact_feeds_the_routing_sampler(tmp_path, monkeypatch):
     from datetime import datetime, timezone
 
@@ -144,3 +164,77 @@ def test_written_artifact_feeds_the_routing_sampler(tmp_path, monkeypatch):
     pressure = grib.get_pressure(valid, ((47.0, -124.0), (49.0, -122.0)))
     assert pressure
     assert all(abs(value[2] - 1013.25) < 0.01 for value in pressure)
+
+
+def _blank_lead_dataset(blank_leads):
+    xr = pytest.importorskip("xarray")
+    leads = [np.timedelta64(step, "h") for step in (3, 6)]
+    shape = (len(leads), 3, 3)
+    wind_u = np.full(shape, 5.0, dtype=np.float32)
+    wind_v = np.zeros(shape, dtype=np.float32)
+    for index, lead in enumerate(leads):
+        if int(lead / np.timedelta64(1, "h")) in blank_leads:
+            wind_u[index] = np.nan
+            wind_v[index] = np.nan
+    return xr.Dataset(
+        {
+            U_WIND: (("lead_time", "lat_0p1", "lon_0p1"), wind_u),
+            V_WIND: (("lead_time", "lat_0p1", "lon_0p1"), wind_v),
+        },
+        coords={
+            "lead_time": leads,
+            "lat_0p1": [47.0, 48.0, 49.0],
+            "lon_0p1": [236.0, 237.0, 238.0],
+            "init_time": np.datetime64("2026-11-03T12:00:00"),
+        },
+    )
+
+
+def _patched_source(monkeypatch, dataset):
+    pytest.importorskip("eccodes")
+    monkeypatch.setattr(
+        "sailworks.core.gribsources.weathernext.open_statistics_store",
+        lambda *args, **kwargs: dataset,
+    )
+    monkeypatch.setattr(
+        "sailworks.core.gribsources.weathernext.WeatherNextCredentials.credentials",
+        lambda self: None,
+    )
+    source = WeatherNextSource()
+    source.bounds = (47.0, -124.0, 49.0, -122.0)
+    return source
+
+
+def _wind_identifier(steps):
+    return json.dumps(
+        {
+            "date": "20261103",
+            "cycle": "12",
+            "steps": list(steps),
+            "fields": ["wind"],
+            "run_tag": "01_preds",
+        }
+    )
+
+
+def test_download_drops_blank_leads_instead_of_publishing_empty_frames(
+    tmp_path, monkeypatch
+):
+    gdal = pytest.importorskip("osgeo.gdal")
+    source = _patched_source(monkeypatch, _blank_lead_dataset({6}))
+
+    path = source.download(_wind_identifier([3, 6]), str(tmp_path), lambda _p: None)
+
+    result = gdal.Open(path)
+    assert result.RasterCount == 2
+    for index in range(1, result.RasterCount + 1):
+        metadata = result.GetRasterBand(index).GetMetadata()
+        assert metadata["GRIB_FORECAST_SECONDS"] == "10800"
+
+
+def test_download_refuses_a_run_with_no_data(tmp_path, monkeypatch):
+    source = _patched_source(monkeypatch, _blank_lead_dataset({3, 6}))
+
+    with pytest.raises(ValueError, match="no data"):
+        source.download(_wind_identifier([3, 6]), str(tmp_path), lambda _p: None)
+    assert list(tmp_path.glob("*.grib2")) == []

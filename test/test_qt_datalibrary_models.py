@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QDialog, QGroupBox, QTabWidget, QWidget
 from sailworks.core.forecasttranche import ModelConfiguration
 from sailworks.qt.datalibrary import DataLibrary
 from sailworks.qt.forecastdownload import AnalysisForecastDownloadOptions
+from sailworks.qt.weatherpanel import ForecastModelSelector
 from test.analysis_qt_fixtures import make_published_snapshot
 from test.qt_analysis_fakes import FakeAnalysis, FakeSession, app
 
@@ -44,11 +45,12 @@ def test_forecasts_page_reuses_existing_model_parameters_and_hours_ui(tmp_path):
     assert isinstance(options, AnalysisForecastDownloadOptions)
     assert options.parentWidget() is library.forecast_page
     assert not hasattr(library, "modelspanel")
-    assert {
-        options.active_model.itemData(index)
-        for index in range(options.active_model.count())
-    } == {"GFS", "HRRR"}
-    assert options.active_model.currentData() == "GFS"
+    selector = ForecastModelSelector(session)
+    assert {selector.itemData(index) for index in range(selector.count())} == {
+        "GFS",
+        "HRRR",
+    }
+    assert selector.currentData() == "GFS"
     assert {"ECMWF IFS", "ECMWF AIFS Single", "NOAA AI-GFS"} <= set(options.models)
     assert options.fields["wind"].text() == "Wind at 10 m"
     assert options.fields["gust"].text() == "Wind gust"
@@ -151,7 +153,7 @@ def test_gust_selection_is_limited_to_models_with_supported_products(tmp_path):
     assert "gust" not in configurations["IFS"].fields
     assert options.names() == checked_models + ("ECMWF IFS",)
     assert options._parameter_model_id == "IFS"
-    assert options.active_model.currentData() == "GFS"
+    assert ForecastModelSelector(library.controller).currentData() == "GFS"
     library.close()
 
 
@@ -176,7 +178,7 @@ def test_gfswave_is_a_separate_wave_only_download_model(tmp_path):
         "wave_period",
         "wave_direction",
     )
-    assert options.active_model.currentData() == "GFS"
+    assert ForecastModelSelector(library.controller).currentData() == "GFS"
 
     options.models["NOAA GFS"].setChecked(False)
     with pytest.raises(ValueError, match="wind forecast model"):
@@ -196,7 +198,7 @@ def test_refresh_failure_is_visible_while_previous_model_remains_active(tmp_path
 
     assert options.size_estimate.text() == "Download estimate unavailable."
     assert "missing wind coverage" in options.size_estimate.toolTip()
-    assert options.active_model.currentData() == "GFS"
+    assert ForecastModelSelector(library.controller).currentData() == "GFS"
     library.close()
 
 
@@ -207,3 +209,22 @@ def test_data_library_without_map_callback_has_no_forecast_download_controls(tmp
     assert library.forecast_download is None
     assert not hasattr(library, "files_dialog")
     library.close()
+
+
+def test_weather_panel_model_selector_switches_the_active_model(tmp_path):
+    app()
+    library, session, analysis = forecast_page(
+        tmp_path, capture_region=lambda: (-2, -2, 2, 2)
+    )
+    selector = ForecastModelSelector(session)
+
+    assert selector.currentData() == "GFS"
+    index = selector.findData("HRRR")
+    assert index >= 0
+    selector.setCurrentIndex(index)
+
+    assert analysis.selected == ["HRRR"]
+    # Re-selecting the model already in use must not start another operation.
+    analysis.selected.clear()
+    selector.setCurrentIndex(selector.findData("HRRR"))
+    assert analysis.selected == []

@@ -21,6 +21,64 @@ from .dockchrome import style_scrollarea
 from .marinepanel import BusyButton
 from .theme import section_label
 from sailworks.rendering.windpainter import BARB_DENSITIES
+from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES, display_model_name
+
+
+class ForecastModelSelector(QComboBox):
+    """Choose which published, routing-eligible model the session uses."""
+
+    def __init__(self, controller, parent=None):
+        super().__init__(parent)
+        self.controller = controller
+        self.setAccessibleName("Routing forecast model")
+        self.setToolTip("Choose which downloaded weather model routing uses.")
+        self.currentIndexChanged.connect(self._select)
+        analysis = self._analysis()
+        if analysis is not None:
+            analysis.changed.connect(self._refresh)
+        self._refresh()
+
+    def _analysis(self):
+        return getattr(self.controller, "analysis", None)
+
+    def _refresh(self, *_):
+        analysis = self._analysis()
+        active = getattr(analysis, "active", None) if analysis is not None else None
+        self.blockSignals(True)
+        try:
+            self.clear()
+            if active is None:
+                self.addItem("No published model selection", "")
+                return
+            entries = tuple(
+                entry
+                for entry in active.tranche.entries
+                if MODEL_CAPABILITIES.get(entry.model_id)
+                and MODEL_CAPABILITIES[entry.model_id].routing_eligible
+            )
+            for entry in entries:
+                self.addItem(display_model_name(entry.model_id), entry.model_id)
+            index = self.findData(active.entry.model_id)
+            if index >= 0:
+                self.setCurrentIndex(index)
+            elif entries:
+                self.setCurrentIndex(0)
+            else:
+                self.addItem("No wind model available", "")
+        finally:
+            self.blockSignals(False)
+
+    def _select(self, index):
+        analysis = self._analysis()
+        if analysis is None or index < 0:
+            return
+        model_id = self.itemData(index)
+        if not model_id:
+            return
+        active = getattr(analysis, "active", None)
+        if active is not None and active.entry.model_id == model_id:
+            return
+        analysis.select_model(model_id)
 
 
 class WeatherPanel(QWidget):
@@ -37,6 +95,11 @@ class WeatherPanel(QWidget):
         controls = QVBoxLayout(content)
         controls.setContentsMargins(12, 8, 12, 8)
         controls.addWidget(self._section_divider())
+        model_form = QFormLayout()
+        model_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self.forecast_model = ForecastModelSelector(controller)
+        model_form.addRow("Model", self.forecast_model)
+        controls.addLayout(model_form)
         controls.addWidget(section_label("Wind"))
         self.wind = QCheckBox("Show wind")
         self.wind.setChecked(active_map().wind_visible)

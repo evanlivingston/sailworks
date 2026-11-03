@@ -268,7 +268,7 @@ class SettingsDialog(QDialog):
         terms.setWordWrap(True)
         weathernext_form.addRow(terms)
         self._refresh_weathernext()
-        self.tabs.addTab(weathernext, "WeatherNext")
+        self.tabs.addTab(weathernext, "WN3")
         self.currents = CurrentsAccount(controller.core.marine_manager.coverage_planner)
         self.tabs.addTab(self.currents, "Currents")
         self.status = QLabel()
@@ -380,7 +380,7 @@ class SettingsDialog(QDialog):
     def choose_weathernext_credentials(self):
         path, _filter = QFileDialog.getOpenFileName(
             self,
-            "WeatherNext service-account credentials",
+            "WN3 service-account credentials",
             "",
             "JSON credentials (*.json)",
         )
