@@ -226,8 +226,12 @@ class BarbSelection:
     """The current-view selection of one field.
 
     ``node_ids`` names, per mesh cell, the node of the field that is drawn
-    there, or -1 for a cell without a symbol.  It is bound to the field by
-    ``generation``: a selection of another field is stale and is rejected.
+    there, or -1 for a cell without a symbol.  ``anchors`` is a field-node
+    atlas, ``FIELD_COLUMNS`` wide, indexed by the field's node id: it is
+    independent of the mesh slot assignment, so a pan that permutes slots
+    reuses the same anchor bytes.  Padding past the node count is finite.
+    The selection is bound to the field by ``generation``: a selection of
+    another field is stale and is rejected.
     """
 
     generation: str
@@ -236,6 +240,11 @@ class BarbSelection:
     count: int
     field: GeographicField
     node_image: "QImage | None" = None
+    # The camera whose pixels the anchors are encoded in.  Anchors are
+    # reference-local, so this names the pan reference the layer is placed
+    # against; ``None`` means the anchors are in the publishing camera's own
+    # pixels (the historical path).
+    anchor_reference: tuple | None = None
 
     @property
     def images(self):
@@ -245,6 +254,35 @@ class BarbSelection:
     @property
     def shape(self):
         return self.node_ids.shape
+
+    @property
+    def anchor_shape(self):
+        """The node atlas shape, independent of the mesh slot assignment."""
+        return self.anchors[0].height(), self.anchors[0].width() // 2
+
+    def matches(self, other) -> bool:
+        """Whether ``other`` portrays exactly the same symbols of the field.
+
+        The mesh membership (``node_ids``) and its shape decide the node-id
+        upload.  Anchors are reference-local: a pan inside one
+        ``PanReference`` moves the whole layer without changing either the
+        selection or its anchor atlas, so an identical membership needs no new
+        upload.  The generation binds the selection to its resident field, so
+        it also covers the field identity and the forecast time.  The anchor
+        frame is part of the comparison: anchors encoded at another zoom,
+        viewport size or dpr cannot be placed by the shared transform, so a
+        selection from a different frame is never treated as the same
+        presentation.
+        """
+        if other is None:
+            return False
+        return (
+            self.generation == other.generation
+            and self.count == other.count
+            and self.node_ids.shape == other.node_ids.shape
+            and np.array_equal(self.node_ids, other.node_ids)
+            and self.anchor_reference == other.anchor_reference
+        )
 
 
 def validate_binding(field, selection):

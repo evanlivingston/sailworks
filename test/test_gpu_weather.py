@@ -103,6 +103,56 @@ def test_provider_keeps_displayed_selection_during_native_swap():
     assert not provider.requestImage(new_id, None, QSize()).isNull()
 
 
+def test_provider_retains_the_staged_selection_until_the_front_commits():
+    provider = WeatherImageProvider()
+    front = (encode_component([[1]]),) * 3
+    pending = (encode_component([[2]]),) * 3
+    displayed = provider.publish_selection(front, "front")
+    provider.pin_selection(displayed)
+    staged = provider.publish_selection(pending, "pending")
+    provider.retain_selection(staged)
+    # A newer publication replaces the front's own images, but the pending
+    # selection the back layer binds must stay servable until the swap.
+    provider.publish_selection((encode_component([[3]]),) * 3, "later")
+    for url in displayed + staged:
+        assert not requested(provider, url).isNull()
+    # The commit pins the pending selection and releases the retained front.
+    provider.pin_selection(staged)
+    for url in displayed:
+        assert requested(provider, url).isNull()
+    for url in staged:
+        assert not requested(provider, url).isNull()
+
+
+def test_retained_selection_keeps_two_pending_frames_until_pinned():
+    provider = WeatherImageProvider()
+    front = provider.publish_selection((encode_component([[0]]),) * 3, "front")
+    provider.pin_selection(front)
+    first = provider.publish_selection((encode_component([[1]]),) * 3, "first")
+    provider.retain_selection(first)
+    second = provider.publish_selection((encode_component([[2]]),) * 3, "second")
+    provider.retain_selection(second)
+    # The back layer may still be loading either pending frame, so the next
+    # publication keeps the previous and current pending beside the front.
+    third = provider.publish_selection((encode_component([[3]]),) * 3, "third")
+    for url in front + first + second:
+        assert not requested(provider, url).isNull()
+    # Once the back layer binds the newest pending, the next replacement drops
+    # the oldest pending and keeps the pinned front plus the two newest.
+    provider.retain_selection(third)
+    provider.publish_selection((encode_component([[4]]),) * 3, "fourth")
+    for url in first:
+        assert requested(provider, url).isNull()
+    for url in front + second + third:
+        assert not requested(provider, url).isNull()
+    # The commit pins the pending frame and releases everything it superseded.
+    provider.pin_selection(third)
+    for url in front + second:
+        assert requested(provider, url).isNull()
+    for url in third:
+        assert not requested(provider, url).isNull()
+
+
 def test_two_fields_near_budget_document_front_eviction():
     front = WeatherTexturePair.from_arrays(
         START,

@@ -353,13 +353,14 @@ class TestRealSceneMapContentStationarity(unittest.TestCase):
             def scene_pos(item):
                 return item.mapToItem(root, QPointF(0, 0))
 
-            stationary = ("weatherBarbs", "dashboardOverlay", "mapClip")
+            stationary = ("dashboardOverlay", "mapClip")
             moving = (
                 "baseBand",
                 "chartLayer",
                 "environmentLayer",
                 "weatherFill",
                 "weatherFillBack",
+                "weatherBarbs",
                 "navigationOverlay",
                 "routeOverlay",
             )
@@ -384,6 +385,121 @@ class TestRealSceneMapContentStationarity(unittest.TestCase):
                 self.assertAlmostEqual(
                     after.y() - before[name].y(), 0, places=3, msg=name
                 )
+        finally:
+            component.deleteLater()
+            engine.deleteLater()
+
+    def test_streamlines_keep_screen_frame_behind_navigation_and_routes(self):
+        from PySide6.QtCore import QPointF
+        from PySide6.QtQuick import QQuickItem
+
+        engine, component, root = self._load_scene("ViewportChartScene.qml")
+        try:
+            names = (
+                "mapContent",
+                "weatherBand",
+                "streamlineBand",
+                "weatherBarbs",
+                "weatherStreamlines",
+                "navigationOverlay",
+                "routeOverlay",
+            )
+            items = {name: root.findChild(QQuickItem, name) for name in names}
+            for name, item in items.items():
+                self.assertIsNotNone(item, name)
+
+            band = items["weatherBand"]
+            streamline_band = items["streamlineBand"]
+            self.assertIs(streamline_band.parentItem(), band)
+            self.assertIs(items["weatherStreamlines"].parentItem(), streamline_band)
+            self.assertIs(items["weatherBarbs"].parentItem(), band)
+
+            # Streamlines keep their old layer slot: still inside the weather
+            # band, and navigation and routes still paint over them.
+            content_children = items["mapContent"].childItems()
+            self.assertLess(
+                content_children.index(band),
+                content_children.index(items["navigationOverlay"]),
+            )
+            self.assertLess(
+                content_children.index(band),
+                content_children.index(items["routeOverlay"]),
+            )
+
+            def scene_pos(item):
+                return item.mapToItem(root, QPointF(0, 0))
+
+            barbs_before = scene_pos(items["weatherBarbs"])
+            streamlines_before = scene_pos(items["weatherStreamlines"])
+            items["mapContent"].setX(items["mapContent"].x() + 12)
+            items["mapContent"].setY(items["mapContent"].y() + 7)
+            self.app.processEvents()
+
+            barbs_after = scene_pos(items["weatherBarbs"])
+            self.assertAlmostEqual(barbs_after.x() - barbs_before.x(), 12, places=3)
+            self.assertAlmostEqual(barbs_after.y() - barbs_before.y(), 7, places=3)
+            streamlines_after = scene_pos(items["weatherStreamlines"])
+            self.assertAlmostEqual(
+                streamlines_after.x() - streamlines_before.x(), 0, places=3
+            )
+            self.assertAlmostEqual(
+                streamlines_after.y() - streamlines_before.y(), 0, places=3
+            )
+        finally:
+            component.deleteLater()
+            engine.deleteLater()
+
+    def test_barbs_share_the_scene_anchor_pool_and_block_half_pairs(self):
+        from PySide6.QtQuick import QQuickItem
+
+        engine, component, root = self._load_scene("ViewportChartScene.qml")
+        try:
+            front = root.findChild(QQuickItem, "weatherBarbs")
+            back = root.findChild(QQuickItem, "weatherBarbsBack")
+            self.assertIsNotNone(front)
+            self.assertIsNotNone(back)
+            anchors = {
+                name: root.findChild(QQuickItem, name)
+                for name in (
+                    "sharedAnchorX0",
+                    "sharedAnchorY0",
+                    "sharedAnchorX1",
+                    "sharedAnchorY1",
+                )
+            }
+            for name, item in anchors.items():
+                self.assertIsNotNone(item, name)
+
+            # Both layers sample the same scene-owned provider objects.
+            for item in (front, back):
+                self.assertTrue(item.property("externalAnchors"))
+                for name in anchors:
+                    self.assertIs(item.property(name), anchors[name])
+                self.assertIsNot(
+                    item.property("selectedAnchorX"),
+                    item.findChild(QQuickItem, "selectionX"),
+                )
+            self.assertIs(
+                front.property("selectedAnchorY"), back.property("selectedAnchorY")
+            )
+
+            for item in (front, back):
+                item.setProperty("atlasSlot", 1)
+            self.app.processEvents()
+            self.assertIs(front.property("selectedAnchorX"), anchors["sharedAnchorX1"])
+            self.assertTrue(front.property("sharedPairComplete"))
+            self.assertTrue(back.property("sharedPairComplete"))
+
+            # One supplied half is external mode, not a silent fallback to the
+            # private anchors: the pair is incomplete and readiness stays off.
+            back.setProperty("sharedAnchorY1", None)
+            self.app.processEvents()
+            self.assertTrue(back.property("externalAnchors"))
+            self.assertFalse(back.property("sharedPairComplete"))
+            self.assertFalse(back.property("anchorsReady"))
+            self.assertFalse(back.property("prepared"))
+            self.assertFalse(back.property("ready"))
+            self.assertTrue(front.property("sharedPairComplete"))
         finally:
             component.deleteLater()
             engine.deleteLater()

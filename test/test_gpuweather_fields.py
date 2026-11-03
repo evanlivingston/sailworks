@@ -11,6 +11,7 @@ import pytest
 
 from sailworks.core.gribsampling import WeatherSampler
 from sailworks.qt.gpuweatherfields import (
+    BarbSelection,
     FieldIdentity,
     FieldStore,
     TEXTURE_BYTES_PER_FLOAT32,
@@ -40,12 +41,20 @@ def identity(**overrides):
     return FieldIdentity(**values)
 
 
-def _stage(sampler, view, stamp, store=None, source=None, grid=False):
+def _stage(sampler, view, stamp, store=None, source=None, grid=False, reference=None):
     if store is not None:
         from sailworks.rendering.weatherbarbs import _stage_with_field
 
         return _stage_with_field(
-            sampler, stamp, view, Land(), lambda: False, store, source, grid
+            sampler,
+            stamp,
+            view,
+            Land(),
+            lambda: False,
+            store,
+            source,
+            grid,
+            reference,
         )
     return stage_barbs(sampler, stamp, view, Land())
 
@@ -246,6 +255,31 @@ def test_the_field_window_is_stable_inside_a_lattice_cell(gribs):
     assert field_window(here) != field_window(far)
 
 
+def _node_anchors(selection, view):
+    """Decode a selection's node atlas at the nodes its slots draw."""
+    from sailworks.qt.gpuweather import decode_component
+    from sailworks.rendering.windpainter import mercator_project_flat
+
+    ids = selection.node_ids.ravel()
+    slots = np.flatnonzero(ids >= 0)
+    node_ids = ids[slots].astype(int)
+    ax = decode_component(selection.anchors[0]).ravel()
+    ay = decode_component(selection.anchors[1]).ravel()
+    nodes = selection.field.points[node_ids]
+    expected = np.column_stack(
+        mercator_project_flat(
+            nodes[:, 0],
+            nodes[:, 1],
+            view._center_lat,
+            view._center_lon,
+            view._zoom,
+            view.width,
+            view.height,
+        )
+    )
+    return node_ids, np.column_stack((ax[node_ids], ay[node_ids])), expected
+
+
 def test_each_views_selection_matches_the_direct_reference(gribs):
     """The selection of a panned view equals the direct path's selection."""
     source, sampler, signature = _sources(gribs)
@@ -254,9 +288,10 @@ def test_each_views_selection_matches_the_direct_reference(gribs):
     direct = _stage(sampler, panned, stamp)
     resident = _stage(sampler, panned, stamp, FieldStore(1 << 24), signature)
     assert resident.count == direct.count
-    # The anchors are the direct path's anchors, byte for byte.
-    for published, expected in zip(resident.selection.anchors, direct.anchors):
-        assert published.constBits().tobytes() == expected.constBits().tobytes()
+    # The node atlas anchors every drawn field node at the current view.
+    node_ids, anchors, expected = _node_anchors(resident.selection, panned)
+    assert np.unique(node_ids).size == resident.count
+    np.testing.assert_allclose(anchors, expected, rtol=0, atol=1e-4)
     # The node ids name the field's nodes with the direct path's values.
     ids = resident.selection.node_ids
     ids = ids.ravel()
@@ -294,6 +329,260 @@ def test_field_texture_order_matches_shader_bindings(gribs):
         assert np.isnan(actual[values.size :]).all()
 
 
+def test_barb_selection_matches_only_exact_membership():
+    ids = np.array([[0, 1, -1], [2, 3, 0]])
+    selection = BarbSelection("g", ids, (), 5, None)
+    assert selection.matches(BarbSelection("g", ids.copy(), (), 5, None))
+    assert not selection.matches(None)
+    # Generation binds the selection to its resident field and time.
+    assert not selection.matches(BarbSelection("other", ids.copy(), (), 5, None))
+    assert not selection.matches(BarbSelection("g", ids.copy(), (), 4, None))
+    assert not selection.matches(BarbSelection("g", ids.reshape(3, 2), (), 5, None))
+    changed = ids.copy()
+    changed[0, 1] = 2
+    assert not selection.matches(BarbSelection("g", changed, (), 5, None))
+
+
+def test_barb_selection_anchor_frame_is_part_of_the_membership():
+    ids = np.array([[0, 1, -1], [2, 3, 0]])
+    frame = (48.3, -123.0, 9.0, 900.0, 700.0)
+    selection = BarbSelection("g", ids, (), 5, None, anchor_reference=frame)
+    # A pan inside one pan reference keeps identical anchors and membership.
+    assert selection.matches(
+        BarbSelection("g", ids.copy(), (), 5, None, anchor_reference=frame)
+    )
+    assert selection.matches(
+        BarbSelection("g", ids.copy(), (), 5, None, anchor_reference=tuple(frame))
+    )
+    # Anchors encoded at another zoom, viewport size or dpr cannot be placed
+    # by the shared transform, so they are never the same presentation.
+    for other in (
+        (48.3, -123.0, 10.0, 900.0, 700.0),
+        (48.3, -123.0, 9.0, 901.0, 700.0),
+        (48.3, -123.0, 9.0, 900.0, 701.0),
+        (48.3, -123.0, 9.0, 900.0, 700.0, 2.0),
+    ):
+        assert not selection.matches(
+            BarbSelection("g", ids.copy(), (), 5, None, anchor_reference=other)
+        )
+    # The historical camera-local path has no reference and is distinct.
+    assert not selection.matches(BarbSelection("g", ids.copy(), (), 5, None))
+
+
+def test_antimeridian_seam_anchors_translate_to_the_current_projection():
+    from types import SimpleNamespace
+
+    from sailworks.qt.gpuweather import decode_component
+    from sailworks.qt.viewporttransform import PanReference
+    from sailworks.rendering.weatherbarbs import stage_selection
+    from sailworks.rendering.windpainter import mercator_project_flat
+
+    # A native grid straddling the seam, represented as continuous west
+    # longitudes.  The reference sits on the other side, at +179.95.
+    lats = np.array([-0.2, 0.0, 0.2])
+    lons = np.array([-180.15, -179.95, -179.75])
+    points = np.array([(lat, lon) for lat in lats for lon in lons])
+    points = points[np.lexsort((points[:, 0], points[:, 1]))]
+    zeros = np.zeros((len(points), 2))
+    field = SimpleNamespace(
+        generation="g",
+        points=points,
+        grids=(SimpleNamespace(nodes=lambda bounds: points),),
+        index={
+            (round(lat, 9), round(lon, 9)): index
+            for index, (lat, lon) in enumerate(points)
+        },
+        staged=SimpleNamespace(
+            first=(zeros,), second=(zeros,), weight=lambda stamp: 0.0
+        ),
+        land_flags=None,
+    )
+    current = BarbView(640, 480, 0.0, -179.95, 9, "standard", True)
+    reference = BarbView(640, 480, 0.0, 179.95, 9, "standard", True)
+    selection = stage_selection(None, field, 0.0, current, None, reference=reference)
+    assert selection.anchor_reference == (
+        reference._center_lat,
+        reference._center_lon,
+        reference._zoom,
+        reference.width,
+        reference.height,
+    )
+    ids = selection.node_ids.ravel()
+    slots = np.flatnonzero(ids >= 0)
+    nodes = points[ids[slots].astype(int)]
+    assert selection.count == len(slots) > 0
+    assert np.any(nodes[:, 1] < -180.0)
+    node_ids = ids[slots].astype(int)
+    anchored = np.column_stack(
+        (
+            decode_component(selection.anchors[0]).ravel()[node_ids],
+            decode_component(selection.anchors[1]).ravel()[node_ids],
+        )
+    )
+    camera = SimpleNamespace(
+        center_lat=current._center_lat,
+        center_lon=current._center_lon,
+        zoom=current._zoom,
+        width=current.width,
+        height=current.height,
+    )
+    translation = PanReference(*selection.anchor_reference).translation_to(camera)
+    projected = np.column_stack(
+        mercator_project_flat(
+            nodes[:, 0],
+            nodes[:, 1],
+            current._center_lat,
+            current._center_lon,
+            current._zoom,
+            current.width,
+            current.height,
+        )
+    )
+    # The anchors are local to the other side of the seam; the reference
+    # translation carries them exactly onto the current view's projection.
+    assert not np.allclose(anchored, projected)
+    np.testing.assert_allclose(anchored + translation, projected, atol=1e-4, rtol=0)
+
+
+def test_pan_keeps_exact_membership_with_reference_local_anchors(gribs):
+    from sailworks.qt.gpuweather import decode_component
+
+    source, sampler, signature = _sources(gribs)
+    stamp = START.timestamp() + 3600
+    store = FieldStore(1 << 24)
+    here = BarbView(640, 480, 0.5, 0.5, 9, "standard", False)
+    panned = BarbView(640, 480, 0.501, 0.5, 9, "standard", False)
+    base = _stage(sampler, here, stamp, store, signature, reference=here)
+    repeat = _stage(sampler, here, stamp, store, signature, reference=here)
+    moved = _stage(sampler, panned, stamp, store, signature, reference=here)
+    # The direct path is the membership oracle for the panned camera, and a
+    # fresh field store resolves the same view independently of the cache.
+    oracle = _stage(sampler, panned, stamp)
+    independent = _stage(
+        sampler, panned, stamp, FieldStore(1 << 24), signature, reference=here
+    )
+    # Restaging one view reuses the field and reproduces the same symbols and
+    # the same anchor artefacts, byte for byte.
+    assert repeat.field is base.field
+    assert repeat.selection.matches(base.selection)
+    np.testing.assert_array_equal(repeat.selection.node_ids, base.selection.node_ids)
+    for actual, expected in zip(repeat.selection.anchors, base.selection.anchors):
+        assert actual.constBits().tobytes() == expected.constBits().tobytes()
+    # A covered pan reuses the field and selects exactly the direct path's
+    # symbols. Membership is geographic and independent of the cache: the
+    # exact node ids match the oracle, not merely its count.
+    assert moved.field is base.field
+    assert moved.selection.matches(base.selection)
+    assert moved.count == oracle.count
+    np.testing.assert_array_equal(moved.selection.node_ids, base.selection.node_ids)
+    np.testing.assert_array_equal(
+        moved.selection.node_ids, independent.selection.node_ids
+    )
+    ids = moved.selection.node_ids
+    selected = ids >= 0
+    assert np.all(ids[selected] < moved.field.node_count)
+    assert np.unique(ids[selected]).size == moved.selection.count
+    # Anchors are reference-local: a translation-only pan keeps both anchor
+    # sources untouched and moves the whole layer through the shader offset.
+    for actual, expected in zip(moved.selection.anchors, base.selection.anchors):
+        assert actual.constBits().tobytes() == expected.constBits().tobytes()
+    for actual, expected in zip(moved.selection.anchors, independent.selection.anchors):
+        np.testing.assert_array_equal(
+            decode_component(actual), decode_component(expected)
+        )
+
+
+def test_node_anchor_atlas_is_stable_across_a_wide_slot_permutation(gribs):
+    """A pan of more than one mesh step reassigns slots, not anchor bytes."""
+    from sailworks.qt.gpuweather import decode_component
+    from sailworks.qt.gpuweatherfields import FIELD_COLUMNS
+    from sailworks.rendering.weatherbarbs import stage_selection
+
+    source, sampler, signature = _sources(gribs)
+    stamp = START.timestamp() + 3600
+    here = BarbView(640, 480, 0.5, 0.5, 9, "standard", False)
+    # 0.2 degrees is about 73 pixels at zoom 9, more than one 44 px step.
+    panned = BarbView(640, 480, 0.5, 0.5 + 0.2, 9, "standard", False)
+    field = _stage(
+        sampler, here, stamp, FieldStore(1 << 24), signature, reference=here
+    ).field
+    base = stage_selection(None, field, stamp, here, None, reference=here)
+    moved = stage_selection(None, field, stamp, panned, None, reference=here)
+    # The current-view slot assignment really changed.
+    assert base.node_ids.shape == moved.node_ids.shape
+    assert not np.array_equal(base.node_ids, moved.node_ids)
+    assert moved.anchor_reference == base.anchor_reference
+    # The atlas is field-node-indexed at FIELD_COLUMNS width, and the pan
+    # leaves every encoded byte untouched.
+    rows = -(-field.node_count // FIELD_COLUMNS)
+    assert base.anchor_shape == moved.anchor_shape == (rows, FIELD_COLUMNS)
+    for actual, expected in zip(moved.anchors, base.anchors):
+        assert actual.constBits().tobytes() == expected.constBits().tobytes()
+    # Padding past the node count is finite, as the shader may clamp to it.
+    for image in moved.anchors:
+        values = decode_component(image).ravel()
+        assert np.isfinite(values).all()
+        assert np.all(values[field.node_count :] == 0.0)
+
+
+def test_land_mask_survives_a_covered_pan_with_reference_anchors(gribs):
+    source, sampler, signature = _sources(gribs)
+    stamp = START.timestamp() + 3600
+    store = FieldStore(1 << 24)
+    here = BarbView(640, 480, 0.5, 0.5, 9, "standard", True)
+    panned = BarbView(640, 480, 0.501, 0.5, 9, "standard", True)
+    base = _stage(sampler, here, stamp, store, signature, reference=here)
+    moved = _stage(sampler, panned, stamp, store, signature, reference=here)
+    expected = _stage(sampler, panned, stamp, FieldStore(1 << 24), signature)
+    # The mask is applied to the current view's selection, and its ids are the
+    # direct path's; the anchors stay reference-local.
+    assert moved.field is base.field
+    np.testing.assert_array_equal(moved.selection.node_ids, expected.selection.node_ids)
+    assert moved.selection.count == expected.count
+    for actual, reference in zip(moved.selection.anchors, base.selection.anchors):
+        assert actual.constBits().tobytes() == reference.constBits().tobytes()
+
+
+def test_land_mask_changes_the_membership_exactly(gribs):
+    source, sampler, signature = _sources(gribs)
+    stamp = START.timestamp() + 3600
+    store = FieldStore(1 << 24)
+    offshore = _stage(
+        sampler,
+        BarbView(640, 480, 0.5, 0.5, 9, "standard", False),
+        stamp,
+        store,
+        signature,
+    )
+    with_land = _stage(
+        sampler,
+        BarbView(640, 480, 0.5, 0.5, 9, "standard", True),
+        stamp,
+        store,
+        signature,
+    )
+    assert with_land.field is offshore.field
+    assert not with_land.selection.matches(offshore.selection)
+    # Exact membership, not merely "different": a fresh store resolves the
+    # same symbols, and the land policy only fills the cells it removed.
+    expected = _stage(
+        sampler,
+        BarbView(640, 480, 0.5, 0.5, 9, "standard", True),
+        stamp,
+        FieldStore(1 << 24),
+        signature,
+    )
+    offshore_ids = offshore.selection.node_ids
+    land_ids = with_land.selection.node_ids
+    np.testing.assert_array_equal(land_ids, expected.selection.node_ids)
+    kept = offshore_ids != -1
+    np.testing.assert_array_equal(land_ids[kept], offshore_ids[kept])
+    restored = (~kept) & (land_ids != -1)
+    assert restored.sum() == with_land.selection.count - offshore.selection.count
+    assert np.all(land_ids[~kept & ~restored] == -1)
+    assert offshore.selection.count < with_land.selection.count
+
+
 def test_viewport_rejects_stale_selection_before_publishing():
     from types import SimpleNamespace
     from unittest.mock import Mock
@@ -315,7 +604,6 @@ def test_viewport_rejects_stale_selection_before_publishing():
 
 @pytest.mark.parametrize("over_land", [True, False])
 def test_covered_selection_needs_no_sampler_or_land_io(gribs, monkeypatch, over_land):
-    from sailworks.qt.gpuweather import decode_component
     from sailworks.rendering.weatherbarbs import select_resident
 
     source, sampler, signature = _sources(gribs)
@@ -335,14 +623,11 @@ def test_covered_selection_needs_no_sampler_or_land_io(gribs, monkeypatch, over_
     actual = select_resident(prepared.field, stamp, near)
     assert actual.field is prepared.field
     assert actual.count == expected.count
-    for result, reference in zip(actual.anchors, expected.anchors):
-        np.testing.assert_array_equal(
-            decode_component(result), decode_component(reference)
-        )
+    _node_ids, anchors, projected = _node_anchors(actual.selection, near)
+    np.testing.assert_allclose(anchors, projected, rtol=0, atol=1e-4)
 
 
 def test_shared_grid_enumeration_is_deduplicated_without_dropping_sources(gribs):
-    from sailworks.qt.gpuweather import decode_component
     from sailworks.rendering.weatherbarbs import select_resident
 
     sources = [
@@ -361,10 +646,8 @@ def test_shared_grid_enumeration_is_deduplicated_without_dropping_sources(gribs)
     actual = select_resident(atlas.field, stamp, near)
     expected = _stage(sampler, near, stamp)
     assert actual.count == expected.count
-    for result, reference in zip(actual.anchors, expected.anchors):
-        np.testing.assert_array_equal(
-            decode_component(result), decode_component(reference)
-        )
+    _node_ids, anchors, projected = _node_anchors(actual.selection, near)
+    np.testing.assert_allclose(anchors, projected, rtol=0, atol=1e-4)
 
 
 def test_a_missing_endpoint_stays_missing_in_the_field(gribs):
@@ -441,6 +724,9 @@ def test_a_stalled_preparation_does_not_block_the_caller(gribs):
                 (),
                 {
                     "settings": type("Settings", (), {"gribArrowOnGround": True})(),
+                    "display_forecast": type(
+                        "Forecast", (), {"sources": lambda self: [source]}
+                    )(),
                     "core": type(
                         "Core",
                         (),

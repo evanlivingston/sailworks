@@ -38,7 +38,9 @@ from sailworks.qt.gpuweatherfields import (
 from sailworks.rendering.weatherbarbs import (
     BarbView,
     FIELD_LATTICE_PX,
+    anchor_view,
     field_window,
+    node_anchor_atlas,
     _view_bounds,
     select_resident,
     stage_field,
@@ -57,6 +59,7 @@ from sailworks.qt.viewporttransform import (
     CameraChange,
     PaddedPanWindow,
     continuous_longitude,
+    zoom_preview_transform,
 )
 
 logger = logging.getLogger("sailworks")
@@ -144,6 +147,7 @@ class ViewportCamera:
     density: str = "standard"
     over_land: bool = True
     geographic: bool = True
+    source: str | None = None
 
     def view(self):
         """The staging view of this camera."""
@@ -331,6 +335,11 @@ class GribViewportModel:
         self._prepared_by = {}
         self._selection_cache = {}
         self._selection_cache_order = []
+        # Node-indexed anchor atlases outlive a mesh slot permutation: one
+        # atlas per field generation and anchor camera.  A pan inside one pan
+        # reference reuses it instead of re-projecting every field node.
+        self._anchor_atlas_cache = {}
+        self._anchor_atlas_cache_order = []
         self._prepare_target = None
         self._bands = None
         # Two prepared-resource slots: the front slot is what the viewport may
@@ -412,8 +421,11 @@ class GribViewportModel:
             )
 
     # ----------------------------------------------------------- camera
-    def update(self, camera):  # noqa: C901 - atomic coverage/generation transition
+    def update(self, camera, reference=None):  # noqa: C901 - coverage transition
         """Adopt a camera and return the portrayal that may be shown.
+
+        ``reference`` is the map pan reference the selection anchors are
+        encoded against; a covered pan then resolves the same anchor bytes.
 
         Returns ``(state, field, selection)``.  ``state`` is ``ready`` only
         when the selection belongs to the field that is actually published.
@@ -471,6 +483,17 @@ class GribViewportModel:
                         break
         if field is not None and _covers(field, camera):
             view = camera.view()
+            anchor_key = (
+                None
+                if reference is None
+                else (
+                    reference._center_lat,
+                    reference._center_lon,
+                    reference._zoom,
+                    reference.width,
+                    reference.height,
+                )
+            )
             cache_key = (
                 field.generation,
                 field.identity.key(),
@@ -481,13 +504,49 @@ class GribViewportModel:
                 view._center_lon,
                 view._zoom,
                 view.density,
+                view.over_land,
+                view.geographic,
+                anchor_key,
             )
+            # A reference at another zoom or viewport size cannot place the
+            # shared layer, so the atlas is built from the current view.  Key
+            # it by the frame that is actually projected, not by the reference
+            # that was offered: an incompatible reference must not reuse the
+            # atlas of a previous compatible one.
+            anchor = anchor_view(view, reference)
+            atlas_key = (
+                field.generation,
+                anchor._center_lat,
+                anchor._center_lon,
+                anchor._zoom,
+                anchor.width,
+                anchor.height,
+            )
+            atlas = self._anchor_atlas_cache.get(atlas_key)
+            if atlas is None:
+                try:
+                    atlas = node_anchor_atlas(field, anchor)
+                except Exception as exc:  # projection metadata escape
+                    logger.debug("Resident anchor atlas unavailable: %s", exc)
+                    atlas = None
+                if atlas is not None:
+                    if len(self._anchor_atlas_cache) >= 8:
+                        oldest = self._anchor_atlas_cache_order.pop(0)
+                        self._anchor_atlas_cache.pop(oldest, None)
+                    self._anchor_atlas_cache[atlas_key] = atlas
+                    self._anchor_atlas_cache_order.append(atlas_key)
             cached = self._selection_cache.get(cache_key)
             if cached is not None:
                 selection = cached
             else:
                 try:
-                    selection = select_resident(field, camera.stamp(), view).selection
+                    selection = select_resident(
+                        field,
+                        camera.stamp(),
+                        view,
+                        reference,
+                        anchor_atlas=atlas,
+                    ).selection
                 except Exception as exc:  # coverage or time escape
                     logger.debug("Resident selection unavailable: %s", exc)
                     selection = None
@@ -1331,6 +1390,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._wind_style = "barbs"
             self._camera = None
             self._weather_display_camera = None
+            self._weather_display_dpr = None
             self._drag = None
             self._drag_velocity = DragVelocity()
             self._pan_inertia = None
@@ -1404,6 +1464,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._route_pan_window = None
             self._map_content = None
             self._map_pan_reference = None
+            self._camera_dpr = None
             self._map_anchor_camera = None
             self._map_pan_window = None
             self._base_placement = None
@@ -1524,6 +1585,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 if self._fill is not None
                 else None
             )
+            # The scene may own the node-anchor textures and hand the same
+            # Image instances to the front and back barbs.  Two slots let a
+            # pending frame load beside the one on screen, and a slot's pair
+            # is never rewritten while the front layer displays it.
+            self._shared_anchor_items = self._find_shared_anchor_items()
+            self._shared_anchor_urls = [None, None]
+            self._shared_anchor_front = None
+            self._shared_anchor_pending = None
             self._fill_staging = False
             self._image_fill_token = None
             self._image_fill_pending_epoch = None
@@ -1534,8 +1603,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._native_active_camera = None
             self._native_pending_camera = None
             self._native_active_identity = self._native_pending_identity = None
+            self._native_active_dpr = None
+            self._native_pending_dpr = None
+            self._barb_zoom_preview = None
             self._native_publishing = False
             self._native_pending_selection_urls = ()
+            self._native_active_selection = None
+            self._native_pending_selection = None
             if self._chart_layer:
                 self._chart = self._weather.findChild(QObject, "chartLayer")
                 self._chart_status_item = self._weather.findChild(
@@ -2211,6 +2285,22 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                             placement[1] + dy,
                             *placement[2:],
                         )
+            # The barb anchors are encoded for the camera that published them.
+            # Their displayed position is the anchor plus this offset plus the
+            # parent translation, so a rebase shifts both front and pending by
+            # the same translation instead of re-uploading anchor textures.
+            for item in (
+                getattr(self, "_barbs", None),
+                getattr(self, "_barbs_back", None),
+            ):
+                if item is not None:
+                    for name, delta in (
+                        ("anchorOffsetX", dx),
+                        ("anchorOffsetY", dy),
+                    ):
+                        item.setProperty(
+                            name, float(item.property(name) or 0.0) + delta
+                        )
 
         def _place_fill_rect(self, item, rect):
             placement = (rect.x(), rect.y(), rect.width(), rect.height())
@@ -2488,7 +2578,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 if slot == self._native_front_index:
                     self._native_active_camera = None
                     self._native_active_identity = None
+                    self._native_active_selection = None
+                    self._native_active_dpr = None
                     self._weather_display_camera = None
+                    self._clear_barb_zoom_preview()
                     self._set_weather_visible(False)
                 if self._camera is not None:
                     QTimer.singleShot(
@@ -2542,6 +2635,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     if slot == self._native_front_index:
                         self._native_active_camera = self._camera
                         self._native_active_identity = self._native_pending_identity
+                        self._native_active_selection = self._native_pending_selection
+                        if getattr(self, "_native_active_dpr", None) is None:
+                            self._native_active_dpr = self._native_publication_dpr()
             self._update_native_state()
 
         def _update_native_state(self):
@@ -2583,11 +2679,19 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     if self._native_active_camera is None:
                         self._native_active_camera = self._camera
                         self._native_active_identity = self._native_pending_identity
+                        self._native_active_selection = self._native_pending_selection
+                        if getattr(self, "_native_active_dpr", None) is None:
+                            self._native_active_dpr = (
+                                getattr(self, "_native_pending_dpr", None)
+                                or self._native_publication_dpr()
+                            )
                         self._weather_display_camera = self._camera
+                        self._adopt_shared_anchor_front()
                         self._provider.pin_selection(
                             self._native_pending_selection_urls
                         )
                     if self._state != "ready":
+                        self._clear_barb_zoom_preview()
                         self._show_state("ready")
             elif self._model.state == "ready" and self._state != "loading":
                 self._show_state("loading")
@@ -2604,9 +2708,26 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._native_front_index = 1 - old_index
             self._native_active_camera = self._native_pending_camera
             self._native_active_identity = self._native_pending_identity
+            self._native_active_selection = self._native_pending_selection
+            self._native_active_dpr = getattr(self, "_native_pending_dpr", None)
             self._weather_display_camera = self._native_pending_camera
+            old_front_slot = getattr(self, "_shared_anchor_front", None)
+            retained_anchors = ()
+            if old_front_slot is not None:
+                retained_anchors = (
+                    getattr(self, "_shared_anchor_urls", [None, None])[old_front_slot]
+                    or ()
+                )
+            # The item that was staged as pending now owns the front layer, so
+            # its atlas slot is the one on screen.  The superseded slot keeps
+            # its loaded pair and is only rewritten by a later frame.
+            self._adopt_shared_anchor_front()
             self._native_pending_camera = None
             self._native_pending_identity = None
+            self._native_pending_selection = None
+            # The staged frame is now the front: identity preview uniforms on
+            # both sides, so the next camera's placement uses anchor offsets.
+            self._clear_barb_zoom_preview()
             self._barbs.setVisible(True)
             if self._fill is not None:
                 self._fill.setOpacity(
@@ -2624,7 +2745,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 context = self._native_contexts.get((role, old_index))
                 if context is not None:
                     context.clear()
-            self._provider.pin_selection(self._native_pending_selection_urls)
+            self._provider.pin_selection(
+                self._native_pending_selection_urls, retained=retained_anchors
+            )
             self._native_pending_selection_urls = ()
 
         def _bind_native_layer(
@@ -2727,6 +2850,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._weather_display_camera = None
             self._native_active_camera = self._native_pending_camera = None
             self._native_active_identity = self._native_pending_identity = None
+            self._native_active_selection = self._native_pending_selection = None
+            self._native_active_dpr = self._native_pending_dpr = None
             self._native_pending_selection_urls = ()
             self._clear_weather_sources()
             for context in self._native_contexts.values():
@@ -3384,6 +3509,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
         def _clear_weather_sources(self):
             # Clearing the CPU provider alone leaves QML Images holding the
             # previous source's native textures. Retire both ownership layers.
+            pool = self._shared_anchor_pool()
             for item, names in (
                 (
                     self._barbs,
@@ -3414,10 +3540,28 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             ):
                 if item is not None and shiboken6.isValid(item):
                     for name in names:
+                        if pool is not None and name in (
+                            "anchorXSource",
+                            "anchorYSource",
+                        ):
+                            # The scene-owned atlas slots are cleared below.
+                            continue
                         item.setProperty(name, QUrl())
+                    if names[0] == "u0Source" and "nodeIdSource" in names:
+                        # The next selection is published at the camera that
+                        # produced it; a cleared layer starts unshifted.
+                        item.setProperty("anchorOffsetX", 0.0)
+                        item.setProperty("anchorOffsetY", 0.0)
                     if self._native_weather_fields:
                         item.setProperty("nativeReady", False)
                         item.setProperty("nativeFrameObserved", False)
+            if any(
+                slot is not None
+                for slot in getattr(self, "_shared_anchor_items", None) or ()
+            ):
+                # A partially initialised pool still owns loaded textures: clear
+                # every declared slot rather than only a complete pool.
+                self._clear_shared_anchors()
 
         def _refresh(self, generation):
             if generation != self._source_generation or self._disposed:
@@ -3474,8 +3618,22 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             state = "loading"
             try:
                 previous_camera = self._camera
+                current_dpr = self._native_publication_dpr()
+                previous_dpr = getattr(self, "_camera_dpr", None)
+                self._camera_dpr = current_dpr
+                # Retire anchors encoded for the frame this camera replaces
+                # before the shared map reference (and any rebase offset) is
+                # rewritten. A zoom, resize or ratio change cannot be placed;
+                # a pan or rebase keeps its anchors displayable.
+                self._retire_barb_anchor_frame(previous_camera, camera, previous_dpr)
                 self._camera = camera
                 map_anchor_changed = self._update_shared_map_pan(camera)
+                # After the shared map reference has been reset for this
+                # camera, a zoom may keep the retained front visible through
+                # the temporary preview transform instead of hiding it.
+                self._maybe_arm_barb_zoom_preview(
+                    previous_camera, camera, previous_dpr, current_dpr
+                )
                 if previous_camera is not None and (
                     previous_camera.zoom != camera.zoom
                     or previous_camera.width != camera.width
@@ -3557,7 +3715,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     self._set_weather_visible(False)
                     self.cameraChanged.emit(camera)
                     return self._state
-                state, field, selection = self._model.update(camera)
+                state, field, selection = self._model.update(
+                    camera, self._barb_reference_view(camera)
+                )
                 if state != "ready":
                     previous = self._weather_display_camera
                     preview = (
@@ -3566,7 +3726,21 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                         and previous.time != camera.time
                         and self._same_weather_view(previous, camera)
                     )
-                    if preview:
+                    zoom_preview = (
+                        state == "loading"
+                        and getattr(self, "_barb_zoom_preview", None) is not None
+                        and self._barb_zoom_preview_holds(camera, current_dpr)
+                    )
+                    if zoom_preview:
+                        # The retained front is the previous frame, placed by
+                        # the preview transform.  It is explicitly a loading
+                        # preview: never report it as the current selection.
+                        self._set_weather_visible(True)
+                        self._show_state(
+                            state,
+                            "Updating wind — showing previous-frame zoom preview",
+                        )
+                    elif preview:
                         # Keep the last complete portrayal during time-only
                         # staging. Label it explicitly so previous-time data
                         # cannot be mistaken for the requested forecast.
@@ -3575,14 +3749,20 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                             state, "Updating wind — showing previous forecast time"
                         )
                     else:
+                        self._clear_barb_zoom_preview()
                         self._set_weather_visible(False)
                         self._show_state(state)
                     self.cameraChanged.emit(camera)
                     return state
+                # Do not clear the zoom preview before publishing: it must stay
+                # visible while the replacement stages as pending.  It is
+                # cleared only when the commit swaps the back into the front
+                # (_commit_native_weather).
                 if self._publish(field, selection, camera) is False:
                     return "unavailable"
                 if not self._native_weather_fields:
                     self._weather_display_camera = camera
+                    self._weather_display_dpr = current_dpr
                 self._set_weather_visible(True)
                 if self._native_weather_fields:
                     self._update_native_state()
@@ -3703,15 +3883,31 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
         def _publish(self, field, selection, camera):
             # Reject before publishing either namespace or touching QML sources.
             validate_binding(field, selection)
+            dpr = self._native_publication_dpr()
+            if (
+                self._native_weather_fields
+                and self._native_retained_view_is_current(camera, dpr)
+                and self._selection_is_displayed(field, selection)
+            ):
+                # The same symbols of the same resident field at the same
+                # forecast time, only moved by a covered pan: the retained
+                # anchors are already placed for this camera.  Skip the
+                # back-slot swap so nothing reloads, and keep the displayed
+                # camera current.
+                self._native_active_camera = camera
+                self._weather_display_camera = camera
+                return True
             if self._native_weather_fields and (
                 (
                     self._native_active_camera == camera
                     and self._native_pending_camera is None
                     and self._native_active_identity == field.identity
+                    and getattr(self, "_native_active_dpr", None) == dpr
                 )
                 or (
                     self._native_pending_camera == camera
                     and self._native_pending_identity == field.identity
+                    and getattr(self, "_native_pending_dpr", None) == dpr
                 )
             ):
                 return True
@@ -3726,6 +3922,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     self._fill_back.setVisible(True)
             if self._native_weather_fields:
                 self._native_pending_identity = field.identity
+                self._native_pending_selection = selection
+                self._native_pending_dpr = dpr
             if self._native_weather_fields:
                 required = field.texture_bytes + (
                     0
@@ -4131,6 +4329,84 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 )
             return urls
 
+        def _find_shared_anchor_items(self):
+            """The scene's shared anchor Image slots, when it declares a pool.
+
+            Both barbs sample the same provider Images, so an anchor atlas is
+            uploaded once per slot instead of once per layer.  A scene without
+            them keeps the historical per-item anchor sources.
+            """
+            weather = getattr(self, "_weather", None)
+            if weather is None:
+                return (None, None)
+            slots = []
+            for slot in (0, 1):
+                x_item = weather.findChild(QObject, f"sharedAnchorX{slot}")
+                y_item = weather.findChild(QObject, f"sharedAnchorY{slot}")
+                if x_item is None or y_item is None:
+                    slots.append(None)
+                else:
+                    slots.append((x_item, y_item))
+            return tuple(slots)
+
+        def _shared_anchor_pool(self):
+            """Both atlas slots, or ``None`` when the scene declares none."""
+            items = getattr(self, "_shared_anchor_items", None)
+            if items is None or any(slot is None for slot in items):
+                return None
+            return items
+
+        def _shared_anchor_slot(self, urls, pending):
+            """The atlas slot that serves ``urls``, staging it when necessary.
+
+            The node atlas is field-node-indexed, so a mesh slot permutation
+            reuses an already staged pair without touching either Image.  A new
+            anchor frame is written into the slot the front layer is not
+            displaying, so a pending frame never replaces what is on screen.
+            """
+            items = self._shared_anchor_pool()
+            if items is None:
+                return None
+            pair = (urls[0], urls[1])
+            stored = self._shared_anchor_urls
+            front = self._shared_anchor_front
+            candidates = (0, 1) if front is None else (front, 1 - front)
+            slot = next(
+                (candidate for candidate in candidates if stored[candidate] == pair),
+                None,
+            )
+            if slot is None:
+                slot = 0 if front is None else 1 - front
+                x_item, y_item = items[slot]
+                x_item.setProperty("source", QUrl(pair[0]))
+                y_item.setProperty("source", QUrl(pair[1]))
+                stored[slot] = pair
+            if pending:
+                self._shared_anchor_pending = slot
+            else:
+                self._shared_anchor_front = slot
+            return slot
+
+        def _adopt_shared_anchor_front(self):
+            """Hand the staged atlas slot to the layer that now displays it."""
+            pending = getattr(self, "_shared_anchor_pending", None)
+            if pending is not None:
+                self._shared_anchor_front = pending
+                self._shared_anchor_pending = None
+
+        def _clear_shared_anchors(self):
+            """Release both atlas slots and forget which one the front shows."""
+            self._shared_anchor_urls = [None, None]
+            self._shared_anchor_front = None
+            self._shared_anchor_pending = None
+            items = getattr(self, "_shared_anchor_items", None) or ()
+            for slot in items:
+                if slot is None:
+                    continue
+                for item in slot:
+                    if shiboken6.isValid(item):
+                        item.setProperty("source", QUrl())
+
         def _publish_barbs(self, field, selection, field_urls, selection_urls, camera):
             """Stage the barbs layer on its own inputs.
 
@@ -4143,6 +4419,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 and self._native_pending_camera is not None
                 else self._barbs
             )
+            if self._native_weather_fields:
+                # The bound item starts from identity preview uniforms.  When
+                # this publishes the pending back, the displayed front keeps
+                # its zoom preview until the commit swaps the layers.
+                self._reset_barb_zoom_preview_item(item)
             if self._native_weather_fields:
                 resources = {ResourceKind.IMAGE: field.images}
                 budget_bytes = sum(
@@ -4187,14 +4468,47 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._published = field.generation
                 self.counters["barbs_field_publications"] += 1
                 self.counters["barbs_field_uploads"] += 1
-            # Apply translation to selection anchors if camera has moved from reference
-            selection_urls = self._translate_selection_anchors(
-                selection, camera, selection_urls
+            # Selection anchors are encoded in the coordinates of the camera
+            # that published them.  The layer is placed in shared map-content
+            # space, so the item compensates with its reference-local offset:
+            # a pan inside one reference changes neither the anchors nor the
+            # offset, and a rebase shifts it in _rebase_retained_imagery.
+            offset = self._barb_anchor_offset(camera, selection)
+            # A rebase or zoom can overtake a staged publication: its anchors
+            # then belong to a frame this camera cannot be placed against.
+            # Mark the frame explicitly invalid so the scene keeps the layer
+            # hidden instead of drawing stale anchors at a guessed offset.
+            item.setProperty("anchorFrameValid", offset is not None)
+            if offset is not None:
+                item.setProperty("anchorOffsetX", offset[0])
+                item.setProperty("anchorOffsetY", offset[1])
+            native_pending = (
+                self._native_weather_fields and self._native_pending_camera is not None
             )
+            pool = self._shared_anchor_pool()
+            atlas_slot = None
+            if pool is not None and len(selection_urls) >= 3:
+                # Anchors are the node-indexed atlas: slot changes reuse it and
+                # only the node-id indirection image is per-publication.
+                atlas_slot = self._shared_anchor_slot(
+                    selection_urls[1:3], pending=native_pending
+                )
             for name, url in zip(
                 ("nodeIdSource", "anchorXSource", "anchorYSource"), selection_urls
             ):
+                if pool is not None and name != "nodeIdSource":
+                    continue
                 item.setProperty(name, QUrl(url))
+            if atlas_slot is not None:
+                item.setProperty("atlasSlot", atlas_slot)
+            if native_pending:
+                # The back layer binds these before the swap; keep them
+                # servable until the commit pins them as the front.
+                retain = getattr(
+                    getattr(self, "_provider", None), "retain_selection", None
+                )
+                if retain is not None:
+                    retain(selection_urls)
             self.counters["barbs_selection_publications"] += 1
             self.counters["barbs_selection_uploads"] += 1
             rows, cols = selection.shape
@@ -4206,29 +4520,367 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             if not self._native_weather_fields or self._native_pending_camera is None:
                 item.setOpacity(self._wind_opacity)
 
-        def _translate_selection_anchors(self, selection, camera, selection_urls):
-            """Translate selection anchor coordinates from reference to current camera.
+        def _maybe_arm_barb_zoom_preview(
+            self, previous_camera, camera, previous_dpr, current_dpr
+        ):
+            """Keep the previous front visible through a zoom while it stages.
 
-            For the shared pan migration, selection anchors are published in
-            reference-local coordinates and need to be translated to current
-            camera coordinates.  This is a no-op when there is no reference
-            camera or when the camera hasn't changed from the reference.
+            The preview is only valid when the zoom is the sole change: the
+            viewport size, device ratio and forecast time must match, and the
+            displayed front must still carry a coherent published field.  A
+            source or forecast change therefore never previews; it retires
+            the front as before.  Once armed, a later pan at the same target
+            zoom refreshes the placement against the newly rebased map
+            reference instead of hiding the preview.
             """
-            reference = self._publication_manager.reference_camera
-            if reference is None:
-                return selection_urls
-            ref_pan = PanReference.from_camera(
-                reference, getattr(reference, "dpr", 1.0)
-            )
-            if ref_pan.classify(camera, self.devicePixelRatio()) == CameraChange.PAN:
-                # Camera has only panned from reference; translate anchors
-                dx, dy = ref_pan.translation_to(camera)
-                # The selection_urls tuple contains (nodeIdSource, anchorXSource, anchorYSource)
-                # We need to translate the anchorX and anchorY images
-                # For now, return unchanged - full implementation requires
-                # modifying the anchor coordinate images
+            if not getattr(self, "_native_weather_fields", False) or camera is None:
+                self._clear_barb_zoom_preview()
+                return False
+            active_camera = getattr(self, "_native_active_camera", None)
+            identity = getattr(self, "_native_active_identity", None)
+            selection = getattr(self, "_native_active_selection", None)
+            anchor = getattr(selection, "anchor_reference", None)
+            if (
+                active_camera is None
+                or identity is None
+                or anchor is None
+                or len(anchor) != 5
+            ):
+                self._clear_barb_zoom_preview()
+                return False
+            if not self._barb_zoom_dpr_matches(previous_dpr, current_dpr):
+                self._clear_barb_zoom_preview()
+                return False
+            try:
+                if float(camera.width) != float(anchor[3]) or float(
+                    camera.height
+                ) != float(anchor[4]):
+                    self._clear_barb_zoom_preview()
+                    return False
+                stamp = camera.stamp()
+            except (AttributeError, TypeError, ValueError):
+                self._clear_barb_zoom_preview()
+                return False
+            if getattr(self, "_barb_zoom_preview", None) is not None:
+                if self._barb_zoom_preview_holds(camera, current_dpr):
+                    # A pan at the target zoom: the map reference moved, so
+                    # re-place the same old anchors instead of reloading.
+                    # Re-anchor to the current camera so the preview transform
+                    # is computed against the new map reference at the same
+                    # zoom, keeping the preview visible through pending staging.
+                    self._barb_zoom_preview["anchor"] = PanReference.from_camera(
+                        camera, current_dpr
+                    )
+                    return self._apply_barb_zoom_preview()
+                self._clear_barb_zoom_preview()
+            if previous_camera is None:
+                return False
+            try:
+                unchanged_frame = (
+                    float(camera.zoom) != float(previous_camera.zoom)
+                    and float(camera.width) == float(previous_camera.width)
+                    and float(camera.height) == float(previous_camera.height)
+                    and camera.stamp() == previous_camera.stamp()
+                )
+            except (AttributeError, TypeError, ValueError):
+                return False
+            if not unchanged_frame:
+                return False
+            try:
+                # Source and forecast must match the requested camera: a source
+                # or time change never previews; it retires the front as before.
+                requested_source = getattr(camera, "source", None)
+                if not identity.contains(stamp) or (
+                    requested_source is not None and identity.source != requested_source
+                ):
+                    return False
+            except (AttributeError, TypeError, ValueError):
+                return False
+            # The front must have been displayable at the frame it portrays.
+            if not self._barb_anchor_frame_places(
+                active_camera, previous_dpr, previous_camera, current_dpr
+            ):
+                return False
+            self._barb_zoom_preview = {
+                "anchor": PanReference(*anchor, dpr=current_dpr or 1.0),
+                "zoom": float(camera.zoom),
+                "stamp": stamp,
+                "width": float(camera.width),
+                "height": float(camera.height),
+                "dpr": current_dpr,
+            }
+            return self._apply_barb_zoom_preview()
+
+        @staticmethod
+        def _barb_zoom_dpr_matches(previous_dpr, current_dpr):
+            if previous_dpr is None or current_dpr is None:
+                return True
+            return float(previous_dpr) == float(current_dpr)
+
+        def _barb_zoom_preview_holds(self, camera, dpr=None):
+            """Whether the armed preview still belongs to ``camera``."""
+            frame = getattr(self, "_barb_zoom_preview", None)
+            if frame is None or camera is None:
+                return False
+            if dpr is None:
+                dpr = self._native_publication_dpr()
+            recorded = frame.get("dpr")
+            if recorded is not None and dpr is not None:
+                if float(recorded) != float(dpr):
+                    return False
+            try:
+                return (
+                    float(camera.zoom) == frame["zoom"]
+                    and float(camera.width) == frame["width"]
+                    and float(camera.height) == frame["height"]
+                    and camera.stamp() == frame["stamp"]
+                )
+            except (AttributeError, TypeError, ValueError):
+                return False
+
+        def _apply_barb_zoom_preview(self):
+            """Place the retained front's anchors in the current map reference."""
+            frame = getattr(self, "_barb_zoom_preview", None)
+            if frame is None:
+                return False
+            target = getattr(self, "_map_pan_reference", None)
+            if target is None:
+                camera = self._camera
+                if camera is None:
+                    return False
+                target = PanReference.from_camera(
+                    camera, getattr(self, "_native_publication_dpr", lambda: 1.0)()
+                )
+            transform = zoom_preview_transform(frame["anchor"], target)
+            item = getattr(self, "_barbs", None)
+            if transform is None or item is None:
+                return False
+            scale, offset_x, offset_y = transform
+            try:
+                item.setProperty("previewScale", float(scale))
+                item.setProperty("previewOffsetX", float(offset_x))
+                item.setProperty("previewOffsetY", float(offset_y))
+                # The preview transform already lands in the map reference,
+                # so the reference-local pan compensation is not added again.
+                item.setProperty("anchorOffsetX", 0.0)
+                item.setProperty("anchorOffsetY", 0.0)
+            except RuntimeError:
+                return False
+            self._set_barb_anchor_frame_valid(item, True)
+            return True
+
+        @staticmethod
+        def _reset_barb_zoom_preview_item(item):
+            if item is None:
+                return
+            try:
+                item.setProperty("previewScale", 1.0)
+                item.setProperty("previewOffsetX", 0.0)
+                item.setProperty("previewOffsetY", 0.0)
+            except RuntimeError:
+                # The QML item was destroyed between frames.
                 pass
-            return selection_urls
+
+        def _clear_barb_zoom_preview(self, reset_items=True):
+            """Drop the preview state and restore identity shader uniforms."""
+            frame = getattr(self, "_barb_zoom_preview", None)
+            self._barb_zoom_preview = None
+            if frame is None or not reset_items:
+                return
+            for item in (
+                getattr(self, "_barbs", None),
+                getattr(self, "_barbs_back", None),
+            ):
+                self._reset_barb_zoom_preview_item(item)
+
+        def _retire_barb_anchor_frame(self, previous_camera, camera, previous_dpr=None):
+            """Withdraw barb anchors this camera cannot place.
+
+            The displayed front is judged against the frame it actually
+            portrays (its adopted native camera, or the previous camera), so
+            returning to that frame keeps it displayable.  A pan -- including
+            a rebase the caller compensates -- preserves the anchors; a zoom,
+            viewport resize or device-pixel-ratio change retires them until a
+            publication republishes the layer.  A pending back layer staged
+            for another incompatible frame is retired too, so it can never be
+            committed as the current frame.
+            """
+            if previous_camera is None or camera is None:
+                return False
+            current_dpr = self._native_publication_dpr()
+            active_camera = getattr(self, "_native_active_camera", None)
+            displayed_camera = active_camera or getattr(
+                self, "_weather_display_camera", None
+            )
+            if displayed_camera is None:
+                displayed_camera = previous_camera
+            front_dpr = getattr(self, "_native_active_dpr", None)
+            if front_dpr is None:
+                front_dpr = getattr(self, "_weather_display_dpr", None)
+            if front_dpr is None:
+                front_dpr = previous_dpr
+            front = getattr(self, "_barbs", None)
+            if self._barb_zoom_preview_holds(camera, current_dpr):
+                # The front is the previous frame, placed by the zoom
+                # preview transform.  A pan while the replacement is pending
+                # follows the map reference instead of retiring it.
+                self._set_barb_anchor_frame_valid(front, True)
+            else:
+                self._set_barb_anchor_frame_valid(
+                    front,
+                    self._barb_anchor_frame_places(
+                        displayed_camera, front_dpr, camera, current_dpr
+                    ),
+                )
+            pending_camera = getattr(self, "_native_pending_camera", None)
+            if pending_camera is not None and not self._barb_anchor_frame_places(
+                pending_camera,
+                getattr(self, "_native_pending_dpr", None),
+                camera,
+                current_dpr,
+            ):
+                self._set_barb_anchor_frame_valid(
+                    getattr(self, "_barbs_back", None), False
+                )
+            return not self._barb_anchor_frame_places(
+                previous_camera, previous_dpr, camera, current_dpr
+            )
+
+        @staticmethod
+        def _barb_anchor_frame_places(frame_camera, frame_dpr, camera, current_dpr):
+            """Whether anchors encoded for one frame can be placed at a camera."""
+            if frame_camera is None or camera is None:
+                return False
+            if current_dpr is None:
+                current_dpr = 1.0
+            if frame_dpr is None:
+                frame_dpr = current_dpr
+            try:
+                reference = PanReference.from_camera(frame_camera, frame_dpr)
+                return reference.classify(camera, current_dpr) == CameraChange.PAN
+            except (AttributeError, TypeError, ValueError):
+                return False
+
+        @staticmethod
+        def _set_barb_anchor_frame_valid(item, valid):
+            """Set the anchor-frame flag, tolerating an item already destroyed."""
+            if item is None:
+                return
+            try:
+                item.setProperty("anchorFrameValid", bool(valid))
+            except RuntimeError:
+                # The QML item was destroyed between the camera handoff and
+                # the property write.
+                pass
+
+        def _barb_anchor_offset(self, camera, selection=None):
+            """The reference-local shift of a selection published at ``camera``.
+
+            The selection anchors are reference-local: they are projected at
+            the map pan reference, which the shared parent translates to the
+            camera.  The item therefore needs only ``anchor reference ->
+            map reference``; it is zero whenever both agree.  With no recorded
+            anchor reference (the historical path) the anchors are in the
+            camera's own pixels and the item supplies the inverse pan.
+
+            ``None`` means the anchors belong to an incompatible frame (zoom,
+            viewport size or dpr): there is no correct placement, so the caller
+            must refuse to present them rather than guess an offset.
+            """
+            reference = getattr(self, "_map_pan_reference", None)
+            if reference is None:
+                return 0.0, 0.0
+            anchor = getattr(selection, "anchor_reference", None)
+            try:
+                if anchor is not None:
+                    anchor_reference = PanReference(*anchor, dpr=reference.dpr)
+                    ax, ay = anchor_reference.translation_to(camera, reference.dpr)
+                    bx, by = reference.translation_to(camera, reference.dpr)
+                    return ax - bx, ay - by
+                dx, dy = reference.translation_to(camera, reference.dpr)
+            except (TypeError, ValueError):
+                # A zoom, size or dpr change is a new frame: the retained
+                # anchors cannot be placed against this camera.
+                return None
+            return -dx, -dy
+
+        def _barb_reference_view(self, camera):
+            """The map pan reference, as the view anchors are encoded at."""
+            view = camera.view()
+            reference = getattr(self, "_map_pan_reference", None)
+            if reference is None:
+                return view
+            try:
+                change = reference.classify(camera, self.devicePixelRatio())
+            except (TypeError, ValueError):
+                return view
+            if change != CameraChange.PAN:
+                return view
+            return BarbView(
+                view.width,
+                view.height,
+                reference.center_lat,
+                reference.center_lon,
+                reference.zoom,
+                view.density,
+                view.over_land,
+                view.geographic,
+            )
+
+        def _native_publication_dpr(self):
+            """The GUI's pixel ratio, or None when the host cannot report one."""
+            read = getattr(self, "devicePixelRatio", None)
+            if read is None:
+                return None
+            try:
+                return float(read())
+            except (TypeError, ValueError):
+                return None
+
+        def _native_retained_view_is_current(self, camera, dpr=None):
+            """Whether retained anchors still portray this camera and time exactly.
+
+            Only a translation of an already published camera may reuse them.
+            A forecast-time step changes the blend weights and sampled values
+            even when the resident node identities match, and a zoom, resize
+            or device-pixel-ratio change means the pixel resources were made
+            for another frame, so each of those must publish again.
+            """
+            active = getattr(self, "_native_active_camera", None)
+            if active is None or camera is None:
+                return False
+            if dpr is None:
+                dpr = self._native_publication_dpr()
+            # A publication made at another ratio cannot be reused: its
+            # pixel resources were composed for the earlier frame.
+            recorded = getattr(self, "_native_active_dpr", None)
+            if recorded is None or recorded != dpr:
+                return False
+            active_stamp = getattr(active, "stamp", None)
+            camera_stamp = getattr(camera, "stamp", None)
+            if active_stamp is None or camera_stamp is None:
+                return False
+            try:
+                if active_stamp() != camera_stamp():
+                    return False
+                reference = PanReference.from_camera(active, dpr)
+                return reference.classify(camera, dpr) == CameraChange.PAN
+            except (AttributeError, TypeError, ValueError):
+                return False
+
+        def _selection_is_displayed(self, field, selection):
+            """Whether the front layer already portrays these exact symbols."""
+            if not self._native_weather_fields:
+                return False
+            active = getattr(self, "_native_active_selection", None)
+            matches = getattr(active, "matches", None)
+            return bool(
+                self._native_pending_camera is None
+                and self._native_active_camera is not None
+                and self._native_active_identity == field.identity
+                and matches is not None
+                and matches(selection)
+            )
 
         def publication_counters(self):
             """The published traffic, counted apart by kind and by layer."""

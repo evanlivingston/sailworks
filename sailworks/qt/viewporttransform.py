@@ -122,6 +122,48 @@ def reference_local_point(reference, camera, x, y, dpr: float | None = None):
     return float(x) - dx, float(y) - dy
 
 
+def zoom_preview_transform(
+    anchor: PanReference, target: PanReference
+) -> tuple[float, float, float] | None:
+    """Scale and offset that map ``anchor``-frame pixels into ``target`` pixels.
+
+    A retained barb atlas was projected at the anchor camera, so its centre is
+    the anchor frame's screen centre.  A zoom scales every anchor position
+    about that centre by ``2 ** (target.zoom - anchor.zoom)``; the projected
+    position of the same geographic centre in the target camera supplies the
+    shift.  The longitude is made continuous against the target centre, so a
+    preview that crosses the antimeridian never jumps a world width.
+
+    Only the anchor position is scaled.  The symbol's own quad (its local
+    +/-32 pixel offsets) is added afterwards by the shader, so every preview
+    symbol keeps its screen size.
+
+    ``None`` means the two frames have different viewport sizes, so no
+    screen placement exists and the preview must not be shown.
+    """
+    if float(anchor.width) != float(target.width) or float(anchor.height) != float(
+        target.height
+    ):
+        return None
+    scale = 2.0 ** (float(target.zoom) - float(anchor.zoom))
+    longitude = continuous_longitude(anchor.center_lon, target.center_lon)
+    centre_x = (
+        _world_x(longitude, target.zoom)
+        - _world_x(target.center_lon, target.zoom)
+        + float(target.width) / 2.0
+    )
+    centre_y = (
+        _world_y(anchor.center_lat, target.zoom)
+        - _world_y(target.center_lat, target.zoom)
+        + float(target.height) / 2.0
+    )
+    return (
+        scale,
+        centre_x - scale * float(anchor.width) / 2.0,
+        centre_y - scale * float(anchor.height) / 2.0,
+    )
+
+
 @dataclass(frozen=True)
 class PaddedPanWindow:
     """Retained raster window that can translate until its padding is used."""
