@@ -2258,6 +2258,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
 
         def _rebase_retained_imagery(self, dx, dy):
             """Preserve the on-screen anchors when the bounded parent resets."""
+            navigation = getattr(self, "_navigation_overlay", None)
+            target = getattr(self, "_navigation_target", None)
+            if navigation is not None and target is not None:
+                target = (target[0] + dx, target[1] + dy, *target[2:])
+                navigation.setProperty("imageX", target[0])
+                navigation.setProperty("imageY", target[1])
+                self._navigation_target = target
             for item, attribute in (
                 (getattr(self, "_base", None), "_base_placement"),
                 (getattr(self, "_environment", None), "_environment_placement"),
