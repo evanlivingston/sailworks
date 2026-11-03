@@ -1152,6 +1152,27 @@ class QtPreviewChecks(unittest.TestCase):
                 self.assertFalse(worker.is_alive())
                 self.assertFalse(failures)
 
+    def test_start_connections_only_polls_live_source(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+
+        task = SimpleNamespace(start=Mock())
+        controller = SimpleNamespace(
+            closed=False,
+            session=SimpleNamespace(source="none", streaming=True),
+            connections=SimpleNamespace(polling_active=False, start_polling=Mock()),
+            connection_task=task,
+        )
+        for source in ("none", "log"):
+            with self.subTest(source=source):
+                controller.session.source = source
+                type(self.controller).start_connections(controller)
+                task.start.assert_not_called()
+
+        controller.session.source = "live"
+        type(self.controller).start_connections(controller)
+        task.start.assert_called_once()
+
     @unittest.skipUnless(sys.platform != "win32", "POSIX pseudo-terminal validation")
     def test_local_serial_feed_runs_through_production_reader_and_ui(self):
         import os
@@ -1859,7 +1880,6 @@ class QtPreviewChecks(unittest.TestCase):
         if before_open is not None:
             before_open(path)
         controller = SessionController(
-            offline=True,
             recording_directory=self.path / "recordings",
             load_charts=False,
         )
@@ -1874,6 +1894,46 @@ class QtPreviewChecks(unittest.TestCase):
         self.addCleanup(self.window.close)
         self.drain()
         return self.window.workspace
+
+    def test_nmea_source_persists_before_starting_connections(self):
+        for index, source in ((2, "none"), (1, "log"), (0, "live")):
+            with self.subTest(source=source):
+                with patch.object(self.controller.connection_task, "start"):
+                    self.window.source.setCurrentIndex(index)
+                self.window.workspace.save()
+                self.assertEqual(
+                    self.window.workspace.store.load()["nmea_source"], source
+                )
+                self.restart_workspace()
+                self.assertEqual(self.controller.session.source, source)
+                self.assertEqual(self.window.source.currentIndex(), index)
+                self.assertEqual(self.controller.session.streaming, source == "live")
+                if source == "log":
+                    self.assertIsNone(self.controller.session.log)
+                    self.assertTrue(self.window.source.model().item(1).isEnabled())
+                with patch.object(self.controller.connection_task, "start") as start:
+                    self.controller.start_connections()
+                self.assertEqual(start.call_count, int(source == "live"))
+
+    def test_invalid_or_missing_nmea_source_defaults_to_live(self):
+        for value in (None, "invalid", ["none"]):
+            with self.subTest(value=value):
+
+                def write_preference(path):
+                    payload = json.loads(path.read_text())
+                    state = payload["state"]
+                    if value is None:
+                        state.pop("nmea_source", None)
+                    else:
+                        state["nmea_source"] = value
+                    path.write_text(json.dumps(payload))
+
+                self.restart_workspace(before_open=write_preference)
+                self.assertEqual(self.controller.session.source, "live")
+                self.assertTrue(self.controller.session.streaming)
+                with patch.object(self.controller.connection_task, "start") as start:
+                    self.controller.start_connections()
+                self.assertEqual(start.call_count, 1)
 
     def test_workspace_roundtrip_keeps_layout_view_and_options_without_instrument_history(
         self,

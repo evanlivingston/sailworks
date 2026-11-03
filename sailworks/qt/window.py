@@ -1075,6 +1075,11 @@ class PreviewWindow(QMainWindow):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(12, 8, 12, 12)
         layout.setSpacing(8)
+        layout.addWidget(section_label("Data source"))
+        self.source = QComboBox()
+        self.source.addItems(["Live data source", "Loaded log", "None"])
+        self.source.currentIndexChanged.connect(self._source_changed)
+        layout.addWidget(self.source)
         layout.addWidget(section_label("Instruments"))
         self.instruments_toggle = QPushButton("Instruments")
         self.instruments_toggle.setObjectName("instruments-toggle")
@@ -1090,14 +1095,9 @@ class PreviewWindow(QMainWindow):
         layout.addWidget(self.connection_status)
         self._connection_status_text = None
         self._refresh_connection_status()
-        layout.addWidget(section_label("Data source"))
-        self.source = QComboBox()
-        self.source.addItems(["Live data source", "Loaded log"])
-        self.source.currentIndexChanged.connect(self._source_changed)
-        layout.addWidget(self.source)
-        library = QPushButton("Log library…")
-        library.clicked.connect(self.show_log_library)
-        layout.addWidget(library)
+        self.log_library_button = QPushButton("Log library…")
+        self.log_library_button.clicked.connect(self.show_log_library)
+        layout.addWidget(self.log_library_button)
         self.track_source_group = QWidget()
         track_layout = QVBoxLayout(self.track_source_group)
         track_layout.setContentsMargins(0, 0, 0, 0)
@@ -1132,8 +1132,14 @@ class PreviewWindow(QMainWindow):
     def refresh(self):
         self.syncing = True
         session = self.session
-        self.source.setCurrentIndex(0 if session.source == "live" else 1)
-        self.source.model().item(1).setEnabled(session.log is not None)
+        if session.source == "live":
+            self.source.setCurrentIndex(0)
+        elif session.source == "none":
+            self.source.setCurrentIndex(2)
+        else:
+            self.source.setCurrentIndex(1)
+        self.source.model().item(1).setEnabled(True)
+        self.source.model().item(2).setEnabled(True)
         self.source.setEnabled(
             not session.loading and not self.controller.connection_task.busy
         )
@@ -1143,6 +1149,10 @@ class PreviewWindow(QMainWindow):
             session.recording
             or (session.source == "live" and session.streaming and not session.loading)
         )
+        none_source = session.source == "none"
+        self.instruments_toggle.setVisible(not none_source)
+        self.connection_status.setVisible(not none_source)
+        self.log_library_button.setVisible(session.source == "log")
         self.record.setToolTip(
             "Stop recording"
             if session.recording
@@ -1229,7 +1239,7 @@ class PreviewWindow(QMainWindow):
         session = self.session
         log = session.log if session.source == "log" else None
         tracks = log.source_tracks if log else {}
-        self.track_source_group.setVisible(bool(tracks))
+        self.track_source_group.setVisible(session.source != "none" and bool(tracks))
         self.track_source.setEnabled(bool(tracks) and not session.loading)
         if log is not self._track_source_log:
             self._track_source_log = log
@@ -1315,6 +1325,9 @@ class PreviewWindow(QMainWindow):
         if index == 0:
             self.session.select_source("live")
             self.controller.set_live_reading(True)
+        elif index == 2:
+            self.controller.set_live_reading(False)
+            self.session.select_source("none")
         else:
             self.controller.set_live_reading(False)
             self.session.select_source("log")

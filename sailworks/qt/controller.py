@@ -213,6 +213,7 @@ class SessionController(QObject):
     def start_connections(self):
         if (
             not self.closed
+            and self.session.source == "live"
             and self.session.streaming
             and not self.connections.polling_active
         ):
@@ -671,11 +672,17 @@ class SessionController(QObject):
         self.connection_task.close(wait=True)
         self.connections.stop_polling()
         self.session.close()
-        self.core.nmea_session.disconnect("data", self.core.data_handler)
+        try:
+            self.core.nmea_session.disconnect("data", self.core.data_handler)
+        except ValueError:
+            pass
         for canvas in list(self.charts.maps):
             canvas.dispose()
         self.core.disconnect("boat_data", self.boat_changed.emit)
-        self.core.nmea_session.disconnect("reset", self.core._reset_nmea)
+        try:
+            self.core.nmea_session.disconnect("reset", self.core._reset_nmea)
+        except ValueError:
+            pass
         self.scheduler.close()
         for event, callback in (
             ("changed", self._changed),

@@ -116,8 +116,8 @@ class NMEA2000DataSource:
                 writer(frame(0xA1, b"\x11\x02\x00"))
             self.connected = True
             return True
-        except (OSError, serial.SerialException, ValueError):
-            logger.exception("Cannot connect to NMEA 2000 input %s", self.name)
+        except (OSError, serial.SerialException, ValueError) as exc:
+            logger.warning("Cannot connect to NMEA 2000 input %s: %s", self.name, exc)
             self.close()
             return False
 
