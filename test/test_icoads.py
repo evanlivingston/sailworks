@@ -46,13 +46,14 @@ class IcoadsStateTests(TestCase):
         with patch.object(MercatorProjection, "convert_geographic_to_screen", project):
             positions = item._positions()
             self.assertIs(item._positions(), positions)
-            self.assertEqual(len(calls), 2)
+            initial_count = len(calls)
+            self.assertGreater(initial_count, 0)
             item.set_camera(replace(reference, center_lon=20.01), reference=reference)
             self.assertIs(item._positions(), positions)
-            self.assertEqual(len(calls), 2)
+            self.assertEqual(len(calls), initial_count)
             item.set_reports(reports)
             item._positions()
-            self.assertEqual(len(calls), 4)
+            self.assertEqual(len(calls), 2 * initial_count)
             for change in (
                 {"center_lat": 11},
                 {"center_lon": 21},
@@ -64,17 +65,19 @@ class IcoadsStateTests(TestCase):
                 item.set_camera(camera, reference=camera)
                 count = len(calls)
                 item._positions()
-                self.assertEqual(len(calls), count + 2)
+                self.assertGreater(len(calls), count)
             item._padding += 1
             count = len(calls)
             item._positions()
-            self.assertEqual(len(calls), count + 2)
+            self.assertGreater(len(calls), count)
+            count = len(calls)
             item.setWidth(item.width() + 1)
             item._positions()
-            self.assertEqual(len(calls), count + 4)
+            self.assertGreater(len(calls), count)
+            count = len(calls)
             item.setHeight(item.height() + 1)
             item._positions()
-            self.assertEqual(len(calls), count + 6)
+            self.assertGreater(len(calls), count)
 
     def test_cached_positions_hover_and_paint_match_projection(self):
         from PySide6.QtCore import QPointF

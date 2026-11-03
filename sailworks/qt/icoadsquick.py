@@ -107,13 +107,39 @@ class IcoadsQuickItem(QQuickPaintedItem):
         )
         if camera is self._positions_camera and key == self._positions_key:
             return self._positions_cache
-        from sailworks.core.mapviewport import MapPoint
+        from sailworks.core.mapviewport import MapPoint, MercatorProjection
+
+        view = camera.view()
+        bounds = None
+        if isinstance(view, MercatorProjection):
+            top, left = view.convert_screen_to_geographic(
+                -self._padding, -self._padding
+            ).get_degrees()
+            bottom, right = view.convert_screen_to_geographic(
+                self.width() - self._padding, self.height() - self._padding
+            ).get_degrees()
+            # Roundoff in the inverse must never reject an edge marker.
+            epsilon = 1e-9
+            bounds = (bottom - epsilon, top + epsilon, left - epsilon, right + epsilon)
 
         result = []
         for report in self._reports:
             try:
-                # Project against reference camera
-                x, y = self._ref_camera.view().convert_geographic_to_screen(
+                if bounds is not None:
+                    bottom, top, left, right = bounds
+                    lat = max(-view.MAX_LAT, min(view.MAX_LAT, float(report.latitude)))
+                    lon = float(report.longitude)
+                    if lat < bottom or lat > top:
+                        continue
+                    # Include wrapped candidates conservatively. The existing
+                    # projection itself is unwrapped, and remains authoritative.
+                    if right - left < 360 and not (
+                        left <= lon <= right
+                        or left <= lon - 360 <= right
+                        or left <= lon + 360 <= right
+                    ):
+                        continue
+                x, y = view.convert_geographic_to_screen(
                     MapPoint(report.latitude, report.longitude)
                 )
                 # Paint the padded reference surface once; the stationary map
