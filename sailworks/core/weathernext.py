@@ -31,8 +31,12 @@ def statistics_store_url(run_time: datetime, run_tag: str) -> str:
     return f"{BASE_URL}{run_time:%Y%m%d_%Hhr}_{run_tag}/predictions.zarr"
 
 
-def open_statistics_store(url: str, opener: Callable | None = None):
-    """Open a GCS Zarr store lazily. Dependencies are optional until called."""
+def open_statistics_store(url: str, opener: Callable | None = None, credentials=None):
+    """Open a GCS Zarr store lazily. Dependencies are optional until called.
+
+    ``credentials`` may be a google-auth credential object. When omitted,
+    gcsfs uses Application Default Credentials.
+    """
     if (
         not isinstance(url, str)
         or not url.startswith(BASE_URL)
@@ -42,18 +46,14 @@ def open_statistics_store(url: str, opener: Callable | None = None):
     if opener is not None:
         return opener(url)
     try:
+        import gcsfs
         import xarray as xr
-        from obstore.store import GCSStore
-        from zarr.storage import ObjectStore
     except ImportError as exc:
         raise RuntimeError(
-            "Opening WeatherNext requires xarray, zarr and obstore"
+            "Opening WeatherNext requires xarray, zarr and gcsfs"
         ) from exc
-    store = GCSStore(
-        bucket="weathernext3_statistics_spatial",
-        prefix=url.removeprefix("gs://weathernext3_statistics_spatial/"),
-    )
-    return xr.open_zarr(ObjectStore(store), chunks={})
+    filesystem = gcsfs.GCSFileSystem(token=credentials or "google_default")
+    return xr.open_zarr(filesystem.get_mapper(url), chunks={})
 
 
 def _bounds(bounds, name, low, high):

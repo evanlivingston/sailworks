@@ -1,6 +1,6 @@
 """Weather overlay controls for the active chart or log map."""
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -21,6 +21,21 @@ from .dockchrome import style_scrollarea
 from .marinepanel import BusyButton
 from .theme import section_label
 from sailworks.rendering.windpainter import BARB_DENSITIES
+
+
+class _WeatherNextSignInWorker(QObject):
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, auth):
+        super().__init__()
+        self.auth = auth
+
+    def run(self):
+        try:
+            self.finished.emit(self.auth.sign_in())
+        except Exception as exc:  # surface the OAuth/config error in the panel
+            self.failed.emit(str(exc))
 
 
 class WeatherPanel(QWidget):
@@ -105,6 +120,23 @@ class WeatherPanel(QWidget):
         self.ship_refresh.clicked.connect(self.ship_observations.refresh)
         controls.addWidget(self.ship_refresh)
         self.ship_observations.changed.connect(self._ship_observations_changed)
+        controls.addWidget(self._section_divider())
+        controls.addWidget(section_label("WeatherNext 3"))
+        self.weathernext_auth = controller.weathernext_auth
+        self._weathernext_thread = None
+        self._weathernext_worker = None
+        self.weathernext_status = QLabel()
+        self.weathernext_status.setWordWrap(True)
+        controls.addWidget(self.weathernext_status)
+        weathernext_row = QHBoxLayout()
+        self.weathernext_sign_in = QPushButton("Sign in with Google")
+        self.weathernext_sign_out = QPushButton("Sign out")
+        self.weathernext_sign_in.clicked.connect(self._weathernext_sign_in)
+        self.weathernext_sign_out.clicked.connect(self._weathernext_sign_out)
+        weathernext_row.addWidget(self.weathernext_sign_in)
+        weathernext_row.addWidget(self.weathernext_sign_out)
+        controls.addLayout(weathernext_row)
+        self._refresh_weathernext_status()
         controls.addWidget(self._section_divider())
         controls.addWidget(section_label("Isobars"))
         self.isobars = self.checkbox("Show isobars", "gribIsobarsVisible")
@@ -251,6 +283,69 @@ class WeatherPanel(QWidget):
             self.ship_observations.changed.disconnect(self._ship_observations_changed)
         except (RuntimeError, TypeError):
             pass
+
+    def _refresh_weathernext_status(self):
+        try:
+            credentials = self.weathernext_auth.credentials()
+            email = self.weathernext_auth.account_email() if credentials else None
+        except Exception as exc:
+            self.weathernext_status.setText(f"WeatherNext: {exc}")
+            self.weathernext_sign_in.setEnabled(False)
+            self.weathernext_sign_out.setEnabled(False)
+            return
+        configured = bool(self.weathernext_auth.client_id)
+        if credentials:
+            label = "Signed in"
+            if email:
+                label += f" as {email}"
+            self.weathernext_status.setText(label)
+            self.weathernext_sign_in.setEnabled(False)
+            self.weathernext_sign_out.setEnabled(True)
+        else:
+            self.weathernext_status.setText(
+                "Not signed in"
+                if configured
+                else "Sign-in not configured (set WEATHERNEXT_OAUTH_CLIENT_ID)"
+            )
+            self.weathernext_sign_in.setEnabled(configured)
+            self.weathernext_sign_out.setEnabled(False)
+
+    def _weathernext_sign_in(self):
+        if self._weathernext_thread is not None:
+            return
+        self.weathernext_sign_in.setEnabled(False)
+        self.weathernext_status.setText("Opening Google sign-in…")
+        thread = QThread(self)
+        worker = _WeatherNextSignInWorker(self.weathernext_auth)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._weathernext_signed_in)
+        worker.failed.connect(self._weathernext_sign_in_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(self._weathernext_thread_finished)
+        self._weathernext_thread = thread
+        self._weathernext_worker = worker
+        thread.start()
+
+    def _weathernext_signed_in(self, _credentials):
+        self._refresh_weathernext_status()
+
+    def _weathernext_sign_in_failed(self, message):
+        self.weathernext_status.setText(f"WeatherNext sign-in failed: {message}")
+        self.weathernext_sign_in.setEnabled(bool(self.weathernext_auth.client_id))
+
+    def _weathernext_thread_finished(self):
+        self._weathernext_thread = None
+        self._weathernext_worker = None
+
+    def _weathernext_sign_out(self):
+        try:
+            self.weathernext_auth.sign_out()
+        except Exception as exc:
+            self.weathernext_status.setText(f"WeatherNext sign-out failed: {exc}")
+            return
+        self._refresh_weathernext_status()
 
     def refresh(self):
         self.wind_style.blockSignals(True)
