@@ -14,7 +14,7 @@ GNU General Public License for more details.
 For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
-"""Production instrument values and Cairo dashboard shared by GTK and Qt."""
+"""Production instrument values and Cairo dashboard for the Qt CPU fallback."""
 
 import math
 
@@ -78,6 +78,19 @@ class DashboardRenderer:
         for gauge in self._gauges:
             if gauge.label in gauge_map:
                 gauge.set_value(gauge_map[gauge.label])
+
+    def overlay_data(self):
+        """Gauge values and colours for the QML dashboard overlay."""
+        self._update_gauge_values()
+        return [
+            {
+                "label": gauge.label,
+                "unit": gauge.unit,
+                "text": ("---" if gauge.value is None else gauge.fmt % gauge.value),
+                "color": list(gauge._get_accent_color()),
+            }
+            for gauge in self._gauges
+        ]
 
     def _draw_dashboard(self, gpsmap, cr):
         """Draw the instrument dashboard panel on the map."""

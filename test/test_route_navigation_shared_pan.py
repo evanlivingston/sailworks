@@ -149,6 +149,26 @@ def test_set_camera_moves_route_canvas_in_camera_pass_without_content_callback()
     assert ("panY", 0.0) in calls
 
 
+def test_route_overlay_publishes_dashboard_to_the_qml_layer():
+    calls = []
+    item = SimpleNamespace(setProperty=lambda name, value: calls.append((name, value)))
+    widget = SimpleNamespace(
+        _route_overlay=item,
+        _camera=_camera(),
+        _route_pan_window=None,
+        _route_content_key=None,
+        devicePixelRatio=lambda: 1.0,
+    )
+    widget_class = _viewport_widget_class()
+    widget._place_route_overlay = MethodType(widget_class._place_route_overlay, widget)
+    overlay = _overlay()
+    overlay["dashboard"] = [
+        {"label": "SOG", "unit": "kts", "text": "5.2", "color": [0.2, 0.9, 0.4]}
+    ]
+    widget_class.set_route_overlay(widget, overlay)
+    assert ("dashboardGauges", overlay["dashboard"]) in calls
+
+
 def test_route_overlay_publishes_isochrones_to_the_qml_layer():
     calls = []
     item = SimpleNamespace(setProperty=lambda name, value: calls.append((name, value)))

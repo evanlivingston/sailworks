@@ -21,6 +21,17 @@ class TestDashboard(unittest.TestCase):
         self.renderer._update_gauge_values()
         return {g.label: g.value for g in self.renderer._gauges}
 
+    def test_overlay_data_exposes_labels_values_and_colours(self):
+        self.boat.sog = 5.2
+        data = self.renderer.overlay_data()
+        self.assertEqual(
+            [gauge["label"] for gauge in data],
+            ["SOG", "COG", "AWS", "AWA", "TWS", "TWA", "Depth"],
+        )
+        self.assertEqual(data[0]["text"], "5.2")
+        self.assertEqual(len(data[0]["color"]), 3)
+        self.assertEqual(data[1]["text"], "---")
+
     def test_reported_true_wind_and_zero_values_are_retained(self):
         self.boat.sog = 0
         self.boat.cog = 0
