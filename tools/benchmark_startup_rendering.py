@@ -1201,6 +1201,21 @@ def _standalone_viewport(canvas, config):
     return widget, model, container
 
 
+def _weather_content(selection):
+    """Hash the published selection's identity and node payload."""
+    import numpy as np
+
+    content = hashlib.sha256()
+    field = selection.field
+    content.update(repr(field.generation).encode())
+    content.update(repr(field.identity.key()).encode())
+    content.update(repr(selection.anchor_reference).encode())
+    node_ids = np.ascontiguousarray(selection.node_ids)
+    content.update(repr((node_ids.shape, node_ids.dtype.str)).encode())
+    content.update(node_ids.tobytes())
+    return content.hexdigest()
+
+
 def replay_viewport(controller, app, window, canvas, config, began):
     """Measure the current ViewportMap/GPU path without the retired CPU wind API."""
     from PySide6.QtCore import QEventLoop, QTimer
@@ -1311,6 +1326,7 @@ def replay_viewport(controller, app, window, canvas, config, began):
         key: [] for key in ("grab_ms", "queued_callback_ms", "start_interval_ms")
     }
     rebuilds, uploads, surfaces = [], [], []
+    overlay_jobs = []
     upload_keys = (
         "field_publications",
         "selection_publications",
@@ -1364,6 +1380,25 @@ def replay_viewport(controller, app, window, canvas, config, began):
             before = {name: len(values) for name, values in stages.items()}
             samples["grab_ms"].append(grab())
             pump()
+            active_selection = getattr(widget, "_native_active_selection", None)
+            active_camera = getattr(widget, "_native_active_camera", None)
+            if active_selection is not None and active_camera is not None:
+                overlay_jobs.append(
+                    {
+                        "layer": "wind",
+                        "published": True,
+                        "request_id": len(overlay_jobs),
+                        "viewport": {
+                            "latitude": active_camera.center_lat,
+                            "longitude": active_camera.center_lon,
+                            "zoom": active_camera.zoom,
+                            "width": active_camera.width,
+                            "height": active_camera.height,
+                        },
+                        "forecast_time": active_camera.time.isoformat(),
+                        "weather_content": _weather_content(active_selection),
+                    }
+                )
             frame = {name: 0 for name in all_stage_names}
             frame.update({name: len(stages[name]) - before[name] for name in stages})
             rebuilds.append(frame)
@@ -1450,6 +1485,7 @@ def replay_viewport(controller, app, window, canvas, config, began):
             "model_counters": dict(model.counters),
             "publication_counters": widget.publication_counters(),
             "field_statistics": model.field_statistics(),
+            "overlay_jobs": overlay_jobs,
         }
     finally:
         try:

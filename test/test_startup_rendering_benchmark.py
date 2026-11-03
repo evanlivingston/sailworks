@@ -48,6 +48,25 @@ class TestStartupSnapshot(unittest.TestCase):
             benchmark.numerical_weather_status(SimpleNamespace())["enabled"]
         )
 
+    def test_weather_content_hash_tracks_identity_and_node_payload(self):
+        import numpy as np
+
+        field = SimpleNamespace(
+            generation="gen-a",
+            identity=SimpleNamespace(key=lambda: ("source", "time")),
+        )
+        selection = SimpleNamespace(
+            field=field,
+            anchor_reference=(1.0, 2.0, 3.0, 640.0, 480.0),
+            node_ids=np.array([[1, 2, -1]], dtype=np.float32),
+        )
+        first = benchmark._weather_content(selection)
+        selection.node_ids = np.array([[1, 3, -1]], dtype=np.float32)
+        second = benchmark._weather_content(selection)
+        self.assertNotEqual(first, second)
+        field.generation = "gen-b"
+        self.assertNotEqual(second, benchmark._weather_content(selection))
+
     def test_weather_identity_gate_rejects_changed_missing_and_unmatched_content(self):
         from copy import deepcopy
 
