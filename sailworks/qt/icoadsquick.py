@@ -181,7 +181,9 @@ class IcoadsQuickItem(QQuickPaintedItem):
     @classmethod
     def _paint_details(cls, painter, report, offset_x=0, offset_y=0):
         lines = cls._detail_lines(report)
-        painter.setFont(QFont("Sans Serif", 9))
+        font = QFont()
+        font.setPointSize(9)
+        painter.setFont(font)
         metrics = painter.fontMetrics()
         padding = 10
         width = max(metrics.horizontalAdvance(line) for line in lines) + 2 * padding

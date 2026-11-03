@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from datetime import datetime, timezone
 
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -149,45 +150,118 @@ class RacesPanel(QWidget):
     def _show_race_tracks(self, race: Race):
         if getattr(self, "_defer_heavy", False):
             self._defer_heavy = False
-            QTimer.singleShot(0, lambda r=race: self._show_race_tracks(r))
+            token = object()
+            self._deferred_race_token = token
+
+            def deferred():
+                if getattr(self, "_deferred_race_token", None) is token:
+                    self._show_race_tracks(race)
+
+            QTimer.singleShot(0, deferred)
             return
+        self._deferred_race_token = None
         track_manager = getattr(
             getattr(self.controller, "core", None), "trackManager", None
         )
         if track_manager is None:
             return
-        had_old_tracks = bool(self._race_track_names)
-        track_manager.remove_by_names(self._race_track_names, save=False)
+        source = str(getattr(race, "source", "") or "").strip()
+        race_id = str(getattr(race, "race_id", "") or race.name).strip()
+        if race_id == "race":
+            race_id = f"{race_id}:{race.name.strip()}"
+        race_key = f"{source}:{race_id}"
+        existing = [t for t in track_manager if getattr(t, "race_track", False)]
+        keyed = {}
+        for track in existing:
+            if getattr(track, "race_key", None) == race_key:
+                keyed.setdefault(getattr(track, "race_boat_key", None), []).append(
+                    track
+                )
+        boats = [(i, boat) for i, boat in enumerate(race.boats) if boat.positions]
+        expected_names = [
+            f"{race.name} - {boat.name or boat.boat_id}" for _, boat in boats
+        ]
         self._race_track_names = []
         self.race_track_times = {}
         new_tracks = []
-        for boat in race.boats:
+        used = set()
+        legacy_stale = []
+        legacy_stale_ids = set()
+        changed = False
+        for (index, boat), base_name in zip(boats, expected_names):
+            boat_key = str(getattr(boat, "boat_id", None) or boat.name or index)
             points = [(p.latitude, p.longitude) for p in boat.positions]
-            if not points:
-                continue
-            name = track_manager.get_unique_name(
-                f"{race.name} - {boat.name or boat.boat_id}"
-            )
-            track = Track(
-                name,
-                points,
-                collection=track_manager,
-                race_track=True,
-                color=(random.random(), random.random(), random.random()),
-            )
-            new_tracks.append(track)
-            self._race_track_names.append(name)
-            self.race_track_times[name] = [
+            times = [
                 p.timestamp.replace(tzinfo=timezone.utc).timestamp()
                 for p in boat.positions
             ]
+            matches = [t for t in keyed.get(boat_key, []) if id(t) not in used]
+            track = matches[0] if matches else None
+            if track is None and expected_names.count(base_name) == 1:
+                # One-time cleanup of duplicates created before race keys existed.
+                pattern = re.compile(rf"{re.escape(base_name)}-(\d+)")
+                legacy = [
+                    t
+                    for t in existing
+                    if not getattr(t, "race_key", None)
+                    and (t.name == base_name or pattern.fullmatch(t.name))
+                    and id(t) not in used
+                    and id(t) not in legacy_stale_ids
+                ]
+                if legacy:
+                    track = min(
+                        legacy,
+                        key=lambda t: (
+                            (0, 0)
+                            if t.name == base_name
+                            else (1, int(pattern.fullmatch(t.name).group(1)))
+                        ),
+                    )
+                    track.race_key, track.race_boat_key = race_key, boat_key
+                    duplicates = [t for t in legacy if t is not track]
+                    legacy_stale.extend(duplicates)
+                    legacy_stale_ids.update(id(t) for t in duplicates)
+                    changed = True
+            if track is None:
+                name = track_manager.get_unique_name(base_name)
+                # Pending additions are not yet visible to get_unique_name.
+                reserved = {t.name for t in new_tracks}
+                if name in reserved:
+                    suffix = 1
+                    while name in reserved or any(
+                        t.name == name for t in track_manager
+                    ):
+                        name = f"{base_name}-{suffix}"
+                        suffix += 1
+                track = Track(
+                    name,
+                    points,
+                    collection=track_manager,
+                    race_track=True,
+                    color=(random.random(), random.random(), random.random()),
+                    race_key=race_key,
+                    race_boat_key=boat_key,
+                )
+                new_tracks.append(track)
+                changed = True
+            elif [tuple(p) for p in track.points] != points:
+                track.points = points
+                changed = True
+            used.add(id(track))
+            self._race_track_names.append(track.name)
+            self.race_track_times[track.name] = times
+        stale = [t for tracks in keyed.values() for t in tracks if id(t) not in used]
+        stale.extend(legacy_stale)
+        if stale:
+            track_manager.remove_many(stale, save=False)
+            changed = True
         if new_tracks:
             track_manager.append_many(new_tracks, save=False)
             # Make an imported boat visible immediately, so timeline scrubbing
             # can move its marker without requiring the separate Review action.
             track_manager.set_active(new_tracks[0], save=False)
         self.tracks_changed.emit()
-        if had_old_tracks or new_tracks:
+        if changed:
             track_manager.save_async()
 
     def _show_race(self, race: Race):
