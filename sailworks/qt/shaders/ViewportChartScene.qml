@@ -166,6 +166,7 @@ Item {
                 property var trackHeading: null
                 property var trackAwa: null
                 property var pois: []
+                property var tracks: []
                 property string captionText: ""
                 property bool dashboardVisible: true
                 property real centerLatitude: 0
@@ -286,6 +287,53 @@ Item {
                         context.stroke()
                         context.globalAlpha = 1
                     }
+                    if (tracks && tracks.length) {
+                        for (let t = 0; t < tracks.length; ++t) {
+                            const track = tracks[t]
+                            const points = track.points
+                            if (!points || points.length < 2)
+                                continue
+                            const active = Boolean(track.active)
+                            context.beginPath()
+                            const first = screenPoint(points[0])
+                            context.moveTo(first.x, first.y)
+                            for (let i = 1; i < points.length; ++i) {
+                                const point = screenPoint(points[i])
+                                context.lineTo(point.x, point.y)
+                            }
+                            context.lineWidth = active ? 1 : 0.8
+                            context.strokeStyle = active
+                                ? "rgba(145,50,28,1)"
+                                : "rgba(145,74,124,0.6)"
+                            context.setLineDash([8, 4])
+                            context.stroke()
+                            context.setLineDash([])
+                            context.font = "10px sans-serif"
+                            context.fillStyle = "rgba(17,17,17,0.7)"
+                            context.fillText(track.name, first.x - 10, first.y - 10)
+                            for (let i = 0; i < points.length; ++i) {
+                                const point = screenPoint(points[i])
+                                context.fillStyle = i === track.highlight
+                                    ? "rgba(255,0,0,0.9)"
+                                    : active
+                                        ? "rgba(17,17,17,0.7)"
+                                        : "rgba(17,17,17,0.3)"
+                                context.fillText(String(i + 1),
+                                                 point.x - 4, point.y + 18)
+                                if (track.editing) {
+                                    context.beginPath()
+                                    context.arc(point.x, point.y,
+                                                i === track.highlight ? 7 : 5,
+                                                0, Math.PI * 2)
+                                    context.strokeStyle = active
+                                        ? "rgba(145,50,28,1)"
+                                        : "rgba(145,74,124,0.6)"
+                                    context.lineWidth = 1
+                                    context.stroke()
+                                }
+                            }
+                        }
+                    }
                     if (pois && pois.length) {
                         for (let i = 0; i < pois.length; ++i) {
                             const poi = pois[i]
@@ -349,6 +397,7 @@ Item {
                 onRoutePreviewChanged: requestPaint()
                 onSelectedPointChanged: requestPaint()
                 onPoisChanged: requestPaint()
+                onTracksChanged: requestPaint()
                 onTrackPointsChanged: requestPaint()
                 onTrackPositionChanged: requestPaint()
                 onTrackHeadingChanged: requestPaint()

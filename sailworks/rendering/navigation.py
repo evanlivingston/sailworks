@@ -214,76 +214,77 @@ class NavigationRenderer:
                 prevy = y
                 prevp = p
 
-    def draw_navigation(self, gpsmap, cr):  # noqa: C901
-        for tr in self.core.trackManager:
-            if not tr.visible:
-                continue
-            # Race tracks are drawn separately (and cached) so scrubbing does
-            # not redraw their geometry; skip them here, including their
-            # per-fix number labels.
-            if getattr(tr, "race_track", False):
-                continue
+    def draw_navigation(self, gpsmap, cr, draw_tracks=True):  # noqa: C901
+        if draw_tracks:
+            for tr in self.core.trackManager:
+                if not tr.visible:
+                    continue
+                # Race tracks are drawn separately (and cached) so scrubbing does
+                # not redraw their geometry; skip them here, including their
+                # per-fix number labels.
+                if getattr(tr, "race_track", False):
+                    continue
 
-            active = self.core.trackManager.is_active(tr)
+                active = self.core.trackManager.is_active(tr)
 
-            prevx = None
-            prevy = None
-            i = 0
+                prevx = None
+                prevy = None
+                i = 0
 
-            for p in tr:
-                i += 1
-                x, y = gpsmap.convert_geographic_to_screen(
-                    MapPoint.new_degrees(p[0], p[1])
-                )
+                for p in tr:
+                    i += 1
+                    x, y = gpsmap.convert_geographic_to_screen(
+                        MapPoint.new_degrees(p[0], p[1])
+                    )
 
-                item_hl = active and self.hl_track_item == (i - 1)
+                    item_hl = active and self.hl_track_item == (i - 1)
 
-                if prevx is None:
-                    if active:
-                        Style.Track.TrackActiveFont.apply(cr)
+                    if prevx is None:
+                        if active:
+                            Style.Track.TrackActiveFont.apply(cr)
+                        else:
+                            Style.Track.TrackInactiveFont.apply(cr)
+
+                        cr.move_to(x - 10, y - 10)
+                        cr.show_text(tr.name)
+                        cr.stroke()
+
+                    if item_hl:
+                        Style.Track.TrackItemHLFont.apply(cr)
+                    elif active:
+                        Style.Track.TrackActivePoiFont.apply(cr)
                     else:
-                        Style.Track.TrackInactiveFont.apply(cr)
+                        Style.Track.TrackInactivePoiFont.apply(cr)
 
-                    cr.move_to(x - 10, y - 10)
-                    cr.show_text(tr.name)
+                    cr.move_to(x - 4, y + 18)
+                    cr.show_text(str(i))
                     cr.stroke()
 
-                if item_hl:
-                    Style.Track.TrackItemHLFont.apply(cr)
-                elif active:
-                    Style.Track.TrackActivePoiFont.apply(cr)
-                else:
-                    Style.Track.TrackInactivePoiFont.apply(cr)
+                    if prevx is not None and prevy is not None:
+                        if active:
+                            Style.Track.TrackActive.apply(cr)
+                        else:
+                            Style.Track.TrackInactive.apply(cr)
 
-                cr.move_to(x - 4, y + 18)
-                cr.show_text(str(i))
-                cr.stroke()
+                        cr.move_to(prevx, prevy)
+                        cr.line_to(x, y)
+                        cr.stroke()
 
-                if prevx is not None and prevy is not None:
-                    if active:
+                    if item_hl:
+                        Style.Track.TrackItemHL.apply(cr)
+                    elif active:
                         Style.Track.TrackActive.apply(cr)
                     else:
                         Style.Track.TrackInactive.apply(cr)
 
-                    cr.move_to(prevx, prevy)
-                    cr.line_to(x, y)
-                    cr.stroke()
+                    Style.reset_dash(cr)
 
-                if item_hl:
-                    Style.Track.TrackItemHL.apply(cr)
-                elif active:
-                    Style.Track.TrackActive.apply(cr)
-                else:
-                    Style.Track.TrackInactive.apply(cr)
+                    if self.edit_track is tr:
+                        cr.arc(x, y, 7 if item_hl else 5, 0, 2 * math.pi)
+                        cr.stroke()
 
-                Style.reset_dash(cr)
-
-                if self.edit_track is tr:
-                    cr.arc(x, y, 7 if item_hl else 5, 0, 2 * math.pi)
-                    cr.stroke()
-
-                prevx = x
-                prevy = y
+                    prevx = x
+                    prevy = y
 
     def draw_race_tracks(self, gpsmap, cr, draw_pois=True):  # noqa: C901
         """Draw race-track geometry without per-fix number labels."""
