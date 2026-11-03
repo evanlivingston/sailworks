@@ -313,7 +313,12 @@ class RetainedOverlayMixin:
         navigation = getattr(self, "navigation", None)
         if navigation is not None:
             try:
-                navigation.draw_routes(self, cr, self.time_control.time.timestamp())
+                navigation.draw_routes(
+                    self,
+                    cr,
+                    self.time_control.time.timestamp(),
+                    draw_routes=not getattr(self, "_qml_navigation_overlay", False),
+                )
             except Exception:
                 pass
             try:

@@ -40,6 +40,40 @@ class _Poi:
     position = (48.0, -123.0)
 
 
+class _Route:
+    name = "Route A"
+    visible = True
+    provenance = {}
+    _points = [
+        (48.0, -123.0, "2026-01-01T00:00:00", 0.0, 5.0, 0.0, 0.0),
+        (48.1, -123.1, "2026-01-01T01:00:00", 0.0, 5.0, 0.0, 0.0),
+    ]
+
+    def __iter__(self):
+        return iter(self._points)
+
+
+def test_draw_routes_can_skip_for_qml_overlay():
+    core = SimpleNamespace(
+        trackManager=_TrackManager([]),
+        poiManager=[],
+        routingManager=[_Route()],
+    )
+    nav = NavigationRenderer(core)
+
+    class _GpsMap:
+        def convert_geographic_to_screen(self, point):
+            return (10.0, 20.0)
+
+    skipped = _FakeCr()
+    nav.draw_routes(_GpsMap(), skipped, 1767225600.0, draw_routes=False)
+    assert "Route A" not in skipped.texts
+
+    drawn = _FakeCr()
+    nav.draw_routes(_GpsMap(), drawn, 1767225600.0, draw_routes=True)
+    assert "Route A" in drawn.texts
+
+
 def test_draw_navigation_can_skip_tracks_for_qml_overlay():
     track = _Track("Track A", [(48.0, -123.0), (48.1, -123.1)])
     track.race_track = False
