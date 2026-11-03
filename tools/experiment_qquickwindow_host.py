@@ -36,14 +36,31 @@ def summary(values):
     }
 
 
-def run(mode, frames, interval_ms, warmup, grab=False):
-    from PySide6.QtCore import QEventLoop, QTimer, QUrl, Qt
-    from PySide6.QtQuick import QQuickView
+def run(mode, frames, interval_ms, warmup, grab=False, load_images=False):
+    from PySide6.QtCore import QEventLoop, QObject, QTimer, QUrl, Qt
+    from PySide6.QtQuick import QQuickImageProvider, QQuickView
     from PySide6.QtQuickWidgets import QQuickWidget
     from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
     app = QApplication([])
     source = QUrl.fromLocalFile(str(SCENE))
+
+    class ProbeProvider(QQuickImageProvider):
+        def __init__(self):
+            super().__init__(QQuickImageProvider.ImageType.Image)
+            from PySide6.QtGui import QImage, QColor
+
+            self.image = QImage(2000, 1400, QImage.Format.Format_ARGB32)
+            self.image.fill(QColor("#2f6f8f"))
+
+        def requestImage(self, identifier, size, requested_size):
+            from PySide6.QtGui import QImage
+
+            if size is not None:
+                size.setWidth(self.image.width())
+                size.setHeight(self.image.height())
+            return QImage(self.image)
+
     container = None
     if mode == "qquickwidget":
         container = QWidget()
@@ -67,6 +84,10 @@ def run(mode, frames, interval_ms, warmup, grab=False):
         quick = view
         update = view.update
 
+    provider = ProbeProvider()
+    engine = widget.engine() if mode == "qquickwidget" else view.engine()
+    engine.addImageProvider("probe", provider)
+
     def pump(milliseconds=0):
         app.processEvents()
         if milliseconds > 0:
@@ -76,6 +97,30 @@ def run(mode, frames, interval_ms, warmup, grab=False):
 
     for _ in range(30):
         pump(20)
+
+    if load_images:
+        pump(100)
+        root = widget.rootObject() if mode == "qquickwidget" else view.rootObject()
+        if root is not None:
+            for name in ("baseLayer", "navigationOverlay", "environmentLayer"):
+                for child in root.findChildren(QObject):
+                    if child.objectName() == name:
+                        child.setProperty("source", QUrl("image://probe/" + name))
+                        child.setProperty("imageWidth", 1000.0)
+                        child.setProperty("imageHeight", 700.0)
+                        break
+            for child in root.findChildren(QObject):
+                if child.objectName() == "routeOverlay":
+                    child.setProperty(
+                        "routePlan",
+                        [[48.0 + i * 0.0005, -123.0 + i * 0.0005] for i in range(500)],
+                    )
+                    child.setProperty(
+                        "trackPoints",
+                        [[48.0 + i * 0.0005, -123.0 - i * 0.0005] for i in range(500)],
+                    )
+                    break
+
     state = {"revision": -1, "synchronizing": None}
     dispatched, rendered = {}, {}
     quick.beforeSynchronizing.connect(
@@ -170,9 +215,17 @@ def main():
     parser.add_argument("--interval-ms", type=float, default=16.667)
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--grab", action="store_true")
+    parser.add_argument("--load-images", action="store_true")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    report = run(args.mode, args.frames, args.interval_ms, args.warmup, args.grab)
+    report = run(
+        args.mode,
+        args.frames,
+        args.interval_ms,
+        args.warmup,
+        args.grab,
+        args.load_images,
+    )
     text = json.dumps(report, indent=2) + "\n"
     if args.output:
         args.output.write_text(text)
