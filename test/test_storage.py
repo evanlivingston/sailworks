@@ -79,6 +79,44 @@ class TestStorage(unittest.TestCase):
         del s.todel
         self.assertNotIn("todel", s)
 
+    def test_attribute_assignment_saves_and_notifies_once(self):
+        s = Storage("attribute", parent=None)
+        s.load_or_save_default()
+        s.watched = "initial"
+        callback = MagicMock()
+        s.register_on_change("watched", callback)
+        callback.reset_mock()
+
+        with patch.object(
+            Storage, "save", autospec=True, side_effect=Storage.save
+        ) as save:
+            s.watched = "updated"
+        save.assert_called_once_with(s)
+        callback.assert_called_once_with("updated")
+
+        reloaded = Storage("attribute", parent=None)
+        reloaded.load()
+        self.assertEqual(reloaded.watched, "updated")
+
+    def test_attribute_deletion_saves_once_without_notification(self):
+        s = Storage("attribute_delete", parent=None)
+        s.load_or_save_default()
+        s.watched = "initial"
+        callback = MagicMock()
+        s.register_on_change("watched", callback)
+        callback.reset_mock()
+
+        with patch.object(
+            Storage, "save", autospec=True, side_effect=Storage.save
+        ) as save:
+            del s.watched
+        save.assert_called_once_with(s)
+        callback.assert_not_called()
+
+        reloaded = Storage("attribute_delete", parent=None)
+        reloaded.load()
+        self.assertNotIn("watched", reloaded)
+
     def test_delitem(self):
         s = Storage("teststorage", parent=None)
         s._Storage__init = True

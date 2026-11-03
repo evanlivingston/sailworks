@@ -105,8 +105,6 @@ class Storage(dict):
 
     def __setattr__(self, key, value):
         self.__setitem__(key, value)
-        self.save()
-        self.notify_change(key, value)
 
     def __setitem__(self, key, value):
         super(Storage, self).__setitem__(key, value)
@@ -116,7 +114,6 @@ class Storage(dict):
 
     def __delattr__(self, item):
         self.__delitem__(item)
-        self.save()
 
     def __delitem__(self, key):
         super(Storage, self).__delitem__(key)
