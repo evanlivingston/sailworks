@@ -317,7 +317,11 @@ class RetainedOverlayMixin:
             except Exception:
                 pass
             try:
-                navigation.draw_navigation(self, cr)
+                navigation.draw_navigation(
+                    self,
+                    cr,
+                    draw_tracks=not getattr(self, "_qml_navigation_overlay", False),
+                )
             except Exception:
                 pass
         # Compose the cached race geometry instead of redrawing race tracks on

@@ -542,6 +542,22 @@ class ViewportMap(
                 for poi in self.controller.core.poiManager
                 if poi.visible and poi.position is not None
             ],
+            "tracks": [
+                {
+                    "name": str(track.name),
+                    "points": [[float(point[0]), float(point[1])] for point in track],
+                    "active": bool(self.controller.core.trackManager.is_active(track)),
+                    "highlight": (
+                        int(self.navigation.hl_track_item)
+                        if self.controller.core.trackManager.is_active(track)
+                        and self.navigation.hl_track_item is not None
+                        else -1
+                    ),
+                    "editing": self.navigation.edit_track is track,
+                }
+                for track in self.controller.core.trackManager
+                if track.visible and not getattr(track, "race_track", False)
+            ],
             "caption": _viewport_caption(
                 self.move_callback, self.controller.chart_errors
             ),
