@@ -128,13 +128,12 @@ class WeatherNextSource(GribSource):
         fields = tuple(payload.get("fields") or ())
         if not steps or not fields or self.bounds is None:
             raise ValueError("WeatherNext estimate needs steps, fields and a region")
-        south, west, north, east = _expanded(self.bounds)
-        rows = max(2, int(round((north - south) / 0.1)) + 1)
-        columns = max(2, int(round((east - west) / 0.1)) + 1)
+        # The store chunks one full global field per lead (1801x3600 float32),
+        # so even a tiny region transfers ~26 MB for every message.
+        global_points = 1801 * 3600
         messages = len(steps) * (2 if "wind" in fields else 0)
         messages += len(steps) if "pressure" in fields else 0
-        # float32 grid values plus GRIB2 section overhead per message.
-        return int(messages * (rows * columns * 4 + 512)), True
+        return int(messages * (global_points * 4 + 512)), True
 
     def get_download_list(self, options=None) -> List:
         options = (

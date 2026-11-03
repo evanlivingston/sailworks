@@ -227,6 +227,11 @@ class RefreshCoordinator:
         if callback is not None:
             callback(model_id, min(99, max(0, int(value))))
 
+    def _stage(self, callback, message):
+        """Report which phase the refresh is in, not just a percentage."""
+        if callback is not None:
+            callback(None, message)
+
     def _download_one(self, planned, stage, cancel, progress):
         model_stage = stage / planned.model_id
         model_stage.mkdir()
@@ -328,6 +333,7 @@ class RefreshCoordinator:
         combined = _CombinedCancel(self, revision, ticket, cancel)
         self._raise_if_stale_or_cancelled(revision, ticket, cancel)
         # Show movement during planning; the run catalogue can take seconds.
+        self._stage(progress, "Finding the newest run…")
         self._progress(progress, selected_model_id, 1)
         try:
             plan = self.planner(
@@ -411,6 +417,7 @@ class RefreshCoordinator:
                         registered = self.store.root / artifact.path
                         self._raise_if_stale_or_cancelled(revision, ticket, cancel)
                         phase = "validation"
+                        self._stage(progress, f"Validating {planned.model_id}…")
                         metadata = self.validator(registered, planned, combined)
                         logger.info(
                             "Validated forecast model=%s run=%s",
@@ -447,6 +454,7 @@ class RefreshCoordinator:
                 )
                 self._progress(progress, selected_model_id, 99)
                 self._raise_if_stale_or_cancelled(revision, ticket, cancel)
+                self._stage(progress, "Publishing forecast…")
                 self.store.publish(tranche)
                 logger.info(
                     "Published forecast tranche=%s models=%s selected=%s",

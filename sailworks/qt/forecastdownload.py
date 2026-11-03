@@ -698,9 +698,7 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
             self._set_size_estimate_error(error)
             return
         if self.analysis is None or self.analysis.busy:
-            self.size_estimate.setText(
-                "Waiting for the current forecast task to finish…"
-            )
+            # _update_active_status already shows the live download status.
             return
         if self.analysis.error:
             return
@@ -793,10 +791,17 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
             return
         busy = self.analysis.busy
         self.download_progress.setVisible(busy)
-        self.download_progress.setValue(getattr(self.analysis, "progress", 0))
+        progress = int(getattr(self.analysis, "progress", 0) or 0)
+        self.download_progress.setValue(progress)
         if self.analysis.error:
             self.size_estimate.setText("Download estimate unavailable.")
             self.size_estimate.setToolTip(self.analysis.error)
+        elif busy:
+            status = str(getattr(self.analysis, "status", "") or "").strip()
+            self.size_estimate.setText(status or "Updating forecast…")
+            self.size_estimate.setToolTip(
+                "Current step of the forecast task. The size estimate returns when it finishes."
+            )
 
     def _update_refresh_availability(self, error=""):
         reason = error
