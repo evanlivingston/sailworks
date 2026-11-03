@@ -75,6 +75,23 @@ def _make_widget(composed, current, viewport, reference, dpr=1.0):
     widget._rebase_retained_imagery = MethodType(
         widget_class._rebase_retained_imagery, widget
     )
+    widget._native_publication_dpr = MethodType(
+        widget_class._native_publication_dpr, widget
+    )
+    widget._retire_barb_anchor_frame = MethodType(
+        widget_class._retire_barb_anchor_frame, widget
+    )
+    widget._barb_zoom_preview_holds = MethodType(
+        widget_class._barb_zoom_preview_holds, widget
+    )
+    widget._maybe_arm_barb_zoom_preview = MethodType(
+        widget_class._maybe_arm_barb_zoom_preview, widget
+    )
+    widget._clear_barb_zoom_preview = MethodType(
+        widget_class._clear_barb_zoom_preview, widget
+    )
+    widget._barb_anchor_frame_places = widget_class._barb_anchor_frame_places
+    widget._set_barb_anchor_frame_valid = widget_class._set_barb_anchor_frame_valid
     return widget, calls
 
 

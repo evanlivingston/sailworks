@@ -14,6 +14,19 @@ layout(std140, binding = 0) uniform buf {
     int fieldColumns;
     int rowOffset;
     int meshRows;
+    // Reference-local anchor compensation.  The selection anchors are encoded
+    // for the camera that published them; the retained layer is placed in
+    // shared map-content space, so a rebase shifts this offset instead of
+    // re-uploading anchor textures.
+    float anchorOffsetX;
+    float anchorOffsetY;
+    // Temporary zoom-only preview of the previous frame's retained anchors.
+    // The old atlas was projected at another zoom; `previewScale` grows or
+    // shrinks the anchor positions about the old frame's centre while the
+    // symbol's local quad stays its fixed screen size.  Identity by default.
+    float previewScale;
+    float previewOffsetX;
+    float previewOffsetY;
 };
 layout(binding = 1) uniform sampler2D u0;
 layout(binding = 2) uniform sampler2D v0;
@@ -50,15 +63,19 @@ void main() {
     cell.y += rowOffset;
     marker = vec2(cell);
     localPoint = (vec2(vertex % 2) * 2.0 - 1.0) * 32.0;
-    vec2 anchor = vec2(decodeField(anchorX, cell), decodeField(anchorY, cell));
+    // The node atlas is indexed by the field node id, so a pan that only
+    // permutes mesh slots reuses one anchor texture.  Without indirection the
+    // historical path still anchors each mesh cell directly.
     ivec2 field = cell;
+    int id = -1;
     if (nodeIdIndirection == 1) {
-        int id = int(decodeField(nodeId, cell));
+        id = int(decodeField(nodeId, cell));
         field = ivec2(max(id, 0) % max(fieldColumns, 1), max(id, 0) / max(fieldColumns, 1));
     }
+    vec2 anchor = vec2(decodeField(anchorX, field), decodeField(anchorY, field));
     uvec2 aBits = uvec2(fieldBits(u0, field), fieldBits(v0, field));
     uvec2 bBits = uvec2(fieldBits(u1, field), fieldBits(v1, field));
-    if (nodeIdIndirection == 1 && decodeField(nodeId, cell) < 0.0) {
+    if (nodeIdIndirection == 1 && id < 0) {
         // An unselected cell carries no symbol: a missing wind discards it
         // exactly like a missing datum, and never reaches the fragment stage.
         aBits = uvec2(0x7fc00000u);
@@ -82,5 +99,10 @@ void main() {
                        : (blend >= 1.0 ? bBits.y : floatBitsToUint(wind.y));
         calmShaftY = (northBits & 0x80000000u) != 0u ? -1.0 : 1.0;
     }
-    gl_Position = qt_Matrix * vec4(anchor + localPoint, 0.0, 1.0);
+    vec2 offset = vec2(anchorOffsetX, anchorOffsetY);
+    // The zoom preview scales the anchor POSITION only.  localPoint is added
+    // after the transform, so a symbol keeps its 32 px screen quad whether the
+    // preview zooms in or out.  Defaults (1, 0, 0) are the identity.
+    vec2 position = previewScale * anchor + vec2(previewOffsetX, previewOffsetY);
+    gl_Position = qt_Matrix * vec4(position + offset + localPoint, 0.0, 1.0);
 }

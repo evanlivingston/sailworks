@@ -737,6 +737,7 @@ def test_zoom_reuses_values_only_with_the_same_shoreline_policy(gribs):
     from sailworks.qt.gpuweather import decode_component
     from sailworks.core.gribsampling import WeatherSampler
     from sailworks.rendering.weatherbarbs import stage_barbs
+    from sailworks.rendering.windpainter import mercator_project_flat
 
     paths, source = _paths(gribs)
     model = GribViewportModel(paths, land_mask=Land())
@@ -750,13 +751,130 @@ def test_zoom_reuses_values_only_with_the_same_shoreline_policy(gribs):
             WeatherSampler([source]), zoomed.stamp(), zoomed.view(), Land()
         )
         assert selection.count == direct.count
-        for actual, expected in zip(selection.anchors, direct.anchors):
-            np.testing.assert_array_equal(
-                decode_component(actual), decode_component(expected)
+        view = zoomed.view()
+        ids = selection.node_ids.ravel()
+        node_ids = ids[ids >= 0].astype(int)
+        anchors = np.column_stack(
+            (
+                decode_component(selection.anchors[0]).ravel()[node_ids],
+                decode_component(selection.anchors[1]).ravel()[node_ids],
             )
+        )
+        nodes = selection.field.points[node_ids]
+        expected = np.column_stack(
+            mercator_project_flat(
+                nodes[:, 0],
+                nodes[:, 1],
+                view._center_lat,
+                view._center_lon,
+                view._zoom,
+                view.width,
+                view.height,
+            )
+        )
+        np.testing.assert_allclose(anchors, expected, rtol=0, atol=1e-4)
         # This zoom is geographically covered, but it crosses the shoreline
         # policy boundary (intermediate -> high). Reusing its mask is forbidden.
         assert not gribviewport._covers(field, replace(camera, zoom=camera.zoom + 1))
+    finally:
+        model.close()
+
+
+def test_selection_restages_across_land_policy_and_geographic_layout(gribs):
+    paths, _source = _paths(gribs)
+    model = GribViewportModel(paths, land_mask=Land())
+    # Prepare with the stricter policy so the field carries land decisions and
+    # remains covered when the policy is relaxed to over-land.
+    camera = _camera(over_land=False)
+    try:
+        field, base = _wait_ready(model, camera=camera)
+        # Same position, time and density; only the land policy differs.
+        relaxed = replace(camera, over_land=True)
+        state, same, over_land = model.update(relaxed)
+        assert state == "ready" and same is field
+        assert over_land is not base
+        # The unrestricted selection is exactly the direct current-view one.
+        from sailworks.core.gribsampling import WeatherSampler
+        from sailworks.rendering.weatherbarbs import stage_barbs
+
+        direct = stage_barbs(
+            WeatherSampler([_source]), relaxed.stamp(), relaxed.view(), Land()
+        )
+        assert over_land.count == direct.count
+        # Returning to the original policy serves the original selection.
+        state, same, again = model.update(camera)
+        assert state == "ready" and again is base
+        # The geographic layout is a policy of the same view too: it must not
+        # reuse the screen-layout selection.
+        screen = replace(camera, geographic=False)
+        state, same, screen_selection = model.update(screen)
+        assert state == "ready" and same is field
+        assert screen_selection is not base
+        assert screen_selection is not over_land
+        assert len(model._selection_cache) == 3
+    finally:
+        model.close()
+
+
+def test_an_incompatible_reference_does_not_reuse_a_previous_atlas_frame(gribs):
+    import numpy as np
+
+    paths, _source = _paths(gribs)
+    model = GribViewportModel(paths, land_mask=Land())
+    camera = _camera()
+    try:
+        field, _selection = _wait_ready(model, camera=camera)
+        with model._condition:
+            model._anchor_atlas_cache.clear()
+            model._anchor_atlas_cache_order.clear()
+        # A reference at the same zoom and viewport size is projected at its
+        # own frame and keyed there.
+        compatible = _camera(center_lon=camera.center_lon + 0.02).view()
+        state, same, _selection = model.update(camera, reference=compatible)
+        assert state == "ready" and same is field
+        compatible_key = (
+            field.generation,
+            compatible._center_lat,
+            compatible._center_lon,
+            compatible._zoom,
+            compatible.width,
+            compatible.height,
+        )
+        assert set(model._anchor_atlas_cache) == {compatible_key}
+        # A reference at another zoom is rejected: the current view is
+        # projected. It must neither reuse nor overwrite the compatible key.
+        view = camera.view()
+        incompatible = _camera(
+            center_lon=camera.center_lon - 0.02, zoom=camera.zoom + 1
+        ).view()
+        state, same, selection = model.update(camera, reference=incompatible)
+        assert state == "ready" and same is field and selection is not None
+        view_key = (
+            field.generation,
+            view._center_lat,
+            view._center_lon,
+            view._zoom,
+            view.width,
+            view.height,
+        )
+        incompatible_key = (
+            field.generation,
+            incompatible._center_lat,
+            incompatible._center_lon,
+            incompatible._zoom,
+            incompatible.width,
+            incompatible.height,
+        )
+        assert set(model._anchor_atlas_cache) == {compatible_key, view_key}
+        assert incompatible_key not in model._anchor_atlas_cache
+        # The incompatible reference projects the current view, so its atlas
+        # is the current frame's, not the previous reference's bytes.
+        assert not np.array_equal(
+            model._anchor_atlas_cache[view_key][0],
+            model._anchor_atlas_cache[compatible_key][0],
+        )
+        selection_ids = selection.node_ids.ravel()
+        assert selection_ids[selection_ids >= 0].size == selection.count
     finally:
         model.close()
 
@@ -781,14 +899,27 @@ def test_exact_future_event_is_prepared_on_demand_without_blending_across_it(gri
             WeatherSampler([source]), future.stamp(), future.view(), Land()
         )
         assert selection.count == direct.count
-        for actual, expected in zip(selection.anchors, direct.anchors):
-            np.testing.assert_array_equal(
-                decode_component(actual), decode_component(expected)
-            )
+        # The selection anchors are field-node-indexed while the direct path
+        # publishes its own slot-indexed atlas: decode the selection at the
+        # nodes its slots draw, in slot order, to compare the two oracles.
         ids = selection.node_ids.ravel()
         used = ids >= 0
+        node_ids = ids[used].astype(int)
+        anchors = np.column_stack(
+            (
+                decode_component(selection.anchors[0]).ravel()[node_ids],
+                decode_component(selection.anchors[1]).ravel()[node_ids],
+            )
+        )
+        direct_anchors = np.column_stack(
+            (
+                decode_component(direct.anchors[0]).ravel()[used],
+                decode_component(direct.anchors[1]).ravel()[used],
+            )
+        )
+        np.testing.assert_allclose(anchors, direct_anchors, rtol=0, atol=1e-4)
         np.testing.assert_array_equal(
-            field.staged.first[0, ids[used].astype(int)],
+            field.staged.first[0, node_ids],
             direct.staged.first.reshape(-1, 2)[used],
         )
     finally:
@@ -1061,6 +1192,34 @@ def test_the_fill_is_a_separate_layer_behind_the_barbs():
     assert 'objectName: "weatherFill"' in scene
     assert 'objectName: "weatherBarbs"' in scene
     assert "visible: root.fillEnabled" in scene
+
+
+def test_barbs_carry_their_published_anchor_offset():
+    """A rebase shifts the barbs' anchors in place; the scene never offsets."""
+    shaders = Path(gribviewport.__file__).parent / "shaders"
+    barbs = (shaders / "WeatherBarbs.qml").read_text()
+    assert "property real anchorOffsetX: 0" in barbs
+    assert "property real anchorOffsetY: 0" in barbs
+    assert "property bool anchorFrameValid: true" in barbs
+    assert "readonly property bool displayable: anchorFrameValid" in barbs
+    assert "property real anchorOffsetX: root.anchorOffsetX" in barbs
+    assert "property real anchorOffsetY: root.anchorOffsetY" in barbs
+    scene = (shaders / "ViewportChartScene.qml").read_text()
+    band = scene[
+        scene.index('objectName: "weatherBand"') : scene.index(
+            'objectName: "streamlineBand"'
+        )
+    ]
+    assert "x: -mapContent.x" not in band
+    assert "y: -mapContent.y" not in band
+    streamline_band = scene[scene.index('objectName: "streamlineBand"') :]
+    assert "x: -mapContent.x" in streamline_band
+    assert "y: -mapContent.y" in streamline_band
+    vertex = (shaders / "barbs.vert").read_text()
+    assert "float anchorOffsetX;" in vertex
+    assert "float anchorOffsetY;" in vertex
+    assert "vec2 offset = vec2(anchorOffsetX, anchorOffsetY);" in vertex
+    assert "position + offset + localPoint" in vertex
 
 
 def test_weather_textures_stay_displayable_while_replacements_load():

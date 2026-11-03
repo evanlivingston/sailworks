@@ -49,8 +49,7 @@ Item {
                 objectName: "chartLayer"
                 anchors.fill: parent
             }
-            // Images and numerical fill are reference-local. The weather band
-            // below still cancels the parent motion for unmigrated barbs.
+            // Images and numerical fill are reference-local.
             Item {
                 objectName: "environmentFillBand"
                 width: mapClip.width
@@ -73,23 +72,70 @@ Item {
                     fragmentShader: Qt.resolvedUrl("weather-fill-back.frag.qsb")
                 }
             }
+            // Barbs are reference-local like the fill and the retained
+            // imagery: the shared mapContent pan places them, and a rebase
+            // compensates the anchor offset instead of re-encoding anchors.
             Item {
                 objectName: "weatherBand"
-                x: -mapContent.x
-                y: -mapContent.y
                 width: mapClip.width
                 height: mapClip.height
+                // Shared node-anchor pool: one provider per atlas slot that both
+                // the front and back barbs sample, so an anchor publication is
+                // retained once. Hidden and declaration-ordered ahead of the
+                // barbs, so stacking is unchanged.
+                Image {
+                    id: anchorAtlasX0
+                    objectName: "sharedAnchorX0"; visible: false; smooth: false; cache: false
+                    retainWhileLoading: true; property bool hadReady: false
+                    onStatusChanged: if (status === Image.Ready) hadReady = true
+                }
+                Image {
+                    id: anchorAtlasY0
+                    objectName: "sharedAnchorY0"; visible: false; smooth: false; cache: false
+                    retainWhileLoading: true; property bool hadReady: false
+                    onStatusChanged: if (status === Image.Ready) hadReady = true
+                }
+                Image {
+                    id: anchorAtlasX1
+                    objectName: "sharedAnchorX1"; visible: false; smooth: false; cache: false
+                    retainWhileLoading: true; property bool hadReady: false
+                    onStatusChanged: if (status === Image.Ready) hadReady = true
+                }
+                Image {
+                    id: anchorAtlasY1
+                    objectName: "sharedAnchorY1"; visible: false; smooth: false; cache: false
+                    retainWhileLoading: true; property bool hadReady: false
+                    onStatusChanged: if (status === Image.Ready) hadReady = true
+                }
                 WeatherBarbs {
                     id: barbs
                     objectName: "weatherBarbs"
                     anchors.fill: parent
+                    sharedAnchorX0: anchorAtlasX0
+                    sharedAnchorY0: anchorAtlasY0
+                    sharedAnchorX1: anchorAtlasX1
+                    sharedAnchorY1: anchorAtlasY1
                 }
                 WeatherBarbs {
                     objectName: "weatherBarbsBack"
                     anchors.fill: parent
                     visible: false
+                    sharedAnchorX0: anchorAtlasX0
+                    sharedAnchorY0: anchorAtlasY0
+                    sharedAnchorX1: anchorAtlasX1
+                    sharedAnchorY1: anchorAtlasY1
                 }
-                WeatherStreamlines { objectName: "weatherStreamlines"; anchors.fill: parent; visible: false }
+                // Streamlines still paint in screen space, so this band alone
+                // cancels the shared mapContent pan. It stays inside the
+                // weather band, behind the navigation and route overlays.
+                Item {
+                    objectName: "streamlineBand"
+                    x: -mapContent.x
+                    y: -mapContent.y
+                    width: mapClip.width
+                    height: mapClip.height
+                    WeatherStreamlines { objectName: "weatherStreamlines"; anchors.fill: parent; visible: false }
+                }
             }
             ChartLayer {
                 objectName: "navigationOverlay"

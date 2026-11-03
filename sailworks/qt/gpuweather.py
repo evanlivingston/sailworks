@@ -109,6 +109,13 @@ class WeatherImageProvider(QQuickImageProvider):
         self._generation = 0
         self._images = {}
         self._pinned_selection = {}
+        # A pending selection is staged before the front swaps, so it must stay
+        # servable until the commit pins it: the QML scene binds both layers.
+        # Supersession keeps the previously bound pending beside the newest
+        # one, bounded to the front plus those two, because a pan can stage a
+        # replacement while the back layer is still loading the earlier one.
+        self._retained_selection = {}
+        self._previous_selection = {}
         # The resident field's images are retained under their field identity
         # and outlive the per-view selection. Stable URLs allow the current
         # QML images to retain textures; this is not hardware-upload telemetry.
@@ -269,20 +276,57 @@ class WeatherImageProvider(QQuickImageProvider):
             self.selection_publications += 1
             names = [f"s/{key}/{_digest(image)}" for image in images]
             self._images = dict(self._pinned_selection)
+            self._images.update(self._previous_selection)
+            self._images.update(self._retained_selection)
             self._images.update(
                 (name, QImage(image)) for name, image in zip(names, images)
             )
             return tuple(f"image://weather/{name}" for name in names)
 
-    def pin_selection(self, urls):
-        """Keep the displayed selection servable while a replacement loads."""
+    def retain_selection(self, urls):
+        """Keep a staged selection servable until the front layer commits.
+
+        The pending anchor and node-id textures are bound to the back layer
+        before the swap.  A newer publication must not drop them while that
+        layer still loads, so the newly retained pending is kept beside the
+        one that was bound before it.  Retention is bounded: the pinned front
+        plus those two pending frames, and the next replacement drops the
+        oldest pending once the back layer has been bound to a newer one.
+        """
+        with self._lock:
+            kept = {
+                name: self._images[name]
+                for url in urls
+                if (name := url.removeprefix("image://weather/")) in self._images
+            }
+            self._previous_selection = self._retained_selection
+            self._retained_selection = kept
+            self._images.update(self._previous_selection)
+            self._images.update(kept)
+
+    def pin_selection(self, urls, retained=()):
+        """Keep the displayed selection servable while a replacement loads.
+
+        ``retained`` names the pair the shared anchor pool keeps loaded in its
+        other slot.  It is pinned beside the new front until the next frame
+        replaces it, so both slots the scene can sample stay servable.
+        """
         with self._lock:
             self._pinned_selection = {
                 name: self._images[name]
                 for url in urls
                 if (name := url.removeprefix("image://weather/")) in self._images
             }
+            self._retained_selection = {
+                name: self._images[name]
+                for url in retained
+                if (name := url.removeprefix("image://weather/")) in self._images
+            }
+            # The committed publication is the new front; the pending frames
+            # it supersedes are no longer referenced by either layer.
+            self._previous_selection = {}
             self._images = dict(self._pinned_selection)
+            self._images.update(self._retained_selection)
 
     def _trim_fields(self, protected=None):
         """Release the oldest retained field when over the budget.
@@ -318,6 +362,8 @@ class WeatherImageProvider(QQuickImageProvider):
         with self._lock:
             self._images.clear()
             self._pinned_selection.clear()
+            self._retained_selection.clear()
+            self._previous_selection.clear()
             self._fields.clear()
             self._field_urls.clear()
             self._field_bytes = 0

@@ -430,13 +430,93 @@ def _geographic_cells(points, xx, yy, view, step, margin, cols, rows):
     return cells, np.sort(first[valid[first]])
 
 
-def stage_selection(sampler, field, stamp, view, land_mask, cancel=lambda: False):
+def _anchor_reference(view):
+    """The pan-reference key of a view's anchor coordinates."""
+    return (
+        float(view._center_lat),
+        float(view._center_lon),
+        float(view._zoom),
+        float(view.width),
+        float(view.height),
+    )
+
+
+def anchor_view(view, reference=None):
+    """The camera a selection's anchors are projected at.
+
+    Membership and slots always follow ``view``; only the anchor coordinates
+    are reference-local.  A reference at another zoom or viewport size cannot
+    place the shared layer, so it is not used.
+    """
+    if reference is not None and (
+        reference._zoom,
+        reference.width,
+        reference.height,
+    ) == (view._zoom, view.width, view.height):
+        return reference
+    return view
+
+
+def node_anchor_atlas(field, view):
+    """Encode every field node's anchor in ``view``'s pixels, once per frame.
+
+    The atlas is indexed by the field's node id, laid out in ``FIELD_COLUMNS``
+    wide rows, so a mesh slot permutation (a pan's cell reassignment) changes
+    the selection's ``node_ids`` but not this payload.  Padding past the node
+    count is finite and zero, as the shader may address a clamped id.
+    """
+    from sailworks.qt.gpuweather import encode_component
+    from sailworks.qt.gpuweatherfields import FIELD_COLUMNS
+    from sailworks.qt.viewporttransform import continuous_longitude
+
+    if view is None:
+        raise ValueError("An anchor view is required")
+    points = field.points
+    lons = np.fromiter(
+        (continuous_longitude(lon, view._center_lon) for lon in points[:, 1]),
+        dtype=float,
+        count=len(points),
+    )
+    xx, yy = mercator_project_flat(
+        points[:, 0],
+        lons,
+        view._center_lat,
+        view._center_lon,
+        view._zoom,
+        view.width,
+        view.height,
+    )
+    count = len(points)
+    rows = max(1, math.ceil(count / FIELD_COLUMNS))
+    atlas = np.zeros((2, rows * FIELD_COLUMNS), dtype=np.float32)
+    atlas[0, :count] = xx
+    atlas[1, :count] = yy
+    ax = atlas[0].reshape(rows, FIELD_COLUMNS)
+    ay = atlas[1].reshape(rows, FIELD_COLUMNS)
+    return (encode_component(ax), encode_component(ay))
+
+
+def stage_selection(
+    sampler,
+    field,
+    stamp,
+    view,
+    land_mask,
+    cancel=lambda: False,
+    reference=None,
+    anchor_atlas=None,
+):
     """The exact current-view selection of a resident field.
 
-    The native nodes, the thinning, the membership and the anchors are
-    recomputed for the current view, exactly as the CPU foreground does.  The
-    numerical values come from the resident field, so no weather is decoded
-    and no sample is taken again.
+    The native nodes, the thinning, the membership, the cell slots, the land
+    policy and the cap are recomputed for the current view, exactly as the CPU
+    foreground does.  The numerical values come from the resident field, so no
+    weather is decoded and no sample is taken again.
+
+    Anchors are field-node-indexed, not slot-indexed: the atlas is built once
+    per field generation and anchor camera, and a mesh slot permutation inside
+    that camera reuses it byte for byte.  ``anchor_atlas`` lets a caller pass
+    a cached atlas; otherwise it is encoded here.
     """
     from sailworks.qt.gpuweather import encode_component
     from sailworks.qt.gpuweatherfields import BarbSelection
@@ -479,6 +559,13 @@ def stage_selection(sampler, field, stamp, view, land_mask, cancel=lambda: False
         view.width,
         view.height,
     )
+    # Membership, slots and caps are the current view's.  Anchors, however,
+    # are field-node-indexed and reference-local: every node is projected once
+    # at the pan reference, so a covered pan changes the slots but reuses the
+    # atlas byte for byte.
+    anchor_camera = anchor_view(view, reference)
+    if anchor_atlas is None:
+        anchor_atlas = node_anchor_atlas(field, anchor_camera)
     visible = (
         (xx >= -margin)
         & (xx <= view.width + margin)
@@ -529,19 +616,15 @@ def stage_selection(sampler, field, stamp, view, land_mask, cancel=lambda: False
     # discards a missing mesh cell, and their anchors stay finite and local.
     selection_ids = np.full((rows * cols,), -1.0, dtype=np.float32)
     selection_ids[slots] = node_ids[selected]
-    gy, gx = np.mgrid[:rows, :cols]
-    ax, ay = (gx * step - margin).astype(np.float32), (gy * step - margin).astype(
-        np.float32
-    )
-    ax.ravel()[slots], ay.ravel()[slots] = xx[selected], yy[selected]
     selection_ids.setflags(write=False)
     return BarbSelection(
         generation=field.generation,
         node_ids=selection_ids.reshape(rows, cols),
-        anchors=(encode_component(ax), encode_component(ay)),
+        anchors=anchor_atlas,
         count=len(selected),
         field=field,
         node_image=encode_component(selection_ids.reshape(rows, cols)),
+        anchor_reference=_anchor_reference(anchor_camera),
     )
 
 
@@ -690,9 +773,21 @@ def stage_barbs(
 
 
 def _stage_with_field(
-    sampler, stamp, view, land_mask, cancel, store, source, grid=False
+    sampler,
+    stamp,
+    view,
+    land_mask,
+    cancel,
+    store,
+    source,
+    grid=False,
+    reference=None,
 ):
-    """Stage the current-view selection from a resident geographic field."""
+    """Stage the current-view selection from a resident geographic field.
+
+    ``reference`` is the pan reference the anchors are encoded against; the
+    membership, slots, masks and cap stay the current view's.
+    """
     from sailworks.qt.gpuweatherfields import FieldIdentity
 
     before, after = time_window(sampler, stamp)
@@ -724,7 +819,9 @@ def _stage_with_field(
             return None
         store.store(field)
     try:
-        selection = stage_selection(sampler, field, stamp, view, land_mask, cancel)
+        selection = stage_selection(
+            sampler, field, stamp, view, land_mask, cancel, reference
+        )
     except FieldCoverageError:
         # The resident field does not cover this view's nodes, which happens
         # only for an unusual window (a view that crosses the longitude
@@ -742,7 +839,9 @@ def _stage_with_field(
         )
         if fallback is None:
             return None
-        selection = stage_selection(sampler, fallback, stamp, view, land_mask, cancel)
+        selection = stage_selection(
+            sampler, fallback, stamp, view, land_mask, cancel, reference
+        )
     if selection is None:
         return None
     return selection_atlas(selection)
@@ -761,8 +860,23 @@ def selection_atlas(selection):
     )
 
 
-def select_resident(field, stamp, view):
-    """GUI-safe covered selection: immutable metadata only, no sampler or I/O."""
+def select_resident(field, stamp, view, reference=None, anchor_atlas=None):
+    """GUI-safe covered selection: immutable metadata only, no sampler or I/O.
+
+    ``reference`` is the pan reference the selection anchors are placed
+    against, so a covered pan republishes no anchor texture.  ``anchor_atlas``
+    may carry a cached atlas for the same field generation and anchor camera.
+    """
     if not field.identity.contains(stamp):
         raise FieldCoverageError("Forecast time is outside the resident field")
-    return selection_atlas(stage_selection(None, field, stamp, view, None))
+    return selection_atlas(
+        stage_selection(
+            None,
+            field,
+            stamp,
+            view,
+            None,
+            reference=reference,
+            anchor_atlas=anchor_atlas,
+        )
+    )
