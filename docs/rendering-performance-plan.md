@@ -342,9 +342,9 @@ The desktop viewport's QML `routeOverlay` Canvas now owns:
 
 The Cairo navigation image keeps only the layers not yet migrated and the
 chart/imagery composition. The retained `_race_geometry_image` cache is used
-only when the QML race overlay is inactive (CPU/non-QML hosts). GTK callers
-keep the original Cairo paths through the `draw_routes`/`draw_navigation`/
-`draw_race_tracks` defaults.
+only when the QML race overlay is inactive (CPU/non-QML hosts). Non-QML
+callers keep the original Cairo paths through the `draw_routes`/
+`draw_navigation`/`draw_race_tracks` defaults.
 
 Visual parity captures for the migrated layers are still pending; this section
 records ownership, not a pixel-parity claim.

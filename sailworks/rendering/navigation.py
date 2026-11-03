@@ -14,7 +14,7 @@ GNU General Public License for more details.
 For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
-"""Shared GTK/Qt track and POI portrayal, in logical map pixels."""
+"""Shared track and POI portrayal for the Qt CPU fallback, in logical map pixels."""
 
 import math
 import random

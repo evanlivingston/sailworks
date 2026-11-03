@@ -14,7 +14,7 @@ GNU General Public License for more details.
 For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
-"""Production instrument values and Cairo dashboard shared by GTK and Qt."""
+"""Production instrument values and Cairo dashboard for the Qt CPU fallback."""
 
 import math
 
