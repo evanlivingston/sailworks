@@ -1,5 +1,6 @@
 """Persistent instrument log library and local-file drop validation."""
 
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -96,12 +97,17 @@ class LogLibraryDialog(QDialog):
         self.import_progress = LogImportProgress(controller, self)
         layout.addWidget(self.import_progress)
         self.logs = QTableWidget()
-        self.logs.setColumnCount(4)
-        self.logs.setHorizontalHeaderLabels(["Name", "Vessel", "Status", "Imported"])
+        self.logs.setColumnCount(5)
+        self.logs.setHorizontalHeaderLabels(
+            ["Name", "Vessel", "Status", "Time span", "Duration"]
+        )
         self.logs.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.logs.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.logs.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.logs.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.logs.horizontalHeader().setStretchLastSection(True)
+        self.logs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.logs.customContextMenuRequested.connect(self._context_menu)
+        self.logs.installEventFilter(self)
         layout.addWidget(self.logs)
         row = QHBoxLayout()
         self.actions = {}
@@ -110,7 +116,7 @@ class LogLibraryDialog(QDialog):
             ("Save details", self.save),
             ("Open", self.open_log),
             ("File Info…", self.show_file_info),
-            ("Remove…", self.remove),
+            ("Delete…", self.delete_selected),
         ):
             button = QPushButton(label)
             button.clicked.connect(callback)
@@ -123,39 +129,96 @@ class LogLibraryDialog(QDialog):
         controller.changed.connect(self.sync_busy)
         self.refresh()
 
+    def selected_identifiers(self):
+        identifiers = []
+        for item in self.logs.selectedItems():
+            if item.column() != 0:
+                continue
+            value = item.data(Qt.ItemDataRole.UserRole)
+            if value is not None and value not in identifiers:
+                identifiers.append(value)
+        if not identifiers:
+            current = self.logs.currentItem()
+            if current is not None:
+                value = current.data(Qt.ItemDataRole.UserRole)
+                if value is not None:
+                    identifiers.append(value)
+        return identifiers
+
     def identifier(self):
-        item = self.logs.currentItem()
-        return item.data(Qt.ItemDataRole.UserRole) if item else None
+        identifiers = self.selected_identifiers()
+        return identifiers[0] if identifiers else None
 
     def refresh(self):
-        current = self.identifier()
+        current_ids = self.selected_identifiers()
         self.logs.blockSignals(True)
         self.logs.setRowCount(0)
         for row, entry in enumerate(self.library.entries()):
             self.logs.insertRow(row)
+            info = entry.get("file_info") or {}
+            span, duration = self._time_span_and_duration(info)
             values = (
                 entry["name"],
                 entry["vessel"] or "—",
                 entry["status"],
-                entry["imported"],
+                span,
+                duration,
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
                 item.setData(Qt.ItemDataRole.UserRole, entry["id"])
                 self.logs.setItem(row, column, item)
-            if entry["id"] == current:
+            if entry["id"] in current_ids:
                 self.logs.selectRow(row)
         self.logs.blockSignals(False)
-        if self.logs.currentRow() < 0 and self.logs.rowCount():
+        if not self.selected_identifiers() and self.logs.rowCount():
             self.logs.selectRow(0)
         self.selected()
+
+    @staticmethod
+    def _format_duration(seconds):
+        if seconds is None:
+            return "—"
+        try:
+            total = int(float(seconds))
+        except (TypeError, ValueError):
+            return "—"
+        if total < 0:
+            total = 0
+        days, remainder = divmod(total, 86400)
+        hours, remainder = divmod(remainder, 3600)
+        minutes, _seconds = divmod(remainder, 60)
+        parts = []
+        if days:
+            parts.append(f"{days}d")
+        if hours or days:
+            parts.append(f"{hours}h")
+        parts.append(f"{minutes}m")
+        return " ".join(parts)
+
+    @staticmethod
+    def _time_span_and_duration(info):
+        origin = info.get("timestamp_origin")
+        duration = info.get("duration")
+        if not origin:
+            return "—", LogLibraryDialog._format_duration(duration)
+        try:
+            start = datetime.fromisoformat(str(origin))
+        except ValueError:
+            return "—", LogLibraryDialog._format_duration(duration)
+        try:
+            end = start + timedelta(seconds=float(duration)) if duration is not None else start
+        except (TypeError, ValueError):
+            end = start
+        span = f"{start:%Y-%m-%d %H:%M} – {end:%Y-%m-%d %H:%M}"
+        return span, LogLibraryDialog._format_duration(duration)
 
     def selected(self, *_):
         self.sync_busy()
 
     def sync_busy(self):
         busy = self.controller.session.loading
-        selected = self.identifier() is not None
+        selected = bool(self.selected_identifiers())
         for label, button in self.actions.items():
             button.setEnabled(not busy and (label == "Import…" or selected))
 
@@ -212,26 +275,51 @@ class LogLibraryDialog(QDialog):
         self.file_info_dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.file_info_dialog.open()
 
-    def remove(self):
-        identifier = self.identifier()
-        if identifier is None:
+    def delete_selected(self):
+        identifiers = self.selected_identifiers()
+        if not identifiers:
             return
+        if len(identifiers) == 1:
+            question = "Delete this managed copy and its annotations?"
+        else:
+            question = f"Delete {len(identifiers)} managed copies and their annotations?"
         if (
             QMessageBox.question(
                 self,
-                "Remove log?",
-                "Delete this managed copy and its annotations? "
-                "The original source file is not removed.",
+                "Delete log?",
+                question + " The original source files are not removed.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
             != QMessageBox.StandardButton.Yes
         ):
             return
-        try:
-            self.controller.remove_library_log(identifier)
-        except (OSError, ValueError) as exc:
-            QMessageBox.critical(self, "Cannot remove log", str(exc))
+        errors = []
+        for identifier in identifiers:
+            try:
+                self.controller.remove_library_log(identifier)
+            except (OSError, ValueError) as exc:
+                errors.append(str(exc))
+        if errors:
+            QMessageBox.critical(
+                self, "Cannot delete log", "\n".join(errors)
+            )
+
+    def _context_menu(self, position):
+        from PySide6.QtWidgets import QMenu
+
+        if not self.selected_identifiers():
+            return
+        menu = QMenu(self)
+        menu.addAction("Delete", self.delete_selected)
+        menu.exec(self.logs.viewport().mapToGlobal(position))
+
+    def eventFilter(self, watched, event):
+        if watched is self.logs and event.type() == event.Type.KeyPress:
+            if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+                self.delete_selected()
+                return True
+        return super().eventFilter(watched, event)
 
     def dragEnterEvent(self, event):  # noqa: N802
         if not self.controller.session.loading and dropped_log_paths(event.mimeData()):

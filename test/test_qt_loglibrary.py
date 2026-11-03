@@ -112,7 +112,7 @@ def test_dialog_import_edit_reload_open_paused_and_remove(
             "Save details",
             "Open",
             "File Info…",
-            "Remove…",
+            "Delete…",
         }
         monkeypatch.setattr(
             QFileDialog, "getOpenFileNames", lambda *args: ([str(source)], "")
@@ -148,7 +148,7 @@ def test_dialog_import_edit_reload_open_paused_and_remove(
         monkeypatch.setattr(
             QMessageBox, "question", lambda *args: QMessageBox.StandardButton.Yes
         )
-        dialog.actions["Remove…"].click()
+        dialog.actions["Delete…"].click()
         assert dialog.logs.rowCount() == 0
         assert not managed.exists()
         assert controller.session.log is None
