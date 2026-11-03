@@ -51,10 +51,15 @@ class TestStartupSnapshot(unittest.TestCase):
     def test_weather_content_hash_tracks_identity_and_node_payload(self):
         import numpy as np
 
-        field = SimpleNamespace(
-            generation="gen-a",
-            identity=SimpleNamespace(key=lambda: ("source", "time")),
+        identity = SimpleNamespace(
+            source=(("/tmp/a", "grib", "centre", 1.0, 2.0, None, ("dev", 1)),),
+            parameter="wind",
+            before=1.0,
+            after=2.0,
+            window=(0.0, 0.0, 1.0, 1.0),
+            resolution=((0.1, 0.1), None, True),
         )
+        field = SimpleNamespace(generation="gen-a", identity=identity)
         selection = SimpleNamespace(
             field=field,
             anchor_reference=(1.0, 2.0, 3.0, 640.0, 480.0),
@@ -64,7 +69,7 @@ class TestStartupSnapshot(unittest.TestCase):
         selection.node_ids = np.array([[1, 3, -1]], dtype=np.float32)
         second = benchmark._weather_content(selection)
         self.assertNotEqual(first, second)
-        field.generation = "gen-b"
+        field.identity.before = 9.0
         self.assertNotEqual(second, benchmark._weather_content(selection))
 
     def test_weather_identity_gate_rejects_changed_missing_and_unmatched_content(self):

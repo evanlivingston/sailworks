@@ -333,6 +333,23 @@ def worker(config):
     controller.timer.stop()
     configure_wind_workload(controller.settings, config)
     controller.time_control.set_time(datetime.fromisoformat(config["forecast_time"]))
+    if config.get("standalone_viewport"):
+        from types import SimpleNamespace
+
+        canvas = SimpleNamespace(
+            _weather_presenter=SimpleNamespace(widget=None),
+            wind_visible=True,
+            dashboard_visible=False,
+            _center_lat=48.38353666189077,
+            _center_lon=-124.38396048600592,
+            _zoom=10.038935750954801,
+        )
+        window = SimpleNamespace(
+            resize=lambda *_args: None,
+            show=lambda: None,
+            hide=lambda: None,
+        )
+        return replay_viewport(controller, app, window, canvas, config, began)
     controller_ms = (time.perf_counter() - began) * 1000
     chs = controller.charts._chs_renderer
     tile_misses = set()
@@ -1202,13 +1219,32 @@ def _standalone_viewport(canvas, config):
 
 
 def _weather_content(selection):
-    """Hash the published selection's identity and node payload."""
+    """Hash the published selection's stable identity and node payload.
+
+    The sandbox source path and file inode/mtime are deliberately excluded:
+    two replay processes load the same snapshot from different temporary
+    paths and must produce the same content identity.
+    """
     import numpy as np
 
     content = hashlib.sha256()
-    field = selection.field
-    content.update(repr(field.generation).encode())
-    content.update(repr(field.identity.key()).encode())
+    identity = selection.field.identity
+    stable_source = tuple(
+        tuple(item[1:6]) if isinstance(item, tuple) else item
+        for item in identity.source
+    )
+    content.update(
+        repr(
+            (
+                stable_source,
+                identity.parameter,
+                identity.before,
+                identity.after,
+                identity.window,
+                identity.resolution,
+            )
+        ).encode()
+    )
     content.update(repr(selection.anchor_reference).encode())
     node_ids = np.ascontiguousarray(selection.node_ids)
     content.update(repr((node_ids.shape, node_ids.dtype.str)).encode())
@@ -1252,23 +1288,25 @@ def replay_viewport(controller, app, window, canvas, config, began):
         raise TimeoutError(f"Viewport {label} did not settle")
 
     standalone = None
-    try:
-        wait(
-            lambda: controller.analysis is not None
-            and controller.analysis.active is not None
-            and not controller.analysis.error,
-            "analysis",
-            timeout=15,
-        )
-    except TimeoutError:
-        pass
+    if not config.get("standalone_viewport"):
+        try:
+            wait(
+                lambda: controller.analysis is not None
+                and controller.analysis.active is not None
+                and not controller.analysis.error,
+                "analysis",
+                timeout=15,
+            )
+        except TimeoutError:
+            pass
     widget = None
-    try:
-        wait(lambda: presenter.widget is not None, "widget", timeout=5)
-        widget = presenter.widget
-        wait(lambda: widget._state == "ready", "weather", timeout=5)
-    except TimeoutError:
-        widget = None
+    if not config.get("standalone_viewport"):
+        try:
+            wait(lambda: presenter.widget is not None, "widget", timeout=5)
+            widget = presenter.widget
+            wait(lambda: widget._state == "ready", "weather", timeout=5)
+        except TimeoutError:
+            widget = None
     if widget is None:
         window.hide()
         widget, model, container = _standalone_viewport(canvas, config)
@@ -1536,6 +1574,7 @@ def run(args):
             else "offscreen" if args.offscreen else "native-grab"
         ),
         "measurement_mode": args.measurement_mode,
+        "standalone_viewport": args.standalone_viewport,
         "native_drain_timeout_s": args.native_drain_timeout_s,
         **{
             key: getattr(args, key)
@@ -1777,6 +1816,11 @@ def main():
     parser.add_argument("--worker-timeout-s", type=float, default=600)
     parser.add_argument("--offscreen", action="store_true")
     parser.add_argument("--map-renderer", choices=("cpu", "gpu"))
+    parser.add_argument(
+        "--standalone-viewport",
+        action="store_true",
+        help="measure the viewport widget directly, without the PreviewWindow host",
+    )
     parser.add_argument(
         "--cpu-fallback-probe",
         action="store_true",
