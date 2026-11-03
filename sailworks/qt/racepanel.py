@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import random
 from datetime import datetime, timezone
 
 from PySide6.QtCore import Qt, Signal
@@ -150,7 +151,13 @@ class RacesPanel(QWidget):
             name = track_manager.get_unique_name(
                 f"{race.name} - {boat.name or boat.boat_id}"
             )
-            track = Track(name, points, collection=track_manager, race_track=True)
+            track = Track(
+                name,
+                points,
+                collection=track_manager,
+                race_track=True,
+                color=(random.random(), random.random(), random.random()),
+            )
             new_tracks.append(track)
             self._race_track_names.append(name)
             self.race_track_times[name] = [
