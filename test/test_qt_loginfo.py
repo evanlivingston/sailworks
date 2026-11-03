@@ -187,13 +187,15 @@ def test_nmea_panel_has_library_not_direct_load_or_file_info(app, tmp_path):
     window.controller = SimpleNamespace(connection_task=SimpleNamespace(busy=False))
     window.syncing = False
     window._source_changed = lambda _index: None
+    window._toggle_instruments = lambda _enabled: None
+    window._refresh_connection_status = lambda: None
     window.show_log_library = lambda: None
     window._track_source_changed = lambda _index: None
     window._record = lambda _active: None
     panel = PreviewWindow._nmea_panel(window)
     try:
         buttons = {button.text() for button in panel.findChildren(QPushButton)}
-        assert buttons == {"Log library…"}
+        assert buttons == {"Instruments", "Log library…"}
         assert not hasattr(window, "streaming")
         assert not hasattr(window, "load_button")
         assert not hasattr(window, "file_info_button")

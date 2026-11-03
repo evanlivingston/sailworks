@@ -5,6 +5,8 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtQuick import QQuickItem, QQuickPaintedItem
 from datetime import datetime, timezone
 
+DISPLAY_LOD_THRESHOLD = 2000
+
 
 class IcoadsQuickItem(QQuickPaintedItem):
     """Paint neutral report markers; reports are observations, not live AIS."""
@@ -104,6 +106,7 @@ class IcoadsQuickItem(QQuickPaintedItem):
             self._padding,
             self.width(),
             self.height(),
+            id(self._selected_report),
         )
         if camera is self._positions_camera and key == self._positions_key:
             return self._positions_cache
@@ -149,6 +152,16 @@ class IcoadsQuickItem(QQuickPaintedItem):
                     result.append((local_x, local_y, report))
             except (AttributeError, TypeError, ValueError):
                 continue
+        if len(result) > DISPLAY_LOD_THRESHOLD:
+            stride = (len(result) + DISPLAY_LOD_THRESHOLD - 1) // DISPLAY_LOD_THRESHOLD
+            last = len(result) - 1
+            result = [
+                entry
+                for index, entry in enumerate(result)
+                if index % stride == 0
+                or index == last
+                or entry[2] is self._selected_report
+            ]
         self._positions_cache = tuple(result)
         self._positions_key = key
         self._positions_camera = camera
@@ -202,6 +215,7 @@ class IcoadsQuickItem(QQuickPaintedItem):
             )
 
     def _report_at(self, x, y):
+        """Hit-test displayed markers, including the selected marker if visible."""
         nearest = min(
             self._positions(),
             key=lambda item: (item[0] - x) ** 2 + (item[1] - y) ** 2,

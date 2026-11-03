@@ -393,14 +393,12 @@ class PreviewWindow(QMainWindow):
 
     def _build_plots(self, controller):
         """Build the log plot canvas, deferring Matplotlib when it is unused."""
-        if getattr(controller, "early_weather", False):
-            from .lazyplots import LazyLogPlots
+        from .lazyplots import LazyLogPlots
 
-            return LazyLogPlots(
-                self,
-                factory=lambda parent: self._interactive_plots(parent, controller),
-            )
-        return self._interactive_plots(self, controller)
+        return LazyLogPlots(
+            self,
+            factory=lambda parent: self._interactive_plots(parent, controller),
+        )
 
     @staticmethod
     def _interactive_plots(parent, controller):
