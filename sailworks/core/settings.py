@@ -43,6 +43,7 @@ class SettingsManager(Storage):
         self.smoothZoom = True
         self.panInertia = True
         self.mapRenderer = "cpu"
+        self.weatherNextCredentialsPath = ""
         self.canadianCharts = True
         self.chartWorldVisible = True
         self.chartENCVisible = True
