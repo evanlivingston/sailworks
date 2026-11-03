@@ -694,6 +694,10 @@ class SessionController(QObject):
         if self.closed:
             return
         self.closed = True
+        track_manager = getattr(self.core, "trackManager", None)
+        flush_tracks = getattr(track_manager, "flush_async", None)
+        if flush_tracks is not None:
+            flush_tracks()
         if self._load_error_dialog is not None:
             self._load_error_dialog.close()
             self._load_error_dialog = None

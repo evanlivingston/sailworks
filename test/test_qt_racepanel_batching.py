@@ -47,19 +47,24 @@ class _TrackManager(list):
     def get_unique_name(self, name):
         return name
 
-    def remove_by_names(self, names):
+    def remove_by_names(self, names, save=True):
         self.removed_names.append(list(names))
         wanted = set(names or ())
-        self[:] = [track for track in self if getattr(track, "name", None) not in wanted]
+        self[:] = [
+            track for track in self if getattr(track, "name", None) not in wanted
+        ]
 
-    def append_many(self, tracks):
+    def append_many(self, tracks, save=True):
         self.appended_batches.append(list(tracks))
         for track in tracks:
             track.collection = self
             self.append(track)
 
-    def set_active(self, track):
+    def set_active(self, track, save=True):
         self.active = track
+
+    def save_async(self):
+        pass
 
     def get_active(self):
         return self.active
@@ -67,9 +72,10 @@ class _TrackManager(list):
 
 def test_show_race_tracks_uses_batched_remove_and_append(qtbot):
     from unittest.mock import patch
+
     app = QApplication.instance() or QApplication([])
     manager = _TrackManager()
-    
+
     # Create a fully mocked core with only our mock trackManager
     class MockCore(SimpleNamespace):
         def __init__(self):
@@ -77,7 +83,7 @@ def test_show_race_tracks_uses_batched_remove_and_append(qtbot):
             self.trackManager = manager
             self.routingManager = []
             self.poiManager = []
-    
+
     # Mock load_saved_races to return empty to prevent loading real tracks
     with patch("sailworks.qt.racepanel.load_saved_races", return_value=[]):
         controller = SimpleNamespace(
@@ -86,8 +92,9 @@ def test_show_race_tracks_uses_batched_remove_and_append(qtbot):
         )
         panel = racepanel.RacesPanel(controller)
         qtbot.addWidget(panel)
-    
+
     race = _sample_race()
+    panel._defer_heavy = False
 
     # Pre-populate manager with an old race track name.
     panel._race_track_names = ["old track"]
@@ -99,9 +106,41 @@ def test_show_race_tracks_uses_batched_remove_and_append(qtbot):
     assert manager.removed_names[0] == ["old track"]
     assert len(manager.appended_batches) == 1
     assert len(manager.appended_batches[0]) == 2
-    assert all(getattr(track, "race_track", False) for track in manager.appended_batches[0])
+    assert all(
+        getattr(track, "race_track", False) for track in manager.appended_batches[0]
+    )
     assert panel._race_track_names == [
         f"{race.name} - Boat A",
         f"{race.name} - Boat B",
     ]
-    assert manager.active is manager[-2] or manager.active in manager.appended_batches[0]
+    assert (
+        manager.active is manager[-2] or manager.active in manager.appended_batches[0]
+    )
+
+
+def test_tracks_changed_precedes_persistence(qtbot, monkeypatch):
+    monkeypatch.setattr(racepanel, "load_saved_races", lambda: [])
+    manager = _TrackManager()
+    order = []
+    manager.save_async = lambda: order.append("save")
+    panel = racepanel.RacesPanel(
+        SimpleNamespace(core=SimpleNamespace(trackManager=manager))
+    )
+    qtbot.addWidget(panel)
+    panel._defer_heavy = False
+    panel.tracks_changed.connect(lambda: order.append("signal"))
+    panel._show_race_tracks(_sample_race())
+    assert order == ["signal", "save"]
+
+
+def test_panel_close_flushes(qtbot, monkeypatch):
+    monkeypatch.setattr(racepanel, "load_saved_races", lambda: [])
+    manager = _TrackManager()
+    flushed = []
+    manager.flush_async = lambda: flushed.append(True)
+    panel = racepanel.RacesPanel(
+        SimpleNamespace(core=SimpleNamespace(trackManager=manager))
+    )
+    qtbot.addWidget(panel)
+    panel.close()
+    assert flushed == [True]
