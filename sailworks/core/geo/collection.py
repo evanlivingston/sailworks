@@ -80,16 +80,12 @@ class Collection(Generic[T]):
         # Load in memory without persisting after every element: the stored
         # file already contains this data, and saving per element is O(n^2)
         # because each save re-serialises the whole collection.
-        self.elements = []
-
-        if "elements" not in j:
-            self.touch()
-            return
-
-        for x in j["elements"]:
+        elements = []
+        for x in j.get("elements", []):
             e = self.of.from_json(x)
             e.collection = self
-            self.elements.append(e)
+            elements.append(e)
+        self.elements = elements
         self.touch()
 
     def get_unique_name(self, base_name=None) -> str:
