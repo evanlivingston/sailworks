@@ -158,6 +158,7 @@ class WeatherNextSource(GribSource):
         identifier: str,
         dest_dir: str,
         percentage_callback: Callable[[int], None],
+        cancel=None,
     ) -> str:
         import eccodes
         import numpy as np
@@ -232,6 +233,8 @@ class WeatherNextSource(GribSource):
 
         with path.open("wb") as handle:
             for step in steps:
+                if cancel is not None and cancel.is_set():
+                    raise RuntimeError("WeatherNext download cancelled")
                 if "wind" in fields:
                     write_message(
                         "10u",
