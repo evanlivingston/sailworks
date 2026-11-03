@@ -109,7 +109,7 @@ def worker(config):
     layout = QVBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.addWidget(widget)
-    container.resize(1000, 700)
+    container.resize(config["width"], config["height"])
     container.show()
 
     def pump(milliseconds=0):
@@ -278,6 +278,9 @@ def run(args):
         "repeats": args.repeats,
         "warmup_frames": args.warmup_frames,
         "interval_ms": args.interval_ms,
+        "width": args.width,
+        "height": args.height,
+        "scale_factor": args.scale_factor,
         "no_weather": args.no_weather,
         "no_chart": args.no_chart,
         "mode": "afterRendering-trace-v1",
@@ -303,6 +306,7 @@ def run(args):
                     XDG_CACHE_HOME=str(root / "xdg-cache"),
                     PYTHONHASHSEED="0",
                     PYTHONPATH=str(ROOT),
+                    QT_SCALE_FACTOR=str(args.scale_factor),
                 )
                 result = subprocess.run(
                     [
@@ -347,6 +351,9 @@ def main():
     parser.add_argument("--scenarios", default=",".join(SCENARIOS))
     parser.add_argument("--frames", type=int, default=180)
     parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--width", type=int, default=1000)
+    parser.add_argument("--height", type=int, default=700)
+    parser.add_argument("--scale-factor", type=float, default=1.0)
     parser.add_argument("--warmup-frames", type=int, default=5)
     parser.add_argument("--interval-ms", type=float, default=16.667)
     parser.add_argument("--no-weather", action="store_true")
