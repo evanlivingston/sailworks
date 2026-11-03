@@ -6,7 +6,7 @@ import json
 import random
 from datetime import datetime, timezone
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -74,6 +74,7 @@ class RacesPanel(QWidget):
         self.status = QLabel("No race imported.")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+        self._defer_heavy = True
         self._load_saved_races()
 
     def import_race(self):
@@ -135,12 +136,17 @@ class RacesPanel(QWidget):
         self.changed.emit()
 
     def _show_race_tracks(self, race: Race):
+        if getattr(self, "_defer_heavy", False):
+            self._defer_heavy = False
+            QTimer.singleShot(0, lambda r=race: self._show_race_tracks(r))
+            return
         track_manager = getattr(
             getattr(self.controller, "core", None), "trackManager", None
         )
         if track_manager is None:
             return
-        track_manager.remove_by_names(self._race_track_names)
+        had_old_tracks = bool(self._race_track_names)
+        track_manager.remove_by_names(self._race_track_names, save=False)
         self._race_track_names = []
         self.race_track_times = {}
         new_tracks = []
@@ -165,10 +171,12 @@ class RacesPanel(QWidget):
                 for p in boat.positions
             ]
         if new_tracks:
-            track_manager.append_many(new_tracks)
+            track_manager.append_many(new_tracks, save=False)
             # Make an imported boat visible immediately, so timeline scrubbing
             # can move its marker without requiring the separate Review action.
-            track_manager.set_active(new_tracks[0])
+            track_manager.set_active(new_tracks[0], save=False)
+        if had_old_tracks or new_tracks:
+            track_manager.save()
         self.tracks_changed.emit()
 
     def _show_race(self, race: Race):
