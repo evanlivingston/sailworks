@@ -305,7 +305,9 @@ class RetainedOverlayMixin:
             ((isochrone_frame,),) if getattr(isochrone_frame, "isochrones", ()) else ()
         )
         isochrones = getattr(self, "isochrones", None)
-        if isochrones is not None:
+        if isochrones is not None and not getattr(
+            self, "_qml_isochrone_overlay", False
+        ):
             try:
                 isochrones.draw(self, cr, frames, "routing-live")
             except Exception:
