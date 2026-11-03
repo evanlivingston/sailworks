@@ -117,54 +117,120 @@ class NavigationRenderer:
         self.hl_track_item = None
         self.edit_track = None
 
-    def draw_routes(self, gpsmap, cr, display_time):  # noqa: C901
+    def draw_routes(self, gpsmap, cr, display_time, draw_routes=True):  # noqa: C901
         # Legacy route times and the map clock are local and naive; newer
         # routes carry UTC offsets. Compare instants without discarding offsets.
 
+        if draw_routes:
+            for tr in self.core.routingManager:
+                if not tr.visible:
+                    continue
+
+                highlight = tr.name == self.hl_routing
+                if highlight:
+                    draw_current_exclusions(
+                        gpsmap,
+                        cr,
+                        (tr.provenance or {}).get("excluded_current_samples", ()),
+                    )
+
+                prevx = None
+                prevy = None
+                prevp = None
+                points_list = list(tr)
+
+                for i, p in enumerate(points_list):
+                    x, y = gpsmap.convert_geographic_to_screen(
+                        MapPoint.new_degrees(p[0], p[1])
+                    )
+
+                    # Route name label at start with background
+                    if prevp is None and highlight:
+                        cr.set_font_size(10)
+                        ext = cr.text_extents(tr.name)
+                        cr.set_source_rgba(0.0, 0.0, 0.0, 0.6)
+                        cr.rectangle(x + 8, y - 12, ext.width + 8, 16)
+                        cr.fill()
+                        cr.set_source_rgba(1.0, 1.0, 1.0, 0.9)
+                        cr.move_to(x + 12, y)
+                        cr.show_text(tr.name)
+                        cr.stroke()
+                    elif prevp is None:
+                        Style.Track.RoutingTrackFont.apply(cr)
+                        cr.move_to(x + 10, y)
+                        cr.show_text(tr.name)
+                        cr.stroke()
+
+                    # Interpolated boat position on route
+                    if prevp is not None:
+                        tprev = _route_datetime(prevp[2]).timestamp()
+                        tcurr = _route_datetime(p[2]).timestamp()
+
+                        if tprev < display_time <= tcurr:
+                            dt = tcurr - tprev
+                            dl = (
+                                utils.point_distance(prevp[0], prevp[1], p[0], p[1])
+                                / dt
+                                * (display_time - tprev)
+                            )
+
+                            rp = utils.routage_point_distance(
+                                prevp[0], prevp[1], dl, math.radians(p[6])
+                            )
+
+                            xx, yy = gpsmap.convert_geographic_to_screen(
+                                MapPoint.new_degrees(rp[0], rp[1])
+                            )
+                            # Boat marker: filled circle with border
+                            cr.set_source_rgba(0.1, 0.6, 0.1, 1.0)
+                            cr.arc(xx, yy, 8, 0, 2 * math.pi)
+                            cr.fill()
+                            cr.set_source_rgba(1.0, 1.0, 1.0, 0.9)
+                            cr.set_line_width(1.5)
+                            cr.arc(xx, yy, 8, 0, 2 * math.pi)
+                            cr.stroke()
+
+                    # Draw segment line colored by boat speed
+                    if prevx is not None and prevy is not None:
+                        speed = p[5] if p[5] is not None else 0
+                        lw = 3.0 if highlight else 2.0
+
+                        r, g, b, a = _speed_color(speed)
+                        cr.set_source_rgba(r, g, b, a if highlight else a * 0.7)
+                        cr.set_line_width(lw)
+                        cr.move_to(prevx, prevy)
+                        cr.line_to(x, y)
+                        cr.stroke()
+
+                    # Waypoint markers
+                    speed = p[5] if p[5] is not None else 0
+                    r, g, b, a = _speed_color(speed)
+                    radius = 3 if highlight else 2
+
+                    cr.set_source_rgba(r, g, b, 1.0)
+                    cr.arc(x, y, radius, 0, 2 * math.pi)
+                    cr.fill()
+
+                    prevx = x
+                    prevy = y
+                    prevp = p
+
+    def route_overlay_data(self, display_time):
+        """Route geometry for a QML overlay, including the interpolated boat."""
+        routes = []
         for tr in self.core.routingManager:
             if not tr.visible:
                 continue
-
-            highlight = tr.name == self.hl_routing
-            if highlight:
-                draw_current_exclusions(
-                    gpsmap,
-                    cr,
-                    (tr.provenance or {}).get("excluded_current_samples", ()),
-                )
-
-            prevx = None
-            prevy = None
+            points = [
+                [float(p[0]), float(p[1]), float(p[5] if p[5] is not None else 0)]
+                for p in tr
+            ]
+            boat = None
             prevp = None
-            points_list = list(tr)
-
-            for i, p in enumerate(points_list):
-                x, y = gpsmap.convert_geographic_to_screen(
-                    MapPoint.new_degrees(p[0], p[1])
-                )
-
-                # Route name label at start with background
-                if prevp is None and highlight:
-                    cr.set_font_size(10)
-                    ext = cr.text_extents(tr.name)
-                    cr.set_source_rgba(0.0, 0.0, 0.0, 0.6)
-                    cr.rectangle(x + 8, y - 12, ext.width + 8, 16)
-                    cr.fill()
-                    cr.set_source_rgba(1.0, 1.0, 1.0, 0.9)
-                    cr.move_to(x + 12, y)
-                    cr.show_text(tr.name)
-                    cr.stroke()
-                elif prevp is None:
-                    Style.Track.RoutingTrackFont.apply(cr)
-                    cr.move_to(x + 10, y)
-                    cr.show_text(tr.name)
-                    cr.stroke()
-
-                # Interpolated boat position on route
+            for p in tr:
                 if prevp is not None:
                     tprev = _route_datetime(prevp[2]).timestamp()
                     tcurr = _route_datetime(p[2]).timestamp()
-
                     if tprev < display_time <= tcurr:
                         dt = tcurr - tprev
                         dl = (
@@ -172,47 +238,21 @@ class NavigationRenderer:
                             / dt
                             * (display_time - tprev)
                         )
-
                         rp = utils.routage_point_distance(
                             prevp[0], prevp[1], dl, math.radians(p[6])
                         )
-
-                        xx, yy = gpsmap.convert_geographic_to_screen(
-                            MapPoint.new_degrees(rp[0], rp[1])
-                        )
-                        # Boat marker: filled circle with border
-                        cr.set_source_rgba(0.1, 0.6, 0.1, 1.0)
-                        cr.arc(xx, yy, 8, 0, 2 * math.pi)
-                        cr.fill()
-                        cr.set_source_rgba(1.0, 1.0, 1.0, 0.9)
-                        cr.set_line_width(1.5)
-                        cr.arc(xx, yy, 8, 0, 2 * math.pi)
-                        cr.stroke()
-
-                # Draw segment line colored by boat speed
-                if prevx is not None and prevy is not None:
-                    speed = p[5] if p[5] is not None else 0
-                    lw = 3.0 if highlight else 2.0
-
-                    r, g, b, a = _speed_color(speed)
-                    cr.set_source_rgba(r, g, b, a if highlight else a * 0.7)
-                    cr.set_line_width(lw)
-                    cr.move_to(prevx, prevy)
-                    cr.line_to(x, y)
-                    cr.stroke()
-
-                # Waypoint markers
-                speed = p[5] if p[5] is not None else 0
-                r, g, b, a = _speed_color(speed)
-                radius = 3 if highlight else 2
-
-                cr.set_source_rgba(r, g, b, 1.0)
-                cr.arc(x, y, radius, 0, 2 * math.pi)
-                cr.fill()
-
-                prevx = x
-                prevy = y
+                        boat = [float(rp[0]), float(rp[1])]
+                        break
                 prevp = p
+            routes.append(
+                {
+                    "name": str(tr.name),
+                    "points": points,
+                    "highlight": tr.name == self.hl_routing,
+                    "boat": boat,
+                }
+            )
+        return routes
 
     def draw_navigation(self, gpsmap, cr, draw_tracks=True):  # noqa: C901
         if draw_tracks:

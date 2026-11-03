@@ -168,6 +168,7 @@ Item {
                 property var pois: []
                 property var tracks: []
                 property var raceTracks: []
+                property var routes: []
                 property string captionText: ""
                 property bool dashboardVisible: true
                 property real centerLatitude: 0
@@ -185,6 +186,19 @@ Item {
                     const centerY = world * (1 - Math.asinh(Math.tan(centerRadians)) / Math.PI) / 2
                     return Qt.point(panPadding + viewportWidth / 2 + dx,
                                     panPadding + viewportHeight / 2 + y - centerY)
+                }
+
+                function speedColor(speed, alpha) {
+                    let r, g, b
+                    if (speed < 2) { r = 0.3; g = 0.5; b = 1.0 }
+                    else if (speed < 4) { r = 0.2; g = 0.7; b = 0.9 }
+                    else if (speed < 6) { r = 0.2; g = 0.85; b = 0.5 }
+                    else if (speed < 8) { r = 0.5; g = 0.9; b = 0.2 }
+                    else if (speed < 10) { r = 0.9; g = 0.85; b = 0.1 }
+                    else if (speed < 12) { r = 1.0; g = 0.6; b = 0.1 }
+                    else { r = 1.0; g = 0.3; b = 0.1 }
+                    return `rgba(${Math.round(r * 255)},${Math.round(g * 255)},` +
+                           `${Math.round(b * 255)},${alpha})`
                 }
 
                 function drawRoute(context, points, color) {
@@ -287,6 +301,49 @@ Item {
                         context.setLineDash([])
                         context.stroke()
                         context.globalAlpha = 1
+                    }
+                    if (routes && routes.length) {
+                        for (let r = 0; r < routes.length; ++r) {
+                            const route = routes[r]
+                            const points = route.points
+                            if (!points || points.length < 2)
+                                continue
+                            const highlight = Boolean(route.highlight)
+                            for (let i = 1; i < points.length; ++i) {
+                                const previous = screenPoint(points[i - 1])
+                                const point = screenPoint(points[i])
+                                context.beginPath()
+                                context.moveTo(previous.x, previous.y)
+                                context.lineTo(point.x, point.y)
+                                context.lineWidth = highlight ? 3 : 2
+                                context.strokeStyle = speedColor(
+                                    points[i][2] || 0, highlight ? 0.9 : 0.63)
+                                context.stroke()
+                            }
+                            context.font = "10px sans-serif"
+                            context.fillStyle = "rgba(17,17,17,0.7)"
+                            const first = screenPoint(points[0])
+                            context.fillText(route.name, first.x + 10, first.y)
+                            for (let i = 0; i < points.length; ++i) {
+                                const point = screenPoint(points[i])
+                                context.beginPath()
+                                context.arc(point.x, point.y,
+                                            highlight ? 3 : 2, 0, Math.PI * 2)
+                                context.fillStyle = speedColor(
+                                    points[i][2] || 0, 1.0)
+                                context.fill()
+                            }
+                            if (route.boat && route.boat.length === 2) {
+                                const boat = screenPoint(route.boat)
+                                context.beginPath()
+                                context.arc(boat.x, boat.y, 8, 0, Math.PI * 2)
+                                context.fillStyle = "rgba(26,153,26,1)"
+                                context.fill()
+                                context.lineWidth = 1.5
+                                context.strokeStyle = "rgba(255,255,255,0.9)"
+                                context.stroke()
+                            }
+                        }
                     }
                     if (tracks && tracks.length) {
                         for (let t = 0; t < tracks.length; ++t) {
@@ -427,6 +484,7 @@ Item {
                 onPoisChanged: requestPaint()
                 onTracksChanged: requestPaint()
                 onRaceTracksChanged: requestPaint()
+                onRoutesChanged: requestPaint()
                 onTrackPointsChanged: requestPaint()
                 onTrackPositionChanged: requestPaint()
                 onTrackHeadingChanged: requestPaint()

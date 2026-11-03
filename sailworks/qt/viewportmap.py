@@ -578,6 +578,9 @@ class ViewportMap(
                 if track.visible and not getattr(track, "race_track", False)
             ],
             "race_tracks": race_tracks,
+            "routes": self.navigation.route_overlay_data(
+                self.time_control.time.timestamp()
+            ),
             "caption": _viewport_caption(
                 self.move_callback, self.controller.chart_errors
             ),
