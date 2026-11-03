@@ -17,6 +17,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 """Shared GTK/Qt track and POI portrayal, in logical map pixels."""
 
 import math
+import random
 from functools import lru_cache
 
 import dateutil.parser
@@ -310,24 +311,20 @@ class NavigationRenderer:
                     cr.show_text(tr.name)
                     cr.stroke()
 
-                if prevx is not None and prevy is not None:
-                    if active:
-                        Style.Track.TrackActive.apply(cr)
-                    else:
-                        Style.Track.TrackInactive.apply(cr)
+                color = getattr(tr, "color", None)
+                if color is None:
+                    rng = random.Random(getattr(tr, "name", "") or "")
+                    color = (rng.random(), rng.random(), rng.random())
 
+                if prevx is not None and prevy is not None:
+                    cr.set_source_rgba(
+                        color[0], color[1], color[2], 1.0 if active else 0.6
+                    )
+                    cr.set_line_width(2.0 if active else 1.2)
+                    Style.reset_dash(cr)
                     cr.move_to(prevx, prevy)
                     cr.line_to(x, y)
                     cr.stroke()
-
-                if active:
-                    Style.Track.TrackActive.apply(cr)
-                else:
-                    Style.Track.TrackInactive.apply(cr)
-
-                Style.reset_dash(cr)
-                cr.arc(x, y, 5, 0, 2 * math.pi)
-                cr.stroke()
 
                 prevx = x
                 prevy = y
