@@ -77,15 +77,20 @@ class Collection(Generic[T]):
         return {"elements": [x.to_json() for x in self.elements]}
 
     def load_json(self, j):
-        self.clear()
+        # Load in memory without persisting after every element: the stored
+        # file already contains this data, and saving per element is O(n^2)
+        # because each save re-serialises the whole collection.
+        self.elements = []
 
         if "elements" not in j:
+            self.touch()
             return
 
         for x in j["elements"]:
             e = self.of.from_json(x)
             e.collection = self
-            self.append(e)
+            self.elements.append(e)
+        self.touch()
 
     def get_unique_name(self, base_name=None) -> str:
         if base_name is None:
@@ -108,7 +113,7 @@ class Collection(Generic[T]):
         self.touch()
         self.save()
 
-    def append_many(self, elements):
+    def append_many(self, elements, save=True):
         """Append multiple elements with a single save."""
         changed = False
         for element in elements:
@@ -118,13 +123,14 @@ class Collection(Generic[T]):
             changed = True
         if changed:
             self.touch()
-            self.save()
+            if save:
+                self.save()
         return len(elements) if elements is not None else 0
 
     def extend(self, elements):
         return self.append_many(elements)
 
-    def remove_many(self, elements):
+    def remove_many(self, elements, save=True):
         """Remove multiple elements with a single save."""
         remove_ids = {id(element) for element in (elements or ())}
         before = len(self.elements)
@@ -133,9 +139,10 @@ class Collection(Generic[T]):
         ]
         if len(self.elements) != before:
             self.touch()
-            self.save()
+            if save:
+                self.save()
 
-    def remove_by_names(self, names):
+    def remove_by_names(self, names, save=True):
         """Remove elements by name with a single save."""
         wanted = set(names or ())
         before = len(self.elements)
@@ -144,7 +151,8 @@ class Collection(Generic[T]):
         ]
         if len(self.elements) != before:
             self.touch()
-            self.save()
+            if save:
+                self.save()
 
     def remove(self, element):
         try:
@@ -222,9 +230,10 @@ class CollectionWithActiveElement(Collection):
     def get_active(self):
         return self.activeElement
 
-    def set_active(self, element):
+    def set_active(self, element, save=True):
         self.activeElement = element
-        self.save()
+        if save:
+            self.save()
 
     def activate(self, name):
         self.set_active(self.get_by_name(name))
@@ -238,14 +247,14 @@ class CollectionWithActiveElement(Collection):
 
         Collection.remove(self, element)
 
-    def remove_many(self, elements):
+    def remove_many(self, elements, save=True):
         for element in list(elements or ()):
             if self.activeElement == element:
                 self.activeElement = None
-        Collection.remove_many(self, elements)
+        Collection.remove_many(self, elements, save=save)
 
-    def remove_by_names(self, names):
+    def remove_by_names(self, names, save=True):
         wanted = set(names or ())
         if self.activeElement is not None and self.activeElement.name in wanted:
             self.activeElement = None
-        Collection.remove_by_names(self, names)
+        Collection.remove_by_names(self, names, save=save)

@@ -17,6 +17,13 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 from sailworks.core import utils
 from sailworks.core.geo.element import Element
 
+try:
+    from pyproj import Geod as _Geod
+
+    _CACHED_GEOD = _Geod(ellps="WGS84")
+except Exception:
+    _CACHED_GEOD = False
+
 
 class _TrackedPoints(list):
     """List of points that bumps its owner's revision on every mutation.
@@ -66,6 +73,8 @@ class ElementMultiPoint(Element):
     def __init__(self, name, points=None, visible=True, collection=None):
         super().__init__(name, visible, collection)
         self.points = [] if points is None else points
+        self._length_cache = None
+        self._length_version = -1
 
     @property
     def points(self):
@@ -97,25 +106,40 @@ class ElementMultiPoint(Element):
 
     def __setitem__(self, key, value):
         self.points[key] = value
+        self.touch()
         self.collection.save()
 
     def __delitem__(self, key):
         del self.points[key]
+        self.touch()
         self.collection.save()
 
     def __iter__(self):
         return iter(self.points)
 
     def length(self):
+        # Cache the (expensive) length computation; invalidate when the
+        # element is touched (point edits bump the revision).
+        if self._length_cache is not None and self._length_version == self._revision:
+            return self._length_cache
         if len(self.points) <= 1:
+            self._length_cache = 0.0
+            self._length_version = self._revision
             return 0.0
 
         d = 0.0
         prev = self.points[0]
+        geod = _CACHED_GEOD
         for x in self.points[1::]:
-            d += utils.point_distance(prev[0], prev[1], x[0], x[1])
+            if geod:
+                _, _, meters = geod.inv(prev[1], prev[0], x[1], x[0])
+                d += meters * 0.000539957
+            else:
+                d += utils.point_distance(prev[0], prev[1], x[0], x[1])
             prev = x
 
+        self._length_cache = d
+        self._length_version = self._revision
         return d
 
     def move_up(self, i):
@@ -123,6 +147,7 @@ class ElementMultiPoint(Element):
             sw = self.points[i - 1]
             self.points[i - 1] = self.points[i]
             self.points[i] = sw
+            self.touch()
             self.collection.save()
 
     def move_down(self, i):
@@ -130,11 +155,13 @@ class ElementMultiPoint(Element):
             sw = self.points[i + 1]
             self.points[i + 1] = self.points[i]
             self.points[i] = sw
+            self.touch()
             self.collection.save()
 
     def remove(self, i):
         if i >= 0 and i < len(self):
             del self.points[i]
+            self.touch()
             self.collection.save()
 
     def duplicate(self, i):
@@ -143,12 +170,15 @@ class ElementMultiPoint(Element):
 
     def add(self, lat, lon, t=None):
         self.points.append((lat, lon, t))
+        self.touch()
         self.collection.save()
 
     def move(self, i, lat, lon):
         self.points[i] = (lat, lon, None)
+        self.touch()
         self.collection.save()
 
     def clear(self):
         self.points = []
+        self.touch()
         self.collection.save()
