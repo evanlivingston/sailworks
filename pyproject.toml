@@ -48,7 +48,7 @@ classifiers = [
 [project.optional-dependencies]
 qt = [] # Compatibility extra: Qt is now installed by default.
 marine-global = ["copernicusmarine>=2.2,<3"]
-weathernext = ["xarray", "zarr>=3", "gcsfs", "dask[array]"]
+weathernext = ["xarray", "zarr>=3", "gcsfs", "dask[array]", "eccodes"]
 
 [dependency-groups]
 dev = ["black", "pytest", "pytest-qt"]

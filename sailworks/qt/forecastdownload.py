@@ -59,6 +59,14 @@ MODELS = (
         "Global wave fields",
         "GFSWAVE",
     ),
+    (
+        "Google WeatherNext 3",
+        "WeatherNext 3",
+        "0.1° grid",
+        "15 days",
+        "Global AI ensemble means",
+        "WEATHERNEXT",
+    ),
 )
 
 
