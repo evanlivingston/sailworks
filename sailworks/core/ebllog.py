@@ -1,6 +1,7 @@
 """Limited EBL instrument replay, never a claim of full gateway conversion."""
 
 import os
+from datetime import timedelta
 from pathlib import Path
 from types import MappingProxyType
 from collections.abc import Sequence
@@ -10,7 +11,7 @@ import nmeatoolkit as nt
 from .ebl import EBLDecoder
 from .nmea2000 import instruments
 from .n2kdevices import DeviceCollector
-from .nmeasession import NMEALog, NMEATrack, NumericFieldCollector, _track_sentence
+from .nmeasession import NMEALog, NMEATrack, NumericFieldCollector, _track_sentence, slice_log
 from .polarperformance import PerformanceHistory
 
 
@@ -189,3 +190,34 @@ def write_edited_log(log, path):
             stream.write(f"@+{elapsed:.9f}\t{source_text}\t{packet.serialize()}\n")
         stream.flush()
         os.fsync(stream.fileno())
+
+
+EBL_SESSION_GAP_SECONDS = 3600.0
+
+
+def split_ebl_log(log, gap_seconds=EBL_SESSION_GAP_SECONDS):
+    """Split a timed EBL log into one log per gap larger than ``gap_seconds``."""
+    if not getattr(log, "timestamped", False) or not getattr(log, "entries", None):
+        return [log]
+    origin = getattr(log, "timestamp_origin", None)
+    if origin is None or len(log.entries) < 2:
+        return [log]
+    sessions = []
+    start = 0
+    for index in range(1, len(log.entries)):
+        previous = origin + timedelta(seconds=log.entries[index - 1][0])
+        current = origin + timedelta(seconds=log.entries[index][0])
+        if (current - previous).total_seconds() > float(gap_seconds):
+            sessions.append((start, index))
+            start = index
+    sessions.append((start, len(log.entries)))
+    if len(sessions) <= 1:
+        return [log]
+    result = []
+    for start_index, end_index in sessions:
+        start_elapsed = log.entries[start_index][0]
+        end_elapsed = log.entries[end_index - 1][0]
+        sliced = slice_log(log, start_elapsed, end_elapsed)
+        if sliced is not None:
+            result.append(sliced)
+    return result or [log]

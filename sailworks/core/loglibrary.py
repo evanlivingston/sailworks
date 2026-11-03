@@ -177,7 +177,12 @@ class LogLibrary:
 
     def _import_ebl(self, group, progress=None, decode_progress=None):
         """Decode an EBL (single or stitched) and store the decoded .log."""
-        from .ebllog import read_ebl_log, write_decoded_log
+        from .ebllog import (
+            EBL_SESSION_GAP_SECONDS,
+            read_ebl_log,
+            split_ebl_log,
+            write_decoded_log,
+        )
         from dataclasses import asdict, replace
 
         group = tuple(group)
@@ -277,67 +282,92 @@ class LogLibrary:
                 raise
             return dict(item)
 
-        target = self.originals / f"{identifier}.log"
-        temporary = self.originals / f".{identifier}.log.tmp"
-        try:
-            write_decoded_log(log, temporary)
-            os.replace(temporary, target)
-        except Exception:
-            temporary.unlink(missing_ok=True)
-            target.unlink(missing_ok=True)
-            raise
-        try:
-            item = dict(
-                id=identifier,
-                file=target.name,
-                name=(
+        logs = split_ebl_log(log, EBL_SESSION_GAP_SECONDS)
+        session_items = []
+        session_logs = []
+        for session_index, session_log in enumerate(logs):
+            session_identifier = (
+                identifier if len(logs) == 1 else f"{identifier}_{session_index}"
+            )
+            target = self.originals / f"{session_identifier}.log"
+            temporary = self.originals / f".{session_identifier}.log.tmp"
+            try:
+                write_decoded_log(session_log, temporary)
+                os.replace(temporary, target)
+            except Exception:
+                temporary.unlink(missing_ok=True)
+                target.unlink(missing_ok=True)
+                raise
+            if len(logs) == 1:
+                name = (
                     f"{group[0].parent.name}/{group[0].stem.split('_')[0]}.log"
                     if len(group) > 1
                     else group[0].stem + ".log"
-                ),
+                )
+            else:
+                name = (
+                    f"{group[0].parent.name}/{group[0].stem.split('_')[0]}_"
+                    f"session{session_index + 1}.log"
+                )
+            item = dict(
+                id=session_identifier,
+                file=target.name,
+                name=name,
                 vessel="",
                 notes="",
                 imported=datetime.now(timezone.utc).isoformat(),
                 status=(
                     (
-                        f"{log.format}: {log.frame_count:,} raw CAN frames; "
-                        f"{len(log.entries):,} replay entries"
+                        f"{session_log.format}: {session_log.frame_count:,} raw CAN frames; "
+                        f"{len(session_log.entries):,} replay entries"
                     )
-                    if log.entries and log.frame_count is not None
+                    if session_log.entries and session_log.frame_count is not None
                     else (
-                        f"{log.format}: {len(log.entries):,} sentences"
-                        if log.entries
+                        f"{session_log.format}: {len(session_log.entries):,} sentences"
+                        if session_log.entries
                         else "Archive only — no supported replay data"
                     )
                 ),
-                diagnostics=list(log.diagnostics),
+                diagnostics=list(session_log.diagnostics),
                 source_signature=source_signature,
                 file_info={
                     "path": str(target),
                     "format": "NMEA 0183 (decoded from EBL)",
-                    "entries": len(log.entries),
-                    "duration": log.duration,
+                    "entries": len(session_log.entries),
+                    "duration": session_log.duration,
                     "timestamp_origin": (
-                        log.timestamp_origin.isoformat()
-                        if getattr(log, "timestamp_origin", None) is not None
+                        session_log.timestamp_origin.isoformat()
+                        if getattr(session_log, "timestamp_origin", None) is not None
                         else None
                     ),
-                    "timestamped": log.timestamped,
-                    "skipped": log.skipped,
-                    "frame_count": log.frame_count,
-                    "source_tracks": list(log.source_tracks),
-                    "device_metadata_available": log.device_metadata_available,
-                    "devices": [asdict(d) for d in log.devices],
-                    "diagnostics": list(log.diagnostics),
+                    "timestamped": session_log.timestamped,
+                    "skipped": session_log.skipped,
+                    "frame_count": session_log.frame_count,
+                    "source_tracks": list(session_log.source_tracks),
+                    "device_metadata_available": session_log.device_metadata_available,
+                    "devices": [asdict(d) for d in session_log.devices],
+                    "diagnostics": list(session_log.diagnostics),
                 },
             )
+            session_items.append((session_identifier, item))
+            session_logs.append((session_log, target))
+
+        try:
             with self.lock:
-                self._save({**self._entries, identifier: item})
-            result = dict(item)
-            result["_decoded_log"] = replace(log, path=str(target))
+                entries = dict(self._entries)
+                for session_identifier, item in session_items:
+                    entries[session_identifier] = item
+                self._save(entries)
+            result = dict(session_items[0][1])
+            result["_decoded_log"] = replace(session_logs[0][0], path=str(session_logs[0][1]))
+            # Expose all decoded sessions for callers that can handle them.
+            result["_decoded_logs"] = [
+                replace(log, path=str(path)) for log, path in session_logs
+            ]
             return result
         except Exception:
-            target.unlink(missing_ok=True)
+            for _, path in session_logs:
+                path.unlink(missing_ok=True)
             raise
 
     @staticmethod

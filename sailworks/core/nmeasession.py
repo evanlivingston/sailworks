@@ -3,7 +3,8 @@
 import logging
 from array import array
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from types import MappingProxyType
 import math
 from pathlib import Path
 from threading import RLock
@@ -361,7 +362,12 @@ def ripple_delete_log(log, start, end):
 
     history = PerformanceHistory(max_age=50, interval=0)
     for index, (_, packet) in enumerate(entries):
-        history.ingest(packet.data, now=getattr(packet, "log_index", index))
+        if packet is None:
+            continue
+        data = getattr(packet, "data", None)
+        if data is None:
+            continue
+        history.ingest(data, now=getattr(packet, "log_index", index))
     numeric_series = []
     for series in log.numeric_series:
         offsets = array("d")
@@ -385,6 +391,76 @@ def ripple_delete_log(log, start, end):
         point_offsets=point_offsets,
         source_tracks=tracks,
         numeric_series=tuple(numeric_series),
+    )
+
+
+def slice_log(log, start, end):
+    """Return a log containing only entries in [start, end], with reset timing."""
+    start = max(0.0, float(start))
+    end = min(float(end), log.duration)
+    if end <= start:
+        return None
+    delta = start
+    entries = tuple(
+        (offset - delta, packet)
+        for offset, packet in log.entries
+        if start <= offset <= end
+    )
+    if not entries:
+        return None
+
+    def keep(points, offsets):
+        retained = [
+            (point, offset)
+            for point, offset in zip(points, offsets)
+            if start <= offset <= end
+        ]
+        return (
+            tuple(point for point, _ in retained),
+            tuple(offset - delta for _, offset in retained),
+        )
+
+    points, point_offsets = keep(log.points, log.point_offsets)
+    tracks = {}
+    for source, track in (log.source_tracks or {}).items():
+        track_points, track_offsets = keep(track.points, track.point_offsets)
+        tracks[source] = NMEATrack(track_points, track_offsets)
+
+    history = PerformanceHistory(max_age=50, interval=0)
+    for index, (_, packet) in enumerate(entries):
+        if packet is None:
+            continue
+        data = getattr(packet, "data", None)
+        if data is None:
+            continue
+        history.ingest(data, now=getattr(packet, "log_index", index))
+
+    numeric_series = []
+    for series in log.numeric_series:
+        offsets = array("d")
+        values = array("d")
+        for offset, value in zip(series.offsets, series.values):
+            if start <= offset <= end:
+                offsets.append(offset - delta)
+                values.append(value)
+        if offsets:
+            numeric_series.append(
+                LoggedFieldSeries(series.key, series.label, offsets, values)
+            )
+
+    origin = log.timestamp_origin
+    if origin is not None:
+        origin = origin + timedelta(seconds=start)
+
+    return replace(
+        log,
+        entries=entries,
+        samples=history.snapshot()[1],
+        points=points,
+        point_offsets=point_offsets,
+        source_tracks=MappingProxyType(tracks) if isinstance(log.source_tracks, MappingProxyType) else tracks,
+        numeric_series=tuple(numeric_series),
+        timestamp_origin=origin,
     )
 
 
