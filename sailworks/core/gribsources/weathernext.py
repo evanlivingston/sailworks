@@ -23,6 +23,17 @@ PRESSURE = "mean_sea_level_pressure_mean"
 _RUN = re.compile(r"^(\d{8})_(\d{2})hr_(\d{2})_preds$")
 
 
+def _expanded(bounds):
+    """Expand to 0.1-degree grid points so the written GRIB covers the request."""
+    south, west, north, east = bounds
+    return (
+        math.floor(south * 10) / 10,
+        math.floor(west * 10) / 10,
+        math.ceil(north * 10) / 10,
+        math.ceil(east * 10) / 10,
+    )
+
+
 class WeatherNextSource(GribSource):
     """Read a bounded WeatherNext Zarr run and emit a GRIB2 artifact.
 
@@ -123,7 +134,9 @@ class WeatherNextSource(GribSource):
     def _select(self, dataset, variable, run_time, step, latitude, longitude):
         import numpy as np
 
-        south, west, north, east = latitude[0], longitude[0], latitude[1], longitude[1]
+        south, west, north, east = _expanded(
+            (latitude[0], longitude[0], latitude[1], longitude[1])
+        )
         if west > east:
             raise ValueError(
                 "WeatherNext does not support a region crossing the prime meridian"
@@ -158,7 +171,7 @@ class WeatherNextSource(GribSource):
         fields = tuple(payload["fields"])
         if self.bounds is None:
             raise ValueError("WeatherNext requires a requested region")
-        south, west, north, east = self.bounds
+        south, west, north, east = _expanded(self.bounds)
         url = statistics_store_url(run_time, payload.get("run_tag", "01_preds"))
         dataset = open_statistics_store(url, credentials=WeatherNextCredentials().token)
         lat = dataset.coords["lat_0p1"].values
