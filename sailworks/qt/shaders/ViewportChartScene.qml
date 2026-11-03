@@ -167,6 +167,7 @@ Item {
                 property var trackAwa: null
                 property var pois: []
                 property var tracks: []
+                property var raceTracks: []
                 property string captionText: ""
                 property bool dashboardVisible: true
                 property real centerLatitude: 0
@@ -334,6 +335,33 @@ Item {
                             }
                         }
                     }
+                    if (raceTracks && raceTracks.length) {
+                        for (let t = 0; t < raceTracks.length; ++t) {
+                            const track = raceTracks[t]
+                            const points = track.points
+                            if (!points || points.length < 2)
+                                continue
+                            const color = track.color || [1, 1, 1]
+                            const alpha = track.active ? 1 : 0.6
+                            context.beginPath()
+                            const first = screenPoint(points[0])
+                            context.moveTo(first.x, first.y)
+                            for (let i = 1; i < points.length; ++i) {
+                                const point = screenPoint(points[i])
+                                context.lineTo(point.x, point.y)
+                            }
+                            context.strokeStyle =
+                                `rgba(${Math.round(color[0] * 255)},` +
+                                `${Math.round(color[1] * 255)},` +
+                                `${Math.round(color[2] * 255)},${alpha})`
+                            context.lineWidth = track.active ? 2 : 1.2
+                            context.setLineDash([])
+                            context.stroke()
+                            context.font = "10px sans-serif"
+                            context.fillStyle = "rgba(17,17,17,0.7)"
+                            context.fillText(track.name, first.x - 10, first.y - 10)
+                        }
+                    }
                     if (pois && pois.length) {
                         for (let i = 0; i < pois.length; ++i) {
                             const poi = pois[i]
@@ -398,6 +426,7 @@ Item {
                 onSelectedPointChanged: requestPaint()
                 onPoisChanged: requestPaint()
                 onTracksChanged: requestPaint()
+                onRaceTracksChanged: requestPaint()
                 onTrackPointsChanged: requestPaint()
                 onTrackPositionChanged: requestPaint()
                 onTrackHeadingChanged: requestPaint()

@@ -138,6 +138,25 @@ def test_race_geometry_image_invalidates_on_view_change():
     assert len(calls) == 2
 
 
+def test_navigation_image_skips_cached_race_geometry_when_qml_owns_it():
+    host = _Host()
+    calls = []
+
+    def draw(gpsmap, cr, **kwargs):
+        calls.append(1)
+
+    host.navigation = type("Navigation", (), {})()
+    host.navigation.draw_race_tracks = draw
+    host.navigation.draw_routes = lambda gpsmap, cr, ts: None
+    host.navigation.draw_navigation = lambda *args, **kwargs: None
+    host._qml_race_overlay = True
+    host._center_lat = 48.0
+    host._center_lon = -123.0
+    host._zoom = 6.0
+    host._navigation_image()
+    assert calls == []
+
+
 def test_navigation_image_reuses_cached_race_geometry_on_marker_change():
     host = _Host()
     calls = []

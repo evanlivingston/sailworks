@@ -327,43 +327,49 @@ class RetainedOverlayMixin:
         # Compose the cached race geometry instead of redrawing race tracks on
         # every navigation image. The cache is keyed on view/track state, so
         # marker-only scrubbing reuses the previously rendered geometry.
-        race_geometry_image = getattr(self, "_race_geometry_image", None)
-        if callable(race_geometry_image):
-            cached_race_image = race_geometry_image()
-            if isinstance(cached_race_image, QImage) and not cached_race_image.isNull():
-                # Keep the Qt image and its buffer alive for the lifetime of the
-                # Cairo surface that wraps them; Cairo does not take ownership of
-                # the external buffer.
-                cached_bits = cached_race_image.bits()
-                if cached_bits is None:
-                    raise RuntimeError("cached race image has no backing buffer")
-                cached_width = cached_race_image.width()
-                cached_height = cached_race_image.height()
-                cached_stride = cached_race_image.bytesPerLine()
-                if cached_width <= 0 or cached_height <= 0 or cached_stride <= 0:
-                    raise ValueError("cached race image has invalid dimensions")
-                cached_surface = cairo.ImageSurface.create_for_data(
-                    cached_bits,
-                    cairo.FORMAT_ARGB32,
-                    cached_width,
-                    cached_height,
-                    cached_stride,
+        if not getattr(self, "_qml_race_overlay", False):
+            race_geometry_image = getattr(self, "_race_geometry_image", None)
+            if callable(race_geometry_image):
+                cached_race_image = race_geometry_image()
+                if (
+                    isinstance(cached_race_image, QImage)
+                    and not cached_race_image.isNull()
+                ):
+                    # Keep the Qt image and its buffer alive for the lifetime of the
+                    # Cairo surface that wraps them; Cairo does not take ownership of
+                    # the external buffer.
+                    cached_bits = cached_race_image.bits()
+                    if cached_bits is None:
+                        raise RuntimeError("cached race image has no backing buffer")
+                    cached_width = cached_race_image.width()
+                    cached_height = cached_race_image.height()
+                    cached_stride = cached_race_image.bytesPerLine()
+                    if cached_width <= 0 or cached_height <= 0 or cached_stride <= 0:
+                        raise ValueError("cached race image has invalid dimensions")
+                    cached_surface = cairo.ImageSurface.create_for_data(
+                        cached_bits,
+                        cairo.FORMAT_ARGB32,
+                        cached_width,
+                        cached_height,
+                        cached_stride,
+                    )
+                    # Retain references in locals so the wrapped buffer cannot be
+                    # collected while Cairo reads it during painting.
+                    _race_composition_refs = (  # noqa: F841
+                        cached_race_image,
+                        cached_bits,
+                        cached_surface,
+                    )
+                    cached_surface.set_device_scale(factor, factor)
+                    cr.set_source_surface(cached_surface, 0, 0)
+                    cr.paint()
+                    cached_surface.flush()
+            elif navigation is not None and hasattr(navigation, "draw_race_tracks"):
+                navigation.draw_race_tracks(
+                    self,
+                    cr,
+                    draw_pois=not getattr(self, "_qml_navigation_overlay", False),
                 )
-                # Retain references in locals so the wrapped buffer cannot be
-                # collected while Cairo reads it during painting.
-                _race_composition_refs = (  # noqa: F841
-                    cached_race_image,
-                    cached_bits,
-                    cached_surface,
-                )
-                cached_surface.set_device_scale(factor, factor)
-                cr.set_source_surface(cached_surface, 0, 0)
-                cr.paint()
-                cached_surface.flush()
-        elif navigation is not None and hasattr(navigation, "draw_race_tracks"):
-            navigation.draw_race_tracks(
-                self, cr, draw_pois=not getattr(self, "_qml_navigation_overlay", False)
-            )
         if getattr(self, "ais_visible", False):
             ais_renderer = getattr(self, "ais_renderer", None)
             ais_targets = getattr(self, "ais_targets", ())
