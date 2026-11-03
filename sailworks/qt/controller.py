@@ -260,11 +260,6 @@ class SessionController(QObject):
                 self.time_control.set_time(times[0])
         except Exception:
             self.time_control.set_time(times[0])
-        for canvas in list(getattr(self.charts, "maps", ())):
-            timeline = getattr(canvas, "timeline", None)
-            clear = getattr(timeline, "clear_bounds_override", None)
-            if callable(clear):
-                clear()
 
     def _changed(self, _):
         seek_timer = getattr(self, "seek_timer", None)

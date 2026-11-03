@@ -827,9 +827,9 @@ class PreviewWindow(QMainWindow):
                     for p in boat.positions
                 ),
             )
-        self._apply_race_timeline_bounds()
+        self._apply_race_timeline_bounds(force=True)
 
-    def _apply_race_timeline_bounds(self):
+    def _apply_race_timeline_bounds(self, *_args, force=False):
         bounds = getattr(self, "_race_timeline_bounds", None)
         timeline = getattr(self.map, "timeline", None)
         if timeline is None:
@@ -838,7 +838,19 @@ class PreviewWindow(QMainWindow):
             timeline.clear_bounds_override()
             return
         start, end, valid_times = bounds
+        if not force and not self._race_window_in_forecast(start, end):
+            timeline.clear_bounds_override()
+            return
         timeline.set_bounds_override(start, end, valid_times)
+
+    def _race_window_in_forecast(self, start, end):
+        try:
+            return any(
+                source.first_valid <= end and source.last_valid >= start
+                for source in self.controller.display_forecast.sources() or ()
+            )
+        except Exception:
+            return False
 
     def _race_tracks_changed(self):
         self._race_track_times = dict(getattr(self.race_panel, "race_track_times", {}))
