@@ -4,12 +4,14 @@ from datetime import datetime, timezone
 import numpy as np
 import pytest
 
+from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES
 from sailworks.core.gribsources.options import DownloadOptions
 from sailworks.core.gribsources.weathernext import (
     PRESSURE,
     WeatherNextSource,
 )
 from sailworks.core.weathernext import U_WIND, V_WIND
+from sailworks.qt.forecastdownload import MODELS
 
 RUN = datetime(2026, 11, 3, 12, tzinfo=timezone.utc)
 
@@ -89,3 +91,11 @@ def test_download_writes_validated_ugrd_vgrd_and_prmsl(tmp_path, monkeypatch):
         metadata = result.GetRasterBand(index).GetMetadata()
         assert metadata["GRIB_FORECAST_SECONDS"] == "21600"
         assert "CENTER=250" in metadata["GRIB_IDS"]
+
+
+def test_weathernext_is_registered_in_capabilities_and_download_ui():
+    capability = MODEL_CAPABILITIES["WEATHERNEXT"]
+    assert capability.provider_name == "Google WeatherNext 3"
+    assert capability.native_resolution == "0.1deg"
+    assert capability.max_horizon() == 360
+    assert any(row[0] == "Google WeatherNext 3" for row in MODELS)
