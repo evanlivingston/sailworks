@@ -172,6 +172,33 @@ def _expanded(camera, factor):
     )
 
 
+#: Pixels of pan a cached selection may cover before it is recomputed.
+#: This matches the selection's existing 32 px symbol margin, so reuse never
+#: changes which symbols a viewport shows.
+SELECTION_REUSE_MARGIN = 32.0
+
+
+def _selection_translation(first, second):
+    """Logical-pixel translation from ``first`` to ``second`` at one zoom."""
+    dx = first._lon_to_x(first._center_lon) - first._lon_to_x(
+        continuous_longitude(second._center_lon, first._center_lon)
+    )
+    dy = first._lat_to_y(first._center_lat) - first._lat_to_y(second._center_lat)
+    return dx, dy
+
+
+def _selection_reusable(computed_view, current_view):
+    """Whether a padded selection still covers the current camera."""
+    if (
+        computed_view._zoom != current_view._zoom
+        or computed_view.width != current_view.width
+        or computed_view.height != current_view.height
+    ):
+        return False
+    dx, dy = _selection_translation(computed_view, current_view)
+    return abs(dx) <= SELECTION_REUSE_MARGIN and abs(dy) <= SELECTION_REUSE_MARGIN
+
+
 def _spatially_covers(field, camera):
     """Geographic coverage and the same shoreline tier, independent of zoom."""
     if not camera.over_land and (
@@ -483,16 +510,13 @@ class GribViewportModel:
                         break
         if field is not None and _covers(field, camera):
             view = camera.view()
+            anchor = anchor_view(view, reference)
             anchor_key = (
-                None
-                if reference is None
-                else (
-                    reference._center_lat,
-                    reference._center_lon,
-                    reference._zoom,
-                    reference.width,
-                    reference.height,
-                )
+                anchor._center_lat,
+                anchor._center_lon,
+                anchor._zoom,
+                anchor.width,
+                anchor.height,
             )
             cache_key = (
                 field.generation,
@@ -500,8 +524,6 @@ class GribViewportModel:
                 camera.stamp(),
                 view.width,
                 view.height,
-                view._center_lat,
-                view._center_lon,
                 view._zoom,
                 view.density,
                 view.over_land,
@@ -513,7 +535,6 @@ class GribViewportModel:
             # it by the frame that is actually projected, not by the reference
             # that was offered: an incompatible reference must not reuse the
             # atlas of a previous compatible one.
-            anchor = anchor_view(view, reference)
             atlas_key = (
                 field.generation,
                 anchor._center_lat,
@@ -536,26 +557,36 @@ class GribViewportModel:
                     self._anchor_atlas_cache[atlas_key] = atlas
                     self._anchor_atlas_cache_order.append(atlas_key)
             cached = self._selection_cache.get(cache_key)
+            selection = None
             if cached is not None:
-                selection = cached
-            else:
+                cached_selection, computed_view = cached
+                # A covered pan reuses the padded selection and lets the
+                # shared layer translate; recompute only when the padding is
+                # exhausted.
+                if _selection_reusable(computed_view, view):
+                    selection = cached_selection
+            if selection is None:
                 try:
                     selection = select_resident(
                         field,
                         camera.stamp(),
                         view,
-                        reference,
+                        anchor,
                         anchor_atlas=atlas,
+                        margin=SELECTION_REUSE_MARGIN,
                     ).selection
                 except Exception as exc:  # coverage or time escape
                     logger.debug("Resident selection unavailable: %s", exc)
                     selection = None
                 if selection is not None:
-                    if len(self._selection_cache) >= 16:
-                        oldest = self._selection_cache_order.pop(0)
-                        self._selection_cache.pop(oldest, None)
-                    self._selection_cache[cache_key] = selection
-                    self._selection_cache_order.append(cache_key)
+                    if cache_key in self._selection_cache:
+                        self._selection_cache[cache_key] = (selection, view)
+                    else:
+                        if len(self._selection_cache) >= 16:
+                            oldest = self._selection_cache_order.pop(0)
+                            self._selection_cache.pop(oldest, None)
+                        self._selection_cache[cache_key] = (selection, view)
+                        self._selection_cache_order.append(cache_key)
             if selection is not None:
                 with self._condition:
                     self.counters["covered_reuses"] += 1

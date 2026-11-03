@@ -505,6 +505,7 @@ def stage_selection(
     cancel=lambda: False,
     reference=None,
     anchor_atlas=None,
+    margin=32.0,
 ):
     """The exact current-view selection of a resident field.
 
@@ -525,7 +526,6 @@ def stage_selection(
     unthinned = view.density == "all"
     if step <= 0 and not unthinned:
         raise ValueError("Unsupported wind density")
-    margin = 32.0
     cols = 1 if unthinned else math.ceil((view.width + 2 * margin) / step) + 1
     rows = 1 if unthinned else math.ceil((view.height + 2 * margin) / step) + 1
     if not unthinned and cols * rows > 8192:
@@ -860,7 +860,7 @@ def selection_atlas(selection):
     )
 
 
-def select_resident(field, stamp, view, reference=None, anchor_atlas=None):
+def select_resident(field, stamp, view, reference=None, anchor_atlas=None, margin=32.0):
     """GUI-safe covered selection: immutable metadata only, no sampler or I/O.
 
     ``reference`` is the pan reference the selection anchors are placed
@@ -878,5 +878,6 @@ def select_resident(field, stamp, view, reference=None, anchor_atlas=None):
             None,
             reference=reference,
             anchor_atlas=anchor_atlas,
+            margin=margin,
         )
     )
