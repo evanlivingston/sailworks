@@ -102,9 +102,18 @@ class RemoveNavigationCommand(QUndoCommand):
         self.point_index, self.kind = point_index, kind
 
     def redo(self):
-        for _, element in reversed(self.removed):
-            if element in self.manager.elements:
-                self.manager.remove(element)
+        # Remove every selected element in one batch so the collection is
+        # serialized/persisted once instead of once per element.  Removing
+        # tracks one at a time made deleting many YB race tracks O(n^2) in
+        # both list scans and storage writes, which could hang the UI.
+        current_ids = {id(element) for element in self.manager.elements}
+        elements = [
+            element
+            for _, element in reversed(self.removed)
+            if id(element) in current_ids
+        ]
+        if elements:
+            self.manager.remove_many(elements)
         if self.kind == "track":
             if any(element is self.current for _, element in self.removed):
                 self.manager.set_active(self.manager[-1] if len(self.manager) else None)
