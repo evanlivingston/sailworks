@@ -1544,11 +1544,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             if self._chart_layer:
                 chart_weather_band = self._weather.findChild(QObject, "weatherBand")
                 if chart_weather_band is not None:
-                    marine_parent = chart_weather_band
+                    marine_parent = chart_weather_band.findChild(QObject, "marineBand")
+                    if marine_parent is None:
+                        marine_parent = chart_weather_band
 
             self._marine_layer = MarineQuickLayer(marine_parent, self)
             self._marine_layer.stateChanged.connect(self.marineStateChanged.emit)
             self._icoads_layer = IcoadsQuickLayer(marine_parent, self)
+
             self._barbs = self._weather
             self._fill = cast(
                 Any,
@@ -2257,6 +2260,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
 
         def _rebase_retained_imagery(self, dx, dy):
             """Preserve the on-screen anchors when the bounded parent resets."""
+            navigation = getattr(self, "_navigation_overlay", None)
+            target = getattr(self, "_navigation_target", None)
+            if navigation is not None and target is not None:
+                target = (target[0] + dx, target[1] + dy, *target[2:])
+                navigation.setProperty("imageX", target[0])
+                navigation.setProperty("imageY", target[1])
+                self._navigation_target = target
             for item, attribute in (
                 (getattr(self, "_base", None), "_base_placement"),
                 (getattr(self, "_environment", None), "_environment_placement"),
@@ -4567,6 +4577,29 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     self._barb_zoom_preview["anchor"] = PanReference.from_camera(
                         camera, current_dpr
                     )
+                    return self._apply_barb_zoom_preview()
+                # A continuing zoom animation changes the target zoom on every
+                # tick, so the preview never "holds" mid-animation.  Renew the
+                # same retained frame instead of dropping it: clearing here
+                # blanks the barbs until the replacement commits, which reads
+                # as a flash on each zoom tick.
+                frame = self._barb_zoom_preview
+                try:
+                    requested_source = getattr(camera, "source", None)
+                    renew = (
+                        float(camera.width) == frame["width"]
+                        and float(camera.height) == frame["height"]
+                        and camera.stamp() == frame["stamp"]
+                        and self._barb_zoom_dpr_matches(frame.get("dpr"), current_dpr)
+                        and (
+                            requested_source is None
+                            or identity.source == requested_source
+                        )
+                    )
+                except (AttributeError, TypeError, ValueError):
+                    renew = False
+                if renew:
+                    self._barb_zoom_preview["zoom"] = float(camera.zoom)
                     return self._apply_barb_zoom_preview()
                 self._clear_barb_zoom_preview()
             if previous_camera is None:

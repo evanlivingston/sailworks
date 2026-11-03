@@ -1,6 +1,7 @@
 """Marine-owned latest-request worker and batched Qt Quick current geometry."""
 
 import ctypes
+from math import asinh, ceil, floor, pi, radians, tan
 from threading import Condition, Thread
 
 import numpy as np
@@ -22,8 +23,76 @@ from sailworks.rendering.marinesnapshot import (
     sample_currents,
 )
 
-_ATTRIBUTES = QSGGeometry.defaultAttributes_ColoredPoint2D()
+_ATTRIBS = QSGGeometry.defaultAttributes_ColoredPoint2D()
 _VERTEX = np.dtype([("position", "<f4", 2), ("color", "u1", 4)])
+
+
+def _membership_key(sources, camera):
+    """Identify the current-view candidates without sampling their values.
+
+    This mirrors the bounds in sample_currents. A change in any candidate can
+    change the result, even if that candidate later proves unavailable.
+    """
+    from sailworks.core.mapviewport import MapPoint, MapViewport
+    from sailworks.rendering.marinepresentation import current_grid_spacing
+
+    view = camera.view()
+    grid = None
+    if sources.fields:
+        level = max(0, floor(camera.zoom + 0.5))
+        cells = max(
+            1,
+            round(
+                MapViewport.TILE_SIZE * 2**level / current_grid_spacing(sources.density)
+            ),
+        )
+        world = MapViewport.TILE_SIZE * 2**camera.zoom
+        cx = (camera.center_lon + 180) / 360
+        latitude = max(
+            -MapViewport.MAX_LAT, min(MapViewport.MAX_LAT, camera.center_lat)
+        )
+        cy = (1 - asinh(tan(radians(latitude))) / pi) / 2
+        left, right = cx - camera.width / (2 * world), cx + camera.width / (2 * world)
+        top = max(0, cy - camera.height / (2 * world))
+        bottom = min(1, cy + camera.height / (2 * world))
+        columns = tuple(
+            dict.fromkeys(
+                i % cells for i in range(ceil(left * cells), floor(right * cells) + 1)
+            )
+        )
+        grid = (cells, columns, ceil(top * cells), floor(bottom * cells))
+
+    groups = []
+    for selection in (sources.currents, sources.levels):
+        seen, visible = set(), []
+        for dataset in selection.datasets:
+            station = dataset.station
+            if station.id in seen:
+                continue
+            seen.add(station.id)
+            lon = (
+                camera.center_lon
+                + (station.longitude - camera.center_lon + 180) % 360
+                - 180
+            )
+            x, y = view.convert_geographic_to_screen(MapPoint(station.latitude, lon))
+            if 0 <= x <= camera.width and 0 <= y <= camera.height:
+                visible.append(station.id)
+        groups.append(tuple(visible))
+    return grid, *groups
+
+
+def _projection_margin(reference, camera, minimum):
+    """Include geometry visible after the parent moves the reference frame."""
+    if reference is None or camera is None:
+        return minimum
+    from sailworks.qt.viewporttransform import PanReference
+
+    try:
+        dx, dy = PanReference.from_camera(reference).translation_to(camera)
+    except (AttributeError, TypeError, ValueError):
+        return minimum
+    return minimum + max(abs(dx), abs(dy))
 
 
 class MarineLabelItem(QQuickPaintedItem):
@@ -34,9 +103,22 @@ class MarineLabelItem(QQuickPaintedItem):
         self.labels = ()
         self.setAntialiasing(True)
 
-    def present(self, snapshot, camera):
-        self.labels = current_labels(snapshot, camera) if snapshot is not None else ()
-        self.setSize(self.parentItem().size())
+    def present(self, snapshot, ref_camera, camera=None):
+        # Project labels against reference camera; parent mapContent pan handles translation
+        if camera is None:
+            camera = ref_camera
+        padding = _projection_margin(ref_camera, camera, 64)
+        labels = (
+            current_labels(snapshot, ref_camera, margin=padding)
+            if snapshot is not None
+            else ()
+        )
+        self.labels = tuple((x + padding, y + padding, text) for x, y, text in labels)
+        self.setX(-padding)
+        self.setY(-padding)
+        size = self.parentItem().size()
+        self.setWidth(size.width() + 2 * padding)
+        self.setHeight(size.height() + 2 * padding)
         self.update()
 
     def paint(self, painter):
@@ -60,16 +142,30 @@ class MarineCurrentItem(QQuickItem):
         self.vertices = np.empty(0, dtype=_VERTEX)
         self.resources = None
 
-    def present(self, snapshot, camera):
-        rows = current_triangles(snapshot, camera) if snapshot is not None else ()
+    def present(self, snapshot, ref_camera, camera=None):
+        # Project geometry against the reference camera and paint it into a
+        # padded surface; the shared mapContent parent supplies the pan, and
+        # the stationary clip decides what is visible.
+        if camera is None:
+            camera = ref_camera
+        padding = _projection_margin(ref_camera, camera, 40)
+        rows = (
+            current_triangles(snapshot, ref_camera, margin=padding)
+            if snapshot is not None
+            else ()
+        )
         vertices = np.empty(len(rows), dtype=_VERTEX)
         if rows:
             values = np.asarray(rows)
-            vertices["position"] = values[:, :2]
+            vertices["position"] = values[:, :2] + padding
             vertices["color"] = values[:, 2:]
         vertices.setflags(write=False)
         self.vertices = vertices
-        self.setSize(self.parentItem().size())
+        self.setX(-padding)
+        self.setY(-padding)
+        size = self.parentItem().size()
+        self.setWidth(size.width() + 2 * padding)
+        self.setHeight(size.height() + 2 * padding)
         self.update()
 
     def updatePaintNode(self, old, _):  # noqa: N802
@@ -84,7 +180,7 @@ class MarineCurrentItem(QQuickItem):
         try:
             node = old or QSGGeometryNode()
             if old is None:
-                geometry = QSGGeometry(_ATTRIBUTES, len(self.vertices))
+                geometry = QSGGeometry(_ATTRIBS, len(self.vertices))
                 if geometry.sizeOfVertex() != _VERTEX.itemsize:
                     raise RuntimeError("Unsupported QSG colored vertex layout")
                 geometry.setDrawingMode(QSGGeometry.DrawingMode.DrawTriangles)
@@ -94,7 +190,7 @@ class MarineCurrentItem(QQuickItem):
                 node.setMaterial(material)
                 node.setFlag(QSGNode.Flag.OwnsGeometry)
                 node.setFlag(QSGNode.Flag.OwnsMaterial)
-                self.resources = (node, _ATTRIBUTES, geometry, material)
+                self.resources = (node, _ATTRIBS, geometry, material)
             geometry = node.geometry()
             geometry.allocate(len(self.vertices))
             ctypes.memmove(
@@ -137,6 +233,9 @@ class MarineQuickLayer(QObject):
         self._completed = None
         self._closed = False
         self.error = ""
+        # Reference camera for shared pan: geometry is projected against this
+        # camera and the parent mapContent translation handles pan.
+        self._ref_camera = None
         self.item.failed.connect(self._fail)
         self._thread = Thread(target=self._run, name="marine-quick", daemon=True)
         self._thread.start()
@@ -147,7 +246,19 @@ class MarineQuickLayer(QObject):
 
     def set_camera(self, camera):
         self.camera = camera
-        self._present(self.snapshot, camera)
+        # A chart scene moves under the viewport's map reference. Other
+        # scenes are stationary and must project at the current camera.
+        viewport = self.parent()
+        reference = (
+            getattr(viewport, "_map_anchor_camera", None)
+            if getattr(viewport, "_map_content", None) is not None
+            else None
+        )
+        old_reference = self._ref_camera
+        self._ref_camera = reference or camera
+        # Present using reference-local projection
+        if old_reference != self._ref_camera or self._content is None:
+            self._present(self.snapshot, camera)
         if self._content is not None:
             self.request(*self._content, camera)
 
@@ -155,15 +266,19 @@ class MarineQuickLayer(QObject):
         if self._closed or self.error:
             return False
         content = (sources, instant, visible)
+        try:
+            membership = _membership_key(sources, camera)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            # Unknown source contracts cannot prove selection invariance.
+            membership = (camera.center_lat, camera.center_lon)
         key = (
             id(sources),
             instant,
             visible,
-            camera.center_lat,
-            camera.center_lon,
             camera.zoom,
             camera.width,
             camera.height,
+            membership,
         )
         if key == self._key:
             return True
@@ -171,7 +286,10 @@ class MarineQuickLayer(QObject):
         # the worker samples its replacement. Source/visibility changes must
         # clear immediately because the previous content is no longer valid.
         same_sources = self._content is not None and self._content[0] is sources
-        if self._content != content and (not same_sources or not visible):
+        frame_changed = self._key is not None and self._key[3:6] != key[3:6]
+        if frame_changed or (
+            self._content != content and (not same_sources or not visible)
+        ):
             self.snapshot = None
             self._present(None, camera)
             if self.error:
@@ -200,8 +318,10 @@ class MarineQuickLayer(QObject):
         if self._closed or self.error:
             return
         try:
-            self.item.present(snapshot, camera)
-            self.labels.present(snapshot, camera)
+            # Use reference camera for projection; parent mapContent handles pan
+            ref_camera = self._ref_camera if self._ref_camera else camera
+            self.item.present(snapshot, ref_camera, camera)
+            self.labels.present(snapshot, ref_camera, camera)
         except Exception as exc:
             self._fail(str(exc))
 

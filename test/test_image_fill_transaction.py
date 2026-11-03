@@ -186,11 +186,23 @@ def test_rebase_and_hide_show_do_not_restore_old_reference_front():
     scene._place_route_overlay = lambda *args: None
     scene._publish_streamlines = lambda camera: None
     scene._wind_style = "barbs"
-    scene._model = SimpleNamespace(update=lambda camera: ("loading", None, None))
+    scene._model = SimpleNamespace(
+        update=lambda camera, ref=None: ("loading", None, None)
+    )
     scene._weather_display_camera = _camera()
     scene.cameraChanged = SimpleNamespace(emit=lambda camera: None)
     scene._presentation_spans = []
     scene.devicePixelRatio = lambda: 1.0
+    scene._retire_barb_anchor_frame = lambda *args, **kwargs: None
+    scene._maybe_arm_barb_zoom_preview = lambda *args, **kwargs: None
+    scene._barb_zoom_preview = None
+    scene._camera_dpr = 1.0
+    scene._barb_zoom_dpr_matches = lambda prev, curr: True
+    scene._barb_zoom_preview_holds = lambda cam, dpr: False
+    scene._apply_barb_zoom_preview = lambda: False
+    scene._clear_barb_zoom_preview = lambda *args: None
+    scene._barb_anchor_frame_places = lambda *args: True
+    scene._set_barb_anchor_frame_valid = lambda *args: None
     scene.set_camera(replace(_camera(), zoom=_camera().zoom + 1))
     scene._set_weather_visible(True)
     scene._fill_back.properties["prepared"] = True

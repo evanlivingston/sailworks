@@ -187,8 +187,9 @@ def test_wheel_reprojects_marine_and_renders_before_settling(gribs, monkeypatch)
         )
         assert widget._camera.zoom == pytest.approx(target)
         rows = np.asarray(current_triangles(snapshot, widget._camera))
+        item = widget._marine_layer.item
         np.testing.assert_allclose(
-            widget._marine_layer.item.vertices["position"],
+            item.vertices["position"].astype(float) + (item.x(), item.y()),
             rows[:, :2],
             rtol=0,
             atol=3e-5,

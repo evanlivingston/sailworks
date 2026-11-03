@@ -13,6 +13,10 @@ class IcoadsQuickItem(QQuickPaintedItem):
         super().__init__(parent)
         self._reports = ()
         self._camera = None
+        self._ref_camera = None
+        self._offset_x = 0.0
+        self._offset_y = 0.0
+        self._padding = 0.0
         self._on_select = None
         self._selected_report = None
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
@@ -23,26 +27,74 @@ class IcoadsQuickItem(QQuickPaintedItem):
         self._reports = tuple(reports or ())
         if camera is not None:
             self._camera = camera
+            if self._ref_camera is None:
+                self._ref_camera = camera
         self._on_select = on_select
         self.update()
 
-    def set_camera(self, camera):
+    def set_camera(self, camera, reference=None):
+        old_reference = self._ref_camera
+        old_padding = self._padding
+        if reference is not None:
+            self._ref_camera = reference
+        elif self._ref_camera is None:
+            self._ref_camera = camera
+        # Update reference camera if zoom/size changed
+        if self._ref_camera is not None and (
+            self._ref_camera.zoom != camera.zoom
+            or self._ref_camera.width != camera.width
+            or self._ref_camera.height != camera.height
+        ):
+            self._ref_camera = camera
         self._camera = camera
-        self.update()
+        # Compute pan offset for covered pan
+        if self._ref_camera is not camera:
+            try:
+                from sailworks.qt.viewporttransform import PanReference
+
+                ref_pan = PanReference.from_camera(self._ref_camera)
+                dx, dy = ref_pan.translation_to(camera)
+                self._offset_x, self._offset_y = dx, dy
+            except (ValueError, TypeError):
+                self._offset_x, self._offset_y = 0.0, 0.0
+        else:
+            self._offset_x, self._offset_y = 0.0, 0.0
+        # A translated viewport-sized painted texture clips markers before
+        # they reach the stationary map clip. Cover the shared pan window.
+        self._padding = (
+            0.5 * max(camera.width, camera.height) + 40
+            if reference is not None and self.parentItem() is not None
+            else 0.0
+        )
+        self.setX(-self._padding)
+        self.setY(-self._padding)
+        if self._padding:
+            self.setWidth(camera.width + 2 * self._padding)
+            self.setHeight(camera.height + 2 * self._padding)
+        if (
+            self._ref_camera != old_reference
+            or self._padding != old_padding
+            or self._selected_report is not None
+        ):
+            self.update()
 
     def _positions(self):
-        if self._camera is None:
+        if self._ref_camera is None:
             return ()
         from sailworks.core.mapviewport import MapPoint
 
         result = []
         for report in self._reports:
             try:
-                x, y = self._camera.view().convert_geographic_to_screen(
+                # Project against reference camera
+                x, y = self._ref_camera.view().convert_geographic_to_screen(
                     MapPoint(report.latitude, report.longitude)
                 )
-                if 0 <= x <= self.width() and 0 <= y <= self.height():
-                    result.append((x, y, report))
+                # Paint the padded reference surface once; the stationary map
+                # clip decides which portion is visible as its parent pans.
+                local_x, local_y = x + self._padding, y + self._padding
+                if 0 <= local_x <= self.width() and 0 <= local_y <= self.height():
+                    result.append((local_x, local_y, report))
             except (AttributeError, TypeError, ValueError):
                 continue
         return tuple(result)
@@ -54,27 +106,32 @@ class IcoadsQuickItem(QQuickPaintedItem):
         for x, y, _report in self._positions():
             painter.drawEllipse(int(x) - 4, int(y) - 4, 8, 8)
         if self._selected_report is not None:
-            self._paint_details(painter, self._selected_report)
+            self._paint_details(
+                painter,
+                self._selected_report,
+                self._padding - self._offset_x,
+                self._padding - self._offset_y,
+            )
 
     @staticmethod
     def _detail_lines(report):
         age = datetime.now(timezone.utc) - report.observed_at
         return (
-            "NOAA ICOADS · delayed ship observation",
+            "NOAA ICOADS \u00b7 delayed ship observation",
             f"Observed {report.observed_at:%Y-%m-%d %H:%M UTC}",
             f"Age: {max(0, int(age.total_seconds() // 3600))} h",
             *(f"{key}: {value}" for key, value in report.measurements),
         )
 
     @classmethod
-    def _paint_details(cls, painter, report):
+    def _paint_details(cls, painter, report, offset_x=0, offset_y=0):
         lines = cls._detail_lines(report)
         painter.setFont(QFont("Sans Serif", 9))
         metrics = painter.fontMetrics()
         padding = 10
         width = max(metrics.horizontalAdvance(line) for line in lines) + 2 * padding
         height = len(lines) * metrics.height() + 2 * padding
-        rect = QRectF(12, 12, width, height)
+        rect = QRectF(12 + offset_x, 12 + offset_y, width, height)
         painter.setPen(QPen(QColor("#e7edf2"), 1))
         painter.setBrush(QColor(20, 32, 40, 238))
         painter.drawRoundedRect(rect, 4, 4)
@@ -118,15 +175,15 @@ class IcoadsQuickItem(QQuickPaintedItem):
         try:
             point = event.position()
             report = self._report_at(point.x(), point.y())
+            if report is not None:
+                self._selected_report = report
+                self.update()
+                if self._on_select is not None:
+                    self._on_select(report)
+                event.accept()
+                return
         except Exception:
             event.ignore()
-            return
-        if report is not None:
-            self._selected_report = report
-            self.update()
-            if self._on_select is not None:
-                self._on_select(report)
-            event.accept()
             return
         event.ignore()
 
@@ -148,15 +205,23 @@ class IcoadsQuickLayer(QObject):
     def present(self, reports, visible, camera):
         if self._closed:
             return
-        self.item.setSize(self.root.size())
+        if not self.item._padding:
+            self.item.setSize(self.root.size())
         self.item.set_reports(reports, camera)
         self.item.setVisible(bool(visible and reports))
 
     def set_camera(self, camera):
         if self._closed:
             return
-        self.item.setSize(self.root.size())
-        self.item.set_camera(camera)
+        if not self.item._padding:
+            self.item.setSize(self.root.size())
+        viewport = self.parent()
+        reference = (
+            getattr(viewport, "_map_anchor_camera", None)
+            if getattr(viewport, "_map_content", None) is not None
+            else camera
+        )
+        self.item.set_camera(camera, reference)
 
     def close(self):
         if self._closed:

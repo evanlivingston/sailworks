@@ -107,6 +107,11 @@ Item {
                     retainWhileLoading: true; property bool hadReady: false
                     onStatusChanged: if (status === Image.Ready) hadReady = true
                 }
+                // Geographic marine portrayal remains below wind barbs.
+                Item {
+                    objectName: "marineBand"
+                    anchors.fill: parent
+                }
                 WeatherBarbs {
                     id: barbs
                     objectName: "weatherBarbs"

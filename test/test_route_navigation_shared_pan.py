@@ -303,6 +303,22 @@ def test_navigation_target_is_parent_local_across_shared_pan_and_rebase():
     assert published == [1, 2]
 
 
+def test_navigation_rebase_compensates_retained_image_without_republication():
+    widget_class = _viewport_widget_class()
+    properties = {}
+    widget = SimpleNamespace(
+        _navigation_overlay=SimpleNamespace(
+            setProperty=lambda name, value: properties.__setitem__(name, value)
+        ),
+        _navigation_target=(-40.0, -30.0, 980.0, 760.0),
+        _navigation_key=7,
+    )
+    widget_class._rebase_retained_imagery(widget, 12.25, -7.5)
+    assert widget._navigation_target == (-27.75, -37.5, 980.0, 760.0)
+    assert properties == {"imageX": -27.75, "imageY": -37.5}
+    assert widget._navigation_key == 7
+
+
 def test_navigation_target_legacy_fallback_and_camera_adoption_invalidation():
     from PySide6.QtCore import QRectF
     from sailworks.qt.viewportmap import ViewportMap

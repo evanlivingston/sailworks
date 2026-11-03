@@ -23,6 +23,86 @@ def setUpModule():
 
 
 class IcoadsStateTests(TestCase):
+    def test_covered_pan_does_not_repaint_unchanged_marker_surface(self):
+        from PySide6.QtQuick import QQuickItem
+        from sailworks.qt.gribviewport import ViewportCamera
+
+        instant = datetime(2026, 10, 27, tzinfo=timezone.utc)
+        reference = ViewportCamera(10, 20, 9, 900, 700, instant)
+        current = ViewportCamera(10, 20.03, 9, 900, 700, instant)
+        parent = QQuickItem()
+        item = IcoadsQuickItem(parent)
+        item.set_camera(reference, reference=reference)
+        with patch.object(item, "update") as update:
+            item.set_camera(current, reference=reference)
+            update.assert_not_called()
+            item.set_camera(current, reference=current)
+            update.assert_called_once_with()
+
+    def test_marker_entering_view_has_rendered_surface_coverage(self):
+        from PySide6.QtCore import QPointF
+        from PySide6.QtQuick import QQuickItem
+        from sailworks.qt.gribviewport import ViewportCamera
+        from sailworks.qt.viewporttransform import PanReference
+
+        instant = datetime(2026, 10, 27, tzinfo=timezone.utc)
+        reference = ViewportCamera(10, 20, 9, 900, 700, instant)
+        current = ViewportCamera(10, 21, 9, 900, 700, instant)
+        report = ShipReport(10, 22, instant)
+        root = QQuickItem()
+        parent = QQuickItem(root)
+        item = IcoadsQuickItem(parent)
+        item.set_camera(reference, reference=reference)
+        item.set_reports((report,), reference)
+        dx, dy = PanReference.from_camera(reference).translation_to(current)
+        parent.setX(dx)
+        parent.setY(dy)
+        item.set_camera(current, reference=reference)
+        x, y, _ = item._positions()[0]
+        self.assertTrue(0 <= x <= item.width() and 0 <= y <= item.height())
+        point = item.mapToItem(root, QPointF(x, y))
+        self.assertTrue(0 <= point.x() <= current.width)
+        self.assertIs(item._report_at(x, y), report)
+
+    def test_marker_uses_shared_translation_once(self):
+        from PySide6.QtCore import QPointF
+        from PySide6.QtQuick import QQuickItem
+        from sailworks.qt.gribviewport import ViewportCamera
+        from sailworks.qt.viewporttransform import PanReference
+        from sailworks.core.mapviewport import MapPoint
+
+        time = datetime(2026, 10, 27, tzinfo=timezone.utc)
+        reference = ViewportCamera(10, 20, 9, 900, 700, time)
+        current = ViewportCamera(10, 20.03, 9, 900, 700, time)
+        report = ShipReport(10, 20, time)
+        root = QQuickItem()
+        parent = QQuickItem(root)
+        item = IcoadsQuickItem(parent)
+        item.setWidth(900)
+        item.setHeight(700)
+        item.set_camera(reference, reference=reference)
+        item.set_reports((report,), reference)
+        dx, dy = PanReference.from_camera(reference).translation_to(current)
+        parent.setX(dx)
+        parent.setY(dy)
+        item.set_camera(current, reference=reference)
+        x, y, _ = item._positions()[0]
+        scene_point = item.mapToItem(root, QPointF(x, y))
+        expected_x, expected_y = current.view().convert_geographic_to_screen(
+            MapPoint(report.latitude, report.longitude)
+        )
+        self.assertAlmostEqual(scene_point.x(), expected_x, delta=0.001)
+        self.assertAlmostEqual(scene_point.y(), expected_y, delta=0.001)
+
+        # The viewport has reset its parent reference to the current camera.
+        parent.setX(0)
+        parent.setY(0)
+        item.set_camera(current, reference=current)
+        x, y, _ = item._positions()[0]
+        scene_point = item.mapToItem(root, QPointF(x, y))
+        self.assertAlmostEqual(scene_point.x(), expected_x, delta=0.001)
+        self.assertAlmostEqual(scene_point.y(), expected_y, delta=0.001)
+
     def test_markers_accept_map_viewport_screen_coordinate_tuples(self):
         from PySide6.QtCore import QPointF, Qt
 
