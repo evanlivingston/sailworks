@@ -176,13 +176,18 @@ class DataController(QObject):
         self.task.message = f"{len(result)} NOAA charts cover this location"
 
     def _install_chart(self, result):
+        from sailworks.rendering.chartclasses import chart_class_enabled
+
         chart, settings = result
         self._save_chart_entries(chart, True)
         settings.attach(self.owner.settings)
         chart.settings_manager = self.owner.settings
         charts = self.owner.charts.charts
         index = next((i for i, c in enumerate(charts) if c.path == chart.path), None)
-        if index is None:
+        if not chart_class_enabled(self.owner.settings, chart):
+            if index is not None:
+                del charts[index]
+        elif index is None:
             charts.append(chart)
         else:
             charts[index] = chart

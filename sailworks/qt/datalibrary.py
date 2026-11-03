@@ -1,5 +1,7 @@
 """Published model forecasts, charts, and marine data in a native Qt dialog."""
 
+from types import SimpleNamespace
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -42,6 +44,20 @@ def table(headers):
 def selected_row(widget, entries):
     row = widget.currentRow()
     return entries[row] if 0 <= row < len(entries) else None
+
+
+def local_chart_entries(charts, settings):
+    entries = list(charts)
+    loaded = {(c.ctype, c.path) for c in entries}
+    for kind in ("vector", "raster", "mbtiles"):
+        for entry in settings[kind + "Charts"]:
+            if (kind, entry["path"]) not in loaded:
+                entries.append(
+                    SimpleNamespace(
+                        path=entry["path"], ctype=kind, enabled=False, deferred=True
+                    )
+                )
+    return entries
 
 
 def fill_table(widget, rows, checked=None, editable_checks=None):
@@ -272,7 +288,9 @@ class DataLibrary(QDialog):
             self.longitude.setValue(canvas.camera_state.center_lon)
 
     def refresh(self):
-        self.chart_entries = list(self.controller.charts.charts)
+        self.chart_entries = local_chart_entries(
+            self.controller.charts.charts, self.controller.settings
+        )
         fill_table(
             self.charts,
             [
@@ -280,7 +298,10 @@ class DataLibrary(QDialog):
                 for c in self.chart_entries
             ],
             [c.enabled for c in self.chart_entries],
-            [self.imported_chart(c) for c in self.chart_entries],
+            [
+                self.imported_chart(c) and not getattr(c, "deferred", False)
+                for c in self.chart_entries
+            ],
         )
         fill_table(
             self.available_charts,
@@ -321,7 +342,11 @@ class DataLibrary(QDialog):
         )
         chart = selected_row(self.charts, getattr(self, "chart_entries", []))
         # Base charts are managed by the installation, not the imported library.
-        imported = chart is not None and self.imported_chart(chart)
+        imported = (
+            chart is not None
+            and not getattr(chart, "deferred", False)
+            and self.imported_chart(chart)
+        )
         self.remove_chart_button.setEnabled(not blocked and imported)
         self.marine.refresh_buttons(blocked)
 

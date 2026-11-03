@@ -37,6 +37,7 @@ class Owner(QObject):
             load_vector_layer=self.vector,
             load_raster_layer=self.vector,
             load_mbtiles_layer=self.vector,
+            load_deferred_charts=lambda skip: None,
         )
         self.map_data = SimpleNamespace(task=FakeTask())
         self.data_signal = FakeTask(self)

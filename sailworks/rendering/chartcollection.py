@@ -31,7 +31,12 @@ from sailworks.core.scheduling import schedule_idle
 from sailworks.core.mapviewport import MapViewport
 
 from .chartlayer import ChartLayer
-from .chartclasses import CHART_CLASSES, chart_class_enabled
+from .chartclasses import (
+    CHART_CLASSES,
+    chart_class,
+    chart_class_enabled,
+    saved_chart_enabled,
+)
 from .chsrenderer import CHSRenderer
 from .gdalrasterchart import GDALRasterChart
 from .gdalvectorchart import GDALVectorChart
@@ -51,6 +56,10 @@ class ChartCollection:
         self.gshhsLayer: Optional[GSHHSVectorChart] = None
         self.osmLayer: Optional[GDALVectorChart] = None
         self.basemap_error = ""
+        self.load_saved_on_change = False
+        self.chart_load_error = None
+        self.chart_sources_changed = None
+        self.chart_startup = None
         self.settings_manager: SettingsManager = settings_manager
         self.maps: List = []
         self._chart_surfaces: WeakKeyDictionary[
@@ -88,6 +97,17 @@ class ChartCollection:
             getattr(canvas, "invalidate_chart_sources", canvas.queue_draw)()
 
     def on_chart_classes_changed(self, key, enabled):
+        if self.load_saved_on_change:
+            kind = next(kind for kind, setting, _ in CHART_CLASSES if setting == key)
+            if self.chart_startup is not None:
+                self.chart_startup.class_changed(kind, enabled)
+            else:
+                if not enabled:
+                    self.remove_chart_class(kind)
+                else:
+                    self.load_deferred_charts()
+                if self.chart_sources_changed is not None:
+                    self.chart_sources_changed()
         self._chart_surfaces.clear()
         for canvas in self.maps:
             if key == "chartENCVisible" and not enabled:
@@ -95,6 +115,36 @@ class ChartCollection:
             if key == "chartMBTilesVisible" and not enabled:
                 self._mbtiles_renderer.forget(canvas)
             getattr(canvas, "invalidate_chart_sources", canvas.queue_draw)()
+
+    def remove_chart_class(self, kind):
+        self.charts = [c for c in self.charts if chart_class(c) != kind]
+        if kind == "world":
+            self.gshhsLayer = None
+        elif kind == "seamarks":
+            self.osmLayer = None
+
+    def load_deferred_charts(self, skip=()):
+        """Load configured enabled sources not already in the collection."""
+        self.load_base_chart()
+        for kind in ("vector", "raster", "mbtiles"):
+            loader = getattr(self, "load_" + kind + "_layer")
+            for entry in self.settings_manager[kind + "Charts"]:
+                if (kind, entry["path"]) in skip:
+                    continue
+                if not saved_chart_enabled(self.settings_manager, kind, entry):
+                    continue
+                if any(
+                    c.path == entry["path"] and c.ctype == kind for c in self.charts
+                ):
+                    continue
+                try:
+                    loader(
+                        entry["path"], entry.get("metadata"), entry.get("enabled", True)
+                    )
+                except Exception as exc:
+                    logger.warning("Unable to load chart %s: %s", entry["path"], exc)
+                    if self.chart_load_error is not None:
+                        self.chart_load_error(entry["path"], exc)
 
     def get_line_point_validity_providers(self):
         lpvp: List[LinePointValidityProvider] = []
@@ -138,10 +188,16 @@ class ChartCollection:
 
     def load_base_chart(self, parent=None):
         """Load installed charts; downloading data belongs to the frontend."""
-        self._load_base_gshhs()
-        self._load_base_osm()
+        if saved_chart_enabled(self.settings_manager, "world", {}):
+            self._load_base_gshhs()
+        if saved_chart_enabled(self.settings_manager, "seamarks", {}):
+            self._load_base_osm()
         fallback = resource_path("sailworks", "data/countries.geojson")
-        if self.gshhsLayer is None and not any(c.path == fallback for c in self.charts):
+        if (
+            saved_chart_enabled(self.settings_manager, "world", {})
+            and self.gshhsLayer is None
+            and not any(c.path == fallback for c in self.charts)
+        ):
             try:
                 self.charts.insert(0, GDALVectorChart(fallback, self.settings_manager))
             except Exception as error:
