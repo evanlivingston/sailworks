@@ -1,4 +1,4 @@
-"""Render ENC detail off the GTK thread; transform the last image during gestures."""
+"""Render ENC detail off the GUI thread; transform the last image during gestures."""
 
 from collections import OrderedDict
 from sailworks.core.scheduling import schedule_idle
@@ -99,7 +99,7 @@ class ENCOverlayRenderer(OverlayRenderer):
     def _worker_chart(self, path, native_scale, palette):
         chart = self._charts.get(path)
         if chart is None:
-            # No GTK objects, symbol-provider initialization or settings callbacks here.
+            # No GUI objects, symbol-provider initialization or settings callbacks here.
             chart = GDALVectorChart.__new__(GDALVectorChart)
             chart.vector_file = ogr.Open(path)
             if chart.vector_file is None:

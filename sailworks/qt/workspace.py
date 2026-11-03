@@ -1,4 +1,4 @@
-"""Debounced Qt view preferences, separate from GTK layout and NMEA history."""
+"""Debounced Qt view preferences, separate from the legacy layout and NMEA history."""
 
 import base64
 import binascii

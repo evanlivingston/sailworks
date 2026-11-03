@@ -1,4 +1,4 @@
-"""Cached CHS image tiles with all I/O and PNG decoding off the GTK thread."""
+"""Cached CHS image tiles with all I/O and PNG decoding off the GUI thread."""
 
 from collections import OrderedDict
 import io

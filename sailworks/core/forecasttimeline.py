@@ -14,7 +14,7 @@ GNU General Public License for more details.
 For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
-"""Forecast time controls shared by the GTK and Qt frontends.
+"""Forecast time controls shared by the Qt frontends.
 
 Inspect only enabled-source metadata; this does not open forecast datasets.
 """

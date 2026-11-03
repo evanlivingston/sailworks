@@ -660,7 +660,7 @@ class NMEASession(EventDispatcher):
                 return
             self.position = min(self.log.duration, self.position + elapsed * self.speed)
             start = self.cursor
-            # Bound work per GTK tick; subsequent ticks drain overdue entries.
+            # Bound work per GUI tick; subsequent ticks drain overdue entries.
             while (
                 self.cursor < len(self.log.entries)
                 and self.log.entries[self.cursor][0] <= self.position

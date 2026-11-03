@@ -91,7 +91,7 @@ class ENCCell:
 
     def contains(self, lat, lon):
         # Most catalog cells are far away. Reject them without walking polygons
-        # on the GTK thread; exact coverage still decides the remaining matches.
+        # on the GUI thread; exact coverage still decides the remaining matches.
         if not any(
             south <= lat <= north
             and west <= lon + 360 * round(((west + east) / 2 - lon) / 360) <= east
