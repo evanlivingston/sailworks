@@ -527,13 +527,16 @@ def test_plot_does_not_scrub_without_valid_log_axis(transport, invalid, monkeypa
         plot.close()
 
 
-def test_lazy_plot_factory_injects_callbacks_into_nested_canvas(transport):
+@pytest.mark.parametrize("early_weather", [False, True])
+def test_lazy_plot_factory_injects_callbacks_into_nested_canvas(
+    transport, early_weather
+):
     from sailworks.qt.lazyplots import LazyLogPlots
 
     app, controller, _ = transport
     window = QWidget()
     window._interactive_plots = PreviewWindow._interactive_plots
-    controller.early_weather = True
+    controller.early_weather = early_weather
     lazy = PreviewWindow._build_plots(window, controller)
     assert isinstance(lazy, LazyLogPlots)
     lazy.set_points(plot_points(), (10, 20, 30), True)
@@ -549,6 +552,39 @@ def test_lazy_plot_factory_injects_callbacks_into_nested_canvas(transport):
         assert controller.session.seeking
         drain(app, controller)
         assert controller.session.position == 20
+    finally:
+        lazy.close()
+        window.close()
+
+
+def test_default_lazy_plot_materializes_latest_data_on_show(transport):
+    from sailworks.qt.lazyplots import LazyLogPlots
+
+    app, controller, _ = transport
+    controller.early_weather = False
+    window = QWidget()
+    plot = QWidget(window)
+    for name in (
+        "set_logged_fields",
+        "set_points",
+        "set_viewport_callback",
+        "set_position",
+    ):
+        setattr(plot, name, Mock())
+    plot.selected_logged_fields = set()
+    window._interactive_plots = lambda parent, controller: plot
+    lazy = PreviewWindow._build_plots(window, controller)
+    assert isinstance(lazy, LazyLogPlots)
+    lazy.set_points((), (), False)
+    points = plot_points()
+    lazy.set_points(points, (10, 20, 30), True)
+    assert lazy.plot is None
+    try:
+        window.show()
+        lazy.show()
+        app.processEvents()
+        assert lazy.plot is plot
+        plot.set_points.assert_called_once_with(tuple(points), (10, 20, 30), True)
     finally:
         lazy.close()
         window.close()
@@ -570,6 +606,8 @@ def test_clean_nmea_panel_is_scrub_only_and_keeps_production_chart_scrubbing(
         "show_log_library",
         "_track_source_changed",
         "_record",
+        "_toggle_instruments",
+        "_refresh_connection_status",
     ):
         setattr(window, name, lambda *args: None)
     window._interactive_plots = PreviewWindow._interactive_plots
@@ -584,9 +622,8 @@ def test_clean_nmea_panel_is_scrub_only_and_keeps_production_chart_scrubbing(
     try:
         window.show()
         canvas.show()
-        if early_weather:
-            canvas.materialize()
-        plot = canvas.plot if early_weather else canvas
+        canvas.materialize()
+        plot = canvas.plot
         PreviewWindow.refresh(window)
         assert not panel.findChildren(QSlider)
         assert not panel.findChildren(LogScrubber)
@@ -617,7 +654,7 @@ def test_clean_nmea_panel_is_scrub_only_and_keeps_production_chart_scrubbing(
         ):
             assert noise not in texts
         buttons = {button.text() for button in panel.findChildren(QPushButton)}
-        assert buttons == {"Log library…"}
+        assert buttons == {"Instruments", "Log library…"}
         assert panel.findChildren(QToolButton) == [window.record]
         assert window.record.isCheckable()
         assert window.record.isHidden()  # no recording control while replaying
@@ -643,12 +680,16 @@ def test_clean_nmea_panel_is_scrub_only_and_keeps_production_chart_scrubbing(
 
 
 def test_source_dropdown_is_the_live_reading_control(transport):
+    class StubWindow(QWidget):
+        def __getattr__(self, _name):
+            return lambda *args, **kwargs: None
+
     _, controller, _ = transport
     controller.connection_task = SimpleNamespace(busy=False)
     controller.set_live_reading = lambda active: controller.session.set_streaming(
         active
     )
-    window = QWidget()
+    window = StubWindow()
     window.controller = controller
     window.session = controller.session
     window.syncing = False
@@ -656,6 +697,7 @@ def test_source_dropdown_is_the_live_reading_control(transport):
     window.show_log_library = lambda: None
     window._track_source_changed = lambda _index: None
     window._record = lambda _active: None
+    window._toggle_instruments = lambda _active: None
     panel = PreviewWindow._nmea_panel(window)
     try:
         window.source.setCurrentIndex(1)
@@ -715,6 +757,7 @@ def test_gps_picker_updates_plot_both_maps_and_marker_without_replay(transport):
         _track_source_log=None,
         views=Mock(),
         logs_view=Mock(),
+        _refresh_connection_status=Mock(),
     )
     window._refresh_data = lambda: PreviewWindow._refresh_data(window)
     window._refresh_log_position = lambda: PreviewWindow._refresh_log_position(window)
