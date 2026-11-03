@@ -99,9 +99,9 @@ def worker(config):
     widget = _viewport_widget_class()(
         model,
         gpu_weather_fill=True,
-        chart_layer=True,
-        enc_chart_layer=True,
-        chart_without_weather=True,
+        chart_layer=not config.get("no_chart"),
+        enc_chart_layer=not config.get("no_chart"),
+        chart_without_weather=not config.get("no_chart"),
         chart_data_dir=data,
         native_weather_fields=True,
     )
@@ -140,6 +140,9 @@ def worker(config):
     )
     widget.set_camera(camera)
     wait(lambda: widget._state == "ready", "viewport ready")
+    if config.get("no_weather"):
+        widget._set_weather_visible = lambda visible: None
+        widget._weather.setVisible(False)
 
     stages = {"set_camera_ms": [], "model_update_ms": [], "publish_ms": []}
     last = {name: 0.0 for name in stages}
@@ -275,6 +278,8 @@ def run(args):
         "repeats": args.repeats,
         "warmup_frames": args.warmup_frames,
         "interval_ms": args.interval_ms,
+        "no_weather": args.no_weather,
+        "no_chart": args.no_chart,
         "mode": "afterRendering-trace-v1",
     }
     report = {"schema_version": SCHEMA, "workload": workload, "runs": []}
@@ -344,6 +349,8 @@ def main():
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--warmup-frames", type=int, default=5)
     parser.add_argument("--interval-ms", type=float, default=16.667)
+    parser.add_argument("--no-weather", action="store_true")
+    parser.add_argument("--no-chart", action="store_true")
     parser.add_argument("--worker-timeout-s", type=float, default=600)
     parser.add_argument("--worker", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
