@@ -15,7 +15,9 @@ class _Host(RetainedOverlayMixin):
         self.controller = SimpleNamespace(
             core=SimpleNamespace(trackManager=[], poiManager=[])
         )
-        self.navigation = SimpleNamespace(draw_race_tracks=lambda gpsmap, cr: None)
+        self.navigation = SimpleNamespace(
+            draw_race_tracks=lambda gpsmap, cr, **kwargs: None
+        )
         self.time_control = SimpleNamespace(time=SimpleNamespace(timestamp=lambda: 0))
 
     def _view_pixel_size(self):
@@ -55,7 +57,7 @@ def test_race_geometry_image_uses_draw_race_tracks():
     host = _Host()
     calls = []
 
-    def draw(gpsmap, cr):
+    def draw(gpsmap, cr, **kwargs):
         calls.append((gpsmap is host, cr is not None))
 
     host.navigation.draw_race_tracks = draw
@@ -81,7 +83,7 @@ def test_race_geometry_image_caches_and_reuses():
     host = _Host()
     calls = []
 
-    def draw(gpsmap, cr):
+    def draw(gpsmap, cr, **kwargs):
         calls.append(1)
 
     host.navigation.draw_race_tracks = draw
@@ -95,7 +97,7 @@ def test_race_geometry_image_invalidates_on_track_change():
     host = _Host()
     calls = []
 
-    def draw(gpsmap, cr):
+    def draw(gpsmap, cr, **kwargs):
         calls.append(1)
 
     host.navigation.draw_race_tracks = draw
@@ -109,7 +111,7 @@ def test_race_geometry_image_invalidates_on_dimension_change():
     host = _Host()
     calls = []
 
-    def draw(gpsmap, cr):
+    def draw(gpsmap, cr, **kwargs):
         calls.append(1)
 
     host.navigation.draw_race_tracks = draw
@@ -123,7 +125,7 @@ def test_race_geometry_image_invalidates_on_view_change():
     host = _Host()
     calls = []
 
-    def draw(gpsmap, cr):
+    def draw(gpsmap, cr, **kwargs):
         calls.append(1)
 
     host.navigation.draw_race_tracks = draw
@@ -140,13 +142,13 @@ def test_navigation_image_reuses_cached_race_geometry_on_marker_change():
     host = _Host()
     calls = []
 
-    def draw(gpsmap, cr):
+    def draw(gpsmap, cr, **kwargs):
         calls.append(1)
 
     host.navigation = type("Navigation", (), {})()
     host.navigation.draw_race_tracks = draw
     host.navigation.draw_routes = lambda gpsmap, cr, ts: None
-    host.navigation.draw_navigation = lambda gpsmap, cr: None
+    host.navigation.draw_navigation = lambda gpsmap, cr, **kwargs: None
     host._center_lat = 48.0
     host._center_lon = -123.0
     host._zoom = 6.0
@@ -162,13 +164,13 @@ def test_navigation_image_invalidates_cached_race_geometry_on_view_change():
     host = _Host()
     calls = []
 
-    def draw(gpsmap, cr):
+    def draw(gpsmap, cr, **kwargs):
         calls.append(1)
 
     host.navigation = type("Navigation", (), {})()
     host.navigation.draw_race_tracks = draw
     host.navigation.draw_routes = lambda gpsmap, cr, ts: None
-    host.navigation.draw_navigation = lambda gpsmap, cr: None
+    host.navigation.draw_navigation = lambda gpsmap, cr, **kwargs: None
     host._center_lat = 48.0
     host._center_lon = -123.0
     host._zoom = 6.0
@@ -184,7 +186,7 @@ def test_navigation_image_composites_cached_race_geometry_pixels():
     host = _Host()
     calls = []
 
-    def draw(gpsmap, cr):
+    def draw(gpsmap, cr, **kwargs):
         calls.append(1)
         cr.rectangle(0, 0, 3, 3)
         cr.set_source_rgba(1.0, 0.0, 0.0, 1.0)
@@ -193,7 +195,7 @@ def test_navigation_image_composites_cached_race_geometry_pixels():
     host.navigation = type("Navigation", (), {})()
     host.navigation.draw_race_tracks = draw
     host.navigation.draw_routes = lambda gpsmap, cr, ts: None
-    host.navigation.draw_navigation = lambda gpsmap, cr: None
+    host.navigation.draw_navigation = lambda gpsmap, cr, **kwargs: None
     host._center_lat = 48.0
     host._center_lon = -123.0
     host._zoom = 6.0
@@ -237,7 +239,7 @@ def _real_host(track_manager):
     host._center_lon = -123.0
     host._zoom = 6.0
     calls = []
-    host.navigation.draw_race_tracks = lambda gpsmap, cr: calls.append(1)
+    host.navigation.draw_race_tracks = lambda gpsmap, cr, **kwargs: calls.append(1)
     return host, calls
 
 
@@ -346,7 +348,9 @@ def test_collection_structural_edits_bump_revision():
 
 def test_snapshot_is_per_element_not_per_point():
     # The snapshot must not scan points: a large track yields a fixed-size entry.
-    big = Track("big", [(float(i), 0.0, None) for i in range(5000)], collection=_Saver())
+    big = Track(
+        "big", [(float(i), 0.0, None) for i in range(5000)], collection=_Saver()
+    )
     snap = MapHostMixin._collection_snapshot([big])
     entry = snap[1][0]
     assert len(entry) == 5

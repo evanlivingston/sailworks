@@ -2373,6 +2373,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 overlay["track_position"],
                 overlay.get("track_heading"),
                 overlay.get("track_awa"),
+                overlay.get("pois", []),
                 overlay["caption"],
                 overlay["dashboard_visible"],
             )
@@ -2392,6 +2393,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                         "trackPosition",
                         "trackHeading",
                         "trackAwa",
+                        "pois",
                         "captionText",
                         "dashboardVisible",
                     ),
