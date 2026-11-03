@@ -162,7 +162,8 @@ class Storage(dict):
     def load_or_save_default(self):
         try:
             self.load()
-            self.__init = True
+            # Bypass attribute hooks so loading does not immediately rewrite the file.
+            self.__dict__["_Storage__init"] = True
         except Exception:
             self.__init = True
             self.save()
