@@ -101,6 +101,26 @@ def test_weathernext_is_registered_in_capabilities_and_download_ui():
     assert any(row[0] == "Google WeatherNext 3" for row in MODELS)
 
 
+def test_weathernext_interim_runs_publish_only_48_leads():
+    capability = MODEL_CAPABILITIES["WEATHERNEXT"]
+    # Synoptic cycles carry the full horizon; every other hour is an interim run.
+    for hour in (0, 6, 12, 18):
+        assert capability.max_horizon(hour) == 360
+        assert capability.available_steps(hour, "wind")[-1] == 360
+    for hour in (1, 5, 7, 13, 14, 23):
+        assert capability.max_horizon(hour) == 48
+        assert capability.available_steps(hour, "wind")[-1] == 48
+
+
+def test_weathernext_display_name_is_short_but_identity_is_stable():
+    from sailworks.core.forecastcapabilities import display_model_name
+
+    assert display_model_name("WEATHERNEXT") == "WN3"
+    assert MODEL_CAPABILITIES["WEATHERNEXT"].provider_name == "Google WeatherNext 3"
+    # Unknown models fall back to their identifier.
+    assert display_model_name("NOT_A_MODEL") == "NOT_A_MODEL"
+
+
 def test_written_artifact_feeds_the_routing_sampler(tmp_path, monkeypatch):
     from datetime import datetime, timezone
 

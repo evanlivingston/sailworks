@@ -8,6 +8,8 @@ from PySide6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QSize, Qt,
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QFrame, QLayout, QScrollArea, QVBoxLayout, QWidget
 
+from sailworks.core.forecastcapabilities import display_model_name
+
 
 def source_rows(selection, marine):
     """Use published metadata/sample clocks, never requested coverage endpoints."""
@@ -20,10 +22,18 @@ def source_rows(selection, marine):
         label = getattr(source, "label", None) or getattr(source, "name", "Forecast")
         model = getattr(source, "model_name", "")
         if model:
-            label = f"{model} · {label}"
+            label = f"{display_model_name(model)} · {label}"
         active = any(getattr(item, "key", id(item)) == key for item in selected)
-        rows.append((str(key), str(label), tuple(source.valid_times), active,
-                     "Weather models", str(model or "Other")))
+        rows.append(
+            (
+                str(key),
+                str(label),
+                tuple(source.valid_times),
+                active,
+                "Weather models",
+                str(display_model_name(model) if model else "Other"),
+            )
+        )
 
     datasets = marine.ordered_datasets()
     # Lightweight controllers used by embedders may have no marine catalog.
@@ -55,8 +65,9 @@ def source_rows(selection, marine):
                 # The station-current sampler requires paired component clocks.
                 stamps.clear()
             label = f"{title} · {dataset.provider} · {dataset.station.name}"
-            rows.append((f"{identifier}:{codes[0]}", label, tuple(stamps), enabled,
-                         title, ""))
+            rows.append(
+                (f"{identifier}:{codes[0]}", label, tuple(stamps), enabled, title, "")
+            )
 
     fields = marine.fields.fields
     if isinstance(fields, Mapping):
@@ -64,12 +75,23 @@ def source_rows(selection, marine):
             metadata = field.manifest()
             label = f"Current field · {metadata['provider']} · {metadata['model']}"
             rows.append(
-                (str(key), label, tuple(field.times), key not in marine.fields.excluded,
-                 "Currents", "")
+                (
+                    str(key),
+                    label,
+                    tuple(field.times),
+                    key not in marine.fields.excluded,
+                    "Currents",
+                    "",
+                )
             )
     return tuple(
-        (key, label, tuple(sorted({float(t) for t in times if math.isfinite(t)})),
-         active, *metadata)
+        (
+            key,
+            label,
+            tuple(sorted({float(t) for t in times if math.isfinite(t)})),
+            active,
+            *metadata,
+        )
         for key, label, times, active, *metadata in rows
     )
 
@@ -88,7 +110,13 @@ class SourceTimePlot(QWidget):
         self.bounds = None
         self.now_cursor = None
         self.time_cursor = None
-        self.expanded_groups = {"Weather models", "Tides", "Currents", "Station currents", "Passage events"}
+        self.expanded_groups = {
+            "Weather models",
+            "Tides",
+            "Currents",
+            "Station currents",
+            "Passage events",
+        }
         self._known_model_types = set()
         self.tree_rows = ()
         self.label_width = 240
@@ -96,7 +124,9 @@ class SourceTimePlot(QWidget):
 
     def set_rows(self, rows, bounds=None):
         self.rows = rows
-        model_types = {row[5] for row in rows if len(row) > 5 and row[4] == "Weather models"}
+        model_types = {
+            row[5] for row in rows if len(row) > 5 and row[4] == "Weather models"
+        }
         for model_type in model_types - self._known_model_types:
             self.expanded_groups.add(f"Weather models/{model_type}")
         self._known_model_types.update(model_types)
@@ -105,7 +135,9 @@ class SourceTimePlot(QWidget):
             stamps = [t for row in rows for t in row[2]]
             self.bounds = (min(stamps), max(stamps)) if stamps else None
         self.tree_rows = self._visible_tree_rows()
-        self.setFixedHeight(max(1, len(self.tree_rows)) * self.ROW_HEIGHT + self.AXIS_HEIGHT)
+        self.setFixedHeight(
+            max(1, len(self.tree_rows)) * self.ROW_HEIGHT + self.AXIS_HEIGHT
+        )
         self.update()
 
     def set_cursors(self, now, selected_time):
@@ -246,7 +278,11 @@ class SourceTimePlot(QWidget):
             painter.setPen(palette.text().color())
             active = row[3] if kind == "leaf" else True
             group_key = f"Weather models/{label}" if kind == "subgroup" else label
-            text = ("▾ " if group_key in self.expanded_groups else "▸ ") + label if kind != "leaf" else label + ("" if active else " (not selected)")
+            text = (
+                ("▾ " if group_key in self.expanded_groups else "▸ ") + label
+                if kind != "leaf"
+                else label + ("" if active else " (not selected)")
+            )
             indent = 4 if kind == "group" else 20 if kind == "subgroup" else 36
             painter.drawText(
                 indent,
@@ -263,8 +299,10 @@ class SourceTimePlot(QWidget):
             times = row[2] if kind == "leaf" else row
             painter.save()
             painter.setClipRect(
-                self._plot_left(), top,
-                max(0, self.width() - self._plot_left()), self.ROW_HEIGHT,
+                self._plot_left(),
+                top,
+                max(0, self.width() - self._plot_left()),
+                self.ROW_HEIGHT,
             )
             for point in self.dot_points(times, index):
                 painter.drawEllipse(point, 1.5, 1.5)
@@ -306,7 +344,10 @@ class SourceTimePlot(QWidget):
 
     def mousePressEvent(self, event):
         index = int(event.position().y() // self.ROW_HEIGHT)
-        if not 0 <= index < len(self.tree_rows) or event.position().x() >= self._plot_left():
+        if (
+            not 0 <= index < len(self.tree_rows)
+            or event.position().x() >= self._plot_left()
+        ):
             return super().mousePressEvent(event)
         kind, label, _ = self.tree_rows[index]
         key = f"Weather models/{label}" if kind == "subgroup" else label
@@ -316,7 +357,9 @@ class SourceTimePlot(QWidget):
             else:
                 self.expanded_groups.add(key)
             self.tree_rows = self._visible_tree_rows()
-            self.setFixedHeight(max(1, len(self.tree_rows)) * self.ROW_HEIGHT + self.AXIS_HEIGHT)
+            self.setFixedHeight(
+                max(1, len(self.tree_rows)) * self.ROW_HEIGHT + self.AXIS_HEIGHT
+            )
             self.update()
             event.accept()
             return

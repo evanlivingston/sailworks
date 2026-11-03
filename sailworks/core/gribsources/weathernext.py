@@ -10,6 +10,7 @@ from typing import Callable, List
 
 from sailworks.core.gribsources.base import GribSource
 from sailworks.core.gribsources.options import DEFAULT_FIELDS
+from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES
 from sailworks.core.weathernext import (
     BASE_URL,
     U_WIND,
@@ -104,7 +105,6 @@ class WeatherNextSource(GribSource):
                 },
             )()
         )
-        available = tuple(range(1, 361))
         fields = tuple(
             field for field in options.fields if field in self.download_fields
         )
@@ -112,6 +112,9 @@ class WeatherNextSource(GribSource):
             return []
         rows = []
         for date, cycle, tag, run_time in self._catalogue_runs()[-24:]:
+            available = MODEL_CAPABILITIES["WEATHERNEXT"].available_steps(
+                run_time.hour, "wind"
+            )
             steps = options.select(available)
             if not steps:
                 continue
@@ -129,7 +132,7 @@ class WeatherNextSource(GribSource):
             }
             rows.append(
                 [
-                    f"WeatherNext 3 · {coverage}",
+                    f"WN3 · {coverage}",
                     self.name,
                     f"~{count * 0.4:.1f} MB",
                     run_time.strftime("%Y-%m-%d %H:%M UTC"),
