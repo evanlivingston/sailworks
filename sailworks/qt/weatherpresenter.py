@@ -195,6 +195,7 @@ class WeatherPresenter(QObject):
                 )
                 widget.statusChanged.connect(self._qml_status)
                 widget.quickWindow().afterRendering.connect(self.rendered.emit)
+            widget.prepared.connect(lambda _generation: self.request())
             self.widget = widget
             self.foreground = WeatherForeground(self.canvas)
             self.foreground.installEventFilter(self)
@@ -389,7 +390,7 @@ class WeatherPresenter(QObject):
         widget, foreground = self.widget, self.foreground
         if widget is None or foreground is None:
             raise RuntimeError("ENC/weather viewport initialization failed")
-        if widget._camera != camera:
+        if widget._camera != camera or widget._state == "loading":
             widget.set_camera(camera)
         widget.setGeometry(self.canvas.rect())
         foreground.setGeometry(self.canvas.rect())
