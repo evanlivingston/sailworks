@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import time
 from datetime import datetime, timezone
 from typing import Callable, List
 
@@ -22,6 +23,10 @@ from sailworks.core.weathernextcredentials import WeatherNextCredentials
 
 PRESSURE = "mean_sea_level_pressure_mean"
 _RUN = re.compile(r"^(\d{8})_(\d{2})hr_(\d{2})_preds$")
+# Listing the bucket costs ~190 round trips, so share one catalogue per process.
+_CATALOGUE_TTL = 600.0
+_CATALOGUE = ()
+_CATALOGUE_AT = 0.0
 
 
 def _expanded(bounds):
@@ -62,7 +67,12 @@ class WeatherNextSource(GribSource):
         self._bounds = value
 
     def _catalogue_runs(self):
+        global _CATALOGUE, _CATALOGUE_AT
         if self._runs is not None:
+            return list(self._runs)
+        now = time.monotonic()
+        if _CATALOGUE and now - _CATALOGUE_AT < _CATALOGUE_TTL:
+            self._runs = _CATALOGUE
             return list(self._runs)
         filesystem = WeatherNextCredentials().gcs_filesystem()
         entries = filesystem.ls(BASE_URL.rstrip("/"), detail=False)
@@ -89,7 +99,25 @@ class WeatherNextSource(GribSource):
                     ),
                 )
             )
-        return sorted(runs, key=lambda item: item[3])
+        runs = sorted(runs, key=lambda item: item[3])
+        _CATALOGUE, _CATALOGUE_AT = tuple(runs), now
+        self._runs = _CATALOGUE
+        return list(runs)
+
+    def estimate_download_size(self, identifier, *, cancel=None):
+        """Estimate the GRIB2 payload from the region grid and requested steps."""
+        payload = json.loads(identifier)
+        steps = tuple(payload.get("steps") or ())
+        fields = tuple(payload.get("fields") or ())
+        if not steps or not fields or self.bounds is None:
+            raise ValueError("WeatherNext estimate needs steps, fields and a region")
+        south, west, north, east = _expanded(self.bounds)
+        rows = max(2, int(round((north - south) / 0.1)) + 1)
+        columns = max(2, int(round((east - west) / 0.1)) + 1)
+        messages = len(steps) * (2 if "wind" in fields else 0)
+        messages += len(steps) if "pressure" in fields else 0
+        # float32 grid values plus GRIB2 section overhead per message.
+        return int(messages * (rows * columns * 4 + 512)), True
 
     def get_download_list(self, options=None) -> List:
         options = (
