@@ -4,6 +4,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
 from sailworks.core.connectionconfig import connection_config, connection_key
 from sailworks.core.nmea2000datasource import N2K_FORMATS
 from sailworks.core.serialdatasource import SerialDataSource
+from sailworks.core.weathernextcredentials import describe_access_error
 from .marinesettings import CurrentsAccount
 
 
@@ -254,11 +256,17 @@ class SettingsDialog(QDialog):
         weathernext_buttons = QHBoxLayout()
         self.weathernext_choose = QPushButton("Choose credentials JSON…")
         self.weathernext_adc = QPushButton("Use ADC")
+        self.weathernext_test = QPushButton("Test access")
         self.weathernext_choose.clicked.connect(self.choose_weathernext_credentials)
         self.weathernext_adc.clicked.connect(self.use_weathernext_adc)
+        self.weathernext_test.clicked.connect(self.test_weathernext_access)
         weathernext_buttons.addWidget(self.weathernext_choose)
         weathernext_buttons.addWidget(self.weathernext_adc)
+        weathernext_buttons.addWidget(self.weathernext_test)
         weathernext_form.addRow(weathernext_buttons)
+        terms = QLabel("Ensemble means · Google Cloud terms apply")
+        terms.setWordWrap(True)
+        weathernext_form.addRow(terms)
         self._refresh_weathernext()
         self.tabs.addTab(weathernext, "WeatherNext")
         self.currents = CurrentsAccount(controller.core.marine_manager.coverage_planner)
@@ -386,6 +394,28 @@ class SettingsDialog(QDialog):
         self.weathernext_credentials.path = ""
         self.set_preference("weatherNextCredentialsPath", "")
         self._refresh_weathernext()
+
+    def test_weathernext_access(self):
+        from sailworks.core.weathernext import BASE_URL
+
+        self.weathernext_test.setEnabled(False)
+        self.weathernext_source.setText("Testing access…")
+        QApplication.processEvents()
+        try:
+            filesystem = self.weathernext_credentials.gcs_filesystem()
+            entries = filesystem.ls(BASE_URL.rstrip("/"), detail=False)
+            runs = sum(
+                1
+                for entry in entries
+                if entry.rstrip("/").rsplit("/", 1)[-1][:8].isdigit()
+            )
+            self.weathernext_source.setText(f"Access OK · {runs} runs")
+        except Exception as exc:
+            self.weathernext_source.setText(
+                f"Access failed: {describe_access_error(exc)}"
+            )
+        finally:
+            self.weathernext_test.setEnabled(True)
 
     def set_gpu_rendering(self, enabled):
         self.set_preference("mapRenderer", "gpu" if enabled else "cpu")

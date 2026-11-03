@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from sailworks.core.gribsources.options import DownloadOptions
 from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES
 from sailworks.core.forecasttranche import ModelConfiguration
+from sailworks.core.weathernextcredentials import describe_access_error
 
 MODELS = (
     ("NOAA GFS", "GFS", "0.25°", "10 days", "Global", "GFS"),
@@ -64,7 +65,7 @@ MODELS = (
         "WeatherNext 3",
         "0.1° grid",
         "15 days",
-        "Global AI ensemble means",
+        "Global ensemble means · Google Cloud terms apply",
         "WEATHERNEXT",
     ),
 )
@@ -196,7 +197,13 @@ class ForecastDownloadOptions(QWidget):
                 forecast,
                 checked=name == "NOAA GFS",
             )
-            row.download_check.setToolTip(region)
+            capability = MODEL_CAPABILITIES[model_id]
+            tooltip = region
+            if capability.attribution:
+                tooltip += f" · {capability.attribution}"
+            if capability.license_url:
+                tooltip += f" · {capability.license_url}"
+            row.download_check.setToolTip(tooltip)
             self.models[name] = row.download_check
             self.model_rows[name] = row
             self.model_rows_by_id[model_id] = row
@@ -750,7 +757,13 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
                 )
                 payload = (result, "")
             except Exception as exc:
-                payload = (None, str(exc) or type(exc).__name__)
+                detail = str(exc) or type(exc).__name__
+                if "WEATHERNEXT:" in detail or (
+                    len(configurations) == 1
+                    and configurations[0].model_id == "WEATHERNEXT"
+                ):
+                    detail = describe_access_error(exc)
+                payload = (None, detail)
             try:
                 self._estimate_result.emit(generation, payload)
             except RuntimeError:
