@@ -230,9 +230,9 @@ FPS or GPU-completion timing.
 ### App/viewport replay
 
 - Report: [`profiles/rendering/2026-11-02/app-pan-zoom-baseline.json`](profiles/rendering/2026-11-02/app-pan-zoom-baseline.json)
-- Harness: `tools/benchmark_startup_rendering.py`
-- Snapshot content: `259e0fef6ad5bb6d7a05eee12dbbe688614658019b9b8a7e1000c4e1e4bbcdc3`
-  (314 files, 322063633 bytes; private snapshot not committed)
+- Harness: `tools/benchmark_startup_rendering.py --standalone-viewport`
+- Snapshot content: `d2cca530d9401b391a45c1d798208d5fe4272c4cf863494fbca61403d8deafcd`
+  (314 files, 320739619 bytes; private snapshot not committed)
 - Workload: `pan`, `trackpad_pan`, `wheel_zoom`, `zoom_out`; 180 frames, 3
   repeated processes, 1000x700, GPU renderer, saved 3-source forecast
   selection.
@@ -240,28 +240,26 @@ FPS or GPU-completion timing.
 
 | Scenario | p50 | p95 | p99 | max |
 | --- | ---: | ---: | ---: | ---: |
-| `pan` | 18.88 ms | 31.09 ms | 35.96 ms | 40.62 ms |
-| `trackpad_pan` | 16.89 ms | 30.13 ms | 36.39 ms | 41.97 ms |
-| `wheel_zoom` | 12.22 ms | 18.13 ms | 20.79 ms | 24.88 ms |
-| `zoom_out` | 14.02 ms | 23.40 ms | 28.40 ms | 34.35 ms |
+| `pan` | 20.67 ms | 34.82 ms | 41.74 ms | 49.75 ms |
+| `trackpad_pan` | 19.70 ms | 31.37 ms | 36.09 ms | 41.39 ms |
+| `wheel_zoom` | 10.51 ms | 17.70 ms | 21.58 ms | 25.14 ms |
+| `zoom_out` | 13.00 ms | 23.14 ms | 28.66 ms | 107.64 ms |
 
-Selection uploads (three repeats): `pan` 29, `trackpad_pan` 17, `wheel_zoom`
+Selection uploads (three repeats): `pan` 28, `trackpad_pan` 17, `wheel_zoom`
 540, `zoom_out` 87. Field publications, fill uploads, barbs field uploads and
 chart publications were 0 in these covered scenarios. The Cairo overlay
 rebuild counters are 0 because the replay measures the viewport widget; the
-app-host overlay path is not exercised by this fallback.
+app-host overlay path is not exercised by this replay.
 
-The replay uses the current `SessionController` and viewport widget. The
-`PreviewWindow` host currently leaves the native viewport in `loading` while
-the analysis source settles, so the harness falls back to the same standalone
-viewport widget with the same model, flags and snapshot data. Fixing that host
-transition is separate from this measurement contract.
+The replay uses the current `SessionController` and viewport widget directly.
+Each run also records `overlay_jobs` with the published wind content identity,
+so `--compare` exercises `weather_content` (`matched_frames` must be non-zero).
 
 ```bash
 python tools/benchmark_startup_rendering.py \
   --snapshot <private-snapshot> --output <candidate>.json \
   --scenarios pan,trackpad_pan,wheel_zoom,zoom_out \
-  --frames 180 --repeats 3 --map-renderer gpu
+  --frames 180 --repeats 3 --map-renderer gpu --standalone-viewport
 python tools/benchmark_startup_rendering.py \
   --compare docs/profiles/rendering/2026-11-02/app-pan-zoom-baseline.json \
   <candidate>.json --output <comparison>.json
