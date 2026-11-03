@@ -69,7 +69,7 @@ class ModelCapabilities:
         if self.model_id == "AIGFS":
             return tuple(range(0, 385, 6))
         if self.model_id == "WEATHERNEXT":
-            return tuple(range(361))
+            return tuple(range(1, 361))
         if self.model_id == "HRRR" and field == "gust":
             return tuple(range(maximum + 1))
         if self.model_id == "HRDPS" and field == "pressure":

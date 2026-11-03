@@ -65,12 +65,19 @@ class WeatherNextSource(GribSource):
             return list(self._runs)
         filesystem = WeatherNextCredentials().gcs_filesystem()
         entries = filesystem.ls(BASE_URL.rstrip("/"), detail=False)
+        names = sorted(entry.rstrip("/").rsplit("/", 1)[-1] for entry in entries)
         runs = []
-        for entry in entries:
-            match = _RUN.fullmatch(entry.rstrip("/").rsplit("/", 1)[-1])
+        for name in names[-96:]:
+            match = _RUN.fullmatch(name)
             if match is None:
                 continue
             date, cycle, tag = match.groups()
+            store = f"{BASE_URL}{name}/predictions.zarr"
+            if not (
+                filesystem.exists(f"{store}/zarr.json")
+                or filesystem.exists(f"{store}/.zgroup")
+            ):
+                continue
             runs.append(
                 (
                     date,
@@ -97,7 +104,7 @@ class WeatherNextSource(GribSource):
                 },
             )()
         )
-        available = tuple(range(361))
+        available = tuple(range(1, 361))
         fields = tuple(
             field for field in options.fields if field in self.download_fields
         )
@@ -222,10 +229,14 @@ class WeatherNextSource(GribSource):
                 "jScansPositively": 1 if selected_lat[-1] > selected_lat[0] else 0,
                 "centre": 250,
                 "subCentre": 0,
+                "missingValue": 9999.0,
+                "bitmapPresent": 1,
             }
             for key, value in keys.items():
                 eccodes.codes_set(gid, key, value)
-            eccodes.codes_set_values(gid, np.asarray(values, dtype=float).ravel())
+            encoded = np.asarray(values, dtype=float).ravel()
+            encoded[~np.isfinite(encoded)] = 9999.0
+            eccodes.codes_set_values(gid, encoded)
             eccodes.codes_write(gid, handle)
             eccodes.codes_release(gid)
             done += 1

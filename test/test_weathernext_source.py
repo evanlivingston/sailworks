@@ -52,7 +52,7 @@ def test_catalogue_returns_pinned_weathernext_rows():
     assert payload["date"] == "20261103"
     assert payload["cycle"] == "12"
     assert payload["fields"] == ["wind"]
-    assert payload["steps"] == [0, 3, 6, 9, 12]
+    assert payload["steps"] == [3, 6, 9, 12]
     assert payload["run_tag"] == "01_preds"
 
 
