@@ -19,7 +19,6 @@ from .gfswaveindex import ELEMENTS_BY_FIELD, parse_index
 from .options import DownloadOptions, custom_rows
 from .ranged import HTTPStatusError, append_message, fetch_text, message_length
 
-
 GFSWAVE_ROOT = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/"
 GFSWAVE_NAME = "NOAA GFS-Wave"
 GFSWAVE_FIELDS = tuple(ELEMENTS_BY_FIELD)
@@ -57,6 +56,12 @@ def _child_name(url):
 def _check_cancel(cancel):
     if cancel is not None and cancel.is_set():
         raise DownloadCancelledError()
+
+
+def _run_unavailable(exc):
+    # NOMADS answers 403, not 404, for cycle directories that are not published
+    # yet (verified against the live catalogue); both mean "try the next run".
+    return exc.status_code in (403, 404)
 
 
 class NOAAGFSWaveSource(GribSource):
@@ -190,7 +195,7 @@ class NOAAGFSWaveSource(GribSource):
                 try:
                     date_links = self._catalog_links(date_url)
                 except HTTPStatusError as exc:
-                    if exc.status_code == 404:
+                    if _run_unavailable(exc):
                         continue
                     raise
                 cycles = sorted(
@@ -222,7 +227,7 @@ class NOAAGFSWaveSource(GribSource):
                     except LookupError:
                         continue
                     except HTTPStatusError as exc:
-                        if exc.status_code == 404:
+                        if _run_unavailable(exc):
                             continue
                         raise
                     run_time = datetime.strptime(date + cycle, "%Y%m%d%H").replace(

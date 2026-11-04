@@ -196,9 +196,50 @@ def test_refresh_failure_is_visible_while_previous_model_remains_active(tmp_path
 
     options._update_active_status()
 
-    assert options.size_estimate.text() == "Download estimate unavailable."
+    assert options.size_estimate.text() == (
+        "Download failed: HRRR validation failed: missing wind coverage."
+    )
     assert "missing wind coverage" in options.size_estimate.toolTip()
     assert ForecastModelSelector(library.controller).currentData() == "GFS"
+    library.close()
+
+
+def test_refresh_planning_failure_is_reported_with_model_and_reason(tmp_path):
+    app()
+    library, _, analysis = forecast_page(
+        tmp_path, capture_region=lambda: (-2, -2, 2, 2)
+    )
+    options = library.forecast_options
+    options.region = (-2, -2, 2, 2)
+    options.models["NOAA GFS-Wave"].setChecked(True)
+    options.model_rows["NOAA GFS-Wave"].selected.emit("GFSWAVE")
+    options._save_intent()
+    assert options.refresh_button.isEnabled()
+
+    failure = (
+        "planning failed: GFSWAVE: Expected HTTP 200, got 403 for "
+        "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/"
+        "gfs.20261104/18/wave/gridded/"
+    )
+
+    def refresh():
+        analysis.busy = True
+        analysis.status = "Updating forecast…"
+        analysis.changed.emit()
+        analysis.busy = False
+        analysis.error = failure
+        analysis.status = "Using currently published forecast"
+        analysis.changed.emit()
+        return False
+
+    analysis.refresh = refresh
+    options.refresh_models()
+
+    text = options.size_estimate.text()
+    assert "NOAA GFS-Wave" in text
+    assert "HTTP 403" in text
+    assert failure in options.size_estimate.toolTip()
+    assert options.refresh_button.isEnabled()
     library.close()
 
 

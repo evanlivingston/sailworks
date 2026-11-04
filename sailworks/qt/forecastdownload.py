@@ -710,17 +710,41 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
         self.size_estimate.setText("Checking run availability and download size…")
         self._estimate_timer.start()
 
-    def _set_size_estimate_error(self, error):
-        detail = str(error) or type(error).__name__
+    def _set_size_estimate_error(self, error, prefix="Estimate unavailable"):
+        summary = self._error_summary(error)
+        self.size_estimate.setText(f"{prefix}: {summary}.")
+        self.size_estimate.setToolTip(str(error) or type(error).__name__)
+
+    @staticmethod
+    def _error_summary(error):
+        """Name the model when the planner prefixed its reason with the model id."""
+        detail = str(error).strip() or type(error).__name__
+        detail = detail.removeprefix("planning failed: ")
+        for model_id in sorted(MODEL_CAPABILITIES, key=len, reverse=True):
+            token = f"{model_id}: "
+            index = detail.find(token)
+            if index < 0 or (index > 0 and detail[index - 1].isalnum()):
+                continue
+            detail = (
+                detail[:index]
+                + MODEL_CAPABILITIES[model_id].provider_name
+                + ": "
+                + detail[index + len(token) :]
+            )
+            break
         if "Expected HTTP " in detail and ", got " in detail:
             status = detail.split(", got ", 1)[1].split(" ", 1)[0]
-            summary = f"provider returned HTTP {status}"
+            name = detail.split("Expected HTTP ", 1)[0].rstrip(" :")
+            summary = (
+                f"{name}: provider returned HTTP {status}"
+                if name
+                else f"provider returned HTTP {status}"
+            )
         else:
             summary = detail.split(" for ", 1)[0]
             if len(summary) > 96:
                 summary = summary[:93] + "…"
-        self.size_estimate.setText(f"Estimate unavailable: {summary}.")
-        self.size_estimate.setToolTip(detail)
+        return summary
 
     def _start_size_estimate(self):
         if self.analysis is None or self.analysis.busy:
@@ -795,8 +819,9 @@ class AnalysisForecastDownloadOptions(ForecastDownloadOptions):
         progress = int(getattr(self.analysis, "progress", 0) or 0)
         self.download_progress.setValue(progress)
         if self.analysis.error:
-            self.size_estimate.setText("Download estimate unavailable.")
-            self.size_estimate.setToolTip(self.analysis.error)
+            # A failed plan/refresh must be visible here: the dialog has no other
+            # error surface for a background refresh that ends without a forecast.
+            self._set_size_estimate_error(self.analysis.error, "Download failed")
         elif busy:
             status = str(getattr(self.analysis, "status", "") or "").strip()
             self.size_estimate.setText(status or "Updating forecast…")

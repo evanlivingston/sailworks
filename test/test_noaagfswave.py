@@ -9,7 +9,6 @@ from sailworks.core.gribsources.noaagfswave import (
 )
 from sailworks.core.gribsources.options import DownloadOptions
 
-
 _INDEX = """\
 1:0:d=2026102312:WIND:surface:3 hour fcst:
 2:100:d=2026102312:WDIR:surface:3 hour fcst:
@@ -127,6 +126,73 @@ def test_gfswave_catalog_pins_complete_runs_and_selected_wave_fields(monkeypatch
     assert [item[3] for item in urls] == [0, 3]
 
 
+def _catalog_with_status(monkeypatch, source, status, *, level):
+    root = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/"
+    date_url = root + "gfs.20261104/"
+    run_url = date_url + "12/wave/gridded/"
+    filenames = {source._filename("12", hour) for hour in (0, 3)}
+
+    def unavailable(url):
+        from types import SimpleNamespace
+
+        from sailworks.core.gribsources.ranged import HTTPStatusError
+
+        return HTTPStatusError(200, SimpleNamespace(status_code=status), url)
+
+    def catalog(url):
+        if url == root:
+            return (date_url,)
+        if url == date_url:
+            if level == "date":
+                raise unavailable(url)
+            return (date_url + "18/", date_url + "12/")
+        if url == date_url + "18/wave/gridded/":
+            raise unavailable(url)
+        if url == run_url:
+            return tuple(
+                run_url + name
+                for name in filenames | {name + ".idx" for name in filenames}
+            )
+        raise AssertionError(url)
+
+    monkeypatch.setattr(source, "_catalog_links", catalog)
+    monkeypatch.setattr(source, "_selected_index", lambda *_args: ((100, 25),))
+
+
+@pytest.mark.parametrize("status", [403, 404])
+def test_gfswave_catalog_skips_unpublished_run_directory(monkeypatch, status):
+    source = NOAAGFSWaveSource(session=object())
+    _catalog_with_status(monkeypatch, source, status, level="run")
+
+    rows = source.get_download_list(DownloadOptions(3, 3, ("wave_height",), (0, 3)))
+
+    assert len(rows) == 1
+    assert json.loads(rows[0][4])["cycle"] == "12"
+
+
+@pytest.mark.parametrize("status", [403, 404])
+def test_gfswave_catalog_skips_unpublished_date_directory(monkeypatch, status):
+    source = NOAAGFSWaveSource(session=object())
+    _catalog_with_status(monkeypatch, source, status, level="date")
+
+    assert (
+        source.get_download_list(DownloadOptions(3, 3, ("wave_height",), (0, 3))) == []
+    )
+
+
+@pytest.mark.parametrize("status", [401, 429, 500, 503])
+def test_gfswave_catalog_still_raises_for_fatal_statuses(monkeypatch, status):
+    from sailworks.core.gribsources.ranged import HTTPStatusError
+
+    source = NOAAGFSWaveSource(session=object())
+    _catalog_with_status(monkeypatch, source, status, level="run")
+
+    with pytest.raises(HTTPStatusError) as raised:
+        source.get_download_list(DownloadOptions(3, 3, ("wave_height",), (0, 3)))
+
+    assert raised.value.status_code == status
+
+
 def test_gfswave_download_writes_selected_messages_atomically(tmp_path, monkeypatch):
     source = NOAAGFSWaveSource(session=object())
     identifier = NOAAGFSWaveSource._identifier(
@@ -144,9 +210,7 @@ def test_gfswave_download_writes_selected_messages_atomically(tmp_path, monkeypa
         output.write(b"x" * length)
         return length
 
-    monkeypatch.setattr(
-        "sailworks.core.gribsources.noaagfswave.append_message", append
-    )
+    monkeypatch.setattr("sailworks.core.gribsources.noaagfswave.append_message", append)
     progress = []
     result = Path(source.download(identifier, str(tmp_path), progress.append))
 
