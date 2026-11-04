@@ -7,6 +7,7 @@ import threading
 
 from PySide6.QtCore import QDate, QDateTime, QTime, QTimer, QTimeZone, Qt
 from PySide6.QtWidgets import (
+    QComboBox,
     QDateTimeEdit,
     QDoubleSpinBox,
     QHBoxLayout,
@@ -43,8 +44,8 @@ class Era5DownloadTab(QWidget):
         self.job = None
         layout = QVBoxLayout(self)
         self.intro = QLabel(
-            "ERA5 reanalysis history (UTC). Requests are limited to 31 days and "
-            "a bounded area; historical imports never activate a forecast."
+            "Historical weather (UTC), downloaded without activating a forecast. "
+            "Choose a model, then a region and time range."
         )
         layout.addWidget(self.intro)
         self.instructions = QLabel(
@@ -55,6 +56,15 @@ class Era5DownloadTab(QWidget):
         )
         self.instructions.setWordWrap(True)
         layout.addWidget(self.instructions)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Model"))
+        self.source = QComboBox()
+        self.source.addItem("ERA5 reanalysis (CDS, hourly, wind + pressure)", "era5")
+        self.source.addItem("Satellite-blended NBS (NOAA, 6-hourly, wind)", "nbs")
+        self.source.currentIndexChanged.connect(self._source_changed)
+        row.addWidget(self.source, 1)
+        layout.addLayout(row)
+        self.source_row = row
         self.north, self.west = self._coord(90), self._coord(180)
         self.south, self.east = self._coord(90), self._coord(180)
         row = QHBoxLayout()
@@ -87,7 +97,7 @@ class Era5DownloadTab(QWidget):
         self.request_button = QPushButton("Start download")
         self.cancel_button = QPushButton("Cancel")
         self.retry_button = QPushButton("Retry")
-        self.request_button.clicked.connect(self.submit)
+        self.request_button.clicked.connect(self.start_download)
         self.cancel_button.clicked.connect(self.cancel)
         self.retry_button.clicked.connect(self.retry)
         self.show_button = QPushButton("Show on map")
@@ -96,15 +106,8 @@ class Era5DownloadTab(QWidget):
             "jump the clock to their first hour"
         )
         self.show_button.clicked.connect(self._publish_history_display)
-        self.nbs_button = QPushButton("Satellite winds (NBS)")
-        self.nbs_button.setToolTip(
-            "NOAA/NCEI Blended Seawinds: 0.25° 6-hourly satellite-blended wind, "
-            "no CDS queue. Direction comes from ERA5; speed from satellites."
-        )
-        self.nbs_button.clicked.connect(self.submit_nbs)
         row.addWidget(self.request_button)
         row.addWidget(self.show_button)
-        row.addWidget(self.nbs_button)
         row.addWidget(self.cancel_button)
         row.addWidget(self.retry_button)
         layout.addLayout(row)
@@ -171,6 +174,7 @@ class Era5DownloadTab(QWidget):
             resume()
         self.cancel_button.setEnabled(False)
         self.retry_button.setEnabled(False)
+        self._source_changed()
         self.refresh_catalog()
 
     @staticmethod
@@ -294,6 +298,27 @@ class Era5DownloadTab(QWidget):
             ),
         )
 
+    def start_download(self):
+        """Download with whichever historical model the user selected."""
+        if self.source.currentData() == "nbs":
+            self.submit_nbs()
+        else:
+            self.submit()
+
+    def _source_changed(self, *_):
+        nbs = self.source.currentData() == "nbs"
+        self.instructions.setVisible(not nbs)
+        self.show_button.setVisible(not nbs)
+        self.request_button.setText(
+            "Download satellite winds" if nbs else "Start download"
+        )
+        self.retry_button.setEnabled(not nbs and bool(self.service.errors))
+        self.status.setText(
+            "Satellite-blended NBS wind: NOAA CoastWatch, no CDS queue."
+            if nbs
+            else "ERA5 reanalysis: CDS queue, hourly wind and pressure."
+        )
+
     def submit(self):
         if self.job is not None and self.job.is_alive():
             return
@@ -371,7 +396,6 @@ class Era5DownloadTab(QWidget):
         self.progress.show()
         self.status.setText("Downloading NOAA satellite-blended winds…")
         self.request_button.setEnabled(False)
-        self.nbs_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
 
         def report(percent, stage):
@@ -404,7 +428,6 @@ class Era5DownloadTab(QWidget):
             return
         self.nbs_job = None
         self.cancel_button.setEnabled(False)
-        self.nbs_button.setEnabled(True)
         self.request_button.setEnabled(True)
         if self.nbs_error:
             self.status.setText(f"Satellite wind download failed: {self.nbs_error}")

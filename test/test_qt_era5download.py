@@ -96,6 +96,36 @@ def test_refresh_catalog_shows_satellite_wind_status(tmp_path):
     assert "Downloading NBS 2026-05-16…" in labels
 
 
+def test_history_model_selector_dispatches_to_the_chosen_source(tmp_path):
+    app()
+    from sailworks.core.tranchestore import TrancheStore
+
+    store = TrancheStore(tmp_path)
+    controller = SimpleNamespace(
+        analysis=SimpleNamespace(state=SimpleNamespace(store=store))
+    )
+    tab = Era5DownloadTab(
+        controller, capture_region=lambda: (49.5, -126.0, 45.2, -121.6)
+    )
+    calls = []
+    tab.submit = lambda: calls.append("era5")
+    tab.submit_nbs = lambda: calls.append("nbs")
+
+    tab.source.setCurrentIndex(tab.source.findData("nbs"))
+    assert tab.request_button.text() == "Download satellite winds"
+    assert tab.instructions.isHidden()
+    assert tab.show_button.isHidden()
+    tab.start_download()
+
+    tab.source.setCurrentIndex(tab.source.findData("era5"))
+    assert tab.request_button.text() == "Start download"
+    assert not tab.instructions.isHidden()
+    assert not tab.show_button.isHidden()
+    tab.start_download()
+
+    assert calls == ["nbs", "era5"]
+
+
 def test_unset_region_is_filled_from_the_visible_map(tmp_path):
     app()
     from sailworks.core.tranchestore import TrancheStore
