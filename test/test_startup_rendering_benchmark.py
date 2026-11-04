@@ -28,7 +28,10 @@ class TestStartupSnapshot(unittest.TestCase):
         scene = SimpleNamespace(
             frame=frame, weather=item, weather_provider=SimpleNamespace(requests=6)
         )
-        stager = SimpleNamespace(band_cache_statistics=lambda: {"current_bytes": 64})
+        stager = SimpleNamespace(
+            band_cache_statistics=lambda: {"current_bytes": 64},
+            field_store_statistics=lambda: {},
+        )
         canvas = SimpleNamespace(
             _gpu=SimpleNamespace(active=True, scene=scene, weather=stager)
         )
@@ -211,6 +214,7 @@ class TestStartupSnapshot(unittest.TestCase):
             )
         )
         (path / "conn-manager.json").write_text("private instrument configuration")
+        (path / "grib-manager.json").write_text(json.dumps({"opened": []}))
         (path / "recordings").mkdir()
         (path / "recordings/private.log").write_text("private history")
         (path / "temp").mkdir()

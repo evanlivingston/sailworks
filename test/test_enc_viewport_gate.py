@@ -44,7 +44,14 @@ def test_weather_miss_keeps_enc_scene_visible():
         return state
 
     widget = SimpleNamespace(
-        _enc_chart_layer=True, _weather=item(), _barbs=item(), _fill=item()
+        _enc_chart_layer=True,
+        _weather=item(),
+        _barbs=item(),
+        _fill=item(),
+        _native_weather_fields=False,
+        _cancel_image_fill=lambda: None,
+        _wind_gradient_enabled=True,
+        _image_fill_matches_requested=lambda: True,
     )
     method = _viewport_widget_class()._set_weather_visible
     method(widget, False)
@@ -58,7 +65,13 @@ def test_weather_miss_keeps_enc_scene_visible():
 def test_default_viewport_still_hides_weather_scene_on_miss():
     scene = SimpleNamespace(visible=True)
     scene.setVisible = lambda visible: setattr(scene, "visible", visible)
-    widget = SimpleNamespace(_enc_chart_layer=False, _weather=scene)
+    widget = SimpleNamespace(
+        _enc_chart_layer=False,
+        _weather=scene,
+        _fill=None,
+        _native_weather_fields=False,
+        _cancel_image_fill=lambda: None,
+    )
     _viewport_widget_class()._set_weather_visible(widget, False)
     assert not scene.visible
 
@@ -443,6 +456,8 @@ def test_world_chart_scene_stays_visible_when_weather_is_unavailable():
     barbs.setVisible = lambda visible: setattr(barbs, "visible", visible)
     widget = SimpleNamespace(
         _chart_layer=True,
+        _native_weather_fields=False,
+        _cancel_image_fill=lambda: None,
         _weather=scene,
         _barbs=barbs,
         _fill=None,
