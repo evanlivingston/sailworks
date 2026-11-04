@@ -538,7 +538,7 @@ def test_stale_accepted_request_is_deleted_and_resubmitted(tmp_path):
     from sailworks.core.tranchestore import TrancheStore
 
     store = TrancheStore(tmp_path)
-    created = datetime.now(timezone.utc) - timedelta(hours=2)
+    created = datetime.now(timezone.utc) - timedelta(hours=8)
 
     class Stale:
         request_id = "rid-stale"

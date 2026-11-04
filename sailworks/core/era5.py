@@ -34,10 +34,11 @@ LATENCY = timedelta(days=5)
 # this select exactly the same cells. Matching them keeps a request from being
 # resubmitted just because the map region was rounded differently.
 AREA_TOLERANCE = 0.01
-# CDS leaves a request in "accepted" while it waits in the dataset queue. A
-# request that has never been touched since it was queued for this long is
-# stuck (normally it starts within a minute), so it is dropped and resubmitted.
-STALE_ACCEPTED = timedelta(minutes=20)
+# CDS leaves a request in "accepted" while it waits in the dataset queue, and
+# that queue can run for hours (thousands of requests are often waiting). Only
+# a request that has sat untouched for this long is treated as dead, so a real
+# queue position is never thrown away.
+STALE_ACCEPTED = timedelta(hours=6)
 QUEUE_RETRY_SECONDS = 30
 QUEUE_RETRY_ATTEMPTS = 20
 
