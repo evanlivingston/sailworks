@@ -78,6 +78,7 @@ def test_set_camera_moves_route_canvas_in_camera_pass_without_content_callback()
     widget = SimpleNamespace(
         _route_overlay=item,
         _camera=initial_camera,
+        _place_world=lambda camera: None,
         _route_pan_window=None,
         _route_content_key=None,
         _chart=chart_item,
@@ -387,13 +388,14 @@ def test_padded_basemap_targets_keep_current_camera_placement_without_shared_par
             setVisible=lambda visible: None,
         )
         widget = SimpleNamespace(
+            _camera=None,
             **{
                 item_name: item,
                 provider_name: SimpleNamespace(
                     publish=lambda key, image: "image://retained/1"
                 ),
                 key_name: None,
-            }
+            },
         )
         widget._place_retained_image = MethodType(
             viewport_class._place_retained_image, widget

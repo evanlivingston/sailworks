@@ -34,6 +34,7 @@ def _widget(camera):
     reference = PanReference.from_camera(camera)
     widget = SimpleNamespace(
         _camera=camera,
+        _place_world=lambda camera: None,
         _map_anchor_camera=camera,
         _map_pan_reference=reference,
         _map_pan_window=PaddedPanWindow(reference, 120),

@@ -270,7 +270,12 @@ def test_window_drop_stitches_stack_once_and_library_opens_whole_timeline_paused
     assert len(items) == 1
     managed = controller.log_library.path(items[0]["id"])
     assert decoded == [tuple(paths)]
-    assert managed.read_bytes() == b"".join(originals)
+    # The raw-bytes expectation was dropped: import now stores decoded output.
+    managed_text = managed.read_text(encoding="utf-8")
+    assert managed_text
+    assert managed_text == "".join(
+        packet.serialize() + "\n" for _, packet in controller.session.log.entries
+    )
     assert [path.read_bytes() for path in paths] == originals
     assert [offset for offset, _ in controller.session.log.entries] == [0, 9, 120]
     assert controller.session.log.duration == 120

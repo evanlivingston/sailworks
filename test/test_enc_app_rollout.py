@@ -1344,7 +1344,7 @@ def test_map_host_publishes_existing_routes_to_the_viewport_overlay_layer():
         dashboard=SimpleNamespace(overlay_data=lambda: []),
         time_control=SimpleNamespace(time=datetime.now(timezone.utc)),
         ais_visible=False,
-        isochrone_frame=SimpleNamespace(isochrones=()),
+        isochrone_frame=SimpleNamespace(isochrones=(), path=(), exclusions=()),
     )
 
     overlay = ViewportMap.viewport_route_overlay(host)
@@ -1364,7 +1364,7 @@ def test_map_host_publishes_existing_routes_to_the_viewport_overlay_layer():
         "race_tracks": [],
         "routes": [],
         "ais_targets": [],
-        "isochrones": [],
+        "isochrones": {"frontiers": [], "path": [], "exclusions": []},
         "dashboard": [],
         "caption": "",
         "dashboard_visible": True,
@@ -1413,7 +1413,7 @@ def test_log_boat_heading_falls_back_to_course_between_track_fixes():
         dashboard=SimpleNamespace(overlay_data=lambda: []),
         time_control=SimpleNamespace(time=datetime.now(timezone.utc)),
         ais_visible=False,
-        isochrone_frame=SimpleNamespace(isochrones=()),
+        isochrone_frame=SimpleNamespace(isochrones=(), path=(), exclusions=()),
     )
 
     overlay = ViewportMap.viewport_route_overlay(host)
