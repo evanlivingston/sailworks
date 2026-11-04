@@ -91,6 +91,10 @@ class Era5DownloadTab(QWidget):
         self.cancel_button.clicked.connect(self.cancel)
         self.retry_button.clicked.connect(self.retry)
         self.show_button = QPushButton("Show on map")
+        self.show_button.setToolTip(
+            "Publish the downloaded ERA5 chunks as the display forecast and "
+            "jump the clock to their first hour"
+        )
         self.show_button.clicked.connect(self._publish_history_display)
         self.nbs_button = QPushButton("Satellite winds (NBS)")
         self.nbs_button.setToolTip(
@@ -208,6 +212,32 @@ class Era5DownloadTab(QWidget):
         except Exception as exc:
             self.status.setText(f"Could not capture visible region: {exc}")
 
+    def _area(self):
+        return (
+            self.north.value(),
+            self.west.value(),
+            self.south.value(),
+            self.east.value(),
+        )
+
+    def _valid_area(self):
+        north, west, south, east = self._area()
+        return -90 <= south < north <= 90 and -180 <= west < east <= 180
+
+    def _ensure_area(self):
+        """Fill an unset region from the map before validating a download."""
+        if self._valid_area():
+            return True
+        if self.capture_region is not None:
+            self.use_visible_region()
+            if self._valid_area():
+                return True
+        self.status.setText(
+            "Set the download region first: click 'Use visible map region' or "
+            "type north/west/south/east bounds."
+        )
+        return False
+
     def apply_race_request(self, region, start, end, *, auto_submit=True):
         """Use the selected race's bounds and UTC window, hiding manual inputs."""
         if region is not None:
@@ -267,6 +297,8 @@ class Era5DownloadTab(QWidget):
     def submit(self):
         if self.job is not None and self.job.is_alive():
             return
+        if not self._ensure_area():
+            return
         try:
             self.plan = self._make_plan()
             self.service.errors.pop(
@@ -303,6 +335,8 @@ class Era5DownloadTab(QWidget):
             self.status.setText("Wait for the ERA5 request to finish first.")
             return
         if self.nbs_job is not None and self.nbs_job.is_alive():
+            return
+        if not self._ensure_area():
             return
         start, end = self.start.date(), self.end.date()
         try:
@@ -470,7 +504,15 @@ class Era5DownloadTab(QWidget):
             entries = []
         analysis = getattr(self.controller, "analysis", None)
         state = getattr(analysis, "state", None)
-        if state is None or not entries:
+        if state is None:
+            self.history_status.setText(
+                "Historical data is not available in this workspace."
+            )
+            return False
+        if not entries:
+            self.history_status.setText(
+                "No downloaded ERA5 history to show yet; use Start download first."
+            )
             return False
         try:
             tranche = publish_history_display(state, entries)

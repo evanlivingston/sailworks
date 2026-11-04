@@ -80,6 +80,38 @@ def test_poll_refreshes_queue_rows_while_download_runs(tmp_path):
     assert label.openExternalLinks()
 
 
+def test_unset_region_is_filled_from_the_visible_map(tmp_path):
+    app()
+    from sailworks.core.tranchestore import TrancheStore
+
+    store = TrancheStore(tmp_path)
+    controller = SimpleNamespace(
+        analysis=SimpleNamespace(state=SimpleNamespace(store=store))
+    )
+    tab = Era5DownloadTab(
+        controller, capture_region=lambda: (49.54, -125.97, 45.2, -121.62)
+    )
+
+    assert not tab._valid_area()
+    assert tab._ensure_area()
+    assert tab._area() == (49.54, -125.97, 45.2, -121.62)
+    assert "Using visible bounds" in tab.status.text()
+
+
+def test_unset_region_without_capture_explains_what_to_do(tmp_path):
+    app()
+    from sailworks.core.tranchestore import TrancheStore
+
+    store = TrancheStore(tmp_path)
+    controller = SimpleNamespace(
+        analysis=SimpleNamespace(state=SimpleNamespace(store=store))
+    )
+    tab = Era5DownloadTab(controller, capture_region=None)
+
+    assert not tab._ensure_area()
+    assert "Use visible map region" in tab.status.text()
+
+
 def test_sample_selected_samples_explicit_hours_without_forecast_activation(
     tmp_path, monkeypatch
 ):
