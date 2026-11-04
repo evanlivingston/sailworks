@@ -1734,35 +1734,35 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     self._base_provider = chart_image_provider("base")
                     self.engine().addImageProvider("base", self._base_provider)
                     self._base = self._weather.findChild(QObject, "baseLayer")
-                    self._world_provider = chart_image_provider("world")
-                    self.engine().addImageProvider("world", self._world_provider)
-                    self._world = self._weather.findChild(QObject, "worldLayer")
-                    self.worldRendered.connect(
-                        self._world_rendered, Qt.ConnectionType.QueuedConnection
-                    )
-                    factor = max(1, round(self.devicePixelRatio()))
+                # The underlay belongs to every mode: the composed chart layer
+                # covers the whole camera, so the world has to sit beneath it.
+                self._world_provider = chart_image_provider("world")
+                self.engine().addImageProvider("world", self._world_provider)
+                self._world = self._weather.findChild(QObject, "worldLayer")
+                self.worldRendered.connect(
+                    self._world_rendered, Qt.ConnectionType.QueuedConnection
+                )
+                world_factor = max(1, round(self.devicePixelRatio()))
 
-                    def render_world():
-                        started = time.perf_counter()
+                def render_world():
+                    started = time.perf_counter()
+                    try:
+                        image = _render_world(
+                            chart_data_dir, self._chart_palette, world_factor
+                        )
+                        logger.info(
+                            "World underlay rendered in %.3f s",
+                            time.perf_counter() - started,
+                        )
+                        self.worldRendered.emit(image, "")
+                    except Exception as exc:
+                        logger.warning("World underlay unavailable: %s", exc)
                         try:
-                            image = _render_world(
-                                chart_data_dir, self._chart_palette, factor
-                            )
-                            logger.info(
-                                "World underlay rendered in %.3f s",
-                                time.perf_counter() - started,
-                            )
-                            self.worldRendered.emit(image, "")
-                        except Exception as exc:
-                            logger.warning("World underlay unavailable: %s", exc)
-                            try:
-                                self.worldRendered.emit(None, str(exc))
-                            except RuntimeError:
-                                pass
+                            self.worldRendered.emit(None, str(exc))
+                        except RuntimeError:
+                            pass
 
-                    Thread(
-                        target=render_world, name="world-underlay", daemon=True
-                    ).start()
+                Thread(target=render_world, name="world-underlay", daemon=True).start()
                 if self._chart_layer:
                     self._environment_provider = chart_image_provider("environment")
                     self.engine().addImageProvider(
