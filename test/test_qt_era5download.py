@@ -141,6 +141,47 @@ def test_history_model_list_dispatches_to_checked_models(tmp_path):
     assert calls == [("nbs", None), ("era5", ("wind", "pressure"))]
 
 
+def test_failed_download_completion_consumes_job_error(tmp_path, monkeypatch):
+    app()
+    from sailworks.core.era5 import job_key
+    from sailworks.core.tranchestore import TrancheStore
+
+    store = TrancheStore(tmp_path)
+    controller = SimpleNamespace(
+        analysis=SimpleNamespace(state=SimpleNamespace(store=store))
+    )
+    tab = Era5DownloadTab(
+        controller, capture_region=lambda: (49.5, -126.0, 45.2, -121.6)
+    )
+    tab.model_checks["NBS"].setChecked(False)
+    tab._range = (
+        datetime(2026, 5, 14, tzinfo=timezone.utc),
+        datetime(2026, 5, 15, tzinfo=timezone.utc),
+    )
+
+    def fail_download(*args, **kwargs):
+        raise RuntimeError("CDS download failed")
+
+    monkeypatch.setattr(tab.service, "_run", fail_download)
+    tab.start_download()
+    assert tab.job is not None
+    tab.job.join(timeout=5)
+    assert not tab.job.is_alive()
+    key = job_key(tab.plan)
+    error = tab.service.error_for(key)
+    assert "ERA5 download failed (RuntimeError)" in error
+
+    tab.poll()
+    assert tab.status.text() == error
+    assert "request complete" not in tab.status.text()
+    assert tab.service.error_for(key) is None
+    assert tab.job is None
+
+    tab.status.setText("After completion")
+    tab.poll()
+    assert tab.status.text() == "After completion"
+
+
 def test_history_requires_at_least_one_model_and_wind(tmp_path):
     app()
     from sailworks.core.tranchestore import TrancheStore
