@@ -183,7 +183,7 @@ class RoutingController(QObject):
         self.message = (
             "Calculating…"
             if self.scenario_count == 1
-            else f"Scenario {index+1}/{self.scenario_count}: calculating…"
+            else f"Scenario {index + 1}/{self.scenario_count}: calculating…"
         )
         self.preview_changed.emit(())
         self.isochrones_changed.emit(())
@@ -242,7 +242,7 @@ class RoutingController(QObject):
             return
         self.percent = percent
         prefix = (
-            f"Scenario {self.scenario_index+1}/{self.scenario_count} · "
+            f"Scenario {self.scenario_index + 1}/{self.scenario_count} · "
             if self.scenario_count > 1
             else ""
         )

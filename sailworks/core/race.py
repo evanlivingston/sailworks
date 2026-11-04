@@ -153,6 +153,7 @@ class _TrackedPositions(list):
             result = method(self, *args, **kwargs)
             self._notify(old, self)
             return result
+
         return call
 
     def append(self, value):
@@ -204,7 +205,8 @@ class RaceBoat:
         for position in removed:
             if id(position) not in added_ids:
                 position._boats[:] = [
-                    ref for ref in position._boats
+                    ref
+                    for ref in position._boats
                     if ref() is not None and ref() is not self
                 ]
         for position in added:
@@ -227,7 +229,9 @@ class RaceBoat:
 
     def __post_init__(self):
         # Keep the caller's list (and its original report order) untouched.
-        self.positions = _TrackedPositions(self.positions or [], self._positions_changed)
+        self.positions = _TrackedPositions(
+            self.positions or [], self._positions_changed
+        )
         self._position_sorted_times = []
         self._position_sorted_indices = []
         self._indexed_positions = self.positions
@@ -261,8 +265,7 @@ class RaceBoat:
         positions = self.positions
         if (
             self._position_index_dirty
-            or
-            self._indexed_positions is not positions
+            or self._indexed_positions is not positions
             or len(positions) != self._indexed_length
         ):
             self._rebuild_position_index()

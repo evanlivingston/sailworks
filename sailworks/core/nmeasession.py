@@ -458,7 +458,11 @@ def slice_log(log, start, end):
         samples=history.snapshot()[1],
         points=points,
         point_offsets=point_offsets,
-        source_tracks=MappingProxyType(tracks) if isinstance(log.source_tracks, MappingProxyType) else tracks,
+        source_tracks=(
+            MappingProxyType(tracks)
+            if isinstance(log.source_tracks, MappingProxyType)
+            else tracks
+        ),
         numeric_series=tuple(numeric_series),
         timestamp_origin=origin,
     )
