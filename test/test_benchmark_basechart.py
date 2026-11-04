@@ -3,6 +3,7 @@
 import subprocess
 import sys
 import importlib.util
+import math
 from pathlib import Path
 
 import pytest
@@ -63,3 +64,46 @@ def test_viewports_per_iteration(monkeypatch, mode):
         assert viewports[1]._center_lon < 0
     else:
         assert len({id(viewport) for viewport in viewports}) == 1
+
+
+def test_tile_bounds_and_shift():
+    view = benchmark_basechart.Viewport(47.6, -122.4, 8)
+    tile = benchmark_basechart.selected_tile(view, 256)
+    shifted = benchmark_basechart.selected_tile(view, 256, 1)
+    x = math.floor(view._lon_to_x(view._center_lon) / 256) * 256
+    y = math.floor(view._lat_to_y(view._center_lat) / 256) * 256
+    top_left, bottom_right = tile.get_bbox()
+    lat, lon = top_left.get_degrees()
+    bottom, right = bottom_right.get_degrees()
+    assert tile._lon_to_x(lon) == pytest.approx(x)
+    assert tile._lat_to_y(lat) == pytest.approx(y)
+    assert tile._lon_to_x(right) == pytest.approx(x + 256)
+    assert tile._lat_to_y(bottom) == pytest.approx(y + 256)
+    assert shifted._lon_to_x(shifted._center_lon) == pytest.approx(x + 384)
+
+
+def test_grid_layout_non_multiple():
+    cold = benchmark_basechart.grid_layout(912, 812, 256)
+    warm = benchmark_basechart.grid_layout(912, 812, 256, 50)
+    assert len(cold) == 16
+    assert len(warm) == 20
+    assert cold[-1] == (3, 3, 656, 768)
+    assert warm[-1] == (4, 3, 862, 768)
+    exposed = benchmark_basechart.grid_layout(1000, 812, 256, 50)
+    assert len(exposed) == 20
+    assert exposed[-1] == (4, 3, 950, 768)
+
+
+@pytest.mark.parametrize("mode", ["--tile", "--grid"])
+def test_synthetic_new_modes(mode):
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--synthetic", "-n", "1", mode],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert (
+        "mode=tile" in result.stdout
+        if mode == "--tile"
+        else "mode=grid-warm-pan" in result.stdout
+    )
