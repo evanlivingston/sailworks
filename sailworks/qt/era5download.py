@@ -331,9 +331,6 @@ class Era5DownloadTab(QWidget):
     def submit_nbs(self):
         from sailworks.core import nbs
 
-        if self.job is not None and self.job.is_alive():
-            self.status.setText("Wait for the ERA5 request to finish first.")
-            return
         if self.nbs_job is not None and self.nbs_job.is_alive():
             return
         if not self._ensure_area():
