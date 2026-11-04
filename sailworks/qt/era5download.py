@@ -159,7 +159,7 @@ class Era5DownloadTab(QWidget):
         self._resume_was_active = False
         resume = getattr(self.service, "resume_pending", None)
         if callable(resume):
-            resume()
+            self._resume_was_active = bool(resume())
         self.cancel_button.setEnabled(False)
         self.retry_button.setEnabled(False)
         self._models_changed()
@@ -470,6 +470,15 @@ class Era5DownloadTab(QWidget):
             elif getattr(self, "_resume_was_active", False):
                 self._resume_was_active = False
                 self.progress.hide()
+                completed_keys = getattr(
+                    self.service, "completed_resume_keys", lambda: []
+                )()
+                errors = [self.service.clear_error(key) for key in completed_keys]
+                errors = [error for error in errors if error]
+                if errors:
+                    self.status.setText("ERA5 resume failed: " + "; ".join(errors))
+                    self.refresh_catalog()
+                    return
                 self.status.setText("ERA5 history updated.")
                 self.refresh_catalog()
                 self._publish_history_display()

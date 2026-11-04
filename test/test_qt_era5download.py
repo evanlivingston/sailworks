@@ -182,6 +182,33 @@ def test_failed_download_completion_consumes_job_error(tmp_path, monkeypatch):
     assert tab.status.text() == "After completion"
 
 
+def test_failed_resume_completion_consumes_job_error(tmp_path):
+    app()
+    from sailworks.core.era5 import Era5DownloadService, job_key, plan_request
+    from PySide6.QtWidgets import QLabel, QProgressBar
+
+    tab = make_tab(tmp_path)
+    tab.service = Era5DownloadService(SimpleNamespace(root=tmp_path))
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    request = plan_request(start, start, (50, -10, 40, 5))
+    key = job_key(request)
+    tab.service.errors[key] = "resume failed"
+    tab.service._completed_resumes.append(key)
+    tab.job = None
+    tab.progress = QProgressBar()
+    tab.status = QLabel()
+    tab._poll_count = 0
+    tab._resume_was_active = True
+    tab.refresh_catalog = lambda: None
+    tab._publish_history_display = lambda: (_ for _ in ()).throw(AssertionError())
+    tab.poll()
+    assert "resume failed" in tab.status.text()
+    assert tab.service.error_for(key) is None
+    tab.status.setText("After completion")
+    tab.poll()
+    assert tab.status.text() == "After completion"
+
+
 def test_history_requires_at_least_one_model_and_wind(tmp_path):
     app()
     from sailworks.core.tranchestore import TrancheStore

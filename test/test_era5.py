@@ -54,6 +54,98 @@ def test_pending_removal_uses_request_id(tmp_path):
     assert [entry["request_id"] for entry in service._load_pending()] == ["replacement"]
 
 
+@pytest.mark.parametrize("fully_covered", [False, True])
+def test_catalog_subset_does_not_forget_pending_superset(tmp_path, fully_covered):
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    area = (50, -10, 40, 5)
+    wind = plan_request(start, start, area, fields=("wind",))
+    both = plan_request(start, start, area, fields=("wind", "pressure"))
+    service = Era5DownloadService(SimpleNamespace(root=tmp_path))
+    service._remember_pending(both, "pending")
+    (tmp_path / "existing.grib").write_bytes(b"existing")
+    (tmp_path / "era5-history.json").write_text(
+        json.dumps(
+            [
+                {
+                    "start": start.isoformat(),
+                    "end": start.isoformat(),
+                    "area": area,
+                    "artifact": "existing.grib",
+                    "variables": (both if fully_covered else wind).request["variable"],
+                }
+            ]
+        )
+    )
+    service._run(wind, threading.Event(), False)
+    assert bool(service._load_pending()) is not fully_covered
+
+
+def test_job_key_canonicalizes_area_noise(tmp_path):
+    from sailworks.core.era5 import _areas_close, job_key
+
+    first = plan("2025-01-01T00:00", "2025-01-01T00:00")
+    second = plan("2025-01-01T00:00", "2025-01-01T00:00", (50.00001, -10, 40, 5))
+    assert _areas_close(first.area, second.area)
+    assert job_key(first) == job_key(second)
+    service = Era5DownloadService(SimpleNamespace(root=tmp_path))
+    service._remember_pending(second, "one")
+    assert service._load_pending()[0]["area"] == list(first.area)
+
+
+def test_resume_threads_pruned_without_polling(tmp_path):
+    service = Era5DownloadService(SimpleNamespace(root=tmp_path))
+    first = plan("2025-01-01T00:00", "2025-01-01T00:00")
+    second = plan("2025-01-01T01:00", "2025-01-01T01:00")
+    service._remember_pending(first, "first")
+    service._remember_pending(second, "second")
+    entered, release = threading.Event(), threading.Event()
+
+    def client():
+        entered.set()
+        assert release.wait(5)
+        return SimpleNamespace(client=None)
+
+    service.client_factory = client
+    assert service.resume_pending() == 2
+    assert entered.wait(5)
+    with service._lock:
+        threads = list(service._resume_threads)
+    assert len(threads) == 2
+    release.set()
+    for thread in threads:
+        thread.join(5)
+        assert not thread.is_alive()
+    assert service._resume_threads == []
+
+
+def test_history_vector_components_require_matching_area(tmp_path):
+    from sailworks.core.era5 import FIELD_VARIABLES, publish_history_display
+    from sailworks.core.tranchestore import TrancheStore
+
+    (tmp_path / "x.grib").write_bytes(b"x")
+    base = {
+        "artifact": "x.grib",
+        "start": "2025-01-01T00:00:00+00:00",
+        "end": "2025-01-01T01:00:00+00:00",
+        "area": (50, -10, 40, 5),
+    }
+    u, v = FIELD_VARIABLES["wind"]
+    pressure = FIELD_VARIABLES["pressure"][0]
+    entries = [
+        {**base, "variables": [u, pressure]},
+        {**base, "variables": [v], "area": (30, -10, 20, 5)},
+    ]
+    state = SimpleNamespace(store=TrancheStore(tmp_path))
+    assert publish_history_display(state, entries).entries[0].fields == ("pressure",)
+    entries[1]["area"] = (50.001, -10, 40, 5)
+    (tmp_path / "y.grib").write_bytes(b"y")
+    entries[1]["artifact"] = "y.grib"
+    assert publish_history_display(state, entries).entries[0].fields == (
+        "wind",
+        "pressure",
+    )
+
+
 def test_job_retention_preserves_running_and_isolates_progress(tmp_path):
     from datetime import timedelta
     from sailworks.core.era5 import job_key

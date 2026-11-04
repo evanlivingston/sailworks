@@ -60,6 +60,10 @@ def _areas_close(left, right):
     )
 
 
+def _canonical_area(area):
+    return tuple(round(float(value), 2) for value in area)
+
+
 def _is_queue_limit_error(exc):
     text = str(exc).lower()
     return "maximum number queued" in text or "queued requests for this dataset" in text
@@ -78,7 +82,7 @@ def job_key(plan):
     return (
         plan.start,
         plan.end,
-        plan.area,
+        _canonical_area(plan.area),
         DATASET,
         tuple(sorted(plan.request.get("variable") or VARIABLES)),
     )
@@ -335,6 +339,7 @@ class Era5DownloadService:
         self.progress = {}
         self._resume_threads = []
         self._resuming = set()
+        self._completed_resumes = []
 
     _job_key = staticmethod(job_key)
 
@@ -449,7 +454,15 @@ class Era5DownloadService:
                     raise Era5Error("ERA5 download canceled")
                 if self._catalog_covers(entries, piece):
                     pending = self._pending_entry(self._load_pending(), piece)
-                    self._forget_pending(pending.get("request_id") if pending else None)
+                    if pending:
+                        pending_piece = Era5Request(
+                            datetime.fromisoformat(pending["start"]),
+                            datetime.fromisoformat(pending["end"]),
+                            tuple(pending["area"]),
+                            {"variable": pending.get("variables")},
+                        )
+                        if self._catalog_covers(entries, pending_piece):
+                            self._forget_pending(pending.get("request_id"))
                     done += 1
                     self._set_progress(
                         key,
@@ -554,14 +567,6 @@ class Era5DownloadService:
     def _pending_path(self):
         return Path(self.store.root) / "era5-pending.json"
 
-    @staticmethod
-    def _request_key(start, end, area):
-        return (
-            start.astimezone(timezone.utc).isoformat(),
-            end.astimezone(timezone.utc).isoformat(),
-            tuple(round(float(value), 2) for value in area),
-        )
-
     def _load_pending(self):
         try:
             data = json.loads(self._pending_path().read_text())
@@ -614,7 +619,7 @@ class Era5DownloadService:
                     "dataset": DATASET,
                     "start": piece.start.isoformat(),
                     "end": piece.end.isoformat(),
-                    "area": list(piece.area),
+                    "area": list(_canonical_area(piece.area)),
                     "variables": list(piece.request.get("variable") or VARIABLES),
                     "request_id": str(request_id),
                     "created": datetime.now(timezone.utc).isoformat(),
@@ -685,10 +690,14 @@ class Era5DownloadService:
         return len(self.pending_requests())
 
     def resume_active(self):
-        self._resume_threads = [
-            thread for thread in self._resume_threads if thread.is_alive()
-        ]
-        return len(self._resume_threads)
+        with self._lock:
+            return len(self._resume_threads)
+
+    def completed_resume_keys(self):
+        with self._lock:
+            keys = self._completed_resumes
+            self._completed_resumes = []
+            return keys
 
     def resume_pending(self):
         """Resume persisted CDS requests that outlived a previous app run."""
@@ -718,11 +727,12 @@ class Era5DownloadService:
                 if key in self._resuming:
                     continue
                 self._resuming.add(key)
-            thread = threading.Thread(
-                target=self._resume_entry, args=(entry, key), daemon=True
-            )
-            self._resume_threads.append(thread)
-            thread.start()
+                self.errors.pop(key, None)
+                thread = threading.Thread(
+                    target=self._resume_entry, args=(entry, key), daemon=True
+                )
+                self._resume_threads.append(thread)
+                thread.start()
             started += 1
         return started
 
@@ -772,6 +782,8 @@ class Era5DownloadService:
         finally:
             with self._lock:
                 self._resuming.discard(key)
+                self._resume_threads.remove(threading.current_thread())
+                self._completed_resumes.append(key)
 
     def _publish_chunks(self, root, catalog, staged_chunks, cancel):
         registered = []
@@ -1030,13 +1042,23 @@ def publish_history_display(state, entries, *, model_id="ERA5"):
         cursor = start.astimezone(timezone.utc)
         finish = end.astimezone(timezone.utc)
         while cursor <= finish:
-            variables_by_time.setdefault(cursor, set()).update(variables)
+            variables_by_time.setdefault(cursor, []).append((entry["area"], variables))
             cursor += timedelta(hours=1)
     field_time_sets = {
         field: {
             stamp
-            for stamp, variables in variables_by_time.items()
-            if set(names) <= variables
+            for stamp, groups in variables_by_time.items()
+            if any(
+                set(names)
+                <= set().union(
+                    *(
+                        variables
+                        for other_area, variables in groups
+                        if _areas_close(area, other_area)
+                    )
+                )
+                for area, _ in groups
+            )
         }
         for field, names in FIELD_VARIABLES.items()
     }
