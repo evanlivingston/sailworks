@@ -7,7 +7,9 @@ import pytest
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 
+from sailworks.core import storage
 from sailworks.core.forecastcapabilities import display_model_name
+from sailworks.core.settings import SettingsManager
 from sailworks.qt.analysiscontroller import AnalysisController
 from sailworks.qt.analysisdisplay import BoundDisplayForecastSelection
 from sailworks.qt.weatherpanel import ForecastModelSelector, WeatherPanel
@@ -265,9 +267,10 @@ class MapDouble:
         pass
 
 
-def make_panel(controller, selection, stored=""):
-    settings = SettingsDouble(PANEL_SETTINGS)
-    settings["gribWaveSource"] = stored
+def make_panel(controller, selection, stored="", settings=None):
+    if settings is None:
+        settings = SettingsDouble(PANEL_SETTINGS)
+        settings["gribWaveSource"] = stored
     controller.settings = settings
     controller.display_forecast = selection
     controller.data = SimpleNamespace(redraw=lambda: None)
@@ -359,6 +362,94 @@ def test_wave_selector_sits_in_the_waves_section_with_a_short_label(
     assert panel.wave_forecast.itemText(1) == expected
     assert "member deterministic" not in panel.wave_forecast.itemText(1)
     assert "run " not in panel.wave_forecast.itemText(1)
+    panel.dispose()
+    selection.close()
+    controller.close()
+
+
+def test_completed_scan_without_wave_choices_clears_the_stored_source(
+    tmp_path, monkeypatch
+):
+    application, controller, selection = start(
+        tmp_path, monkeypatch, make_snapshot(tmp_path)
+    )
+    key = "tranche-a:gone-forecast:stale"
+    panel, settings = make_panel(controller, selection, key)
+
+    # The scan is complete and offers no wave source: the stored preference
+    # can never be honoured, so it must not linger.
+    assert panel.wave_forecast.count() == 1
+    assert settings["gribWaveSource"] == ""
+
+    # A rescan publishes an empty choice list while it runs; that transient
+    # state must not erase a valid preference.
+    settings["gribWaveSource"] = key
+    selection.loading = True
+    selection._scan_pending = True
+    panel._refresh_wave()
+    assert settings["gribWaveSource"] == key
+    selection.loading = False
+    selection._scan_pending = False
+    panel._refresh_wave()
+    assert settings["gribWaveSource"] == ""
+    panel.dispose()
+    selection.close()
+    controller.close()
+
+
+def test_stored_wave_source_survives_a_real_settings_reload(tmp_path, monkeypatch):
+    settings_dir = tmp_path / "config"
+    settings_dir.mkdir()
+    monkeypatch.setattr(storage, "DATA_DIR", str(settings_dir))
+
+    application, controller, selection = start(
+        tmp_path, monkeypatch, snapshot_with(tmp_path, wave_entry())
+    )
+    settings = SettingsManager()
+    panel, _settings = make_panel(controller, selection, settings=settings)
+    key = selection.wave.choices[0].key
+    panel.wave_forecast.setCurrentIndex(1)
+    assert settings["gribWaveSource"] == key
+    assert (settings_dir / "settings.json").is_file()
+    panel.dispose()
+    selection.close()
+
+    # A restart reads the same directory: fresh settings, selection and panel.
+    reloaded = SettingsManager()
+    assert reloaded["gribWaveSource"] == key
+    restarted = BoundDisplayForecastSelection(controller)
+    panel, _settings = make_panel(controller, restarted, settings=reloaded)
+    wait_for(
+        lambda: restarted.wave.selected_key == key,
+        application,
+        detail=lambda: f"error={restarted.error!r}; status={restarted.status!r}",
+    )
+    assert panel.wave_forecast.currentData() == key
+    assert restarted.wave.sources()[0].model_name == "GFSWAVE"
+    assert reloaded["gribWaveSource"] == key
+    panel.dispose()
+    restarted.close()
+    controller.close()
+
+
+def test_absent_wave_source_is_cleared_from_the_settings_file(tmp_path, monkeypatch):
+    settings_dir = tmp_path / "config"
+    settings_dir.mkdir()
+    monkeypatch.setattr(storage, "DATA_DIR", str(settings_dir))
+
+    application, controller, selection = start(
+        tmp_path, monkeypatch, snapshot_with(tmp_path, wave_entry())
+    )
+    settings = SettingsManager()
+    settings["gribWaveSource"] = "tranche-gone:gfswave:stale"
+    panel, _settings = make_panel(controller, selection, settings=settings)
+
+    assert panel.wave_forecast.currentData() == ""
+    assert selection.wave.selected_key == ""
+    assert selection.wave.sources()[0].model_name == "GFS"
+    assert settings["gribWaveSource"] == ""
+    # The clear reached the file, not just the in-memory mapping.
+    assert SettingsManager()["gribWaveSource"] == ""
     panel.dispose()
     selection.close()
     controller.close()

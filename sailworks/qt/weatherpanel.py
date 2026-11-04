@@ -385,6 +385,12 @@ class WeatherPanel(QWidget):
                 else:
                     # The stored source is gone: fall back and forget it.
                     self._store_wave_source("")
+        if not choices and not loading and getattr(wave, "scan_complete", False):
+            # A completed scan that yields no wave choice means the stored
+            # preference no longer exists. A rescan publishes an empty list
+            # before its choices arrive, so it must not erase a valid choice.
+            if self._stored_wave_source():
+                self._store_wave_source("")
         self.wave_forecast.blockSignals(True)
         try:
             self.wave_forecast.clear()

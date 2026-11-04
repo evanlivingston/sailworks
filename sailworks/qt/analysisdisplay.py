@@ -89,6 +89,16 @@ class DisplaySourceSelection(QObject):
     def selected_key(self):
         return self._selected_key
 
+    @property
+    def loading(self):
+        """True while the display scan is inspecting the active tranche."""
+        return bool(getattr(self.selection, "loading", False))
+
+    @property
+    def scan_complete(self):
+        """True once a scan finished, so an empty list means "no source"."""
+        return bool(getattr(self.selection, "scan_complete", False))
+
     def sources(self):
         """The chosen wave source, otherwise the active routing source."""
         selected = self._selected
@@ -188,6 +198,15 @@ class BoundDisplayForecastSelection(QObject):
     def display_sources(self):
         """Sources the weather presenter shows: a chosen wave source, else routing."""
         return self.wave.sources()
+
+    @property
+    def scan_complete(self):
+        """True when the active tranche was inspected and no scan is pending.
+
+        An empty choice list means different things before and after this
+        flips: mid-scan it is provisional, afterwards it is final.
+        """
+        return self._binding is not None and not self.loading and not self._scan_pending
 
     def _binding_for(self, resolved):
         if resolved is None:
