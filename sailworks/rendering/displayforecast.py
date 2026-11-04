@@ -9,6 +9,20 @@ def identity_key(path, reference, model):
     return json.dumps((str(path), reference, model), separators=(",", ":"))
 
 
+def display_selection(source):
+    """Run selection for a displayed source, or None for display-only models.
+
+    Models outside the forecast capability catalogue (for example imported
+    ERA5 history) have no model-run identity, so their GRIB messages must not
+    be filtered by one.
+    """
+    from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES
+
+    if getattr(source, "model_name", "") not in MODEL_CAPABILITIES:
+        return None
+    return getattr(source, "display_identity", None)
+
+
 def restrict_index(index, selection):
     """Filter the private index, preserving original band numbers/vector flags."""
     if selection is not None:

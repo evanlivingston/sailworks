@@ -143,7 +143,9 @@ class DisplayGrib(Grib):
             source.last_forecast,
         )
         self._arrays = OrderedDict()
-        self.display_identity = getattr(source, "display_identity", None)
+        from .displayforecast import display_selection
+
+        self.display_identity = display_selection(source)
         self._pressure_arrays = OrderedDict()
         transform = self.dataset.GetGeoTransform()
         self._lons = (
