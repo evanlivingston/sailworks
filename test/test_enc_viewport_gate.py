@@ -117,6 +117,61 @@ def test_desktop_native_gesture_end_clears_viewport_gesture_state():
     assert event.accepted
 
 
+def test_desktop_native_pinch_rejects_degenerate_scales():
+    method = _viewport_widget_class()._native_gesture_event
+    for value in (-1.0, -2.5, float("nan"), float("inf")):
+        widget = SimpleNamespace(_native_gesture_active=False, zoom_at=Mock())
+
+        class Gesture:
+            def gestureType(self):
+                return Qt.NativeGestureType.ZoomNativeGesture
+
+            def value(self):
+                return value
+
+            def position(self):
+                return QPointF(10, 20)
+
+            def accept(self):
+                self.accepted = True
+
+        event = Gesture()
+        assert method(widget, event), value
+        widget.zoom_at.assert_not_called()
+        assert not widget._native_gesture_active, value
+        assert event.accepted
+
+
+def test_desktop_cancel_motion_stops_pending_camera_motion():
+    method = _viewport_widget_class().cancel_motion
+    timers = [Mock(), Mock(), Mock(), Mock()]
+    widget = SimpleNamespace(
+        _wheel_zoom_tick=timers[0],
+        _wheel_zoom_settle=timers[1],
+        _wheel_scroll_settle=timers[2],
+        _wheel_zoom_target=(1.0, 2.0),
+        _wheel_zoom_anchor=(3.0, 4.0),
+        _wheel_zoom_last_tick=5.0,
+        _wheel_trackpad_panning=True,
+        _native_gesture_active=True,
+        _drag=(6.0, 7.0),
+        _pan_inertia_tick=timers[3],
+        _pan_inertia=(8.0, 9.0),
+        _pan_inertia_last_tick=10.0,
+    )
+    method(widget)
+    for timer in timers:
+        timer.stop.assert_called_once()
+    assert widget._wheel_zoom_target is None
+    assert widget._wheel_zoom_anchor is None
+    assert widget._wheel_zoom_last_tick is None
+    assert widget._wheel_trackpad_panning is False
+    assert widget._native_gesture_active is False
+    assert widget._drag is None
+    assert widget._pan_inertia is None
+    assert widget._pan_inertia_last_tick is None
+
+
 def test_desktop_precise_scroll_pans_the_viewport_camera():
     method = _viewport_widget_class()._handle_desktop_wheel
     widget = SimpleNamespace(

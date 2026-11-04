@@ -1310,7 +1310,7 @@ class QtPreviewChecks(unittest.TestCase):
                 library.chart_sections.tabText(i)
                 for i in range(library.chart_sections.count())
             ],
-            ["Sources & appearance", "Local files", "Downloads & base maps"],
+            ["Sources && appearance", "Local files", "Downloads && base maps"],
         )
         self.assertEqual(len(library.chart_layers_panel.checkboxes), 8)
         self.assertIsNone(self.window.findChild(QDockWidget, "chart-layers"))
@@ -1753,7 +1753,7 @@ class QtPreviewChecks(unittest.TestCase):
         release.set()
         data.task.worker_thread.join(2)
         self.drain()
-        self.assertEqual(data.remote_forecasts, [])
+        self.assertEqual(data.remote_charts, [])
 
     def test_workspace_views_and_grouped_panels_preserve_playback_and_map(self):
         from PySide6.QtGui import QPalette
@@ -2754,6 +2754,9 @@ class QtPreviewChecks(unittest.TestCase):
         status = self.window.cursor_status
         with (
             patch.object(canvas.charts, "depth_at", return_value={"area": (9.1, 18.2)}),
+            patch.object(
+                canvas.controller.display_forecast, "sources", return_value=["gfs"]
+            ),
             patch.object(canvas._wind_cursor, "request") as wind,
         ):
             canvas._hover(QPointF(100, 100))
@@ -2792,6 +2795,9 @@ class QtPreviewChecks(unittest.TestCase):
                 "depth_at",
                 return_value={"sounding": 12.4, "distance_m": 35},
             ) as lookup,
+            patch.object(
+                canvas.controller.display_forecast, "sources", return_value=["gfs"]
+            ),
             patch.object(canvas._wind_cursor, "request") as wind,
         ):
             canvas._hover(QPointF(100, 100))
@@ -2809,7 +2815,12 @@ class QtPreviewChecks(unittest.TestCase):
     def test_cursor_wind_and_gust_update_when_barbs_are_hidden(self):
         canvas = self.window.map
         canvas.set_wind_visible(False)
-        with patch.object(canvas._wind_cursor, "request") as request:
+        with (
+            patch.object(
+                canvas.controller.display_forecast, "sources", return_value=["gfs"]
+            ),
+            patch.object(canvas._wind_cursor, "request") as request,
+        ):
             canvas._hover(QPointF(100, 100))
             self.assertIn("Wind …", self.window.cursor_status.text())
             request.call_args.args[-1](((180, 10), 5.0))
@@ -2819,7 +2830,12 @@ class QtPreviewChecks(unittest.TestCase):
 
     def test_cursor_marks_missing_interpolated_wind_unavailable(self):
         canvas = self.window.map
-        with patch.object(canvas._wind_cursor, "request") as request:
+        with (
+            patch.object(
+                canvas.controller.display_forecast, "sources", return_value=["gfs"]
+            ),
+            patch.object(canvas._wind_cursor, "request") as request,
+        ):
             canvas._hover(QPointF(100, 100))
             request.call_args.args[-1]((None, None))
             self.assertIn("Wind unavailable", self.window.cursor_status.text())
@@ -2847,12 +2863,12 @@ class QtPreviewChecks(unittest.TestCase):
         with patch.object(canvas.charts, "depth_at", return_value=None) as lookup:
             canvas._hover(QPointF(100, 100))
             lookup.reset_mock()
-            canvas._zoom += 1
+            canvas._center_lat -= 1.0
             canvas._sample_depth()
             lookup.assert_not_called()
             canvas._hover(QPointF(100, 100))
             lookup.reset_mock()
-            canvas.leaveEvent(QEvent(QEvent.Type.Leave))
+            canvas._cancel_cursor()
             canvas._sample_depth()
             lookup.assert_not_called()
 
@@ -2873,7 +2889,7 @@ class QtPreviewChecks(unittest.TestCase):
                 (120, None, None),
             ):
                 lookup.return_value = result
-                canvas.mouseMoveEvent(SimpleNamespace(position=lambda: QPointF(x, 100)))
+                canvas._hover(QPointF(x, 100))
                 text = self.window.cursor_status.text()
                 self.assertIn("Lat ", text)
                 if label:
@@ -2896,12 +2912,15 @@ class QtPreviewChecks(unittest.TestCase):
         proxy = SimpleNamespace(
             time_control=self.controller.time_control,
             scheduler=self.controller.scheduler,
+            display_forecast=self.controller.display_forecast,
             core=SimpleNamespace(grib_manager=gribs, marine_manager=marine),
         )
         timeline = ForecastTimeline(proxy, self.window)
         self.addCleanup(timeline.dispose)
         self.assertFalse(timeline.slider.isEnabled())
-        self.assertIn("Load wind", timeline.caption.text())
+        self.assertIn(
+            "Choose a display forecast in Weather", timeline.caption.text()
+        )
         current = field()
         marine.fields.add(current)
         self.drain()
@@ -3216,7 +3235,7 @@ class QtPreviewChecks(unittest.TestCase):
             manager.fields, "snapshot", wraps=manager.fields.snapshot
         ) as snapshot:
             for _ in range(3):
-                self.window.map._pan_pixels(-16, 0)
+                self.window.map._center_lon -= 0.5
                 panel.refresh()
             snapshot.assert_not_called()
             from datetime import timedelta, timezone
