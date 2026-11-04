@@ -24,6 +24,7 @@ from sailworks.core.era5 import (
     plan_request,
     publish_history_display,
 )
+from sailworks.core.timecontrol import utc_to_wall
 
 
 class Era5DownloadTab(QWidget):
@@ -361,7 +362,13 @@ class Era5DownloadTab(QWidget):
         if state is None or not entries:
             return False
         try:
-            publish_history_display(state, entries)
+            tranche = publish_history_display(state, entries)
+            # Jump the clock into the freshly published coverage so the wind
+            # layer is visible without scrubbing.
+            first_valid = tranche.entries[0].run_time
+            set_time = getattr(self.controller, "time_control", None)
+            if set_time is not None:
+                set_time.set_time(utc_to_wall(first_valid))
             refresh = getattr(analysis, "refresh", None)
             if callable(refresh):
                 refresh()
