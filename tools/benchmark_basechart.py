@@ -10,6 +10,8 @@ import tempfile
 import time
 
 import cairo
+import numpy as np
+from osgeo import ogr
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -19,6 +21,7 @@ from sailworks.core.mapviewport import MercatorProjection
 from sailworks.core.storage import DATA_DIR
 from sailworks.qt.basecharts import BaseChartRenderer, BaseSource
 from sailworks.rendering.overlayrenderer import RenderJob
+from sailworks.rendering.style import Style
 
 
 class Viewport(MercatorProjection):
@@ -142,10 +145,10 @@ def synthetic(path):
             lon, lat = -125 + col * 0.45, 46 + row * 0.4
             points = [
                 [
-                    lon + 0.16 * math.cos(i * math.tau / 80),
-                    lat + 0.12 * math.sin(i * math.tau / 80),
+                    lon + 0.16 * math.cos(i * math.tau / 4),
+                    lat + 0.12 * math.sin(i * math.tau / 4),
                 ]
-                for i in range(80)
+                for i in range(4)
             ]
             points.append(points[0])
             features.append(
@@ -158,9 +161,165 @@ def synthetic(path):
     path.write_text(json.dumps({"type": "FeatureCollection", "features": features}))
 
 
+def extract(source, viewport):
+    """Load one production-selected quality, preserving feature/polygon order."""
+    scale = viewport.get_scale()
+    quality = (
+        "c"
+        if scale > 5000
+        else "l" if scale > 500 else "i" if scale > 200 else "h" if scale >= 15 else "f"
+    )
+    path = (
+        source.path
+        if source.kind == "simple"
+        else str(Path(source.path) / "GSHHS_shp" / quality / f"GSHHS_{quality}_L1.shp")
+    )
+    dataset = ogr.Open(path)
+    if dataset is None:
+        raise ValueError(f"Cannot open {path}")
+    features, bounds = [], []
+
+    def polygons(geom):
+        name = geom.GetGeometryName()
+        if name == "POLYGON":
+            rings = []
+            for i in range(geom.GetGeometryCount()):
+                points = np.asarray(
+                    geom.GetGeometryRef(i).GetPoints(), dtype=np.float64
+                )
+                if len(points):
+                    rings.append((points[:, 0].copy(), points[:, 1].copy()))
+            return [rings] if rings else []
+        if name in ("MULTIPOLYGON", "GEOMETRYCOLLECTION"):
+            return [
+                p
+                for i in range(geom.GetGeometryCount())
+                for p in polygons(geom.GetGeometryRef(i))
+            ]
+        return []
+
+    for layer in dataset:
+        for feature in layer:
+            geom = feature.GetGeometryRef()
+            if geom is not None and not geom.IsEmpty():
+                parts = polygons(geom)
+                if parts:
+                    features.append(parts)
+                    bounds.append(geom.GetEnvelope())
+    return features, np.asarray(bounds, dtype=np.float64).reshape(-1, 4), quality
+
+
+def clip_ring(points, width, height):
+    """Sutherland-Hodgman, vectorizing each half-plane pass."""
+    for axis, limit, lower in (
+        (0, 0, True),
+        (0, width, False),
+        (1, 0, True),
+        (1, height, False),
+    ):
+        if not len(points):
+            break
+        previous = np.roll(points, 1, axis=0)
+        inside = points[:, axis] >= limit if lower else points[:, axis] <= limit
+        prior_inside = np.roll(inside, 1)
+        crossing = inside != prior_inside
+        indices = np.flatnonzero(crossing)
+        intersection = previous[indices] + (
+            (limit - previous[indices, axis])
+            / (points[indices, axis] - previous[indices, axis])
+        )[:, None] * (points[indices] - previous[indices])
+        counts = crossing.astype(int) + inside.astype(int)
+        out = np.empty((counts.sum(), 2), dtype=np.float64)
+        offsets = np.cumsum(counts) - counts
+        out[offsets[indices]] = intersection
+        indices = np.flatnonzero(inside)
+        out[offsets[indices] + crossing[indices].astype(int)] = points[indices]
+        points = out
+    return points
+
+
+def numpy_render(data, viewport, factor):
+    features, bounds, _ = data
+    timing = dict(cull=0.0, project=0.0, clip=0.0, draw=0.0)
+    start = time.perf_counter()
+    top_left, bottom_right = viewport.get_bbox()
+    north, west = top_left.get_degrees()
+    south, east = bottom_right.get_degrees()
+    selected = np.flatnonzero(
+        (bounds[:, 0] <= east)
+        & (bounds[:, 1] >= west)
+        & (bounds[:, 2] <= north)
+        & (bounds[:, 3] >= south)
+    )
+    timing["cull"] += time.perf_counter() - start
+    start = time.perf_counter()
+    surface = cairo.ImageSurface(
+        cairo.FORMAT_ARGB32, viewport.width * factor, viewport.height * factor
+    )
+    surface.set_device_scale(factor, factor)
+    cr = cairo.Context(surface)
+    palette = Style.chart_palettes["dark"]
+    palette.sea.apply(cr)
+    cr.rectangle(0, 0, viewport.width, viewport.height)
+    cr.stroke_preserve()
+    cr.fill()
+    cr.set_line_join(cairo.LINE_JOIN_ROUND)
+    timing["draw"] += time.perf_counter() - start
+    clipped = ring_count = 0
+    for index in selected:
+        for polygon in features[index]:
+            paths = []
+            for lons, lats in polygon:
+                start = time.perf_counter()
+                xs, ys = viewport.convert_geographic_to_screen_batch(lats, lons)
+                points = np.column_stack((xs, ys))
+                timing["project"] += time.perf_counter() - start
+                start = time.perf_counter()
+                ring_count += 1
+                needs_clip = np.any(
+                    (xs < 0) | (xs > viewport.width) | (ys < 0) | (ys > viewport.height)
+                )
+                if needs_clip:
+                    clipped += 1
+                    points = clip_ring(points, viewport.width, viewport.height)
+                timing["clip"] += time.perf_counter() - start
+                if len(points):
+                    paths.append(points)
+            start = time.perf_counter()
+            cr.new_path()
+            for points in paths:
+                cr.move_to(*points[0])
+                for x, y in points[1:]:
+                    cr.line_to(x, y)
+                cr.close_path()
+            cr.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
+            palette.land_fill.apply(cr)
+            cr.fill_preserve()
+            palette.land_stroke.apply(cr)
+            cr.stroke()
+            timing["draw"] += time.perf_counter() - start
+    start = time.perf_counter()
+    surface.flush()
+    timing["draw"] += time.perf_counter() - start
+    return surface, timing, clipped, ring_count
+
+
+def verify(renderer, source, data, viewport, factor):
+    reference = render(renderer, source, viewport, factor)
+    candidate, _, _, _ = numpy_render(data, viewport, factor)
+    a = np.frombuffer(reference.get_data(), dtype=np.uint8).reshape(
+        viewport.height * factor, viewport.width * factor, 4
+    )
+    b = np.frombuffer(candidate.get_data(), dtype=np.uint8).reshape(a.shape)
+    delta = np.abs(a.astype(np.int16) - b.astype(np.int16))
+    return np.any(delta != 0, axis=2).mean(), np.any(delta > 8, axis=2).mean()
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--synthetic", action="store_true")
+    parser.add_argument("--numpy", action="store_true")
+    parser.add_argument("--verify", action="store_true")
     parser.add_argument("--gshhs", type=Path, default=Path(DATA_DIR) / "gshhs")
     parser.add_argument("-n", "--iterations", type=int, default=10)
     parser.add_argument("--factor", type=int, choices=(1, 2), default=2)
@@ -205,6 +364,46 @@ def main(argv=None):
             )
         renderer = BaseChartRenderer(lambda *args: None)
         viewport = Viewport(args.center_lat, args.center_lon, args.zoom)
+        if args.verify and not args.numpy:
+            parser.error("--verify requires --numpy")
+        if args.numpy:
+            if args.grid or args.tile:
+                parser.error("--numpy does not support --grid or --tile")
+            start = time.perf_counter()
+            data = extract(source, viewport)
+            extraction = (time.perf_counter() - start) * 1000
+            print(
+                f"mode=numpy-extract quality={data[2]} features={len(data[0])} n=1 min={extraction:.3f} ms median={extraction:.3f} ms mean={extraction:.3f} ms"
+            )
+            if args.verify:
+                different, over8 = verify(renderer, source, data, viewport, args.factor)
+                print(
+                    f"mode=numpy-verify differing_fraction={different:.9f} over8_fraction={over8:.9f}"
+                )
+                return 0
+            stages = {key: [] for key in ("cull", "project", "clip", "draw")}
+            totals = []
+            clipped = rings = 0
+            pan_degrees = 50 * 360 / (Viewport.TILE_SIZE * 2**args.zoom)
+            for iteration in range(args.iterations):
+                if args.mode == "pan":
+                    lon = (args.center_lon + iteration * pan_degrees + 180) % 360 - 180
+                    viewport = Viewport(args.center_lat, lon, args.zoom)
+                start = time.perf_counter()
+                _, timing, nclip, nring = numpy_render(data, viewport, args.factor)
+                totals.append((time.perf_counter() - start) * 1000)
+                clipped += nclip
+                rings += nring
+                for key in stages:
+                    stages[key].append(timing[key] * 1000)
+            for key, times in stages.items():
+                report(f"numpy-{key}", times)
+            report(
+                "numpy-total",
+                totals,
+                f" pan_mode={args.mode} zoom={args.zoom:g} clipped_fraction={clipped / rings if rings else 0:.6f} rings={rings}",
+            )
+            return 0
         if args.grid:
             measure_grid(
                 renderer, source, viewport, args.factor, args.tile_size, args.iterations

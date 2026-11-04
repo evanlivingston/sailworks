@@ -26,6 +26,24 @@ def test_synthetic_benchmark():
     assert "median=" in result.stdout and "mean=" in result.stdout
 
 
+def test_numpy_verify_synthetic():
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--synthetic",
+            "--numpy",
+            "--verify",
+            "--zoom",
+            "3",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "differing_fraction=0.000000000" in result.stdout
+
+
 def test_missing_gshhs(tmp_path):
     result = subprocess.run(
         [sys.executable, str(SCRIPT), "--gshhs", str(tmp_path)],
