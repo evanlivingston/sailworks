@@ -464,6 +464,9 @@ class Era5DownloadService:
             if len(kept) != len(entries):
                 self._save_pending(kept)
 
+    def pending_requests(self):
+        return self._load_pending()
+
     def pending_count(self):
         return len(self._load_pending())
 

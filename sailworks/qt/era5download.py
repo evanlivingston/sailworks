@@ -97,10 +97,10 @@ class Era5DownloadTab(QWidget):
         self.progress.setTextVisible(True)
         self.progress.hide()
         layout.addWidget(self.progress)
-        self.catalog = QTableWidget(0, 4)
-        self._catalog_entries = []
+        self.catalog = QTableWidget(0, 5)
+        self._rows = []
         self.catalog.setHorizontalHeaderLabels(
-            ["UTC coverage", "Area N/W/S/E", "Variables", "Artifact"]
+            ["UTC coverage", "Area N/W/S/E", "Variables", "Status", "Artifact"]
         )
         self.catalog.horizontalHeader().setStretchLastSection(True)
         self.catalog.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -337,64 +337,148 @@ class Era5DownloadTab(QWidget):
         self.retry_button.setEnabled(bool(error))
         self.refresh_catalog()
 
+    _VARIABLE_LABELS = {
+        "10m_u_component_of_wind": "u10",
+        "10m_v_component_of_wind": "v10",
+        "mean_sea_level_pressure": "msl",
+    }
+
+    @classmethod
+    def _variables_label(cls, values):
+        return ", ".join(
+            cls._VARIABLE_LABELS.get(str(value), str(value)) for value in values
+        )
+
+    @staticmethod
+    def _coverage_label(start, end):
+        try:
+            start_dt = datetime.fromisoformat(str(start).replace("Z", "+00:00"))
+            end_dt = datetime.fromisoformat(str(end).replace("Z", "+00:00"))
+            return f"{start_dt:%Y-%m-%d %H:%M} → {end_dt:%Y-%m-%d %H:%M} UTC"
+        except ValueError:
+            return f"{start} → {end} UTC"
+
+    @staticmethod
+    def _area_label(area):
+        try:
+            north, west, south, east = (float(value) for value in area)
+            return f"N {north:.2f} / W {west:.2f} / S {south:.2f} / E {east:.2f}"
+        except (TypeError, ValueError):
+            return str(area)
+
     def refresh_catalog(self):
         path = self.service.store.root / "era5-history.json"
         try:
-            entries = (
+            catalog = (
                 json.loads(path.read_text(encoding="utf8")) if path.exists() else []
             )
         except (OSError, ValueError):
-            entries = []
-        self.catalog.setRowCount(len(entries))
-        self._catalog_entries = entries
-        for row, entry in enumerate(entries):
-            provenance = entry.get("provenance", {})
-            coverage = f"{entry.get('start', '')} — {entry.get('end', '')} UTC"
-            source = entry.get("source", "CDS ERA5 hourly single levels reanalysis")
-            self.catalog.setItem(
-                row,
-                0,
-                QTableWidgetItem(
-                    f"{source}; {coverage}; {provenance.get('reader', 'unverified')}"
-                ),
+            catalog = []
+        pending_for = getattr(self.service, "pending_requests", None)
+        pending = pending_for() if callable(pending_for) else []
+        rows = []
+        catalog_keys = set()
+        for entry in catalog:
+            catalog_keys.add((str(entry.get("start")), str(entry.get("end"))))
+            rows.append(
+                {
+                    "kind": "complete",
+                    "entry": entry,
+                    "start": entry.get("start"),
+                    "end": entry.get("end"),
+                    "area": entry.get("area", []),
+                    "variables": entry.get("variables", []),
+                    "artifact": str(entry.get("artifact", "")),
+                }
             )
-            self.catalog.setItem(row, 1, QTableWidgetItem(str(entry.get("area", ""))))
-            self.catalog.setItem(
-                row, 2, QTableWidgetItem(", ".join(entry.get("variables", [])))
+        for entry in pending:
+            key = (str(entry.get("start")), str(entry.get("end")))
+            if key in catalog_keys:
+                continue
+            rows.append(
+                {
+                    "kind": "queued",
+                    "entry": None,
+                    "start": entry.get("start"),
+                    "end": entry.get("end"),
+                    "area": entry.get("area", []),
+                    "variables": list(self._VARIABLE_LABELS),
+                    "artifact": "",
+                    "request_id": str(entry.get("request_id", "")),
+                }
             )
-            self.catalog.setItem(
-                row, 3, QTableWidgetItem(str(entry.get("artifact", "")))
+        rows.sort(key=lambda row: str(row.get("start") or ""))
+        self._rows = rows
+        self.catalog.blockSignals(True)
+        self.catalog.setRowCount(len(rows))
+        for index, row in enumerate(rows):
+            if row["kind"] == "complete":
+                status = "Downloaded"
+                artifact = str(row["artifact"]).rsplit("/", 1)[-1][:12]
+            else:
+                status = "Queued at CDS"
+                artifact = "—"
+            values = (
+                self._coverage_label(row["start"], row["end"]),
+                self._area_label(row["area"]),
+                self._variables_label(row["variables"]),
+                status,
+                artifact,
             )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(value)
+                self.catalog.setItem(index, column, item)
+            if row["kind"] == "queued":
+                self.catalog.item(index, 3).setToolTip(
+                    f"CDS request {row.get('request_id', '')}"
+                )
+            else:
+                self.catalog.item(index, 4).setToolTip(str(row["artifact"]))
+        self.catalog.blockSignals(False)
+        downloaded = sum(1 for row in rows if row["kind"] == "complete")
+        self.history_status.setText(
+            f"{downloaded} downloaded, {len(rows) - downloaded} queued."
+        )
 
     def _history_selected(self):
         row = self.catalog.currentRow()
-        if row < 0:
+        if row < 0 or row >= len(self._rows):
             self.history_status.setText(
                 "Select an imported history row to enable sampling."
             )
             return
-        artifact = self.catalog.item(row, 3)
+        data = self._rows[row]
+        if data["kind"] == "queued":
+            self.history_status.setText(
+                f"Queued at CDS (request {data.get('request_id', '')}). "
+                "Sampling is available after the download completes."
+            )
+            return
         self.history_status.setText(
-            f"Selected history artifact {artifact.text() if artifact else ''}; "
-            "choose any inclusive UTC sample-hour range."
+            f"Selected {self._coverage_label(data['start'], data['end'])}; "
+            "choose an inclusive UTC sample hour."
         )
 
     def sample_selected(self):
         row = self.catalog.currentRow()
-        if row < 0:
+        if row < 0 or row >= len(self._rows):
             self.history_status.setText(
                 "Select an imported history row before sampling."
             )
             return
-        artifact = self.catalog.item(row, 3)
-        if artifact is None:
-            self.history_status.setText("Selected history row has no artifact.")
+        data = self._rows[row]
+        if data["kind"] != "complete":
+            self.history_status.setText(
+                "This chunk is still queued at CDS; sampling is not available yet."
+            )
             return
+        artifact = str(data["artifact"])
         from sailworks.core.grib import Grib
 
         grib = None
         try:
-            path = self.service.store.root / artifact.text()
+            path = self.service.store.root / artifact
             grib = Grib.parse(str(path))
             start = self._sample_hour(row)
             lat, lon = self.sample_lat.value(), self.sample_lon.value()
@@ -417,7 +501,9 @@ class Era5DownloadTab(QWidget):
         end = self.sample_end.dateTime().toPython().replace(tzinfo=timezone.utc)
         if start != end:
             raise ValueError("Sample one explicitly selected UTC hour at a time.")
-        entry = self._catalog_entries[row]
+        entry = self._rows[row].get("entry")
+        if entry is None:
+            raise ValueError("This chunk has not been downloaded yet")
         coverage_start = datetime.fromisoformat(entry["start"].replace("Z", "+00:00"))
         coverage_end = datetime.fromisoformat(entry["end"].replace("Z", "+00:00"))
         if coverage_start.tzinfo is None:

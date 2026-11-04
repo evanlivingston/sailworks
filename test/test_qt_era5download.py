@@ -13,12 +13,21 @@ def make_tab(tmp_path):
     tab = Era5DownloadTab.__new__(Era5DownloadTab)
     QWidget.__init__(tab)
     tab.service = SimpleNamespace(store=SimpleNamespace(root=tmp_path))
-    tab.catalog = QTableWidget(1, 4, tab)
-    tab.catalog.setItem(0, 3, QTableWidgetItem("history.grib"))
-    tab._catalog_entries = [
+    tab.catalog = QTableWidget(1, 5, tab)
+    tab.catalog.setItem(0, 4, QTableWidgetItem("history.grib"))
+    tab._rows = [
         {
+            "kind": "complete",
+            "entry": {
+                "start": "2020-01-01T00:00:00Z",
+                "end": "2020-01-01T01:00:00Z",
+                "artifact": "history.grib",
+            },
             "start": "2020-01-01T00:00:00Z",
             "end": "2020-01-01T01:00:00Z",
+            "area": [50, -10, 40, 5],
+            "variables": ["10m_u_component_of_wind"],
+            "artifact": "history.grib",
         }
     ]
     tab.history_status = __import__("PySide6.QtWidgets", fromlist=["QLabel"]).QLabel()
