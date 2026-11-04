@@ -317,6 +317,12 @@ class Grib(weatherrouting.Grib):
         start_time = None
         hours_forecasted = None
         models = set()
+        # ERA5 has no forecast run: every message's reference time is its
+        # valid time and there are no lead hours. Detect that shape so it can
+        # be treated as an hourly model instead of "Unknown".
+        supported_records = 0
+        era5_like = True
+        valid_times = set()
 
         for bidx in range(1, dataset.RasterCount + 1):
             band = dataset.GetRasterBand(bidx)
@@ -329,15 +335,27 @@ class Grib(weatherrouting.Grib):
                 models.add(forecast_model_name(dataset, metadata))
                 centre = metadata.get("GRIB_CENTER", "")
                 forecast_hours = number(metadata.get("GRIB_FORECAST_SECONDS", 0)) / 3600
-                time = datetime.datetime.fromtimestamp(
-                    number(metadata.get("GRIB_REF_TIME", 0))
-                )
+                reference = number(metadata.get("GRIB_REF_TIME", 0))
+                valid = number(metadata.get("GRIB_VALID_TIME", reference))
+                supported_records += 1
+                valid_times.add(valid)
+                if forecast_hours or reference != valid:
+                    era5_like = False
+                time = datetime.datetime.fromtimestamp(reference)
 
                 if start_time is None or time < start_time:
                     start_time = time
 
                 if hours_forecasted is None or forecast_hours > hours_forecasted:
                     hours_forecasted = forecast_hours
+
+        if (
+            supported_records
+            and era5_like
+            and len(valid_times) > 1
+            and models == {"Unknown"}
+        ):
+            models = {"ERA5"}
 
         if start_time is None or hours_forecasted is None:
             raise ValueError(

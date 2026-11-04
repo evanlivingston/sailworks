@@ -11,6 +11,14 @@ from dataclasses import dataclass
 from datetime import datetime, time as daytime, timedelta, timezone
 from pathlib import Path
 
+from .forecasttranche import (
+    AnalysisSelection,
+    Artifact,
+    ForecastTranche,
+    ModelConfiguration,
+    ModelEntry,
+)
+
 DATASET = "reanalysis-era5-single-levels"
 VARIABLES = (
     "10m_u_component_of_wind",
@@ -709,3 +717,78 @@ def _sha256(path):
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def publish_history_display(state, entries, *, model_id="ERA5"):
+    """Publish downloaded ERA5 chunks as one hourly display forecast."""
+    usable = [
+        entry
+        for entry in entries
+        if entry.get("artifact") and entry.get("start") and entry.get("end")
+    ]
+    if not usable:
+        raise Era5Error("No downloaded ERA5 history to display")
+    usable.sort(key=lambda entry: str(entry["start"]))
+    root = Path(state.store.root)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix="era5-display-", suffix=".grib", delete=False, dir=root
+        ) as stream:
+            temp_path = Path(stream.name)
+            for entry in usable:
+                stream.write((root / str(entry["artifact"])).read_bytes())
+        artifact = state.store.register_file(temp_path)
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+    times = []
+    for entry in usable:
+        start = datetime.fromisoformat(str(entry["start"]).replace("Z", "+00:00"))
+        end = datetime.fromisoformat(str(entry["end"]).replace("Z", "+00:00"))
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        cursor = start.astimezone(timezone.utc)
+        finish = end.astimezone(timezone.utc)
+        while cursor <= finish:
+            times.append(cursor)
+            cursor += timedelta(hours=1)
+    times = tuple(sorted(set(times)))
+    if len(times) < 2:
+        raise Era5Error("ERA5 history needs at least two hours to display")
+
+    north, west, south, east = (float(value) for value in usable[0]["area"])
+    region = (south, west, north, east)
+    run_time = times[0]
+    hours = int((times[-1] - run_time).total_seconds() // 3600)
+    config = ModelConfiguration(
+        model_id,
+        ("wind", "pressure"),
+        region,
+        "0.25",
+        hours,
+        tuple(range(hours + 1)),
+        1,
+    )
+    now = datetime.now(timezone.utc)
+    entry = ModelEntry(
+        model_id,
+        model_id,
+        run_time,
+        "deterministic",
+        ("wind", "pressure"),
+        ("surface",),
+        region,
+        "0.25",
+        times,
+        (Artifact(artifact.path, artifact.sha256, artifact.size),),
+        now,
+        field_times=(("wind", times), ("pressure", times)),
+    )
+    tranche = ForecastTranche(f"era5-{artifact.sha256[:16]}", now, (config,), (entry,))
+    state.store.publish(tranche)
+    state.store.activate(AnalysisSelection(tranche.tranche_id, entry.entry_id))
+    return tranche

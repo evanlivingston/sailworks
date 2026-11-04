@@ -68,6 +68,31 @@ def inspect_forecasts(entries):
                 metadata.last_forecast,
                 metadata.model_name,
             )
+            if metadata.model_name == "ERA5":
+                times = tuple(
+                    sorted({record.valid for record in source.sampling.records})
+                )
+                if times:
+                    reference = min(times)
+                    forecasts.append(
+                        DisplayForecast(
+                            str(path),
+                            metadata.name,
+                            metadata.centre,
+                            metadata.bounds,
+                            datetime.fromtimestamp(reference),
+                            (max(times) - reference) / 3600,
+                            "ERA5",
+                            (reference, ("ecmf", "ERA5", ())),
+                            reference,
+                            max(times),
+                            version,
+                            valid_times=times,
+                        )
+                    )
+                else:
+                    errors.append(f"{metadata.name}: no supported point forecasts")
+                continue
             groups = {}
             for record in source.sampling.records:
                 groups.setdefault((record.reference, record.identity[1]), []).append(

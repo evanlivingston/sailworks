@@ -18,7 +18,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sailworks.core.era5 import Era5DownloadService, Era5Error, plan_request
+from sailworks.core.era5 import (
+    Era5DownloadService,
+    Era5Error,
+    plan_request,
+    publish_history_display,
+)
 
 
 class Era5DownloadTab(QWidget):
@@ -80,7 +85,10 @@ class Era5DownloadTab(QWidget):
         self.request_button.clicked.connect(self.submit)
         self.cancel_button.clicked.connect(self.cancel)
         self.retry_button.clicked.connect(self.retry)
+        self.show_button = QPushButton("Show on map")
+        self.show_button.clicked.connect(self._publish_history_display)
         row.addWidget(self.request_button)
+        row.addWidget(self.show_button)
         row.addWidget(self.cancel_button)
         row.addWidget(self.retry_button)
         layout.addLayout(row)
@@ -292,6 +300,7 @@ class Era5DownloadTab(QWidget):
                 self.progress.hide()
                 self.status.setText("ERA5 history updated.")
                 self.refresh_catalog()
+                self._publish_history_display()
             return
         plan = self.plan
         progress_for = getattr(self.service, "progress_for", None)
@@ -336,6 +345,31 @@ class Era5DownloadTab(QWidget):
         self.cancel_button.setEnabled(False)
         self.retry_button.setEnabled(bool(error))
         self.refresh_catalog()
+        if not error:
+            self._publish_history_display()
+
+    def _publish_history_display(self):
+        path = self.service.store.root / "era5-history.json"
+        try:
+            entries = (
+                json.loads(path.read_text(encoding="utf8")) if path.exists() else []
+            )
+        except (OSError, ValueError):
+            entries = []
+        analysis = getattr(self.controller, "analysis", None)
+        state = getattr(analysis, "state", None)
+        if state is None or not entries:
+            return False
+        try:
+            publish_history_display(state, entries)
+            refresh = getattr(analysis, "refresh", None)
+            if callable(refresh):
+                refresh()
+            self.history_status.setText("Published ERA5 history as a display forecast.")
+            return True
+        except Exception as exc:
+            self.history_status.setText(f"Could not display ERA5 history: {exc}")
+            return False
 
     _VARIABLE_LABELS = {
         "10m_u_component_of_wind": "u10",
