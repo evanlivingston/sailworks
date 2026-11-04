@@ -376,17 +376,17 @@ def test_submitted_cds_request_is_persisted_and_reused(tmp_path):
 
     service._run(planned, threading.Event(), False)
 
-    assert len(clients) == 1
-    assert len(clients[0].client.submitted) == 1
+    assert sum(len(client.client.submitted) for client in clients) == 1
     assert service._load_pending() == []
     assert (tmp_path / "era5-history.json").exists()
 
     # A repeated request is served from the catalog: no new CDS submission.
+    before = len(clients)
     repeated = Era5DownloadService(
         store, client_factory=factory, validator=lambda _p, _piece: {"reader": "test"}
     )
     repeated._run(planned, threading.Event(), False)
-    assert len(clients) == 1
+    assert len(clients) == before
 
 
 def test_pending_cds_request_resumes_after_restart(tmp_path):

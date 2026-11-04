@@ -303,8 +303,11 @@ class Era5DownloadService:
         )
         entries = self._catalog_entries(catalog)
         staged_chunks = []
+        queued = []
         done = 0
         with tempfile.TemporaryDirectory(prefix="era5-") as staging:
+            # Submit every missing chunk first so they queue at CDS in parallel
+            # instead of waiting for one chunk to finish before submitting the next.
             for n, piece in enumerate(pieces):
                 if cancel.is_set():
                     raise Era5Error("ERA5 download canceled")
@@ -317,12 +320,19 @@ class Era5DownloadService:
                         stage=f"Chunk {n + 1}/{total}: already downloaded",
                     )
                     continue
-                pending = self._pending_entry(self._load_pending(), piece)
-                if pending is not None:
+                if self._pending_entry(self._load_pending(), piece) is not None:
                     stage = f"Chunk {n + 1}/{total}: resuming queued CDS request…"
                 else:
-                    stage = f"Chunk {n + 1}/{total}: requesting from CDS…"
+                    stage = f"Chunk {n + 1}/{total}: submitting to CDS…"
                 self._set_progress(key, stage=stage)
+                self._ensure_chunk_request(piece)
+                queued.append((n, piece))
+            for n, piece in queued:
+                if cancel.is_set():
+                    raise Era5Error("ERA5 download canceled")
+                self._set_progress(
+                    key, stage=f"Chunk {n + 1}/{total}: waiting for CDS results…"
+                )
                 staged_chunks.append(
                     self._stage_chunk(staging, n, piece, cancel, retry)
                 )
@@ -588,6 +598,28 @@ class Era5DownloadService:
                 target = root / artifact.path
                 target.unlink(missing_ok=True)
             raise
+
+    def _ensure_chunk_request(self, piece):
+        """Submit a chunk (or reuse its pending request) without waiting."""
+        client = self.client_factory()
+        inner = getattr(client, "client", None)
+        if (
+            inner is None
+            or not hasattr(inner, "submit")
+            or not hasattr(inner, "get_remote")
+        ):
+            return None
+        entry = self._pending_entry(self._load_pending(), piece)
+        if entry is not None and entry.get("request_id"):
+            try:
+                remote = inner.get_remote(str(entry["request_id"]))
+                remote.status
+                return str(entry["request_id"])
+            except Exception:
+                self._forget_pending(piece)
+        remote = inner.submit(DATASET, piece.request)
+        self._remember_pending(piece, remote.request_id)
+        return str(remote.request_id)
 
     def _retrieve_chunk(self, piece, path, retry):
         client = self.client_factory()
