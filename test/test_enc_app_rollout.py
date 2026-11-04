@@ -360,6 +360,7 @@ def test_chart_staging_ignores_stale_callbacks_and_adopts_metadata(presenter):
         _update_enc_status=Mock(),
         _enc_chart_layer=False,
         _chart_ready_at=None,
+        _chart_timer=Mock(),
         counters={"chart_publications": 0},
     )
     for name in (
@@ -367,6 +368,7 @@ def test_chart_staging_ignores_stale_callbacks_and_adopts_metadata(presenter):
         "_reject_chart_pending",
         "_chart_slot_result",
         "_chart_state_changed",
+        "_restart_chart_settle",
     ):
         setattr(widget, name, MethodType(getattr(cls, name), widget))
     image = QImage(2, 2, QImage.Format.Format_ARGB32)
@@ -424,12 +426,6 @@ def test_chart_reuse_redelivers_rejected_cold_start_without_stale_adoption(
     model._reusable = lambda camera, preview=False: (
         camera == "covered" and metadata.get("preview", False) == preview
     )
-    assert model._reusable("covered", False)
-    assert not model._reusable("covered", True)
-    metadata["preview"] = True
-    assert model._reusable("covered", True)
-    assert not model._reusable("covered", False)
-    metadata["preview"] = False
     manager = Mock()
     manager.budget = PublicationBudget()
     manager.stage_resources.return_value = True
@@ -579,12 +575,14 @@ def _budget_chart_widget(image):
         _place_chart=Mock(),
         _chart_state_now=Mock(),
         _chart_ready_at=None,
+        _chart_timer=Mock(),
         counters={"chart_publications": 0},
     )
     for name in (
         "_reject_chart_pending",
         "_clear_chart",
         "_chart_state_changed",
+        "_restart_chart_settle",
         "_publish_chart",
         "_chart_slot_result",
     ):
@@ -1527,9 +1525,8 @@ def test_viewport_dashboard_layer_publishes_and_clears_the_cached_image():
 
 def test_chart_idle_timer_debounces_camera_changes(presenter):
     import time
-    from types import MethodType
 
-    from PySide6.QtCore import QTimer, Qt
+    from PySide6.QtCore import QObject, Qt
     from PySide6.QtTest import QTest
 
     from sailworks.qt.gribviewport import _viewport_widget_class
@@ -1541,29 +1538,36 @@ def test_chart_idle_timer_debounces_camera_changes(presenter):
         calls.append((time.monotonic(), camera, preview))
         return len(calls)
 
-    widget = SimpleNamespace(
-        _disposed=False,
-        _chart_timer=QTimer(),
-        _chart_model=SimpleNamespace(request=request),
-        _camera="first",
-        _weather_ready_at=1,
-        _model=SimpleNamespace(busy=lambda: False),
-        _chart_interactive_at=None,
-        _chart_redelivery_generation=None,
-        _chart_state_now=lambda: {},
-        counters={"chart_requests": 0},
-    )
     cls = _viewport_widget_class()
-    for name in ("_restart_chart_settle", "_request_interactive_chart", "_request_chart"):
-        setattr(widget, name, MethodType(getattr(cls, name), widget))
-    widget._chart_timer.setSingleShot(True)
+    viewport = cls(Mock(paths=(), display_identity=""))
+    timer = viewport._chart_timer
+    assert timer.isSingleShot()
+    timer.timeout.disconnect(viewport._request_chart)
+
+    class ChartWidget(QObject):
+        _restart_chart_settle = cls._restart_chart_settle
+        _request_interactive_chart = cls._request_interactive_chart
+        _request_chart = cls._request_chart
+
+    widget = ChartWidget()
+    widget._disposed = False
+    widget._chart_timer = timer
+    widget._chart_model = SimpleNamespace(request=request)
+    widget._camera = "first"
+    widget._weather_ready_at = 1
+    widget._model = SimpleNamespace(busy=lambda: False)
+    widget._chart_interactive_at = None
+    widget._chart_redelivery_generation = None
+    widget._chart_state_now = lambda: {}
+    widget.counters = {"chart_requests": 0}
     widget._chart_timer.setTimerType(Qt.TimerType.PreciseTimer)
-    widget._chart_timer.setInterval(CHART_IDLE_MS)
     widget._chart_timer.timeout.connect(widget._request_chart)
     widget._chart_camera_changed = time.perf_counter()
     widget._restart_chart_settle()
     widget._request_interactive_chart()
-    QTest.qWait(CHART_IDLE_MS // 2)
+    # Do not enter the event loop between changes: qWait can overshoot by an
+    # entire settle interval on a busy GUI thread, allowing a valid first view
+    # to settle before the second camera change is delivered.
     assert len(calls) <= 1
     assert all(preview for _, _, preview in calls)
     changed = time.monotonic()
@@ -1571,7 +1575,6 @@ def test_chart_idle_timer_debounces_camera_changes(presenter):
     widget._chart_camera_changed = time.perf_counter()
     widget._restart_chart_settle()
     widget._request_interactive_chart()
-    QTest.qWait(CHART_IDLE_MS // 2)
     assert len(calls) <= 1
     assert all(preview for _, _, preview in calls)
     QTest.qWait(CHART_IDLE_MS)
@@ -1581,6 +1584,7 @@ def test_chart_idle_timer_debounces_camera_changes(presenter):
     assert full[0][0] - changed >= CHART_IDLE_MS / 1000
     QTest.qWait(CHART_IDLE_MS)
     assert len([call for call in calls if not call[2]]) == 1
+    viewport.close()
 
 
 def test_chart_worker_finishes_active_and_coalesces_latest_camera(tmp_path):

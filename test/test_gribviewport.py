@@ -1675,6 +1675,7 @@ def test_preview_is_blocked_in_flight_and_settle_publishes_full_quality(tmp_path
             assert release.wait(5)
         metadata = _chart_metadata(camera)
         metadata["preview"] = preview
+        metadata["factor"] = layer._dpr * (0.5 if preview else 1)
         return "image", metadata
 
     layer._compose = compose
