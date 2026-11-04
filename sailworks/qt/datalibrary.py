@@ -27,6 +27,7 @@ from .theme import section_label
 from .chartlayerspanel import ChartLayersPanel
 from .mapdatasetup import MapDataSetup
 from sailworks.rendering.style import Style
+from .text import qt_text
 
 
 def table(headers):
@@ -127,7 +128,7 @@ class DataLibrary(QDialog):
         self.tabs.currentChanged.connect(self._forecast_tab_changed)
 
     def button(self, row, label, callback):
-        button = QPushButton(label)
+        button = QPushButton(qt_text(label))
         button.clicked.connect(callback)
         row.addWidget(button)
         self.mutations.append(button)
@@ -178,7 +179,7 @@ class DataLibrary(QDialog):
         self.controller.settings.register_on_change("chartPalette", self._sync_palette)
         row.addWidget(self.palette_combo, 1)
         source_layout.addLayout(row)
-        self.chart_sections.addTab(sources, "Sources & appearance")
+        self.chart_sections.addTab(sources, "Sources && appearance")
 
         local = QWidget()
         layout = QVBoxLayout(local)
@@ -232,7 +233,7 @@ class DataLibrary(QDialog):
         self.available_charts.setColumnWidth(3, 90)
         self.available_charts.itemSelectionChanged.connect(self.refresh_buttons)
         layout.addWidget(self.available_charts, 2)
-        self.chart_sections.addTab(downloads, "Downloads & base maps")
+        self.chart_sections.addTab(downloads, "Downloads && base maps")
         self.tabs.addTab(self.charts_page, "Charts")
 
     def _history(self):
@@ -264,7 +265,7 @@ class DataLibrary(QDialog):
             self.controller, canvas, self._show_marine_settings, self
         )
         self.marine.jobs.changed.connect(self.refresh_buttons)
-        self.tabs.addTab(self.marine, "Tides & Currents")
+        self.tabs.addTab(self.marine, "Tides && Currents")
 
     def _show_marine_settings(self, kind):
         callback = getattr(self.parent(), "show_marine_settings", None)

@@ -22,6 +22,7 @@ from .marinepanel import BusyButton
 from .theme import section_label
 from sailworks.rendering.windpainter import BARB_DENSITIES
 from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES, display_model_name
+from .text import qt_text
 
 
 class ForecastModelSelector(QComboBox):
@@ -200,7 +201,7 @@ class WeatherPanel(QWidget):
         self.refresh()
 
     def checkbox(self, label, key):
-        widget = QCheckBox(label)
+        widget = QCheckBox(qt_text(label))
         widget.setChecked(bool(self.controller.settings[key]))
         widget.toggled.connect(lambda value: self.set_preference(key, value))
         return widget

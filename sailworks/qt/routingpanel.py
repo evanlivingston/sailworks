@@ -39,6 +39,7 @@ from sailworks.core.routingoptions import (
 )
 from .dockchrome import style_scrollarea
 from .theme import section_label
+from .text import qt_text
 
 
 class RoutingPanel(QWidget):
@@ -129,7 +130,7 @@ class RoutingPanel(QWidget):
 
         self.progress = QProgressBar()
         layout.addWidget(self.progress)
-        self.status = QLabel(self.routing.message)
+        self.status = QLabel(qt_text(self.routing.message))
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
         layout.addLayout(actions)
@@ -240,7 +241,7 @@ class RoutingPanel(QWidget):
                 continue
             widget.setToolTip(param.tooltip)
             widget.setAccessibleName(param.name)
-            label = QLabel(param.name)
+            label = QLabel(qt_text(param.name))
             label.setWordWrap(True)
             self.parameter_form.addRow(label, widget)
             self.parameter_widgets[key] = widget

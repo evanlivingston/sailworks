@@ -31,6 +31,7 @@ from sailworks.core.race import (
 from sailworks.core.timecontrol import utc_to_wall, wall_to_utc
 
 from sailworks.qt.ybracedialog import YBRaceDialog
+from .text import qt_text
 
 
 def _hex_colour(value) -> tuple[float, float, float] | None:
@@ -445,7 +446,7 @@ class RacesPanel(QWidget):
         answer = QMessageBox.question(
             self,
             "Delete race",
-            f"Delete '{race.name}'?\n\nIts saved data and loaded tracks are removed.",
+            f"Delete '{qt_text(race.name)}'?\n\nIts saved data and loaded tracks are removed.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )

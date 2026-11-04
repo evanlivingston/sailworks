@@ -65,6 +65,7 @@ from .loglibrary import (
     LogLibraryDialog,
     dropped_log_paths,
 )
+from .text import qt_text
 
 
 class NavigationScroll(QScrollArea):
@@ -111,7 +112,7 @@ class PreviewWindow(QMainWindow):
         self.workspace_tabs = QTabBar()
         self.workspace_tabs.setExpanding(False)
         for name in ("Charts", "Logs", "Polars"):
-            self.workspace_tabs.addTab(name)
+            self.workspace_tabs.addTab(qt_text(name))
         header.addWidget(self.workspace_tabs)
         self.plots = self._build_plots(controller)
         self.log_time = TimeControl()
