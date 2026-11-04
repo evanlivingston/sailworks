@@ -181,7 +181,7 @@ class Era5DownloadTab(QWidget):
         self.catalog.itemSelectionChanged.connect(self._history_selected)
         layout.addWidget(self.catalog)
         samples = QHBoxLayout()
-        samples.addWidget(QLabel("Selected history sample UTC"))
+        samples.addWidget(QLabel("Sample UTC"))
         self.sample_start = self._date(now)
         self.sample_end = self._date(now)
         self.sample_start.setObjectName("historySampleStart")
@@ -195,7 +195,7 @@ class Era5DownloadTab(QWidget):
         samples.addWidget(self.sample_lat)
         samples.addWidget(QLabel("Lon"))
         samples.addWidget(self.sample_lon)
-        self.sample_button = QPushButton("Sample selected hour")
+        self.sample_button = QPushButton("Sample")
         self.sample_button.clicked.connect(self.sample_selected)
         samples.addWidget(self.sample_button)
         self.history_status = QLabel(
