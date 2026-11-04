@@ -113,29 +113,10 @@ def test_local_json_selection_and_invalid_file_warning(qtbot, monkeypatch, tmp_p
 def test_review_from_start_sets_race_time_and_selects_race_track(qtbot):
     from datetime import datetime
 
-    from sailworks.core.timecontrol import TimeControl
+    from sailworks.core.timecontrol import TimeControl, utc_to_wall
 
-    class TrackManager(list):
-        active = None
-
-        def get_unique_name(self, name):
-            return name
-
-        def set_active(self, track):
-            self.active = track
-
-        def remove_by_names(self, names):
-            wanted = set(names or ())
-            self[:] = [track for track in self if getattr(track, "name", None) not in wanted]
-
-        def append_many(self, tracks):
-            for track in tracks:
-                track.collection = self
-                self.append(track)
-
-    manager = TrackManager()
     controller = SimpleNamespace(
-        time_control=TimeControl(), core=SimpleNamespace(trackManager=manager)
+        time_control=TimeControl(), core=SimpleNamespace(trackManager=[])
     )
     panel = racepanel.RacesPanel(controller)
     qtbot.addWidget(panel)
@@ -159,16 +140,18 @@ def test_review_from_start_sets_race_time_and_selects_race_track(qtbot):
     )
     panel._add_race(race)
 
-    assert manager.active is not None
-    assert manager.active.name in panel._race_track_names
-    assert len(manager.active.points) == 2
+    qtbot.waitUntil(lambda: panel.active_race_track is not None)
+    assert panel.active_race_track in panel.race_tracks(race)
+    assert len(panel.active_race_track.points) == 2
+    assert not controller.core.trackManager
 
     panel.review_button.click()
 
-    assert controller.time_control.time == datetime(2026, 5, 16, 3)
-    assert manager.active is not None
-    assert manager.active.name in panel._race_track_names
-    assert len(manager.active.points) == 2
+    assert controller.time_control.time == utc_to_wall(race.start_time)
+    assert panel.active_race_track is not None
+    assert panel.active_race_track in panel.race_tracks(race)
+    assert len(panel.active_race_track.points) == 2
+    assert not controller.core.trackManager
 
 
 def _sample_race():

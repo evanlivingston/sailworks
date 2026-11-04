@@ -35,7 +35,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sailworks.core.timecontrol import TimeControl, naive_wall_time
+from sailworks.core.timecontrol import (
+    TimeControl,
+    naive_wall_time,
+    wall_to_utc,
+)
 from sailworks.core.n2kdevices import source_label
 from sailworks.common import resource_path
 from .theme import section_label, symbol_icon
@@ -197,7 +201,6 @@ class PreviewWindow(QMainWindow):
         self.navigation_panel.move_requested.connect(self._move_navigation_point)
         self.navigation_panel.ais_updated.connect(self._ais_updated)
         self._ais_updated(tuple(self.navigation_panel.ais_targets))
-        self._race_track_times = {}
         self._race_boat_positions = []
         self._race_timeline_bounds = None
         self.race_panel = RacesPanel(controller)
@@ -817,17 +820,63 @@ class PreviewWindow(QMainWindow):
 
     def _race_selected(self, race):
         self._race_timeline_bounds = None
-        if getattr(race, "start_time", None) and getattr(race, "end_time", None):
-            self._race_timeline_bounds = (
-                race.start_time.replace(tzinfo=timezone.utc).timestamp(),
-                race.end_time.replace(tzinfo=timezone.utc).timestamp(),
-                tuple(
-                    p.timestamp.replace(tzinfo=timezone.utc).timestamp()
-                    for boat in getattr(race, "boats", ())
-                    for p in boat.positions
-                ),
+        if race is not None:
+            position_times = tuple(
+                p.timestamp.replace(tzinfo=timezone.utc).timestamp()
+                for boat in getattr(race, "boats", ())
+                for p in boat.positions
             )
+            start = getattr(race, "start_time", None)
+            end = getattr(race, "end_time", None)
+            # Races without explicit start/end metadata still have usable
+            # bounds from their position timestamps.
+            if start is None and position_times:
+                start = datetime.fromtimestamp(
+                    min(position_times), timezone.utc
+                ).replace(tzinfo=None)
+            if end is None and position_times:
+                end = datetime.fromtimestamp(max(position_times), timezone.utc).replace(
+                    tzinfo=None
+                )
+            if start is not None and end is not None:
+                self._race_timeline_bounds = (
+                    start.replace(tzinfo=timezone.utc).timestamp(),
+                    end.replace(tzinfo=timezone.utc).timestamp(),
+                    position_times,
+                )
         self._apply_race_timeline_bounds()
+        self._apply_race_course(race)
+
+    def _apply_race_course(self, race):
+        courses = []
+        if race is not None:
+            for course in getattr(race, "course", ()) or ():
+                points = [[float(point[0]), float(point[1])] for point in course.points]
+                if len(points) >= 2:
+                    courses.append(
+                        {
+                            "name": str(course.name or ""),
+                            "points": points,
+                            "closed": bool(getattr(course, "closed", False)),
+                        }
+                    )
+        for canvas in (self.map, self.log_map):
+            try:
+                canvas.race_courses = courses
+            except Exception:
+                pass
+            try:
+                canvas.refresh_route_overlay()
+            except Exception:
+                pass
+            try:
+                canvas.invalidate_navigation()
+            except Exception:
+                pass
+            try:
+                canvas.update()
+            except Exception:
+                pass
 
     def _apply_race_timeline_bounds(self):
         bounds = getattr(self, "_race_timeline_bounds", None)
@@ -841,82 +890,106 @@ class PreviewWindow(QMainWindow):
         timeline.set_bounds_override(start, end, valid_times)
 
     def _race_tracks_changed(self):
-        self._race_track_times = dict(getattr(self.race_panel, "race_track_times", {}))
-        self._race_track_names = set(getattr(self.race_panel, "_race_track_names", []))
+        self._publish_race_track_overlay()
         self.navigation_panel.refresh()
         self._navigation_changed()
         self._race_time_changed(self.controller.time_control.time)
 
+    def _publish_race_track_overlay(self):
+        panel = getattr(self, "race_panel", None)
+        active = getattr(panel, "active_race_track", None)
+        loaded = panel.loaded_race_tracks() if panel is not None else {}
+        tracks = []
+        for race_tracks in loaded.values():
+            for track in race_tracks:
+                if not track.visible:
+                    continue
+                tracks.append(
+                    {
+                        "name": track.name,
+                        "points": [
+                            [float(point[0]), float(point[1])] for point in track.points
+                        ],
+                        "color": [float(channel) for channel in track.color],
+                        "active": track is active,
+                    }
+                )
+        for canvas in (self.map, self.log_map):
+            try:
+                canvas.race_tracks_overlay = tracks
+            except Exception:
+                pass
+            try:
+                canvas.refresh_route_overlay()
+            except Exception:
+                pass
+            try:
+                canvas.update()
+            except Exception:
+                pass
+
     def _race_time_changed(self, when):
-        if not getattr(self, "_race_track_times", None):
-            # No imported race is active; make sure stale boat markers disappear.
-            self._race_boat_positions = []
+        panel = getattr(self, "race_panel", None)
+        race = getattr(panel, "race", None) if panel is not None else None
+        active = getattr(panel, "active_race_track", None)
+        if active is None or not active.visible or not active.timestamps:
             for canvas in (self.map, self.log_map):
                 try:
-                    canvas.race_boat_positions = []
-                    canvas.race_positions = []
+                    canvas.offsets = ()
+                    canvas.position = None
                 except Exception:
                     pass
-                try:
-                    canvas.invalidate_navigation()
-                except Exception:
-                    pass
-                try:
-                    canvas.update()
-                except Exception:
-                    pass
-            return
-        active = self.controller.core.trackManager.get_active()
-        if active is not None and active.name in self._race_track_times:
-            offsets = self._race_track_times[active.name]
-            if offsets:
-                try:
-                    position = when.replace(tzinfo=timezone.utc).timestamp()
-                except Exception:
-                    position = None
-                if position is not None:
-                    for canvas in (self.map, self.log_map):
-                        canvas.offsets = tuple(offsets)
-                        canvas.position = position
-        # Keep every imported race boat visible at the scrubbed time, not just
-        # the currently active track. Only show boats that still have
-        # their tracks in the trackManager (user may have deleted some).
-        race = getattr(getattr(self, "race_panel", None), "race", None)
-        track_manager = getattr(
-            getattr(self.controller, "core", None), "trackManager", None
-        )
-        positions = []
-        if race is not None and track_manager is not None:
+        else:
             try:
-                when_dt = when
-                # Build set of boat IDs that have visible tracks in trackManager
-                visible_boat_ids = set()
-                track_names = getattr(self, "_race_track_names", {})
-                for track in track_manager:
-                    if track.name in track_names:
-                        # Find which boat this track belongs to
-                        for boat in race.boats:
-                            if (
-                                f"{race.name} - {boat.name or boat.boat_id}"
-                                in track.name
-                            ):
-                                visible_boat_ids.add(boat.boat_id)
-                                break
-                for boat_id, boat_position in race.positions_at(when_dt).items():
-                    if boat_id in visible_boat_ids:
-                        positions.append(
-                            [
-                                float(boat_position.latitude),
-                                float(boat_position.longitude),
-                            ]
-                        )
+                # TimeControl carries local wall time; race tracks use UTC epochs.
+                position = when.timestamp()
+            except Exception:
+                position = None
+            if position is not None:
+                for canvas in (self.map, self.log_map):
+                    canvas.offsets = tuple(active.timestamps)
+                    canvas.position = position
+        # Keep every visible race boat on the map at the scrubbed time.
+        positions = []
+        markers = []
+        if race is not None and panel is not None:
+            try:
+                visible_tracks = {
+                    track.boat_id: track
+                    for track in panel.race_tracks(race)
+                    if track.visible
+                }
+                for boat_id, boat_position in race.positions_at(
+                    wall_to_utc(when)
+                ).items():
+                    track = visible_tracks.get(boat_id)
+                    if track is None:
+                        continue
+                    latitude = float(boat_position.latitude)
+                    longitude = float(boat_position.longitude)
+                    positions.append([latitude, longitude])
+                    markers.append(
+                        {
+                            "lat": latitude,
+                            "lon": longitude,
+                            "name": track.name,
+                            "color": [float(channel) for channel in track.color],
+                            "angle": boat_position.course,
+                        }
+                    )
             except Exception:
                 positions = []
+                markers = []
         self._race_boat_positions = positions
         for canvas in (self.map, self.log_map):
             try:
                 canvas.race_boat_positions = positions
                 canvas.race_positions = positions
+                canvas.race_boat_markers = markers
+            except Exception:
+                pass
+            try:
+                canvas.refresh_route_overlay()
             except Exception:
                 pass
             canvas.invalidate_navigation()

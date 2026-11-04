@@ -47,29 +47,38 @@ class _TrackManager(list):
     def get_unique_name(self, name):
         return name
 
-    def remove_by_names(self, names):
+    def exists(self, name):
+        return any(track.name == name for track in self)
+
+    def save(self):
+        pass
+
+    def remove_by_names(self, names, save=True):
         self.removed_names.append(list(names))
         wanted = set(names or ())
-        self[:] = [track for track in self if getattr(track, "name", None) not in wanted]
+        self[:] = [
+            track for track in self if getattr(track, "name", None) not in wanted
+        ]
 
-    def append_many(self, tracks):
+    def append_many(self, tracks, save=True):
         self.appended_batches.append(list(tracks))
         for track in tracks:
             track.collection = self
             self.append(track)
 
-    def set_active(self, track):
+    def set_active(self, track, save=True):
         self.active = track
 
     def get_active(self):
         return self.active
 
 
-def test_show_race_tracks_uses_batched_remove_and_append(qtbot):
+def test_show_race_tracks_builds_transient_race_tracks(qtbot):
     from unittest.mock import patch
+
     app = QApplication.instance() or QApplication([])
     manager = _TrackManager()
-    
+
     # Create a fully mocked core with only our mock trackManager
     class MockCore(SimpleNamespace):
         def __init__(self):
@@ -77,7 +86,7 @@ def test_show_race_tracks_uses_batched_remove_and_append(qtbot):
             self.trackManager = manager
             self.routingManager = []
             self.poiManager = []
-    
+
     # Mock load_saved_races to return empty to prevent loading real tracks
     with patch("sailworks.qt.racepanel.load_saved_races", return_value=[]):
         controller = SimpleNamespace(
@@ -86,22 +95,24 @@ def test_show_race_tracks_uses_batched_remove_and_append(qtbot):
         )
         panel = racepanel.RacesPanel(controller)
         qtbot.addWidget(panel)
-    
+
     race = _sample_race()
 
-    # Pre-populate manager with an old race track name.
-    panel._race_track_names = ["old track"]
-    manager.append(SimpleNamespace(name="old track"))
+    old_race = _sample_race()
+    old_race.race_id = "old"
+    panel._races.append(old_race)
+    panel._displayed_race_id = "old"
+    panel._defer_heavy = False
+    panel._load_race_tracks(old_race)
 
     panel._show_race_tracks(race)
 
-    assert len(manager.removed_names) == 1
-    assert manager.removed_names[0] == ["old track"]
-    assert len(manager.appended_batches) == 1
-    assert len(manager.appended_batches[0]) == 2
-    assert all(getattr(track, "race_track", False) for track in manager.appended_batches[0])
-    assert panel._race_track_names == [
-        f"{race.name} - Boat A",
-        f"{race.name} - Boat B",
+    assert not panel.race_tracks(old_race)
+    assert [track.name for track in panel.race_tracks(race)] == [
+        "Boat A",
+        "Boat B",
     ]
-    assert manager.active is manager[-2] or manager.active in manager.appended_batches[0]
+    assert panel.active_race_track in panel.race_tracks(race)
+    # Race tracks are transient: they never enter the user's track collection.
+    assert len(manager) == 0
+    assert not manager.appended_batches

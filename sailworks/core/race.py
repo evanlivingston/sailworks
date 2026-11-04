@@ -153,6 +153,7 @@ class _TrackedPositions(list):
             result = method(self, *args, **kwargs)
             self._notify(old, self)
             return result
+
         return call
 
     def append(self, value):
@@ -196,6 +197,13 @@ class RaceBoat:
     sail: str = ""
     model: str = ""
     status: str = ""
+    boat_type: str = ""
+    country: str = ""
+    flag: str = ""
+    colour: str = ""
+    tcf1: str = ""
+    tcf2: str = ""
+    tcf3: str = ""
     positions: list[RacePosition] = field(default_factory=list)
 
     def _positions_changed(self, removed=(), added=()):
@@ -204,7 +212,8 @@ class RaceBoat:
         for position in removed:
             if id(position) not in added_ids:
                 position._boats[:] = [
-                    ref for ref in position._boats
+                    ref
+                    for ref in position._boats
                     if ref() is not None and ref() is not self
                 ]
         for position in added:
@@ -227,7 +236,9 @@ class RaceBoat:
 
     def __post_init__(self):
         # Keep the caller's list (and its original report order) untouched.
-        self.positions = _TrackedPositions(self.positions or [], self._positions_changed)
+        self.positions = _TrackedPositions(
+            self.positions or [], self._positions_changed
+        )
         self._position_sorted_times = []
         self._position_sorted_indices = []
         self._indexed_positions = self.positions
@@ -261,8 +272,7 @@ class RaceBoat:
         positions = self.positions
         if (
             self._position_index_dirty
-            or
-            self._indexed_positions is not positions
+            or self._indexed_positions is not positions
             or len(positions) != self._indexed_length
         ):
             self._rebuild_position_index()
@@ -325,8 +335,36 @@ class RaceBoat:
             "sail": self.sail,
             "model": self.model,
             "status": self.status,
+            "type": self.boat_type,
+            "country": self.country,
+            "flag": self.flag,
+            "colour": self.colour,
+            "tcf1": self.tcf1,
+            "tcf2": self.tcf2,
+            "tcf3": self.tcf3,
             "positions": [p.to_dict() for p in self.positions],
         }
+
+
+@dataclass
+class RaceTrack:
+    """One boat's race track: geometry with a timestamp per point."""
+
+    boat_id: Any
+    name: str
+    race_id: str
+    points: list[tuple[float, float]] = field(default_factory=list)
+    timestamps: list[float] = field(default_factory=list)
+    color: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    visible: bool = True
+
+    def position_at(self, epoch: float) -> Optional[tuple[float, float]]:
+        if not self.points or not self.timestamps:
+            return None
+        index = bisect_right(self.timestamps, epoch) - 1
+        if index < 0:
+            return None
+        return self.points[min(index, len(self.points) - 1)]
 
 
 @dataclass
@@ -482,6 +520,20 @@ def _unwrap_race(data: Any) -> dict:
 def _course_from_poi(poi: Any) -> list[RaceCourse]:
     courses: list[RaceCourse] = []
     if isinstance(poi, dict):
+        # YB RaceSetup describes the ordered course as ``course.nodes``.
+        nodes = poi.get("nodes")
+        if isinstance(nodes, list):
+            node_points: list[tuple[float, float]] = []
+            for node in nodes:
+                point = _normalize_point(node)
+                if point is not None:
+                    node_points.append(point)
+            if node_points:
+                courses.append(
+                    RaceCourse(
+                        name=str(poi.get("name") or "Course"), points=node_points
+                    )
+                )
         lines = poi.get("lines") or poi.get("polylines") or poi.get("tracks") or []
         for line in lines if isinstance(lines, list) else []:
             nodes = line.get("nodes") if isinstance(line, dict) else None
@@ -597,7 +649,16 @@ def _boats_from_data(data: dict) -> list[RaceBoat]:
         for entry in positions_list:
             if not isinstance(entry, dict):
                 continue
-            boat_id = _first(entry, "id", "boat_id", "team_id", "teamId", "boatId")
+            boat_id = _first(
+                entry,
+                "id",
+                "boat_id",
+                "team_id",
+                "teamId",
+                "boatId",
+                "serial",
+                "marker",
+            )
             moments = _first(entry, "moments", "positions", "points", "track")
             if isinstance(moments, list):
                 positions_by_id[boat_id] = moments
@@ -609,8 +670,26 @@ def _boats_from_data(data: dict) -> list[RaceBoat]:
     for team in teams:
         if not isinstance(team, dict):
             continue
-        boat_id = _first(team, "id", "boat_id", "team_id", "teamId", "boatId")
+        boat_id = _first(
+            team,
+            "id",
+            "boat_id",
+            "team_id",
+            "teamId",
+            "boatId",
+            "serial",
+            "marker",
+        )
         moments = positions_by_id.get(boat_id)
+        if moments is None:
+            for alternate in (
+                _first(team, "serial"),
+                _first(team, "marker"),
+                _first(team, "name"),
+            ):
+                if alternate in positions_by_id:
+                    moments = positions_by_id[alternate]
+                    break
         if moments is None:
             # Fall back to positions embedded in the team record.
             moments = _first(team, "positions", "moments", "track", "points")
@@ -664,6 +743,9 @@ def _boats_from_data(data: dict) -> list[RaceBoat]:
                         ),
                     )
                 )
+        # YB returns newest-first; the position index assumes list order is
+        # chronological (last item is the latest fix).
+        race_positions.sort(key=lambda position: position.timestamp)
         boats.append(
             RaceBoat(
                 boat_id=boat_id,
@@ -671,6 +753,15 @@ def _boats_from_data(data: dict) -> list[RaceBoat]:
                 sail=str(_first(team, "sail", "sail_number", "sailNumber") or ""),
                 model=str(_first(team, "model", "boat_model", "boatModel") or ""),
                 status=str(_first(team, "status") or ""),
+                boat_type=str(
+                    _first(team, "type", "boat_type", "boatType", "type3d") or ""
+                ),
+                country=str(_first(team, "country", "nation") or ""),
+                flag=str(_first(team, "flag", "country_code", "countryCode") or ""),
+                colour=str(_first(team, "colour", "color") or ""),
+                tcf1=str(_first(team, "tcf1", "tcf_1") or ""),
+                tcf2=str(_first(team, "tcf2", "tcf_2") or ""),
+                tcf3=str(_first(team, "tcf3", "tcf_3") or ""),
                 positions=race_positions,
             )
         )
@@ -709,6 +800,7 @@ def _boats_from_data(data: dict) -> list[RaceBoat]:
                         timestamp=timestamp, latitude=point[0], longitude=point[1]
                     )
                 )
+            race_positions.sort(key=lambda position: position.timestamp)
             boats.append(
                 RaceBoat(
                     boat_id=entry["id"],
@@ -847,6 +939,7 @@ def weather_download_request(race: Race, *args, **kwargs) -> dict:
 
 YB_HOST = "yb.tl"
 YB_POSITIONS_PATH_TEMPLATE = "API3/Race/{race}/GetPositions"
+YB_RACE_SETUP_PATH_TEMPLATE = "JSON/{race}/RaceSetup"
 YB_DOWNLOAD_TIMEOUT = 30
 YB_MAX_RESPONSE_BYTES = 50 * 1024 * 1024
 
@@ -905,6 +998,15 @@ def yb_positions_url(slug: str) -> str:
         raise ValueError("invalid YB race slug")
     return "https://{host}/{path}".format(
         host=YB_HOST, path=YB_POSITIONS_PATH_TEMPLATE.format(race=slug)
+    )
+
+
+def yb_race_setup_url(slug: str) -> str:
+    slug = normalize_yb_race_slug(slug)
+    if slug is None:
+        raise ValueError("invalid YB race slug")
+    return "https://{host}/{path}".format(
+        host=YB_HOST, path=YB_RACE_SETUP_PATH_TEMPLATE.format(race=slug)
     )
 
 
@@ -1032,21 +1134,14 @@ RaceRepository = RaceStore
 YBRaceStore = RaceStore
 
 
-def fetch_yb_positions(
-    identifier: Any,
+def _fetch_yb_json(
+    url: str,
     *,
-    timeout: int = YB_DOWNLOAD_TIMEOUT,
-    max_bytes: int = YB_MAX_RESPONSE_BYTES,
-    session=None,
+    timeout: int,
+    max_bytes: int,
+    session,
 ) -> Any:
-    """Download and return the parsed JSON payload for a YB race."""
-    slug = normalize_yb_race_slug(identifier)
-    if slug is None:
-        raise YBRaceError("invalid YB race code or URL")
-    # Request the complete position history. A bare GetPositions request returns
-    # only the latest report for each boat; t=0 asks for positions from the
-    # start of the race.
-    url = yb_positions_url(slug) + "?t=0"
+    """Download and decode one JSON document from YB."""
     client = session
     if client is None:
         requests_module = globals().get("requests")
@@ -1138,6 +1233,162 @@ def fetch_yb_positions(
     return payload
 
 
+def fetch_yb_positions(
+    identifier: Any,
+    *,
+    timeout: int = YB_DOWNLOAD_TIMEOUT,
+    max_bytes: int = YB_MAX_RESPONSE_BYTES,
+    session=None,
+) -> Any:
+    """Download and return the parsed position payload for a YB race."""
+    slug = normalize_yb_race_slug(identifier)
+    if slug is None:
+        raise YBRaceError("invalid YB race code or URL")
+    # Request the complete position history. A bare GetPositions request returns
+    # only the latest report for each boat; t=0 asks for positions from the
+    # start of the race.
+    return _fetch_yb_json(
+        yb_positions_url(slug) + "?t=0",
+        timeout=timeout,
+        max_bytes=max_bytes,
+        session=session,
+    )
+
+
+def fetch_yb_race_setup(
+    identifier: Any,
+    *,
+    timeout: int = YB_DOWNLOAD_TIMEOUT,
+    max_bytes: int = YB_MAX_RESPONSE_BYTES,
+    session=None,
+) -> Any:
+    """Download the viewer RaceSetup payload (title, times, course, POIs)."""
+    slug = normalize_yb_race_slug(identifier)
+    if slug is None:
+        raise YBRaceError("invalid YB race code or URL")
+    payload = _fetch_yb_json(
+        yb_race_setup_url(slug),
+        timeout=timeout,
+        max_bytes=max_bytes,
+        session=session,
+    )
+    if not isinstance(payload, dict):
+        raise YBRaceError("YB race setup is not a JSON object")
+    return payload
+
+
+# Viewer-only POI lines such as shipping lanes are not part of the race course.
+_YB_NON_COURSE_LINE_TOKENS = ("shipping", "lane", "join")
+
+
+def _is_race_course_line(line: Any) -> bool:
+    if not isinstance(line, dict):
+        return False
+    name = str(line.get("name") or "").strip().lower()
+    return not any(token in name for token in _YB_NON_COURSE_LINE_TOKENS)
+
+
+def merge_race_setup(payload: Any, setup: Any) -> Any:
+    """Merge YB RaceSetup metadata and course into a GetPositions payload."""
+    if not isinstance(payload, dict) or not isinstance(setup, dict):
+        return payload
+    merged = dict(payload)
+    title = setup.get("title") or setup.get("name")
+    if title and not any(
+        key in merged for key in ("name", "race_name", "raceName", "title", "event")
+    ):
+        merged["name"] = title
+    if not any(
+        key in merged
+        for key in (
+            "start",
+            "start_time",
+            "startTime",
+            "race_start",
+            "raceStart",
+            "begin",
+        )
+    ):
+        if setup.get("start") is not None:
+            merged["start"] = setup["start"]
+    course = setup.get("course")
+    if isinstance(course, dict):
+        nodes = course.get("nodes")
+        if isinstance(nodes, list) and nodes:
+            merged["course"] = {
+                "name": str(course.get("name") or "Course"),
+                "nodes": nodes,
+            }
+    poi = setup.get("poi")
+    if isinstance(poi, dict):
+        lines = poi.get("lines")
+        if isinstance(lines, list):
+            kept = [line for line in lines if _is_race_course_line(line)]
+            if kept:
+                merged["poi"] = {"lines": kept}
+    return _merge_setup_teams(merged, setup)
+
+
+def _merge_setup_teams(payload: dict, setup: dict) -> dict:
+    """Enrich downloaded teams with the class/identity data from RaceSetup."""
+    teams = payload.get("teams")
+    setup_teams = setup.get("teams")
+    if not isinstance(teams, list) or not isinstance(setup_teams, list):
+        return payload
+    by_marker: dict[str, dict] = {}
+    by_name: dict[str, dict] = {}
+    for team in setup_teams:
+        if not isinstance(team, dict):
+            continue
+        marker = team.get("markerText", team.get("marker"))
+        if marker is not None:
+            by_marker[str(marker)] = team
+        name = team.get("name")
+        if name:
+            by_name[str(name)] = team
+    merged_teams = []
+    for team in teams:
+        if not isinstance(team, dict):
+            merged_teams.append(team)
+            continue
+        enriched = dict(team)
+        marker = enriched.get("marker", enriched.get("markerText"))
+        match = by_marker.get(str(marker)) if marker is not None else None
+        if match is None:
+            match = by_name.get(str(enriched.get("name") or ""))
+        if match is not None:
+            for field in (
+                "id",
+                "markerText",
+                "sail",
+                "model",
+                "type",
+                "type3d",
+                "status",
+                "country",
+                "flag",
+                "colour",
+                "tcf1",
+                "tcf2",
+                "tcf3",
+                "owner",
+                "captain",
+                "notes",
+                "tags",
+            ):
+                if enriched.get(field) in (None, "") and match.get(field) not in (
+                    None,
+                    "",
+                ):
+                    enriched[field] = match[field]
+            if enriched.get("marker") is None and match.get("markerText") is not None:
+                enriched["marker"] = match["markerText"]
+        merged_teams.append(enriched)
+    result = dict(payload)
+    result["teams"] = merged_teams
+    return result
+
+
 fetch_yb_race = fetch_yb_positions
 download_yb_positions = fetch_yb_positions
 get_yb_positions = fetch_yb_positions
@@ -1151,11 +1402,23 @@ def download_yb_race(
     session=None,
     directory: Any = None,
     save: bool = True,
+    include_setup: bool = True,
 ) -> Race:
     """Download, parse, optionally persist, and return a YB race."""
     payload = fetch_yb_positions(
         identifier, timeout=timeout, max_bytes=max_bytes, session=session
     )
+    # RaceSetup supplies the title, start time and course/start line. It is
+    # optional: a setup failure must not discard an otherwise valid download.
+    if include_setup:
+        try:
+            setup = fetch_yb_race_setup(
+                identifier, timeout=timeout, max_bytes=max_bytes, session=session
+            )
+        except Exception:
+            setup = None
+        if setup is not None:
+            payload = merge_race_setup(payload, setup)
     slug = normalize_yb_race_slug(identifier)
     race = parse_race(payload, race_id=slug)
     if save:

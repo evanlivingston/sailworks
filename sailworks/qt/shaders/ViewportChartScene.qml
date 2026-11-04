@@ -168,6 +168,8 @@ Item {
                 property var pois: []
                 property var tracks: []
                 property var raceTracks: []
+                property var raceCourses: []
+                property var racePositions: []
                 property var routes: []
                 property var aisTargets: []
                 property var isochrones: null
@@ -518,6 +520,68 @@ Item {
                             context.fillText(label, lx, ly)
                         }
                     }
+                    if (raceCourses && raceCourses.length) {
+                        for (let c = 0; c < raceCourses.length; ++c) {
+                            const course = raceCourses[c]
+                            const points = course.points
+                            if (!points || points.length < 2)
+                                continue
+                            const label = String(course.name || "")
+                            const upper = label.toUpperCase()
+                            const isStart = upper.indexOf("START") === 0
+                            const isFinish = upper.indexOf("FINISH") === 0
+                            const stroke = isStart
+                                ? "rgba(0,200,90,1)"
+                                : isFinish
+                                    ? "rgba(230,40,40,1)"
+                                    : "rgba(255,255,255,0.95)"
+                            // Halo pass keeps the course legible over charts/weather.
+                            for (let pass = 0; pass < 2; ++pass) {
+                                context.beginPath()
+                                const first = screenPoint(points[0])
+                                context.moveTo(first.x, first.y)
+                                for (let i = 1; i < points.length; ++i) {
+                                    const point = screenPoint(points[i])
+                                    context.lineTo(point.x, point.y)
+                                }
+                                if (course.closed)
+                                    context.closePath()
+                                context.lineWidth = pass === 0
+                                    ? (isStart || isFinish ? 5 : 3.5)
+                                    : (isStart || isFinish ? 3 : 2)
+                                context.strokeStyle = pass === 0
+                                    ? "rgba(0,0,0,0.55)"
+                                    : stroke
+                                context.setLineDash(
+                                    (isStart || isFinish) ? [] : [10, 6])
+                                context.stroke()
+                            }
+                            context.setLineDash([])
+                            if (label) {
+                                const anchor = screenPoint(points[0])
+                                context.font = "bold 10px sans-serif"
+                                const width = context.measureText(label).width
+                                context.fillStyle = "rgba(0,0,0,0.6)"
+                                context.fillRect(anchor.x - 2, anchor.y - 24,
+                                                 width + 4, 13)
+                                context.fillStyle = stroke
+                                context.fillText(label, anchor.x, anchor.y - 14)
+                            }
+                            if (!isStart && !isFinish) {
+                                for (let i = 0; i < points.length; ++i) {
+                                    const point = screenPoint(points[i])
+                                    context.beginPath()
+                                    context.arc(point.x, point.y, 2.5,
+                                                0, Math.PI * 2)
+                                    context.fillStyle = "rgba(255,255,255,0.95)"
+                                    context.fill()
+                                    context.lineWidth = 1
+                                    context.strokeStyle = "rgba(0,0,0,0.7)"
+                                    context.stroke()
+                                }
+                            }
+                        }
+                    }
                     if (raceTracks && raceTracks.length) {
                         for (let t = 0; t < raceTracks.length; ++t) {
                             const track = raceTracks[t]
@@ -543,6 +607,55 @@ Item {
                             context.font = "10px sans-serif"
                             context.fillStyle = "rgba(17,17,17,0.7)"
                             context.fillText(track.name, first.x - 10, first.y - 10)
+                        }
+                    }
+                    if (racePositions && racePositions.length) {
+                        context.font = "10px sans-serif"
+                        for (let b = 0; b < racePositions.length; ++b) {
+                            const marker = racePositions[b]
+                            const isPair = Array.isArray(marker)
+                            const lat = isPair ? marker[0] : marker.lat
+                            const lon = isPair ? marker[1] : marker.lon
+                            const point = screenPoint([lat, lon])
+                            if (!isFinite(point.x) || !isFinite(point.y))
+                                continue
+                            const color = (!isPair && marker.color)
+                                ? marker.color
+                                : [0.95, 0.2, 0.1]
+                            const fill = `rgba(${Math.round(color[0] * 255)},` +
+                                `${Math.round(color[1] * 255)},` +
+                                `${Math.round(color[2] * 255)},0.95)`
+                            const angle = (!isPair && hasFiniteValue(marker.angle))
+                                ? Number(marker.angle) * Math.PI / 180
+                                : 0
+                            context.save()
+                            context.translate(point.x, point.y)
+                            context.rotate(angle)
+                            // Boat-shaped arrow pointing along the boat's course.
+                            context.beginPath()
+                            context.moveTo(0, -8)
+                            context.lineTo(4.5, 6)
+                            context.lineTo(0, 3.5)
+                            context.lineTo(-4.5, 6)
+                            context.closePath()
+                            context.fillStyle = fill
+                            context.fill()
+                            context.lineWidth = 1.2
+                            context.strokeStyle = "rgba(255,255,255,0.95)"
+                            context.stroke()
+                            context.restore()
+                            const label = (!isPair && marker.name)
+                                ? String(marker.name)
+                                : ""
+                            if (label) {
+                                const lx = point.x + 8
+                                const ly = point.y - 8
+                                const width = context.measureText(label).width
+                                context.fillStyle = "rgba(0,0,0,0.55)"
+                                context.fillRect(lx - 2, ly - 11, width + 4, 14)
+                                context.fillStyle = "rgba(255,255,255,0.95)"
+                                context.fillText(label, lx, ly)
+                            }
                         }
                     }
                     if (pois && pois.length) {
@@ -678,6 +791,8 @@ Item {
                 onPoisChanged: requestPaint()
                 onTracksChanged: requestPaint()
                 onRaceTracksChanged: requestPaint()
+                onRaceCoursesChanged: requestPaint()
+                onRacePositionsChanged: requestPaint()
                 onRoutesChanged: requestPaint()
                 onAisTargetsChanged: requestPaint()
                 onIsochronesChanged: requestPaint()

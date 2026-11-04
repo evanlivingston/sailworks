@@ -67,7 +67,7 @@ def test_track_select_edit_escape_and_race_track_restriction(qtbot):
     assert panel.canvas.navigation.edit_track is None
     assert not panel.track_buttons[1].isEnabled()
 
-    race = Track("Race", [(1, 2, None)], race_track=True)
+    race = Track("Race", [(1, 2, None)])
     panel.core.trackManager = _Tracks(race)
     NavigationPanel.edit_track(panel)
     assert panel.canvas.navigation.edit_track is None
@@ -87,7 +87,7 @@ def test_point_modifications_require_selected_editable_track(qtbot):
     NavigationPanel.edit_point(panel, "remove")
     assert len(track.points) == 1
 
-    race = Track("Race", [(1, 2, None)], race_track=True)
+    race = Track("Race", [(1, 2, None)])
     panel.core.trackManager = _Tracks(race)
     panel.canvas.navigation.edit_track = race
     NavigationPanel.edit_point(panel, "remove")
@@ -121,7 +121,7 @@ def test_add_point_requires_edit_mode_for_existing_tracks(qtbot):
     assert panel.canvas.invalidations == 1
     assert panel.canvas._weather_presenter.invalidations == 1
 
-    race = Track("Race", [(1, 2, None)], race_track=True)
+    race = Track("Race", [(1, 2, None)])
     panel.core.trackManager = _Tracks(race)
     panel.canvas.navigation.edit_track = race
     NavigationPanel.add_point(panel, (5, 6))
@@ -154,7 +154,7 @@ def test_new_track_enters_edit_mode_and_accepts_repeated_points(qtbot):
     NavigationPanel.add_point(panel, (3, 4))
     assert track.points == [(1, 2, None), (3, 4, None)]
 
-    race = Track("Race", [(5, 6, None)], race_track=True)
+    race = Track("Race", [(5, 6, None)])
     panel.core.trackManager = _Tracks(race)
     panel.canvas.navigation.edit_track = race
     NavigationPanel.add_point(panel, (7, 8))
@@ -171,7 +171,7 @@ def test_add_point_implicitly_creates_editable_track(qtbot):
     NavigationPanel.add_point(panel, (3, 4))
     assert track.points == [(1, 2, None), (3, 4, None)]
 
-    race = Track("Race", [(5, 6, None)], race_track=True)
+    race = Track("Race", [(5, 6, None)])
     panel.core.trackManager = _Tracks(race)
     panel.canvas.navigation.edit_track = None
     NavigationPanel.add_point(panel, (7, 8))
@@ -200,7 +200,7 @@ def test_track_list_click_and_double_click_are_wired(qtbot):
     table = QTableWidget(2, 1)
     qtbot.addWidget(table)
     ordinary = Track("Editable", [(1, 2, None)])
-    race = Track("Race", [(3, 4, None)], race_track=True)
+    race = Track("Race", [(3, 4, None)])
     manager = _Tracks(ordinary, race)
     buttons = [QPushButton(), QPushButton()]
     canvas = SimpleNamespace(
@@ -258,7 +258,9 @@ def test_only_edited_track_gets_point_handle_circles():
         Track("Second", [(3, 4, None)]),
     ]
     renderer = NavigationRenderer(
-        SimpleNamespace(trackManager=TrackManager(tracks), poiManager=[], routingManager=[])
+        SimpleNamespace(
+            trackManager=TrackManager(tracks), poiManager=[], routingManager=[]
+        )
     )
     renderer.edit_track = tracks[1]
 

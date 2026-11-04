@@ -10,8 +10,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QSlider, QWidget
 
-from sailworks.core.race import parse_race
-from sailworks.core.timecontrol import TimeControl
+from sailworks.core.race import RaceTrack, parse_race
+from sailworks.core.timecontrol import TimeControl, utc_to_wall
 from sailworks.qt.mapoverlays import RetainedOverlayMixin
 from sailworks.qt.window import PreviewWindow
 
@@ -46,14 +46,22 @@ def test_boats_at_current_time_follows_scrubbed_time(qtbot):
         def get_unique_name(self, name):
             return name
 
-        def set_active(self, track):
+        def exists(self, name):
+            return any(track.name == name for track in self)
+
+        def save(self):
+            pass
+
+        def set_active(self, track, save=True):
             self.active = track
 
-        def remove_by_names(self, names):
+        def remove_by_names(self, names, save=True):
             wanted = set(names or ())
-            self[:] = [track for track in self if getattr(track, "name", None) not in wanted]
+            self[:] = [
+                track for track in self if getattr(track, "name", None) not in wanted
+            ]
 
-        def append_many(self, tracks):
+        def append_many(self, tracks, save=True):
             for track in tracks:
                 track.collection = self
                 self.append(track)
@@ -67,43 +75,32 @@ def test_boats_at_current_time_follows_scrubbed_time(qtbot):
     race = _sample_race()
     panel._add_race(race)
 
-    controller.time_control.set_time(race.start_time)
+    controller.time_control.set_time(utc_to_wall(race.start_time))
     positions = panel.boats_at_current_time()
     assert 1 in positions
     assert positions[1].latitude == 48.0
 
-    controller.time_control.set_time(race.end_time)
+    controller.time_control.set_time(utc_to_wall(race.end_time))
     positions = panel.boats_at_current_time()
     assert positions[1].latitude == 48.1
 
 
 def test_window_race_time_changed_publishes_all_boat_positions(qtbot):
     race = _sample_race()
-    track_name = f"{race.name} - Boat"
-    race_panel = SimpleNamespace(race=race, race_track_times={})
-    race_panel.race_track_times[track_name] = [
-        p.timestamp.replace(tzinfo=timezone.utc).timestamp()
-        for p in race.boat(1).positions
-    ]
-
-    # Mock track manager that supports iteration and get_active
-    class TrackManager(list):
-        def get_active(self):
-            # Return a track with the expected name
-            for track in self:
-                if track.name == track_name:
-                    return track
-            return None
-
-        def get_unique_name(self, name):
-            return name
-
-    track_manager = TrackManager()
-    track_manager.append(SimpleNamespace(name=track_name))
-
+    positions = race.boat(1).positions
+    track = RaceTrack(
+        boat_id=1,
+        name="Boat",
+        race_id=race.race_id,
+        points=[(p.latitude, p.longitude) for p in positions],
+        timestamps=[
+            p.timestamp.replace(tzinfo=timezone.utc).timestamp() for p in positions
+        ],
+    )
+    race_panel = SimpleNamespace(race=race, active_race_track=track)
+    race_panel.race_tracks = lambda selected: [track]
     controller = SimpleNamespace(
-        time_control=TimeControl(),
-        core=SimpleNamespace(trackManager=track_manager),
+        time_control=TimeControl(), core=SimpleNamespace(trackManager=[])
     )
     canvas_map = Mock()
     canvas_log = Mock()
@@ -112,15 +109,13 @@ def test_window_race_time_changed_publishes_all_boat_positions(qtbot):
         race_panel=race_panel,
         map=canvas_map,
         log_map=canvas_log,
-        _race_track_times=dict(race_panel.race_track_times),
-        _race_track_names={track_name},
         _race_boat_positions=[],
     )
     window._race_time_changed = lambda when: PreviewWindow._race_time_changed(
         window, when
     )
 
-    when = race.start_time
+    when = utc_to_wall(race.start_time)
     controller.time_control.set_time(when)
     window._race_time_changed(when)
 
@@ -131,7 +126,7 @@ def test_window_race_time_changed_publishes_all_boat_positions(qtbot):
         canvas.invalidate_navigation.assert_called()
         canvas.update.assert_called()
 
-    later = race.end_time
+    later = utc_to_wall(race.end_time)
     controller.time_control.set_time(later)
     window._race_time_changed(later)
     assert window._race_boat_positions == [[48.1, -123.1]]
@@ -149,10 +144,9 @@ def test_window_race_time_changed_clears_stale_markers(qtbot):
     )
     window = SimpleNamespace(
         controller=controller,
-        race_panel=SimpleNamespace(race=None, race_track_times={}),
+        race_panel=SimpleNamespace(race=None, active_race_track=None),
         map=canvas_map,
         log_map=canvas_log,
-        _race_track_times={},
         _race_boat_positions=[[48.0, -123.0]],
     )
     window._race_time_changed = lambda when: PreviewWindow._race_time_changed(
@@ -199,34 +193,25 @@ def test_navigation_overlay_drives_race_scrub_markers(qtbot):
             ],
         }
     )
-    track_name = f"{race.name} - Boat"
-    times = [
-        p.timestamp.replace(tzinfo=timezone.utc).timestamp()
-        for p in race.boat(1).positions
-    ]
+    positions = race.boat(1).positions
+    track = RaceTrack(
+        boat_id=1,
+        name="Boat",
+        race_id=race.race_id,
+        points=[(p.latitude, p.longitude) for p in positions],
+        timestamps=[
+            p.timestamp.replace(tzinfo=timezone.utc).timestamp() for p in positions
+        ],
+    )
 
     class Host(SimpleNamespace):
         pass
-
-    # Mock track manager that supports iteration and get_active
-    class TrackManager(list):
-        def get_active(self):
-            for track in self:
-                if track.name == track_name:
-                    return track
-            return None
-
-        def get_unique_name(self, name):
-            return name
-
-    track_manager = TrackManager()
-    track_manager.append(SimpleNamespace(name=track_name))
 
     host = Host()
     host.controller = SimpleNamespace(
         core=SimpleNamespace(
             routingManager=[],
-            trackManager=track_manager,
+            trackManager=[],
             poiManager=[],
         )
     )
@@ -266,14 +251,13 @@ def test_navigation_overlay_drives_race_scrub_markers(qtbot):
     host.selected_route_point = -1
 
     controller = SimpleNamespace(time_control=TimeControl(), core=host.controller.core)
-    race_panel = SimpleNamespace(race=race, race_track_times={track_name: times})
+    race_panel = SimpleNamespace(race=race, active_race_track=track)
+    race_panel.race_tracks = lambda selected: [track]
     window = SimpleNamespace(
         controller=controller,
         race_panel=race_panel,
         map=host,
         log_map=host,
-        _race_track_times={track_name: times},
-        _race_track_names={track_name},
         _race_boat_positions=[],
     )
 
@@ -288,7 +272,7 @@ def test_navigation_overlay_drives_race_scrub_markers(qtbot):
 
     def scrub(value):
         controller.time_control.set_time(
-            race.start_time if value == 0 else race.end_time
+            utc_to_wall(race.start_time if value == 0 else race.end_time)
         )
 
     slider.valueChanged.connect(scrub)
@@ -308,9 +292,9 @@ def test_navigation_overlay_drives_race_scrub_markers(qtbot):
     assert second_centroid is not None
     assert first_centroid != second_centroid
 
-    window._race_track_times = {}
+    window.race_panel.active_race_track = None
     window.race_panel.race = None
-    controller.time_control.set_time(race.end_time)
+    controller.time_control.set_time(utc_to_wall(race.end_time))
     qtbot.waitUntil(lambda: window._race_boat_positions == [], timeout=1000)
     cleared_centroid = _marker_centroid(RetainedOverlayMixin._navigation_image(host))
     assert cleared_centroid is None
