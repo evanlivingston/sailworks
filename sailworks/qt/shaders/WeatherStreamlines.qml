@@ -94,9 +94,11 @@ Item {
                          + ", mesh=" + delegate.meshResolution
                          + ", segments=" + delegate.segmentCount
                          + ", arrow=" + delegate.arrow
+                         + ", ready=" + delegate.ready
                          + ", error=" + delegate.shaderError)
         }
-        return "batches=" + batches.count + " [" + details.join("; ") + "]"
+        return "front=" + frontBuffer + " pending=" + pendingBuffer
+               + " batches=" + batches.count + " [" + details.join("; ") + "]"
     }
 
     // RGB888, three texels per segment row (never uses alpha as data).
@@ -157,10 +159,21 @@ Item {
                  property color segmentColor: modelData.color
                  property bool arrow: !!modelData.arrow
                 property bool ready: segments.status === Image.Ready && effect.status === ShaderEffect.Compiled
+                // Any status other than Compiled is a failure worth
+                // reporting: on some RHI backends the effect stays at an
+                // intermediate status instead of Error, and an empty message
+                // hid a shader that never compiled.
                 property string shaderError: segments.status === Image.Error ? "Streamline texture unavailable"
-                                             : effect.status === ShaderEffect.Error ? effect.log : ""
+                                             : effect.status === ShaderEffect.Compiled ? ""
+                                             : (effect.log.length ? effect.log
+                                                : "Streamline shader did not compile (status " + effect.status + ")")
                 onReadyChanged: root.batchRevision++
                 onShaderErrorChanged: root.batchRevision++
+                // The aggregate ``ready`` reads delegate state inside a JS
+                // loop, so it must be told when a status transition happens;
+                // ready/shaderError alone do not cover the initial load.
+                onImageStatusChanged: root.batchRevision++
+                onEffectStatusChanged: root.batchRevision++
                 anchors.fill: parent
                 Image { id: segments; source: batch.segmentSource; visible: false; smooth: false; cache: false }
                 ShaderEffect {
