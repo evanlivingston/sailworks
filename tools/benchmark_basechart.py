@@ -26,6 +26,11 @@ class Viewport(MercatorProjection):
     width = 912
     height = 812
 
+    def __init__(self, center_lat=47.6, center_lon=-122.4, zoom=8):
+        self._center_lat = center_lat
+        self._center_lon = center_lon
+        self._zoom = zoom
+
     def get_allocated_width(self):
         return self.width
 
@@ -62,6 +67,13 @@ def main(argv=None):
     parser.add_argument("--gshhs", type=Path, default=Path(DATA_DIR) / "gshhs")
     parser.add_argument("-n", "--iterations", type=int, default=10)
     parser.add_argument("--factor", type=int, choices=(1, 2), default=2)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--pan", dest="mode", action="store_const", const="pan")
+    mode.add_argument("--static", dest="mode", action="store_const", const="static")
+    parser.set_defaults(mode="pan")
+    parser.add_argument("--zoom", type=float, default=8)
+    parser.add_argument("--center-lat", type=float, default=47.6)
+    parser.add_argument("--center-lon", type=float, default=-122.4)
     args = parser.parse_args(argv)
     if args.iterations < 1:
         parser.error("iterations must be positive")
@@ -86,14 +98,19 @@ def main(argv=None):
                 "gshhs", str(args.gshhs), initial_times=tuple((q, 0.0) for q in "fhilc")
             )
         renderer = BaseChartRenderer(lambda *args: None)
-        job = RenderJob((), Viewport(), ((source,),), args.factor, "dark")
+        viewport = Viewport(args.center_lat, args.center_lon, args.zoom)
+        pan_degrees = 50 * 360 / (Viewport.TILE_SIZE * 2**args.zoom)
         times = []
-        for _ in range(args.iterations):
+        for iteration in range(args.iterations):
+            if args.mode == "pan":
+                lon = (args.center_lon + iteration * pan_degrees + 180) % 360 - 180
+                viewport = Viewport(args.center_lat, lon, args.zoom)
+            job = RenderJob((), viewport, ((source,),), args.factor, "dark")
             start = time.perf_counter()
             renderer._render(job)
             times.append((time.perf_counter() - start) * 1000)
         print(
-            f"n={len(times)} min={min(times):.3f} ms median={statistics.median(times):.3f} ms mean={statistics.mean(times):.3f} ms"
+            f"mode={args.mode} n={len(times)} min={min(times):.3f} ms median={statistics.median(times):.3f} ms mean={statistics.mean(times):.3f} ms"
         )
     return 0
 
