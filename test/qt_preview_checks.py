@@ -739,7 +739,6 @@ class QtPreviewChecks(unittest.TestCase):
             (46.2, -121.3, 9.5),
         )
 
-
     def test_floating_panels_redock_and_reset_without_losing_content(self):
         from sailworks.qt.dockchrome import DockTitleBar, DOCK_MIN_WIDTH
 
@@ -903,7 +902,6 @@ class QtPreviewChecks(unittest.TestCase):
         )
         self.controller.time_control.set_time(start)
         return start
-
 
     def test_coastline_polygon_hole_is_preserved(self):
         import cairo
@@ -1455,7 +1453,6 @@ class QtPreviewChecks(unittest.TestCase):
             bytes((11, 22, 33, 255, 44, 55, 66, 255)),
         )
         self.assertEqual(chart.surface.get_width(), 2)
-
 
     def wait_for_route(self):
         # The current-coverage preflight samples a corridor and checks it
@@ -2323,7 +2320,6 @@ class QtPreviewChecks(unittest.TestCase):
             self.window.polar_workspace.status.text(),
         )
 
-
     def test_gtk_performance_controls_use_shared_history_basis_band_and_clear_only_samples(
         self,
     ):
@@ -2365,10 +2361,6 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(self.controller.session.active_history.snapshot()[1], ())
         self.assertIs(self.controller.session.log, source_log)
         self.assertEqual(tuple(self.controller.points), points)
-
-
-
-
 
     def test_track_extended_selection_context_click_and_multi_delete(self):
         from PySide6.QtCore import QItemSelection, QItemSelectionModel
@@ -2702,9 +2694,6 @@ class QtPreviewChecks(unittest.TestCase):
         canvas._dashboard_image()
         self.assertTrue(all(g.value is None for g in canvas.dashboard._gauges))
 
-
-
-
     def test_weather_streamline_style_updates_render_key_and_persists(self):
         from sailworks.core.settings import SettingsManager
 
@@ -2740,7 +2729,6 @@ class QtPreviewChecks(unittest.TestCase):
             barbs_key = canvas._wind_style_key()
             panel.barb_density.setCurrentIndex(panel.barb_density.findData("sparse"))
             self.assertEqual(canvas._wind_style_key(), barbs_key)
-
 
     def test_bottom_status_bar_has_consistent_padding(self):
         margins = self.window.statusBar().contentsMargins()
@@ -2918,9 +2906,7 @@ class QtPreviewChecks(unittest.TestCase):
         timeline = ForecastTimeline(proxy, self.window)
         self.addCleanup(timeline.dispose)
         self.assertFalse(timeline.slider.isEnabled())
-        self.assertIn(
-            "Choose a display forecast in Weather", timeline.caption.text()
-        )
+        self.assertIn("Choose a display forecast in Weather", timeline.caption.text())
         current = field()
         marine.fields.add(current)
         self.drain()
@@ -3484,7 +3470,6 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertTrue(marine.manager.is_enabled(tide.id))
         self.assertIn("reused 1", marine.status.text())
 
-
     def test_marine_overlay_uses_shared_worker_and_cursor_values(self):
         current, tide = self.marine_fixture()
         manager = self.controller.core.marine_manager
@@ -3944,10 +3929,6 @@ class QtPreviewChecks(unittest.TestCase):
                     target.pixelColor(100 * factor, 100 * factor), QColor("#39954c")
                 )
 
-
-
-
-
     @staticmethod
     def _native_pinch(kind, value=0.0, pointer=QPointF(83, 71)):
         from PySide6.QtGui import QNativeGestureEvent, QPointingDevice
@@ -3984,12 +3965,6 @@ class QtPreviewChecks(unittest.TestCase):
             phase,
             inverted,
         )
-
-
-
-
-
-
 
     def _enable_motion_settings(self):
         # The common fixture skips disk loading; initialize notifications using
