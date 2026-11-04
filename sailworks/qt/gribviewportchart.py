@@ -53,10 +53,10 @@ CHART_PALETTE = "cm93"
 
 #: The settle window the chart layer composes for.  The recorded interaction
 #: sweep delivers its inputs at 30 per second (33 ms apart), so a window of
-#: 500 ms spans more than fifteen inputs: an interaction never triggers a
-#: composition, and the chart layer never competes with the weather
-#: pipeline for the worker.  This is a policy, not a measured threshold.
-CHART_SETTLE_MS = 500
+#: 200 ms spans about six inputs. This deliberate policy, not a measured
+#: threshold, keeps an interaction from triggering a composition while
+#: shortening the wait after the camera settles.
+CHART_SETTLE_MS = 200
 
 #: The coastline qualities' initial draw times, as the application's own
 #: ``GSHHSVectorChart`` records them.

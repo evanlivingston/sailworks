@@ -251,7 +251,7 @@ def test_chart_placement_scales_the_retained_zoom_preview_about_its_center():
 
     x, y, width, height = chart_placement(composed, zoomed)
 
-    assert CHART_SETTLE_MS == 500
+    assert CHART_SETTLE_MS == 200
     assert width == composed.width * 2
     assert height == composed.height * 2
     assert x + width / 2 == camera.width / 2
