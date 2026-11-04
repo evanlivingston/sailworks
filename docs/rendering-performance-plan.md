@@ -193,8 +193,8 @@ and every `_request_chart` early return. A camera-too-recent return re-arms for 
 a full interval. The former repeating `CHART_SETTLE_MS = 200` poll added a 0–500 ms phase offset in the legacy
 tree and 70–188 ms in this tree.
 
-**One composition in flight.** A newer camera replaces only the pending slot; the running composition is never
-cancelled, and the latest camera is requested when it completes. Retained-imagery pan/zoom preview predates
+**One composition in flight.** A newer camera replaces only the pending slot; it does not cancel the running
+composition, though lifecycle and invalidation paths may cancel or invalidate work. The latest camera is requested when it completes. Retained-imagery pan/zoom preview predates
 this change.
 
 **Interactive previews during motion.** Camera changes may request a coarse composition at DPR × 0.5 (a

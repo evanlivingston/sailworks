@@ -293,7 +293,7 @@ steps immediate and finishes an active zoom at its requested target. Pan inertia
 off stops motion immediately. A pause before releasing suppresses a glide.
 
 New input, fit, point placement, hiding, resizing and closing stop inertial motion. Non-chart overlay updates wait until motion settles, and workspace autosave waits for both maps
-to stop moving. Chart compositions run during motion as explicitly marked, throttled, lower-resolution previews; a full-quality composition follows a 100 ms idle debounce.
+to stop moving. Lower-resolution previews require weather not busy, an available chart worker and the 150 ms throttle, so not every camera event produces one; full-quality composition follows a 100 ms idle debounce but can also wait while weather is busy.
 Preferences use the existing shared settings file and survive restart. The verified rebuilt-layer draw fix remains in place. Mouse-wheel zoom step size and routing calculations are
 unchanged.
 
