@@ -85,6 +85,7 @@ class RoutingPanel(QWidget):
         self.departure.setCalendarPopup(True)
         self.departure.setDisplayFormat("yyyy-MM-dd HH:mm")
         form.addRow("Departure (local)", self.departure)
+        self.departure.dateTimeChanged.connect(lambda *_: self.options_changed.emit())
         self.map_start = None
         self.map_destination = None
         # The start mode depends on the chosen track/POI, so pick the
@@ -233,6 +234,7 @@ class RoutingPanel(QWidget):
         )
         self.parameters_header.setArrowType(Qt.ArrowType.RightArrow)
         self.parameters_header.toggled.connect(self._toggle_parameters)
+        self.parameters_header.toggled.connect(lambda *_: self.options_changed.emit())
 
         self.parameters_section = QWidget()
         section_layout = QVBoxLayout(self.parameters_section)
@@ -454,11 +456,72 @@ class RoutingPanel(QWidget):
             self.preflight_dialog = None
             dialog.deleteLater()
 
+    @staticmethod
+    def _selection_state(value):
+        if isinstance(value, Track):
+            return {"type": "track", "name": value.name}
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            try:
+                return {
+                    "type": "position",
+                    "value": [float(value[0]), float(value[1])],
+                }
+            except (TypeError, ValueError):
+                return None
+        if isinstance(value, str) and value:
+            return {"type": "value", "value": value}
+        return None
+
+    @staticmethod
+    def _same_position(left, right):
+        try:
+            return (
+                abs(float(left[0]) - float(right[0])) <= 1e-9
+                and abs(float(left[1]) - float(right[1])) <= 1e-9
+            )
+        except (TypeError, ValueError, IndexError):
+            return False
+
+    def _combo_has_position(self, combo, value):
+        if not isinstance(value, (list, tuple)) or len(value) < 2:
+            return False
+        for index in range(combo.count()):
+            data = combo.itemData(index)
+            if isinstance(data, (list, tuple)) and self._same_position(data, value):
+                return True
+        return False
+
+    def _restore_combo(self, combo, saved):
+        if not isinstance(saved, dict):
+            return False
+        kind = saved.get("type")
+        value = saved.get("value")
+        for index in range(combo.count()):
+            data = combo.itemData(index)
+            if kind == "track" and isinstance(data, Track) and data.name == value:
+                combo.setCurrentIndex(index)
+                return True
+            if (
+                kind == "position"
+                and isinstance(data, (list, tuple))
+                and self._same_position(data, value)
+            ):
+                combo.setCurrentIndex(index)
+                return True
+            if kind == "value" and data == value:
+                combo.setCurrentIndex(index)
+                return True
+        return False
+
     def saved_options(self):
         cache = dict(self.parameter_cache)
         cache[self.parameter_name] = self._read_parameters()
         return dict(
             parameters=cache,
+            destination=self._selection_state(self.destination.currentData()),
+            start=self._selection_state(self.start_mode.currentData()),
+            departure=self.departure.dateTime().toPython().isoformat(),
+            advanced_expanded=self.parameters_header.isChecked(),
             use_currents=self.use_currents.isChecked(),
             current_priority=self.current_priority.currentData(),
             coastline_clearance_nm=self.coastline_clearance.value(),
@@ -499,6 +562,31 @@ class RoutingPanel(QWidget):
                 pass
         # Preserve the validated cache while replacing the initially displayed defaults.
         self.parameter_name = ""
+        destination = mapping(saved.get("destination"))
+        start = mapping(saved.get("start"))
+        for combo, key, saved_value in (
+            (self.destination, "destination", destination),
+            (self.start_mode, "start", start),
+        ):
+            if saved_value.get("type") == "position" and not self._combo_has_position(
+                combo, saved_value.get("value")
+            ):
+                value = saved_value.get("value")
+                if isinstance(value, (list, tuple)) and len(value) >= 2:
+                    if key == "destination":
+                        self.map_destination = tuple(value[:2])
+                    else:
+                        self.map_start = tuple(value[:2])
+        self.refresh_destinations()
+        self._restore_combo(self.destination, destination)
+        self._restore_combo(self.start_mode, start)
+        departure = saved.get("departure")
+        if isinstance(departure, str):
+            try:
+                self.departure.setDateTime(QDateTime(datetime.fromisoformat(departure)))
+            except ValueError:
+                pass
+        self.parameters_header.setChecked(saved.get("advanced_expanded") is True)
         self.use_currents.setChecked(saved.get("use_currents") is True)
         clearance_nm = saved.get("coastline_clearance_nm")
         if (
@@ -595,6 +683,7 @@ class RoutingPanel(QWidget):
         self.plan_changed.emit(
             tuple(([start] if start is not None else []) + list(points))
         )
+        self.options_changed.emit()
         self.refresh()
 
     def _start_position(self, points):

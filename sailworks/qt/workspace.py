@@ -411,6 +411,7 @@ class WorkspacePreferences(QObject):
                 index = combo.findText(text)
                 if index >= 0:
                     combo.setCurrentIndex(index)
+        panel.coastlines.setChecked(saved.get("coastlines") is True)
         panel.restore_options(mapping(saved.get("options")))
         route = self.window.controller.core.routingManager.get_by_name(
             saved.get("selected_route")
