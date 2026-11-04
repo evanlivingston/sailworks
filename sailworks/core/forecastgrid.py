@@ -45,6 +45,12 @@ def _inside(gt, forward, lon, lat, width, height, wrap_longitude):
     raise ForecastGridError("forecast grid does not contain requested region")
 
 
+def _on_grid_step(value, step):
+    """True when value is an exact multiple of step within 1e-6 of a step."""
+    ratio = value / step
+    return abs(ratio - round(ratio)) <= 1e-6
+
+
 def validate_grid(dataset, model, requested):
     """Validate supported native resolution and sample requested boundary.
 
@@ -93,8 +99,8 @@ def validate_grid(dataset, model, requested):
             or abs(gt[5] + 0.25) > 1e-6
             or gt[2]
             or gt[4]
-            or abs((gt[0] + gt[1] * 0.5) + 180.0) > 1e-6
-            or abs((gt[0] + gt[1] * (width - 0.5)) - 179.75) > 1e-6
+            or abs(abs(gt[1]) * width - 360.0) > 1e-6
+            or not _on_grid_step(gt[0] + gt[1] * 0.5, gt[1])
             or abs((gt[3] + gt[5] * 0.5) - 90.0) > 1e-6
             or abs((gt[3] + gt[5] * (height - 0.5)) + 90.0) > 1e-6
         ):

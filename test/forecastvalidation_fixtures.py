@@ -243,5 +243,13 @@ class GFSWaveGlobalDataset(Dataset):
     RasterXSize = 1440
     RasterYSize = 721
 
+    def __init__(self, bands, geotransform=None):
+        super().__init__(bands)
+        self.geotransform = (
+            (-180.125, 0.25, 0.0, 90.125, 0.0, -0.25)
+            if geotransform is None
+            else geotransform
+        )
+
     def GetGeoTransform(self):
-        return (-180.125, 0.25, 0.0, 90.125, 0.0, -0.25)
+        return self.geotransform
