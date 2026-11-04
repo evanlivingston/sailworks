@@ -458,10 +458,22 @@ class WeatherPresenter(QObject):
     def sync(self):
         if self.closed or self.canvas.disposed or not self.canvas.isVisible():
             return
-        sources = self.canvas.controller.display_forecast.sources()
-        source = sources[0] if sources else None
-        self._sync_weather(source)
+        self._sync_weather(self._display_source())
         self._raise_interactive_children()
+
+    def _display_source(self):
+        # A wave-only choice replaces the displayed forecast but never the
+        # routing model; without one this is the active routing entry.
+        from .analysisdisplay import DisplaySourceSelection
+
+        selection = self.canvas.controller.display_forecast
+        wave = getattr(selection, "wave", None)
+        sources = (
+            wave.sources()
+            if isinstance(wave, DisplaySourceSelection)
+            else selection.sources()
+        )
+        return sources[0] if sources else None
 
     def _sync_weather(self, source):
         if self.active:

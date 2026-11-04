@@ -7,6 +7,13 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from sailworks.rendering.displayforecast import inspect_forecasts
 
+WAVE_FIELDS = ("wave_height", "wave_period", "wave_direction")
+
+
+def wave_fields(fields):
+    """Wave fields present in an entry, in a stable order."""
+    return tuple(field for field in WAVE_FIELDS if field in fields)
+
 
 @dataclass(frozen=True)
 class BoundDisplayForecast:
@@ -35,6 +42,96 @@ class BoundDisplayForecast:
         return getattr(self.metadata, name)
 
 
+class DisplaySourceSelection(QObject):
+    """Choose a wave-only published forecast for display, never for routing.
+
+    The choice only changes what the weather presenter draws. It never calls
+    the analysis controller, so the routing model stays what the routing
+    selector chose.
+    """
+
+    changed = Signal()
+
+    def __init__(self, selection, parent=None):
+        super().__init__(parent)
+        self.selection = selection
+        self.choices = ()
+        self._selected = None
+        self._selected_key = ""
+        selection.changed.connect(self._refresh)
+        self._refresh()
+
+    @property
+    def selected_key(self):
+        return self._selected_key
+
+    def sources(self):
+        """The chosen wave source, otherwise the active routing source."""
+        selected = self._selected
+        if selected is not None and any(
+            choice.key == selected.key for choice in self.selection.choices
+        ):
+            return (selected,)
+        return tuple(self.selection.sources())
+
+    def choose(self, key):
+        if self.selection.loading:
+            return False
+        if not key:
+            self._select(None)
+            return True
+        choice = next((item for item in self.choices if item.key == key), None)
+        if choice is None:
+            return False
+        self._select(choice)
+        return True
+
+    def _select(self, choice):
+        if choice is self._selected:
+            return
+        self._selected = choice
+        self._selected_key = choice.key if choice is not None else ""
+        self.changed.emit()
+
+    @Slot()
+    def _refresh(self):
+        active = self.selection.analysis.active
+        fields = {}
+        if active is not None:
+            fields = {entry.entry_id: entry.fields for entry in active.tranche.entries}
+        choices = tuple(
+            sorted(
+                (
+                    choice
+                    for choice in self.selection.choices
+                    if wave_fields(fields.get(choice.entry_id, ()))
+                ),
+                key=lambda choice: (
+                    -choice.start_time.timestamp(),
+                    wave_fields(fields.get(choice.entry_id, ())),
+                    choice.entry_id,
+                ),
+            )
+        )
+        refreshed = choices != self.choices
+        self.choices = choices
+        selected = next(
+            (choice for choice in choices if choice.key == self._selected_key), None
+        )
+        if selected is not self._selected:
+            self._selected = selected
+            self._selected_key = selected.key if selected is not None else ""
+            refreshed = True
+        if refreshed:
+            self.changed.emit()
+
+    def close(self):
+        try:
+            self.selection.changed.disconnect(self._refresh)
+        except (RuntimeError, TypeError):
+            pass
+
+
 class BoundDisplayForecastSelection(QObject):
     changed = Signal()
     _scanned = Signal(int, object, object)
@@ -53,6 +150,7 @@ class BoundDisplayForecastSelection(QObject):
         self._binding = None
         self._scan_pending = False
         self._scanned.connect(self._finish_scan)
+        self.wave = DisplaySourceSelection(self, self)
         analysis.changed.connect(self._analysis_changed)
         self._analysis_changed()
 
@@ -62,6 +160,10 @@ class BoundDisplayForecastSelection(QObject):
 
     def sources(self):
         return self._sources
+
+    def display_sources(self):
+        """Sources the weather presenter shows: a chosen wave source, else routing."""
+        return self.wave.sources()
 
     def _binding_for(self, resolved):
         if resolved is None:
@@ -209,6 +311,7 @@ class BoundDisplayForecastSelection(QObject):
             return
         self._closed = True
         self._generation += 1
+        self.wave.close()
         try:
             self.analysis.changed.disconnect(self._analysis_changed)
         except (RuntimeError, TypeError):

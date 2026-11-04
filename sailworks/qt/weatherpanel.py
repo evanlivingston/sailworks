@@ -147,6 +147,19 @@ class WeatherPanel(QWidget):
         model_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.forecast_model = ForecastModelSelector(controller)
         model_form.addRow("Model", self.forecast_model)
+        self.wave_label = QLabel("Wave forecast")
+        self.wave_forecast = QComboBox()
+        self.wave_forecast.setAccessibleName("Wave forecast display")
+        self.wave_forecast.setToolTip(
+            "Show a wave-only published forecast. Routing keeps its own model."
+        )
+        self.wave_forecast.currentIndexChanged.connect(self._select_wave)
+        model_form.addRow(self.wave_label, self.wave_forecast)
+        display = getattr(self.controller, "display_forecast", None)
+        wave = getattr(display, "wave", None)
+        if wave is not None:
+            wave.changed.connect(self._refresh_wave)
+        self._refresh_wave()
         controls.addLayout(model_form)
         controls.addWidget(section_label("Wind"))
         self.wind = QCheckBox("Show wind")
@@ -246,6 +259,37 @@ class WeatherPanel(QWidget):
         scroll.setWidget(content)
         layout.addWidget(scroll)
         self.refresh()
+
+    def _refresh_wave(self):
+        display = getattr(self.controller, "display_forecast", None)
+        wave = getattr(display, "wave", None)
+        choices = tuple(getattr(wave, "choices", ()) or ())
+        selected = getattr(wave, "selected_key", "")
+        self.wave_forecast.blockSignals(True)
+        try:
+            self.wave_forecast.clear()
+            self.wave_forecast.addItem("Routing forecast", "")
+            for choice in choices:
+                self.wave_forecast.addItem(choice.label, choice.key)
+            self.wave_forecast.setCurrentIndex(
+                max(0, self.wave_forecast.findData(selected))
+            )
+        finally:
+            self.wave_forecast.blockSignals(False)
+        self.wave_label.setVisible(bool(choices))
+        self.wave_forecast.setVisible(bool(choices))
+
+    def _select_wave(self, index):
+        if index < 0:
+            return
+        display = getattr(self.controller, "display_forecast", None)
+        wave = getattr(display, "wave", None)
+        choose = getattr(wave, "choose", None)
+        if not callable(choose) or not choose(self.wave_forecast.itemData(index)):
+            return
+        presenter = getattr(self.active_map(), "_weather_presenter", None)
+        if presenter is not None:
+            presenter.source_changed()
 
     def checkbox(self, label, key):
         widget = QCheckBox(qt_text(label))
