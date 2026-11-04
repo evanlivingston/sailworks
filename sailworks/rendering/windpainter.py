@@ -19,7 +19,7 @@ from functools import lru_cache
 
 import cairo
 import numpy as np
-from sailworks.common import wind_color
+from sailworks.common import wave_color, wind_color
 from sailworks.core.utils import point_in_country
 
 try:
@@ -67,6 +67,109 @@ _BUCKET_COLORS = tuple(wind_color(float(b)) for b in range(0, 30, 2))
 def barb_bucket_colors():
     """Public bucket colors for Qt foreground painting (r, g, b floats)."""
     return list(_BUCKET_COLORS)
+
+
+#: Wave arrows: a shorter shaft than a wind barb, scaled by the wave period.
+WAVE_ARROW_SHAFT_MIN = 8.0
+WAVE_ARROW_SHAFT_MAX = 20.0
+WAVE_ARROW_HEAD_LEN = 5.0
+WAVE_ARROW_HEAD_SPREAD = 3.0
+#: The period range the shaft length spans (seconds).
+WAVE_PERIOD_MIN_S = 4.0
+WAVE_PERIOD_MAX_S = 20.0
+
+#: The legend's wave-height edges (metres), the same buckets wave_color() uses.
+_WAVE_BUCKET_EDGES = (0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0)
+#: Precomputed bucket colors, derived from wave_color() so the arrows can
+#: never drift from the legend and the wave fill.
+_WAVE_BUCKET_COLORS = tuple(
+    wave_color(index * 0.5) for index in range(len(_WAVE_BUCKET_EDGES) + 1)
+)
+
+
+def wave_bucket_colors():
+    """Public wave bucket colors (r, g, b floats), derived from wave_color()."""
+    return list(_WAVE_BUCKET_COLORS)
+
+
+def _wave_bucket(height):
+    """The legend bucket of a significant wave height in metres."""
+    if height is None or not math.isfinite(height) or height < 0:
+        return 0
+    bucket = 0
+    for edge in _WAVE_BUCKET_EDGES:
+        if height < edge:
+            break
+        bucket += 1
+    return bucket
+
+
+def wave_arrow_length(period):
+    """Shaft length in screen pixels for a wave period in seconds.
+
+    Periods map linearly from 4 s to 20 s onto
+    ``WAVE_ARROW_SHAFT_MIN``..``WAVE_ARROW_SHAFT_MAX`` and are clamped at
+    both ends. A missing, zero or non-finite period keeps the minimum length,
+    so the direction is still drawn instead of the symbol vanishing.
+    """
+    if period is None or not math.isfinite(period) or period <= 0:
+        return WAVE_ARROW_SHAFT_MIN
+    fraction = (period - WAVE_PERIOD_MIN_S) / (WAVE_PERIOD_MAX_S - WAVE_PERIOD_MIN_S)
+    fraction = min(1.0, max(0.0, fraction))
+    return WAVE_ARROW_SHAFT_MIN + fraction * (
+        WAVE_ARROW_SHAFT_MAX - WAVE_ARROW_SHAFT_MIN
+    )
+
+
+def build_wave_geometry(xxs, yys, dirs, heights, periods):
+    """Compute screen-space wave arrows grouped by wave-height colour bucket.
+
+    ``dirs`` is the meteorological *coming-from* bearing in degrees true, the
+    same convention as :meth:`WindPainter.build_barb_geometry`: the shaft
+    points from the anchor towards the direction the waves come from (0 deg
+    points north/up, 90 deg points east/right). Colour is the wave height and
+    the shaft length is the wave period, so the height fill, the legend and
+    the arrows share one ramp.
+
+    The glyph is a shaft plus one chevron head. It deliberately carries no
+    feathers: feathers encode Beaufort force on a wind barb and would read as
+    a wind speed on a wave arrow.
+    """
+    buckets: dict[int, tuple[list, list, list]] = {}
+    for x, y, wdir, height, period in zip(xxs, yys, dirs, heights, periods):
+        if not all(math.isfinite(value) for value in (x, y, wdir)):
+            continue
+        if height is None or not math.isfinite(height):
+            # A missing height has no colour; never invent a bucket for it.
+            continue
+        angle = math.radians(float(wdir))
+        shaft_x, shaft_y = math.sin(angle), -math.cos(angle)
+        perp_x, perp_y = math.cos(angle), math.sin(angle)
+        length = wave_arrow_length(period)
+        entry = buckets.setdefault(_wave_bucket(float(height)), ([], [], []))
+        lines, _tris, _dots = entry
+        tip_x = float(x) + shaft_x * length
+        tip_y = float(y) + shaft_y * length
+        lines.append((float(x), float(y), tip_x, tip_y))
+        base_x = tip_x - shaft_x * WAVE_ARROW_HEAD_LEN
+        base_y = tip_y - shaft_y * WAVE_ARROW_HEAD_LEN
+        lines.append(
+            (
+                tip_x,
+                tip_y,
+                base_x + perp_x * WAVE_ARROW_HEAD_SPREAD,
+                base_y + perp_y * WAVE_ARROW_HEAD_SPREAD,
+            )
+        )
+        lines.append(
+            (
+                tip_x,
+                tip_y,
+                base_x - perp_x * WAVE_ARROW_HEAD_SPREAD,
+                base_y - perp_y * WAVE_ARROW_HEAD_SPREAD,
+            )
+        )
+    return buckets
 
 
 def barb_density_parameters(density):
@@ -376,16 +479,21 @@ class WindPainter:
         return buckets
 
     @staticmethod
-    def paint_barb_geometry(cr, geometry, opacity):
-        """Paint grouped geometry with one stroke/fill per color bucket."""
+    def paint_barb_geometry(cr, geometry, opacity, colors=None):
+        """Paint grouped geometry with one stroke/fill per color bucket.
+
+        ``colors`` defaults to the wind-speed buckets; the wave arrows pass
+        their own height ramp so one painter serves both glyph layers.
+        """
         if not geometry:
             return
+        palette = _BUCKET_COLORS if colors is None else colors
         cr.save()
         cr.set_line_width(1.0)
         cr.set_line_cap(cairo.LINE_CAP_BUTT)
         for bucket in sorted(geometry):
             lines, tris, dots = geometry[bucket]
-            color = _BUCKET_COLORS[bucket]
+            color = palette[bucket]
             cr.set_source_rgba(color[0], color[1], color[2], opacity)
             if lines or dots:
                 for x1, y1, x2, y2 in lines:
@@ -403,6 +511,11 @@ class WindPainter:
                     cr.close_path()
                 cr.fill()
         cr.restore()
+
+    @staticmethod
+    def paint_wave_geometry(cr, geometry, opacity):
+        """Paint wave arrows with the wave-height buckets of the legend."""
+        WindPainter.paint_barb_geometry(cr, geometry, opacity, _WAVE_BUCKET_COLORS)
 
     @staticmethod
     def live_geometry_for_view(

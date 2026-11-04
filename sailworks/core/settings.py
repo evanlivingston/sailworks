@@ -33,6 +33,9 @@ class SettingsManager(Storage):
         self.gribWaveOpacity = 0.85
         self.gribWaveSmooth = True
         self.gribWaveLevels = 9
+        # Wave direction arrows reuse the wind barbs' density modes, with
+        # their own setting so the two glyph layers thin independently.
+        self.gribWaveDensity = "standard"
         self.weatherRenderer = "viewport"
         self.gribIsobarsVisible = True
         self.gribIsobarInterval = 4.0

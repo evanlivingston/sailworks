@@ -225,6 +225,24 @@ class WeatherPanel(QWidget):
         controls.addWidget(self.wave)
         wave_form = QFormLayout()
         wave_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        # Wave direction arrows reuse the wind barbs' thinning modes through
+        # their own setting, so the two glyph layers thin independently and
+        # toggling waves never restages the wind barbs.
+        from sailworks.rendering.windpainter import BARB_DENSITIES
+
+        self.wave_density = QComboBox()
+        for key, label, _spacing in BARB_DENSITIES:
+            self.wave_density.addItem(label, key)
+        initial_density = getattr(
+            getattr(getattr(self, "controller", None), "settings", None),
+            "gribWaveDensity",
+            "standard",
+        )
+        self.wave_density.setCurrentIndex(
+            max(0, self.wave_density.findData(initial_density))
+        )
+        self.wave_density.currentIndexChanged.connect(self._select_wave_density)
+        wave_form.addRow("Arrow density", self.wave_density)
         self.wave_opacity = self.percent("gribWaveOpacity")
         wave_form.addRow("Wave opacity", self.wave_opacity)
         self.wave_style = QComboBox()
@@ -302,6 +320,17 @@ class WeatherPanel(QWidget):
             self.wave_forecast.blockSignals(False)
         self.wave_label.setVisible(bool(choices))
         self.wave_forecast.setVisible(bool(choices))
+
+    def _select_wave_density(self, _index):
+        """Store the wave arrow density; the wind barb density is untouched."""
+        settings = getattr(getattr(self, "controller", None), "settings", None)
+        value = self.wave_density.currentData()
+        if settings is None or value is None:
+            return
+        try:
+            settings["gribWaveDensity"] = value
+        except TypeError:
+            settings.gribWaveDensity = value
 
     def _select_wave(self, index):
         if index < 0:

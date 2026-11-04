@@ -528,6 +528,7 @@ def stage_selection(
     reference=None,
     anchor_atlas=None,
     margin=32.0,
+    values_for=None,
 ):
     """The exact current-view selection of a resident field.
 
@@ -540,6 +541,10 @@ def stage_selection(
     per field generation and anchor camera, and a mesh slot permutation inside
     that camera reuses it byte for byte.  ``anchor_atlas`` lets a caller pass
     a cached atlas; otherwise it is encoded here.
+
+    ``values_for`` overrides the sampled values (a callable from node ids to
+    an array); the wave selection uses it to carry height, period and
+    direction from three scalar fields on the same placement.
     """
     from sailworks.qt.gpuweather import encode_component
     from sailworks.qt.gpuweatherfields import BarbSelection
@@ -568,10 +573,11 @@ def stage_selection(
     )
     if np.any(node_ids < 0):
         raise FieldCoverageError("The resident field does not cover this view")
-    first = np.asarray(field.staged.first[0]).reshape(-1, 2)[node_ids]
-    second = np.asarray(field.staged.second[0]).reshape(-1, 2)[node_ids]
-    weight = field.staged.weight(stamp)
-    uv = first + (second - first) * weight
+    values = (
+        _blended_values(field, stamp, node_ids)
+        if values_for is None
+        else np.asarray(values_for(node_ids))
+    )
     xx, yy = mercator_project_flat(
         points[:, 0],
         points[:, 1],
@@ -593,7 +599,7 @@ def stage_selection(
         & (xx <= view.width + margin)
         & (yy >= -margin)
         & (yy <= view.height + margin)
-        & np.isfinite(uv).all(axis=1)
+        & np.isfinite(values).all(axis=1)
         & np.isfinite(xx)
         & np.isfinite(yy)
     )
@@ -647,6 +653,74 @@ def stage_selection(
         field=field,
         node_image=encode_component(selection_ids.reshape(rows, cols)),
         anchor_reference=_anchor_reference(anchor_camera),
+    )
+
+
+def _blended_values(field, stamp, node_ids):
+    """The field's temporally blended values at the given node ids."""
+    components = field.staged.components or 1
+    first = np.asarray(field.staged.first[0]).reshape(-1, components)[node_ids]
+    second = np.asarray(field.staged.second[0]).reshape(-1, components)[node_ids]
+    weight = field.staged.weight(stamp)
+    return first + (second - first) * weight
+
+
+#: The three bands a wave arrow needs; a source missing any of them draws
+#: no arrows at all rather than inventing a direction.
+WAVE_BANDS = ("wave_height", "wave_period", "wave_direction")
+
+
+def stage_wave_selection(
+    sampler,
+    fields,
+    stamp,
+    view,
+    land_mask,
+    cancel=lambda: False,
+    reference=None,
+    anchor_atlas=None,
+    margin=32.0,
+):
+    """Select wave arrow glyphs from the three wave bands.
+
+    Placement, thinning, the land policy and the symbol cap are the wind
+    selection's own (``stage_selection``), so a wave arrow density means the
+    same thing as a wind barb density. The values are the three bands'
+    blended height (m), period (s) and *coming-from* direction (degrees
+    true), the same meteorological convention as the wind barbs.
+
+    All three bands are required: a source that lacks height, period or
+    direction yields ``None``, so the viewport shows its explicit
+    wave-unavailable state instead of fabricating a 0 degree direction.
+    """
+    if not fields:
+        return None
+    heights = fields.get("wave_height")
+    periods = fields.get("wave_period")
+    directions = fields.get("wave_direction")
+    if heights is None or periods is None or directions is None:
+        return None
+
+    def values(node_ids):
+        return np.column_stack(
+            (
+                _blended_values(heights, stamp, node_ids),
+                _blended_values(periods, stamp, node_ids),
+                _blended_values(directions, stamp, node_ids),
+            )
+        )
+
+    return stage_selection(
+        sampler,
+        heights,
+        stamp,
+        view,
+        land_mask,
+        cancel,
+        reference,
+        anchor_atlas,
+        margin,
+        values_for=values,
     )
 
 

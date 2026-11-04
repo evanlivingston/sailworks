@@ -25,6 +25,10 @@ class LayerRole(str, Enum):
     STREAMLINES = "streamlines"
     WAVE_FILL = "wave_fill"
     WAVE_FILL_BACK = "wave_fill_back"
+    # Wave direction arrows are their own layer: they are staged from the
+    # wave bands and never share the wind barbs' generation or bytes.
+    WAVE_BARBS = "wave_barbs"
+    WAVE_BARBS_BACK = "wave_barbs_back"
 
 
 class ResourceKind(str, Enum):

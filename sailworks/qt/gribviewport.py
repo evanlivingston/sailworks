@@ -1508,6 +1508,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._wave_fill = None
             self._wave_state = "unavailable"
             self._wave_error = ""
+            # Wave direction arrows are a separate glyph layer, staged from
+            # the wave bands and never from the wind field: they follow the
+            # wave layer's visibility, own their density and publication
+            # (LayerRole.WAVE_BARBS) and leave the wind barbs untouched.
+            self._wave_arrows_visible = True
+            self._wave_arrow_density = "standard"
             self._camera = None
             self._weather_display_camera = None
             self._weather_display_dpr = None
@@ -3334,6 +3340,20 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 return
             self._show_wave_state("loading", "Loading wave height")
             self._update_wave(self._camera)
+
+        def set_wave_arrows_visible(self, visible):
+            """Show or hide the wave arrows without touching the height fill."""
+            self._wave_arrows_visible = bool(visible)
+
+        def wave_arrows_visible(self):
+            return self._wave_arrows_visible
+
+        def set_wave_arrow_density(self, density):
+            """Set the wave arrow thinning mode, independent of the barbs."""
+            self._wave_arrow_density = str(density)
+
+        def wave_arrow_density(self):
+            return self._wave_arrow_density
 
         def set_wave_opacity(self, opacity):
             self._wave_opacity = max(0.0, min(1.0, float(opacity)))
