@@ -91,6 +91,7 @@ def test_capability_ui_contract_and_lazy_source_registry():
         "AIFS",
         "AIGFS",
         "GFSWAVE",
+        "WEATHERNEXT",
     }
     assert MODEL_CAPABILITIES["GFS"].default_hours == 120
     assert MODEL_CAPABILITIES["HRRR"].default_hours == 48
