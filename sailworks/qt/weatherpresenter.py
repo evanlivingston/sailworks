@@ -421,6 +421,13 @@ class WeatherPresenter(QObject):
             self.canvas.controller.settings.gribWaveSmooth,
             self.canvas.controller.settings.gribWaveLevels,
         )
+        # The wave toggle governs both the height fill and the direction
+        # arrows; the arrow density stays an independent setting so the two
+        # glyph layers thin separately.
+        widget.set_wave_arrows_visible(self.canvas.wave_visible)
+        widget.set_wave_arrow_density(
+            getattr(self.canvas.controller.settings, "gribWaveDensity", "standard")
+        )
         legend = getattr(self.canvas, "wave_legend", None)
         if legend is not None:
             legend.setVisible(bool(self.canvas.wave_visible))
