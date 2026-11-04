@@ -133,6 +133,11 @@ class ForecastAnalysisState:
         with self._lock:
             return self._configuration_error
 
+    @property
+    def refresh_warning(self):
+        """Partial download/validation failures from the last refresh."""
+        return self.coordinator.refresh_warning
+
     def _load_configuration(self):
         if self.configuration_path.is_symlink():
             self._configuration_error = "Saved forecast configuration is a symlink"

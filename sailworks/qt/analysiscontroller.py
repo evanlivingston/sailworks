@@ -212,13 +212,19 @@ class AnalysisController(QObject):
             )
         else:
             self._active = result
-            self.error = getattr(self.state, "configuration_error", "")
+            configuration_error = getattr(self.state, "configuration_error", "")
+            warning = (
+                getattr(self.state, "refresh_warning", "")
+                if action == "refresh"
+                else ""
+            )
+            self.error = configuration_error or warning
             self.status = (
                 "Forecast ready"
                 if result is not None
                 else "No published forecast selected"
             )
-            if self.error:
+            if configuration_error:
                 self.status += "; saved refresh configuration is invalid"
         self.changed.emit()
 

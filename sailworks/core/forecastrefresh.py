@@ -32,6 +32,16 @@ class RefreshSupersededError(RuntimeError):
     """A newer refresh or configuration retired this refresh ticket."""
 
 
+def _partial_failure_message(failures, published):
+    """Summarize which planned models failed when others were published."""
+    if not failures:
+        return ""
+    reasons = "; ".join(
+        f"{model_id}: {reason}" for model_id, reason in failures.items()
+    )
+    return f"{reasons}. Other models downloaded: {', '.join(published)}."
+
+
 def _utc(value, label):
     if (
         not isinstance(value, datetime)
@@ -81,6 +91,8 @@ class RefreshCoordinator:
         self._ticket = 0
         self._configurations = ()
         self._selected_model_id = None
+        self._partial_failures = {}
+        self._refresh_warning = ""
 
     def configure(self, configurations, selected_model_id):
         configs = tuple(configurations)
@@ -202,6 +214,26 @@ class RefreshCoordinator:
     def _is_current(self, revision, ticket):
         with self._lock:
             return revision == self._revision and ticket == self._ticket
+
+    @property
+    def partial_failures(self):
+        """Failures from the last completed refresh, as {model_id: reason}."""
+        with self._lock:
+            return dict(self._partial_failures)
+
+    @property
+    def refresh_warning(self):
+        """Partial-failure summary for the last refresh, or an empty string."""
+        with self._lock:
+            return self._refresh_warning
+
+    def _record_outcome(self, revision, ticket, failures, published):
+        """Publish the last refresh's partial failures for the UI to display."""
+        with self._lock:
+            if revision != self._revision or ticket != self._ticket:
+                return
+            self._partial_failures = dict(failures)
+            self._refresh_warning = _partial_failure_message(failures, published)
 
     def _raise_if_stale_or_cancelled(self, revision, ticket, cancel):
         if not self._is_current(revision, ticket):
@@ -377,6 +409,10 @@ class RefreshCoordinator:
                 return current
 
         entries = []
+        failures = {}
+        published = []
+        selection = None
+        self._record_outcome(revision, ticket, {}, ())
         try:
             with tempfile.TemporaryDirectory(
                 dir=self.store.root, prefix=".refresh-"
@@ -438,19 +474,39 @@ class RefreshCoordinator:
                     except (RefreshCancelledError, RefreshSupersededError):
                         raise
                     except Exception as exc:
+                        # One model's failure must not block the others: record
+                        # it and continue with the remaining planned models.
                         self._raise_if_stale_or_cancelled(revision, ticket, cancel)
                         logger.exception(
                             "Forecast model %s failed during %s",
                             planned.model_id,
                             phase,
                         )
-                        raise RefreshExecutionError(
-                            f"{planned.model_id} {phase} failed: {exc}"
-                        ) from exc
+                        failures[planned.model_id] = f"{phase} failed: {exc}"
                 self._raise_if_stale_or_cancelled(revision, ticket, cancel)
+                published = [entry.model_id for entry in entries]
+                if not entries:
+                    reasons = "; ".join(
+                        f"{model_id} {reason}" for model_id, reason in failures.items()
+                    )
+                    raise RefreshExecutionError(
+                        f"every planned model failed: {reasons}"
+                        if reasons
+                        else "the plan contained no models"
+                    )
                 refreshed_at = _utc(self.clock(), "refresh time")
+                published_set = {entry.model_id for entry in entries}
+                # A tranche declares exactly the models it actually contains, so
+                # models that failed are not advertised as published.
                 tranche = ForecastTranche(
-                    self.id_factory(), refreshed_at, plan.configurations, tuple(entries)
+                    self.id_factory(),
+                    refreshed_at,
+                    tuple(
+                        planned.configuration
+                        for planned in plan.models
+                        if planned.model_id in published_set
+                    ),
+                    tuple(entries),
                 )
                 self._progress(progress, selected_model_id, 99)
                 self._raise_if_stale_or_cancelled(revision, ticket, cancel)
@@ -462,7 +518,8 @@ class RefreshCoordinator:
                     ",".join(entry.model_id for entry in tranche.entries),
                     selected_model_id,
                 )
-                selection = AnalysisSelection(tranche.tranche_id, selected_model_id)
+                if selected_model_id in {entry.model_id for entry in entries}:
+                    selection = AnalysisSelection(tranche.tranche_id, selected_model_id)
             # The owned stage is removed before activation; cleanup failure cannot
             # occur after the active pointer has committed.
         except (RefreshCancelledError, RefreshSupersededError):
@@ -471,6 +528,17 @@ class RefreshCoordinator:
             self._raise_if_stale_or_cancelled(revision, ticket, cancel)
             logger.exception("Forecast refresh preparation failed")
             raise RefreshExecutionError(f"refresh preparation failed: {exc}") from exc
+        self._record_outcome(revision, ticket, failures, published)
+        if selection is None:
+            # The requested model failed but others published. Never switch the
+            # user's selection silently; leave the previous active selection.
+            current = self.store.active()
+            logger.info(
+                "Forecast refresh kept previous selection; models=%s failed=%s",
+                ",".join(published),
+                ",".join(failures),
+            )
+            return current
         self._raise_if_stale_or_cancelled(revision, ticket, cancel)
         try:
             return self.store.activate(

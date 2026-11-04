@@ -264,19 +264,11 @@ def test_estimate_excludes_reused_models_from_network_total(tmp_path):
     assert models[0][2] is True
 
 
-@pytest.mark.parametrize("failure", ["download", "validation", "second-model"])
-def test_any_model_failure_preserves_old_active_binding(tmp_path, failure):
+@pytest.mark.parametrize("failure", ["download", "validation"])
+def test_failing_model_does_not_block_other_models(tmp_path, failure):
     store = TrancheStore(tmp_path)
-    initial, _ = coordinator(store, (config(),))
-    initial.configure((config(),), "GFS")
-    prior = initial.refresh()
-    pointer = store.active_path.read_bytes()
     configs = (config("GFS"), config("HRRR"))
-    behaviors = (
-        {"HRRR": {"download_error": True}}
-        if failure in ("download", "second-model")
-        else None
-    )
+    behaviors = {"HRRR": {"download_error": True}} if failure == "download" else None
 
     def validator(path, planned, cancel):
         if failure == "validation" and planned.model_id == "HRRR":
@@ -285,10 +277,64 @@ def test_any_model_failure_preserves_old_active_binding(tmp_path, failure):
 
     service, _ = coordinator(store, configs, behaviors=behaviors, validator=validator)
     service.configure(configs, "GFS")
-    with pytest.raises(RefreshExecutionError):
-        service.refresh()
+    result = service.refresh()
+
+    assert {entry.model_id for entry in result.tranche.entries} == {"GFS"}
+    assert result.selection.entry_id == "GFS"
+    reason = (
+        "download failed: synthetic download error"
+        if failure == "download"
+        else "validation failed: synthetic validation failure"
+    )
+    assert service.partial_failures == {"HRRR": reason}
+    message = service.refresh_warning
+    assert message == f"HRRR: {reason}. Other models downloaded: GFS."
+
+
+def test_selected_model_failure_keeps_previous_selection(tmp_path):
+    store = TrancheStore(tmp_path)
+    gfs = config("GFS")
+    initial, _ = coordinator(store, (gfs,))
+    initial.configure((gfs,), "GFS")
+    prior = initial.refresh()
+    pointer = store.active_path.read_bytes()
+    manifests = len(list(store.manifests.glob("*.json")))
+    configs = (gfs, config("HRRR"))
+
+    def validator(path, planned, cancel):
+        if planned.model_id == "HRRR":
+            raise ValueError("synthetic validation failure")
+        return valid_metadata(planned)
+
+    service, _ = coordinator(store, configs, validator=validator)
+    service.configure(configs, "HRRR")
+    result = service.refresh()
+
+    # The requested model failed, so the previous selection stays active even
+    # though the other model published into the library.
+    assert result.tranche.tranche_id == prior.tranche.tranche_id
     assert store.active_path.read_bytes() == pointer
-    assert store.active().tranche.tranche_id == prior.tranche.tranche_id
+    assert store.active_selection().entry_id == "GFS"
+    assert len(list(store.manifests.glob("*.json"))) == manifests + 1
+    assert "HRRR" in service.refresh_warning
+
+
+def test_all_models_failing_raises_with_every_reason(tmp_path):
+    store = TrancheStore(tmp_path)
+    configs = (config("GFS"), config("HRRR"))
+
+    def validator(path, planned, cancel):
+        raise ValueError(f"{planned.model_id} synthetic failure")
+
+    service, _ = coordinator(store, configs, validator=validator)
+    service.configure(configs, "GFS")
+    with pytest.raises(RefreshExecutionError) as excinfo:
+        service.refresh()
+    message = str(excinfo.value)
+    assert "GFS validation failed: GFS synthetic failure" in message
+    assert "HRRR validation failed: HRRR synthetic failure" in message
+    assert store.active() is None
+    assert not list(tmp_path.glob(".refresh-*"))
 
 
 def test_configuration_edit_during_download_retires_ticket(tmp_path):
