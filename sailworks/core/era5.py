@@ -20,11 +20,15 @@ from .forecasttranche import (
 )
 
 DATASET = "reanalysis-era5-single-levels"
-VARIABLES = (
-    "10m_u_component_of_wind",
-    "10m_v_component_of_wind",
-    "mean_sea_level_pressure",
-)
+FIELD_VARIABLES = {
+    "wind": (
+        "10m_u_component_of_wind",
+        "10m_v_component_of_wind",
+    ),
+    "pressure": ("mean_sea_level_pressure",),
+}
+DEFAULT_FIELDS = ("wind", "pressure")
+VARIABLES = FIELD_VARIABLES["wind"] + FIELD_VARIABLES["pressure"]
 MAX_DAYS = 31
 MAX_AREA_CELLS = 2_000_000
 MAX_REQUEST_HOURS = 31 * 24
@@ -66,7 +70,9 @@ class Era5Request:
     request: dict
 
 
-def plan_request(start, end, area, *, now=None, max_days=MAX_DAYS):
+def plan_request(
+    start, end, area, *, now=None, max_days=MAX_DAYS, fields=DEFAULT_FIELDS
+):
     """Plan inclusive hourly UTC coverage for a bounded, non-wrapping area."""
 
     def utc(value):
@@ -96,12 +102,25 @@ def plan_request(start, end, area, *, now=None, max_days=MAX_DAYS):
             "ERA5 data is not considered available until five days after valid time"
         )
     north, west, south, east = _validate_area_and_limits(start, end, area, max_days)
+    variables = _field_variables(fields)
     return Era5Request(
-        start, end, (north, west, south, east), _request_payload(start, end, area)
+        start,
+        end,
+        (north, west, south, east),
+        _request_payload(start, end, area, variables=variables),
     )
 
 
-def _request_payload(start, end, area, *, hours=None):
+def _field_variables(fields):
+    selected = tuple(fields)
+    if not selected or any(field not in FIELD_VARIABLES for field in selected):
+        raise ValueError("fields must be wind, pressure, or both")
+    if len(set(selected)) != len(selected):
+        raise ValueError("duplicate ERA5 field")
+    return [name for field in selected for name in FIELD_VARIABLES[field]]
+
+
+def _request_payload(start, end, area, *, hours=None, variables=None):
     """Build the CDS payload for a UTC range, optionally filtered to hours."""
     if hours is None:
         time = [f"{h:02d}:00" for h in range(24)]
@@ -111,7 +130,7 @@ def _request_payload(start, end, area, *, hours=None):
             time = [f"{h:02d}:00" for h in range(24)]
     return {
         "product_type": ["reanalysis"],
-        "variable": list(VARIABLES),
+        "variable": list(variables if variables is not None else VARIABLES),
         "year": sorted({f"{d.year:04d}" for d in _dates(start.date(), end.date())}),
         "month": sorted({f"{d.month:02d}" for d in _dates(start.date(), end.date())}),
         "day": sorted({f"{d.day:02d}" for d in _dates(start.date(), end.date())}),
@@ -122,9 +141,15 @@ def _request_payload(start, end, area, *, hours=None):
     }
 
 
-def _chunk_payload(start, end, area):
+def _chunk_payload(start, end, area, *, variables=None):
     """CDS payload for one chunk: only the hours the chunk covers."""
-    return _request_payload(start, end, area, hours=range(start.hour, end.hour + 1))
+    return _request_payload(
+        start,
+        end,
+        area,
+        hours=range(start.hour, end.hour + 1),
+        variables=variables,
+    )
 
 
 def _validate_area_and_limits(start, end, area, max_days):
@@ -238,11 +263,19 @@ def validate_grib(path, piece, *, dataset_opener=None):
             if timestamp in required:
                 fields.add(field)
                 found.add((field, timestamp))
+        requested = piece.request.get("variable") or list(VARIABLES)
+        required_fields = [
+            name
+            for name, variables in FIELD_VARIABLES.items()
+            if all(variable in requested for variable in variables)
+        ]
         missing = [
             (field, moment)
-            for field in VARIABLES
+            for field in required_fields
             for moment in required
-            if (field, moment) not in found
+            if any(
+                (variable, moment) not in found for variable in FIELD_VARIABLES[field]
+            )
         ]
         if missing:
             raise Era5Error(
@@ -518,6 +551,7 @@ class Era5DownloadService:
                     "start": piece.start.isoformat(),
                     "end": piece.end.isoformat(),
                     "area": list(piece.area),
+                    "variables": list(piece.request.get("variable") or VARIABLES),
                     "request_id": str(request_id),
                     "created": datetime.now(timezone.utc).isoformat(),
                 }
@@ -601,7 +635,12 @@ class Era5DownloadService:
                 key = self._request_key(start, end, area)
             except (KeyError, TypeError, ValueError):
                 continue
-            piece = Era5Request(start, end, area, _chunk_payload(start, end, area))
+            piece = Era5Request(
+                start,
+                end,
+                area,
+                _chunk_payload(start, end, area, variables=entry.get("variables")),
+            )
             if self._catalog_covers(catalog, piece):
                 self._forget_pending(piece)
                 continue
@@ -627,6 +666,7 @@ class Era5DownloadService:
                     datetime.fromisoformat(entry["start"]),
                     datetime.fromisoformat(entry["end"]),
                     tuple(float(value) for value in entry["area"]),
+                    variables=entry.get("variables"),
                 ),
             )
             inner = getattr(self.client_factory(), "client", None)
@@ -685,7 +725,7 @@ class Era5DownloadService:
                     "start": piece.start.isoformat(),
                     "end": piece.end.isoformat(),
                     "area": list(piece.area),
-                    "variables": list(VARIABLES),
+                    "variables": list(piece.request.get("variable") or VARIABLES),
                     "provenance": provenance,
                 }
                 records.append(record)
@@ -925,9 +965,22 @@ def publish_history_display(state, entries, *, model_id="ERA5"):
     region = (south, west, north, east)
     run_time = times[0]
     hours = int((times[-1] - run_time).total_seconds() // 3600)
+    variables = {str(value) for item in usable for value in item.get("variables", ())}
+    fields = tuple(
+        name
+        for name, names in FIELD_VARIABLES.items()
+        if all(value in variables for value in names)
+    )
+    if not fields:
+        raise Era5Error("ERA5 history has no wind or pressure fields to display")
+    levels = tuple(
+        level
+        for field, level in (("wind", "10-HTGL"), ("pressure", "0-MSL"))
+        if field in fields
+    )
     config = ModelConfiguration(
         model_id,
-        ("wind", "pressure"),
+        fields,
         region,
         "0.25",
         hours,
@@ -940,15 +993,14 @@ def publish_history_display(state, entries, *, model_id="ERA5"):
         model_id,
         run_time,
         "deterministic",
-        ("wind", "pressure"),
-        # Routing requires the 10 m wind level identity used by GRIB.
-        ("10-HTGL",),
+        fields,
+        levels,
         region,
         "0.25",
         times,
         (Artifact(artifact.path, artifact.sha256, artifact.size),),
         now,
-        field_times=(("wind", times), ("pressure", times)),
+        field_times=tuple((field, times) for field in fields),
     )
     tranche = ForecastTranche(
         f"era5-{artifact.sha256[:16]}-v2", now, (config,), (entry,)

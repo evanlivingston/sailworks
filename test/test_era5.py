@@ -686,6 +686,70 @@ def test_resume_resubmits_dead_request_with_full_payload(tmp_path):
     assert (tmp_path / "era5-history.json").exists()
 
 
+def test_wind_only_plan_and_validation(tmp_path):
+    from sailworks.core.era5 import FIELD_VARIABLES
+
+    planned = plan_request(
+        datetime(2025, 1, 1, tzinfo=timezone.utc),
+        datetime(2025, 1, 1, tzinfo=timezone.utc),
+        (50, -10, 40, 5),
+        fields=("wind",),
+        now=datetime(2025, 2, 20, tzinfo=timezone.utc),
+    )
+    piece = split_request(planned)[0]
+    assert piece.request["variable"] == list(FIELD_VARIABLES["wind"])
+
+    class Band:
+        def __init__(self, element, short):
+            self.element, self.short = element, short
+
+        def GetMetadata(self):
+            return {
+                "GRIB_ELEMENT": self.element,
+                "GRIB_SHORT_NAME": self.short,
+                "GRIB_VALID_TIME": "1735689600 sec UTC",
+            }
+
+    class Dataset:
+        RasterCount = 2
+
+        def GetRasterBand(self, number):
+            return [Band("UGRD", "10-HTGL"), Band("VGRD", "10-HTGL")][number - 1]
+
+    result = validate_grib(
+        tmp_path / "unused", piece, dataset_opener=lambda _path: Dataset()
+    )
+    assert result["validated_hours"] == 1
+
+
+def test_publish_history_display_keeps_requested_fields(tmp_path):
+    from types import SimpleNamespace
+
+    from sailworks.core.era5 import FIELD_VARIABLES, publish_history_display
+    from sailworks.core.tranchestore import TrancheStore
+
+    store = TrancheStore(tmp_path)
+    source = tmp_path / "chunk.grib"
+    source.write_bytes(b"fake era5 grib bytes")
+    artifact = store.register_file(source)
+    entries = [
+        {
+            "artifact": artifact.path,
+            "start": "2025-01-01T00:00:00+00:00",
+            "end": "2025-01-01T01:00:00+00:00",
+            "area": [50, -10, 40, 5],
+            "variables": list(FIELD_VARIABLES["wind"]),
+        }
+    ]
+
+    tranche = publish_history_display(SimpleNamespace(store=store), entries)
+
+    entry = tranche.entries[0]
+    assert entry.fields == ("wind",)
+    assert entry.levels == ("10-HTGL",)
+    assert dict(entry.field_times)["wind"] == entry.time_steps
+
+
 def test_canceled_era5_download_leaves_no_catalog_or_artifacts(tmp_path):
     root = tmp_path
     (root / "artifacts").mkdir()

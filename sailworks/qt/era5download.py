@@ -7,9 +7,10 @@ import threading
 
 from PySide6.QtCore import QDate, QDateTime, QTime, QTimer, QTimeZone, Qt
 from PySide6.QtWidgets import (
-    QComboBox,
+    QCheckBox,
     QDateTimeEdit,
     QDoubleSpinBox,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -27,6 +28,7 @@ from sailworks.core.era5 import (
     publish_history_display,
 )
 from sailworks.core.timecontrol import utc_to_wall
+from .forecastdownload import ModelListRow
 
 CDS_REQUESTS_URL = "https://cds.climate.copernicus.eu/requests"
 CDS_LIVE_URL = "https://cds.climate.copernicus.eu/live"
@@ -56,15 +58,42 @@ class Era5DownloadTab(QWidget):
         )
         self.instructions.setWordWrap(True)
         layout.addWidget(self.instructions)
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Model"))
-        self.source = QComboBox()
-        self.source.addItem("ERA5 reanalysis (CDS, hourly, wind + pressure)", "era5")
-        self.source.addItem("Satellite-blended NBS (NOAA, 6-hourly, wind)", "nbs")
-        self.source.currentIndexChanged.connect(self._source_changed)
-        row.addWidget(self.source, 1)
-        layout.addLayout(row)
-        self.source_row = row
+        models_box = QGroupBox("Models")
+        models_layout = QVBoxLayout(models_box)
+        header = QHBoxLayout()
+        include_heading = QLabel("Include")
+        include_heading.setFixedWidth(58)
+        header.addWidget(include_heading)
+        header.addWidget(QLabel("Model"), 1)
+        resolution_heading = QLabel("Resolution")
+        resolution_heading.setFixedWidth(88)
+        header.addWidget(resolution_heading)
+        coverage_heading = QLabel("Coverage")
+        coverage_heading.setFixedWidth(72)
+        header.addWidget(coverage_heading)
+        models_layout.addLayout(header)
+        self.model_checks = {}
+        for model_id, name, resolution, coverage in (
+            ("ERA5", "ERA5 reanalysis", "0.25°", "hourly"),
+            ("NBS", "Satellite-blended NBS", "0.25°", "6-hourly"),
+        ):
+            row = ModelListRow(model_id, name, resolution, coverage, True)
+            row.download_check.toggled.connect(self._models_changed)
+            models_layout.addWidget(row)
+            self.model_checks[model_id] = row.download_check
+        layout.addWidget(models_box)
+        self.models_box = models_box
+
+        parameters_box = QGroupBox("Parameters")
+        parameters_layout = QVBoxLayout(parameters_box)
+        self.field_wind = QCheckBox("Wind at 10 m")
+        self.field_wind.setChecked(True)
+        self.field_pressure = QCheckBox("Sea-level pressure")
+        self.field_pressure.setChecked(True)
+        parameters_layout.addWidget(self.field_wind)
+        parameters_layout.addWidget(self.field_pressure)
+        layout.addWidget(parameters_box)
+        self.parameters_box = parameters_box
         self.north, self.west = self._coord(90), self._coord(180)
         self.south, self.east = self._coord(90), self._coord(180)
         row = QHBoxLayout()
@@ -174,7 +203,7 @@ class Era5DownloadTab(QWidget):
             resume()
         self.cancel_button.setEnabled(False)
         self.retry_button.setEnabled(False)
-        self._source_changed()
+        self._models_changed()
         self.refresh_catalog()
 
     @staticmethod
@@ -283,7 +312,7 @@ class Era5DownloadTab(QWidget):
         if auto_submit:
             self.submit()
 
-    def _make_plan(self):
+    def _make_plan(self, fields=None):
         def as_utc(edit):
             return edit.dateTime().toPython().replace(tzinfo=timezone.utc)
 
@@ -296,36 +325,62 @@ class Era5DownloadTab(QWidget):
                 self.south.value(),
                 self.east.value(),
             ),
+            fields=fields or self._selected_fields(),
         )
 
     def start_download(self):
-        """Download with whichever historical model the user selected."""
-        if self.source.currentData() == "nbs":
+        """Download every checked model with the checked parameters."""
+        models = self._selected_models()
+        if not models:
+            self.status.setText("Select at least one model to download.")
+            return
+        if not self.field_wind.isChecked():
+            self.status.setText(
+                "Wind at 10 m is required for a usable historical field."
+            )
+            return
+        if "ERA5" in models:
+            self.submit(fields=self._selected_fields())
+        if "NBS" in models:
             self.submit_nbs()
+
+    def _selected_models(self):
+        return [
+            model_id
+            for model_id, check in self.model_checks.items()
+            if check.isChecked()
+        ]
+
+    def _selected_fields(self):
+        fields = []
+        if self.field_wind.isChecked():
+            fields.append("wind")
+        if self.field_pressure.isChecked() and self.model_checks["ERA5"].isChecked():
+            fields.append("pressure")
+        return tuple(fields) or ("wind",)
+
+    def _models_changed(self, *_):
+        era5 = self.model_checks["ERA5"].isChecked()
+        nbs = self.model_checks["NBS"].isChecked()
+        self.field_pressure.setEnabled(era5)
+        self.instructions.setVisible(era5)
+        self.show_button.setVisible(era5)
+        if not era5 and not nbs:
+            self.status.setText("Select at least one model to download.")
+        elif nbs and not era5:
+            self.status.setText(
+                "Satellite-blended NBS wind: NOAA CoastWatch, no CDS queue."
+            )
         else:
-            self.submit()
+            self.status.setText("Historical weather (UTC).")
 
-    def _source_changed(self, *_):
-        nbs = self.source.currentData() == "nbs"
-        self.instructions.setVisible(not nbs)
-        self.show_button.setVisible(not nbs)
-        self.request_button.setText(
-            "Download satellite winds" if nbs else "Start download"
-        )
-        self.retry_button.setEnabled(not nbs and bool(self.service.errors))
-        self.status.setText(
-            "Satellite-blended NBS wind: NOAA CoastWatch, no CDS queue."
-            if nbs
-            else "ERA5 reanalysis: CDS queue, hourly wind and pressure."
-        )
-
-    def submit(self):
+    def submit(self, fields=None):
         if self.job is not None and self.job.is_alive():
             return
         if not self._ensure_area():
             return
         try:
-            self.plan = self._make_plan()
+            self.plan = self._make_plan(fields)
             self.service.errors.pop(
                 (self.plan.start, self.plan.end, self.plan.area), None
             )
