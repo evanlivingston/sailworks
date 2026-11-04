@@ -1409,7 +1409,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
     from sailworks.qt.gpuweather import WeatherImageProvider
     from sailworks.qt.gribviewportchart import (
         CHART_PALETTE,
-        CHART_SETTLE_MS,
+        CHART_IDLE_MS,
+        CHART_INTERACTIVE_MS,
         ViewportChartLayer,
         chart_image_provider,
         chart_placement,
@@ -1571,6 +1572,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._chart_composition_camera = None
             self._chart_composition_dpr = None
             self._chart_camera_changed = time.perf_counter()
+            self._chart_interactive_at = None
             self._chart_ready_at = None
             self._chart_request_state = None
             self._chart_publish_state = None
@@ -1715,7 +1717,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     paths=model.paths,
                     data_dir=chart_data_dir,
                     palette=self._chart_palette,
-                    worker_idle=model.busy,
+                    worker_idle=lambda: not model.busy(),
                     current_camera=lambda: self._camera,
                     on_publish=self.chartPublished.emit,
                     on_state=self.chartStateChanged.emit,
@@ -1853,14 +1855,18 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             )
             self._status.move(8, 8)
             self._status.adjustSize()
-            # The chart layer composes for a settled view.  The settle timer
-            # spans more than fifteen of the gate's 30 inputs/s, so an
-            # interaction never triggers a composition: the chart can never
-            # compete with the weather pipeline for the worker.
+            # Request once after the most recent view or input change.
             self._chart_timer = QTimer(self)
-            self._chart_timer.setInterval(CHART_SETTLE_MS)
+            self._chart_timer.setSingleShot(True)
+            self._chart_timer.setInterval(CHART_IDLE_MS)
             self._chart_timer.timeout.connect(self._request_chart)
-            self._chart_timer.start()
+            # Check external chart sources every five seconds while idle.
+            self._chart_source_timer = QTimer(self)
+            self._chart_source_timer.setSingleShot(True)
+            self._chart_source_timer.setInterval(5000)
+            self._chart_source_timer.timeout.connect(self._check_chart_sources)
+            self._chart_source_timer.start()
+            self._watch_chart_budget()
             self.prepared.connect(self._refresh, Qt.ConnectionType.QueuedConnection)
             self.chartPublished.connect(
                 self._publish_chart, Qt.ConnectionType.QueuedConnection
@@ -1946,6 +1952,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 # The weather is presented: the chart layer may now be asked
                 # for its own generation.
                 self._weather_ready_at = time.perf_counter()
+                if getattr(self, "_chart_model", None) is not None:
+                    self._restart_chart_settle()
             self.stateChanged.emit(state)
 
         def _chart_state_changed(self, state):
@@ -1966,6 +1974,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     # if it were.
                     self._clear_chart()
             self._update_enc_status()
+            if state in ("idle", "unavailable") and not self._disposed:
+                self._restart_chart_settle()
 
         def _publish_chart(self, payload):
             """Stage a composed image without disturbing the visible chart."""
@@ -2080,7 +2090,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     and model._published is not None
                     and model._published[0] == generation
                     and metadata.get("viewport") is not None
-                    and model._reusable(self._camera)
+                    and model._reusable(self._camera, metadata.get("preview", False))
                 )
 
         def _reject_chart_pending(self):
@@ -2130,6 +2140,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._chart_viewport = metadata["viewport"]
             self._chart_composition_camera = metadata.get("camera")
             self._chart_composition_dpr = metadata.get("factor")
+            if metadata.get("preview") and self._chart_composition_dpr is not None:
+                self._chart_composition_dpr *= 2
             self._place_chart()
             self._chart_front_slot = slot
             self._chart.setProperty("frontSlot", slot)
@@ -2175,9 +2187,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             if chart is not None:
                 self._clear_chart()
             self._update_enc_status()
-            camera = getattr(self, "_camera", None)
-            if camera is not None and not getattr(self, "_disposed", False):
-                model.request(camera, replace=True)
+            self._chart_force_replace = True
+            self._restart_chart_settle()
 
         def _place_chart(self):
             """Place the retained chart image from its own composition camera."""
@@ -2669,15 +2680,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             ):
                 item.setProperty(name, value)
 
-        def _request_chart(self):
-            """Ask the chart layer for its own generation.
+        def _restart_chart_settle(self):
+            """Request a chart after the view and inputs have been idle."""
+            if not getattr(self, "_disposed", False):
+                self._chart_timer.start(CHART_IDLE_MS)
 
-            The chart is composed for a settled view: the view must not have
-            moved for the settle window, the weather must already be
-            presented and the weather pipeline must be idle.  While any of
-            those is untrue the chart asks again, so the chart never delays
-            the weather and never composes during an interaction.
-            """
+        def _request_interactive_chart(self):
+            """Offer one low-resolution chart on camera events, never by timer."""
             if self._chart_model is None or self._camera is None:
                 return
             if (
@@ -2685,20 +2694,80 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 and not getattr(self, "_chart_without_weather", False)
                 and not (self._enc_chart_layer and self._model.state == "unavailable")
             ):
-                # The chart is added after the weather is presented.
                 return
-            if (time.perf_counter() - self._chart_camera_changed) * 1000.0 < (
-                CHART_SETTLE_MS
+            if self._model.busy():
+                return
+            now = time.perf_counter()
+            last = self._chart_interactive_at
+            if last is not None and (now - last) * 1000 < CHART_INTERACTIVE_MS:
+                return
+            generation = self._chart_model.request(self._camera, preview=True)
+            if generation is not None:
+                self._chart_interactive_at = now
+                self.counters["chart_requests"] += 1
+                self._chart_requested_after_weather = True
+                self._chart_request_state = self._chart_state_now()
+
+        def _watch_chart_budget(self):
+            """Wake a refused chart when another layer releases capacity."""
+            budget = self._publication_manager.budget
+            release = budget.release
+
+            def release_and_rearm(role, size):
+                before = budget.total_used()
+                release(role, size)
+                if (
+                    budget.total_used() < before
+                    and getattr(self, "_chart_budget_refusal", None) is not None
+                ):
+                    self._restart_chart_settle()
+
+            budget.release = release_and_rearm
+
+        def _check_chart_sources(self):
+            """Recheck sources without defeating retained-composition reuse."""
+            if self._disposed:
+                return
+            self._request_chart()
+            self._chart_source_timer.start()
+
+        def _request_chart(self):
+            """Ask the chart layer for its own generation.
+
+            The chart is composed for a settled view: the view must not have
+            moved for the settle window, the weather must already be
+            presented and the weather pipeline must be idle.  While any of
+            those is untrue the chart asks again, so the chart never delays
+            the weather.
+            """
+            if self._chart_model is None or self._camera is None:
+                self._restart_chart_settle()
+                return
+            if (
+                self._weather_ready_at is None
+                and not getattr(self, "_chart_without_weather", False)
+                and not (self._enc_chart_layer and self._model.state == "unavailable")
             ):
+                # The chart is added after the weather is presented.
+                self._restart_chart_settle()
+                return
+            elapsed = (time.perf_counter() - self._chart_camera_changed) * 1000.0
+            if elapsed < CHART_IDLE_MS:
                 # The view is still moving: the chart waits for it to settle.
+                self._chart_timer.start(max(1, math.ceil(CHART_IDLE_MS - elapsed)))
                 return
             if self._model.busy():
                 # The weather pipeline is working: the chart waits.
+                self._restart_chart_settle()
                 return
             self.counters["chart_requests"] += 1
             self._chart_requested_after_weather = True
             self._chart_request_state = self._chart_state_now()
-            generation = self._chart_model.request(self._camera)
+            if getattr(self, "_chart_force_replace", False):
+                self._chart_force_replace = False
+                generation = self._chart_model.request(self._camera, replace=True)
+            else:
+                generation = self._chart_model.request(self._camera)
             refusal = getattr(self, "_chart_budget_refusal", None)
             retry_refusal = False
             if refusal is not None and refusal[0] == generation:
@@ -3677,6 +3746,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._model.close()
             if shiboken6.isValid(self._chart_timer):
                 self._chart_timer.stop()
+            if shiboken6.isValid(self._chart_source_timer):
+                self._chart_source_timer.stop()
             if self._chart_model is not None:
                 self._chart_model.close()
             self._provider.clear()
@@ -3758,6 +3829,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 return
             if self._camera is not None:
                 self.set_camera(self._camera)
+                if getattr(self, "_chart_model", None) is not None:
+                    self._restart_chart_settle()
 
         def _set_weather_visible(self, visible):
             """Chart scenes remain visible even when weather has no data."""
@@ -3836,16 +3909,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._marine_layer.set_camera(camera)
                 self._icoads_layer.set_camera(camera)
                 if self._chart_model is not None:
-                    # The chart is composed for a settled view: the settle
-                    # timer only asks for a composition when the view has
-                    # not moved for the settle window, so an interaction
-                    # never triggers a composition and the chart can never
-                    # compete with the weather pipeline.  The retained
-                    # composition is placed for the new camera either way.
                     previous_chart_camera = self._chart_camera
                     if self._chart_camera != camera:
                         self._chart_camera = camera
                         self._chart_camera_changed = time.perf_counter()
+                        self._restart_chart_settle()
+                        self._request_interactive_chart()
                     # Show retained image as a scaled preview during zoom when ENC is off.
                     # (Desktop viewport sets enc_chart_layer=True as a capability;
                     # the preview should activate whenever ENC isn't actually enabled.)
@@ -5338,6 +5407,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             # The display's own ratio is only known once the widget is on a
             # screen: the chart composition is made at that ratio.
             self._adopt_device_pixel_ratio()
+            self._restart_chart_settle()
 
         def event(self, event):
             if (

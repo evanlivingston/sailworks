@@ -71,6 +71,8 @@ Non-negotiable invariants:
 
 ## Architecture and ownership
 
+For current chart scheduling ownership, see the [performance plan](rendering-performance-plan.md#chart-publication-settle-measurement); the architecture below is historical context.
+
 The architecture below remains the target. The embedded presenter implements
 only the presentation boundary; view/content generations, worker restructuring,
 and coverage scheduling are not implemented yet.
@@ -292,6 +294,8 @@ speculative traffic. Report useful-prefetch hit rate AND wasted work/bytes.
   CPU fallback removal, GTK migration, and automatic downloads are out of scope.
 
 ## Measurement and acceptance contract
+
+See [current chart scheduling and measurements](rendering-performance-plan.md#chart-publication-settle-measurement) and the [measurement audit](rendering-m0-measurement-audit.md) for endpoint definitions.
 
 Extend existing tools instead of creating incomparable benchmarks. Record a
 protocol version, snapshot/fixture hashes, code revisions, actual backend, host,

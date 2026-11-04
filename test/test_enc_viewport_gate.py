@@ -478,6 +478,7 @@ def test_initial_weather_miss_does_not_block_enc_request():
         _enc_chart_layer=True,
         _model=SimpleNamespace(state="unavailable", busy=lambda: False),
         _chart_camera_changed=0,
+        _restart_chart_settle=Mock(),
         counters={"chart_requests": 0},
         _chart_state_now=lambda: {},
     )

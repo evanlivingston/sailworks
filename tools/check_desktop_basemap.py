@@ -232,12 +232,496 @@ def application(report, data, output, deadline):
         app.processEvents()
 
 
+def interaction_application(report, data, output, deadline):
+    """Time input dispatch to GUI adoption, not rendering or presentation."""
+    from dataclasses import asdict
+
+    from PySide6.QtWidgets import QApplication
+    from sailworks.core.marine.credentials import SystemCredentialStore
+    from sailworks.core.storage import DATA_DIR
+    from sailworks.qt.controller import SessionController
+    from sailworks.qt import gribviewport, weatherpresenter
+    from sailworks.qt.gribviewportchart import CHART_IDLE_MS
+    from sailworks.qt.theme import apply_theme
+    from sailworks.qt.window import PreviewWindow
+
+    if Path(DATA_DIR) != data:
+        raise RuntimeError("Application storage escaped the sandbox")
+    SystemCredentialStore.load = lambda _self: None
+    app = QApplication.instance() or QApplication([])
+    apply_theme(app)
+    controller = SessionController()
+    settings = controller.settings
+    for key in (
+        "chartENCVisible",
+        "chartRasterVisible",
+        "chartMBTilesVisible",
+        "chartCM93Visible",
+        "chartSeamarksVisible",
+        "chartVectorVisible",
+        "canadianCharts",
+    ):
+        settings[key] = False
+    settings["chartWorldVisible"] = True
+    settings["weatherRenderer"] = "viewport"
+    settings["gribWindStyle"] = "barbs"
+    controller.display_forecast.choose("")
+    active = None
+    original_factory = gribviewport._viewport_widget_class
+    original_presenter_factory = weatherpresenter._viewport_widget_class
+    instrumented_classes = {}
+
+    def slot_result(original_slot_result, widget, slot, token, success):
+        pending = widget._chart_pending
+        original_slot_result(widget, slot, token, success)
+        ended = time.perf_counter_ns()
+        if active is None or not success or pending is None:
+            return
+        generation, metadata, pending_slot, pending_token = pending
+        model = widget._chart_model
+        chart = widget._chart
+        if (
+            (slot, token) == (pending_slot, pending_token)
+            and model is not None
+            and chart is not None
+            and slot == widget._chart_front_slot == chart.property("frontSlot")
+            and chart.property("ready")
+            and chart.property(f"slot{slot}Source").toString()
+            == f"image://chart/{generation}"
+            and widget._chart_visible_generation == generation
+            and widget._chart_viewport is metadata.get("viewport")
+            and widget._chart_composition_camera
+            == metadata.get("camera")
+            == widget._camera
+            and model._published is not None
+            and model._published[0] == generation
+            and model._published[2] is metadata
+            and model._base_sources() == active["sources"]
+            and not model._enc_enabled
+            and not model._enc_only
+            and (metadata.get("enc") or {}).get("state") == "disabled"
+        ):
+            active["evidence"].append((generation, metadata.get("camera"), ended))
+
+    def instrumented_factory():
+        widget_class = original_factory()
+        if widget_class not in instrumented_classes:
+            original = widget_class._chart_slot_result
+            original_gate = widget_class._request_chart
+            instrumented_classes[widget_class] = (original, original_gate)
+
+            def wrapped(widget, slot, token, success):
+                return slot_result(original, widget, slot, token, success)
+
+            def traced_gate(widget):
+                sample = active
+                if sample is None:
+                    return original_gate(widget)
+                fired = time.perf_counter_ns()
+                chart = widget._chart_model
+                weather = widget._model
+                missing_model_or_camera = chart is None or widget._camera is None
+                weather_not_ready = widget._weather_ready_at is None
+                weather_blocked = (
+                    weather_not_ready
+                    and not getattr(widget, "_chart_without_weather", False)
+                    and not (widget._enc_chart_layer and weather.state == "unavailable")
+                )
+                busy_snapshot = weather.busy()
+                busy_checked = []
+                original_busy = weather.busy
+                had_instance_busy = "busy" in weather.__dict__
+
+                def observed_busy():
+                    result = original_busy()
+                    busy_checked.append(result)
+                    return result
+
+                if chart is None:
+                    chart_active = chart_pending = requests_before = None
+                else:
+                    with chart._condition:
+                        chart_active = chart._active is not None
+                        chart_pending = chart._pending is not None
+                        requests_before = chart.counters["requests"]
+                elapsed = fired / 1e6 - widget._chart_camera_changed * 1000.0
+                event = {
+                    "timestamp_ns": fired,
+                    "elapsed_since_sample_ms": (
+                        fired - sample["timestamps_ns"]["input"]
+                    )
+                    / 1e6,
+                    "elapsed_since_camera_change_ms": elapsed,
+                    "weather_ready_at_is_none": weather_not_ready,
+                    "weather_busy": busy_snapshot,
+                    "chart_active": chart_active,
+                    "chart_pending": chart_pending,
+                }
+                sample["gate_events"].append(event)
+                weather.busy = observed_busy
+                try:
+                    result = original_gate(widget)
+                finally:
+                    if had_instance_busy:
+                        weather.busy = original_busy
+                    else:
+                        del weather.busy
+                if chart is None:
+                    requests_after = None
+                else:
+                    with chart._condition:
+                        requests_after = chart.counters["requests"]
+                requested = (
+                    requests_before is not None and requests_after > requests_before
+                )
+                event["new_request"] = requested
+                event["weather_busy_checked"] = (
+                    busy_checked[0] if busy_checked else None
+                )
+                conditions = []
+                if missing_model_or_camera:
+                    conditions.append("no_model_or_camera")
+                if weather_blocked:
+                    conditions.append("weather_not_ready")
+                if elapsed < CHART_IDLE_MS:
+                    conditions.append("camera_moving_at_fire")
+                if busy_snapshot:
+                    conditions.append("weather_busy_at_fire")
+                if chart_active or chart_pending:
+                    conditions.append("chart_in_flight")
+                event["conditions_at_fire"] = conditions
+                if requested:
+                    event["outcome"] = "requested"
+                elif missing_model_or_camera:
+                    event["outcome"] = "returned_no_model_or_camera"
+                elif weather_blocked:
+                    event["outcome"] = "returned_weather_not_ready"
+                elif not busy_checked:
+                    event["outcome"] = "returned_camera_moving"
+                elif busy_checked[0]:
+                    event["outcome"] = "returned_weather_busy"
+                else:
+                    event["outcome"] = "request_without_new_composition"
+                return result
+
+            widget_class._chart_slot_result = wrapped
+            widget_class._request_chart = traced_gate
+        return widget_class
+
+    window = None
+    model = None
+    original_request = None
+    original_compose = None
+    original_notify_publish = None
+    try:
+        gribviewport._viewport_widget_class = instrumented_factory
+        weatherpresenter._viewport_widget_class = instrumented_factory
+        window = PreviewWindow(
+            controller, workspace_path=data / "interaction-workspace.json"
+        )
+        canvas = window.map
+        report["measurement"] = (
+            "camera input dispatch to GUI chart adoption; not presentation or FPS"
+        )
+        report["samples"] = []
+        report["workload"] = {
+            "pan_pixels": [800, 400],
+            "zoom_steps": 0.5,
+            "zoom_anchor_fraction": [0.3, 0.4],
+            "settle_ms": 100,
+            "timeout_after_settle_s": 3,
+        }
+        window.show()
+        canvas.camera_state.center_lat = 48.45
+        canvas.camera_state.center_lon = -124.29
+        canvas.camera_state.zoom = 9.38
+        canvas._invalidate_base()
+        canvas.update()
+
+        def initial_ready():
+            widget = canvas._weather_presenter.widget
+            return bool(
+                widget is not None
+                and widget._camera is not None
+                and widget._chart_model is not None
+                and widget._chart_model._published is not None
+                and widget._chart_visible_generation
+                == widget._chart_model._published[0]
+                and widget._chart_composition_camera
+                == widget._chart_model._published[2].get("camera")
+                == widget._camera
+                and widget._chart_viewport
+                is widget._chart_model._published[2].get("viewport")
+                and widget._chart is not None
+                and widget._chart.property("ready")
+                and widget._chart.property(
+                    f"slot{widget._chart_front_slot}Source"
+                ).toString()
+                == f"image://chart/{widget._chart_visible_generation}"
+            )
+
+        if not _wait(initial_ready, min(20, max(0, deadline - time.perf_counter()))):
+            raise RuntimeError("Initial chart was not adopted")
+        widget = canvas._weather_presenter.widget
+        model = widget._chart_model
+        sources = model._base_sources()
+        basemap = model.observations()["basemap"]
+        report["source"] = {
+            "sources": [
+                {"kind": source.kind, "path": source.path} for source in sources
+            ],
+            "gshhs_directory_exists": (data / "gshhs").is_dir(),
+            "expected_gshhs_path": str(data / "gshhs"),
+            "basemap": basemap,
+            "enc_enabled": model._enc_enabled,
+            "enc_only": model._enc_only,
+            "initial_camera": asdict(widget._camera),
+        }
+        if not (
+            (data / "gshhs").is_dir()
+            and len(sources) == 1
+            and sources[0].kind == "gshhs"
+            and sources[0].path == str(data / "gshhs")
+            and basemap["has_gshhs"]
+            and basemap["available"]
+            and not basemap["error"]
+            and not model._enc_enabled
+            and not model._enc_only
+            and (model._published[2].get("enc") or {}).get("state") == "disabled"
+        ):
+            raise RuntimeError("GSHHS-only source cannot be verified")
+        original_request = model.request
+        original_compose = model._compose
+        original_notify_publish = model._notify_publish
+
+        def compose(camera, cancel, preview=False):
+            began = time.perf_counter_ns()
+            sample = active
+            generation = model._active[0] if model._active is not None else None
+            result = original_compose(camera, cancel, preview=preview)
+            ended = time.perf_counter_ns()
+            if sample is not None and active is sample and generation is not None:
+                sample["timeline"].setdefault(generation, {})[
+                    "composed_preview"
+                ] = preview
+            if (
+                sample is not None
+                and active is sample
+                and generation is not None
+                and generation > sample["previous_generation"]
+                and generation == model._generation
+                and not cancel.is_set()
+            ):
+                sample["timeline"].setdefault(generation, {}).update(
+                    compose_start=began, compose_end=ended
+                )
+            return result
+
+        def notify_publish(payload):
+            published = time.perf_counter_ns()
+            sample = active
+            if (
+                sample is not None
+                and payload[0] > sample["previous_generation"]
+                and payload[0] == model._generation
+            ):
+                sample["timeline"].setdefault(payload[0], {})["publish"] = published
+            return original_notify_publish(payload)
+
+        def request(camera, replace=False, preview=False):
+            requested = time.perf_counter_ns()
+            sample = active
+            record = None
+            if sample is not None:
+                record = {
+                    "camera": camera,
+                    "generation": None,
+                    "preview": preview,
+                    "requested_ns": requested,
+                    "requests_before": model.counters["requests"],
+                    "reuses_before": model.counters["reuses"],
+                }
+                sample["requests"].append(record)
+            generation = original_request(camera, replace=replace, preview=preview)
+            if record is not None:
+                record["generation"] = generation
+                record["requests_delta"] = (
+                    model.counters["requests"] - record["requests_before"]
+                )
+                record["reuses_delta"] = (
+                    model.counters["reuses"] - record["reuses_before"]
+                )
+            return generation
+
+        model.request = request
+        model._compose = compose
+        model._notify_publish = notify_publish
+        for kind in ("pan", "zoom"):
+            for index in range(3):
+                previous = model._generation
+                active = {
+                    "kind": kind,
+                    "index": index + 1,
+                    "previous_generation": previous,
+                    "sources": sources,
+                    "requests": [],
+                    "gate_events": [],
+                    "evidence": [],
+                    "timeline": {},
+                    "phases_ms": {},
+                }
+                previous_camera = widget._camera
+                started = time.perf_counter_ns()
+                active["timestamps_ns"] = {"input": started}
+                if kind == "pan":
+                    widget.pan_pixels(800, 400)
+                else:
+                    widget.zoom_at(
+                        0.5, widget._camera.width * 0.3, widget._camera.height * 0.4
+                    )
+                requested_camera = widget._camera
+                active["requested_camera"] = asdict(requested_camera)
+
+                def outcome():
+                    for request_record in active["requests"]:
+                        if request_record.get("preview"):
+                            # A coarse interactive preview must never be
+                            # mistaken for the settled full-quality result.
+                            continue
+                        generation = request_record["generation"]
+                        if (
+                            request_record["camera"] != requested_camera
+                            or generation is None
+                        ):
+                            continue
+                        for adopted, camera, ended in active["evidence"]:
+                            if (
+                                generation > previous
+                                and adopted == generation
+                                and camera == requested_camera
+                            ):
+                                return ("published_match", request_record, ended)
+                        if (
+                            generation <= previous
+                            and request_record.get("reuses_delta", 0) > 0
+                        ):
+                            return ("reused", request_record, None)
+                    return None
+
+                if requested_camera == previous_camera:
+                    active["status"] = "unchanged_camera"
+                else:
+                    _wait(
+                        lambda: outcome() is not None,
+                        min(3.5, max(0, deadline - time.perf_counter())),
+                    )
+                    resolved = outcome()
+                    if resolved:
+                        status, request_record, ended = resolved
+                        active["status"] = status
+                        active["requested_generation"] = request_record["generation"]
+                        if ended is not None:
+                            active["adopted_generation"] = request_record["generation"]
+                            active["metadata_camera"] = asdict(requested_camera)
+                            active["elapsed_ms"] = (ended - started) / 1e6
+                            timeline = active["timeline"].get(
+                                request_record["generation"], {}
+                            )
+                            timestamps = {
+                                "input": started,
+                                "request": request_record["requested_ns"],
+                                "adopt": ended,
+                                **timeline,
+                            }
+                            active["timestamps_ns"] = timestamps
+                            active["phases_ms"] = {
+                                name: (timestamps[end] - timestamps[start]) / 1e6
+                                for name, start, end in (
+                                    ("settle_and_gating", "input", "request"),
+                                    ("scheduling", "request", "compose_start"),
+                                    ("compose", "compose_start", "compose_end"),
+                                    ("handoff", "compose_end", "publish"),
+                                    ("gui_adoption", "publish", "adopt"),
+                                )
+                                if start in timestamps and end in timestamps
+                            }
+                    else:
+                        active["status"] = (
+                            "timeout"
+                            if any(
+                                r["camera"] == requested_camera
+                                for r in active["requests"]
+                            )
+                            else "no_request"
+                        )
+                result = active.copy()
+                active = None
+                for request_record in result["requests"]:
+                    composition = result["timeline"].get(
+                        request_record["generation"], {}
+                    )
+                    if "composed_preview" in composition:
+                        request_record["composed_preview"] = composition[
+                            "composed_preview"
+                        ]
+                del result["sources"]
+                del result["evidence"]
+                del result["timeline"]
+                for request_record in result["requests"]:
+                    request_record["camera"] = asdict(request_record["camera"])
+                report["samples"].append(result)
+                if result["status"] != "published_match":
+                    break
+            if report["samples"][-1]["status"] != "published_match":
+                break
+        report["complete"] = len(report["samples"]) == 6 and all(
+            sample["status"] == "published_match" for sample in report["samples"]
+        )
+    finally:
+        try:
+            if window is not None:
+                window.close()
+        finally:
+            if original_request is not None:
+                model.request = original_request
+            if original_compose is not None:
+                model._compose = original_compose
+            if original_notify_publish is not None:
+                model._notify_publish = original_notify_publish
+            gribviewport._viewport_widget_class = original_factory
+            weatherpresenter._viewport_widget_class = original_presenter_factory
+            for widget_class, (original, original_gate) in instrumented_classes.items():
+                widget_class._chart_slot_result = original
+                widget_class._request_chart = original_gate
+            controller.close()
+            app.processEvents()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshot", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--chart-publication",
+        action="store_true",
+        help="measure camera dispatch to verified chart adoption (diagnostic only)",
+    )
     args = parser.parse_args()
-    report = run(args.snapshot, args.output, application=application)
+    if args.chart_publication:
+        import tempfile
+
+        approved = Path(
+            "/private/var/folders/w7/hb5wv1x1715821rqd1_3xf4r0000gn/T/opencode"
+        ).resolve()
+        output = args.output.resolve()
+        if not output.is_relative_to(approved) or output == approved:
+            parser.error(f"--chart-publication output must be inside {approved}")
+        tempfile.tempdir = str(approved)
+    report = run(
+        args.snapshot,
+        args.output,
+        application=interaction_application if args.chart_publication else application,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, default=str))
 
