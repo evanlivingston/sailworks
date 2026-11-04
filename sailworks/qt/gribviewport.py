@@ -2486,6 +2486,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 overlay.get("pois", []),
                 overlay.get("tracks", []),
                 overlay.get("race_tracks", []),
+                overlay.get("race_courses", []),
+                overlay.get("race_positions", []),
                 overlay.get("routes", []),
                 overlay.get("ais_targets", []),
                 overlay.get("isochrones", {}),
@@ -2506,13 +2508,18 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 pois_key = repr(content[7])
             routes_key = overlay.get("_routes_key")
             if routes_key is None:
-                routes_key = repr(content[10])
+                routes_key = repr(content[12])
+            # raceTracks (9) and routes (12) are keyed above; pois (7) and
+            # tracks (8) are keyed too. Courses (10) and boat markers (11)
+            # change cheaply by value.
             content_key = (
-                repr(content[:7] + content[11:]),
+                repr(content[:7]),
                 pois_key,
                 tracks_key,
                 race_key,
                 routes_key,
+                repr(content[10:12]),
+                repr(content[13:]),
             )
             content_changed = content_key != self._route_content_key
             if self._route_pan_window is None or content_changed:
@@ -2541,6 +2548,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                         "pois",
                         "tracks",
                         "raceTracks",
+                        "raceCourses",
+                        "racePositions",
                         "routes",
                         "aisTargets",
                         "isochrones",

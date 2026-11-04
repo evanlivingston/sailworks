@@ -427,7 +427,7 @@ class NavigationPanel(QWidget):
 
     def _set_track_editing(self, editing):
         track = self.core.trackManager.get_active()
-        editing = bool(editing and track is not None and not track.race_track)
+        editing = bool(editing and track is not None)
         self.canvas.navigation.edit_track = track if editing else None
         self.track_buttons[1].setEnabled(editing)
         self._invalidate_race_geometry()
@@ -541,9 +541,7 @@ class NavigationPanel(QWidget):
 
     def add_point(self, coordinates):
         active = self.core.trackManager.get_active()
-        if active is not None and (
-            self.canvas.navigation.edit_track is not active or active.race_track
-        ):
+        if active is not None and self.canvas.navigation.edit_track is not active:
             return
         if active is None:
             if len(self.core.trackManager) > 1:
@@ -556,8 +554,6 @@ class NavigationPanel(QWidget):
             )
             self.core.trackManager.set_active(active)
             self._set_track_editing(True)
-        if active.race_track:
-            return
         active.add(*coordinates)
         self._invalidate_race_geometry()
         self.point_index = len(active) - 1
@@ -667,7 +663,6 @@ class NavigationPanel(QWidget):
         if (
             active is None
             or self.canvas.navigation.edit_track is not active
-            or active.race_track
             or not 0 <= self.point_index < len(active)
         ):
             return
@@ -699,7 +694,6 @@ class NavigationPanel(QWidget):
         if (
             active is None
             or self.canvas.navigation.edit_track is not active
-            or active.race_track
             or not 0 <= index < len(active)
         ):
             return

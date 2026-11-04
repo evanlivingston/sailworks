@@ -210,9 +210,11 @@ class WeatherPresenter(QObject):
 
     @staticmethod
     def _model(source, grid=False):
+        from sailworks.rendering.displayforecast import display_selection
+
         return GribViewportModel(
             () if source is None else (source.path,),
-            display_identity=None if source is None else source.display_identity,
+            display_identity=None if source is None else display_selection(source),
             resident_time_window=True,
             grid=grid,
         )

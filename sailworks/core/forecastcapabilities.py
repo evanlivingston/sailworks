@@ -188,6 +188,9 @@ def model_from_grib_metadata(dataset, metadata):
 
     # Preserve the legacy names and HRDPS projection guard exactly.
     if center == "7" and len(values) >= 5:
+        if values[4] == "200":
+            # NBS satellite-blended wind, encoded with a local-use process id.
+            return "NBS"
         if values[4] in ("81", "96"):
             return "GFS"
         if values[4] == "83":

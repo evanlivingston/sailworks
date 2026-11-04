@@ -54,10 +54,11 @@ class _TrackManager(list):
             suffix += 1
         return candidate
 
-    def remove_many(self, tracks, save=True):
-        self.removed_batches.append((list(tracks), save))
-        ids = {id(track) for track in tracks}
-        self[:] = [track for track in self if id(track) not in ids]
+    def exists(self, name):
+        return any(track.name == name for track in self)
+
+    def save(self):
+        pass
 
     def remove_by_names(self, names, save=True):
         self.removed_names.append(list(names))
@@ -82,7 +83,7 @@ class _TrackManager(list):
         return self.active
 
 
-def test_show_race_tracks_uses_batched_remove_and_append(qtbot):
+def test_show_race_tracks_builds_transient_race_tracks(qtbot):
     from unittest.mock import patch
 
     app = QApplication.instance() or QApplication([])
@@ -106,144 +107,22 @@ def test_show_race_tracks_uses_batched_remove_and_append(qtbot):
         qtbot.addWidget(panel)
 
     race = _sample_race()
+
+    old_race = _sample_race()
+    old_race.race_id = "old"
+    panel._races.append(old_race)
+    panel._displayed_race_id = "old"
     panel._defer_heavy = False
+    panel._load_race_tracks(old_race)
 
     panel._show_race_tracks(race)
 
-    assert len(manager.appended_batches) == 1
-    assert len(manager.appended_batches[0]) == 2
-    assert all(
-        getattr(track, "race_track", False) for track in manager.appended_batches[0]
-    )
-    assert panel._race_track_names == [
-        f"{race.name} - Boat A",
-        f"{race.name} - Boat B",
+    assert not panel.race_tracks(old_race)
+    assert [track.name for track in panel.race_tracks(race)] == [
+        "Boat A",
+        "Boat B",
     ]
-    assert (
-        manager.active is manager[-2] or manager.active in manager.appended_batches[0]
-    )
-    original = list(manager)
-    panel._show_race_tracks(race)
-    assert all(a is b for a, b in zip(manager, original))
-    assert len(manager) == 2
-
-
-def test_restart_change_and_stale_tracks(qtbot, monkeypatch):
-    import json
-    from sailworks.core.geo.track import Track
-
-    monkeypatch.setattr(racepanel, "load_saved_races", lambda: [])
-    manager = _TrackManager()
-    panel = racepanel.RacesPanel(
-        SimpleNamespace(core=SimpleNamespace(trackManager=manager))
-    )
-    qtbot.addWidget(panel)
-    panel._defer_heavy = False
-    race = _sample_race()
-    panel._show_race_tracks(race)
-    saved = json.loads(json.dumps([t.to_json() for t in manager]))
-    assert all("race_times" not in track for track in saved)
-    manager[:] = [Track.from_json(t) for t in saved]
-    for track in manager:
-        track.collection = manager
-    original = list(manager)
-    panel._race_track_names = []
-    panel.race_track_times = {}
-    panel._show_race_tracks(race)
-    assert len(manager) == 2 and all(a is b for a, b in zip(manager, original))
-    assert len(panel._race_track_names) == len(panel.race_track_times) == 2
-    revision = manager[0]._revision
-    race.boats[0].positions[0].latitude += 1
-    race.boats.pop()
-    panel._show_race_tracks(race)
-    assert len(manager) == 1 and manager[0] is original[0]
-    assert manager[0]._revision > revision
-    assert manager[0].points[0][0] == race.boats[0].positions[0].latitude
-
-
-def test_legacy_duplicate_migration(qtbot, monkeypatch):
-    from sailworks.core.geo.track import Track
-
-    monkeypatch.setattr(racepanel, "load_saved_races", lambda: [])
-    manager = _TrackManager()
-    panel = racepanel.RacesPanel(
-        SimpleNamespace(core=SimpleNamespace(trackManager=manager))
-    )
-    qtbot.addWidget(panel)
-    panel._defer_heavy = False
-    race = _sample_race()
-    a = Track(f"{race.name} - Boat A", race_track=True)
-    b = Track(f"{race.name} - Boat B", race_track=True)
-    duplicate1 = Track(f"{a.name}-1", race_track=True)
-    duplicate2 = Track(f"{a.name}-2", race_track=True)
-    unrelated = Track("Another race - Boat A-1", race_track=True)
-    manager.extend([duplicate2, duplicate1, a, b, unrelated])
-    panel._show_race_tracks(race)
-    assert a.race_key and a.race_boat_key
-    assert b.race_key and b.race_boat_key
-    assert manager == [a, b, unrelated]
-    assert manager.removed_batches == [([duplicate2, duplicate1], False)]
-    assert manager.saves == 1
-    panel._show_race_tracks(race)
-    assert manager == [a, b, unrelated]
-    assert len(manager.removed_batches) == 1
-    assert manager.saves == 1
-
-
-def test_legacy_suffix_order_and_ambiguous_names(qtbot, monkeypatch):
-    from sailworks.core.geo.track import Track
-
-    monkeypatch.setattr(racepanel, "load_saved_races", lambda: [])
-    manager = _TrackManager()
-    panel = racepanel.RacesPanel(
-        SimpleNamespace(core=SimpleNamespace(trackManager=manager))
-    )
-    qtbot.addWidget(panel)
-    panel._defer_heavy = False
-    race = _sample_race()
-    base = f"{race.name} - Boat A"
-    later = Track(f"{base}-10", race_track=True)
-    earlier = Track(f"{base}-2", race_track=True)
-    manager.extend([later, earlier])
-    panel._show_race_tracks(race)
-    assert earlier.race_key and later not in manager
-
-    manager.clear()
-    manager.removed_batches.clear()
-    race.boats[1].name = race.boats[0].name
-    legacy = Track(base, race_track=True)
-    duplicate = Track(f"{base}-1", race_track=True)
-    manager.extend([legacy, duplicate])
-    panel._show_race_tracks(race)
-    assert legacy.race_key is None and duplicate.race_key is None
-    assert legacy in manager and duplicate in manager
-    assert len(manager) == 4
-    assert not manager.removed_batches
-
-
-def test_tracks_changed_precedes_persistence(qtbot, monkeypatch):
-    monkeypatch.setattr(racepanel, "load_saved_races", lambda: [])
-    manager = _TrackManager()
-    order = []
-    manager.save_async = lambda: order.append("save")
-    panel = racepanel.RacesPanel(
-        SimpleNamespace(core=SimpleNamespace(trackManager=manager))
-    )
-    qtbot.addWidget(panel)
-    panel._defer_heavy = False
-    panel.tracks_changed.connect(lambda: order.append("signal"))
-    panel._show_race_tracks(_sample_race())
-    assert order == ["signal", "save"]
-
-
-def test_panel_close_flushes(qtbot, monkeypatch):
-    monkeypatch.setattr(racepanel, "load_saved_races", lambda: [])
-    manager = _TrackManager()
-    flushed = []
-    manager.flush_async = lambda: flushed.append(True)
-    panel = racepanel.RacesPanel(
-        SimpleNamespace(core=SimpleNamespace(trackManager=manager))
-    )
-    qtbot.addWidget(panel)
-    panel.close()
-    assert flushed == [True]
+    assert panel.active_race_track in panel.race_tracks(race)
+    # Race tracks are transient: they never enter the user's track collection.
+    assert len(manager) == 0
+    assert not manager.appended_batches

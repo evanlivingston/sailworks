@@ -23,6 +23,7 @@ from sailworks.core.gribsources.options import DownloadOptions
 from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES
 from sailworks.core.forecasttranche import ModelConfiguration
 from sailworks.core.weathernextcredentials import describe_access_error
+from .text import qt_text
 
 MODELS = (
     ("NOAA GFS", "GFS", "0.25°", "10 days", "Global", "GFS"),
@@ -94,9 +95,9 @@ class ModelListRow(QWidget):
         include_layout.addWidget(self.download_check)
         include_layout.addStretch(1)
 
-        self.model_label = QLabel(name, self)
-        self.resolution_label = QLabel(resolution, self)
-        self.forecast_label = QLabel(forecast, self)
+        self.model_label = QLabel(qt_text(name), self)
+        self.resolution_label = QLabel(qt_text(resolution), self)
+        self.forecast_label = QLabel(qt_text(forecast), self)
         self.resolution_label.setFixedWidth(88)
         self.forecast_label.setFixedWidth(72)
         for label in (self.model_label, self.resolution_label, self.forecast_label):

@@ -6,7 +6,7 @@ import math
 from typing import cast
 
 import weatherrouting
-from PySide6.QtCore import QDateTime, Signal
+from PySide6.QtCore import QDateTime, QPoint, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -39,6 +39,137 @@ from sailworks.core.routingoptions import (
 )
 from .dockchrome import style_scrollarea
 from .theme import section_label
+from .text import qt_text
+
+
+class InfoButton(QToolButton):
+    """ⓘ button that opens a readable, word-wrapped explanation."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(parent)
+        self._text = text
+        self._popup = None
+        self._show_timer = QTimer(self)
+        self._show_timer.setSingleShot(True)
+        self._show_timer.setInterval(200)
+        self._show_timer.timeout.connect(self._open_popup)
+        self.setText("i")
+        self.setAutoRaise(True)
+        self.setCursor(Qt.CursorShape.WhatsThisCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setFixedSize(18, 18)
+        self.setAccessibleName("More information")
+        self.setStyleSheet(
+            "QToolButton { border: 1px solid palette(mid); border-radius: 9px;"
+            " background: palette(base); color: palette(text);"
+            " font-size: 10px; padding: 0; }"
+            "QToolButton:hover { border-color: palette(highlight); }"
+        )
+
+    def info_text(self):
+        return self._text
+
+    def enterEvent(self, event):
+        self._show_timer.start()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._show_timer.stop()
+        self._hide_popup()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        self._show_timer.stop()
+        if self._popup is None:
+            self._open_popup()
+        else:
+            self._hide_popup()
+        super().mousePressEvent(event)
+
+    def hideEvent(self, event):
+        self._hide_popup()
+        super().hideEvent(event)
+
+    def _open_popup(self):
+        if self._popup is not None or not self._text:
+            return
+        popup = QLabel(self._text)
+        popup.setWordWrap(True)
+        popup.setMinimumWidth(220)
+        popup.setMaximumWidth(340)
+        popup.setWindowFlags(Qt.WindowType.ToolTip)
+        popup.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        popup.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        popup.setStyleSheet(
+            "QLabel { background-color: palette(base); color: palette(text);"
+            " border: 1px solid palette(mid); border-radius: 6px;"
+            " padding: 8px 10px; font-size: 12px; }"
+        )
+        popup.adjustSize()
+        anchor = self.mapToGlobal(QPoint(0, self.height() + 6))
+        screen = self.screen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            x = min(
+                max(anchor.x(), area.left() + 4),
+                area.right() - popup.width() - 4,
+            )
+            y = anchor.y()
+            if y + popup.height() > area.bottom() - 4:
+                y = self.mapToGlobal(QPoint(0, 0)).y() - popup.height() - 6
+            anchor = QPoint(x, y)
+        popup.move(anchor)
+        popup.show()
+        self._popup = popup
+
+    def _hide_popup(self):
+        if self._popup is not None:
+            self._popup.close()
+            self._popup.deleteLater()
+            self._popup = None
+
+
+# Plain-language help for the settings that used to show CDS-style one-liners.
+PARAMETER_HELP = {
+    "subdiv": (
+        "How finely the isochrone search subdivides the grid when checking "
+        "whether a point is reachable. Higher values test more intermediate "
+        "points, giving a smoother and usually more accurate route but taking "
+        "longer to calculate. Lower values are faster and coarser."
+    ),
+    "concurrent": (
+        "Calculate isochrones for several time steps in parallel using more "
+        "CPU cores. Speeds up long routes, but uses more memory and can make "
+        "progress less predictable while it runs."
+    ),
+    "min_increase": (
+        "How much extra distance (in nautical miles) a new candidate point "
+        "must add over the previous isochrone before it is kept. Larger values "
+        "prune more aggressively (faster, possibly less optimal route); smaller "
+        "values search harder."
+    ),
+}
+
+SAFETY_HELP = {
+    "limit_wind": (
+        "Reject route points where the forecast true wind exceeds this speed. "
+        "The router will detour or wait instead of sailing into stronger wind."
+    ),
+    "motor_fallback": (
+        "When the boat's sailing speed drops below this value, continue at the "
+        "motoring speed instead of stalling. Use it to model a motor assist, or "
+        "to keep a minimum rate of progress in light air."
+    ),
+    "motor_speed": (
+        "Speed used while motoring under the fallback above. Set it to roughly "
+        "the boat's motoring speed in calm conditions."
+    ),
+    "wave_proxy": (
+        "Reduces sailing speed when the wind exceeds 20 kn, down to 25% at "
+        "40 kn, as a stand-in for rough sea state. It uses forecast wind speed, "
+        "not wave height, and does not change the motoring speed."
+    ),
+}
 
 
 class RoutingPanel(QWidget):
@@ -84,16 +215,19 @@ class RoutingPanel(QWidget):
         self.departure.setCalendarPopup(True)
         self.departure.setDisplayFormat("yyyy-MM-dd HH:mm")
         form.addRow("Departure (local)", self.departure)
+        self.departure.dateTimeChanged.connect(lambda *_: self.options_changed.emit())
         self.map_start = None
         self.map_destination = None
+        # The start mode depends on the chosen track/POI, so pick the
+        # destination first.
+        self.destination = QComboBox()
         self.start_mode = QComboBox()
         self.start_mode.addItem("First waypoint", "first-track-point")
         self.start_mode.addItem("Boat position", "boat-position")
-        self.start_mode.currentIndexChanged.connect(self._plan_changed)
-        form.addRow("Start", self.start_mode)
-        self.destination = QComboBox()
         self.destination.currentIndexChanged.connect(self._plan_changed)
+        self.start_mode.currentIndexChanged.connect(self._plan_changed)
         form.addRow("Waypoints / destination", self.destination)
+        form.addRow("Start", self.start_mode)
         self.coastlines = QCheckBox("Check coastlines")
         self.coastlines.setChecked(True)
         form.addRow(self.coastlines)
@@ -105,10 +239,13 @@ class RoutingPanel(QWidget):
         self.coastline_clearance.setToolTip(
             "Reject route legs within this distance of the coastline."
         )
-        form.addRow("Keep off coast", self.coastline_clearance)
+        self.coastline_label = QLabel("Keep off coast")
+        form.addRow(self.coastline_label, self.coastline_clearance)
         self.coastline_clearance.valueChanged.connect(
             lambda *_: self.options_changed.emit()
         )
+        self.coastlines.toggled.connect(self._sync_coastline_clearance)
+        self._sync_coastline_clearance(self.coastlines.isChecked())
         setup_layout.addLayout(form)
         hint = QLabel(
             "Choose a waypoint track or saved POI. "
@@ -129,7 +266,7 @@ class RoutingPanel(QWidget):
 
         self.progress = QProgressBar()
         layout.addWidget(self.progress)
-        self.status = QLabel(self.routing.message)
+        self.status = QLabel(qt_text(self.routing.message))
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
         layout.addLayout(actions)
@@ -139,7 +276,8 @@ class RoutingPanel(QWidget):
             )
             combo.setMinimumContentsLength(14)
         self._build_advanced_pages()
-        self._build_safety_controls(form)
+        self._build_safety_controls()
+        form.addRow(self.parameters_section)
         self.inputs = (
             self.polar,
             self.algorithm,
@@ -155,22 +293,41 @@ class RoutingPanel(QWidget):
         self.refresh_destinations()
         self.refresh()
 
-    def _build_safety_controls(self, form):
-        form.addRow(section_label("Routing limits"))
+    def _build_safety_controls(self):
+        self.safety_form = QFormLayout()
+        self.safety_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        self.safety_form.addRow(section_label("Routing limits"))
         self.limit_wind = QCheckBox("Maximum true wind")
+        self.limit_wind.setAccessibleDescription(SAFETY_HELP["limit_wind"])
         self.maximum_wind = self._speed_control(30, 100)
-        form.addRow(self.limit_wind, self.maximum_wind)
-        self.motor_fallback = QCheckBox("Motor when sailing speed is below")
-        self.minimum_sailing_speed = self._speed_control(3, 30)
-        form.addRow(self.motor_fallback, self.minimum_sailing_speed)
-        self.motor_speed = self._speed_control(5, 30)
-        form.addRow("Motoring speed", self.motor_speed)
-        self.wave_proxy = QCheckBox("Wind-based speed reduction (wave proxy)")
-        self.wave_proxy.setToolTip(
-            "Reduces sailing speed above 20 kn wind, up to 25% at 40 kn. "
-            "Uses wind speed, not wave-height forecasts. Motoring speed is unchanged."
+        self.maximum_wind.setAccessibleDescription(SAFETY_HELP["limit_wind"])
+        self.safety_form.addRow(
+            self._row_with_info(self.limit_wind, SAFETY_HELP["limit_wind"]),
+            self.maximum_wind,
         )
-        form.addRow(self.wave_proxy)
+        self.motor_fallback = QCheckBox("Motor when sailing speed is below")
+        self.motor_fallback.setAccessibleDescription(SAFETY_HELP["motor_fallback"])
+        self.minimum_sailing_speed = self._speed_control(3, 30)
+        self.minimum_sailing_speed.setAccessibleDescription(
+            SAFETY_HELP["motor_fallback"]
+        )
+        self.safety_form.addRow(
+            self._row_with_info(self.motor_fallback, SAFETY_HELP["motor_fallback"]),
+            self.minimum_sailing_speed,
+        )
+        self.motor_speed = self._speed_control(5, 30)
+        self.motor_speed.setAccessibleDescription(SAFETY_HELP["motor_speed"])
+        motor_label = QLabel("Motoring speed")
+        self.safety_form.addRow(
+            self._row_with_info(motor_label, SAFETY_HELP["motor_speed"]),
+            self.motor_speed,
+        )
+        self.wave_proxy = QCheckBox("Wind-based speed reduction (wave proxy)")
+        self.wave_proxy.setAccessibleDescription(SAFETY_HELP["wave_proxy"])
+        self.safety_form.addRow(
+            self._row_with_info(self.wave_proxy, SAFETY_HELP["wave_proxy"])
+        )
+        self.parameters_box.layout().addLayout(self.safety_form)
         for control in (self.limit_wind, self.motor_fallback, self.wave_proxy):
             control.toggled.connect(self._safety_changed)
         for control in (
@@ -209,13 +366,56 @@ class RoutingPanel(QWidget):
         self.parameters_box = QWidget()
         layout = QVBoxLayout(self.parameters_box)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(section_label("Router Parameters"))
         self.parameter_form = QFormLayout()
         self.parameter_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
         layout.addLayout(self.parameter_form)
-        form.addRow(self.parameters_box)
+
+        self.parameters_header = QToolButton()
+        self.parameters_header.setText("Advanced")
+        self.parameters_header.setCheckable(True)
+        self.parameters_header.setChecked(False)
+        self.parameters_header.setAutoRaise(True)
+        self.parameters_header.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.parameters_header.setArrowType(Qt.ArrowType.RightArrow)
+        self.parameters_header.toggled.connect(self._toggle_parameters)
+        self.parameters_header.toggled.connect(lambda *_: self.options_changed.emit())
+
+        self.parameters_section = QWidget()
+        section_layout = QVBoxLayout(self.parameters_section)
+        section_layout.setContentsMargins(0, 0, 0, 0)
+        section_layout.setSpacing(4)
+        section_layout.addWidget(self.parameters_header)
+        section_layout.addWidget(self.parameters_box)
+        self.parameters_box.setVisible(False)
+        form.addRow(self.parameters_section)
+
         self.algorithm.currentIndexChanged.connect(self._algorithm_changed)
         self._algorithm_changed()
+
+    def _toggle_parameters(self, expanded):
+        self.parameters_header.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
+        self.parameters_box.setVisible(expanded)
+
+    def _sync_coastline_clearance(self, checked):
+        self.coastline_label.setVisible(checked)
+        self.coastline_clearance.setVisible(checked)
+
+    @staticmethod
+    def _info_button(text):
+        return InfoButton(text)
+
+    def _row_with_info(self, widget, text):
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(widget, 1)
+        layout.addWidget(self._info_button(text))
+        return row
 
     def _read_parameters(self):
         return {
@@ -238,13 +438,23 @@ class RoutingPanel(QWidget):
             widget = self._parameter_widget(param, values.get(key, param.value))
             if widget is None:
                 continue
-            widget.setToolTip(param.tooltip)
+            widget.setAccessibleDescription(
+                PARAMETER_HELP.get(key, param.tooltip or param.name)
+            )
             widget.setAccessibleName(param.name)
-            label = QLabel(param.name)
+            label = QLabel(qt_text(param.name))
             label.setWordWrap(True)
-            self.parameter_form.addRow(label, widget)
+            label_row = QWidget()
+            label_layout = QHBoxLayout(label_row)
+            label_layout.setContentsMargins(0, 0, 0, 0)
+            label_layout.setSpacing(4)
+            label_layout.addWidget(label, 1)
+            label_layout.addWidget(
+                self._info_button(PARAMETER_HELP.get(key, param.tooltip or param.name))
+            )
+            self.parameter_form.addRow(label_row, widget)
             self.parameter_widgets[key] = widget
-        self.parameters_box.setVisible(bool(self.parameter_widgets))
+        self.parameters_section.setVisible(True)
         self.options_changed.emit()
 
     def _parameter_widget(self, param, value):
@@ -395,11 +605,72 @@ class RoutingPanel(QWidget):
             self.preflight_dialog = None
             dialog.deleteLater()
 
+    @staticmethod
+    def _selection_state(value):
+        if isinstance(value, Track):
+            return {"type": "track", "name": value.name}
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            try:
+                return {
+                    "type": "position",
+                    "value": [float(value[0]), float(value[1])],
+                }
+            except (TypeError, ValueError):
+                return None
+        if isinstance(value, str) and value:
+            return {"type": "value", "value": value}
+        return None
+
+    @staticmethod
+    def _same_position(left, right):
+        try:
+            return (
+                abs(float(left[0]) - float(right[0])) <= 1e-9
+                and abs(float(left[1]) - float(right[1])) <= 1e-9
+            )
+        except (TypeError, ValueError, IndexError):
+            return False
+
+    def _combo_has_position(self, combo, value):
+        if not isinstance(value, (list, tuple)) or len(value) < 2:
+            return False
+        for index in range(combo.count()):
+            data = combo.itemData(index)
+            if isinstance(data, (list, tuple)) and self._same_position(data, value):
+                return True
+        return False
+
+    def _restore_combo(self, combo, saved):
+        if not isinstance(saved, dict):
+            return False
+        kind = saved.get("type")
+        value = saved.get("value")
+        for index in range(combo.count()):
+            data = combo.itemData(index)
+            if kind == "track" and isinstance(data, Track) and data.name == value:
+                combo.setCurrentIndex(index)
+                return True
+            if (
+                kind == "position"
+                and isinstance(data, (list, tuple))
+                and self._same_position(data, value)
+            ):
+                combo.setCurrentIndex(index)
+                return True
+            if kind == "value" and data == value:
+                combo.setCurrentIndex(index)
+                return True
+        return False
+
     def saved_options(self):
         cache = dict(self.parameter_cache)
         cache[self.parameter_name] = self._read_parameters()
         return dict(
             parameters=cache,
+            destination=self._selection_state(self.destination.currentData()),
+            start=self._selection_state(self.start_mode.currentData()),
+            departure=self.departure.dateTime().toPython().isoformat(),
+            advanced_expanded=self.parameters_header.isChecked(),
             use_currents=self.use_currents.isChecked(),
             current_priority=self.current_priority.currentData(),
             coastline_clearance_nm=self.coastline_clearance.value(),
@@ -440,6 +711,31 @@ class RoutingPanel(QWidget):
                 pass
         # Preserve the validated cache while replacing the initially displayed defaults.
         self.parameter_name = ""
+        destination = mapping(saved.get("destination"))
+        start = mapping(saved.get("start"))
+        for combo, key, saved_value in (
+            (self.destination, "destination", destination),
+            (self.start_mode, "start", start),
+        ):
+            if saved_value.get("type") == "position" and not self._combo_has_position(
+                combo, saved_value.get("value")
+            ):
+                value = saved_value.get("value")
+                if isinstance(value, (list, tuple)) and len(value) >= 2:
+                    if key == "destination":
+                        self.map_destination = tuple(value[:2])
+                    else:
+                        self.map_start = tuple(value[:2])
+        self.refresh_destinations()
+        self._restore_combo(self.destination, destination)
+        self._restore_combo(self.start_mode, start)
+        departure = saved.get("departure")
+        if isinstance(departure, str):
+            try:
+                self.departure.setDateTime(QDateTime(datetime.fromisoformat(departure)))
+            except ValueError:
+                pass
+        self.parameters_header.setChecked(saved.get("advanced_expanded") is True)
         self.use_currents.setChecked(saved.get("use_currents") is True)
         clearance_nm = saved.get("coastline_clearance_nm")
         if (
@@ -536,6 +832,7 @@ class RoutingPanel(QWidget):
         self.plan_changed.emit(
             tuple(([start] if start is not None else []) + list(points))
         )
+        self.options_changed.emit()
         self.refresh()
 
     def _start_position(self, points):

@@ -22,6 +22,7 @@ from .marinepanel import BusyButton
 from .theme import section_label
 from sailworks.rendering.windpainter import BARB_DENSITIES
 from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES, display_model_name
+from .text import qt_text
 
 
 class ForecastModelSelector(QComboBox):
@@ -47,38 +48,85 @@ class ForecastModelSelector(QComboBox):
         self.blockSignals(True)
         try:
             self.clear()
-            if active is None:
+            if analysis is None or active is None:
                 self.addItem("No published model selection", "")
                 return
-            entries = tuple(
-                entry
-                for entry in active.tranche.entries
-                if MODEL_CAPABILITIES.get(entry.model_id)
-                and MODEL_CAPABILITIES[entry.model_id].routing_eligible
-            )
-            for entry in entries:
-                self.addItem(display_model_name(entry.model_id), entry.model_id)
+            choices = self._choices(analysis)
+            self._targets = {}
+            for label, model_id, target in choices:
+                self.addItem(label, model_id)
+                self._targets[model_id] = target
             index = self.findData(active.entry.model_id)
+            if index < 0:
+                index = self.findText(display_model_name(active.entry.model_id))
             if index >= 0:
                 self.setCurrentIndex(index)
-            elif entries:
+            elif choices:
                 self.setCurrentIndex(0)
             else:
                 self.addItem("No wind model available", "")
         finally:
             self.blockSignals(False)
 
+    @staticmethod
+    def _choices(analysis):
+        """One entry per model, using its newest published run.
+
+        The dropdown chooses a model, not a run: switching runs is the job of
+        a refresh, while selecting here decides which model the session uses.
+        """
+        store = analysis.state.store
+        manifests = getattr(store, "manifests", None)
+        if manifests is None:
+            active = getattr(analysis, "active", None)
+            tranches = [active.tranche] if active is not None else []
+        else:
+            tranches = []
+            for path in manifests.glob("*.json"):
+                try:
+                    tranches.append(store.load(path.stem))
+                except Exception:
+                    continue
+        newest = {}
+        for tranche in tranches:
+            for entry in tranche.entries:
+                if "wind" not in entry.fields:
+                    continue
+                capability = MODEL_CAPABILITIES.get(entry.model_id)
+                if capability is not None and not capability.routing_eligible:
+                    continue
+                prior = newest.get(entry.model_id)
+                if prior is None or entry.run_time > prior[0]:
+                    newest[entry.model_id] = (
+                        entry.run_time,
+                        (tranche.tranche_id, entry.entry_id),
+                    )
+        ordered = sorted(newest.items(), key=lambda item: item[1][0], reverse=True)
+        return [
+            (display_model_name(model_id), model_id, data)
+            for model_id, (_run, data) in ordered
+        ]
+
     def _select(self, index):
         analysis = self._analysis()
         if analysis is None or index < 0:
             return
         model_id = self.itemData(index)
-        if not model_id:
+        target = getattr(self, "_targets", {}).get(model_id)
+        if target is None:
             return
+        tranche_id, entry_id = target
         active = getattr(analysis, "active", None)
-        if active is not None and active.entry.model_id == model_id:
+        if active is not None and (
+            active.tranche.tranche_id,
+            active.entry.entry_id,
+        ) == (tranche_id, entry_id):
             return
-        analysis.select_model(model_id)
+        activate = getattr(analysis, "activate", None)
+        if callable(activate):
+            activate(tranche_id, entry_id)
+        else:
+            analysis.select_model(model_id)
 
 
 class WeatherPanel(QWidget):
@@ -200,7 +248,7 @@ class WeatherPanel(QWidget):
         self.refresh()
 
     def checkbox(self, label, key):
-        widget = QCheckBox(label)
+        widget = QCheckBox(qt_text(label))
         widget.setChecked(bool(self.controller.settings[key]))
         widget.toggled.connect(lambda value: self.set_preference(key, value))
         return widget

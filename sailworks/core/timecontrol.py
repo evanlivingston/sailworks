@@ -26,6 +26,24 @@ def naive_wall_time(value: datetime.datetime) -> datetime.datetime:
     return value
 
 
+def utc_to_wall(value: datetime.datetime) -> datetime.datetime:
+    """Convert a naive-UTC racing timestamp to the local wall clock."""
+    if value is None:
+        return None
+    epoch = value.replace(tzinfo=datetime.timezone.utc).timestamp()
+    return datetime.datetime.fromtimestamp(epoch).replace(tzinfo=None)
+
+
+def wall_to_utc(value: datetime.datetime) -> datetime.datetime:
+    """Convert a local wall-clock time back to a naive-UTC timestamp."""
+    if value is None:
+        return None
+    epoch = value.timestamp()
+    return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).replace(
+        tzinfo=None
+    )
+
+
 class TimeControl(EventDispatcher):
     DFORMAT = "%Y/%m/%d, %H:%M"
 

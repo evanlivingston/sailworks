@@ -9,6 +9,20 @@ def identity_key(path, reference, model):
     return json.dumps((str(path), reference, model), separators=(",", ":"))
 
 
+def display_selection(source):
+    """Run selection for a displayed source, or None for display-only models.
+
+    Models outside the forecast capability catalogue (for example imported
+    ERA5 history) have no model-run identity, so their GRIB messages must not
+    be filtered by one.
+    """
+    from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES
+
+    if getattr(source, "model_name", "") not in MODEL_CAPABILITIES:
+        return None
+    return getattr(source, "display_identity", None)
+
+
 def restrict_index(index, selection):
     """Filter the private index, preserving original band numbers/vector flags."""
     if selection is not None:
@@ -68,6 +82,45 @@ def inspect_forecasts(entries):
                 metadata.last_forecast,
                 metadata.model_name,
             )
+            records = source.sampling.records
+            # Analysis-like sources (ERA5, NBS) carry one reference time per
+            # valid time, so they must become a single forecast spanning all
+            # valid hours instead of one forecast per message.
+            analysis_like = bool(records) and all(
+                abs(record.reference - record.valid) <= 1e-6 for record in records
+            )
+            if (
+                analysis_like
+                and metadata.model_name in ("ERA5", "NBS")
+                and len({record.valid for record in records}) > 1
+            ):
+                times = tuple(sorted({record.valid for record in records}))
+                reference = min(times)
+                identity = (
+                    reference,
+                    (
+                        ("ecmf", "ERA5", ())
+                        if metadata.model_name == "ERA5"
+                        else ("analysis", metadata.model_name, ())
+                    ),
+                )
+                forecasts.append(
+                    DisplayForecast(
+                        str(path),
+                        metadata.name,
+                        metadata.centre,
+                        metadata.bounds,
+                        datetime.fromtimestamp(reference),
+                        (max(times) - reference) / 3600,
+                        metadata.model_name,
+                        identity,
+                        reference,
+                        max(times),
+                        version,
+                        valid_times=times,
+                    )
+                )
+                continue
             groups = {}
             for record in source.sampling.records:
                 groups.setdefault((record.reference, record.identity[1]), []).append(

@@ -387,12 +387,14 @@ class RetainedOverlayMixin:
                     ais_renderer.draw_targets(self, cr, ais_targets)
                 except Exception:
                     pass
-        from sailworks.core.mapviewport import MapPoint
+        if not getattr(self, "_qml_race_overlay", False):
+            # The viewport draws race markers itself; only the legacy map
+            # renderer needs these Cairo circles.
+            from sailworks.core.mapviewport import MapPoint
 
-        positions = getattr(self, "race_boat_positions", ()) or getattr(
-            self, "race_positions", ()
-        )
-        if positions:
+            positions = getattr(self, "race_boat_positions", ()) or getattr(
+                self, "race_positions", ()
+            )
             for position in positions:
                 try:
                     lat, lon = position
