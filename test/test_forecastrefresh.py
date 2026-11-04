@@ -337,6 +337,57 @@ def test_all_models_failing_raises_with_every_reason(tmp_path):
     assert not list(tmp_path.glob(".refresh-*"))
 
 
+def test_reusable_entry_failure_does_not_abort_other_models(tmp_path, monkeypatch):
+    store = TrancheStore(tmp_path)
+    configs = (config("GFS"), config("HRRR"))
+    original = store.reusable_entry
+
+    def reusable(planned):
+        if planned.model_id == "GFS":
+            raise OSError("synthetic store failure")
+        return original(planned)
+
+    monkeypatch.setattr(store, "reusable_entry", reusable)
+    service, _ = coordinator(store, configs)
+    service.configure(configs, "HRRR")
+    result = service.refresh()
+
+    assert {entry.model_id for entry in result.tranche.entries} == {"HRRR"}
+    assert result.selection.entry_id == "HRRR"
+    assert service.partial_failures == {
+        "GFS": "local reuse failed: synthetic store failure"
+    }
+    assert "GFS: local reuse failed: synthetic store failure" in (
+        service.refresh_warning
+    )
+
+
+def test_planning_failure_is_reported_while_other_models_publish(tmp_path):
+    store = TrancheStore(tmp_path)
+    configs = (config("GFS"), config("HRRR"))
+    full = make_plan(configs, "HRRR")
+    partial = ForecastRefreshPlan(
+        (full.models[1],), "HRRR", {"GFS": "catalogue unavailable"}
+    )
+
+    factories, _ = make_factories()
+    service = RefreshCoordinator(
+        store,
+        factories=factories,
+        planner=lambda requested, selected, **kwargs: partial,
+        validator=lambda path, planned, cancel: valid_metadata(planned),
+        clock=lambda: ACQUIRED,
+        id_factory=lambda: "tranche-0",
+    )
+    service.configure(configs, "HRRR")
+    result = service.refresh()
+
+    assert {entry.model_id for entry in result.tranche.entries} == {"HRRR"}
+    assert result.selection.entry_id == "HRRR"
+    assert service.partial_failures == {"GFS": "catalogue unavailable"}
+    assert service.refresh_warning.startswith("GFS: catalogue unavailable.")
+
+
 def test_configuration_edit_during_download_retires_ticket(tmp_path):
     entered, release = Event(), Event()
     service, _ = coordinator(

@@ -175,7 +175,17 @@ class RefreshCoordinator:
         already covers every planned run.
         """
         for planned in plan.models:
-            if self.store.reusable_entry(planned) is None:
+            try:
+                reusable = self.store.reusable_entry(planned)
+            except Exception:
+                # The per-model refresh loop reports local-store errors. Treat
+                # an unreadable entry as not current so the loop can do that
+                # without aborting every other model.
+                logger.exception(
+                    "Local reuse lookup failed for model=%s", planned.model_id
+                )
+                return False
+            if reusable is None:
                 return False
         return True
 
@@ -381,8 +391,18 @@ class RefreshCoordinator:
             self._raise_if_stale_or_cancelled(revision, ticket, cancel)
             logger.exception("Forecast refresh planning failed")
             raise RefreshExecutionError(f"planning failed: {exc}") from exc
+        expected_by_id = {
+            configuration.model_id: configuration for configuration in configurations
+        }
+        planned_ids = {item.model_id for item in plan.models}
+        failed_ids = set(plan.planning_failures)
         if (
-            plan.configurations != configurations
+            planned_ids | failed_ids != set(expected_by_id)
+            or planned_ids & failed_ids
+            or any(
+                item.configuration != expected_by_id[item.model_id]
+                for item in plan.models
+            )
             or plan.selected_model_id != selected_model_id
         ):
             raise RefreshExecutionError(
@@ -406,10 +426,19 @@ class RefreshCoordinator:
                     ",".join(item.model_id for item in plan.models),
                     selected_model_id,
                 )
+                if plan.planning_failures:
+                    self._record_outcome(
+                        revision,
+                        ticket,
+                        dict(plan.planning_failures),
+                        tuple(item.model_id for item in plan.models),
+                    )
                 return current
 
         entries = []
-        failures = {}
+        # Planning failures are per-model and belong in the same summary as
+        # failures that happen later during download, registration or validation.
+        failures = dict(plan.planning_failures)
         published = []
         selection = None
         self._record_outcome(revision, ticket, {}, ())
@@ -420,24 +449,25 @@ class RefreshCoordinator:
                 stage = Path(tmp)
                 for index, planned in enumerate(plan.models):
                     self._raise_if_stale_or_cancelled(revision, ticket, cancel)
-                    reusable = self.store.reusable_entry(planned)
-                    if reusable is not None:
-                        entry, _path = reusable
-                        logger.info(
-                            "Reusing local forecast model=%s run=%s artifact=%s",
-                            planned.model_id,
-                            planned.run_time.isoformat(),
-                            entry.artifacts[0].sha256,
-                        )
-                        entries.append(entry)
-                        self._progress(
-                            progress,
-                            planned.model_id,
-                            90 + int(9 * (index + 1) / len(plan.models)),
-                        )
-                        continue
-                    phase = "download"
+                    phase = "local reuse"
                     try:
+                        reusable = self.store.reusable_entry(planned)
+                        if reusable is not None:
+                            entry, _path = reusable
+                            logger.info(
+                                "Reusing local forecast model=%s run=%s artifact=%s",
+                                planned.model_id,
+                                planned.run_time.isoformat(),
+                                entry.artifacts[0].sha256,
+                            )
+                            entries.append(entry)
+                            self._progress(
+                                progress,
+                                planned.model_id,
+                                90 + int(9 * (index + 1) / len(plan.models)),
+                            )
+                            continue
+                        phase = "download"
                         logger.info(
                             "Downloading forecast model=%s run=%s",
                             planned.model_id,

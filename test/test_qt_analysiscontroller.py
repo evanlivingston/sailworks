@@ -163,6 +163,27 @@ def test_configuration_persists_intent_without_replacing_active_snapshot(tmp_pat
     controller.close()
 
 
+def test_configuration_error_and_partial_refresh_warning_both_surface(tmp_path):
+    application = app()
+    state = FakeAnalysisState(tmp_path, make_snapshot(tmp_path))
+    controller = AnalysisController(state=state)
+    wait_for(lambda: not controller.loading, application)
+
+    state.configuration_error = "saved refresh configuration is invalid"
+    state.refresh_warning = (
+        "HRRR: download failed: synthetic failure. Other models downloaded: GFS."
+    )
+    state.next_refresh = make_snapshot(tmp_path, "tranche-b", "GFS")
+    assert controller.refresh()
+    wait_for(lambda: not controller.loading, application)
+
+    assert "saved refresh configuration is invalid" in controller.error
+    assert "HRRR: download failed: synthetic failure" in controller.error
+    assert controller.error.index("saved refresh") < controller.error.index("HRRR")
+    assert "invalid" in controller.status
+    controller.close()
+
+
 def test_root_injection_uses_only_the_temporary_analysis_store(tmp_path):
     application = app()
     controller = AnalysisController(root=tmp_path)

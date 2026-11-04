@@ -218,7 +218,12 @@ class AnalysisController(QObject):
                 if action == "refresh"
                 else ""
             )
-            self.error = configuration_error or warning
+            # A saved-configuration error must not hide which models failed
+            # during the refresh; keep both in one rendered message, matching
+            # the "; " separator used for reconciliation errors below.
+            self.error = "; ".join(
+                part for part in (configuration_error, warning) if part
+            )
             self.status = (
                 "Forecast ready"
                 if result is not None

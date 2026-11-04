@@ -1,6 +1,6 @@
 """Immutable public contracts for pinned forecast refresh plans."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 
@@ -145,16 +145,33 @@ class PlannedModel:
 class ForecastRefreshPlan:
     models: tuple[PlannedModel, ...]
     selected_model_id: str
+    planning_failures: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self):
         models = tuple(self.models)
         if not models or any(not isinstance(model, PlannedModel) for model in models):
             raise ValueError("plan needs non-empty PlannedModel values")
         ids = tuple(model.model_id for model in models)
-        if len(set(ids)) != len(ids) or self.selected_model_id not in ids:
-            raise ValueError("selected model must identify one unique planned model")
+        if len(set(ids)) != len(ids):
+            raise ValueError("plan models must be unique")
+        failures = dict(self.planning_failures)
+        if any(
+            not isinstance(model_id, str)
+            or not model_id
+            or not isinstance(reason, str)
+            or not reason
+            for model_id, reason in failures.items()
+        ):
+            raise ValueError("planning failures need non-empty model ids and reasons")
+        if set(ids) & set(failures):
+            raise ValueError("a planned model cannot also be a planning failure")
+        if self.selected_model_id not in ids and self.selected_model_id not in failures:
+            raise ValueError(
+                "selected model must identify one planned model or planning failure"
+            )
         shared_requested_region(tuple(model.configuration for model in models))
         object.__setattr__(self, "models", models)
+        object.__setattr__(self, "planning_failures", failures)
 
     @property
     def configurations(self):

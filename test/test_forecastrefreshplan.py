@@ -241,20 +241,23 @@ def test_native_resolution_and_wrapped_region_rules():
         plan_refresh((config(region=(0, 170, 10, -170)),), "GFS", factories=factories)
 
 
-def test_catalogue_errors_and_malformed_or_mismatched_rows_fail_whole_plan():
+def test_malformed_catalogue_row_isolated_to_one_model():
     good = FakeSource(
         "NOAA GFS", [row("NOAA GFS", "20250101", "00", 6, range(0, 7, 3))]
     )
     bad = FakeSource("NOAA HRRR", [["bad"]])
     factories, _ = factory_map({"GFS": good, "HRRR": bad})
-    with pytest.raises(RefreshPlanningError, match="HRRR"):
-        plan_refresh((config(), config("HRRR")), "GFS", factories=factories)
+    result = plan_refresh((config(), config("HRRR")), "GFS", factories=factories)
+    assert [planned.model_id for planned in result.models] == ["GFS"]
+    assert set(result.planning_failures) == {"HRRR"}
+    assert result.selected_model_id == "GFS"
+
     bad.rows = [row("NOAA GFS", "20250101", "00", 6, range(0, 7, 3))]
     with pytest.raises(RefreshPlanningError, match="provider mismatch"):
         plan_refresh((config("HRRR"),), "HRRR", factories=factories)
 
 
-def test_no_partial_plan_when_catalogue_raises_and_unknown_models_rejected():
+def test_catalogue_failure_does_not_discard_other_plans_and_unknown_models_rejected():
     good = FakeSource(
         "NOAA GFS", [row("NOAA GFS", "20250101", "00", 6, range(0, 7, 3))]
     )
@@ -265,10 +268,26 @@ def test_no_partial_plan_when_catalogue_raises_and_unknown_models_rejected():
 
     failing = OfflineSource("NOAA HRRR", [])
     factories, _ = factory_map({"GFS": good, "HRRR": failing})
-    with pytest.raises(RefreshPlanningError, match="HRRR: offline"):
-        plan_refresh((config(), config("HRRR")), "GFS", factories=factories)
+    result = plan_refresh((config(), config("HRRR")), "GFS", factories=factories)
+    assert [planned.model_id for planned in result.models] == ["GFS"]
+    assert result.planning_failures == {"HRRR": "offline"}
     with pytest.raises(UnsupportedConfigurationError):
         plan_refresh((config("Imported"),), "Imported", factories=factories)
+
+
+def test_every_model_failing_to_plan_raises_with_every_reason():
+    class OfflineSource(FakeSource):
+        def get_download_list(self, options):
+            raise OSError(f"{self.name} catalogue offline")
+
+    gfs = OfflineSource("NOAA GFS", [])
+    hrrr = OfflineSource("NOAA HRRR", [])
+    factories, _ = factory_map({"GFS": gfs, "HRRR": hrrr})
+    with pytest.raises(RefreshPlanningError) as excinfo:
+        plan_refresh((config(), config("HRRR")), "GFS", factories=factories)
+    message = str(excinfo.value)
+    assert "GFS: NOAA GFS catalogue offline" in message
+    assert "HRRR: NOAA HRRR catalogue offline" in message
 
 
 def test_cancellation_and_immutable_pinned_identifiers():
