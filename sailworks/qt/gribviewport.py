@@ -1717,7 +1717,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     paths=model.paths,
                     data_dir=chart_data_dir,
                     palette=self._chart_palette,
-                    worker_idle=model.busy,
+                    worker_idle=lambda: not model.busy(),
                     current_camera=lambda: self._camera,
                     on_publish=self.chartPublished.emit,
                     on_state=self.chartStateChanged.emit,
@@ -1860,6 +1860,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._chart_timer.setSingleShot(True)
             self._chart_timer.setInterval(CHART_IDLE_MS)
             self._chart_timer.timeout.connect(self._request_chart)
+            # Check external chart sources every five seconds while idle.
+            self._chart_source_timer = QTimer(self)
+            self._chart_source_timer.setSingleShot(True)
+            self._chart_source_timer.setInterval(5000)
+            self._chart_source_timer.timeout.connect(self._check_chart_sources)
+            self._chart_source_timer.start()
             self._watch_chart_budget()
             self.prepared.connect(self._refresh, Qt.ConnectionType.QueuedConnection)
             self.chartPublished.connect(
@@ -1968,6 +1974,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     # if it were.
                     self._clear_chart()
             self._update_enc_status()
+            if state in ("idle", "unavailable") and not self._disposed:
+                self._restart_chart_settle()
 
         def _publish_chart(self, payload):
             """Stage a composed image without disturbing the visible chart."""
@@ -2132,6 +2140,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._chart_viewport = metadata["viewport"]
             self._chart_composition_camera = metadata.get("camera")
             self._chart_composition_dpr = metadata.get("factor")
+            if metadata.get("preview") and self._chart_composition_dpr is not None:
+                self._chart_composition_dpr *= 2
             self._place_chart()
             self._chart_front_slot = slot
             self._chart.setProperty("frontSlot", slot)
@@ -2713,6 +2723,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     self._restart_chart_settle()
 
             budget.release = release_and_rearm
+
+        def _check_chart_sources(self):
+            """Recheck sources without defeating retained-composition reuse."""
+            if self._disposed:
+                return
+            self._request_chart()
+            self._chart_source_timer.start()
 
         def _request_chart(self):
             """Ask the chart layer for its own generation.
@@ -3729,6 +3746,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._model.close()
             if shiboken6.isValid(self._chart_timer):
                 self._chart_timer.stop()
+            if shiboken6.isValid(self._chart_source_timer):
+                self._chart_source_timer.stop()
             if self._chart_model is not None:
                 self._chart_model.close()
             self._provider.clear()

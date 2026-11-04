@@ -318,6 +318,7 @@ class ViewportChartLayer:
         self._thread = None
         self._closed = False
         self._sources = ()
+        self._reset_sources = False
         self._sampler = None
         self._sampler_sources: "tuple[DisplayWeatherSource, ...]" = ()
         self._composer_instance = None
@@ -463,14 +464,18 @@ class ViewportChartLayer:
                 return None
             if preview and (self._active is not None or self._pending is not None):
                 return None
-            if self._sources_changed():
+            sources_changed = self._sources_changed()
+            basemap_changed = self._basemap_sources_changed()
+            if sources_changed or basemap_changed:
+                self._invalidate_sources_locked()
+            if sources_changed:
                 # The user's own manifest changed: the retained composition
                 # may no longer describe the user's cells, so it is withdrawn
                 # and the cells are composed again.
                 self._published = None
                 self._payload_bytes = 0
                 self._enc_stale = False
-            if self._basemap_sources_changed():
+            if basemap_changed:
                 # The basemap sources changed: the retained composition
                 # may no longer be valid, so it is withdrawn.
                 self._published = None
@@ -512,11 +517,16 @@ class ViewportChartLayer:
         if replace:
             return None
         if self._pending is not None:
-            if self._pending[1] == camera and self._pending[3] == preview:
+            if (
+                self._pending[0] == self._generation
+                and self._pending[1] == camera
+                and self._pending[3] == preview
+            ):
                 return self._pending[0]
             return None
         if (
             self._active is not None
+            and self._active[0] == self._generation
             and self._active[1] == camera
             and self._active[3] == preview
         ):
@@ -536,7 +546,8 @@ class ViewportChartLayer:
         if metadata["time"] != camera.stamp():
             # The isobars belong to the forecast instant.
             return False
-        if metadata.get("factor", 1) != self._dpr:
+        expected_factor = self._dpr * 0.5 if preview else self._dpr
+        if metadata.get("factor", 1) != expected_factor:
             # The composition was made at another device pixel ratio: it is
             # not current, and it may not be resampled into this one.
             return False
@@ -603,6 +614,7 @@ class ViewportChartLayer:
         longer be the user's.
         """
         with self._condition:
+            self._invalidate_sources_locked()
             self._published = None
             self._payload_bytes = 0
             self._enc_stale = False
@@ -612,6 +624,14 @@ class ViewportChartLayer:
                 self._enc_metadata = {}
             # Also recheck basemap sources
             self._check_basemap_sources(self._data_dir)
+
+    def _invalidate_sources_locked(self):
+        """Reject old work and refresh worker-owned source handles."""
+        self._generation += 1
+        self._reset_sources = True
+        for request in (self._pending, self._active):
+            if request is not None:
+                request[2].set()
 
     def enc_status(self):
         """The ENC source's own status text, for the scene."""
@@ -665,6 +685,11 @@ class ViewportChartLayer:
                         return
                     request, self._pending = cast(tuple, self._pending), None
                     self._active = request
+                    reset_sources = self._reset_sources
+                    self._reset_sources = False
+                if reset_sources:
+                    self._release()
+                    self._sources = ()
                 generation, camera, cancel, preview = request
                 began = time.perf_counter()
                 error = ""
@@ -676,13 +701,16 @@ class ViewportChartLayer:
                         if preview and not self._await_idle(cancel):
                             self._outcome = "yielded"
                         elif preview:
-                            image, metadata = self._compose(camera, cancel, preview=True)
+                            image, metadata = self._compose(
+                                camera, cancel, preview=True
+                            )
                         else:
                             image, metadata = self._compose(camera, cancel)
                 except Exception as exc:  # a chart failure is never fatal
                     error = str(exc)
                 ended = time.perf_counter()
                 publish = None
+                notify_state = None
                 with self._condition:
                     self._active = None
                     self._spans.append((began, ended))
@@ -697,7 +725,7 @@ class ViewportChartLayer:
                         # yields, and the layer asks again when the weather
                         # pipeline is idle.
                         self._state = "idle"
-                        self._pending = None
+                        notify_state = "idle"
                     elif (
                         cancel.is_set()
                         or generation != self._generation
@@ -721,8 +749,11 @@ class ViewportChartLayer:
                     else:
                         self.counters["failures"] += 1
                         self._state = "unavailable"
+                        notify_state = "unavailable"
                         self._error = error
                         self._outcomes[generation] = "failed"
+                        self._published = None
+                        self._payload_bytes = 0
                         if self._enc_enabled:
                             # A failed composition never leaves the previous
                             # ENC presented: it is not current, and it is not
@@ -731,8 +762,6 @@ class ViewportChartLayer:
                             self._enc_state = "unavailable"
                             self._enc_stale = False
                             self._enc_metadata = {}
-                            self._published = None
-                            self._payload_bytes = 0
                     self._trim_history()
                 if publish is not None:
                     with self._condition:
@@ -744,8 +773,8 @@ class ViewportChartLayer:
                     if publish is not None:
                         self._notify_publish(publish)
                         self._notify_state("ready")
-                elif error:
-                    self._notify_state("unavailable")
+                elif notify_state is not None:
+                    self._notify_state(notify_state)
         finally:
             self._release()
 
@@ -868,7 +897,7 @@ class ViewportChartLayer:
             "viewport": viewport,
             "camera": camera,
             "time": camera.stamp(),
-            "factor": self._dpr,
+            "factor": factor,
             "preview": preview,
             "enc": enc if enc is not None else disabled_enc_metadata(),
         }
