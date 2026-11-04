@@ -26,6 +26,9 @@ from sailworks.core.era5 import (
 )
 from sailworks.core.timecontrol import utc_to_wall
 
+CDS_REQUESTS_URL = "https://cds.climate.copernicus.eu/requests"
+CDS_LIVE_URL = "https://cds.climate.copernicus.eu/live"
+
 
 class Era5DownloadTab(QWidget):
     """Download historical data without changing forecast or routing state."""
@@ -441,6 +444,20 @@ class Era5DownloadTab(QWidget):
         hours, remaining = divmod(minutes, 60)
         return f"{hours} h {remaining} min" if remaining else f"{hours} h"
 
+    def _set_status_link(self, index, status, row):
+        link = QLabel(
+            f'<a href="{CDS_REQUESTS_URL}" style="text-decoration:none;">'
+            f"{status} ↗</a>"
+        )
+        link.setOpenExternalLinks(True)
+        link.setToolTip(
+            "Open your requests on the CDS website "
+            f"(request {row.get('request_id', '')})"
+        )
+        link.setContentsMargins(6, 0, 6, 0)
+        link.setStyleSheet("QLabel { background: transparent; }")
+        self.catalog.setCellWidget(index, 3, link)
+
     def refresh_catalog(self):
         path = self.service.store.root / "era5-history.json"
         try:
@@ -505,13 +522,14 @@ class Era5DownloadTab(QWidget):
                 artifact,
             )
             for column, value in enumerate(values):
+                if row["kind"] == "queued" and column == 3:
+                    # The status is a link to the CDS request list.
+                    continue
                 item = QTableWidgetItem(value)
                 item.setToolTip(value)
                 self.catalog.setItem(index, column, item)
             if row["kind"] == "queued":
-                self.catalog.item(index, 3).setToolTip(
-                    f"CDS request {row.get('request_id', '')}"
-                )
+                self._set_status_link(index, status, row)
             else:
                 self.catalog.item(index, 4).setToolTip(str(row["artifact"]))
         self.catalog.blockSignals(False)

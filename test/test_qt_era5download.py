@@ -73,7 +73,10 @@ def test_poll_refreshes_queue_rows_while_download_runs(tmp_path):
     tab.poll()
 
     assert tab.catalog.rowCount() == 1
-    assert tab.catalog.item(0, 3).text().startswith("Queued at CDS")
+    assert "Queued at CDS" in tab.catalog.cellWidget(0, 3).text()
+    label = tab.catalog.cellWidget(0, 3)
+    assert "cds.climate.copernicus.eu/requests" in label.text()
+    assert label.openExternalLinks()
 
 
 def test_sample_selected_samples_explicit_hours_without_forecast_activation(
