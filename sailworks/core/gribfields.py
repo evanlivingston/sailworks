@@ -2,6 +2,9 @@
 
 PRESSURE_ELEMENTS = ("PRMSL", "MSLMA", "PRES")
 GUST_ELEMENTS = ("GUST",)
+WAVE_HEIGHT_ELEMENTS = ("SWH", "HTSGW")
+WAVE_PERIOD_ELEMENTS = ("MWP", "PERPW")
+WAVE_DIRECTION_ELEMENTS = ("MWD", "DIRPW")
 
 
 def is_mean_sea_level_pressure(metadata):

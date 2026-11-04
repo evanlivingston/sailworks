@@ -26,6 +26,9 @@ FIELD_VARIABLES = {
         "10m_v_component_of_wind",
     ),
     "pressure": ("mean_sea_level_pressure",),
+    "wave_height": ("significant_height_of_combined_wind_waves_and_swell",),
+    "wave_period": ("mean_wave_period",),
+    "wave_direction": ("mean_wave_direction",),
 }
 DEFAULT_FIELDS = ("wind", "pressure")
 VARIABLES = FIELD_VARIABLES["wind"] + FIELD_VARIABLES["pressure"]
@@ -114,7 +117,7 @@ def plan_request(
 def _field_variables(fields):
     selected = tuple(fields)
     if not selected or any(field not in FIELD_VARIABLES for field in selected):
-        raise ValueError("fields must be wind, pressure, or both")
+        raise ValueError("fields must be supported ERA5 field names")
     if len(set(selected)) != len(selected):
         raise ValueError("duplicate ERA5 field")
     return [name for field in selected for name in FIELD_VARIABLES[field]]
@@ -247,6 +250,23 @@ def validate_grib(path, piece, *, dataset_opener=None):
                 element == "MSL" and level == "0-SFC"
             ):
                 field = VARIABLES[2]
+            elif element in (
+                "SWH",
+                "HTSGW",
+                "MWP",
+                "PERPW",
+                "MWD",
+                "DIRPW",
+            ) and level in ("0-SFC", "1-SFC"):
+                name = {
+                    "SWH": "wave_height",
+                    "HTSGW": "wave_height",
+                    "MWP": "wave_period",
+                    "PERPW": "wave_period",
+                    "MWD": "wave_direction",
+                    "DIRPW": "wave_direction",
+                }[element]
+                field = FIELD_VARIABLES[name][0]
             else:
                 raise Era5Error(
                     f"Unsupported GRIB element/level band: {element or '<unknown>'}/"
@@ -539,6 +559,10 @@ class Era5DownloadService:
                 start == piece.start
                 and end == piece.end
                 and _areas_close(area, piece.area)
+                # A queued request only contains its submitted variables.
+                and entry.get("dataset", DATASET) == DATASET
+                and set(piece.request.get("variable") or VARIABLES)
+                <= set(entry.get("variables") or VARIABLES)
             ):
                 return entry
         return None
@@ -603,13 +627,18 @@ class Era5DownloadService:
                     datetime.fromisoformat(entry["start"]),
                     datetime.fromisoformat(entry["end"]),
                     tuple(float(value) for value in entry["area"]),
-                    {},
+                    {"variable": entry.get("variables") or VARIABLES},
                 )
             except (KeyError, TypeError, ValueError):
                 continue
+            if entry.get("dataset", DATASET) != DATASET:
+                continue
             if self._catalog_covers(catalog, piece):
                 continue
-            key = self._request_key(piece.start, piece.end, piece.area)
+            key = self._request_key(piece.start, piece.end, piece.area) + (
+                entry.get("dataset", DATASET),
+                tuple(sorted(piece.request["variable"])),
+            )
             prior = newest.get(key)
             if prior is None or str(entry.get("created", "")) > str(
                 prior.get("created", "")
@@ -636,7 +665,10 @@ class Era5DownloadService:
                 start = datetime.fromisoformat(entry["start"])
                 end = datetime.fromisoformat(entry["end"])
                 area = tuple(float(value) for value in entry["area"])
-                key = self._request_key(start, end, area)
+                key = self._request_key(start, end, area) + (
+                    entry.get("dataset", DATASET),
+                    tuple(sorted(entry.get("variables") or VARIABLES)),
+                )
             except (KeyError, TypeError, ValueError):
                 continue
             piece = Era5Request(
@@ -969,18 +1001,28 @@ def publish_history_display(state, entries, *, model_id="ERA5"):
     region = (south, west, north, east)
     run_time = times[0]
     hours = int((times[-1] - run_time).total_seconds() // 3600)
-    variables = {str(value) for item in usable for value in item.get("variables", ())}
+    variables = {
+        str(value) for item in usable for value in (item.get("variables") or VARIABLES)
+    }
     fields = tuple(
         name
         for name, names in FIELD_VARIABLES.items()
         if all(value in variables for value in names)
     )
     if not fields:
-        raise Era5Error("ERA5 history has no wind or pressure fields to display")
+        raise Era5Error("ERA5 history has no supported fields to display")
     levels = tuple(
-        level
-        for field, level in (("wind", "10-HTGL"), ("pressure", "0-MSL"))
-        if field in fields
+        dict.fromkeys(
+            level
+            for field, level in (
+                ("wind", "10-HTGL"),
+                ("pressure", "0-MSL"),
+                ("wave_height", "0-SFC"),
+                ("wave_period", "0-SFC"),
+                ("wave_direction", "0-SFC"),
+            )
+            if field in fields
+        )
     )
     config = ModelConfiguration(
         model_id,

@@ -18,7 +18,14 @@ from osgeo import gdal
 from pyproj import CRS, Transformer, Geod
 
 from .gribvectors import vector_flags
-from .gribfields import GUST_ELEMENTS, PRESSURE_ELEMENTS, is_mean_sea_level_pressure
+from .gribfields import (
+    GUST_ELEMENTS,
+    PRESSURE_ELEMENTS,
+    WAVE_HEIGHT_ELEMENTS,
+    WAVE_PERIOD_ELEMENTS,
+    WAVE_DIRECTION_ELEMENTS,
+    is_mean_sea_level_pressure,
+)
 
 logger = logging.getLogger("sailworks")
 
@@ -26,6 +33,9 @@ FIELDS = {
     "wind": ("UGRD", "VGRD"),
     "pressure": PRESSURE_ELEMENTS,
     "gust": GUST_ELEMENTS,
+    "wave_height": WAVE_HEIGHT_ELEMENTS,
+    "wave_period": WAVE_PERIOD_ELEMENTS,
+    "wave_direction": WAVE_DIRECTION_ELEMENTS,
 }
 
 
@@ -120,7 +130,7 @@ class GridIndex:
         records = []
         for band_id in range(1, self.dataset.RasterCount + 1):
             metadata = self.dataset.GetRasterBand(band_id).GetMetadata()
-            element = metadata.get("GRIB_ELEMENT")
+            element = metadata.get("GRIB_ELEMENT", "").upper()
             # ERA5 single-level CDS GRIB uses ecCodes short aliases. Normalize
             # only those unambiguous element/level pairs for the shared sampler.
             level = metadata.get("GRIB_SHORT_NAME", "")
@@ -141,7 +151,11 @@ class GridIndex:
             is_wind = element in FIELDS["wind"]
             is_gust = element in FIELDS["gust"]
             is_pressure = is_mean_sea_level_pressure(metadata)
-            if not (is_wind or is_gust or is_pressure):
+            is_wave = any(
+                element in FIELDS[field]
+                for field in ("wave_height", "wave_period", "wave_direction")
+            )
+            if not (is_wind or is_gust or is_pressure or is_wave):
                 continue
             accepted_levels: tuple[str, ...]
             if is_wind:
@@ -150,6 +164,9 @@ class GridIndex:
             elif is_gust:
                 expected = level or "0-SFC"
                 accepted_levels = ("0-SFC", "10-HTGL")
+            elif is_wave:
+                expected = level or "0-SFC"
+                accepted_levels = ("0-SFC", "1-SFC")
             else:
                 expected = "0-MSL"
                 accepted_levels = (expected,)
@@ -186,7 +203,19 @@ class GridIndex:
                 scale = 0.514444
             elif is_gust and unit.lower().strip("[] ") in ("km/h", "kph"):
                 scale = 1.0 / 3.6
+            elif element in FIELDS["wave_height"] and unit.lower().strip("[] ") in (
+                "cm",
+                "km",
+            ):
+                scale = {"cm": 0.01, "km": 1000.0}[unit.lower().strip("[] ")]
+            elif element in FIELDS["wave_period"] and unit.lower().strip("[] ") in (
+                "min",
+                "minute",
+                "minutes",
+            ):
+                scale = 60.0
             else:
+                # Wave direction stays in meteorological degrees, coming from.
                 scale = 1.0
             records.append(
                 Record(
@@ -539,10 +568,10 @@ class WeatherSampler:
             sorted({getattr(r.index.source, "name", "unknown") for r in records})
         )
 
-    def _pressure_at_time(self, records, lats, lons):
+    def _scalar_at_time(self, records, field, lats, lons):
         result = np.full((len(lats), 1), np.nan)
         origins = np.full(len(lats), "", dtype=object)
-        for element in FIELDS["pressure"]:
+        for element in FIELDS[field]:
             for record in records.get(element, ()):
                 use = ~np.isfinite(result[:, 0])
                 if not use.any():
@@ -586,8 +615,8 @@ class WeatherSampler:
         ]
 
     def _at_time(self, records, field, lats, lons):
-        if field == "pressure":
-            return self._pressure_at_time(records, lats, lons)
+        if field != "wind" and field != "gust":
+            return self._scalar_at_time(records, field, lats, lons)
         if field == "gust":
             return self._gust_at_time(records, lats, lons)
         result = np.full((len(lats), 2), np.nan)

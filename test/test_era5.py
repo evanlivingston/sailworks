@@ -35,6 +35,74 @@ def test_plan_inclusive_utc_and_contract():
     assert planned.request["download_format"] == "unarchived"
 
 
+def test_wave_request_and_pending_identity(tmp_path):
+    from types import SimpleNamespace
+    from sailworks.core.era5 import FIELD_VARIABLES
+
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    fields = ("wave_height", "wave_period", "wave_direction")
+    wave = plan_request(start, start, (50, -10, 40, 5), fields=fields)
+    wind = plan_request(start, start, (50, -10, 40, 5), fields=("wind",))
+    assert wave.request["variable"] == [FIELD_VARIABLES[f][0] for f in fields]
+    service = Era5DownloadService(SimpleNamespace(root=tmp_path))
+    service._remember_pending(wind, "wind")
+    service._remember_pending(wave, "wave")
+    assert service._pending_entry(service._load_pending(), wave)["request_id"] == "wave"
+    assert len(service.pending_requests()) == 2
+
+
+def test_validate_and_publish_wave_history(tmp_path):
+    from types import SimpleNamespace
+    from sailworks.core.era5 import publish_history_display
+    from sailworks.core.tranchestore import TrancheStore
+
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2025, 1, 1, 1, tzinfo=timezone.utc)
+    fields = ("wave_height", "wave_period", "wave_direction")
+    piece = plan_request(start, end, (50, -10, 40, 5), fields=fields)
+
+    class Band:
+        def __init__(self, element, stamp):
+            self.element, self.stamp = element, stamp
+
+        def GetMetadata(self):
+            return {
+                "GRIB_ELEMENT": self.element,
+                "GRIB_SHORT_NAME": "0-SFC",
+                "GRIB_VALID_TIME": str(self.stamp),
+            }
+
+    bands = [
+        Band(element, int(stamp.timestamp()))
+        for stamp in (start, end)
+        for element in ("swh", "mwp", "mwd")
+    ]
+    dataset = SimpleNamespace(
+        RasterCount=len(bands), GetRasterBand=lambda n: bands[n - 1]
+    )
+    assert (
+        validate_grib(tmp_path / "x", piece, dataset_opener=lambda _: dataset)[
+            "validated_hours"
+        ]
+        == 2
+    )
+    store = TrancheStore(tmp_path)
+    artifact = tmp_path / "waves.grib"
+    artifact.write_bytes(b"waves")
+    entries = [
+        {
+            "artifact": artifact.name,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "area": piece.area,
+            "variables": piece.request["variable"],
+        }
+    ]
+    tranche = publish_history_display(SimpleNamespace(store=store), entries)
+    assert tranche.entries[0].fields == fields
+    assert all(times == (start, end) for _, times in tranche.entries[0].field_times)
+
+
 @pytest.mark.parametrize("area", [(10, 170, 0, -170), (91, 0, 0, 10)])
 def test_rejects_invalid_and_dateline_area(area):
     with pytest.raises(ValueError):

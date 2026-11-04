@@ -79,6 +79,15 @@ class Era5DownloadTab(QWidget):
         self.field_pressure.setChecked(True)
         parameters_layout.addWidget(self.field_wind)
         parameters_layout.addWidget(self.field_pressure)
+        self.field_wave_height = QCheckBox("Significant wave height")
+        self.field_wave_period = QCheckBox("Wave period")
+        self.field_wave_direction = QCheckBox("Wave direction")
+        for check in (
+            self.field_wave_height,
+            self.field_wave_period,
+            self.field_wave_direction,
+        ):
+            parameters_layout.addWidget(check)
         parameters_layout.addStretch(1)
         columns.addWidget(parameters_box, 1)
         self.parameters_box = parameters_box
@@ -244,7 +253,7 @@ class Era5DownloadTab(QWidget):
         if not models:
             self.status.setText("Select at least one model to download.")
             return
-        if not self.field_wind.isChecked():
+        if "NBS" in models and not self.field_wind.isChecked():
             self.status.setText(
                 "Wind at 10 m is required for a usable historical field."
             )
@@ -267,12 +276,26 @@ class Era5DownloadTab(QWidget):
             fields.append("wind")
         if self.field_pressure.isChecked() and self.model_checks["ERA5"].isChecked():
             fields.append("pressure")
+        if self.model_checks["ERA5"].isChecked():
+            for field, check in (
+                ("wave_height", self.field_wave_height),
+                ("wave_period", self.field_wave_period),
+                ("wave_direction", self.field_wave_direction),
+            ):
+                if check.isChecked():
+                    fields.append(field)
         return tuple(fields) or ("wind",)
 
     def _models_changed(self, *_):
         era5 = self.model_checks["ERA5"].isChecked()
         nbs = self.model_checks["NBS"].isChecked()
         self.field_pressure.setEnabled(era5)
+        for check in (
+            self.field_wave_height,
+            self.field_wave_period,
+            self.field_wave_direction,
+        ):
+            check.setEnabled(era5)
         if not era5 and not nbs:
             self.status.setText("Select at least one model to download.")
         elif nbs and not era5:

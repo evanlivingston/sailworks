@@ -68,6 +68,35 @@ class TestGribSampling(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.files = []
 
+    def test_wave_aliases_and_units(self):
+        for element, field, unit, value, expected in (
+            ("swh", "wave_height", "[cm]", 250, 2.5),
+            ("HTSGW", "wave_height", "[km]", 2, 2000),
+            ("mwp", "wave_period", "[min]", 2, 120),
+            ("PERPW", "wave_period", "[s]", 9, 9),
+            ("mwd", "wave_direction", "[deg]", 270, 270),
+            ("DIRPW", "wave_direction", "[deg]", 180, 180),
+        ):
+            with self.subTest(element=element):
+                source = self.file(
+                    [
+                        (
+                            element,
+                            0,
+                            [[value]],
+                            {"GRIB_SHORT_NAME": "0-SFC", "GRIB_UNIT": unit},
+                        )
+                    ]
+                )
+                sampler = WeatherSampler([source])
+                self.assertAlmostEqual(
+                    sampler.sample(field, START, [0], [0])[0, 0], expected
+                )
+                self.assertAlmostEqual(
+                    sampler.sample_timestamps(field, START.timestamp(), [0], [0])[0, 0],
+                    expected,
+                )
+
     def file(
         self,
         records,

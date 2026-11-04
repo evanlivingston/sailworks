@@ -35,6 +35,30 @@ def make_tab(tmp_path):
     return tab
 
 
+def test_wave_only_selection(tmp_path):
+    app()
+    from sailworks.core.tranchestore import TrancheStore
+
+    controller = SimpleNamespace(
+        analysis=SimpleNamespace(state=SimpleNamespace(store=TrancheStore(tmp_path)))
+    )
+    tab = Era5DownloadTab(controller)
+    assert tab._selected_fields() == ("wind", "pressure")
+    assert not tab.field_wave_height.isChecked()
+    assert not tab.field_wave_period.isChecked()
+    assert not tab.field_wave_direction.isChecked()
+    tab.model_checks["NBS"].setChecked(False)
+    tab.field_wind.setChecked(False)
+    tab.field_pressure.setChecked(False)
+    for check in (
+        tab.field_wave_height,
+        tab.field_wave_period,
+        tab.field_wave_direction,
+    ):
+        check.setChecked(True)
+    assert tab._selected_fields() == ("wave_height", "wave_period", "wave_direction")
+
+
 def test_poll_refreshes_queue_rows_while_download_runs(tmp_path):
     app()
     from PySide6.QtWidgets import QLabel, QProgressBar
