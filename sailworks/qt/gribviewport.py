@@ -326,8 +326,10 @@ class GribViewportModel:
         resident_time_window=False,
         grid=False,
         display_identity=None,
+        interpolate=True,
     ):
         self.paths = tuple(str(path) for path in paths)
+        self.interpolate = bool(interpolate)
         if display_identity is not None and len(self.paths) != 1:
             raise ValueError("A display identity must belong to exactly one file")
         self.display_identity = display_identity
@@ -1032,6 +1034,7 @@ class GribViewportModel:
                         metadata.model_name,
                         band_cache=bands,
                         display_identity=self.display_identity,
+                        interpolate=self.interpolate,
                     )
                 )
             # Opening/indexing must never happen while holding the caller's lock.

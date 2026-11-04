@@ -121,14 +121,33 @@ class WeatherPanel(QWidget):
         self.wind_style.setCurrentIndex(
             max(0, self.wind_style.findData(controller.settings.gribWindStyle))
         )
-        self.wind_style.currentIndexChanged.connect(
-            lambda _index: self.set_preference(
-                "gribWindStyle", self.wind_style.currentData()
-            )
-        )
+        self.wind_style.currentIndexChanged.connect(self._style_changed)
         form = QFormLayout()
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         form.addRow("Style", self.wind_style)
+        self.wind_sampling = QComboBox()
+        self.wind_sampling.addItem(
+            "Interpolated between grid/time samples", "interpolated"
+        )
+        self.wind_sampling.addItem("Native grid values only", "native")
+        self.wind_sampling.setToolTip(
+            "Native uses the nearest ERA5/forecast grid cell and time only;"
+            " interpolated blends between them."
+        )
+        self.wind_sampling.setCurrentIndex(
+            max(
+                0,
+                self.wind_sampling.findData(
+                    getattr(controller.settings, "gribWindSampling", "interpolated")
+                ),
+            )
+        )
+        self.wind_sampling.currentIndexChanged.connect(
+            lambda _index: self.set_preference(
+                "gribWindSampling", self.wind_sampling.currentData()
+            )
+        )
+        form.addRow("Sampling", self.wind_sampling)
         self.wind_gradient = self.checkbox("Gradient", "gribWindGradient")
         form.addRow(self.wind_gradient)
         self.wind_gradient_opacity = self.percent("gribWindGradientOpacity")
@@ -153,7 +172,7 @@ class WeatherPanel(QWidget):
         self.refresh_density_labels()
         self.barb_density.currentIndexChanged.connect(
             lambda _index: self.set_preference(
-                "gribBarbDensity", self.barb_density.currentData()
+                self.density_key(), self.barb_density.currentData()
             )
         )
         form.addRow("Line density", self.barb_density)
@@ -273,19 +292,39 @@ class WeatherPanel(QWidget):
         self.refresh()
         presenter = getattr(self.active_map(), "_weather_presenter", None)
         if presenter is not None:
+            if key == "gribWindSampling":
+                source_changed = getattr(presenter, "source_changed", None)
+                if callable(source_changed):
+                    source_changed()
             presenter.request()
         self.controller.data.redraw()
 
+    def _style_changed(self, _index):
+        self.set_preference("gribWindStyle", self.wind_style.currentData())
+        self.refresh_density()
+
+    def refresh_density(self):
+        self.barb_density.blockSignals(True)
+        self.barb_density.setCurrentIndex(self.density_index())
+        self.barb_density.blockSignals(False)
+        self.refresh_density_labels()
+
+    def density_key(self):
+        if self.controller.settings.gribWindStyle == "streamlines":
+            return "gribStreamlineDensity"
+        return "gribBarbDensity"
+
     def density_index(self):
-        index = self.barb_density.findData(self.controller.settings.gribBarbDensity)
+        value = getattr(self.controller.settings, self.density_key(), "standard")
+        index = self.barb_density.findData(value)
         return index if index >= 0 else self.barb_density.findData("standard")
 
     def refresh_density_labels(self):
         streamlines = self.controller.settings.gribWindStyle == "streamlines"
         for index, (key, label, _spacing) in enumerate(BARB_DENSITIES):
-            self.barb_density.setItemText(
-                index, "Maximum" if streamlines and key == "all" else label
-            )
+            if key == "all":
+                label = "Maximum" if streamlines else "All grid points"
+            self.barb_density.setItemText(index, label)
         self.barb_density.setToolTip(
             "Choose streamline spacing. Denser settings add paths;"
             " Maximum remains capped for responsiveness."
@@ -335,10 +374,21 @@ class WeatherPanel(QWidget):
             )
         )
         self.wind_gradient_style.blockSignals(False)
-        self.barb_density.blockSignals(True)
-        self.barb_density.setCurrentIndex(self.density_index())
-        self.barb_density.blockSignals(False)
-        self.refresh_density_labels()
+        self.refresh_density()
+        self.wind_sampling.blockSignals(True)
+        self.wind_sampling.setCurrentIndex(
+            max(
+                0,
+                self.wind_sampling.findData(
+                    getattr(
+                        self.controller.settings,
+                        "gribWindSampling",
+                        "interpolated",
+                    )
+                ),
+            )
+        )
+        self.wind_sampling.blockSignals(False)
         for widget, value in (
             (self.wind, self.active_map().wind_visible),
             (self.wind_gradient, self.controller.settings.gribWindGradient),

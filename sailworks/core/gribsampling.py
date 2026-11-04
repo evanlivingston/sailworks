@@ -105,6 +105,7 @@ class GridIndex:
         self._stencil = lru_cache(maxsize=4096)(self._stencil_for)
         path = self.dataset.GetDescription()
         self.vector_flags = vector_flags(path) if path else []
+        self.interpolate = getattr(source, "interpolate", True)
         self.records = self._records()
         self.references = {record.reference for record in self.records}
 
@@ -278,6 +279,11 @@ class GridIndex:
         )
         y1 = np.minimum(y0 + 1, self.height - 1)
         dx, dy = x - x0, y - y0
+        if not self.interpolate:
+            # Nearest native cell only; never invent values between grid nodes.
+            x0 = np.clip(np.rint(x).astype(int), 0, self.width - 1)
+            y0 = np.clip(np.rint(y).astype(int), 0, self.height - 1)
+            x1, y1, dx, dy = x0, y0, 0.0, 0.0
         if not inside.any():
             return np.full(lats.shape + ((2,) if vector else ()), np.nan)
         array = self.array(record)
@@ -292,7 +298,9 @@ class GridIndex:
         for position, (xx, yy, weight) in enumerate(corners):
             corner = array[yy, xx]
             needed = weight > 1e-12
-            inside &= ~needed | np.isfinite(corner)
+            inside = np.asarray(inside, dtype=bool) & np.asarray(
+                ~needed | np.isfinite(corner), dtype=bool
+            )
             contribution = np.where(needed, np.nan_to_num(corner) * weight, 0)
             if vector:
                 contribution = (
@@ -466,6 +474,9 @@ class WeatherSampler:
                 self.indices.append(source.sampling)
             except (ValueError, AttributeError, RuntimeError) as exc:
                 logger.warning("Weather grid unavailable: %s", exc)
+        self.interpolate = all(
+            getattr(index, "interpolate", True) for index in self.indices
+        )
         self.last_sources = set()
         self.groups: dict[tuple, dict[float, dict[str, list[Record]]]] = {}
         self.coverage: dict[tuple, float] = {}
@@ -682,7 +693,21 @@ class WeatherSampler:
             b, tb, sb = self._side(
                 group, times, field, lats[use], lons[use], stamps[use], False, cancel
             )
-            result[use], origins[use] = self._blend(a, ta, sa, b, tb, sb, stamps[use])
+            if self.interpolate:
+                result[use], origins[use] = self._blend(
+                    a, ta, sa, b, tb, sb, stamps[use]
+                )
+            else:
+                # Native sampling picks the nearer stored time; no blending.
+                query = stamps[use]
+                pick_b = np.isfinite(tb) & (
+                    ~np.isfinite(ta) | (np.abs(tb - query) < np.abs(query - ta))
+                )
+                values = np.where(pick_b[:, None], b, a)
+                names = np.where(pick_b, sb, sa)
+                good = np.isfinite(ta) | np.isfinite(tb)
+                result[use] = np.where(good[:, None], values, np.nan)
+                origins[use] = np.where(good, names, "")
         self.last_sources = {
             name for origin in origins for name in origin.split("\x1f") if name
         }
@@ -734,9 +759,11 @@ class WeatherSampler:
             if a is None and b is None:
                 continue
             chosen = a if a is not None else b
+            if not self.interpolate and a is not None and b is not None:
+                chosen = a if abs(stamp - a[0]) <= abs(b[0] - stamp) else b
             valid, uv, names = chosen
             self.last_sources.update(names.split("\x1f"))
-            if a is not None and b is not None and b[0] > a[0]:
+            if self.interpolate and a is not None and b is not None and b[0] > a[0]:
                 weight = (stamp - a[0]) / (b[0] - a[0])
                 uv = tuple(x + (y - x) * weight for x, y in zip(a[1], b[1]))
                 self.last_sources.update(b[2].split("\x1f"))
