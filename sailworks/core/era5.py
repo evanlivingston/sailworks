@@ -610,6 +610,7 @@ class Era5DownloadService:
             inner = getattr(self.client_factory(), "client", None)
             if inner is None or not hasattr(inner, "get_remote"):
                 return
+            self._submit_with_backoff(piece, threading.Event())
             with tempfile.TemporaryDirectory(prefix="era5-") as staging:
                 path = Path(staging) / "resume.grib"
                 self._retrieve_chunk(piece, path, retry=True)
