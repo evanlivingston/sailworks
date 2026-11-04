@@ -279,6 +279,31 @@ def test_inspects_gfswave_as_separate_wave_only_model():
     }
 
 
+class _ZeroOriginGlobalGrid(Dataset):
+    """1440x721 global grid whose longitude origin the test supplies."""
+
+    RasterXSize = 1440
+    RasterYSize = 721
+
+    def __init__(self, bands, geotransform):
+        super().__init__(bands)
+        self.geotransform = geotransform
+
+    def GetGeoTransform(self):
+        return self.geotransform
+
+
+def test_ifs_rejects_zero_origin_global_grid():
+    """Only GFS-Wave accepts the 0-360 convention; ECMWF grids stay strict."""
+    request = planned(("wind",), model="IFS")
+    dataset = _ZeroOriginGlobalGrid(
+        [band("UGRD", 0), band("VGRD", 0), band("UGRD", 3), band("VGRD", 3)],
+        geotransform=(-0.125, 0.25, 0.0, 90.125, 0.0, -0.25),
+    )
+    with pytest.raises(ForecastValidationError, match="IFS grid"):
+        inspect_fake("ifs.grib2", request, dataset)
+
+
 def _wave_bands():
     return [
         band(element, hour, model="GFSWAVE")

@@ -51,6 +51,22 @@ def _on_grid_step(value, step):
     return abs(ratio - round(ratio)) <= 1e-6
 
 
+def _longitude_axis_ok(gt, model, width):
+    """Check the longitude convention this model's source is verified to use."""
+    if model == "GFSWAVE":
+        # GFS-Wave products ship 0-360 degree longitude, so accept either
+        # convention as long as one row spans the globe from an exact step.
+        return abs(abs(gt[1]) * width - 360.0) <= 1e-6 and _on_grid_step(
+            gt[0] + gt[1] * 0.5, gt[1]
+        )
+    # ECMWF-style products are only verified in the -180..180 convention:
+    # the first cell centre sits on -180 and the last on 179.75.
+    return (
+        abs((gt[0] + gt[1] * 0.5) + 180.0) <= 1e-6
+        and abs((gt[0] + gt[1] * (width - 0.5)) - 179.75) <= 1e-6
+    )
+
+
 def validate_grid(dataset, model, requested):
     """Validate supported native resolution and sample requested boundary.
 
@@ -99,8 +115,7 @@ def validate_grid(dataset, model, requested):
             or abs(gt[5] + 0.25) > 1e-6
             or gt[2]
             or gt[4]
-            or abs(abs(gt[1]) * width - 360.0) > 1e-6
-            or not _on_grid_step(gt[0] + gt[1] * 0.5, gt[1])
+            or not _longitude_axis_ok(gt, model, width)
             or abs((gt[3] + gt[5] * 0.5) - 90.0) > 1e-6
             or abs((gt[3] + gt[5] * (height - 0.5)) + 90.0) > 1e-6
         ):
