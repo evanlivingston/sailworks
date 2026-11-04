@@ -204,8 +204,10 @@ class GridIndex:
         # reference is its valid time. Group them under one identity so
         # off-hour queries interpolate between surrounding fields instead of
         # falling outside each one-hour coverage.
-        if len({record.reference for record in records}) > 1 and all(
-            abs(record.reference - record.valid) <= 1e-6 for record in records
+        if (
+            len({record.reference for record in records}) > 1
+            and getattr(self.source, "model_name", "") in ("ERA5", "NBS")
+            and all(abs(record.reference - record.valid) <= 1e-6 for record in records)
         ):
             first = min(record.reference for record in records)
             records = [
