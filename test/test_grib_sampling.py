@@ -97,6 +97,24 @@ class TestGribSampling(unittest.TestCase):
                     expected,
                 )
 
+    def test_wave_direction_wraps_spatially_and_temporally(self):
+        metadata = {"GRIB_SHORT_NAME": "0-SFC", "GRIB_UNIT": "[deg]"}
+        spatial = self.file([("mwd", 0, [[350, 10], [350, 10]], metadata)])
+        temporal = self.file(
+            [
+                ("mwd", 0, [[350]], metadata),
+                ("mwd", 3, [[10]], metadata),
+            ]
+        )
+        for source, when, lat, lon in (
+            (spatial, START, 0.5, 0.5),
+            (temporal, START + timedelta(minutes=90), 0, 0),
+        ):
+            bearing = WeatherSampler([source]).sample(
+                "wave_direction", when, [lat], [lon]
+            )[0, 0]
+            self.assertAlmostEqual((bearing + 180) % 360 - 180, 0)
+
     def file(
         self,
         records,

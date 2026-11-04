@@ -325,8 +325,18 @@ class Era5DownloadService:
         self._resume_threads = []
         self._resuming = set()
 
+    @staticmethod
+    def _job_key(plan):
+        return (
+            plan.start,
+            plan.end,
+            plan.area,
+            DATASET,
+            tuple(sorted(plan.request.get("variable") or VARIABLES)),
+        )
+
     def submit(self, plan, *, retry=False):
-        key = (plan.start, plan.end, plan.area)
+        key = self._job_key(plan)
         with self._lock:
             prior = self._jobs.get(key)
             if prior and prior[0].is_alive():
@@ -346,12 +356,12 @@ class Era5DownloadService:
 
     def cancel(self, plan):
         with self._lock:
-            job = self._jobs.get((plan.start, plan.end, plan.area))
+            job = self._jobs.get(self._job_key(plan))
             if job:
                 job[1].set()
 
     def progress_for(self, plan):
-        key = (plan.start, plan.end, plan.area)
+        key = self._job_key(plan)
         with self._lock:
             entry = self.progress.get(key)
             return dict(entry) if entry is not None else None
@@ -393,7 +403,7 @@ class Era5DownloadService:
             self._set_progress(key, stage="Failed")
 
     def _run(self, plan, cancel, retry):
-        key = (plan.start, plan.end, plan.area)
+        key = self._job_key(plan)
         root = Path(self.store.root)
         catalog = root / "era5-history.json"
         pieces = list(split_request(plan))
@@ -594,6 +604,8 @@ class Era5DownloadService:
                 entry
                 for entry in entries
                 if self._pending_entry([entry], piece) is None
+                or set(entry.get("variables") or VARIABLES)
+                != set(piece.request.get("variable") or VARIABLES)
             ]
             if len(kept) != len(entries):
                 self._save_pending(kept)
@@ -817,20 +829,27 @@ class Era5DownloadService:
         entry = self._pending_entry(self._load_pending(), piece)
         if entry is None or not entry.get("request_id"):
             return None
+        pending_piece = Era5Request(
+            piece.start,
+            piece.end,
+            piece.area,
+            {**piece.request, "variable": list(entry.get("variables") or VARIABLES)},
+        )
         request_id = str(entry["request_id"])
         try:
             remote = inner.get_remote(request_id)
             status = remote.status
         except Exception:
-            self._forget_pending(piece)
+            self._forget_pending(pending_piece)
             return None
         if self._remote_is_stale(remote):
             self._delete_request(inner, request_id)
-            self._forget_pending(piece)
+            self._forget_pending(pending_piece)
             return None
         if status in ("failed", "rejected", "dismissed", "deleted"):
-            self._forget_pending(piece)
+            self._forget_pending(pending_piece)
             return None
+        piece.request["variable"] = list(entry.get("variables") or VARIABLES)
         return request_id
 
     @staticmethod
@@ -980,8 +999,12 @@ def publish_history_display(state, entries, *, model_id="ERA5"):
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)
 
-    times = []
+    field_time_sets = {field: set() for field in FIELD_VARIABLES}
     for entry in usable:
+        variables = set(entry.get("variables") or VARIABLES)
+        entry_fields = [
+            field for field, names in FIELD_VARIABLES.items() if set(names) <= variables
+        ]
         start = datetime.fromisoformat(str(entry["start"]).replace("Z", "+00:00"))
         end = datetime.fromisoformat(str(entry["end"]).replace("Z", "+00:00"))
         if start.tzinfo is None:
@@ -991,9 +1014,11 @@ def publish_history_display(state, entries, *, model_id="ERA5"):
         cursor = start.astimezone(timezone.utc)
         finish = end.astimezone(timezone.utc)
         while cursor <= finish:
-            times.append(cursor)
+            for field in entry_fields:
+                field_time_sets[field].add(cursor)
             cursor += timedelta(hours=1)
-    times = tuple(sorted(set(times)))
+    fields = tuple(field for field, values in field_time_sets.items() if values)
+    times = tuple(sorted(set().union(*(field_time_sets[field] for field in fields))))
     if len(times) < 2:
         raise Era5Error("ERA5 history needs at least two hours to display")
 
@@ -1001,14 +1026,6 @@ def publish_history_display(state, entries, *, model_id="ERA5"):
     region = (south, west, north, east)
     run_time = times[0]
     hours = int((times[-1] - run_time).total_seconds() // 3600)
-    variables = {
-        str(value) for item in usable for value in (item.get("variables") or VARIABLES)
-    }
-    fields = tuple(
-        name
-        for name, names in FIELD_VARIABLES.items()
-        if all(value in variables for value in names)
-    )
     if not fields:
         raise Era5Error("ERA5 history has no supported fields to display")
     levels = tuple(
@@ -1030,7 +1047,7 @@ def publish_history_display(state, entries, *, model_id="ERA5"):
         region,
         "0.25",
         hours,
-        tuple(range(hours + 1)),
+        tuple(int((instant - run_time).total_seconds() // 3600) for instant in times),
         1,
     )
     now = datetime.now(timezone.utc)
@@ -1046,7 +1063,9 @@ def publish_history_display(state, entries, *, model_id="ERA5"):
         times,
         (Artifact(artifact.path, artifact.sha256, artifact.size),),
         now,
-        field_times=tuple((field, times) for field in fields),
+        field_times=tuple(
+            (field, tuple(sorted(field_time_sets[field]))) for field in fields
+        ),
     )
     tranche = ForecastTranche(
         f"era5-{artifact.sha256[:16]}-v2", now, (config,), (entry,)

@@ -818,6 +818,137 @@ def test_publish_history_display_keeps_requested_fields(tmp_path):
     assert dict(entry.field_times)["wind"] == entry.time_steps
 
 
+def test_history_field_times_follow_each_artifact(tmp_path):
+    from types import SimpleNamespace
+    from sailworks.core.era5 import FIELD_VARIABLES, VARIABLES, publish_history_display
+    from sailworks.core.tranchestore import TrancheStore
+
+    store = TrancheStore(tmp_path)
+    source = tmp_path / "chunk.grib"
+    source.write_bytes(b"era5")
+    artifact = store.register_file(source)
+
+    def entry(hour, variables):
+        stamp = f"2025-01-01T{hour:02d}:00:00+00:00"
+        return {
+            "artifact": artifact.path,
+            "start": stamp,
+            "end": stamp,
+            "area": [50, -10, 40, 5],
+            "variables": list(variables),
+        }
+
+    mixed = publish_history_display(
+        SimpleNamespace(store=store),
+        [entry(0, VARIABLES), entry(6, FIELD_VARIABLES["wave_height"])],
+    ).entries[0]
+    coverage = dict(mixed.field_times)
+    assert [t.hour for t in coverage["wind"]] == [0]
+    assert coverage["pressure"] == coverage["wind"]
+    assert [t.hour for t in coverage["wave_height"]] == [6]
+    assert [t.hour for t in mixed.time_steps] == [0, 6]
+    source.write_bytes(b"different era5")
+    artifact = store.register_file(source)
+    homogeneous = publish_history_display(
+        SimpleNamespace(store=store), [entry(0, VARIABLES), entry(6, VARIABLES)]
+    ).entries[0]
+    assert all(times == homogeneous.time_steps for _, times in homogeneous.field_times)
+
+
+def test_pending_superset_is_published_and_reused(tmp_path):
+    from sailworks.core.era5 import FIELD_VARIABLES
+    from sailworks.core.tranchestore import TrancheStore
+
+    class Remote:
+        request_id = "superset"
+        status = "successful"
+
+        def download(self, target):
+            Path(target).write_bytes(b"superset grib")
+
+    class Inner:
+        def submit(self, *_args):
+            raise AssertionError("unexpected request")
+
+        def get_remote(self, _request_id):
+            return Remote()
+
+    class Client:
+        client = Inner()
+
+    store = TrancheStore(tmp_path)
+    seen = []
+    service = Era5DownloadService(
+        store,
+        client_factory=Client,
+        validator=lambda _p, piece: seen.append(set(piece.request["variable"]))
+        or {"reader": "test"},
+    )
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+
+    def request(fields):
+        return plan_request(
+            start,
+            start,
+            (50, -10, 40, 5),
+            fields=fields,
+            now=datetime(2025, 2, 20, tzinfo=timezone.utc),
+        )
+
+    superset = request(("wind", "wave_height"))
+    service._remember_pending(split_request(superset)[0], "superset")
+    service._run(request(("wind",)), threading.Event(), False)
+    expected = set(FIELD_VARIABLES["wind"] + FIELD_VARIABLES["wave_height"])
+    assert seen == [expected]
+    assert (
+        set(service._catalog_entries(tmp_path / "era5-history.json")[0]["variables"])
+        == expected
+    )
+    assert service._load_pending() == []
+    service._run(request(("wave_height",)), threading.Event(), False)
+    assert seen == [expected]
+
+
+def test_active_jobs_distinguish_variables(tmp_path):
+    from sailworks.core.tranchestore import TrancheStore
+
+    service = Era5DownloadService(TrancheStore(tmp_path))
+    started = threading.Event()
+    release = threading.Event()
+
+    def run(_plan, _cancel, _retry):
+        started.set()
+        release.wait(5)
+
+    service._run = run
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+
+    def request(field):
+        return plan_request(
+            start,
+            start,
+            (50, -10, 40, 5),
+            fields=(field,),
+            now=datetime(2025, 2, 20, tzinfo=timezone.utc),
+        )
+
+    wind, wave = request("wind"), request("wave_height")
+    try:
+        first = service.submit(wind)
+        assert started.wait(5)
+        second = service.submit(wave)
+        assert first is not second
+        assert service.submit(wind) is first
+        assert service.submit(wave) is second
+        service.cancel(wind)
+        assert service._jobs[service._job_key(wind)][1].is_set()
+        assert not service._jobs[service._job_key(wave)][1].is_set()
+    finally:
+        release.set()
+        first.join(5)
+        second.join(5)
+
+
 def test_canceled_era5_download_leaves_no_catalog_or_artifacts(tmp_path):
     root = tmp_path
     (root / "artifacts").mkdir()

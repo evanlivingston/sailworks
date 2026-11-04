@@ -49,6 +49,19 @@ def wind_value(uv):
     return (math.degrees(math.atan2(-u, -v)) + 360) % 360, math.hypot(u, v)
 
 
+def _circular_blend(a, b, t):
+    a, b = np.deg2rad(a), np.deg2rad(b)
+    result = (
+        np.degrees(
+            np.arctan2(
+                (1 - t) * np.sin(a) + t * np.sin(b), (1 - t) * np.cos(a) + t * np.cos(b)
+            )
+        )
+        % 360
+    )
+    return np.where(result >= 360, 0, result)
+
+
 def model_key(metadata, source):
     ids = metadata.get("GRIB_IDS", "")
     center = re.search(r"(?:^|\s)CENTER=(\d+)", ids)
@@ -318,16 +331,27 @@ class GridIndex:
             (x1, y1, dx * dy),
         )
         bases = self._corner_basis(record, corners) if vector else None
+        circular = not vector and record.element in WAVE_DIRECTION_ELEMENTS
+        sine = np.zeros(lats.shape) if circular else None
+        cosine = np.zeros(lats.shape) if circular else None
         for position, (xx, yy, weight) in enumerate(corners):
             corner = array[yy, xx]
             needed = weight > 1e-12
             inside &= ~needed | np.isfinite(corner)
             contribution = np.where(needed, np.nan_to_num(corner) * weight, 0)
+            if circular:
+                radians = np.deg2rad(np.nan_to_num(corner))
+                sine += np.sin(radians) * weight
+                cosine += np.cos(radians) * weight
+                continue
             if vector:
                 contribution = (
                     contribution[:, None] * cast("list[np.ndarray]", bases)[position]
                 )
             value += contribution
+        if circular:
+            value = np.degrees(np.arctan2(sine, cosine)) % 360
+            value = np.where(value >= 360, 0, value)
         return np.where(inside[:, None] if vector else inside, value, np.nan)
 
     def _corner_basis(self, record, corners):
@@ -661,13 +685,16 @@ class WeatherSampler:
         return values, stamps, origins
 
     @staticmethod
-    def _blend(a, ta, sa, b, tb, sb, stamps):
+    def _blend(a, ta, sa, b, tb, sb, stamps, field=None):
         av, bv = np.isfinite(ta), np.isfinite(tb)
         values = np.where(av[:, None], a, b)
         names = np.where(av, sa, sb)
         both = av & bv & (tb > ta)
         weight = (stamps[both] - ta[both]) / (tb[both] - ta[both])
-        values[both] = a[both] + (b[both] - a[both]) * weight[:, None]
+        if field == "wave_direction":
+            values[both] = _circular_blend(a[both], b[both], weight[:, None])
+        else:
+            values[both] = a[both] + (b[both] - a[both]) * weight[:, None]
         for i in np.flatnonzero(both):
             names[i] = "\x1f".join(
                 sorted(set(sa[i].split("\x1f")) | set(sb[i].split("\x1f")))
@@ -711,7 +738,9 @@ class WeatherSampler:
             b, tb, sb = self._side(
                 group, times, field, lats[use], lons[use], stamps[use], False, cancel
             )
-            result[use], origins[use] = self._blend(a, ta, sa, b, tb, sb, stamps[use])
+            result[use], origins[use] = self._blend(
+                a, ta, sa, b, tb, sb, stamps[use], field
+            )
         self.last_sources = {
             name for origin in origins for name in origin.split("\x1f") if name
         }
