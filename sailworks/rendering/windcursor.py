@@ -1,11 +1,23 @@
 """Asynchronous cursor weather queries with private, bounded GRIB handles."""
 
+import math
 from collections import OrderedDict
 from threading import Thread
 
 from .windrenderer import DisplayGrib
 from sailworks.core.grib import Grib
+from sailworks.core.gribfields import (
+    WAVE_DIRECTION_ELEMENTS,
+    WAVE_HEIGHT_ELEMENTS,
+    WAVE_PERIOD_ELEMENTS,
+)
 from sailworks.core.gribsampling import WeatherSampler
+
+WAVE_FIELDS = (
+    ("wave_height", WAVE_HEIGHT_ELEMENTS),
+    ("wave_period", WAVE_PERIOD_ELEMENTS),
+    ("wave_direction", WAVE_DIRECTION_ELEMENTS),
+)
 
 
 class CursorGrib(DisplayGrib):
@@ -33,11 +45,19 @@ class WindCursorSampler:
         self._closed = False
         self._gribs = OrderedDict()
 
-    def request(self, sources, forecast, lat, lon, callback):
+    def request(self, sources, forecast, lat, lon, callback, wave_visible=False):
         self.cancel()
         if self._closed or not sources:
             return
-        self._pending = (self._generation, tuple(sources), forecast, lat, lon, callback)
+        self._pending = (
+            self._generation,
+            tuple(sources),
+            forecast,
+            lat,
+            lon,
+            callback,
+            bool(wave_visible),
+        )
         self._start()
 
     def cancel(self):
@@ -69,9 +89,9 @@ class WindCursorSampler:
 
         def worker():
             try:
-                result = self._sample_weather(*request[1:5])
+                result = self._sample_weather(*request[1:5], request[6])
             except Exception:
-                result = (None, None)
+                result = (None, None, None)
             if self._closed:
                 self._clear_gribs()
             self._dispatch(self._ready, request, result)
@@ -83,7 +103,7 @@ class WindCursorSampler:
         """Compatibility API returning wind only."""
         return self._sample_weather(sources, forecast, lat, lon)[0]
 
-    def _sample_weather(self, sources, forecast, lat, lon):
+    def _sample_weather(self, sources, forecast, lat, lon, wave_visible=False):
         private = []
         try:
             for source in sources:
@@ -108,13 +128,43 @@ class WindCursorSampler:
                     )
                     else None
                 )
-                return wind, gust
-            return self._sample_providers(private, forecast, lat, lon)
+                waves = (
+                    self._sample_waves(sampler, forecast, lat, lon)
+                    if wave_visible
+                    else None
+                )
+                return wind, gust, waves
+            wind, gust = self._sample_providers(private, forecast, lat, lon)
+            return wind, gust, None
         finally:
             # Keep every enabled file alive until cross-file sampling completes.
             while len(self._gribs) > 2:
                 _, evicted = self._gribs.popitem(last=False)
                 self._release_grib(evicted)
+
+    @staticmethod
+    def _sample_waves(sampler, forecast, lat, lon):
+        """Sample height, period and direction from the sampler already open."""
+        if not any(
+            record.element in WAVE_HEIGHT_ELEMENTS
+            for index in sampler.indices
+            for record in index.records
+        ):
+            return None
+        values = []
+        for field, elements in WAVE_FIELDS:
+            if not any(
+                record.element in elements
+                for index in sampler.indices
+                for record in index.records
+            ):
+                return None
+            sampled = sampler.sample(field, forecast, [lat], [lon])
+            value = sampled[0, 0]
+            values.append(float(value) if math.isfinite(value) else None)
+        if any(value is None for value in values):
+            return None
+        return tuple(values)
 
     @staticmethod
     def _sample_providers(private, forecast, lat, lon):

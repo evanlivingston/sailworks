@@ -162,6 +162,7 @@ class ViewportMap(
             "wind": "",
             "gust": "",
             "current": "",
+            "wave": "",
             "depth": "",
         }
         self._cursor_coords = ""

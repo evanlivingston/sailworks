@@ -3133,7 +3133,7 @@ class QtPreviewChecks(unittest.TestCase):
             patch.object(canvas._wind_cursor, "request") as wind,
         ):
             canvas._hover(QPointF(100, 100))
-            wind.call_args.args[-1](((180, 10), None))
+            wind.call_args.args[-1](((180, 10), None, None))
             QApplication.processEvents()
             positions = {key: label.x() for key, label in status.fields.items()}
             canvas._cursor_parts["depth"] = ""
@@ -3173,7 +3173,7 @@ class QtPreviewChecks(unittest.TestCase):
             canvas._hover(QPointF(100, 100))
             lookup.assert_called_once()
             self.assertIn("12.4 m (35 m away)", self.window.cursor_status.text())
-            wind.call_args.args[-1](((180, 10), None))
+            wind.call_args.args[-1](((180, 10), None, None))
             text = self.window.cursor_status.text()
             self.assertIn("12.4 m (35 m away)", text)
             self.assertIn("Sounding", text)
@@ -3188,7 +3188,7 @@ class QtPreviewChecks(unittest.TestCase):
         with patch.object(canvas._wind_cursor, "request") as request:
             canvas._hover(QPointF(100, 100))
             self.assertIn("Wind …", self.window.cursor_status.text())
-            request.call_args.args[-1](((180, 10), 5.0))
+            request.call_args.args[-1](((180, 10), 5.0, None))
             text = self.window.cursor_status.text()
             self.assertIn("Wind 180.0°, 19.4 kts", text)
             self.assertIn("Gust 9.7 kts", text)
@@ -3197,7 +3197,7 @@ class QtPreviewChecks(unittest.TestCase):
         canvas = self.window.map
         with patch.object(canvas._wind_cursor, "request") as request:
             canvas._hover(QPointF(100, 100))
-            request.call_args.args[-1]((None, None))
+            request.call_args.args[-1]((None, None, None))
             self.assertIn("Wind unavailable", self.window.cursor_status.text())
             self.assertNotIn("Gust", self.window.cursor_status.text())
 
