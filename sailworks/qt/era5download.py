@@ -197,7 +197,9 @@ class Era5DownloadTab(QWidget):
             "Select an imported history row to enable sampling."
         )
         samples.addWidget(self.history_status)
-        layout.addLayout(samples)
+        # Point sampling stays available to code paths that reference it, but
+        # the History tab itself mirrors Forecasts and shows only the download
+        # controls, the status line and the catalog table.
         self.samples_row = samples
         self.timer = QTimer(self)
         self.timer.setInterval(500)
