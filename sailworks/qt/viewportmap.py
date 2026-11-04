@@ -179,9 +179,7 @@ class ViewportMap(
         )
         self.dashboard_visible = True
         self.wind_visible = True
-        self.wave_visible = bool(
-            getattr(controller.settings, "gribWaveVisible", False)
-        )
+        self.wave_visible = bool(getattr(controller.settings, "gribWaveVisible", False))
         self.wave_legend = WaveLegend(self)
         self.wave_legend.hide()
         self._layout_wave_legend()
