@@ -45,6 +45,37 @@ def make_tab(tmp_path):
     return tab
 
 
+def test_poll_refreshes_queue_rows_while_download_runs(tmp_path):
+    app()
+    from PySide6.QtWidgets import QLabel, QProgressBar
+
+    tab = make_tab(tmp_path)
+    tab.service = SimpleNamespace(
+        store=SimpleNamespace(root=tmp_path),
+        pending_requests=lambda: [
+            {
+                "start": "2026-05-16T00:00:00+00:00",
+                "end": "2026-05-16T23:00:00+00:00",
+                "area": [49.54, -125.97, 45.2, -121.62],
+                "request_id": "rid-queued",
+                "created": "2026-11-04T02:44:07+00:00",
+            }
+        ],
+        resume_active=lambda: 0,
+    )
+    tab.job = SimpleNamespace(is_alive=lambda: True)
+    tab.plan = None
+    tab.progress = QProgressBar()
+    tab.status = QLabel()
+    tab._poll_count = 3
+
+    tab.catalog.setRowCount(0)
+    tab.poll()
+
+    assert tab.catalog.rowCount() == 1
+    assert tab.catalog.item(0, 3).text().startswith("Queued at CDS")
+
+
 def test_sample_selected_samples_explicit_hours_without_forecast_activation(
     tmp_path, monkeypatch
 ):

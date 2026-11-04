@@ -144,6 +144,7 @@ class Era5DownloadTab(QWidget):
         self.timer.setInterval(500)
         self.timer.timeout.connect(self.poll)
         self.timer.start()
+        self._poll_count = 0
         self._resume_was_active = False
         resume = getattr(self.service, "resume_pending", None)
         if callable(resume):
@@ -289,6 +290,14 @@ class Era5DownloadTab(QWidget):
 
     def poll(self):
         resume_active = getattr(self.service, "resume_active", None)
+        running = (self.job is not None and self.job.is_alive()) or (
+            self.job is None and callable(resume_active) and resume_active()
+        )
+        self._poll_count += 1
+        # Show chunks the moment they are submitted to CDS, not only when the
+        # whole plan finishes.
+        if running and self._poll_count % 4 == 0:
+            self.refresh_catalog()
         if self.job is None:
             if callable(resume_active) and resume_active():
                 self._resume_was_active = True
