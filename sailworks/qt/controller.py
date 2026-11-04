@@ -249,18 +249,18 @@ class SessionController(QObject):
             )
 
     def _forecast_selection_changed(self):
-        """Keep the map clock inside the active forecast's valid range."""
+        """Keep the map clock inside the active forecast's valid range.
+
+        The timeline's user-owned region is deliberately left alone: selecting
+        a model must not rewrite the time window.
+        """
         active = getattr(self.analysis, "active", None)
         if active is None:
             return
-        key = (active.tranche.tranche_id, active.entry.entry_id)
-        if key != getattr(self, "_last_forecast_selection", None):
-            self._last_forecast_selection = key
-            for canvas in list(getattr(self.charts, "maps", ())):
-                timeline = getattr(canvas, "timeline", None)
-                clear = getattr(timeline, "clear_bounds_override", None)
-                if callable(clear):
-                    clear()
+        self._last_forecast_selection = (
+            active.tranche.tranche_id,
+            active.entry.entry_id,
+        )
         self._align_clock_to_forecast(active)
 
     def _align_clock_to_forecast(self, active):

@@ -906,13 +906,13 @@ class PreviewWindow(QMainWindow):
         if timeline is None:
             return
         if bounds is None:
-            timeline.clear_bounds_override()
+            timeline.clear_region()
             return
-        start, end, valid_times = bounds
+        start, end, _valid_times = bounds
         if not force and not self._race_window_in_forecast(start, end):
-            timeline.clear_bounds_override()
+            timeline.clear_region()
             return
-        timeline.set_bounds_override(start, end, valid_times)
+        timeline.set_region(start, end)
 
     def _race_window_in_forecast(self, start, end):
         try:

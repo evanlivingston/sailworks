@@ -3330,22 +3330,32 @@ class QtPreviewChecks(unittest.TestCase):
             self.controller.time_control.time, start + timedelta(minutes=59, seconds=30)
         )
 
-        # "Now" must land inside the loaded model window: the wall clock is
-        # usually outside a downloaded forecast's valid range, so it snaps to
-        # the nearest loaded valid time instead of dispatching an unreachable
-        # instant that left the display on the previous field.
+        # "Now" claims the region [wall-24h, wall+48h] and lands inside it:
+        # it snaps to the nearest loaded valid time within the region, or
+        # stays on the wall clock when the model has no coverage there.
         class _FixedDatetime(datetime):
             @classmethod
             def now(cls, tz=None):
                 return datetime(2026, 1, 5, 14, 32)
 
+        wall = datetime(2026, 1, 5, 14, 32).timestamp()
         with patch("sailworks.qt.forecasttimeline.datetime", _FixedDatetime):
             timeline.now_button.click()
+        region_start, region_end = timeline.region
+        self.assertAlmostEqual(region_start, wall - 24 * 3600, delta=1)
+        self.assertAlmostEqual(region_end, wall + 48 * 3600, delta=1)
+        self.assertEqual(timeline.bounds, timeline.region)
         snapped = self.controller.time_control.time
-        start_bound, end_bound = timeline.bounds
-        self.assertGreaterEqual(snapped.timestamp(), start_bound - 1)
-        self.assertLessEqual(snapped.timestamp(), end_bound + 1)
-        self.assertEqual(timeline.caption.text(), "")
+        self.assertGreaterEqual(snapped.timestamp(), region_start - 1)
+        self.assertLessEqual(snapped.timestamp(), region_end + 1)
+        covered = any(
+            first - 1 <= snapped.timestamp() <= last + 1
+            for first, last in timeline._model_intervals
+        )
+        self.assertEqual(
+            timeline.caption.text(),
+            "" if covered else "No model data for the selected time",
+        )
         self.assertLess(timeline.slider.value(), timeline.slider.maximum())
         timeline.pause_button.click()
         self.assertFalse(timeline.playing)
