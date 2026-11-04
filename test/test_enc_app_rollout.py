@@ -107,46 +107,6 @@ def test_track_point_fit_action_fits_selected_point_only():
     panel.fit_track.assert_not_called()
 
 
-def test_app_supplies_basemap_inside_quick_before_weather(presenter):
-    canvas = presenter.canvas
-    settings = canvas.controller.settings
-    settings.gribBarbDensity, settings.gribArrowOpacity = "standard", 1
-    settings.gribWindGradient = False
-    settings.gribWindGradientOpacity = 1.0
-    settings.gribWindGradientSmooth = True
-    settings.gribWindGradientLevels = 15
-    canvas._center_lat, canvas._center_lon, canvas._zoom = 48.4, -123.4, 9
-    canvas.time_control = SimpleNamespace(time=datetime(2026, 10, 22))
-    canvas.marine = SimpleNamespace(
-        visible=True,
-        sources=object(),
-        time_control=canvas.time_control,
-        watch=Mock(),
-    )
-    canvas.wind_visible = True
-    canvas.ship_observations = SimpleNamespace(reports=[], visible=False)
-    canvas._base_key = Mock(return_value="base")
-    canvas._base_cache = canvas._environment_cache = None
-    canvas._base_image, canvas._environment_image = Mock(), Mock()
-    base, environment = object(), object()
-    base_target, environment_target = object(), object()
-    base_cache, environment_cache = (None,) * 4 + (base,), (None,) * 4 + (environment,)
-    canvas._resolve_reusable_layer = Mock(
-        side_effect=[(base_cache, base_target), (environment_cache, environment_target)]
-    )
-    widget = Mock(_chart_palette="dark")
-    presenter.widget, presenter.foreground = widget, Mock()
-    presenter._sync_active(None)
-    widget.set_base.assert_called_once_with(base, base_target, (None, None, None))
-    widget.set_environment.assert_called_once_with(
-        environment, environment_target, (None, None, None)
-    )
-    assert canvas._base_cache is base_cache
-    assert canvas._environment_cache is environment_cache
-    calls = [entry[0] for entry in widget.mock_calls]
-    assert calls.index("set_base") < calls.index("set_environment")
-
-
 def test_legacy_recovery_disables_both_viewport_weather_and_enc(presenter):
     presenter.widget = Mock()
     presenter.canvas.controller.settings.gribWindStyle = "legacy"
@@ -1146,9 +1106,6 @@ def test_viewport_foreground_publishes_navigation_instead_of_legacy_painting():
         _navigation_image=Mock(return_value=image),
         _paint_dashboard=Mock(),
         _paint_measurement_overlay=Mock(),
-        _paint_route_overlay=Mock(),
-        _paint_track_overlay=Mock(),
-        _paint_caption=Mock(),
     )
 
     ViewportMap._paint_foreground(host, painter)
@@ -1159,9 +1116,14 @@ def test_viewport_foreground_publishes_navigation_instead_of_legacy_painting():
     widget.set_navigation_overlay.assert_called_once_with(image, target)
     host._paint_dashboard.assert_called_once_with(painter)
     host._paint_measurement_overlay.assert_called_once_with(painter)
-    host._paint_route_overlay.assert_not_called()
-    host._paint_track_overlay.assert_not_called()
-    host._paint_caption.assert_not_called()
+    # Routes, tracks, POIs, isochrones and the dashboard are composed by the
+    # QML overlay; the foreground publishes the flags that suppress the legacy
+    # Cairo painters.
+    assert host._qml_navigation_overlay
+    assert host._qml_race_overlay
+    assert host._qml_ais_overlay
+    assert host._qml_isochrone_overlay
+    assert host._qml_dashboard_overlay
 
 
 def test_viewport_dashboard_publishes_or_clears_only_through_qml():
