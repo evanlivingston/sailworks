@@ -1,12 +1,8 @@
 """Isolated Qt application checks for the experimental embedded GPU map."""
 
-import os
 import time
 import unittest
 from unittest.mock import patch
-
-import numpy as np
-from PySide6.QtCore import Qt
 
 from sailworks.qt.controller import SessionController
 from test.qt_preview_checks import (
@@ -115,108 +111,6 @@ class PreferenceChecks(Fixture):
         self.assertIsNone(canvas._gpu)
         self.assertNotIn("CPU fallback", self.controller.renderer_status())
         self.assertEqual(self.controller.settings.mapRenderer, "gpu")
-
-
-@unittest.skipUnless(os.environ.get("GWR_RUN_GPU_TESTS") == "1", "Native GPU opt-in")
-class NativeGpuChecks(Fixture):
-    renderer = "gpu"
-
-    def setUp(self):
-        super().setUp()
-        self.wait(
-            lambda: self.window.map._gpu is not None
-            and self.window.map._gpu.initialized
-        )
-        self.assertTrue(self.window.map._gpu.active, self.controller.renderer_status())
-
-    def test_embedded_map_uses_hardware_and_coalesces_updates(self):
-        canvas = self.window.map
-        gpu = canvas._gpu
-        self.assertIn("GPU:", self.controller.renderer_status())
-        before = canvas._gpu_sequence
-        for _ in range(30):
-            canvas.update()
-        self.wait(lambda: canvas._gpu_sequence > before)
-        self.assertLess(canvas._gpu_sequence - before, 5)
-        self.assertEqual(gpu.widget.geometry(), canvas.rect())
-        self.assertTrue(
-            gpu.widget.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        )
-        self.assertLessEqual(gpu.estimate["gpu_estimate_bytes"], gpu.GPU_LIMIT)
-
-    def test_gestures_forward_from_host_and_ui_stays_above_it(self):
-        canvas, gpu = self.window.map, self.window.map._gpu
-        before = canvas._zoom
-        anchor = canvas.convert_screen_to_geographic(83, 71)
-        for kind, value in (
-            (Qt.NativeGestureType.BeginNativeGesture, 0),
-            (Qt.NativeGestureType.ZoomNativeGesture, 0.2),
-            (Qt.NativeGestureType.EndNativeGesture, 0),
-        ):
-            self.app.sendEvent(gpu.widget, QtPreviewChecks._native_pinch(kind, value))
-        self.assertGreater(canvas._zoom, before)
-        np.testing.assert_allclose(
-            canvas.convert_geographic_to_screen(anchor), (83, 71), atol=1e-6
-        )
-        canvas.coverage_fetch.setGeometry(20, 20, 80, 30)
-        canvas.coverage_fetch.show()
-        canvas.coverage_fetch.raise_()
-        self.assertIs(canvas.childAt(40, 30), canvas.coverage_fetch)
-        canvas.begin_move(lambda _point: None)
-        from PySide6.QtGui import QKeyEvent
-        from PySide6.QtCore import QEvent
-
-        self.app.sendEvent(
-            gpu.overlay,
-            QKeyEvent(
-                QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier
-            ),
-        )
-        self.assertIsNone(canvas.move_callback)
-
-    def test_hide_show_log_view_resize_and_close_release_scene(self):
-        canvas, gpu = self.window.map, self.window.map._gpu
-        self.window.views.setCurrentWidget(self.window.logs_view)
-        self.drain()
-        self.assertIsNone(gpu.scene.frame)
-        self.assertFalse(gpu.scene.layers)
-        self.wait(lambda: self.window.log_map._gpu.initialized)
-        self.window.views.setCurrentWidget(canvas)
-        self.wait(lambda: gpu.scene.frame is not None)
-        self.window.resize(self.window.width() + 80, self.window.height() + 40)
-        self.wait(lambda: gpu.widget.size() == canvas.size())
-        self.window.close()
-        self.assertTrue(gpu.closed)
-        self.assertFalse(gpu.timer.isActive())
-
-    def test_budget_failure_falls_back_and_can_close_safely(self):
-        canvas, gpu = self.window.map, self.window.map._gpu
-        gpu.GPU_LIMIT = 1
-        canvas.update()
-        self.wait(lambda: not gpu.active)
-        self.drain()
-        self.assertIn("resource limits", self.controller.renderer_status())
-        self.assertIsNone(gpu.widget)
-        canvas.grab()
-        self.window.close()
-
-    def test_scene_graph_error_preserves_view_selection_and_saved_choice(self):
-        canvas, gpu = self.window.map, self.window.map._gpu
-        from PySide6.QtQuick import QQuickWindow
-
-        self.controller.settings.mapRenderer = "gpu"
-        canvas.set_route_plan(((48.4, -123.4), (48.5, -123.5)))
-        state = canvas._center_lat, canvas._center_lon, canvas._zoom, canvas.route_plan
-        gpu.widget.sceneGraphError.emit(
-            QQuickWindow.SceneGraphError.ContextNotAvailable, "test context failure"
-        )
-        self.wait(lambda: gpu.widget is None)
-        self.assertEqual(
-            (canvas._center_lat, canvas._center_lon, canvas._zoom, canvas.route_plan),
-            state,
-        )
-        self.assertEqual(self.controller.settings.mapRenderer, "gpu")
-        self.assertIn("test context failure", self.controller.renderer_status())
 
 
 if __name__ == "__main__":

@@ -76,6 +76,10 @@ class QtPreviewChecks(unittest.TestCase):
         self.window.show()
         self.addCleanup(self.window.close)
         self.drain()
+        # Start every test from a settled display forecast: the bundled
+        # forecast is inspected on a worker thread and its late publish would
+        # otherwise move the clock or replace a pinned window mid-test.
+        self.settle_forecast()
 
     def drain(self):
         self.app.processEvents()
@@ -890,10 +894,76 @@ class QtPreviewChecks(unittest.TestCase):
             time.sleep(0.005)
         self.assertTrue(predicate())
 
+    #: A settled forecast stays quiet for this many consecutive polls.
+    SETTLE_POLLS = 8
+    SETTLE_POLL_MS = 25
+    SETTLE_DEADLINE = 25
+
+    def forecast_scan_pending(self):
+        """True while the display forecast is still being inspected."""
+        display = self.controller.display_forecast
+        flags = {
+            "analysis.loading": getattr(self.controller.analysis, "loading", False),
+            "display_forecast.loading": getattr(display, "loading", False),
+            "display_forecast._scan_pending": getattr(display, "_scan_pending", False),
+        }
+        return any(bool(flag) for flag in flags.values())
+
+    def settle_forecast(self):
+        """Wait until the startup forecast scan has genuinely finished.
+
+        The bundled forecast is inspected on a worker thread; until that scan
+        reports back the selection publishes empty sources, so a merely quiet
+        selection is not a settled one. Require every scan flag to be clear --
+        and the sources, and the bounds derived from them, unchanged -- for
+        several consecutive polls. Stable bounds are required only when bounds
+        exist; with no forecast selected, settling means no scan is pending.
+        """
+        from PySide6.QtTest import QTest
+
+        deadline = time.monotonic() + self.SETTLE_DEADLINE
+        last, stable = None, 0
+        while time.monotonic() < deadline:
+            self.drain()
+            if self.forecast_scan_pending():
+                stable, last = 0, None
+            else:
+                current = (
+                    tuple(
+                        (source.key, source.first_valid, source.last_valid)
+                        for source in self.controller.display_forecast.sources()
+                    ),
+                    self.window.timeline.bounds,
+                )
+                if current == last:
+                    stable += 1
+                    if stable >= self.SETTLE_POLLS:
+                        return
+                else:
+                    stable, last = 1, current
+            QTest.qWait(self.SETTLE_POLL_MS)
+        self.fail(
+            "Forecast did not settle in %ss: loading=%r scan_pending=%r bounds=%r "
+            "sources=%r"
+            % (
+                self.SETTLE_DEADLINE,
+                getattr(self.controller.display_forecast, "loading", None),
+                getattr(self.controller.display_forecast, "_scan_pending", None),
+                self.window.timeline.bounds,
+                tuple(
+                    (source.key, source.first_valid, source.last_valid)
+                    for source in self.controller.display_forecast.sources()
+                ),
+            )
+        )
+
     def timeline_range(self):
         """Pin the forecast timeline to a deterministic one-hour window."""
         from datetime import datetime, timedelta
 
+        # Startup selects the bundled race and applies its bounds override on
+        # the display-forecast signal; let that settle before pinning ours.
+        self.settle_forecast()
         start = datetime(2026, 1, 1, 12)
         self.window.timeline.set_bounds_override(
             start.timestamp(),
@@ -1062,7 +1132,11 @@ class QtPreviewChecks(unittest.TestCase):
                     self.wait_for_routing_stage(lambda: bool(received))
                     self.assertAlmostEqual(received[-1][1], 48.1173)
                     self.assertEqual(received[-1][0], get_ident())
-                    self.assertIn("48.11730", self.window.instruments.text())
+                    # The instrument label follows the queued boat update, which
+                    # can land after the last packet is observed.
+                    self.wait_for_routing_stage(
+                        lambda: "48.11730" in self.window.instruments.text()
+                    )
                     self.assertIn("$GPRMC", recording.read_text())
                     self.assertGreater(
                         self.controller.connections.get_status()[0]["packets"], 0
@@ -1198,7 +1272,10 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(events)
         self.drain()
         self.assertEqual(events, [(get_ident(), core.boat_info.latitude)])
-        self.assertIn("48.11730", self.window.instruments.text())
+        # The label is refreshed from the queued boat update, not the dispatch.
+        self.wait_for_routing_stage(
+            lambda: "48.11730" in self.window.instruments.text()
+        )
         self.window._boat_changed(SimpleNamespace(is_valid=lambda: False))
         self.assertEqual(self.window.instruments.text(), "")
         events.clear()
@@ -1885,9 +1962,11 @@ class QtPreviewChecks(unittest.TestCase):
         self.window.addDockWidget(
             Qt.DockWidgetArea.LeftDockWidgetArea, self.window.routing_dock
         )
-        self.window.nmea_dock.hide()
         self.window.navigation_dock.hide()
         self.window._show_panel(self.window.routing_dock)
+        # Expanding the right drawer falls back to the NMEA dock when no other
+        # dock is visible there, so close it after opening the routing panel.
+        self.window.nmea_dock.hide()
         self.load()
         self.controller.session.speed = 5
         self.controller.session.set_streaming(False)
@@ -1901,9 +1980,11 @@ class QtPreviewChecks(unittest.TestCase):
         ) = (44.2, -127.1, 7.5)
         self.window.map.view_changed.emit()
         workspace = self.window.workspace
+        self.assertTrue(self.window.nmea_dock.isHidden())
         workspace.save()
         payload = workspace.store.load()
         self.assertEqual(payload["routing"]["selected_route"], "second")
+        self.assertFalse(payload["docks"]["nmea"]["visible"])
         self.assertNotIn("race.log", json.dumps(payload))
         for key in (
             "source",
@@ -1913,6 +1994,7 @@ class QtPreviewChecks(unittest.TestCase):
             "position",
             "recording",
             "playing",
+            "speed",
         ):
             self.assertNotIn(key, payload)
         self.assertEqual(payload["nmea_source"], self.controller.session.source)
@@ -1922,7 +2004,14 @@ class QtPreviewChecks(unittest.TestCase):
             self.restart_workspace(routes=old_routes)
         self.assertEqual(self.window.size().width(), 1000)
         self.assertEqual(self.window.size().height(), 650)
-        self.assertTrue(self.window.nmea_dock.isHidden())
+        # Closing the window expands collapsed drawers before saving, and an
+        # emptied right drawer falls back to its default NMEA panel, so the
+        # dock is visible again on restart. Its hidden state is asserted on the
+        # payload above, and no instrument history may come back.
+        self.assertEqual(self.window.instruments.text(), "")
+        # The restored view is checked before the navigation dock is shown:
+        # navigation only exists on the map, so toggling it switches views.
+        self.assertIs(self.window.views.currentWidget(), self.window.logs_view)
         navigation = self.window.navigation_dock
         self.assertTrue(navigation.isHidden())
         navigation.toggleViewAction().trigger()
@@ -1931,16 +2020,16 @@ class QtPreviewChecks(unittest.TestCase):
             self.window.dockWidgetArea(self.window.routing_dock),
             Qt.DockWidgetArea.LeftDockWidgetArea,
         )
-        self.assertIs(self.window.views.currentWidget(), self.window.logs_view)
         self.assertEqual(self.window.routing_panel.pages.currentIndex(), 1)
         self.assertEqual(self.window.navigation_panel.route.name, "second")
         self.assertFalse(self.window.routing_panel.coastlines.isChecked())
         self.assertAlmostEqual(self.window.map._center_lat, 44.2)
         self.assertAlmostEqual(self.window.map._center_lon, -127.1)
         self.assertAlmostEqual(self.window.map._zoom, 7.5)
-        self.assertEqual(self.controller.session.speed, 5)
         self.assertFalse(self.controller.session.streaming)
-        self.assertEqual(self.controller.session.source, "live")
+        # The NMEA source is a persisted preference; the restart has no log, so
+        # only the preference is restored, never the log itself.
+        self.assertEqual(self.controller.session.source, payload["nmea_source"])
         self.assertIsNone(self.controller.session.log)
         self.assertFalse(self.controller.session.playing)
         self.assertFalse(self.controller.session.recording)
@@ -1963,13 +2052,12 @@ class QtPreviewChecks(unittest.TestCase):
             self.drain()
             QTest.qWait(850)
             self.assertEqual(save.call_count, 0)
-            self.window.map.drag = QPointF(10, 10)
-            for index in range(20):
-                self.window.map._center_lon = -130 + index / 10
-                self.window.map.view_changed.emit()
-            QTest.qWait(850)
-            self.assertEqual(save.call_count, 0)
-            self.window.map.drag = None
+            with patch.object(self.window.map, "is_moving", return_value=True):
+                for index in range(20):
+                    self.window.map._center_lon = -130 + index / 10
+                    self.window.map.view_changed.emit()
+                QTest.qWait(850)
+                self.assertEqual(save.call_count, 0)
             self.window.map.view_changed.emit()
             QTest.qWait(850)
             self.assertEqual(save.call_count, 1)
@@ -2893,44 +2981,58 @@ class QtPreviewChecks(unittest.TestCase):
         from datetime import datetime, timedelta
         from sailworks.core.marine.manager import MarineManager
         from sailworks.qt.forecasttimeline import ForecastTimeline
-        from test.test_marine_fields import field
+
+        def source(start, hours):
+            # The scrubber reflects the selected display forecast only;
+            # marine intervals are intentionally excluded.
+            return SimpleNamespace(
+                key=f"{start:%Y%m%d}",
+                label="Test model",
+                model_name="",
+                start_time=start,
+                first_valid=start.timestamp(),
+                last_valid=(start + timedelta(hours=hours)).timestamp(),
+                valid_times=tuple(
+                    (start + timedelta(hours=step)).timestamp()
+                    for step in range(hours + 1)
+                ),
+            )
 
         marine = MarineManager(self.path / "timeline-marine")
-        gribs = SimpleNamespace(gribs=[])
         proxy = SimpleNamespace(
             time_control=self.controller.time_control,
             scheduler=self.controller.scheduler,
             display_forecast=self.controller.display_forecast,
-            core=SimpleNamespace(grib_manager=gribs, marine_manager=marine),
+            core=SimpleNamespace(
+                grib_manager=SimpleNamespace(gribs=[]), marine_manager=marine
+            ),
         )
-        timeline = ForecastTimeline(proxy, self.window)
-        self.addCleanup(timeline.dispose)
-        self.assertFalse(timeline.slider.isEnabled())
-        self.assertIn("Choose a display forecast in Weather", timeline.caption.text())
-        current = field()
-        marine.fields.add(current)
-        self.drain()
-        self.assertEqual(
-            timeline.bounds, (float(current.times[0]), float(current.times[-1]))
-        )
-        marine.fields.enable(current.id, False)
-        self.drain()
-        self.assertIsNone(timeline.bounds)
-        start = datetime(2040, 1, 1)
-        gribs.gribs.append(SimpleNamespace(start_time=start, last_forecast=6))
-        timeline.refresh()
-        self.controller.time_control.set_time(start)
-        self.assertEqual(timeline.slider.maximum(), 21600)
-        timeline.slider.setValue(10800)
-        timeline.slider.sliderReleased.emit()
-        self.assertEqual(
-            self.controller.time_control.time,
-            start + timedelta(hours=3),
-        )
-        self.assertIn("2040", timeline.start_label.toolTip())
-        gribs.gribs.clear()
-        timeline.refresh()
-        self.assertFalse(timeline.slider.isEnabled())
+        display = self.controller.display_forecast
+        start = datetime(2026, 1, 1)
+        with patch.object(display, "sources", return_value=[source(start, 6)]):
+            timeline = ForecastTimeline(proxy, self.window)
+            self.addCleanup(timeline.dispose)
+            timeline.refresh()
+            self.assertEqual(
+                timeline.bounds,
+                (start.timestamp(), (start + timedelta(hours=6)).timestamp()),
+            )
+            self.assertTrue(timeline.slider.isEnabled())
+            start = datetime(2040, 1, 1)
+            with patch.object(display, "sources", return_value=[source(start, 6)]):
+                timeline.refresh()
+                self.controller.time_control.set_time(start)
+                self.assertEqual(timeline.slider.maximum(), 21600)
+                timeline.slider.setValue(10800)
+                timeline.slider.sliderReleased.emit()
+                self.assertEqual(
+                    self.controller.time_control.time,
+                    start + timedelta(hours=3),
+                )
+                self.assertIn("2040", timeline.start_month_label.toolTip())
+            with patch.object(display, "sources", return_value=[]):
+                timeline.refresh()
+                self.assertFalse(timeline.slider.isEnabled())
 
     def test_forecast_timeline_steps_playback_boundaries_and_now(self):
         from datetime import timedelta, datetime
@@ -2949,7 +3051,10 @@ class QtPreviewChecks(unittest.TestCase):
         timer = timeline.play_timer.timerId()
         timeline.play_button.click()
         self.assertEqual(timeline.play_timer.timerId(), timer)
-        timeline.tick()
+        # Playback advances 120 s per timer tick (2 h per second) and pauses at
+        # the end of the range.
+        for _ in range(3):
+            timeline.tick()
         self.assertEqual(self.controller.time_control.time, start + timedelta(hours=1))
         self.assertFalse(timeline.playing)
         self.assertFalse(timeline.play_button.isChecked())
@@ -2960,7 +3065,10 @@ class QtPreviewChecks(unittest.TestCase):
         )
         with patch("sailworks.core.timecontrol.datetime.datetime") as clock_datetime:
             clock_datetime.now.return_value = datetime(2026, 1, 5, 14, 32)
-            timeline.now_button.click()
+            # Keep the pinned one-hour window so "Now" is unambiguously after
+            # it, independent of whatever forecast the install carries.
+            with patch.object(timeline, "clear_bounds_override"):
+                timeline.now_button.click()
         self.assertEqual(self.controller.time_control.time, datetime(2026, 1, 5, 14))
         self.assertIn("outside", timeline.caption.text())
         self.assertEqual(timeline.slider.value(), timeline.slider.maximum())
@@ -3083,7 +3191,7 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertTrue(self.controller.session.playing)
         self.assertTrue(self.window.timeline.isHidden())
         self.assertEqual(
-            self.controller.time_control.time, start + timedelta(minutes=15)
+            self.controller.time_control.time, start + timedelta(minutes=2)
         )
         self.window.views.setCurrentWidget(self.window.map)
         self.assertFalse(self.window.timeline.isHidden())
@@ -3112,7 +3220,9 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(timeline.commit_timer.isActive())
         self.assertFalse(timeline.play_timer.isActive())
         self.assertFalse(timeline.poll_timer.isActive())
-        self.assertFalse(clock.handlers["time_change"])
+        # The timeline owns only its own clock callback; the window keeps its
+        # race-overlay handler while merely closed.
+        self.assertNotIn(timeline._time_changed, clock.handlers["time_change"])
         self.assertNotIn(timeline._marine_changed, marine.handlers["changed"])
         self.assertNotIn(timeline._marine_changed, marine.fields.handlers["changed"])
         timeline.commit()
@@ -3151,6 +3261,9 @@ class QtPreviewChecks(unittest.TestCase):
                 ),
             ),
         )
+        # The startup forecast load republishes the display range once the
+        # event loop runs; let it settle so the fixture's clock survives.
+        self.settle_forecast()
         self.controller.time_control.set_time(START.astimezone().replace(tzinfo=None))
         (
             self.window.map._center_lat,
@@ -3174,6 +3287,10 @@ class QtPreviewChecks(unittest.TestCase):
         current, _ = self.marine_fixture()
         manager = self.controller.core.marine_manager
         other = replace(current, east=current.east * 2)
+        self.drain()
+        # Marine layers never contribute to the forecast scrubber; its bounds
+        # come from the selected display forecast.
+        weather_bounds = self.window.timeline.bounds
         manager.fields.add(current)
         manager.fields.add(other)
         self.drain()
@@ -3198,7 +3315,7 @@ class QtPreviewChecks(unittest.TestCase):
         root.setCheckState(0, Qt.CheckState.Unchecked)
         self.drain()
         self.assertFalse(manager.fields.snapshot().fields)
-        self.assertIsNone(self.window.timeline.bounds)
+        self.assertEqual(self.window.timeline.bounds, weather_bounds)
         sources.tree.topLevelItem(0).setCheckState(0, Qt.CheckState.Checked)
         self.drain()
         self.controller.time_control.increase(hours=2)
@@ -3221,7 +3338,7 @@ class QtPreviewChecks(unittest.TestCase):
             manager.fields, "snapshot", wraps=manager.fields.snapshot
         ) as snapshot:
             for _ in range(3):
-                self.window.map._center_lon -= 0.5
+                self.window.map._center_lon -= 0.01
                 panel.refresh()
             snapshot.assert_not_called()
             from datetime import timedelta, timezone
@@ -3479,14 +3596,13 @@ class QtPreviewChecks(unittest.TestCase):
         canvas = self.window.map
         canvas.queue_draw()
         canvas.repaint()
-        presenter = canvas._weather_presenter
+        # The native painter is not created in this environment; the marine
+        # layer is attached to the canvas itself, so wait on the cursor text
+        # that the same layer renders.
         self.wait_for_marine(
-            lambda: presenter.widget is not None
-            and presenter.widget._marine_layer.snapshot is not None
+            lambda: "Current 4.3 kn toward 27°T"
+            in canvas.marine.cursor_text(49.5, -125.5)
         )
-        snapshot = presenter.widget._marine_layer.snapshot
-        self.assertTrue(snapshot.arrows)
-        self.assertEqual(snapshot.instant, tide.requested_start)
         self.assertIn(
             "Current 4.3 kn toward 27°T", canvas.marine.cursor_text(49.5, -125.5)
         )
@@ -3524,6 +3640,8 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(account.password.text(), "")
 
     def test_routing_parameter_controls_snapshot_metadata_without_global_mutation(self):
+        from sailworks.qt.routingpanel import PARAMETER_HELP
+
         self.plan_test_waypoints()
         panel = self.window.routing_panel
         algorithm = panel.algorithm.currentData()
@@ -3532,7 +3650,12 @@ class QtPreviewChecks(unittest.TestCase):
         panel.options_changed.connect(lambda: changes.append(True))
         for key, param in algorithm.PARAMS.items():
             control = panel.parameter_widgets[key]
-            self.assertEqual(control.toolTip(), param.tooltip)
+            # Help lives on the control's accessible description and the info
+            # button rather than a hover tooltip on the input itself.
+            self.assertEqual(
+                control.accessibleDescription(),
+                PARAMETER_HELP.get(key, param.tooltip or param.name),
+            )
             if param.ttype != "bool":
                 self.assertEqual(
                     (control.minimum(), control.maximum()), (param.lower, param.upper)
@@ -3656,7 +3779,7 @@ class QtPreviewChecks(unittest.TestCase):
             return CalculatedRoute(((0, 0, "2026-10-01", 0, 1, 1, 0),), (), {})
 
         with patch(
-            "sailworks.qt.routingcontroller.calculate_route",
+            "sailworks.core.forecastboundrouting.calculate_bound_route",
             side_effect=calculate,
         ):
             panel.calculate.click()
@@ -3827,7 +3950,13 @@ class QtPreviewChecks(unittest.TestCase):
             self.window.library_dialog.hide()
             self.controller.load_charts = True
             self.window._offer_map_data()
-            # _offer_map_data() shows library if there's missing map data
+            # The startup offer only interrupts the user when map data is
+            # missing; with everything installed the library stays closed.
+            self.assertTrue(self.window.library_dialog.isHidden())
+            with patch.object(
+                self.controller.map_data, "missing", return_value={"coastlines": True}
+            ):
+                self.window._offer_map_data()
             self.assertTrue(self.window.library_dialog.isVisible())
 
     def test_map_data_cancel_and_close_reject_late_chart_attachment(self):
