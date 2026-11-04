@@ -420,6 +420,34 @@ class TrancheStore:
         _acquired_at, entry, path = max(matches, key=lambda item: item[0])
         return entry, path
 
+    def newest_selection(self, model_id):
+        """The newest published selection holding a model.
+
+        Recency is the tranche refresh time; the manifest mtime only breaks
+        ties between tranches published during the same refresh. Older
+        tranches are never returned for a model they do not contain.
+        """
+        newest = None
+        for path in self.manifests.glob("*.json"):
+            try:
+                tranche = self.load(path.stem)
+                mtime = path.stat().st_mtime_ns
+            except Exception:
+                continue
+            entry = next(
+                (item for item in tranche.entries if item.model_id == model_id),
+                None,
+            )
+            if entry is None:
+                continue
+            key = (tranche.refreshed_at, mtime)
+            if newest is None or key > newest[0]:
+                newest = (
+                    key,
+                    AnalysisSelection(tranche.tranche_id, entry.entry_id),
+                )
+        return None if newest is None else newest[1]
+
     def resolve(self, selection):
         if not isinstance(selection, AnalysisSelection):
             raise TypeError("expected AnalysisSelection")

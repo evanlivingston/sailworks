@@ -79,16 +79,30 @@ class ForecastModelSelector(QComboBox):
         manifests = getattr(store, "manifests", None)
         if manifests is None:
             active = getattr(analysis, "active", None)
-            tranches = [active.tranche] if active is not None else []
+            published = (
+                [
+                    (
+                        active.tranche,
+                        (
+                            getattr(active.tranche, "refreshed_at", None),
+                            0,
+                        ),
+                    )
+                ]
+                if active is not None
+                else []
+            )
         else:
-            tranches = []
+            published = []
             for path in manifests.glob("*.json"):
                 try:
-                    tranches.append(store.load(path.stem))
+                    tranche = store.load(path.stem)
+                    recency = (tranche.refreshed_at, path.stat().st_mtime_ns)
                 except Exception:
                     continue
+                published.append((tranche, recency))
         newest = {}
-        for tranche in tranches:
+        for tranche, recency in published:
             for entry in tranche.entries:
                 if "wind" not in entry.fields:
                     continue
@@ -96,15 +110,18 @@ class ForecastModelSelector(QComboBox):
                 if capability is not None and not capability.routing_eligible:
                     continue
                 prior = newest.get(entry.model_id)
-                if prior is None or entry.run_time > prior[0]:
+                if prior is None or recency > prior[0]:
+                    # Newest published tranche holding the model, not merely
+                    # its newest run: a refresh may republish the same run.
                     newest[entry.model_id] = (
-                        entry.run_time,
+                        recency,
                         (tranche.tranche_id, entry.entry_id),
+                        entry.run_time,
                     )
-        ordered = sorted(newest.items(), key=lambda item: item[1][0], reverse=True)
+        ordered = sorted(newest.items(), key=lambda item: item[1][2], reverse=True)
         return [
             (display_model_name(model_id), model_id, data)
-            for model_id, (_run, data) in ordered
+            for model_id, (_recency, data, _run) in ordered
         ]
 
     def _select(self, index):
