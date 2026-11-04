@@ -275,6 +275,32 @@ def test_catalogue_failure_does_not_discard_other_plans_and_unknown_models_rejec
         plan_refresh((config("Imported"),), "Imported", factories=factories)
 
 
+def test_empty_exception_message_does_not_abort_a_partial_plan():
+    good = FakeSource(
+        "NOAA GFS", [row("NOAA GFS", "20250101", "00", 6, range(0, 7, 3))]
+    )
+
+    class SilentSource(FakeSource):
+        def get_download_list(self, options):
+            raise RuntimeError()
+
+    silent = SilentSource("NOAA HRRR", [])
+    factories, _ = factory_map({"GFS": good, "HRRR": silent})
+    result = plan_refresh((config(), config("HRRR")), "GFS", factories=factories)
+    assert [planned.model_id for planned in result.models] == ["GFS"]
+    assert result.planning_failures == {"HRRR": "RuntimeError"}
+
+
+def test_empty_failure_reason_is_normalized_at_the_contract_boundary():
+    source = FakeSource(
+        "NOAA GFS", [row("NOAA GFS", "20250101", "00", 6, range(0, 7, 3))]
+    )
+    factories, _ = factory_map({"GFS": source})
+    plan = plan_refresh((config(),), "GFS", factories=factories)
+    normalized = ForecastRefreshPlan(plan.models, "GFS", {"HRRR": "  "})
+    assert normalized.planning_failures == {"HRRR": "unspecified failure"}
+
+
 def test_every_model_failing_to_plan_raises_with_every_reason():
     class OfflineSource(FakeSource):
         def get_download_list(self, options):

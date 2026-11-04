@@ -8,6 +8,7 @@ import logging
 from threading import RLock
 from uuid import uuid4
 
+from .forecastrefreshcontracts import failure_reason
 from .forecastrefreshplan import (
     RefreshCancelledError,
     create_source,
@@ -512,7 +513,9 @@ class RefreshCoordinator:
                             planned.model_id,
                             phase,
                         )
-                        failures[planned.model_id] = f"{phase} failed: {exc}"
+                        failures[planned.model_id] = (
+                            f"{phase} failed: {failure_reason(exc)}"
+                        )
                 self._raise_if_stale_or_cancelled(revision, ticket, cancel)
                 published = [entry.model_id for entry in entries]
                 if not entries:

@@ -141,6 +141,19 @@ class PlannedModel:
         return self.configuration.model_id
 
 
+def failure_reason(error):
+    """Describe a per-model failure with a reason that is never empty.
+
+    Exceptions such as a bare ``RuntimeError()`` stringify to ``""``, so fall
+    back to the exception class name. Reasons reach the plan contract, which
+    requires them to be non-empty.
+    """
+    if isinstance(error, BaseException):
+        message = str(error).strip()
+        return message or type(error).__name__
+    return str(error).strip() or "unspecified failure"
+
+
 @dataclass(frozen=True)
 class ForecastRefreshPlan:
     models: tuple[PlannedModel, ...]
@@ -154,15 +167,14 @@ class ForecastRefreshPlan:
         ids = tuple(model.model_id for model in models)
         if len(set(ids)) != len(ids):
             raise ValueError("plan models must be unique")
-        failures = dict(self.planning_failures)
-        if any(
-            not isinstance(model_id, str)
-            or not model_id
-            or not isinstance(reason, str)
-            or not reason
-            for model_id, reason in failures.items()
-        ):
-            raise ValueError("planning failures need non-empty model ids and reasons")
+        # Normalize reasons here as well so an empty reason can never make
+        # construction fail: the contract guarantees a non-empty reason.
+        failures = {
+            model_id: failure_reason(reason)
+            for model_id, reason in self.planning_failures.items()
+        }
+        if any(not isinstance(model_id, str) or not model_id for model_id in failures):
+            raise ValueError("planning failures need non-empty model ids")
         if set(ids) & set(failures):
             raise ValueError("a planned model cannot also be a planning failure")
         if self.selected_model_id not in ids and self.selected_model_id not in failures:

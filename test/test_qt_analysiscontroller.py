@@ -4,6 +4,7 @@ import pytest
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 
+from sailworks.core.forecastcapabilities import display_model_name
 from sailworks.core.forecasttranche import ModelConfiguration
 from sailworks.qt.analysiscontroller import AnalysisController
 from test.analysis_qt_fixtures import FakeAnalysisState, make_snapshot
@@ -124,7 +125,7 @@ def test_progress_report_exposes_current_model_and_percentage(tmp_path):
     controller._progress_token = "progress-token"
     controller._progress(controller._generation, "progress-token", ("HRRR", 42))
 
-    assert controller.status == "Downloading HRRR…"
+    assert controller.status == f"Downloading {display_model_name('HRRR')}…"
     assert controller.progress == 42
     controller.close()
 

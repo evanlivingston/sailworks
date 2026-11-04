@@ -9,7 +9,11 @@ import json
 import logging
 
 from .forecastcapabilities import MODEL_CAPABILITIES
-from .forecastrefreshcontracts import ForecastRefreshPlan, PlannedModel
+from .forecastrefreshcontracts import (
+    ForecastRefreshPlan,
+    PlannedModel,
+    failure_reason,
+)
 from .forecasttranche import ModelConfiguration, shared_requested_region
 
 logger = logging.getLogger(__name__)
@@ -323,7 +327,7 @@ def plan_refresh(configurations, selected_model_id, *, factories=None, cancel=No
                 configuration.model_id,
                 exc,
             )
-            planning_failures[configuration.model_id] = str(exc)
+            planning_failures[configuration.model_id] = failure_reason(exc)
         _cancelled(cancel)
     if not plans:
         reasons = "; ".join(
