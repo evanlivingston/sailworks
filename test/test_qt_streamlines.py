@@ -860,7 +860,10 @@ class TestStreamlineShaderPixels(unittest.TestCase):
             self._wait_until_ready(layer, window)
             self.assertTrue(
                 layer.property("ready"),
-                f"root error={layer.property('shaderError')!r}; {layer.property('batchDiagnostics')}",
+                "root error={!r}; {}".format(
+                    layer.property("shaderError"),
+                    layer.property("batchDiagnostics"),
+                ),
             )
             self.assertFalse(layer.property("shaderError"))
             pixels = window.grabWindow()
