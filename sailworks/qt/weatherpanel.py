@@ -51,11 +51,14 @@ class ForecastModelSelector(QComboBox):
             if active is None:
                 self.addItem("No published model selection", "")
                 return
+            # Known models must be routing-capable, but display-only models
+            # (such as imported ERA5 history) are not in the catalogue and
+            # must still be selectable for rendering.
             entries = tuple(
                 entry
                 for entry in active.tranche.entries
-                if MODEL_CAPABILITIES.get(entry.model_id)
-                and MODEL_CAPABILITIES[entry.model_id].routing_eligible
+                if MODEL_CAPABILITIES.get(entry.model_id) is None
+                or MODEL_CAPABILITIES[entry.model_id].routing_eligible
             )
             for entry in entries:
                 self.addItem(display_model_name(entry.model_id), entry.model_id)
