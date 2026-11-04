@@ -304,15 +304,46 @@ def numpy_render(data, viewport, factor):
     return surface, timing, clipped, ring_count
 
 
-def verify(renderer, source, data, viewport, factor):
-    reference = render(renderer, source, viewport, factor)
-    candidate, _, _, _ = numpy_render(data, viewport, factor)
-    a = np.frombuffer(reference.get_data(), dtype=np.uint8).reshape(
+def verify(renderer, source, viewport, factor):
+    """Compare the production fast path with the same drawer forced to OGR."""
+    from sailworks.rendering.vectordrawer.simplechartdrawer import SimpleChartDrawer
+
+    if not warm(source, viewport):
+        raise SystemExit("coastline array cache did not warm")
+    fast = render(renderer, source, viewport, factor)
+    SimpleChartDrawer.use_coastline_arrays = False
+    try:
+        old = render(renderer, source, viewport, factor)
+    finally:
+        SimpleChartDrawer.use_coastline_arrays = True
+    a = np.frombuffer(fast.get_data(), dtype=np.uint8).reshape(
         viewport.height * factor, viewport.width * factor, 4
     )
-    b = np.frombuffer(candidate.get_data(), dtype=np.uint8).reshape(a.shape)
+    b = np.frombuffer(old.get_data(), dtype=np.uint8).reshape(a.shape)
     delta = np.abs(a.astype(np.int16) - b.astype(np.int16))
-    return np.any(delta != 0, axis=2).mean(), np.any(delta > 8, axis=2).mean()
+    differing = np.any(delta != 0, axis=2)
+    return differing.mean(), np.any(delta > 8, axis=2).mean(), delta.max()
+
+
+def warm(source, viewport):
+    """Populate the array cache for the tier this view would draw."""
+    from sailworks.rendering.vectordrawer.coastlinearrays import COASTLINE_ARRAYS
+
+    if source.kind != "gshhs":
+        return COASTLINE_ARRAYS.get_by_path(source.path) is not None
+    scale = viewport.get_scale()
+    if scale > 5000:
+        quality = "c"
+    elif scale > 500:
+        quality = "l"
+    elif scale > 200:
+        quality = "i"
+    elif scale >= 15:
+        quality = "h"
+    else:
+        quality = "f"
+    path = f"{source.path}/GSHHS_shp/{quality}/GSHHS_{quality}_L1.shp"
+    return COASTLINE_ARRAYS.get_by_path(path) is not None
 
 
 def main(argv=None):
@@ -320,6 +351,7 @@ def main(argv=None):
     parser.add_argument("--synthetic", action="store_true")
     parser.add_argument("--numpy", action="store_true")
     parser.add_argument("--verify", action="store_true")
+    parser.add_argument("--no-arrays", action="store_true")
     parser.add_argument("--gshhs", type=Path, default=Path(DATA_DIR) / "gshhs")
     parser.add_argument("-n", "--iterations", type=int, default=10)
     parser.add_argument("--factor", type=int, choices=(1, 2), default=2)
@@ -364,6 +396,14 @@ def main(argv=None):
             )
         renderer = BaseChartRenderer(lambda *args: None)
         viewport = Viewport(args.center_lat, args.center_lon, args.zoom)
+        if args.no_arrays:
+            from sailworks.rendering.vectordrawer.simplechartdrawer import (
+                SimpleChartDrawer,
+            )
+
+            SimpleChartDrawer.use_coastline_arrays = False
+        elif not args.numpy:
+            warm(source, viewport)
         if args.verify and not args.numpy:
             parser.error("--verify requires --numpy")
         if args.numpy:
@@ -376,9 +416,11 @@ def main(argv=None):
                 f"mode=numpy-extract quality={data[2]} features={len(data[0])} n=1 min={extraction:.3f} ms median={extraction:.3f} ms mean={extraction:.3f} ms"
             )
             if args.verify:
-                different, over8 = verify(renderer, source, data, viewport, args.factor)
+                different, over8, worst = verify(
+                    renderer, source, viewport, args.factor
+                )
                 print(
-                    f"mode=numpy-verify differing_fraction={different:.9f} over8_fraction={over8:.9f}"
+                    f"mode=verify differing_fraction={different:.9f} over8_fraction={over8:.9f} max_delta={worst}"
                 )
                 return 0
             stages = {key: [] for key in ("cull", "project", "clip", "draw")}
