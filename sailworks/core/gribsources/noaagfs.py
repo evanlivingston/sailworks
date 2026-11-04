@@ -334,4 +334,5 @@ class NOAAGFSSource(GribSource):
             request,
             check_cancel,
             percentage_callback,
+            model="GFS",
         )

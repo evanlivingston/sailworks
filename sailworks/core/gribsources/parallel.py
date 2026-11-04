@@ -6,9 +6,22 @@ from threading import Event, Lock
 MAX_CONCURRENT_FORECAST_REQUESTS = 4
 MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024
 
+# GRIB edition 1 and 2 files both start with the four-byte "GRIB" indicator.
+GRIB_MAGIC = b"GRIB"
+
 
 class _ParallelRequestStopped(Exception):
     """A sibling request failed; stop work that has not finished yet."""
+
+
+class NonGribStepResponseError(RuntimeError):
+    """A forecast step did not return a successful GRIB payload."""
+
+
+def _non_grib_step_error(model, step, status, detail):
+    return NonGribStepResponseError(
+        f"{model} f{step:03d} returned HTTP {status} ({detail})"
+    )
 
 
 def write_ordered_forecasts(
@@ -18,13 +31,25 @@ def write_ordered_forecasts(
     check_cancel,
     percentage_callback,
     *,
+    model="forecast",
     max_workers=MAX_CONCURRENT_FORECAST_REQUESTS,
 ):
-    """Fetch a bounded window concurrently, appending GRIB bytes in step order."""
+    """Fetch a bounded window concurrently, appending GRIB bytes in step order.
+
+    Every step must resolve to a final HTTP 200 whose body is a GRIB file.
+    NOMADS answers rate-limited filter requests with a 302 or a 200 HTML error
+    page; either would otherwise be concatenated into the ``.grib2`` output and
+    corrupt it silently.
+    """
+
+    rate_limit_detail = "server is rate limiting or returned a non-GRIB page"
 
     def fetch(step):
         response = request(step)
         try:
+            status = response.status_code
+            if status != 200:
+                raise _non_grib_step_error(model, step, status, rate_limit_detail)
             response.raise_for_status()
             content = bytearray()
             for chunk in response.iter_content(chunk_size=8192):
@@ -36,6 +61,10 @@ def write_ordered_forecasts(
                         "Forecast download exceeded 256 MiB; choose a smaller route area"
                     )
                 content.extend(chunk)
+            if not content.startswith(GRIB_MAGIC):
+                raise _non_grib_step_error(
+                    model, step, status, "response body is not a GRIB file"
+                )
             return content
         finally:
             response.close()
