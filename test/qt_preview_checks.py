@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from PySide6.QtCore import QPointF, Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication, QToolBar, QMessageBox
 
 from sailworks.core.datasource import NMEADataPacket
@@ -941,6 +942,27 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(hasattr(self.window, "file_info_button"))
         self.assertEqual(tuple(self.controller.points), previous.points)
 
+    def wait_for_routing_stage(self, predicate):
+        """Pump the UI event loop until *predicate* holds or the stage times out."""
+        deadline = time.monotonic() + 8
+        while not predicate() and time.monotonic() < deadline:
+            self.drain()
+            time.sleep(0.005)
+        self.assertTrue(predicate())
+
+    def timeline_range(self):
+        """Pin the forecast timeline to a deterministic one-hour window."""
+        from datetime import datetime, timedelta
+
+        start = datetime(2026, 1, 1, 12)
+        self.window.timeline.set_bounds_override(
+            start.timestamp(),
+            (start + timedelta(hours=1)).timestamp(),
+            (start.timestamp(),),
+        )
+        self.controller.time_control.set_time(start)
+        return start
+
     def test_shared_projection_cairo_buffer_and_pan(self):
         canvas = self.window.map
         viewport = MapViewport(canvas)
@@ -1774,7 +1796,9 @@ class QtPreviewChecks(unittest.TestCase):
 
     def test_live_reading_toggle_is_not_persisted_as_a_separate_setting(self):
         self.assertFalse(hasattr(self.window, "streaming"))
-        self.assertNotIn("streaming", self.window.workspace.save_state()["nmea"])
+        state = self.window.workspace.save_state()
+        self.assertNotIn("streaming", state)
+        self.assertEqual(state["nmea_source"], self.controller.session.source)
 
     def test_reading_off_ignores_already_queued_live_packets(self):
         packet = NMEADataPacket.parse(rmc("120000"))
@@ -1964,7 +1988,7 @@ class QtPreviewChecks(unittest.TestCase):
             Qt.DockWidgetArea.LeftDockWidgetArea, self.window.routing_dock
         )
         self.window.nmea_dock.hide()
-        self.window.findChild(QToolBar, "navigation").hide()
+        self.window.navigation_dock.hide()
         self.window._show_panel(self.window.routing_dock)
         self.load()
         self.controller.session.speed = 5
@@ -1992,7 +2016,8 @@ class QtPreviewChecks(unittest.TestCase):
             "recording",
             "playing",
         ):
-            self.assertNotIn(key, payload["nmea"])
+            self.assertNotIn(key, payload)
+        self.assertEqual(payload["nmea_source"], self.controller.session.source)
         with patch(
             "sailworks.qt.workspace.workareas", return_value=[(0, 0, 1600, 1000)]
         ):
@@ -2000,10 +2025,10 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(self.window.size().width(), 1000)
         self.assertEqual(self.window.size().height(), 650)
         self.assertTrue(self.window.nmea_dock.isHidden())
-        toolbar = self.window.findChild(QToolBar, "navigation")
-        self.assertTrue(toolbar.isHidden())
-        toolbar.toggleViewAction().trigger()
-        self.assertFalse(toolbar.isHidden())
+        navigation = self.window.navigation_dock
+        self.assertTrue(navigation.isHidden())
+        navigation.toggleViewAction().trigger()
+        self.assertFalse(navigation.isHidden())
         self.assertEqual(
             self.window.dockWidgetArea(self.window.routing_dock),
             Qt.DockWidgetArea.LeftDockWidgetArea,
