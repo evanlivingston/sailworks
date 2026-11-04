@@ -639,6 +639,53 @@ def test_queue_limit_is_waited_out_instead_of_failing(tmp_path, monkeypatch):
     assert (tmp_path / "era5-history.json").exists()
 
 
+def test_resume_resubmits_dead_request_with_full_payload(tmp_path):
+    from sailworks.core.tranchestore import TrancheStore
+
+    store = TrancheStore(tmp_path)
+    submitted = []
+
+    class Remote:
+        request_id = "rid-new"
+        status = "successful"
+
+        def download(self, target):
+            Path(target).write_bytes(b"resubmitted era5 grib bytes")
+
+    class Inner:
+        def submit(self, _dataset, request):
+            submitted.append(request)
+            return Remote()
+
+        def get_remote(self, request_id):
+            if request_id == "rid-dead":
+                raise RuntimeError("404 not found")
+            return Remote()
+
+    class Client:
+        def __init__(self):
+            self.client = Inner()
+
+    service = Era5DownloadService(
+        store, client_factory=Client, validator=lambda _p, _piece: {"reader": "test"}
+    )
+    piece = split_request(plan("2025-01-01T00:00", "2025-01-01T00:00"))[0]
+    service._remember_pending(piece, "rid-dead")
+
+    assert service.resume_pending() == 1
+    for thread in list(service._resume_threads):
+        thread.join(5)
+
+    assert len(submitted) == 1
+    assert submitted[0]["year"] == ["2025"]
+    assert submitted[0]["month"] == ["01"]
+    assert submitted[0]["day"] == ["01"]
+    assert submitted[0]["time"] == ["00:00"]
+    assert submitted[0]["area"] == list(piece.area)
+    assert submitted[0]["variable"]
+    assert (tmp_path / "era5-history.json").exists()
+
+
 def test_canceled_era5_download_leaves_no_catalog_or_artifacts(tmp_path):
     root = tmp_path
     (root / "artifacts").mkdir()

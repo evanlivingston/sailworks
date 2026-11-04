@@ -95,18 +95,35 @@ def plan_request(start, end, area, *, now=None, max_days=MAX_DAYS):
             "ERA5 data is not considered available until five days after valid time"
         )
     north, west, south, east = _validate_area_and_limits(start, end, area, max_days)
-    req = {
+    return Era5Request(
+        start, end, (north, west, south, east), _request_payload(start, end, area)
+    )
+
+
+def _request_payload(start, end, area, *, hours=None):
+    """Build the CDS payload for a UTC range, optionally filtered to hours."""
+    if hours is None:
+        time = [f"{h:02d}:00" for h in range(24)]
+    else:
+        time = [f"{h:02d}:00" for h in hours]
+        if not time:
+            time = [f"{h:02d}:00" for h in range(24)]
+    return {
         "product_type": ["reanalysis"],
         "variable": list(VARIABLES),
         "year": sorted({f"{d.year:04d}" for d in _dates(start.date(), end.date())}),
         "month": sorted({f"{d.month:02d}" for d in _dates(start.date(), end.date())}),
         "day": sorted({f"{d.day:02d}" for d in _dates(start.date(), end.date())}),
-        "time": [f"{h:02d}:00" for h in range(24)],
-        "area": [north, west, south, east],
+        "time": time,
+        "area": [float(value) for value in area],
         "data_format": "grib",
         "download_format": "unarchived",
     }
-    return Era5Request(start, end, (north, west, south, east), req)
+
+
+def _chunk_payload(start, end, area):
+    """CDS payload for one chunk: only the hours the chunk covers."""
+    return _request_payload(start, end, area, hours=range(start.hour, end.hour + 1))
 
 
 def _validate_area_and_limits(start, end, area, max_days):
@@ -583,7 +600,7 @@ class Era5DownloadService:
                 key = self._request_key(start, end, area)
             except (KeyError, TypeError, ValueError):
                 continue
-            piece = Era5Request(start, end, area, {})
+            piece = Era5Request(start, end, area, _chunk_payload(start, end, area))
             if self._catalog_covers(catalog, piece):
                 self._forget_pending(piece)
                 continue
@@ -605,7 +622,11 @@ class Era5DownloadService:
                 datetime.fromisoformat(entry["start"]),
                 datetime.fromisoformat(entry["end"]),
                 tuple(float(value) for value in entry["area"]),
-                {},
+                _chunk_payload(
+                    datetime.fromisoformat(entry["start"]),
+                    datetime.fromisoformat(entry["end"]),
+                    tuple(float(value) for value in entry["area"]),
+                ),
             )
             inner = getattr(self.client_factory(), "client", None)
             if inner is None or not hasattr(inner, "get_remote"):
