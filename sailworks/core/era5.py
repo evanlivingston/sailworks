@@ -30,10 +30,31 @@ MAX_AREA_CELLS = 2_000_000
 MAX_REQUEST_HOURS = 31 * 24
 ERA5_EARLIEST = datetime(1940, 1, 1, tzinfo=timezone.utc)
 LATENCY = timedelta(days=5)
+# ERA5 is served on a 0.25 degree grid, so bounds that differ by less than
+# this select exactly the same cells. Matching them keeps a request from being
+# resubmitted just because the map region was rounded differently.
+AREA_TOLERANCE = 0.01
+# CDS leaves a request in "accepted" while it waits in the dataset queue. A
+# request that has never been touched since it was queued for this long is
+# stuck (normally it starts within a minute), so it is dropped and resubmitted.
+STALE_ACCEPTED = timedelta(minutes=20)
+QUEUE_RETRY_SECONDS = 30
+QUEUE_RETRY_ATTEMPTS = 20
 
 
 class Era5Error(RuntimeError):
     """An actionable ERA5 acquisition or validation error."""
+
+
+def _areas_close(left, right):
+    return len(left) == len(right) and all(
+        abs(float(a) - float(b)) <= AREA_TOLERANCE for a, b in zip(left, right)
+    )
+
+
+def _is_queue_limit_error(exc):
+    text = str(exc).lower()
+    return "maximum number queued" in text or "queued requests for this dataset" in text
 
 
 @dataclass(frozen=True)
@@ -312,6 +333,7 @@ class Era5DownloadService:
         entries = self._catalog_entries(catalog)
         staged_chunks = []
         queued = []
+        deferred = []
         done = 0
         with tempfile.TemporaryDirectory(prefix="era5-") as staging:
             # Submit every missing chunk first so they queue at CDS in parallel
@@ -333,7 +355,15 @@ class Era5DownloadService:
                 else:
                     stage = f"Chunk {n + 1}/{total}: submitting to CDS…"
                 self._set_progress(key, stage=stage)
-                self._ensure_chunk_request(piece)
+                try:
+                    self._ensure_chunk_request(piece)
+                except Exception as exc:
+                    if not _is_queue_limit_error(exc):
+                        raise
+                    # CDS refuses more queued requests than its dataset limit
+                    # allows; retry once the other chunks have freed their slot.
+                    deferred.append((n, piece))
+                    continue
                 queued.append((n, piece))
             for n, piece in queued:
                 if cancel.is_set():
@@ -341,6 +371,23 @@ class Era5DownloadService:
                 self._set_progress(
                     key, stage=f"Chunk {n + 1}/{total}: waiting for CDS results…"
                 )
+                staged_chunks.append(
+                    self._stage_chunk(staging, n, piece, cancel, retry)
+                )
+                done += 1
+                self._set_progress(
+                    key,
+                    done=done,
+                    stage=f"Chunk {n + 1}/{total}: downloaded and validated",
+                )
+            for n, piece in deferred:
+                if cancel.is_set():
+                    raise Era5Error("ERA5 download canceled")
+                self._set_progress(
+                    key,
+                    stage=f"Chunk {n + 1}/{total}: waiting for a CDS queue slot…",
+                )
+                self._submit_with_backoff(piece, cancel)
                 staged_chunks.append(
                     self._stage_chunk(staging, n, piece, cancel, retry)
                 )
@@ -387,9 +434,7 @@ class Era5DownloadService:
                 end = end.replace(tzinfo=timezone.utc)
             if start > piece.start or end < piece.end:
                 continue
-            if len(area) != len(piece.area) or not all(
-                abs(a - b) <= 1e-6 for a, b in zip(area, piece.area)
-            ):
+            if not _areas_close(area, piece.area):
                 continue
             if artifact.is_file():
                 return True
@@ -403,7 +448,7 @@ class Era5DownloadService:
         return (
             start.astimezone(timezone.utc).isoformat(),
             end.astimezone(timezone.utc).isoformat(),
-            tuple(round(float(value), 6) for value in area),
+            tuple(round(float(value), 2) for value in area),
         )
 
     def _load_pending(self):
@@ -428,17 +473,18 @@ class Era5DownloadService:
                 os.unlink(staged)
 
     def _pending_entry(self, entries, piece):
-        key = self._request_key(piece.start, piece.end, piece.area)
         for entry in entries:
             try:
-                entry_key = self._request_key(
-                    datetime.fromisoformat(entry["start"]),
-                    datetime.fromisoformat(entry["end"]),
-                    entry["area"],
-                )
+                start = datetime.fromisoformat(entry["start"])
+                end = datetime.fromisoformat(entry["end"])
+                area = tuple(float(value) for value in entry["area"])
             except (KeyError, TypeError, ValueError):
                 continue
-            if entry_key == key:
+            if (
+                start == piece.start
+                and end == piece.end
+                and _areas_close(area, piece.area)
+            ):
                 return entry
         return None
 
@@ -473,10 +519,50 @@ class Era5DownloadService:
                 self._save_pending(kept)
 
     def pending_requests(self):
-        return self._load_pending()
+        entries = self._load_pending()
+        catalog = self._catalog_entries(Path(self.store.root) / "era5-history.json")
+        kept = self._prune_pending(entries, catalog)
+        if len(kept) != len(entries):
+            path = self._pending_path()
+            with _catalog_lock(path):
+                entries = self._load_pending()
+                kept = self._prune_pending(entries, catalog)
+                if len(kept) != len(entries):
+                    self._save_pending(kept)
+        return kept
+
+    def _prune_pending(self, entries, catalog):
+        """Keep only outstanding, unique requests.
+
+        Entries whose chunk is already in the catalog are stale bookkeeping
+        from a run that failed before it could forget them, and entries that
+        describe the same chunk (same times, same ERA5 grid cells) are
+        duplicates from a restart. Keeping the newest duplicate lets one
+        superseding request replace a stuck one.
+        """
+        newest = {}
+        for entry in entries:
+            try:
+                piece = Era5Request(
+                    datetime.fromisoformat(entry["start"]),
+                    datetime.fromisoformat(entry["end"]),
+                    tuple(float(value) for value in entry["area"]),
+                    {},
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            if self._catalog_covers(catalog, piece):
+                continue
+            key = self._request_key(piece.start, piece.end, piece.area)
+            prior = newest.get(key)
+            if prior is None or str(entry.get("created", "")) > str(
+                prior.get("created", "")
+            ):
+                newest[key] = entry
+        return list(newest.values())
 
     def pending_count(self):
-        return len(self._load_pending())
+        return len(self.pending_requests())
 
     def resume_active(self):
         self._resume_threads = [
@@ -489,7 +575,7 @@ class Era5DownloadService:
         started = 0
         root = Path(self.store.root)
         catalog = self._catalog_entries(root / "era5-history.json")
-        for entry in self._load_pending():
+        for entry in self.pending_requests():
             try:
                 start = datetime.fromisoformat(entry["start"])
                 end = datetime.fromisoformat(entry["end"])
@@ -524,14 +610,9 @@ class Era5DownloadService:
             inner = getattr(self.client_factory(), "client", None)
             if inner is None or not hasattr(inner, "get_remote"):
                 return
-            remote = inner.get_remote(entry["request_id"])
-            status = remote.status
-            if status in ("failed", "rejected", "dismissed", "deleted"):
-                self._forget_pending(piece)
-                raise Era5Error(f"ERA5 CDS request {entry['request_id']} was {status}")
             with tempfile.TemporaryDirectory(prefix="era5-") as staging:
                 path = Path(staging) / "resume.grib"
-                remote.download(str(path))
+                self._retrieve_chunk(piece, path, retry=True)
                 if self.validator is None:
                     raise Era5Error(
                         "No GRIB validator configured; refusing to import "
@@ -620,17 +701,79 @@ class Era5DownloadService:
             or not hasattr(inner, "get_remote")
         ):
             return None
-        entry = self._pending_entry(self._load_pending(), piece)
-        if entry is not None and entry.get("request_id"):
-            try:
-                remote = inner.get_remote(str(entry["request_id"]))
-                remote.status
-                return str(entry["request_id"])
-            except Exception:
-                self._forget_pending(piece)
+        request_id = self._live_request_id(inner, piece)
+        if request_id is not None:
+            return request_id
         remote = inner.submit(DATASET, piece.request)
         self._remember_pending(piece, remote.request_id)
         return str(remote.request_id)
+
+    def _live_request_id(self, inner, piece):
+        """Return the queued request for this chunk, discarding dead ones.
+
+        A request CDS accepted and then never touched again is stuck in the
+        dataset queue; deleting it frees the queue slot so the chunk can be
+        resubmitted instead of polling it forever.
+        """
+        entry = self._pending_entry(self._load_pending(), piece)
+        if entry is None or not entry.get("request_id"):
+            return None
+        request_id = str(entry["request_id"])
+        try:
+            remote = inner.get_remote(request_id)
+            status = remote.status
+        except Exception:
+            self._forget_pending(piece)
+            return None
+        if self._remote_is_stale(remote):
+            self._delete_request(inner, request_id)
+            self._forget_pending(piece)
+            return None
+        if status in ("failed", "rejected", "dismissed", "deleted"):
+            self._forget_pending(piece)
+            return None
+        return request_id
+
+    @staticmethod
+    def _remote_is_stale(remote):
+        if getattr(remote, "status", None) != "accepted":
+            return False
+        created = getattr(remote, "created_at", None)
+        updated = getattr(remote, "updated_at", None)
+        if not isinstance(created, datetime):
+            return False
+        if isinstance(updated, datetime) and updated != created:
+            return False
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) - created > STALE_ACCEPTED
+
+    @staticmethod
+    def _delete_request(inner, request_id):
+        delete = getattr(inner, "delete", None)
+        if not callable(delete):
+            return
+        try:
+            delete(request_id)
+        except Exception:
+            pass
+
+    def _submit_with_backoff(self, piece, cancel):
+        """Wait for a CDS queue slot instead of failing the whole download."""
+        for attempt in range(QUEUE_RETRY_ATTEMPTS):
+            if cancel.is_set():
+                raise Era5Error("ERA5 download canceled")
+            try:
+                self._ensure_chunk_request(piece)
+                return
+            except Exception as exc:
+                if (
+                    not _is_queue_limit_error(exc)
+                    or attempt + 1 == QUEUE_RETRY_ATTEMPTS
+                ):
+                    raise
+            if cancel.wait(QUEUE_RETRY_SECONDS):
+                raise Era5Error("ERA5 download canceled")
 
     def _retrieve_chunk(self, piece, path, retry):
         client = self.client_factory()
@@ -643,15 +786,10 @@ class Era5DownloadService:
             # Legacy / test clients expose retrieve() directly.
             client.retrieve(DATASET, piece.request, str(path))
             return
-        entry = self._pending_entry(self._load_pending(), piece)
         remote = None
-        if entry is not None and entry.get("request_id"):
-            try:
-                remote = inner.get_remote(str(entry["request_id"]))
-                remote.status
-            except Exception:
-                self._forget_pending(piece)
-                remote = None
+        request_id = self._live_request_id(inner, piece)
+        if request_id is not None:
+            remote = inner.get_remote(request_id)
         if remote is None:
             remote = inner.submit(DATASET, piece.request)
             self._remember_pending(piece, remote.request_id)

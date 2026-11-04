@@ -414,6 +414,24 @@ class Era5DownloadTab(QWidget):
         except (TypeError, ValueError):
             return str(area)
 
+    @staticmethod
+    def _queued_age(created):
+        if not created:
+            return ""
+        try:
+            then = datetime.fromisoformat(str(created))
+        except ValueError:
+            return ""
+        if then.tzinfo is None:
+            then = then.replace(tzinfo=timezone.utc)
+        minutes = int((datetime.now(timezone.utc) - then).total_seconds() // 60)
+        if minutes < 1:
+            return "just now"
+        if minutes < 60:
+            return f"{minutes} min"
+        hours, remaining = divmod(minutes, 60)
+        return f"{hours} h {remaining} min" if remaining else f"{hours} h"
+
     def refresh_catalog(self):
         path = self.service.store.root / "era5-history.json"
         try:
@@ -453,6 +471,7 @@ class Era5DownloadTab(QWidget):
                     "variables": list(self._VARIABLE_LABELS),
                     "artifact": "",
                     "request_id": str(entry.get("request_id", "")),
+                    "created": str(entry.get("created", "")),
                 }
             )
         rows.sort(key=lambda row: str(row.get("start") or ""))
@@ -465,6 +484,9 @@ class Era5DownloadTab(QWidget):
                 artifact = str(row["artifact"]).rsplit("/", 1)[-1][:12]
             else:
                 status = "Queued at CDS"
+                age = self._queued_age(row.get("created"))
+                if age:
+                    status = f"Queued at CDS · {age}"
                 artifact = "—"
             values = (
                 self._coverage_label(row["start"], row["end"]),
