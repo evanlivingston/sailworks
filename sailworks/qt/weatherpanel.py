@@ -56,6 +56,8 @@ class ForecastModelSelector(QComboBox):
                 self.addItem(label, data)
             key = (active.tranche.tranche_id, active.entry.entry_id)
             index = self.findData(key)
+            if index < 0:
+                index = self.findText(display_model_name(active.entry.model_id))
             if index >= 0:
                 self.setCurrentIndex(index)
             elif choices:
@@ -67,10 +69,13 @@ class ForecastModelSelector(QComboBox):
 
     @staticmethod
     def _choices(analysis):
-        """Every published wind model, not just the ones in the active tranche."""
+        """One entry per model, using its newest published run.
+
+        The dropdown chooses a model, not a run: switching runs is the job of
+        a refresh, while selecting here decides which model the session uses.
+        """
         store = analysis.state.store
-        found = []
-        seen = set()
+        newest = {}
         for path in store.manifests.glob("*.json"):
             try:
                 tranche = store.load(path.stem)
@@ -82,21 +87,16 @@ class ForecastModelSelector(QComboBox):
                 capability = MODEL_CAPABILITIES.get(entry.model_id)
                 if capability is not None and not capability.routing_eligible:
                     continue
-                key = (entry.model_id, entry.run_time, entry.member)
-                if key in seen:
-                    continue
-                seen.add(key)
-                run = entry.run_time.astimezone().strftime("%d %b %H:%M")
-                label = f"{display_model_name(entry.model_id)} · {run}"
-                found.append(
-                    (
+                prior = newest.get(entry.model_id)
+                if prior is None or entry.run_time > prior[0]:
+                    newest[entry.model_id] = (
                         entry.run_time,
-                        label,
                         (tranche.tranche_id, entry.entry_id),
                     )
-                )
-        found.sort(key=lambda item: item[0], reverse=True)
-        return [(label, data) for _run, label, data in found]
+        ordered = sorted(newest.items(), key=lambda item: item[1][0], reverse=True)
+        return [
+            (display_model_name(model_id), data) for model_id, (_run, data) in ordered
+        ]
 
     def _select(self, index):
         analysis = self._analysis()

@@ -82,30 +82,40 @@ def inspect_forecasts(entries):
                 metadata.last_forecast,
                 metadata.model_name,
             )
-            if metadata.model_name == "ERA5":
-                times = tuple(
-                    sorted({record.valid for record in source.sampling.records})
+            records = source.sampling.records
+            # Analysis-like sources (ERA5, NBS) carry one reference time per
+            # valid time, so they must become a single forecast spanning all
+            # valid hours instead of one forecast per message.
+            analysis_like = bool(records) and all(
+                abs(record.reference - record.valid) <= 1e-6 for record in records
+            )
+            if analysis_like and len({record.valid for record in records}) > 1:
+                times = tuple(sorted({record.valid for record in records}))
+                reference = min(times)
+                identity = (
+                    reference,
+                    (
+                        ("ecmf", "ERA5", ())
+                        if metadata.model_name == "ERA5"
+                        else ("analysis", metadata.model_name, ())
+                    ),
                 )
-                if times:
-                    reference = min(times)
-                    forecasts.append(
-                        DisplayForecast(
-                            str(path),
-                            metadata.name,
-                            metadata.centre,
-                            metadata.bounds,
-                            datetime.fromtimestamp(reference),
-                            (max(times) - reference) / 3600,
-                            "ERA5",
-                            (reference, ("ecmf", "ERA5", ())),
-                            reference,
-                            max(times),
-                            version,
-                            valid_times=times,
-                        )
+                forecasts.append(
+                    DisplayForecast(
+                        str(path),
+                        metadata.name,
+                        metadata.centre,
+                        metadata.bounds,
+                        datetime.fromtimestamp(reference),
+                        (max(times) - reference) / 3600,
+                        metadata.model_name,
+                        identity,
+                        reference,
+                        max(times),
+                        version,
+                        valid_times=times,
                     )
-                else:
-                    errors.append(f"{metadata.name}: no supported point forecasts")
+                )
                 continue
             groups = {}
             for record in source.sampling.records:
