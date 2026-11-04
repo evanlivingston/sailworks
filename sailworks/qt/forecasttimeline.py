@@ -744,9 +744,35 @@ class ForecastTimeline(QWidget):
             # never reach the current time. Drop it and restore the loaded
             # forecast range first.
             self.clear_bounds_override()
-            self.clock.now()
         except Exception as exc:  # Never let a now crash the app
             logger.warning("ForecastTimeline now error: %s", exc)
+            return
+        try:
+            # The wall clock is frequently outside the downloaded model window
+            # (a stale download, or a first step after the current hour). Seek
+            # to the nearest loaded valid time instead of dispatching an
+            # unreachable instant, which left the display on the old field.
+            self.clock.set_time(datetime.fromtimestamp(self._now_stamp()))
+        except Exception as exc:  # Never let a now crash the app
+            logger.warning("ForecastTimeline now error: %s", exc)
+
+    def _now_stamp(self):
+        """Nearest loaded valid time to the wall clock, clamped to the bounds.
+
+        With no bounds there is nothing to snap to, so the wall clock stands.
+        """
+        now = datetime.now().timestamp()
+        if not self.bounds:
+            return now
+        start, end = self.bounds
+        valid = tuple(
+            stamp
+            for stamp in self.day_strip.valid_times
+            if start - 1 <= stamp <= end + 1
+        )
+        if valid:
+            return min(valid, key=lambda stamp: abs(stamp - now))
+        return max(start, min(end, now))
 
     def select_time(self):
         try:

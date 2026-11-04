@@ -3329,12 +3329,24 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(
             self.controller.time_control.time, start + timedelta(minutes=59, seconds=30)
         )
-        with patch("sailworks.core.timecontrol.datetime.datetime") as clock_datetime:
-            clock_datetime.now.return_value = datetime(2026, 1, 5, 14, 32)
+
+        # "Now" must land inside the loaded model window: the wall clock is
+        # usually outside a downloaded forecast's valid range, so it snaps to
+        # the nearest loaded valid time instead of dispatching an unreachable
+        # instant that left the display on the previous field.
+        class _FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 1, 5, 14, 32)
+
+        with patch("sailworks.qt.forecasttimeline.datetime", _FixedDatetime):
             timeline.now_button.click()
-        self.assertEqual(self.controller.time_control.time, datetime(2026, 1, 5, 14))
-        self.assertIn("outside", timeline.caption.text())
-        self.assertEqual(timeline.slider.value(), timeline.slider.maximum())
+        snapped = self.controller.time_control.time
+        start_bound, end_bound = timeline.bounds
+        self.assertGreaterEqual(snapped.timestamp(), start_bound - 1)
+        self.assertLessEqual(snapped.timestamp(), end_bound + 1)
+        self.assertEqual(timeline.caption.text(), "")
+        self.assertLess(timeline.slider.value(), timeline.slider.maximum())
         timeline.pause_button.click()
         self.assertFalse(timeline.playing)
 

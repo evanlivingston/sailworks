@@ -16,6 +16,48 @@ from sailworks.core.timecontrol import TimeControl
 
 
 class TestForecastTimeline(unittest.TestCase):
+    def _now_stamp(self, bounds, valid_times, now):
+        from sailworks.qt.forecasttimeline import ForecastTimeline
+
+        class _FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now
+
+        timeline = SimpleNamespace(
+            bounds=bounds,
+            day_strip=SimpleNamespace(valid_times=tuple(valid_times)),
+        )
+        with patch("sailworks.qt.forecasttimeline.datetime", _FixedDatetime):
+            return ForecastTimeline._now_stamp(timeline)
+
+    def test_now_snaps_to_the_nearest_loaded_valid_time(self):
+        early = datetime(2026, 1, 5, 13, 0).timestamp()
+        late = datetime(2026, 1, 5, 18, 0).timestamp()
+        stamp = self._now_stamp(
+            (early, late),
+            (early, late),
+            datetime(2026, 1, 5, 14, 32),
+        )
+        # 14:32 is closer to 13:00 than to 18:00, and both are loaded.
+        self.assertEqual(stamp, early)
+
+    def test_now_clamps_into_the_bounds_without_loaded_valid_times(self):
+        start = datetime(2026, 1, 5, 6, 0).timestamp()
+        end = datetime(2026, 1, 5, 12, 0).timestamp()
+        self.assertEqual(
+            self._now_stamp((start, end), (), datetime(2026, 1, 5, 14, 32)),
+            end,
+        )
+        self.assertEqual(
+            self._now_stamp((start, end), (), datetime(2026, 1, 5, 1, 0)),
+            start,
+        )
+
+    def test_now_uses_the_wall_clock_without_bounds(self):
+        now = datetime(2026, 1, 5, 14, 32)
+        self.assertEqual(self._now_stamp(None, (), now), now.timestamp())
+
     def test_bounds_union_only_enabled_metadata_without_opening_forecasts(self):
         start = datetime(2040, 1, 1, tzinfo=timezone.utc)
         grib = SimpleNamespace(
