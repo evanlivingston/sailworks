@@ -79,6 +79,14 @@ class QtPreviewChecks(unittest.TestCase):
     def drain(self):
         self.app.processEvents()
 
+    def wait_for_data(self):
+        deadline = time.monotonic() + 5
+        while self.controller.data.task.busy and time.monotonic() < deadline:
+            self.drain()
+            time.sleep(0.005)
+        self.drain()
+        self.assertFalse(self.controller.data.task.busy, "Timed out waiting for data")
+
     def test_navigation_remove_undo_restores_objects_order_and_selection(self):
         from PySide6.QtCore import QItemSelection, QItemSelectionModel
 
