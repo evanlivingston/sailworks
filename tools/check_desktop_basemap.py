@@ -232,7 +232,6 @@ def application(report, data, output, deadline):
         app.processEvents()
 
 
-
 def interaction_application(report, data, output, deadline):
     """Time input dispatch to GUI adoption, not rendering or presentation."""
     from dataclasses import asdict
@@ -348,7 +347,10 @@ def interaction_application(report, data, output, deadline):
                 elapsed = fired / 1e6 - widget._chart_camera_changed * 1000.0
                 event = {
                     "timestamp_ns": fired,
-                    "elapsed_since_sample_ms": (fired - sample["timestamps_ns"]["input"]) / 1e6,
+                    "elapsed_since_sample_ms": (
+                        fired - sample["timestamps_ns"]["input"]
+                    )
+                    / 1e6,
                     "elapsed_since_camera_change_ms": elapsed,
                     "weather_ready_at_is_none": weather_not_ready,
                     "weather_busy": busy_snapshot,
@@ -369,9 +371,13 @@ def interaction_application(report, data, output, deadline):
                 else:
                     with chart._condition:
                         requests_after = chart.counters["requests"]
-                requested = requests_before is not None and requests_after > requests_before
+                requested = (
+                    requests_before is not None and requests_after > requests_before
+                )
                 event["new_request"] = requested
-                event["weather_busy_checked"] = busy_checked[0] if busy_checked else None
+                event["weather_busy_checked"] = (
+                    busy_checked[0] if busy_checked else None
+                )
                 conditions = []
                 if missing_model_or_camera:
                     conditions.append("no_model_or_camera")
@@ -448,7 +454,9 @@ def interaction_application(report, data, output, deadline):
                 is widget._chart_model._published[2].get("viewport")
                 and widget._chart is not None
                 and widget._chart.property("ready")
-                and widget._chart.property(f"slot{widget._chart_front_slot}Source").toString()
+                and widget._chart.property(
+                    f"slot{widget._chart_front_slot}Source"
+                ).toString()
                 == f"image://chart/{widget._chart_visible_generation}"
             )
 
@@ -486,12 +494,16 @@ def interaction_application(report, data, output, deadline):
         original_compose = model._compose
         original_notify_publish = model._notify_publish
 
-        def compose(camera, cancel):
+        def compose(camera, cancel, preview=False):
             began = time.perf_counter_ns()
             sample = active
             generation = model._active[0] if model._active is not None else None
-            result = original_compose(camera, cancel)
+            result = original_compose(camera, cancel, preview=preview)
             ended = time.perf_counter_ns()
+            if sample is not None and active is sample and generation is not None:
+                sample["timeline"].setdefault(generation, {})[
+                    "composed_preview"
+                ] = preview
             if (
                 sample is not None
                 and active is sample
@@ -644,6 +656,14 @@ def interaction_application(report, data, output, deadline):
                         )
                 result = active.copy()
                 active = None
+                for request_record in result["requests"]:
+                    composition = result["timeline"].get(
+                        request_record["generation"], {}
+                    )
+                    if "composed_preview" in composition:
+                        request_record["composed_preview"] = composition[
+                            "composed_preview"
+                        ]
                 del result["sources"]
                 del result["evidence"]
                 del result["timeline"]
@@ -677,26 +697,29 @@ def interaction_application(report, data, output, deadline):
             app.processEvents()
 
 
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshot", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument(
-        "--chart-publication", action="store_true",
+        "--chart-publication",
+        action="store_true",
         help="measure camera dispatch to verified chart adoption (diagnostic only)",
     )
     args = parser.parse_args()
     if args.chart_publication:
         import tempfile
 
-        approved = Path("/private/var/folders/w7/hb5wv1x1715821rqd1_3xf4r0000gn/T/opencode").resolve()
+        approved = Path(
+            "/private/var/folders/w7/hb5wv1x1715821rqd1_3xf4r0000gn/T/opencode"
+        ).resolve()
         output = args.output.resolve()
         if not output.is_relative_to(approved) or output == approved:
             parser.error(f"--chart-publication output must be inside {approved}")
         tempfile.tempdir = str(approved)
     report = run(
-        args.snapshot, args.output,
+        args.snapshot,
+        args.output,
         application=interaction_application if args.chart_publication else application,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
