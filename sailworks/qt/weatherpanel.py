@@ -228,8 +228,6 @@ class WeatherPanel(QWidget):
         # Wave direction arrows reuse the wind barbs' thinning modes through
         # their own setting, so the two glyph layers thin independently and
         # toggling waves never restages the wind barbs.
-        from sailworks.rendering.windpainter import BARB_DENSITIES
-
         self.wave_density = QComboBox()
         for key, label, _spacing in BARB_DENSITIES:
             self.wave_density.addItem(label, key)
