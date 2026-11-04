@@ -59,7 +59,8 @@ Item {
     }
     readonly property string shaderError: {
         let revision = batchRevision
-        let batches = frontBuffer === 0 ? buffer0 : buffer1
+        let active = frontBuffer >= 0 ? frontBuffer : pendingBuffer
+        let batches = active === 0 ? buffer0 : buffer1
         for (var i = 0; i < batches.count; ++i) {
             var delegate = batches.itemAt(i)
             if (delegate && delegate.shaderError.length)
@@ -70,7 +71,11 @@ Item {
     readonly property string batchDiagnostics: {
         let revision = batchRevision
         let details = []
-        let batches = pendingBuffer === 0 ? buffer0 : buffer1
+        // Report the buffer that is actually on screen: with no pending swap
+        // the pending buffer is empty and its count says nothing about what
+        // the layer is drawing.
+        let active = frontBuffer >= 0 ? frontBuffer : pendingBuffer
+        let batches = active === 0 ? buffer0 : buffer1
         for (var i = 0; i < batches.count; ++i) {
             var delegate = batches.itemAt(i)
             if (!delegate) {
