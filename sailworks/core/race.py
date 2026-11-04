@@ -1357,7 +1357,7 @@ def _merge_setup_teams(payload: dict, setup: dict) -> dict:
         if match is None:
             match = by_name.get(str(enriched.get("name") or ""))
         if match is not None:
-            for field in (
+            for key in (
                 "id",
                 "markerText",
                 "sail",
@@ -1376,11 +1376,11 @@ def _merge_setup_teams(payload: dict, setup: dict) -> dict:
                 "notes",
                 "tags",
             ):
-                if enriched.get(field) in (None, "") and match.get(field) not in (
+                if enriched.get(key) in (None, "") and match.get(key) not in (
                     None,
                     "",
                 ):
-                    enriched[field] = match[field]
+                    enriched[key] = match[key]
             if enriched.get("marker") is None and match.get("markerText") is not None:
                 enriched["marker"] = match["markerText"]
         merged_teams.append(enriched)

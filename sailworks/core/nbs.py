@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
 import threading
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
