@@ -14,6 +14,8 @@ GNU General Public License for more details.
 For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
+import math
+
 import cairo
 import numpy as np
 
@@ -88,6 +90,36 @@ class SimpleChartDrawer(VectorChartDrawer):
         xs, ys = gpsmap.convert_geographic_to_screen_batch(lats, lons)
         return xs.tolist(), ys.tolist()
 
+    @staticmethod
+    def _simplify_polygon(gpsmap, cr, geom):
+        if not all(hasattr(gpsmap, name) for name in ("_zoom", "TILE_SIZE", "MAX_LAT")):
+            return geom
+        if not geom.GetGeometryCount() or any(
+            geom.GetGeometryRef(i).GetPointCount() <= 8
+            for i in range(geom.GetGeometryCount())
+        ):
+            return geom
+        _, _, south, north = geom.GetEnvelope()
+        latitude = min(gpsmap.MAX_LAT, max(abs(south), abs(north)))
+        factor = max(cr.get_target().get_device_scale())
+        try:
+            # 0.3 device pixels at the most distorted latitude keeps the
+            # topology-preserving approximation below a visible pixel.
+            tolerance = (
+                0.3
+                * 360.0
+                * math.cos(math.radians(latitude))
+                / (2.0**gpsmap._zoom * gpsmap.TILE_SIZE * factor)
+            )
+        except (OverflowError, ZeroDivisionError):
+            return geom
+        if not math.isfinite(tolerance) or tolerance <= 0:
+            return geom
+        simplified = geom.SimplifyPreserveTopology(tolerance)
+        if simplified is None or simplified.IsEmpty() or not simplified.IsValid():
+            return geom
+        return simplified
+
     def feature_render(
         self, gpsmap, cr, geom, feat, layer, stroke_style, fill_style, contourn_style
     ):
@@ -106,6 +138,8 @@ class SimpleChartDrawer(VectorChartDrawer):
                     contourn_style,
                 )
             return
+        if geom.GetGeometryName() == "POLYGON":
+            geom = self._simplify_polygon(gpsmap, cr, geom)
         cr.new_path()
         for i in range(geom.GetGeometryCount()):
             ring = geom.GetGeometryRef(i)
