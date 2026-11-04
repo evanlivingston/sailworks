@@ -6,7 +6,7 @@ import math
 from typing import cast
 
 import weatherrouting
-from PySide6.QtCore import QDateTime, Signal
+from PySide6.QtCore import QDateTime, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -212,13 +212,52 @@ class RoutingPanel(QWidget):
         self.parameters_box = QWidget()
         layout = QVBoxLayout(self.parameters_box)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(section_label("Router Parameters"))
         self.parameter_form = QFormLayout()
         self.parameter_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
         layout.addLayout(self.parameter_form)
-        form.addRow(self.parameters_box)
+
+        self.parameters_header = QToolButton()
+        self.parameters_header.setText("Advanced")
+        self.parameters_header.setCheckable(True)
+        self.parameters_header.setChecked(False)
+        self.parameters_header.setAutoRaise(True)
+        self.parameters_header.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.parameters_header.setArrowType(Qt.ArrowType.RightArrow)
+        self.parameters_header.toggled.connect(self._toggle_parameters)
+
+        self.parameters_section = QWidget()
+        section_layout = QVBoxLayout(self.parameters_section)
+        section_layout.setContentsMargins(0, 0, 0, 0)
+        section_layout.setSpacing(4)
+        section_layout.addWidget(self.parameters_header)
+        section_layout.addWidget(self.parameters_box)
+        self.parameters_box.setVisible(False)
+        form.addRow(self.parameters_section)
+
         self.algorithm.currentIndexChanged.connect(self._algorithm_changed)
         self._algorithm_changed()
+
+    def _toggle_parameters(self, expanded):
+        self.parameters_header.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
+        self.parameters_box.setVisible(expanded)
+
+    @staticmethod
+    def _info_button(text):
+        button = QToolButton()
+        button.setText("i")
+        button.setAutoRaise(True)
+        button.setToolTip(text)
+        button.setFixedSize(16, 16)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.setStyleSheet(
+            "QToolButton { border: 1px solid #777; border-radius: 8px;"
+            " font-size: 9px; padding: 0; }"
+        )
+        return button
 
     def _read_parameters(self):
         return {
@@ -245,9 +284,18 @@ class RoutingPanel(QWidget):
             widget.setAccessibleName(param.name)
             label = QLabel(qt_text(param.name))
             label.setWordWrap(True)
-            self.parameter_form.addRow(label, widget)
+            label_row = QWidget()
+            label_layout = QHBoxLayout(label_row)
+            label_layout.setContentsMargins(0, 0, 0, 0)
+            label_layout.setSpacing(4)
+            label_layout.addWidget(label, 1)
+            label_layout.addWidget(self._info_button(param.tooltip or param.name))
+            self.parameter_form.addRow(label_row, widget)
             self.parameter_widgets[key] = widget
-        self.parameters_box.setVisible(bool(self.parameter_widgets))
+        self.parameters_section.setVisible(bool(self.parameter_widgets))
+        if not self.parameter_widgets:
+            self.parameters_header.setChecked(False)
+            self.parameters_box.setVisible(False)
         self.options_changed.emit()
 
     def _parameter_widget(self, param, value):
