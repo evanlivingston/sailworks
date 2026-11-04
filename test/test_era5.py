@@ -318,6 +318,15 @@ def test_successful_era5_import_publishes_catalog_and_artifact(tmp_path):
     assert hashlib.sha256(artifact_path.read_bytes()).hexdigest() == digest
     assert artifact_path.stat().st_size == size
 
+    class NoClient:
+        def retrieve(self, *_args):
+            raise AssertionError("covered ERA5 data must be reused")
+
+    reuse = Era5DownloadService(store, client_factory=NoClient, validator=validate)
+    reuse._run(planned, threading.Event(), False)
+    assert reuse.progress_for(planned)["stage"] == "Already available"
+    assert len(json.loads(catalog.read_text())) == 1
+
     active_after = store.active_path.read_bytes()
     assert active_after == active_before
     assert active_after == sentinel

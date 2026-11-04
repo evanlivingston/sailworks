@@ -299,27 +299,75 @@ class Era5DownloadService:
         self._set_progress(
             key, done=0, total=total, stage=f"Planning {total} CDS chunk(s)…"
         )
+        entries = self._catalog_entries(catalog)
         staged_chunks = []
+        done = 0
         with tempfile.TemporaryDirectory(prefix="era5-") as staging:
             for n, piece in enumerate(pieces):
                 if cancel.is_set():
                     raise Era5Error("ERA5 download canceled")
+                if self._catalog_covers(entries, piece):
+                    done += 1
+                    self._set_progress(
+                        key,
+                        done=done,
+                        stage=f"Chunk {n + 1}/{total}: already downloaded",
+                    )
+                    continue
                 self._set_progress(
                     key, stage=f"Chunk {n + 1}/{total}: requesting from CDS…"
                 )
                 staged_chunks.append(
                     self._stage_chunk(staging, n, piece, cancel, retry)
                 )
+                done += 1
                 self._set_progress(
                     key,
-                    done=n + 1,
+                    done=done,
                     stage=f"Chunk {n + 1}/{total}: downloaded and validated",
                 )
             if cancel.is_set():
                 raise Era5Error("ERA5 download canceled")
+            if not staged_chunks:
+                self._set_progress(key, done=total, stage="Already available")
+                return
             self._set_progress(key, stage="Publishing ERA5 history…")
             self._publish_chunks(root, catalog, staged_chunks, cancel)
         self._set_progress(key, done=total, stage="Complete")
+
+    def _catalog_entries(self, catalog):
+        try:
+            if not catalog.exists():
+                return []
+            entries = json.loads(catalog.read_text())
+        except (OSError, ValueError):
+            return []
+        return entries if isinstance(entries, list) else []
+
+    def _catalog_covers(self, entries, piece):
+        """True when an existing artifact already covers this chunk."""
+        root = Path(self.store.root)
+        for entry in entries:
+            try:
+                start = datetime.fromisoformat(str(entry["start"]))
+                end = datetime.fromisoformat(str(entry["end"]))
+                area = tuple(float(value) for value in entry["area"])
+                artifact = root / str(entry["artifact"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=timezone.utc)
+            if end.tzinfo is None:
+                end = end.replace(tzinfo=timezone.utc)
+            if start > piece.start or end < piece.end:
+                continue
+            if len(area) != len(piece.area) or not all(
+                abs(a - b) <= 1e-6 for a, b in zip(area, piece.area)
+            ):
+                continue
+            if artifact.is_file():
+                return True
+        return False
 
     def _publish_chunks(self, root, catalog, staged_chunks, cancel):
         registered = []

@@ -300,7 +300,14 @@ class Era5DownloadTab(QWidget):
             return
         key = (plan.start, plan.end, plan.area)
         error = self.service.errors.pop(key, None)
-        self.status.setText(error or "ERA5 historical request complete.")
+        info = progress_for(plan) if progress_for else None
+        stage = (info or {}).get("stage")
+        if error:
+            self.status.setText(error)
+        elif stage == "Already available":
+            self.status.setText("ERA5 history already available.")
+        else:
+            self.status.setText("ERA5 historical request complete.")
         self.job = None
         if error:
             self.progress.hide()
