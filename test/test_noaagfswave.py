@@ -1,11 +1,15 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from sailworks.core.gribsources.noaagfswave import (
     GFSWAVE_HOURS,
+    GFSWAVE_ROOT,
+    GFSWAVE_S3_ROOT,
     NOAAGFSWaveSource,
+    RateLimitError,
 )
 from sailworks.core.gribsources.options import DownloadOptions
 
@@ -87,6 +91,7 @@ def test_gfswave_schedule_and_pinned_identifiers_are_strict():
 
 def test_gfswave_catalog_pins_complete_runs_and_selected_wave_fields(monkeypatch):
     source = NOAAGFSWaveSource(session=object())
+    monkeypatch.setattr(source, "_s3_runs", lambda *_args: [])
     root = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/"
     date_url = root + "gfs.20261023/"
     run_url = date_url + "12/wave/gridded/"
@@ -155,6 +160,7 @@ def _catalog_with_status(monkeypatch, source, status, *, level):
             )
         raise AssertionError(url)
 
+    monkeypatch.setattr(source, "_s3_runs", lambda *_args: [])
     monkeypatch.setattr(source, "_catalog_links", catalog)
     monkeypatch.setattr(source, "_selected_index", lambda *_args: ((100, 25),))
 
@@ -217,3 +223,213 @@ def test_gfswave_download_writes_selected_messages_atomically(tmp_path, monkeypa
     assert result.is_file()
     assert result.stat().st_size == 100
     assert progress == [25, 50, 75, 100]
+
+
+def _s3_candidates(*entries):
+    return lambda: iter(entries)
+
+
+def test_gfswave_s3_catalog_probes_newest_complete_run_without_listings(monkeypatch):
+    source = NOAAGFSWaveSource(session=object())
+    monkeypatch.setattr(
+        source,
+        "_candidate_runs",
+        _s3_candidates(
+            ("20261104", "12", datetime(2026, 11, 4, 12, tzinfo=timezone.utc)),
+            ("20261104", "06", datetime(2026, 11, 4, 6, tzinfo=timezone.utc)),
+        ),
+    )
+
+    def catalog(url):
+        raise AssertionError(f"directory listing requested: {url}")
+
+    probed = []
+
+    def selected(url, date, cycle, hour, fields):
+        probed.append((url, date, cycle, hour))
+        return ((100, 25),)
+
+    monkeypatch.setattr(source, "_catalog_links", catalog)
+    monkeypatch.setattr(source, "_selected_index", selected)
+
+    rows = source.get_download_list(DownloadOptions(3, 3, ("wave_height",), (0, 3)))
+
+    assert len(rows) == 2
+    payload = json.loads(rows[0][4])
+    assert payload["date"] == "20261104"
+    assert payload["cycle"] == "12"
+    assert all(url.startswith(GFSWAVE_S3_ROOT) for url, *_ in probed)
+    assert [hour for _, _, _, hour in probed[:2]] == [0, 3]
+
+
+def test_gfswave_s3_catalog_skips_runs_with_a_missing_hour(monkeypatch):
+    source = NOAAGFSWaveSource(session=object())
+    monkeypatch.setattr(
+        source,
+        "_candidate_runs",
+        _s3_candidates(
+            ("20261104", "18", datetime(2026, 11, 4, 18, tzinfo=timezone.utc)),
+            ("20261104", "12", datetime(2026, 11, 4, 12, tzinfo=timezone.utc)),
+        ),
+    )
+    probed = []
+
+    def selected(url, date, cycle, hour, fields):
+        probed.append((cycle, hour))
+        return None if cycle == "18" and hour == 3 else ((100, 25),)
+
+    monkeypatch.setattr(source, "_selected_index", selected)
+
+    rows = source.get_download_list(DownloadOptions(3, 3, ("wave_height",), (0, 3)))
+
+    assert len(rows) == 1
+    assert json.loads(rows[0][4])["cycle"] == "12"
+    assert probed[:2] == [("18", 0), ("18", 3)]
+    assert ("18", 6) not in probed
+
+
+def test_gfswave_s3_catalog_does_not_probe_future_cycles():
+    now = datetime(2026, 11, 4, 13, 30, tzinfo=timezone.utc)
+
+    candidates = list(NOAAGFSWaveSource._candidate_runs(now))
+
+    assert [(date, cycle) for date, cycle, _ in candidates[:2]] == [
+        ("20261104", "12"),
+        ("20261104", "06"),
+    ]
+    assert all(run_time <= now for _, _, run_time in candidates)
+    assert ("20261104", "18") not in {(date, cycle) for date, cycle, _ in candidates}
+    assert len({date for date, _, _ in candidates}) == 3
+
+
+def test_gfswave_s3_catalog_skips_unpublished_run(monkeypatch):
+    from types import SimpleNamespace
+
+    from sailworks.core.gribsources.ranged import HTTPStatusError
+
+    source = NOAAGFSWaveSource(session=object())
+    monkeypatch.setattr(
+        source,
+        "_candidate_runs",
+        _s3_candidates(
+            ("20261104", "18", datetime(2026, 11, 4, 18, tzinfo=timezone.utc)),
+            ("20261104", "12", datetime(2026, 11, 4, 12, tzinfo=timezone.utc)),
+        ),
+    )
+    probed = []
+
+    def selected(url, date, cycle, hour, fields):
+        probed.append((cycle, hour))
+        if cycle == "18":
+            raise HTTPStatusError(200, SimpleNamespace(status_code=403), url)
+        return ((100, 25),)
+
+    monkeypatch.setattr(source, "_selected_index", selected)
+
+    rows = source.get_download_list(DownloadOptions(3, 3, ("wave_height",), (0, 3)))
+
+    assert len(rows) == 1
+    assert json.loads(rows[0][4])["cycle"] == "12"
+    assert probed[0] == ("18", 0)
+
+
+def test_gfswave_catalog_falls_back_to_nomads_when_s3_is_empty(monkeypatch):
+    source = NOAAGFSWaveSource(session=object())
+    date_url = GFSWAVE_ROOT + "gfs.20261023/"
+    run_url = date_url + "12/wave/gridded/"
+    filenames = {source._filename("12", hour) for hour in (0, 3)}
+    monkeypatch.setattr(
+        source,
+        "_candidate_runs",
+        _s3_candidates(
+            ("20261104", "12", datetime(2026, 11, 4, 12, tzinfo=timezone.utc)),
+        ),
+    )
+
+    def catalog(url):
+        if url == GFSWAVE_ROOT:
+            return (date_url,)
+        if url == date_url:
+            return (date_url + "12/",)
+        if url == run_url:
+            return tuple(
+                run_url + name
+                for name in filenames | {name + ".idx" for name in filenames}
+            )
+        raise AssertionError(url)
+
+    def selected(url, date, cycle, hour, fields):
+        if url.startswith(GFSWAVE_S3_ROOT):
+            return None
+        return ((100, 25),)
+
+    monkeypatch.setattr(source, "_catalog_links", catalog)
+    monkeypatch.setattr(source, "_selected_index", selected)
+
+    rows = source.get_download_list(DownloadOptions(3, 3, ("wave_height",), (0, 3)))
+
+    assert len(rows) == 1
+    payload = json.loads(rows[0][4])
+    assert payload["date"] == "20261023"
+    assert payload["cycle"] == "12"
+
+
+class _Page:
+    def __init__(self, status, body):
+        self.status_code = status
+        self.headers = {}
+        self._body = body
+
+    def iter_content(self, chunk_size=1024):
+        yield self._body
+
+    def close(self):
+        pass
+
+
+class _Session:
+    def __init__(self, page):
+        self._page = page
+
+    def get(self, url, **kwargs):
+        return self._page
+
+
+def _raise_status(monkeypatch, status):
+    from types import SimpleNamespace
+
+    from sailworks.core.gribsources.ranged import HTTPStatusError
+
+    def fetch(session, url, **kwargs):
+        raise HTTPStatusError(200, SimpleNamespace(status_code=status), url)
+
+    monkeypatch.setattr("sailworks.core.gribsources.noaagfswave.fetch_text", fetch)
+
+
+def test_gfswave_nomads_rate_limit_is_reported_as_rate_limit(monkeypatch):
+    page = _Page(302, b"<html><body>Over Rate Limit</body></html>")
+    source = NOAAGFSWaveSource(session=_Session(page))
+    monkeypatch.setattr(source, "_s3_runs", lambda *_args: [])
+    _raise_status(monkeypatch, 302)
+
+    with pytest.raises(RateLimitError) as raised:
+        source.get_download_list(DownloadOptions(3, 3, ("wave_height",), (0, 3)))
+
+    assert "NOMADS rate limit reached" in str(raised.value)
+    assert "HTTP 302" not in str(raised.value)
+
+
+def test_gfswave_nomads_redirect_without_rate_limit_marker_stays_a_status_error(
+    monkeypatch,
+):
+    from sailworks.core.gribsources.ranged import HTTPStatusError
+
+    page = _Page(302, b"<html><body>Moved</body></html>")
+    source = NOAAGFSWaveSource(session=_Session(page))
+    monkeypatch.setattr(source, "_s3_runs", lambda *_args: [])
+    _raise_status(monkeypatch, 302)
+
+    with pytest.raises(HTTPStatusError) as raised:
+        source.get_download_list(DownloadOptions(3, 3, ("wave_height",), (0, 3)))
+
+    assert raised.value.status_code == 302

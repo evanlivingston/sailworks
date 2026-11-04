@@ -1,10 +1,11 @@
 """NOAA GFS-Wave global 0.25-degree wave forecast GRIB2 source."""
 
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -19,16 +20,28 @@ from .gfswaveindex import ELEMENTS_BY_FIELD, parse_index
 from .options import DownloadOptions, custom_rows
 from .ranged import HTTPStatusError, append_message, fetch_text, message_length
 
+# The AWS Open Data mirror has no directory listings, so runs are discovered by
+# probing deterministic object names. NOMADS stays as the catalogue fallback.
+GFSWAVE_S3_ROOT = "https://noaa-gfs-bdp-pds.s3.amazonaws.com/"
 GFSWAVE_ROOT = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/"
 GFSWAVE_NAME = "NOAA GFS-Wave"
 GFSWAVE_FIELDS = tuple(ELEMENTS_BY_FIELD)
 GFSWAVE_HOURS = tuple(range(121)) + tuple(range(123, 385, 3))
+GFSWAVE_CYCLES = ("18", "12", "06", "00")
 MAX_INDEX_BYTES = 4 * 1024 * 1024
 MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 MAX_CATALOG_DAYS = 3
 MAX_COMPLETE_RUNS = 4
+RATE_LIMIT_BYTES = 8 * 1024
+_RATE_LIMIT_TEXT = b"Over Rate Limit"
 _DATE_DIR = re.compile(r"^gfs\.(\d{8})/?$")
 _CYCLE_DIR = re.compile(r"^(?:00|06|12|18)/?$")
+
+LOGGER = logging.getLogger(__name__)
+
+
+class RateLimitError(RuntimeError):
+    """The catalogue host is throttling this client."""
 
 
 class _Links(HTMLParser):
@@ -62,6 +75,32 @@ def _run_unavailable(exc):
     # NOMADS answers 403, not 404, for cycle directories that are not published
     # yet (verified against the live catalogue); both mean "try the next run".
     return exc.status_code in (403, 404)
+
+
+def _is_nomads(url):
+    return url.startswith(GFSWAVE_ROOT)
+
+
+def _rate_limit_page(session, url):
+    """Report whether a redirect/429 body is the NOMADS rate-limit page."""
+    response = session.get(
+        url,
+        headers={"Accept-Encoding": "identity"},
+        stream=True,
+        timeout=(10, 60),
+        allow_redirects=False,
+    )
+    try:
+        body = bytearray()
+        for chunk in response.iter_content(chunk_size=4096):
+            body.extend(chunk)
+            if len(body) >= RATE_LIMIT_BYTES:
+                break
+        return _RATE_LIMIT_TEXT in bytes(body[:RATE_LIMIT_BYTES])
+    finally:
+        close = getattr(response, "close", None)
+        if close is not None:
+            close()
 
 
 class NOAAGFSWaveSource(GribSource):
@@ -99,12 +138,30 @@ class NOAAGFSWaveSource(GribSource):
     def bounds(self, value):
         self._bounds = value
 
+    def _catalog_text(self, url):
+        try:
+            return fetch_text(self.session, url, max_bytes=MAX_INDEX_BYTES)
+        except HTTPStatusError as exc:
+            if (
+                exc.status_code in (302, 429)
+                and _is_nomads(url)
+                and _rate_limit_page(self.session, url)
+            ):
+                raise RateLimitError(
+                    f"NOMADS rate limit reached; try again later ({url})"
+                ) from exc
+            raise
+
     def _catalog_links(self, url):
-        return _links(fetch_text(self.session, url, max_bytes=MAX_INDEX_BYTES), url)
+        return _links(self._catalog_text(url), url)
 
     @staticmethod
     def _run_url(date, cycle):
         return urljoin(GFSWAVE_ROOT, f"gfs.{date}/{cycle}/wave/gridded/")
+
+    @staticmethod
+    def _s3_run_url(date, cycle):
+        return urljoin(GFSWAVE_S3_ROOT, f"gfs.{date}/{cycle}/wave/gridded/")
 
     @staticmethod
     def _filename(cycle, hour):
@@ -140,11 +197,7 @@ class NOAAGFSWaveSource(GribSource):
 
     def _selected_index(self, run_url, date, cycle, hour, fields):
         filename = self._filename(cycle, hour)
-        text = fetch_text(
-            self.session,
-            urljoin(run_url, filename + ".idx"),
-            max_bytes=MAX_INDEX_BYTES,
-        )
+        text = self._catalog_text(urljoin(run_url, filename + ".idx"))
         records, selected = parse_index(text, date, cycle, hour)
         if set(selected) & set(fields) != set(fields):
             return None
@@ -176,75 +229,131 @@ class NOAAGFSWaveSource(GribSource):
             separators=(",", ":"),
         )
 
-    def get_download_list(self, options=None):
-        options, hours = self._requested_options(options)
-        fields = tuple(options.fields)
-        with self._session_scope():
-            root_links = self._catalog_links(GFSWAVE_ROOT)
-            dates = sorted(
+    @staticmethod
+    def _candidate_runs(now=None):
+        """Enumerate published-looking (date, cycle) pairs, newest first."""
+        now = now or datetime.now(timezone.utc)
+        for offset in range(MAX_CATALOG_DAYS):
+            date = (now - timedelta(days=offset)).strftime("%Y%m%d")
+            for cycle in GFSWAVE_CYCLES:
+                run_time = datetime.strptime(date + cycle, "%Y%m%d%H").replace(
+                    tzinfo=timezone.utc
+                )
+                if run_time > now:
+                    continue
+                yield date, cycle, run_time
+
+    @staticmethod
+    def _run_entry(date, cycle, run_time, hours):
+        return (
+            date,
+            cycle,
+            run_time.strftime("%Y-%m-%d %H:%M UTC"),
+            max(hours),
+        )
+
+    def _probe_run(self, run_url, date, cycle, hours, fields):
+        """True only when the run serves a usable index for every requested hour."""
+        for hour in hours:
+            try:
+                spans = self._selected_index(run_url, date, cycle, hour, fields)
+            except HTTPStatusError as exc:
+                if _run_unavailable(exc):
+                    return False
+                raise
+            if spans is None:
+                return False
+        return True
+
+    def _s3_runs(self, hours, fields):
+        # The bucket has no listings: probe deterministic object names instead.
+        runs = []
+        for date, cycle, run_time in self._candidate_runs():
+            run_url = self._s3_run_url(date, cycle)
+            if not self._probe_run(run_url, date, cycle, hours, fields):
+                continue
+            runs.append(self._run_entry(date, cycle, run_time, hours))
+            if len(runs) >= MAX_COMPLETE_RUNS:
+                break
+        return runs
+
+    def _nomads_runs(self, hours, fields):
+        root_links = self._catalog_links(GFSWAVE_ROOT)
+        dates = sorted(
+            {
+                match.group(1)
+                for link in root_links
+                if (match := _DATE_DIR.fullmatch(_child_name(link) + "/"))
+            },
+            reverse=True,
+        )[:MAX_CATALOG_DAYS]
+        runs = []
+        for date in dates:
+            date_url = urljoin(GFSWAVE_ROOT, f"gfs.{date}/")
+            try:
+                date_links = self._catalog_links(date_url)
+            except HTTPStatusError as exc:
+                if _run_unavailable(exc):
+                    continue
+                raise
+            cycles = sorted(
                 {
-                    match.group(1)
-                    for link in root_links
-                    if (match := _DATE_DIR.fullmatch(_child_name(link) + "/"))
+                    _child_name(link)
+                    for link in date_links
+                    if _CYCLE_DIR.fullmatch(_child_name(link) + "/")
                 },
                 reverse=True,
-            )[:MAX_CATALOG_DAYS]
-            runs = []
-            for date in dates:
-                date_url = urljoin(GFSWAVE_ROOT, f"gfs.{date}/")
+            )
+            for cycle in cycles:
+                run_url = self._run_url(date, cycle)
                 try:
-                    date_links = self._catalog_links(date_url)
+                    filenames = {
+                        _child_name(link) for link in self._catalog_links(run_url)
+                    }
+                    for hour in hours:
+                        filename = self._filename(cycle, hour)
+                        if (
+                            filename not in filenames
+                            or filename + ".idx" not in filenames
+                        ):
+                            raise LookupError
+                        if (
+                            self._selected_index(run_url, date, cycle, hour, fields)
+                            is None
+                        ):
+                            raise LookupError
+                except LookupError:
+                    continue
                 except HTTPStatusError as exc:
                     if _run_unavailable(exc):
                         continue
                     raise
-                cycles = sorted(
-                    {
-                        _child_name(link)
-                        for link in date_links
-                        if _CYCLE_DIR.fullmatch(_child_name(link) + "/")
-                    },
-                    reverse=True,
+                run_time = datetime.strptime(date + cycle, "%Y%m%d%H").replace(
+                    tzinfo=timezone.utc
                 )
-                for cycle in cycles:
-                    run_url = self._run_url(date, cycle)
-                    try:
-                        filenames = {
-                            _child_name(link) for link in self._catalog_links(run_url)
-                        }
-                        for hour in hours:
-                            filename = self._filename(cycle, hour)
-                            if (
-                                filename not in filenames
-                                or filename + ".idx" not in filenames
-                            ):
-                                raise LookupError
-                            if (
-                                self._selected_index(run_url, date, cycle, hour, fields)
-                                is None
-                            ):
-                                raise LookupError
-                    except LookupError:
-                        continue
-                    except HTTPStatusError as exc:
-                        if _run_unavailable(exc):
-                            continue
-                        raise
-                    run_time = datetime.strptime(date + cycle, "%Y%m%d%H").replace(
-                        tzinfo=timezone.utc
-                    )
-                    runs.append(
-                        (
-                            date,
-                            cycle,
-                            run_time.strftime("%Y-%m-%d %H:%M UTC"),
-                            max(hours),
-                        )
-                    )
-                    if len(runs) >= MAX_COMPLETE_RUNS:
-                        break
+                runs.append(self._run_entry(date, cycle, run_time, hours))
                 if len(runs) >= MAX_COMPLETE_RUNS:
                     break
+            if len(runs) >= MAX_COMPLETE_RUNS:
+                break
+        return runs
+
+    def _discover_runs(self, hours, fields):
+        try:
+            runs = self._s3_runs(hours, fields)
+        except HTTPStatusError:
+            runs = []
+        if runs:
+            LOGGER.info("GFS-Wave catalogue transport: NOAA AWS S3 mirror")
+            return runs
+        LOGGER.info("GFS-Wave catalogue transport: NOMADS fallback")
+        return self._nomads_runs(hours, fields)
+
+    def get_download_list(self, options=None):
+        options, hours = self._requested_options(options)
+        fields = tuple(options.fields)
+        with self._session_scope():
+            runs = self._discover_runs(hours, fields)
             return custom_rows(
                 self,
                 options,
@@ -298,10 +407,21 @@ class NOAAGFSWaveSource(GribSource):
         estimate = len(steps) * len(fields) * 0.65
         return f"~{estimate:.1f} MB" if estimate >= 1 else f"~{estimate * 1024:.0f} KB"
 
+    def _download_run_url(self, date, cycle, hours, fields):
+        """Prefer the S3 mirror, falling back to NOMADS when the run is absent."""
+        run_url = self._s3_run_url(date, cycle)
+        try:
+            self._selected_index(run_url, date, cycle, hours[0], fields)
+        except HTTPStatusError as exc:
+            if not _run_unavailable(exc):
+                raise
+            return self._run_url(date, cycle)
+        return run_url
+
     def _download(self, identifier, dest_dir, percentage_callback, cancel=None):
         date, cycle, hours, fields = self._parse_identifier(identifier)
         _check_cancel(cancel)
-        run_url = self._run_url(date, cycle)
+        run_url = self._download_run_url(date, cycle, hours, fields)
         digest = hashlib.sha256(identifier.encode("utf-8")).hexdigest()[:12]
         filename = f"gfswave_{date}_{cycle}z_{max(hours)}h_{digest}.grib2"
         output_path = Path(dest_dir) / filename
