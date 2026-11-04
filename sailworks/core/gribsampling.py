@@ -6,7 +6,7 @@ See docs/weather-sampling.md for selection and fallback policy.
 """
 
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 import math
 import logging
@@ -200,6 +200,21 @@ class GridIndex:
                     bool(relative),
                 )
             )
+        # Reanalysis (ERA5) has no run time: every message's reference is its
+        # valid time. Group them under one identity so off-hour queries can
+        # interpolate between the surrounding hourly fields instead of
+        # falling outside each one-hour coverage.
+        if records and all(
+            abs(record.reference - record.valid) <= 1e-6 for record in records
+        ):
+            first = min(record.reference for record in records)
+            records = [
+                replace(
+                    record,
+                    identity=(first, record.identity[1], record.identity[2]),
+                )
+                for record in records
+            ]
         return records
 
     def array(self, record):
