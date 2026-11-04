@@ -45,14 +45,6 @@ class Era5DownloadTab(QWidget):
         self.plan = None
         self.job = None
         layout = QVBoxLayout(self)
-        self.heading = QLabel("Historical weather")
-        self.heading.setStyleSheet("font-weight: 600;")
-        layout.addWidget(self.heading)
-        self.intro = QLabel("Download historical data without activating a forecast.")
-        self.intro.setWordWrap(True)
-        self.intro.setProperty("secondary", True)
-        layout.addWidget(self.intro)
-
         columns = QHBoxLayout()
         models_box = QGroupBox("Models")
         models_layout = QVBoxLayout(models_box)
@@ -110,6 +102,7 @@ class Era5DownloadTab(QWidget):
         time_layout.addLayout(end_row)
         time_layout.addStretch(1)
         self.time_box = time_box
+        columns.addStretch(1)
         layout.addLayout(columns)
 
         self.north, self.west = self._coord(90), self._coord(180)
@@ -313,7 +306,6 @@ class Era5DownloadTab(QWidget):
                 if widget is not None:
                     widget.setVisible(False)
 
-        self.intro.setVisible(False)
         self.instructions.setVisible(False)
         hide_layout(self.region_row)
         self.time_box.setVisible(False)
@@ -424,11 +416,12 @@ class Era5DownloadTab(QWidget):
             return
         if not self._ensure_area():
             return
-        start, end = self.start.date(), self.end.date()
+        start = self.start.dateTime().toPython().replace(tzinfo=timezone.utc)
+        end = self.end.dateTime().toPython().replace(tzinfo=timezone.utc)
         try:
             plan = nbs.plan_request(
-                datetime(start.year(), start.month(), start.day(), tzinfo=timezone.utc),
-                datetime(end.year(), end.month(), end.day(), 18, tzinfo=timezone.utc),
+                start,
+                end,
                 (
                     self.north.value(),
                     self.west.value(),
@@ -607,22 +600,20 @@ class Era5DownloadTab(QWidget):
         analysis = getattr(self.controller, "analysis", None)
         state = getattr(analysis, "state", None)
         if state is None:
-            self.history_status.setText(
-                "Historical data is not available in this workspace."
-            )
+            self.status.setText("Historical data is not available in this workspace.")
             return False
         if not entries:
-            self.history_status.setText(
-                "No downloaded ERA5 history to show yet; use Start download first."
+            self.status.setText(
+                "No downloaded ERA5 history to show yet; download it first."
             )
             return False
         try:
             tranche = publish_history_display(state, entries)
             self._show_tranche(tranche)
-            self.history_status.setText("Published ERA5 history as a display forecast.")
+            self.status.setText("Published ERA5 history as a display forecast.")
             return True
         except Exception as exc:
-            self.history_status.setText(f"Could not display ERA5 history: {exc}")
+            self.status.setText(f"Could not display ERA5 history: {exc}")
             return False
 
     def _show_tranche(self, tranche):

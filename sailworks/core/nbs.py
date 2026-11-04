@@ -283,6 +283,7 @@ def validate_grib(path, plan):
     if dataset is None:
         raise NbsError("NBS GRIB could not be opened for validation")
     found = set()
+    valid_cells = 0
     for index in range(1, dataset.RasterCount + 1):
         metadata = dataset.GetRasterBand(index).GetMetadata()
         element = metadata.get("GRIB_ELEMENT")
@@ -290,48 +291,52 @@ def validate_grib(path, plan):
             continue
         if metadata.get("GRIB_SHORT_NAME") != LEVEL:
             raise NbsError("NBS GRIB wind is not at 10 m")
+        array = dataset.GetRasterBand(index).ReadAsArray()
+        if array is not None:
+            valid_cells += int(((array < 9000) & (array > -9000)).sum())
         seconds = float(metadata.get("GRIB_VALID_TIME", 0))
         valid = datetime.fromtimestamp(seconds, tz=timezone.utc)
         found.add((valid, "10u" if element == "UGRD" else "10v"))
     expected = {(valid, short) for valid in plan.times for short in ("10u", "10v")}
     if found != expected:
         raise NbsError("NBS GRIB is missing planned wind times")
+    if not valid_cells:
+        raise NbsError("NBS GRIB contains no valid wind values")
     return {"source": "NOAA/NCEI Blended Seawinds v2", "times": plan.times}
 
 
 def build(state, plan, *, directory=None, progress=None, cancel=None):
     """Download, encode and validate NBS wind, returning a GRIB artifact."""
     cancel = cancel or threading.Event()
-    holder = tempfile.TemporaryDirectory(prefix="nbs-") if directory is None else None
-    working = Path(holder.name) if holder is not None else Path(directory)
-    try:
-        paths = []
-        for index, day in enumerate(plan.days):
-            if cancel.is_set():
-                raise NbsError("NBS download canceled")
-            if progress is not None:
-                progress(
-                    round(10 * index / max(1, len(plan.days))),
-                    f"Downloading NBS {day}…",
-                )
-            paths.append(download_day(day, working))
+    if directory is None:
+        working = Path(state.store.root) / "nbs-cache"
+        working.mkdir(parents=True, exist_ok=True)
+    else:
+        working = Path(directory)
+    paths = []
+    for index, day in enumerate(plan.days):
+        if cancel.is_set():
+            raise NbsError("NBS download canceled")
         if progress is not None:
-            progress(60, "Encoding NBS wind…")
-        destination = working / "nbs.grib2"
-        encode_grib(plan, paths, destination)
-        if progress is not None:
-            progress(85, "Validating NBS wind…")
-        validate_grib(destination, plan)
-        artifact = state.store.register_file(destination)
-        if progress is not None:
-            progress(95, "Publishing NBS wind…")
-        tranche = publish(state, plan, artifact)
-        if progress is not None:
-            progress(100, "Complete")
-        return tranche
-    finally:
-        if holder is not None:
-            holder.cleanup()
+            progress(
+                round(10 * index / max(1, len(plan.days))),
+                f"Downloading NBS {day}…",
+            )
+        paths.append(download_day(day, working))
+    if progress is not None:
+        progress(60, "Encoding NBS wind…")
+    destination = working / "nbs.grib2"
+    encode_grib(plan, paths, destination)
+    if progress is not None:
+        progress(85, "Validating NBS wind…")
+    validate_grib(destination, plan)
+    artifact = state.store.register_file(destination)
+    if progress is not None:
+        progress(95, "Publishing NBS wind…")
+    tranche = publish(state, plan, artifact)
+    if progress is not None:
+        progress(100, "Complete")
+    return tranche
 
 
 def publish(state, plan, artifact):
