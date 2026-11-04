@@ -84,6 +84,7 @@ def test_gfswave_schedule_and_pinned_identifiers_are_strict():
         "12",
         (0, 3),
         ("wave_height", "wave_period"),
+        "nomads",
     )
     with pytest.raises(ValueError, match="schedule or fields"):
         NOAAGFSWaveSource._parse_identifier(identifier.replace("wave_height", "wind"))
@@ -379,44 +380,41 @@ class _Page:
         self.status_code = status
         self.headers = {}
         self._body = body
+        self.closed = False
 
     def iter_content(self, chunk_size=1024):
         yield self._body
 
     def close(self):
-        pass
+        self.closed = True
 
 
-class _Session:
-    def __init__(self, page):
-        self._page = page
+class _ScriptedRequests:
+    """Serve one response per request and record every requested URL."""
 
-    def get(self, url, **kwargs):
-        return self._page
+    def __init__(self, *pages):
+        self.pages = list(pages)
+        self.urls = []
 
-
-def _raise_status(monkeypatch, status):
-    from types import SimpleNamespace
-
-    from sailworks.core.gribsources.ranged import HTTPStatusError
-
-    def fetch(session, url, **kwargs):
-        raise HTTPStatusError(200, SimpleNamespace(status_code=status), url)
-
-    monkeypatch.setattr("sailworks.core.gribsources.noaagfswave.fetch_text", fetch)
+    def __call__(self, _session, url, **_kwargs):
+        self.urls.append(url)
+        return self.pages.pop(0)
 
 
-def test_gfswave_nomads_rate_limit_is_reported_as_rate_limit(monkeypatch):
-    page = _Page(302, b"<html><body>Over Rate Limit</body></html>")
-    source = NOAAGFSWaveSource(session=_Session(page))
+def test_gfswave_nomads_rate_limit_reads_the_failing_response(monkeypatch):
+    failing = _Page(302, b"<html><body>Over Rate Limit</body></html>")
+    requests = _ScriptedRequests(failing, _Page(200, b"<html>Moved</html>"))
+    source = NOAAGFSWaveSource(session=object())
     monkeypatch.setattr(source, "_s3_runs", lambda *_args: [])
-    _raise_status(monkeypatch, 302)
+    monkeypatch.setattr("sailworks.core.gribsources.ranged._request", requests)
 
     with pytest.raises(RateLimitError) as raised:
         source.get_download_list(DownloadOptions(3, 3, ("wave_height",), (0, 3)))
 
     assert "NOMADS rate limit reached" in str(raised.value)
     assert "HTTP 302" not in str(raised.value)
+    assert requests.urls == [GFSWAVE_ROOT]
+    assert failing.closed
 
 
 def test_gfswave_nomads_redirect_without_rate_limit_marker_stays_a_status_error(
@@ -424,12 +422,97 @@ def test_gfswave_nomads_redirect_without_rate_limit_marker_stays_a_status_error(
 ):
     from sailworks.core.gribsources.ranged import HTTPStatusError
 
-    page = _Page(302, b"<html><body>Moved</body></html>")
-    source = NOAAGFSWaveSource(session=_Session(page))
+    failing = _Page(302, b"<html><body>Moved</body></html>")
+    requests = _ScriptedRequests(failing, _Page(200, b"Over Rate Limit"))
+    source = NOAAGFSWaveSource(session=object())
     monkeypatch.setattr(source, "_s3_runs", lambda *_args: [])
-    _raise_status(monkeypatch, 302)
+    monkeypatch.setattr("sailworks.core.gribsources.ranged._request", requests)
 
     with pytest.raises(HTTPStatusError) as raised:
         source.get_download_list(DownloadOptions(3, 3, ("wave_height",), (0, 3)))
 
     assert raised.value.status_code == 302
+    assert requests.urls == [GFSWAVE_ROOT]
+    assert failing.closed
+
+
+def test_gfswave_s3_redirect_is_never_probed_for_a_rate_limit(monkeypatch):
+    from sailworks.core.gribsources.ranged import HTTPStatusError
+
+    failing = _Page(302, b"<html><body>Over Rate Limit</body></html>")
+    requests = _ScriptedRequests(failing, _Page(200, b"Over Rate Limit"))
+    source = NOAAGFSWaveSource(session=object())
+    monkeypatch.setattr("sailworks.core.gribsources.ranged._request", requests)
+
+    with pytest.raises(HTTPStatusError) as raised:
+        source._catalog_text(GFSWAVE_S3_ROOT + "gfs.20261104/12/wave/gridded/x.idx")
+
+    assert raised.value.status_code == 302
+    assert requests.urls == [GFSWAVE_S3_ROOT + "gfs.20261104/12/wave/gridded/x.idx"]
+
+
+@pytest.mark.parametrize(
+    "transport,root", [(None, GFSWAVE_ROOT), ("s3", GFSWAVE_S3_ROOT)]
+)
+def test_gfswave_pinned_download_keeps_its_identifier_transport(
+    tmp_path, monkeypatch, transport, root
+):
+    source = NOAAGFSWaveSource(session=object())
+    identifier = NOAAGFSWaveSource._identifier(
+        "20261023", "12", (0, 3), ("wave_height",), transport=transport
+    )
+    loaded = []
+    download_urls = []
+
+    def selected(run_url, date, cycle, hour, fields):
+        loaded.append(run_url)
+        return ((100, 25),)
+
+    def length(_session, url, *_args, **_kwargs):
+        download_urls.append(url)
+        return 25
+
+    def append(_session, url, _offset, length, output, **_kwargs):
+        download_urls.append(url)
+        output.write(b"x" * length)
+        return length
+
+    monkeypatch.setattr(source, "_selected_index", selected)
+    monkeypatch.setattr("sailworks.core.gribsources.noaagfswave.message_length", length)
+    monkeypatch.setattr("sailworks.core.gribsources.noaagfswave.append_message", append)
+
+    Path(source.download(identifier, str(tmp_path), lambda _value: None))
+
+    assert len(loaded) == 2
+    assert all(url.startswith(root) for url in loaded)
+    assert download_urls and all(url.startswith(root) for url in download_urls)
+
+
+def test_gfswave_nomads_catalog_skips_future_runs(monkeypatch):
+    source = NOAAGFSWaveSource(session=object())
+    date_url = GFSWAVE_ROOT + "gfs.20261104/"
+    run_url = date_url + "12/wave/gridded/"
+    probes = []
+
+    def catalog(url):
+        if url == GFSWAVE_ROOT:
+            return (date_url,)
+        if url == date_url:
+            return (date_url + "18/", date_url + "12/")
+        if url == run_url:
+            probes.append(url)
+            filenames = {source._filename("12", hour) for hour in (0, 3)}
+            return tuple(
+                run_url + name
+                for name in filenames | {name + ".idx" for name in filenames}
+            )
+        raise AssertionError(url)
+
+    monkeypatch.setattr(source, "_catalog_links", catalog)
+    monkeypatch.setattr(source, "_selected_index", lambda *_args: ((100, 25),))
+
+    now = datetime(2026, 11, 4, 13, 30, tzinfo=timezone.utc)
+    runs = source._nomads_runs((0, 3), ("wave_height",), now=now)
+
+    assert [entry[1] for entry in runs] == ["12"]
+    assert probes == [run_url]

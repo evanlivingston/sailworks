@@ -25,10 +25,30 @@ def _check_cancel(cancel):
         raise DownloadCancelledError()
 
 
+class MarkedStatusError(HTTPStatusError):
+    """A failed response whose bounded body contains a caller's marker.
+
+    Raised by :func:`fetch_text` so callers can recognise a meaningful error
+    page (such as a rate-limit notice) from the response that actually failed.
+    """
+
+
 def _close(response):
     close = getattr(response, "close", None)
     if close is not None:
         close()
+
+
+def _read_bounded(response, limit, cancel):
+    body = bytearray()
+    for chunk in response.iter_content(chunk_size=4096):
+        _check_cancel(cancel)
+        if not chunk:
+            continue
+        body.extend(chunk)
+        if len(body) >= limit:
+            break
+    return bytes(body[:limit])
 
 
 def _request(session, url, *, headers=None, stream=True):
@@ -57,14 +77,40 @@ def _require_identity_encoding(response):
         raise ValueError("HTTP range response used content encoding")
 
 
-def fetch_text(session, url, *, cancel=None, max_bytes=4 * 1024 * 1024):
-    """Fetch bounded UTF-8 catalog/index text; only HTTP 200 is accepted."""
+def fetch_text(
+    session,
+    url,
+    *,
+    cancel=None,
+    max_bytes=4 * 1024 * 1024,
+    error_marker=None,
+    error_statuses=(),
+    error_bytes=4096,
+):
+    """Fetch bounded UTF-8 catalog/index text; only HTTP 200 is accepted.
+
+    ``error_marker`` inspects the bounded body of a failed response with one of
+    ``error_statuses`` before it is closed, raising :class:`MarkedStatusError`
+    when the marker is present. The body of other failures is never read.
+    """
     if type(max_bytes) is not int or max_bytes <= 0:
         raise ValueError("max_bytes must be a positive integer")
+    if error_marker is not None and (
+        not isinstance(error_marker, bytes)
+        or type(error_bytes) is not int
+        or error_bytes <= 0
+    ):
+        raise ValueError("error_marker must be bytes with a positive error_bytes")
     _check_cancel(cancel)
     response = _request(session, url)
     try:
         if response.status_code != 200:
+            if (
+                error_marker is not None
+                and response.status_code in error_statuses
+                and error_marker in _read_bounded(response, error_bytes, cancel)
+            ):
+                raise MarkedStatusError(200, response, url)
             raise HTTPStatusError(200, response, url)
         _require_identity_encoding(response)
         chunks, size = [], 0

@@ -18,7 +18,13 @@ from sailworks.core.gribsources.base import GribSource
 from sailworks.core.marine.chs import DownloadCancelledError
 from .gfswaveindex import ELEMENTS_BY_FIELD, parse_index
 from .options import DownloadOptions, custom_rows
-from .ranged import HTTPStatusError, append_message, fetch_text, message_length
+from .ranged import (
+    HTTPStatusError,
+    MarkedStatusError,
+    append_message,
+    fetch_text,
+    message_length,
+)
 
 # The AWS Open Data mirror has no directory listings, so runs are discovered by
 # probing deterministic object names. NOMADS stays as the catalogue fallback.
@@ -28,6 +34,8 @@ GFSWAVE_NAME = "NOAA GFS-Wave"
 GFSWAVE_FIELDS = tuple(ELEMENTS_BY_FIELD)
 GFSWAVE_HOURS = tuple(range(121)) + tuple(range(123, 385, 3))
 GFSWAVE_CYCLES = ("18", "12", "06", "00")
+TRANSPORT_S3 = "s3"
+TRANSPORT_NOMADS = "nomads"
 MAX_INDEX_BYTES = 4 * 1024 * 1024
 MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 MAX_CATALOG_DAYS = 3
@@ -81,28 +89,6 @@ def _is_nomads(url):
     return url.startswith(GFSWAVE_ROOT)
 
 
-def _rate_limit_page(session, url):
-    """Report whether a redirect/429 body is the NOMADS rate-limit page."""
-    response = session.get(
-        url,
-        headers={"Accept-Encoding": "identity"},
-        stream=True,
-        timeout=(10, 60),
-        allow_redirects=False,
-    )
-    try:
-        body = bytearray()
-        for chunk in response.iter_content(chunk_size=4096):
-            body.extend(chunk)
-            if len(body) >= RATE_LIMIT_BYTES:
-                break
-        return _RATE_LIMIT_TEXT in bytes(body[:RATE_LIMIT_BYTES])
-    finally:
-        close = getattr(response, "close", None)
-        if close is not None:
-            close()
-
-
 class NOAAGFSWaveSource(GribSource):
     """Fetch selected wave parameters from NOAA's distinct GFS-Wave product."""
 
@@ -139,18 +125,19 @@ class NOAAGFSWaveSource(GribSource):
         self._bounds = value
 
     def _catalog_text(self, url):
+        options = {}
+        if _is_nomads(url):
+            options = {
+                "error_marker": _RATE_LIMIT_TEXT,
+                "error_statuses": (302, 429),
+                "error_bytes": RATE_LIMIT_BYTES,
+            }
         try:
-            return fetch_text(self.session, url, max_bytes=MAX_INDEX_BYTES)
-        except HTTPStatusError as exc:
-            if (
-                exc.status_code in (302, 429)
-                and _is_nomads(url)
-                and _rate_limit_page(self.session, url)
-            ):
-                raise RateLimitError(
-                    f"NOMADS rate limit reached; try again later ({url})"
-                ) from exc
-            raise
+            return fetch_text(self.session, url, max_bytes=MAX_INDEX_BYTES, **options)
+        except MarkedStatusError as exc:
+            raise RateLimitError(
+                f"NOMADS rate limit reached; try again later ({url})"
+            ) from exc
 
     def _catalog_links(self, url):
         return _links(self._catalog_text(url), url)
@@ -215,19 +202,18 @@ class NOAAGFSWaveSource(GribSource):
         return tuple(sorted(spans))
 
     @staticmethod
-    def _identifier(date, cycle, hours, fields):
-        return json.dumps(
-            {
-                "source": GFSWAVE_NAME,
-                "date": date,
-                "cycle": cycle,
-                "hours": max(hours),
-                "steps": list(hours),
-                "fields": list(fields),
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+    def _identifier(date, cycle, hours, fields, transport=None):
+        config = {
+            "source": GFSWAVE_NAME,
+            "date": date,
+            "cycle": cycle,
+            "hours": max(hours),
+            "steps": list(hours),
+            "fields": list(fields),
+        }
+        if transport:
+            config["transport"] = transport
+        return json.dumps(config, sort_keys=True, separators=(",", ":"))
 
     @staticmethod
     def _candidate_runs(now=None):
@@ -244,12 +230,13 @@ class NOAAGFSWaveSource(GribSource):
                 yield date, cycle, run_time
 
     @staticmethod
-    def _run_entry(date, cycle, run_time, hours):
+    def _run_entry(date, cycle, run_time, hours, transport=None):
         return (
             date,
             cycle,
             run_time.strftime("%Y-%m-%d %H:%M UTC"),
             max(hours),
+            {"transport": transport} if transport else {},
         )
 
     def _probe_run(self, run_url, date, cycle, hours, fields):
@@ -272,12 +259,15 @@ class NOAAGFSWaveSource(GribSource):
             run_url = self._s3_run_url(date, cycle)
             if not self._probe_run(run_url, date, cycle, hours, fields):
                 continue
-            runs.append(self._run_entry(date, cycle, run_time, hours))
+            runs.append(
+                self._run_entry(date, cycle, run_time, hours, transport=TRANSPORT_S3)
+            )
             if len(runs) >= MAX_COMPLETE_RUNS:
                 break
         return runs
 
-    def _nomads_runs(self, hours, fields):
+    def _nomads_runs(self, hours, fields, now=None):
+        now = now or datetime.now(timezone.utc)
         root_links = self._catalog_links(GFSWAVE_ROOT)
         dates = sorted(
             {
@@ -305,6 +295,11 @@ class NOAAGFSWaveSource(GribSource):
                 reverse=True,
             )
             for cycle in cycles:
+                run_time = datetime.strptime(date + cycle, "%Y%m%d%H").replace(
+                    tzinfo=timezone.utc
+                )
+                if run_time > now:
+                    continue
                 run_url = self._run_url(date, cycle)
                 try:
                     filenames = {
@@ -328,9 +323,6 @@ class NOAAGFSWaveSource(GribSource):
                     if _run_unavailable(exc):
                         continue
                     raise
-                run_time = datetime.strptime(date + cycle, "%Y%m%d%H").replace(
-                    tzinfo=timezone.utc
-                )
                 runs.append(self._run_entry(date, cycle, run_time, hours))
                 if len(runs) >= MAX_COMPLETE_RUNS:
                     break
@@ -369,8 +361,11 @@ class NOAAGFSWaveSource(GribSource):
         except (TypeError, json.JSONDecodeError) as exc:
             raise ValueError("Malformed GFS-Wave pinned identifier") from exc
         expected = {"source", "date", "cycle", "hours", "steps", "fields"}
-        if not isinstance(config, dict) or set(config) != expected:
+        if not isinstance(config, dict) or set(config) - {"transport"} != expected:
             raise ValueError("GFS-Wave identifier has unknown or missing fields")
+        transport = config.get("transport", TRANSPORT_NOMADS)
+        if transport not in (TRANSPORT_S3, TRANSPORT_NOMADS):
+            raise ValueError("Invalid GFS-Wave pinned transport")
         date, cycle = config["date"], config["cycle"]
         if (
             config["source"] != GFSWAVE_NAME
@@ -399,7 +394,7 @@ class NOAAGFSWaveSource(GribSource):
             or set(fields) - set(GFSWAVE_FIELDS)
         ):
             raise ValueError("Invalid GFS-Wave schedule or fields")
-        return date, cycle, tuple(steps), tuple(fields)
+        return date, cycle, tuple(steps), tuple(fields), transport
 
     @staticmethod
     def _estimate_custom_size(steps, fields):
@@ -407,21 +402,16 @@ class NOAAGFSWaveSource(GribSource):
         estimate = len(steps) * len(fields) * 0.65
         return f"~{estimate:.1f} MB" if estimate >= 1 else f"~{estimate * 1024:.0f} KB"
 
-    def _download_run_url(self, date, cycle, hours, fields):
-        """Prefer the S3 mirror, falling back to NOMADS when the run is absent."""
-        run_url = self._s3_run_url(date, cycle)
-        try:
-            self._selected_index(run_url, date, cycle, hours[0], fields)
-        except HTTPStatusError as exc:
-            if not _run_unavailable(exc):
-                raise
-            return self._run_url(date, cycle)
-        return run_url
+    def _pinned_run_url(self, date, cycle, transport):
+        """Resolve a pinned run on the transport its identifier recorded."""
+        if transport == TRANSPORT_S3:
+            return self._s3_run_url(date, cycle)
+        return self._run_url(date, cycle)
 
     def _download(self, identifier, dest_dir, percentage_callback, cancel=None):
-        date, cycle, hours, fields = self._parse_identifier(identifier)
+        date, cycle, hours, fields, transport = self._parse_identifier(identifier)
         _check_cancel(cancel)
-        run_url = self._download_run_url(date, cycle, hours, fields)
+        run_url = self._pinned_run_url(date, cycle, transport)
         digest = hashlib.sha256(identifier.encode("utf-8")).hexdigest()[:12]
         filename = f"gfswave_{date}_{cycle}z_{max(hours)}h_{digest}.grib2"
         output_path = Path(dest_dir) / filename
