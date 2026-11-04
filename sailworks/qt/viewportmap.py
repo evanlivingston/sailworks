@@ -449,6 +449,13 @@ class ViewportMap(
             True,
         )
 
+    def refresh_route_overlay(self):
+        """Publish the current overlay data to the QML scene."""
+        presenter = getattr(self, "_weather_presenter", None)
+        widget = getattr(presenter, "widget", None)
+        if widget is not None:
+            widget.set_route_overlay(self.viewport_route_overlay())
+
     def adopt_viewport_camera(self, camera):
         """Mirror viewport-owned camera state for existing map APIs/overlays."""
         state = (camera.center_lat, camera.center_lon, camera.zoom)
