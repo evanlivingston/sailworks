@@ -20,7 +20,7 @@ class RenderJob:
     key: tuple
     viewport: MapViewport
     charts: tuple
-    factor: int
+    factor: float
     palette: str
     cancel: Event = field(default_factory=Event)
     speculative: bool = False

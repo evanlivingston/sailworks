@@ -103,6 +103,10 @@ class ChartStartup(QObject):
             self.owner.map_data.task.message = self.message
             self.owner.map_data.message = self.message
             self.owner.map_data.task.changed.emit()
+            for canvas in getattr(self.owner.charts, "maps", ()):
+                invalidate = getattr(canvas, "invalidate_chart_sources", None)
+                if invalidate is not None:
+                    invalidate()
             self.owner.data.redraw()
             self.owner.data.changed.emit()
             self.changed.emit()

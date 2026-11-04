@@ -84,6 +84,9 @@ class MapDataController(QObject):
                 for canvas in self.owner.charts.maps:
                     if "coastlines" in installed:
                         canvas.marine.forget(canvas)
+                    invalidate = getattr(canvas, "invalidate_chart_sources", None)
+                    if invalidate is not None:
+                        invalidate()
                 self.owner.data.redraw()
             self.message = str(failure) if failure else "Map data installed and ready"
             if installed and failure:

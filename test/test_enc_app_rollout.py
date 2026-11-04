@@ -232,7 +232,7 @@ def test_chart_placement_scales_the_retained_zoom_preview_about_its_center():
     from sailworks.core.mapviewport import MapViewport
     from sailworks.qt.gribviewport import ViewportCamera
     from sailworks.qt.gribviewportchart import (
-        CHART_SETTLE_MS,
+        CHART_IDLE_MS,
         ChartCamera,
         chart_placement,
     )
@@ -251,7 +251,7 @@ def test_chart_placement_scales_the_retained_zoom_preview_about_its_center():
 
     x, y, width, height = chart_placement(composed, zoomed)
 
-    assert CHART_SETTLE_MS == 200
+    assert CHART_IDLE_MS == 100
     assert width == composed.width * 2
     assert height == composed.height * 2
     assert x + width / 2 == camera.width / 2
@@ -421,7 +421,15 @@ def test_chart_reuse_redelivers_rejected_cold_start_without_stale_adoption(
     metadata = {"viewport": object()}
     model._generation = 1
     model._published = (1, image, metadata)
-    model._reusable = lambda camera: camera == "covered"
+    model._reusable = lambda camera, preview=False: (
+        camera == "covered" and metadata.get("preview", False) == preview
+    )
+    assert model._reusable("covered", False)
+    assert not model._reusable("covered", True)
+    metadata["preview"] = True
+    assert model._reusable("covered", True)
+    assert not model._reusable("covered", False)
+    metadata["preview"] = False
     manager = Mock()
     manager.budget = PublicationBudget()
     manager.stage_resources.return_value = True
@@ -1515,3 +1523,172 @@ def test_viewport_dashboard_layer_publishes_and_clears_the_cached_image():
     method(viewport, None)
     assert item.setProperty.call_args == call("source", QUrl(""))
     assert viewport._dashboard_key is None
+
+
+def test_chart_idle_timer_debounces_camera_changes(presenter):
+    import time
+    from types import MethodType
+
+    from PySide6.QtCore import QTimer, Qt
+    from PySide6.QtTest import QTest
+
+    from sailworks.qt.gribviewport import _viewport_widget_class
+    from sailworks.qt.gribviewportchart import CHART_IDLE_MS
+
+    calls = []
+
+    def request(camera, preview=False):
+        calls.append((time.monotonic(), camera, preview))
+        return len(calls)
+
+    widget = SimpleNamespace(
+        _disposed=False,
+        _chart_timer=QTimer(),
+        _chart_model=SimpleNamespace(request=request),
+        _camera="first",
+        _weather_ready_at=1,
+        _model=SimpleNamespace(busy=lambda: False),
+        _chart_interactive_at=None,
+        _chart_redelivery_generation=None,
+        _chart_state_now=lambda: {},
+        counters={"chart_requests": 0},
+    )
+    cls = _viewport_widget_class()
+    for name in ("_restart_chart_settle", "_request_interactive_chart", "_request_chart"):
+        setattr(widget, name, MethodType(getattr(cls, name), widget))
+    widget._chart_timer.setSingleShot(True)
+    widget._chart_timer.setTimerType(Qt.TimerType.PreciseTimer)
+    widget._chart_timer.setInterval(CHART_IDLE_MS)
+    widget._chart_timer.timeout.connect(widget._request_chart)
+    widget._chart_camera_changed = time.perf_counter()
+    widget._restart_chart_settle()
+    widget._request_interactive_chart()
+    QTest.qWait(CHART_IDLE_MS // 2)
+    assert len(calls) <= 1
+    assert all(preview for _, _, preview in calls)
+    changed = time.monotonic()
+    widget._camera = "second"
+    widget._chart_camera_changed = time.perf_counter()
+    widget._restart_chart_settle()
+    widget._request_interactive_chart()
+    QTest.qWait(CHART_IDLE_MS // 2)
+    assert len(calls) <= 1
+    assert all(preview for _, _, preview in calls)
+    QTest.qWait(CHART_IDLE_MS)
+    full = [(when, camera) for when, camera, preview in calls if not preview]
+    assert len(full) == 1
+    assert full[0][1] == "second"
+    assert full[0][0] - changed >= CHART_IDLE_MS / 1000
+    QTest.qWait(CHART_IDLE_MS)
+    assert len([call for call in calls if not call[2]]) == 1
+
+
+def test_chart_worker_finishes_active_and_coalesces_latest_camera(tmp_path):
+    from PySide6.QtGui import QImage
+
+    started, release, finished = Event(), Event(), Event()
+    cameras, cancelled = [], []
+    layer = ViewportChartLayer((), tmp_path)
+
+    def compose(camera, cancel):
+        cameras.append(camera)
+        if camera == "first":
+            started.set()
+            assert release.wait(5)
+            cancelled.append(cancel.is_set())
+        else:
+            finished.set()
+        return QImage(1, 1, QImage.Format.Format_ARGB32), {}
+
+    layer._compose = compose
+    try:
+        layer.request("first")
+        assert started.wait(5)
+        layer.request("intermediate")
+        layer.request("latest")
+        assert not layer._active[2].is_set()
+        release.set()
+        assert finished.wait(5)
+        assert cameras == ["first", "latest"]
+        assert cancelled == [False]
+    finally:
+        release.set()
+        layer.close()
+
+
+def test_chart_weather_busy_rearms_real_timer(presenter):
+    import time
+    from types import MethodType
+
+    from PySide6.QtCore import QTimer
+    from PySide6.QtTest import QTest
+
+    from sailworks.qt.gribviewport import _viewport_widget_class
+    from sailworks.qt.gribviewportchart import CHART_IDLE_MS
+
+    requests = []
+    model = SimpleNamespace(busy=Mock(return_value=True))
+    widget = SimpleNamespace(
+        _disposed=False,
+        _chart_timer=QTimer(),
+        _chart_model=SimpleNamespace(request=requests.append),
+        _camera="camera",
+        _weather_ready_at=1,
+        _enc_chart_layer=False,
+        _model=model,
+        _chart_camera_changed=time.perf_counter() - 1,
+        _chart_state_now=lambda: {},
+        counters={"chart_requests": 0},
+    )
+    cls = _viewport_widget_class()
+    widget._restart_chart_settle = MethodType(cls._restart_chart_settle, widget)
+    widget._request_chart = MethodType(cls._request_chart, widget)
+    widget._chart_timer.setSingleShot(True)
+    widget._chart_timer.setInterval(CHART_IDLE_MS)
+    widget._chart_timer.timeout.connect(widget._request_chart)
+    widget._request_chart()
+    assert widget._chart_timer.isActive()
+    assert not requests
+    model.busy.return_value = False
+    QTest.qWait(CHART_IDLE_MS * 2)
+    assert requests == ["camera"]
+    assert not widget._chart_timer.isActive()
+
+
+def test_chart_budget_release_rearms_only_after_refusal(presenter):
+    from types import MethodType
+
+    from sailworks.qt.gribviewport import _viewport_widget_class
+    from sailworks.qt.viewportpublication import LayerRole, PublicationManager
+
+    manager = PublicationManager()
+    widget = SimpleNamespace(
+        _publication_manager=manager,
+        _chart_budget_refusal=None,
+        _restart_chart_settle=Mock(),
+    )
+    MethodType(_viewport_widget_class()._watch_chart_budget, widget)()
+    assert manager.budget.allocate(LayerRole.FILL, 10)
+    manager.budget.release(LayerRole.FILL, 1)
+    widget._restart_chart_settle.assert_not_called()
+    widget._chart_budget_refusal = (1, ())
+    manager.budget.release(LayerRole.FILL, 0)
+    widget._restart_chart_settle.assert_not_called()
+    manager.budget.release(LayerRole.FILL, 1)
+    widget._restart_chart_settle.assert_called_once_with()
+
+
+def test_chart_early_timer_rearms_for_remaining_idle_interval():
+    from sailworks.qt.gribviewport import _viewport_widget_class
+
+    widget = SimpleNamespace(
+        _chart_model=object(),
+        _camera=object(),
+        _weather_ready_at=1,
+        _chart_camera_changed=99.94,
+        _chart_timer=SimpleNamespace(start=Mock()),
+    )
+    with patch("sailworks.qt.gribviewport.time.perf_counter", return_value=100.0):
+        _viewport_widget_class()._request_chart(widget)
+    remaining = widget._chart_timer.start.call_args.args[0]
+    assert 40 <= remaining <= 41

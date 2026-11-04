@@ -1623,3 +1623,93 @@ def test_the_chart_layer_never_claims_the_weather_worker(tmp_path):
     assert layer._await_idle(None) is False
     busy[0] = False
     assert layer._await_idle(None) is True
+
+
+def test_interactive_chart_is_event_throttled_and_yields_to_weather(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    now = [1.0]
+    monkeypatch.setattr(gribviewport.time, "perf_counter", lambda: now[0])
+    chart = SimpleNamespace(request=Mock(return_value=1))
+    weather = SimpleNamespace(busy=Mock(return_value=False))
+    widget = SimpleNamespace(
+        _chart_model=chart,
+        _camera=_camera(),
+        _weather_ready_at=1,
+        _model=weather,
+        _chart_interactive_at=None,
+        counters={"chart_requests": 0},
+        _chart_state_now=lambda: {},
+    )
+    request = gribviewport._viewport_widget_class()._request_interactive_chart
+    request(widget)
+    now[0] += 0.1
+    request(widget)
+    assert chart.request.call_count == 1
+    now[0] += 0.06
+    weather.busy.return_value = True
+    request(widget)
+    assert chart.request.call_count == 1
+    weather.busy.return_value = False
+    request(widget)
+    assert chart.request.call_count == 2
+    chart.request.assert_called_with(widget._camera, preview=True)
+
+
+def test_preview_is_blocked_in_flight_and_settle_publishes_full_quality(tmp_path):
+    from threading import Event
+
+    entered, release, preview_done, full_done = (Event() for _ in range(4))
+    published = []
+
+    def on_publish(payload):
+        published.append(payload)
+        (preview_done if payload[2]["preview"] else full_done).set()
+
+    layer = _chart_layer(tmp_path, on_publish=on_publish)
+
+    def compose(camera, cancel, preview=False):
+        if preview:
+            entered.set()
+            assert release.wait(5)
+        metadata = _chart_metadata(camera)
+        metadata["preview"] = preview
+        return "image", metadata
+
+    layer._compose = compose
+    camera = _camera()
+    try:
+        preview_generation = layer.request(camera, preview=True)
+        assert entered.wait(5)
+        assert layer.request(camera, preview=True) is None
+        release.set()
+        assert preview_done.wait(5)
+        assert layer._reusable(camera, preview=True)
+        assert not layer._reusable(camera)
+        full_generation = layer.request(camera)
+        assert full_generation != preview_generation
+        assert full_done.wait(5)
+        assert published[-1][0] == full_generation
+        assert published[-1][2]["preview"] is False
+    finally:
+        release.set()
+        layer.close()
+
+
+def test_chart_surface_fractional_scale_rounding_and_image_dpr():
+    from types import SimpleNamespace
+    from sailworks.qt.basecharts import BaseChartRenderer
+    from sailworks.qt.gribviewportchart import _ChartComposer, _surface_image
+    from sailworks.rendering.overlayrenderer import RenderJob
+
+    viewport = SimpleNamespace(width=101, height=103)
+    for factor, expected in ((0.5, (50, 52)), (2, (202, 206))):
+        job = RenderJob((), viewport, (), factor, "cm93")
+        surfaces = (
+            BaseChartRenderer(lambda callback: None)._render(job),
+            _ChartComposer("cm93", ()).render(job)[0],
+        )
+        for surface in surfaces:
+            assert (surface.get_width(), surface.get_height()) == expected
+            assert _surface_image(surface, factor).devicePixelRatio() == factor
