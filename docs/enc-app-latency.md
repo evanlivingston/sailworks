@@ -1,9 +1,13 @@
-# ENC delay investigation — PR #81 user feedback
+# Historical ENC delay investigation — PR #81 user feedback (2026-10-21)
 
-The user reports seconds of chart delay both at startup and after pan/zoom in
-the actual app. Functional acceptance is not performance acceptance. Hold further
-rollout claims pending diagnosis; do not infer a renderer failure from appearance
-or change chart detail to make a speed number improve.
+This is not a current ENC latency baseline. The zero-composition run below was
+inconclusive; subsequent isolated GSHHS-only measurements supersede it as
+chart-latency evidence, not as a measurement of ENC. See the
+[performance plan](rendering-performance-plan.md#current-state).
+
+The user reported seconds of chart delay both at startup and after pan/zoom in
+the actual app. Functional acceptance was not performance acceptance. The
+contemporaneous hold pending diagnosis did not establish a renderer failure.
 
 ## Before profiling
 
@@ -34,9 +38,7 @@ One native run of `tools/profile_enc_app_latency.py` (67.6 s wall, fresh snapsho
 410b88ad…) completed without an exception, but no stage became ready: startup,
 small pan and fractional zoom each waited the full 20 s and recorded zero chart
 compositions, with an empty selection. This does not measure the user's several-
-second delay and does not explain it. Possible causes to check next, before any
-optimization: the wide view may lie outside the selected HRRR coverage; weather
+second delay and does not explain it. The historical possible causes were: the wide view may lie outside the selected HRRR coverage; weather
 readiness gates the chart; or the 20 s harness window is shorter than the real
-startup. No rendering or speed change is made by this result. Recommendation:
-stop and report; the next step needs an additional approved native process to
-separate those causes.
+startup. No rendering or speed change is made by this result. The recommendation at the time was to stop and report; separating those causes
+would have required an additional approved native process.

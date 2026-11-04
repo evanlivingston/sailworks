@@ -1,6 +1,10 @@
 # Normal startup rendering baseline — 2026-10-15
 
-**This is the reference workload:** the app as it opens with the saved local
+**Dated historical workload baseline (2026-10-15), not current performance.**
+See the [performance plan current state](rendering-performance-plan.md#current-state)
+for shipped status.
+
+**This was the reference workload:** the app as it opens with the saved local
 configuration, not a constructed heavy-data scene. No application renderer,
 numerical sampling, model selection, or display-density setting was changed.
 
@@ -43,8 +47,9 @@ probes, **not compositor-presented FPS or input-to-photon measurements**.
 | Reverse pan | 25.1 / 56.4 / 79.5 / 97.9 | 30 | 0.96 s |
 | Zoom out | 22.8 / 30.8 / 36.6 / 89.3 | 3 | 4.85 s |
 
-The post-replay probe includes a deliberate 200 ms quiet window, rendering,
-event-loop service, and worker completion. It is not a direct measure of full
+The post-replay worker-idle probe includes a deliberate 200 ms quiet window,
+rendering, event-loop service, and worker completion. That benchmark window is
+not the application's current chart debounce (`CHART_IDLE_MS = 100` ms). It is not a direct measure of full
 spatial coverage. Import/Qt initialization and snapshot copying are outside the
 startup timer. From controller construction to initial worker idle took a median
 **13.21 s** across the 12 runs. No overlay errors or logged warnings occurred in
@@ -93,7 +98,7 @@ that trace showed repeated collection serialization; `Collection.load_json()`
 calls `clear()`/`append()`, which save as they load. Treat that as a focused
 startup follow-up, not as an explanation of pan rendering costs.
 
-## Updated experiment plan
+## Historical experiment plan (2026-10-15)
 
 These findings supersede the synthetic fixture's optimization ordering:
 
