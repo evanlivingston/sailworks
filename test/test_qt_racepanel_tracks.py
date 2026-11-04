@@ -51,6 +51,7 @@ def test_load_tracks_uses_boat_ids_and_timestamps(panel):
     race = make_race("first")
     assert panel.load_race_tracks(race) == 2
     tracks = panel.race_tracks(race)
+    assert not panel.controller.core.trackManager.elements
     assert {track.boat_id for track in tracks} == {1, 2}
     assert all(track.race_id == race.race_id for track in tracks)
     assert all(
