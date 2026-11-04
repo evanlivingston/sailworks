@@ -2,7 +2,12 @@
 
 import weatherrouting
 
-from sailworks.qt.routingpanel import PARAMETER_HELP, SAFETY_HELP, RoutingPanel
+from sailworks.qt.routingpanel import (
+    PARAMETER_HELP,
+    SAFETY_HELP,
+    InfoButton,
+    RoutingPanel,
+)
 from test.qt_analysis_fakes import app
 
 
@@ -28,8 +33,20 @@ def test_safety_help_covers_every_routing_limit():
         assert len(text) > 80
 
 
-def test_info_button_shows_the_help_text():
+def test_info_button_opens_a_wrapped_popover_instead_of_a_tooltip():
     app()
     button = RoutingPanel._info_button(SAFETY_HELP["wave_proxy"])
-    assert button.toolTip() == SAFETY_HELP["wave_proxy"]
-    assert button.toolTipDuration() == 15000
+    assert isinstance(button, InfoButton)
+    assert button.info_text() == SAFETY_HELP["wave_proxy"]
+    # A native tooltip renders the text as an unreadable single line, so the
+    # explanation lives in a wrapped popover instead.
+    assert button.toolTip() == ""
+
+    button._open_popup()
+    assert button._popup is not None
+    assert button._popup.wordWrap()
+    assert 220 <= button._popup.maximumWidth() <= 360
+    assert button._popup.text() == SAFETY_HELP["wave_proxy"]
+
+    button._hide_popup()
+    assert button._popup is None

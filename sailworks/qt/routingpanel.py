@@ -6,7 +6,7 @@ import math
 from typing import cast
 
 import weatherrouting
-from PySide6.QtCore import QDateTime, Qt, Signal
+from PySide6.QtCore import QDateTime, QPoint, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -40,6 +40,94 @@ from sailworks.core.routingoptions import (
 from .dockchrome import style_scrollarea
 from .theme import section_label
 from .text import qt_text
+
+
+class InfoButton(QToolButton):
+    """ⓘ button that opens a readable, word-wrapped explanation."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(parent)
+        self._text = text
+        self._popup = None
+        self._show_timer = QTimer(self)
+        self._show_timer.setSingleShot(True)
+        self._show_timer.setInterval(200)
+        self._show_timer.timeout.connect(self._open_popup)
+        self.setText("i")
+        self.setAutoRaise(True)
+        self.setCursor(Qt.CursorShape.WhatsThisCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setFixedSize(18, 18)
+        self.setAccessibleName("More information")
+        self.setStyleSheet(
+            "QToolButton { border: 1px solid palette(mid); border-radius: 9px;"
+            " background: palette(base); color: palette(text);"
+            " font-size: 10px; padding: 0; }"
+            "QToolButton:hover { border-color: palette(highlight); }"
+        )
+
+    def info_text(self):
+        return self._text
+
+    def enterEvent(self, event):
+        self._show_timer.start()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._show_timer.stop()
+        self._hide_popup()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        self._show_timer.stop()
+        if self._popup is None:
+            self._open_popup()
+        else:
+            self._hide_popup()
+        super().mousePressEvent(event)
+
+    def hideEvent(self, event):
+        self._hide_popup()
+        super().hideEvent(event)
+
+    def _open_popup(self):
+        if self._popup is not None or not self._text:
+            return
+        popup = QLabel(self._text)
+        popup.setWordWrap(True)
+        popup.setMinimumWidth(220)
+        popup.setMaximumWidth(340)
+        popup.setWindowFlags(Qt.WindowType.ToolTip)
+        popup.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        popup.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        popup.setStyleSheet(
+            "QLabel { background-color: palette(base); color: palette(text);"
+            " border: 1px solid palette(mid); border-radius: 6px;"
+            " padding: 8px 10px; font-size: 12px; }"
+        )
+        popup.adjustSize()
+        anchor = self.mapToGlobal(QPoint(0, self.height() + 6))
+        screen = self.screen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            x = min(
+                max(anchor.x(), area.left() + 4),
+                area.right() - popup.width() - 4,
+            )
+            y = anchor.y()
+            if y + popup.height() > area.bottom() - 4:
+                y = self.mapToGlobal(QPoint(0, 0)).y() - popup.height() - 6
+            anchor = QPoint(x, y)
+        popup.move(anchor)
+        popup.show()
+        self._popup = popup
+
+    def _hide_popup(self):
+        if self._popup is not None:
+            self._popup.close()
+            self._popup.deleteLater()
+            self._popup = None
+
 
 # Plain-language help for the settings that used to show CDS-style one-liners.
 PARAMETER_HELP = {
@@ -210,31 +298,32 @@ class RoutingPanel(QWidget):
         self.safety_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
         self.safety_form.addRow(section_label("Routing limits"))
         self.limit_wind = QCheckBox("Maximum true wind")
-        self.limit_wind.setToolTip(SAFETY_HELP["limit_wind"])
+        self.limit_wind.setAccessibleDescription(SAFETY_HELP["limit_wind"])
         self.maximum_wind = self._speed_control(30, 100)
-        self.maximum_wind.setToolTip(SAFETY_HELP["limit_wind"])
+        self.maximum_wind.setAccessibleDescription(SAFETY_HELP["limit_wind"])
         self.safety_form.addRow(
             self._row_with_info(self.limit_wind, SAFETY_HELP["limit_wind"]),
             self.maximum_wind,
         )
         self.motor_fallback = QCheckBox("Motor when sailing speed is below")
-        self.motor_fallback.setToolTip(SAFETY_HELP["motor_fallback"])
+        self.motor_fallback.setAccessibleDescription(SAFETY_HELP["motor_fallback"])
         self.minimum_sailing_speed = self._speed_control(3, 30)
-        self.minimum_sailing_speed.setToolTip(SAFETY_HELP["motor_fallback"])
+        self.minimum_sailing_speed.setAccessibleDescription(
+            SAFETY_HELP["motor_fallback"]
+        )
         self.safety_form.addRow(
             self._row_with_info(self.motor_fallback, SAFETY_HELP["motor_fallback"]),
             self.minimum_sailing_speed,
         )
         self.motor_speed = self._speed_control(5, 30)
-        self.motor_speed.setToolTip(SAFETY_HELP["motor_speed"])
+        self.motor_speed.setAccessibleDescription(SAFETY_HELP["motor_speed"])
         motor_label = QLabel("Motoring speed")
-        motor_label.setToolTip(SAFETY_HELP["motor_speed"])
         self.safety_form.addRow(
             self._row_with_info(motor_label, SAFETY_HELP["motor_speed"]),
             self.motor_speed,
         )
         self.wave_proxy = QCheckBox("Wind-based speed reduction (wave proxy)")
-        self.wave_proxy.setToolTip(SAFETY_HELP["wave_proxy"])
+        self.wave_proxy.setAccessibleDescription(SAFETY_HELP["wave_proxy"])
         self.safety_form.addRow(
             self._row_with_info(self.wave_proxy, SAFETY_HELP["wave_proxy"])
         )
@@ -317,18 +406,7 @@ class RoutingPanel(QWidget):
 
     @staticmethod
     def _info_button(text):
-        button = QToolButton()
-        button.setText("i")
-        button.setAutoRaise(True)
-        button.setToolTip(text)
-        button.setToolTipDuration(15000)
-        button.setFixedSize(16, 16)
-        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        button.setStyleSheet(
-            "QToolButton { border: 1px solid #777; border-radius: 8px;"
-            " font-size: 9px; padding: 0; }"
-        )
-        return button
+        return InfoButton(text)
 
     def _row_with_info(self, widget, text):
         row = QWidget()
@@ -360,7 +438,9 @@ class RoutingPanel(QWidget):
             widget = self._parameter_widget(param, values.get(key, param.value))
             if widget is None:
                 continue
-            widget.setToolTip(PARAMETER_HELP.get(key, param.tooltip or param.name))
+            widget.setAccessibleDescription(
+                PARAMETER_HELP.get(key, param.tooltip or param.name)
+            )
             widget.setAccessibleName(param.name)
             label = QLabel(qt_text(param.name))
             label.setWordWrap(True)
