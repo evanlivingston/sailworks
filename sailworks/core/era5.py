@@ -335,6 +335,7 @@ class Era5DownloadService:
         self.validator = validator
         self._lock = threading.Lock()
         self._jobs = {}
+        self._job_plans = {}
         self.errors = {}
         self.progress = {}
         self._resume_threads = []
@@ -343,10 +344,29 @@ class Era5DownloadService:
 
     _job_key = staticmethod(job_key)
 
+    def _matching_key(self, plan):
+        key = self._job_key(plan)
+        # Tolerance closeness is not transitive, so it cannot be encoded in a key.
+        matches = (
+            candidate
+            for candidate, stored in self._job_plans.items()
+            if candidate[:2] == key[:2]
+            and candidate[3:] == key[3:]
+            and _areas_close(stored.area, plan.area)
+        )
+        found = list(matches)
+        return next((k for k in found if k in self._jobs), next(iter(found), None))
+
+    def key_for(self, plan):
+        """Return the stored identity for the job matching a request, if any."""
+        with self._lock:
+            return self._matching_key(plan)
+
     def submit(self, plan, *, retry=False):
         key = self._job_key(plan)
         with self._lock:
-            prior = self._jobs.get(key)
+            matched = self._matching_key(plan)
+            prior = self._jobs.get(matched)
             if prior and prior[0].is_alive():
                 return prior[0]
             cancel = threading.Event()
@@ -359,19 +379,21 @@ class Era5DownloadService:
             thread = threading.Thread(
                 target=self._run_guarded, args=(key, plan, cancel, retry), daemon=True
             )
+            thread.era5_key = key
             self._jobs[key] = (thread, cancel)
+            self._job_plans[key] = plan
             thread.start()
             return thread
 
     def cancel(self, plan):
         with self._lock:
-            job = self._jobs.get(self._job_key(plan))
+            job = self._jobs.get(self._matching_key(plan))
             if job:
                 job[1].set()
 
     def progress_for(self, plan):
-        key = self._job_key(plan)
         with self._lock:
+            key = self._matching_key(plan) or self._job_key(plan)
             entry = self.progress.get(key)
             return dict(entry) if entry is not None else None
 
@@ -389,6 +411,13 @@ class Era5DownloadService:
             finished = [key for key in registry if key not in self._jobs]
             for key in finished[:-128]:
                 del registry[key]
+        for key in list(self._job_plans):
+            if (
+                key not in self._jobs
+                and key not in self.progress
+                and key not in self.errors
+            ):
+                del self._job_plans[key]
 
     def _set_progress(self, key, *, done=None, total=None, stage=None):
         with self._lock:

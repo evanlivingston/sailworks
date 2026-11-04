@@ -92,6 +92,67 @@ def test_job_key_canonicalizes_area_noise(tmp_path):
     assert service._load_pending()[0]["area"] == list(first.area)
 
 
+def test_jobs_match_area_tolerance_across_rounding_boundary(tmp_path):
+    from sailworks.core.era5 import job_key
+
+    service = Era5DownloadService(SimpleNamespace(root=tmp_path))
+    first = plan("2025-01-01T00:00", "2025-01-01T00:00", (50.004999, -10, 40, 5))
+    nearby = plan("2025-01-01T00:00", "2025-01-01T00:00", (50.005001, -10, 40, 5))
+    distant = plan("2025-01-01T00:00", "2025-01-01T00:00", (50.024999, -10, 40, 5))
+    assert job_key(first) != job_key(nearby)
+    entered, release = threading.Event(), threading.Event()
+
+    def run(request, cancel, retry):
+        entered.set()
+        assert release.wait(5)
+        if request is first:
+            raise Era5Error("download failed")
+
+    service._run = run
+    try:
+        running = service.submit(first)
+        assert entered.wait(5)
+        assert service.submit(nearby) is running
+        assert service.key_for(nearby) == running.era5_key == job_key(first)
+        assert service.progress_for(nearby) == service.progress_for(first)
+        other = service.submit(distant)
+        assert other is not running
+        service.cancel(nearby)
+        assert service._jobs[job_key(first)][1].is_set()
+    finally:
+        release.set()
+        running.join(5)
+        other.join(5)
+    assert service.error_for(running.era5_key) == "download failed"
+    assert service.clear_error(service.key_for(nearby)) == "download failed"
+
+
+def test_area_exact_tolerance_matches_and_running_preferred(tmp_path):
+    from sailworks.core.era5 import job_key
+
+    service = Era5DownloadService(SimpleNamespace(root=tmp_path))
+    base = plan("2025-01-01T00:00", "2025-01-01T00:00", (50, 0, 40, 5))
+    edge = plan("2025-01-01T00:00", "2025-01-01T00:00", (50, 0.01, 40, 5))
+    beyond = plan("2025-01-01T00:00", "2025-01-01T00:00", (50, 0.02, 40, 5))
+    entered, release = threading.Event(), threading.Event()
+
+    def run(request, cancel, retry):
+        if request is beyond:
+            entered.set()
+            assert release.wait(5)
+
+    service._run = run
+    service.submit(base).join(5)
+    running = service.submit(beyond)
+    try:
+        assert entered.wait(5)
+        assert service.submit(edge) is running
+        assert service.key_for(edge) == job_key(beyond)
+    finally:
+        release.set()
+        running.join(5)
+
+
 def test_resume_threads_pruned_without_polling(tmp_path):
     service = Era5DownloadService(SimpleNamespace(root=tmp_path))
     first = plan("2025-01-01T00:00", "2025-01-01T00:00")
