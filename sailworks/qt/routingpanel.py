@@ -87,14 +87,16 @@ class RoutingPanel(QWidget):
         form.addRow("Departure (local)", self.departure)
         self.map_start = None
         self.map_destination = None
+        # The start mode depends on the chosen track/POI, so pick the
+        # destination first.
+        self.destination = QComboBox()
         self.start_mode = QComboBox()
         self.start_mode.addItem("First waypoint", "first-track-point")
         self.start_mode.addItem("Boat position", "boat-position")
-        self.start_mode.currentIndexChanged.connect(self._plan_changed)
-        form.addRow("Start", self.start_mode)
-        self.destination = QComboBox()
         self.destination.currentIndexChanged.connect(self._plan_changed)
+        self.start_mode.currentIndexChanged.connect(self._plan_changed)
         form.addRow("Waypoints / destination", self.destination)
+        form.addRow("Start", self.start_mode)
         self.coastlines = QCheckBox("Check coastlines")
         self.coastlines.setChecked(True)
         form.addRow(self.coastlines)
