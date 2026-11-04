@@ -780,7 +780,8 @@ def publish_history_display(state, entries, *, model_id="ERA5"):
         run_time,
         "deterministic",
         ("wind", "pressure"),
-        ("surface",),
+        # Routing requires the 10 m wind level identity used by GRIB.
+        ("10-HTGL",),
         region,
         "0.25",
         times,
@@ -788,7 +789,9 @@ def publish_history_display(state, entries, *, model_id="ERA5"):
         now,
         field_times=(("wind", times), ("pressure", times)),
     )
-    tranche = ForecastTranche(f"era5-{artifact.sha256[:16]}", now, (config,), (entry,))
+    tranche = ForecastTranche(
+        f"era5-{artifact.sha256[:16]}-v2", now, (config,), (entry,)
+    )
     state.store.publish(tranche)
     state.store.activate(AnalysisSelection(tranche.tranche_id, entry.entry_id))
     return tranche
