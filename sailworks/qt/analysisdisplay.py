@@ -82,6 +82,7 @@ class DisplaySourceSelection(QObject):
         self.choices = ()
         self._selected = None
         self._selected_key = ""
+        self._scan_state = (False, False)
         selection.changed.connect(self._refresh)
         self._refresh()
 
@@ -147,7 +148,12 @@ class DisplaySourceSelection(QObject):
                 ),
             )
         )
-        refreshed = choices != self.choices
+        # A scan that ends with an empty list changes nothing about the
+        # choices, but the panel must still hear that scanning finished so it
+        # can drop a stale saved selection.
+        scan_state = (self.loading, self.scan_complete)
+        refreshed = choices != self.choices or scan_state != self._scan_state
+        self._scan_state = scan_state
         self.choices = choices
         selected = next(
             (choice for choice in choices if choice.key == self._selected_key), None
