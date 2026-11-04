@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from sailworks.core.era5 import (
     Era5DownloadService,
     Era5Error,
+    job_key,
     plan_request,
     publish_history_display,
 )
@@ -312,9 +313,7 @@ class Era5DownloadTab(QWidget):
             return
         try:
             self.plan = self._make_plan(fields)
-            self.service.errors.pop(
-                (self.plan.start, self.plan.end, self.plan.area), None
-            )
+            self.service.clear_error(job_key(self.plan))
             self.job = self.service.submit(self.plan)
             self.progress.setRange(0, 0)
             self.progress.setFormat("Contacting CDS…")
@@ -438,7 +437,7 @@ class Era5DownloadTab(QWidget):
     def retry(self):
         if self.plan is None or (self.job is not None and self.job.is_alive()):
             return
-        self.service.errors.pop((self.plan.start, self.plan.end, self.plan.area), None)
+        self.service.clear_error(job_key(self.plan))
         self.job = self.service.submit(self.plan, retry=True)
         self.progress.setRange(0, 0)
         self.progress.setFormat("Contacting CDS…")
@@ -496,8 +495,7 @@ class Era5DownloadTab(QWidget):
         if plan is None:
             self.job = None
             return
-        key = (plan.start, plan.end, plan.area)
-        error = self.service.errors.pop(key, None)
+        error = self.service.clear_error(job_key(plan))
         info = progress_for(plan) if progress_for else None
         stage = (info or {}).get("stage")
         if error:

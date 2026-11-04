@@ -28,6 +28,18 @@ from unittest.mock import Mock, patch
 START = datetime(2026, 1, 1)
 
 
+def test_degenerate_circular_blend():
+    from sailworks.core.gribsampling import _circular_blend
+
+    result = _circular_blend(
+        np.array([90.0, 0.0, 90.0, 90.0]),
+        np.array([270.0, 180.0, 270.0 + 1e-10, 270.0]),
+        np.array([0.5, 0.5, 0.5, 0.500000000001]),
+    )
+    assert np.isfinite(result).all()
+    np.testing.assert_allclose(result, [90, 0, 90, 270])
+
+
 def test_streamline_value_blend_matches_sampler_without_provenance_side_effects():
     a = np.array(
         [[1.0, 2.0], [np.nan, 3.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0], [1.0, 2.0]]
@@ -114,6 +126,18 @@ class TestGribSampling(unittest.TestCase):
                 "wave_direction", when, [lat], [lon]
             )[0, 0]
             self.assertAlmostEqual((bearing + 180) % 360 - 180, 0)
+
+    def test_opposite_spatial_bearings(self):
+        metadata = {"GRIB_SHORT_NAME": "0-SFC", "GRIB_UNIT": "[deg]"}
+        for first, second in ((90, 270), (0, 180), (90, 270.00000000001)):
+            source = self.file(
+                [("mwd", 0, [[first, second], [first, second]], metadata)]
+            )
+            sampler = WeatherSampler([source])
+            for lon, expected in ((0.5, first), (0.500000000001, second)):
+                bearing = sampler.sample("wave_direction", START, [0.5], [lon])[0, 0]
+                self.assertTrue(math.isfinite(bearing))
+                self.assertAlmostEqual(bearing, expected)
 
     def file(
         self,

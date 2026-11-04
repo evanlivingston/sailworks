@@ -49,17 +49,29 @@ def wind_value(uv):
     return (math.degrees(math.atan2(-u, -v)) + 360) % 360, math.hypot(u, v)
 
 
-def _circular_blend(a, b, t):
-    a, b = np.deg2rad(a), np.deg2rad(b)
-    result = (
-        np.degrees(
-            np.arctan2(
-                (1 - t) * np.sin(a) + t * np.sin(b), (1 - t) * np.cos(a) + t * np.cos(b)
-            )
-        )
-        % 360
+CIRCULAR_EPSILON = 1e-10
+
+
+def _circular_result(sine, cosine, total, fallback):
+    # A near-zero resultant uses the largest-weight bearing, first on ties.
+    result = np.degrees(np.arctan2(sine, cosine)) % 360
+    result = np.where(
+        np.hypot(sine, cosine) < CIRCULAR_EPSILON * total,
+        np.nan_to_num(fallback) % 360,
+        result,
     )
-    return np.where(result >= 360, 0, result)
+    return np.where(np.isfinite(result) & (result < 360), result, 0)
+
+
+def _circular_blend(a, b, t):
+    ar, br = np.deg2rad(a), np.deg2rad(b)
+    wa, wb = 1 - t, t
+    return _circular_result(
+        wa * np.sin(ar) + wb * np.sin(br),
+        wa * np.cos(ar) + wb * np.cos(br),
+        np.abs(wa) + np.abs(wb),
+        np.where(wa >= wb, a, b),
+    )
 
 
 def model_key(metadata, source):
@@ -334,12 +346,19 @@ class GridIndex:
         circular = not vector and record.element in WAVE_DIRECTION_ELEMENTS
         sine = np.zeros(lats.shape) if circular else None
         cosine = np.zeros(lats.shape) if circular else None
+        best_weight = np.full(lats.shape, -1.0) if circular else None
+        fallback = np.zeros(lats.shape) if circular else None
+        total_weight = np.zeros(lats.shape) if circular else None
         for position, (xx, yy, weight) in enumerate(corners):
             corner = array[yy, xx]
             needed = weight > 1e-12
             inside &= ~needed | np.isfinite(corner)
             contribution = np.where(needed, np.nan_to_num(corner) * weight, 0)
             if circular:
+                better = weight > best_weight
+                fallback = np.where(better, np.nan_to_num(corner), fallback)
+                best_weight = np.where(better, weight, best_weight)
+                total_weight += weight
                 radians = np.deg2rad(np.nan_to_num(corner))
                 sine += np.sin(radians) * weight
                 cosine += np.cos(radians) * weight
@@ -350,8 +369,7 @@ class GridIndex:
                 )
             value += contribution
         if circular:
-            value = np.degrees(np.arctan2(sine, cosine)) % 360
-            value = np.where(value >= 360, 0, value)
+            value = _circular_result(sine, cosine, total_weight, fallback)
         return np.where(inside[:, None] if vector else inside, value, np.nan)
 
     def _corner_basis(self, record, corners):
