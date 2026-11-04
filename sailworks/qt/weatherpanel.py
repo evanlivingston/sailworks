@@ -52,10 +52,11 @@ class ForecastModelSelector(QComboBox):
                 self.addItem("No published model selection", "")
                 return
             choices = self._choices(analysis)
-            for label, data in choices:
-                self.addItem(label, data)
-            key = (active.tranche.tranche_id, active.entry.entry_id)
-            index = self.findData(key)
+            self._targets = {}
+            for label, model_id, target in choices:
+                self.addItem(label, model_id)
+                self._targets[model_id] = target
+            index = self.findData(active.entry.model_id)
             if index < 0:
                 index = self.findText(display_model_name(active.entry.model_id))
             if index >= 0:
@@ -75,12 +76,19 @@ class ForecastModelSelector(QComboBox):
         a refresh, while selecting here decides which model the session uses.
         """
         store = analysis.state.store
+        manifests = getattr(store, "manifests", None)
+        if manifests is None:
+            active = getattr(analysis, "active", None)
+            tranches = [active.tranche] if active is not None else []
+        else:
+            tranches = []
+            for path in manifests.glob("*.json"):
+                try:
+                    tranches.append(store.load(path.stem))
+                except Exception:
+                    continue
         newest = {}
-        for path in store.manifests.glob("*.json"):
-            try:
-                tranche = store.load(path.stem)
-            except Exception:
-                continue
+        for tranche in tranches:
             for entry in tranche.entries:
                 if "wind" not in entry.fields:
                     continue
@@ -95,24 +103,30 @@ class ForecastModelSelector(QComboBox):
                     )
         ordered = sorted(newest.items(), key=lambda item: item[1][0], reverse=True)
         return [
-            (display_model_name(model_id), data) for model_id, (_run, data) in ordered
+            (display_model_name(model_id), model_id, data)
+            for model_id, (_run, data) in ordered
         ]
 
     def _select(self, index):
         analysis = self._analysis()
         if analysis is None or index < 0:
             return
-        data = self.itemData(index)
-        if not isinstance(data, tuple) or len(data) != 2:
+        model_id = self.itemData(index)
+        target = getattr(self, "_targets", {}).get(model_id)
+        if target is None:
             return
-        tranche_id, entry_id = data
+        tranche_id, entry_id = target
         active = getattr(analysis, "active", None)
         if active is not None and (
             active.tranche.tranche_id,
             active.entry.entry_id,
         ) == (tranche_id, entry_id):
             return
-        analysis.activate(tranche_id, entry_id)
+        activate = getattr(analysis, "activate", None)
+        if callable(activate):
+            activate(tranche_id, entry_id)
+        else:
+            analysis.select_model(model_id)
 
 
 class WeatherPanel(QWidget):

@@ -167,17 +167,23 @@ def _times(variable):
 
 
 def _select(plan, lat, lon):
-    lo = plan.area[1] % 360
-    hi = plan.area[3] % 360
-    if lo > hi:
-        raise ValueError("NBS area must not wrap the dateline")
-    lat_mask = (lat >= plan.area[2]) & (lat <= plan.area[0])
-    lon_mask = (lon >= lo) & (lon <= hi)
-    lat_index = np.where(lat_mask)[0]
-    lon_index = np.where(lon_mask)[0]
+    west = plan.area[1] % 360
+    east = plan.area[3] % 360
+    lat_index = np.where((lat >= plan.area[2]) & (lat <= plan.area[0]))[0]
+    if west <= east:
+        lon_index = np.where((lon >= west) & (lon <= east))[0]
+        lon_values = lon[lon_index]
+    else:
+        left = np.where(lon >= west)[0]
+        right = np.where(lon <= east)[0]
+        lon_index = np.concatenate([left, right])
+        lon_values = np.concatenate([lon[left], lon[right]])
     if len(lat_index) < 2 or len(lon_index) < 2:
         raise NbsError("NBS selection is smaller than a GRIB grid")
-    return lat_index, lon_index
+    # NBS stores 0..360; use -180..180 so a box crossing the meridian stays
+    # one contiguous grid.
+    lon_values = np.where(lon_values > 180, lon_values - 360, lon_values)
+    return lat_index, lon_index, lon_values
 
 
 def encode_grib(plan, paths, destination):
@@ -196,9 +202,8 @@ def encode_grib(plan, paths, destination):
             try:
                 lat = np.asarray(dataset.variables["lat"][:], dtype=float)
                 lon = np.asarray(dataset.variables["lon"][:], dtype=float)
-                lat_index, lon_index = _select(plan, lat, lon)
+                lat_index, lon_index, selected_lon = _select(plan, lat, lon)
                 selected_lat = lat[lat_index]
-                selected_lon = lon[lon_index]
                 times = _times(dataset.variables["time"])
                 wanted = set(plan.times)
                 for index, valid in enumerate(times):

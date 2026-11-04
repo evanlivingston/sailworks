@@ -65,6 +65,24 @@ def test_plan_rejects_latency_and_pre_coverage():
         _plan("1987-06-30T00:00", "1987-06-30T18:00")
 
 
+def test_select_crosses_the_prime_meridian():
+    lat = np.linspace(45.0, 50.0, 21)
+    lon = np.arange(0.0, 360.0, 0.25)
+    plan = nbs.plan_request(
+        datetime(2026, 5, 16, tzinfo=timezone.utc),
+        datetime(2026, 5, 16, 18, tzinfo=timezone.utc),
+        (49.0, -5.0, 45.0, 1.5),
+    )
+
+    lat_index, lon_index, lon_values = nbs._select(plan, lat, lon)
+
+    assert len(lat_index) == 17
+    assert len(lon_index) == len(lon_values) == 27
+    assert lon_values[0] == -5.0
+    assert lon_values[-1] == 1.5
+    assert np.all(np.diff(lon_values) > 0)
+
+
 def test_build_publishes_an_nbs_tranche(tmp_path, monkeypatch):
     times = [
         datetime(2026, 5, 16, hour, tzinfo=timezone.utc) for hour in (0, 6, 12, 18)

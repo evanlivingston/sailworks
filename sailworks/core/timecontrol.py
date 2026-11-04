@@ -38,10 +38,7 @@ def wall_to_utc(value: datetime.datetime) -> datetime.datetime:
     """Convert a local wall-clock time back to a naive-UTC timestamp."""
     if value is None:
         return None
-    if value.tzinfo is None:
-        epoch = value.timestamp()
-    else:
-        epoch = value.timestamp()
+    epoch = value.timestamp()
     return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).replace(
         tzinfo=None
     )

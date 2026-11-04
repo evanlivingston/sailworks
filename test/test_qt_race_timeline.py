@@ -26,6 +26,7 @@ class TestRaceTimeline(unittest.TestCase):
         self.window._apply_race_timeline_bounds = lambda **kwargs: (
             PreviewWindow._apply_race_timeline_bounds(self.window, **kwargs)
         )
+        self.window._apply_race_course = lambda race: None
 
     def test_forecast_change_preserves_only_overlapping_race(self):
         for sources, overlaps in (

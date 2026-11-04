@@ -30,17 +30,6 @@ def make_tab(tmp_path):
             "artifact": "history.grib",
         }
     ]
-    tab.history_status = __import__("PySide6.QtWidgets", fromlist=["QLabel"]).QLabel()
-    tab.sample_start = Era5DownloadTab._date(datetime(2020, 1, 1, tzinfo=timezone.utc))
-    tab.sample_end = Era5DownloadTab._date(datetime(2020, 1, 1, tzinfo=timezone.utc))
-    from PySide6.QtWidgets import QDoubleSpinBox
-
-    tab.sample_lat = QDoubleSpinBox()
-    tab.sample_lon = QDoubleSpinBox()
-    tab.sample_lat.setRange(-90, 90)
-    tab.sample_lon.setRange(-180, 180)
-    tab.sample_lat.setValue(45)
-    tab.sample_lon.setValue(-120)
     tab.catalog.selectRow(0)
     tab.nbs_job = None
     return tab
@@ -110,16 +99,18 @@ def test_history_model_list_dispatches_to_checked_models(tmp_path):
     calls = []
     tab.submit = lambda fields=None: calls.append(("era5", fields))
     tab.submit_nbs = lambda: calls.append(("nbs", None))
+    tab._range = (
+        datetime(2026, 5, 14, tzinfo=timezone.utc),
+        datetime(2026, 5, 15, tzinfo=timezone.utc),
+    )
 
     tab.model_checks["ERA5"].setChecked(False)
     tab.model_checks["NBS"].setChecked(True)
-    assert tab.instructions.isHidden()
     assert not tab.field_pressure.isEnabled()
     tab.start_download()
 
     tab.model_checks["NBS"].setChecked(False)
     tab.model_checks["ERA5"].setChecked(True)
-    assert not tab.instructions.isHidden()
     assert tab.field_pressure.isEnabled()
     tab.start_download()
 
@@ -140,6 +131,10 @@ def test_history_requires_at_least_one_model_and_wind(tmp_path):
     calls = []
     tab.submit = lambda fields=None: calls.append("era5")
     tab.submit_nbs = lambda: calls.append("nbs")
+    tab._range = (
+        datetime(2026, 5, 14, tzinfo=timezone.utc),
+        datetime(2026, 5, 15, tzinfo=timezone.utc),
+    )
 
     tab.model_checks["ERA5"].setChecked(False)
     tab.model_checks["NBS"].setChecked(False)
@@ -184,80 +179,3 @@ def test_unset_region_without_capture_explains_what_to_do(tmp_path):
 
     assert not tab._ensure_area()
     assert "Update region from current map" in tab.status.text()
-
-
-def test_sample_selected_samples_explicit_hours_without_forecast_activation(
-    tmp_path, monkeypatch
-):
-    app()
-    from sailworks.core.grib import Grib
-
-    calls = []
-    parsed = []
-
-    class Sampler:
-        def sample(self, variable, hour, lat, lon):
-            calls.append((variable, hour, lat, lon))
-            if variable == "wind":
-                return np.array([[3.0, 4.0]])
-            return np.array([[1012.0]])
-
-    class FakeGrib:
-        def sampler(self):
-            return Sampler()
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(
-        Grib, "parse", classmethod(lambda cls, path: parsed.append(path) or FakeGrib())
-    )
-    tab = make_tab(tmp_path)
-    activated = []
-    tab.controller = SimpleNamespace(
-        analysis=SimpleNamespace(select_model=activated.append)
-    )
-
-    for hour in (0, 1):
-        selected = datetime(2020, 1, 1, hour, tzinfo=timezone.utc)
-        utc_datetime = QDateTime(
-            QDate(selected.year, selected.month, selected.day),
-            QTime(selected.hour, 0),
-            Qt.TimeSpec.UTC,
-        )
-        tab.sample_start.setDateTime(utc_datetime)
-        tab.sample_end.setDateTime(utc_datetime)
-        tab.sample_selected()
-        assert f"2020-01-01 {hour:02}:00 UTC" in tab.history_status.text()
-        assert (
-            "wind u=3.00, v=4.00 m/s; pressure=1012.0 hPa" in tab.history_status.text()
-        )
-
-    assert parsed == [str(tmp_path / "history.grib")] * 2
-    assert [call[1] for call in calls[::2]] == [
-        datetime(2020, 1, 1, hour, tzinfo=timezone.utc) for hour in (0, 1)
-    ]
-    assert [call[0] for call in calls] == ["wind", "pressure"] * 2
-    assert all(call[2:] == (45, -120) for call in calls)
-    assert activated == []
-    tab.close()
-
-
-def test_sample_selected_rejects_hour_outside_history_coverage(tmp_path, monkeypatch):
-    app()
-    from sailworks.core.grib import Grib
-
-    parsed = []
-    monkeypatch.setattr(
-        Grib, "parse", classmethod(lambda cls, path: parsed.append(path))
-    )
-    tab = make_tab(tmp_path)
-    outside = datetime(2020, 1, 1, 2, tzinfo=timezone.utc)
-    tab.sample_start.setDateTime(QDateTime(outside))
-    tab.sample_end.setDateTime(QDateTime(outside))
-
-    tab.sample_selected()
-
-    assert "outside this history artifact's UTC coverage" in tab.history_status.text()
-    assert parsed == [str(tmp_path / "history.grib")]
-    tab.close()

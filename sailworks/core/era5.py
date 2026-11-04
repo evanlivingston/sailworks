@@ -487,6 +487,10 @@ class Era5DownloadService:
                 continue
             if not _areas_close(area, piece.area):
                 continue
+            requested = set(piece.request.get("variable") or VARIABLES)
+            covered = set(entry.get("variables") or VARIABLES)
+            if not requested <= covered:
+                continue
             if artifact.is_file():
                 return True
         return False

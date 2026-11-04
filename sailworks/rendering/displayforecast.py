@@ -89,7 +89,11 @@ def inspect_forecasts(entries):
             analysis_like = bool(records) and all(
                 abs(record.reference - record.valid) <= 1e-6 for record in records
             )
-            if analysis_like and len({record.valid for record in records}) > 1:
+            if (
+                analysis_like
+                and metadata.model_name in ("ERA5", "NBS")
+                and len({record.valid for record in records}) > 1
+            ):
                 times = tuple(sorted({record.valid for record in records}))
                 reference = min(times)
                 identity = (

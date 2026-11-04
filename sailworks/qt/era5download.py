@@ -2,13 +2,11 @@
 
 from datetime import datetime, timedelta, timezone
 import json
-import math
 import threading
 
-from PySide6.QtCore import QDate, QDateTime, QTime, QTimer, QTimeZone, Qt
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
-    QDateTimeEdit,
     QDoubleSpinBox,
     QGroupBox,
     QHBoxLayout,
@@ -84,24 +82,7 @@ class Era5DownloadTab(QWidget):
         parameters_layout.addStretch(1)
         columns.addWidget(parameters_box, 1)
         self.parameters_box = parameters_box
-
-        time_box = QGroupBox("Time range")
-        time_layout = QVBoxLayout(time_box)
-        now = datetime.now(timezone.utc).replace(
-            minute=0, second=0, microsecond=0
-        ) - timedelta(days=6)
-        self.start = self._date(now - timedelta(days=1))
-        self.end = self._date(now)
-        start_row = QHBoxLayout()
-        start_row.addWidget(QLabel("Start UTC"))
-        start_row.addWidget(self.start)
-        end_row = QHBoxLayout()
-        end_row.addWidget(QLabel("End UTC"))
-        end_row.addWidget(self.end)
-        time_layout.addLayout(start_row)
-        time_layout.addLayout(end_row)
-        time_layout.addStretch(1)
-        self.time_box = time_box
+        self._range = None
         columns.addStretch(1)
         layout.addLayout(columns)
 
@@ -115,14 +96,6 @@ class Era5DownloadTab(QWidget):
         self.region_status.setProperty("secondary", True)
         self.region_row.addWidget(self.region_status, 1)
         layout.addLayout(self.region_row)
-
-        self.instructions = QLabel(
-            "CDS setup: create ~/.cdsapirc with "
-            "url: https://cds.climate.copernicus.eu/api and "
-            "key: <personal-access-token>, then accept the ERA5 dataset terms "
-            "at https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels."
-        )
-        self.instructions.setWordWrap(True)
 
         self.request_button = QPushButton("Download selected history")
         self.request_button.clicked.connect(self.start_download)
@@ -162,31 +135,7 @@ class Era5DownloadTab(QWidget):
         self.catalog.horizontalHeader().setStretchLastSection(True)
         self.catalog.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.catalog.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        self.catalog.itemSelectionChanged.connect(self._history_selected)
         layout.addWidget(self.catalog)
-        samples = QHBoxLayout()
-        samples.addWidget(QLabel("Sample UTC"))
-        self.sample_start = self._date(now)
-        self.sample_end = self._date(now)
-        self.sample_start.setObjectName("historySampleStart")
-        self.sample_end.setObjectName("historySampleEnd")
-        samples.addWidget(self.sample_start)
-        samples.addWidget(QLabel("through"))
-        samples.addWidget(self.sample_end)
-        self.sample_lat = self._coord(90)
-        self.sample_lon = self._coord(180)
-        samples.addWidget(QLabel("Lat"))
-        samples.addWidget(self.sample_lat)
-        samples.addWidget(QLabel("Lon"))
-        samples.addWidget(self.sample_lon)
-        self.sample_button = QPushButton("Sample")
-        self.sample_button.clicked.connect(self.sample_selected)
-        samples.addWidget(self.sample_button)
-        self.history_status = QLabel(
-            "Select an imported history row to enable sampling."
-        )
-        samples.addWidget(self.history_status)
-        self.samples_row = samples
         self.timer = QTimer(self)
         self.timer.setInterval(500)
         self.timer.timeout.connect(self.poll)
@@ -212,21 +161,6 @@ class Era5DownloadTab(QWidget):
         spin.setRange(-limit, limit)
         spin.setDecimals(2)
         return spin
-
-    @staticmethod
-    def _date(value):
-        edit = QDateTimeEdit()
-        edit.setTimeZone(QTimeZone.utc())
-        edit.setDateTime(
-            QDateTime(
-                QDate(value.year, value.month, value.day),
-                QTime(value.hour, value.minute, value.second),
-                Qt.TimeSpec.UTC,
-            )
-        )
-        edit.setDisplayFormat("yyyy-MM-dd HH:00 'UTC'")
-        edit.setCalendarPopup(True)
-        return edit
 
     def use_visible_region(self):
         if self.capture_region is None:
@@ -275,7 +209,7 @@ class Era5DownloadTab(QWidget):
         return False
 
     def apply_race_request(self, region, start, end, *, auto_submit=True):
-        """Use the selected race's bounds and UTC window, hiding manual inputs."""
+        """Use the selected race's bounds and UTC window."""
         if region is not None:
             south, west, north, east = region
             for control, value in zip(
@@ -283,55 +217,29 @@ class Era5DownloadTab(QWidget):
                 (north, west, south, east),
             ):
                 control.setValue(float(value))
-        for edit, value, round_up in (
-            (self.start, start, False),
-            (self.end, end, True),
-        ):
-            if value is None:
-                continue
-            whole = value.replace(minute=0, second=0, microsecond=0)
-            if round_up and whole != value:
-                whole += timedelta(hours=1)
-            edit.setDateTime(
-                QDateTime(
-                    QDate(whole.year, whole.month, whole.day),
-                    QTime(whole.hour, whole.minute, whole.second),
-                    Qt.TimeSpec.UTC,
-                )
-            )
-
-        def hide_layout(layout):
-            for index in range(layout.count()):
-                widget = layout.itemAt(index).widget()
-                if widget is not None:
-                    widget.setVisible(False)
-
-        self.instructions.setVisible(False)
-        hide_layout(self.region_row)
-        self.time_box.setVisible(False)
-        hide_layout(self.samples_row)
+            self.region_status.setText(f"Using race region · {self._region_label()}")
+        self._range = (start, end) if start is not None and end is not None else None
+        self.region_row.itemAt(0).widget().setVisible(False)
         self.status.setText("Using the selected race's region and UTC time range.")
         if auto_submit:
-            self.submit()
+            self.start_download()
 
     def _make_plan(self, fields=None):
-        def as_utc(edit):
-            return edit.dateTime().toPython().replace(tzinfo=timezone.utc)
-
+        if self._range is None:
+            raise ValueError("Select a race to choose the download period.")
+        start, end = self._range
         return plan_request(
-            as_utc(self.start),
-            as_utc(self.end),
-            (
-                self.north.value(),
-                self.west.value(),
-                self.south.value(),
-                self.east.value(),
-            ),
+            start,
+            end,
+            self._area(),
             fields=fields or self._selected_fields(),
         )
 
     def start_download(self):
         """Download every checked model with the checked parameters."""
+        if self._range is None:
+            self.status.setText("Select a race to choose the download period.")
+            return
         models = self._selected_models()
         if not models:
             self.status.setText("Select at least one model to download.")
@@ -365,7 +273,6 @@ class Era5DownloadTab(QWidget):
         era5 = self.model_checks["ERA5"].isChecked()
         nbs = self.model_checks["NBS"].isChecked()
         self.field_pressure.setEnabled(era5)
-        self.instructions.setVisible(era5)
         if not era5 and not nbs:
             self.status.setText("Select at least one model to download.")
         elif nbs and not era5:
@@ -416,8 +323,10 @@ class Era5DownloadTab(QWidget):
             return
         if not self._ensure_area():
             return
-        start = self.start.dateTime().toPython().replace(tzinfo=timezone.utc)
-        end = self.end.dateTime().toPython().replace(tzinfo=timezone.utc)
+        if self._range is None:
+            self.status.setText("Select a race to choose the download period.")
+            return
+        start, end = self._range
         try:
             plan = nbs.plan_request(
                 start,
@@ -787,95 +696,3 @@ class Era5DownloadTab(QWidget):
             else:
                 self.catalog.item(index, 4).setToolTip(str(row["artifact"]))
         self.catalog.blockSignals(False)
-        downloaded = sum(1 for row in rows if row["kind"] == "complete")
-        queued = sum(1 for row in rows if row["kind"] == "queued")
-        self.history_status.setText(f"{downloaded} downloaded, {queued} queued.")
-
-    def _history_selected(self):
-        row = self.catalog.currentRow()
-        if row < 0 or row >= len(self._rows):
-            self.history_status.setText(
-                "Select an imported history row to enable sampling."
-            )
-            return
-        data = self._rows[row]
-        if data["kind"] == "queued":
-            self.history_status.setText(
-                f"Queued at CDS (request {data.get('request_id', '')}). "
-                "Sampling is available after the download completes."
-            )
-            return
-        self.history_status.setText(
-            f"Selected {self._coverage_label(data['start'], data['end'])}; "
-            "choose an inclusive UTC sample hour."
-        )
-
-    def sample_selected(self):
-        row = self.catalog.currentRow()
-        if row < 0 or row >= len(self._rows):
-            self.history_status.setText(
-                "Select an imported history row before sampling."
-            )
-            return
-        data = self._rows[row]
-        if data["kind"] != "complete":
-            self.history_status.setText(
-                "This chunk is still queued at CDS; sampling is not available yet."
-            )
-            return
-        artifact = str(data["artifact"])
-        from sailworks.core.grib import Grib
-
-        grib = None
-        try:
-            path = self.service.store.root / artifact
-            grib = Grib.parse(str(path))
-            start = self._sample_hour(row)
-            lat, lon = self.sample_lat.value(), self.sample_lon.value()
-            sampler = grib.sampler()
-            wind = sampler.sample("wind", start, lat, lon)
-            pressure = sampler.sample("pressure", start, lat, lon)
-            u, v, pressure = self._sample_values(wind, pressure)
-            self.history_status.setText(
-                f"{start:%Y-%m-%d %H:00 UTC} at {lat:.2f}, {lon:.2f}: "
-                f"wind u={u:.2f}, v={v:.2f} m/s; pressure={pressure:.1f} hPa"
-            )
-        except Exception as exc:
-            self.history_status.setText(f"Sampling failed: {exc}")
-        finally:
-            if grib is not None:
-                grib.close()
-
-    def _sample_hour(self, row):
-        start = self.sample_start.dateTime().toPython().replace(tzinfo=timezone.utc)
-        end = self.sample_end.dateTime().toPython().replace(tzinfo=timezone.utc)
-        if start != end:
-            raise ValueError("Sample one explicitly selected UTC hour at a time.")
-        entry = self._rows[row].get("entry")
-        if entry is None:
-            raise ValueError("This chunk has not been downloaded yet")
-        coverage_start = datetime.fromisoformat(entry["start"].replace("Z", "+00:00"))
-        coverage_end = datetime.fromisoformat(entry["end"].replace("Z", "+00:00"))
-        if coverage_start.tzinfo is None:
-            coverage_start = coverage_start.replace(tzinfo=timezone.utc)
-        if coverage_end.tzinfo is None:
-            coverage_end = coverage_end.replace(tzinfo=timezone.utc)
-        if not coverage_start <= start <= coverage_end:
-            raise ValueError(
-                "Selected hour is outside this history artifact's UTC coverage."
-            )
-        return start
-
-    @staticmethod
-    def _sample_values(wind, pressure):
-        if wind is None or pressure is None:
-            raise ValueError("No wind and pressure data at this hour/location.")
-        if wind.shape != (1, 2):
-            raise ValueError("Wind sample did not contain u and v components.")
-        if pressure.shape != (1, 1):
-            raise ValueError("Pressure sample did not contain one value.")
-        u, v = float(wind[0, 0]), float(wind[0, 1])
-        pressure = float(pressure[0, 0])
-        if not all(map(math.isfinite, (u, v, pressure))):
-            raise ValueError("Sample returned a non-finite wind or pressure value.")
-        return u, v, pressure

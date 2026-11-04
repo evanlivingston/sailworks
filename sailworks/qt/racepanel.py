@@ -593,7 +593,8 @@ class RacesPanel(QWidget):
                         options.region_status.setText("Using race bounds")
                     if hasattr(options, "_schedule_size_estimate"):
                         options._schedule_size_estimate()
-            except Exception:
+            except Exception as exc:
+                QMessageBox.warning(self, "Could not start weather request", str(exc))
                 return
 
     def boats_at_current_time(self):
