@@ -260,6 +260,54 @@ def test_all_points_selects_every_native_node_at_current_time(gribs, over_land):
         model.close()
 
 
+def test_a_scalar_wave_worker_publishes_its_gridded_form(gribs):
+    """The fill's worker is one scalar band with the gridded form enabled.
+
+    A wave artifact carries no U/V records, so the lattice cell must be
+    measured from the sources that contribute the worker's parameter: the
+    field's gridded form is what the fill interpolates.
+    """
+    import numpy as np
+    from sailworks.qt.gpuweather import decode_component
+
+    y, x = np.mgrid[:101, :101]
+    records = [
+        (
+            "HTSGW",
+            hour,
+            0.5 + x / 100 + 2 * y / 100 + 0.25 * hour,
+            {"GRIB_SHORT_NAME": "0-SFC", "GRIB_UNIT": "[m]"},
+        )
+        for hour in (0, 3)
+    ]
+    source = gribs.file(
+        records,
+        transform=(-0.005, 0.01, 0, -0.005, 0, 0.01),
+        end=3,
+    )
+    model = GribViewportModel(
+        (source.path,),
+        grid=True,
+        parameter="wave_height",
+        components=1,
+        selection=False,
+    )
+    try:
+        field, selection = _wait_ready(model, camera=_camera())
+        assert selection is None
+        assert field.staged.components == 1
+        assert field.grid is not None
+        lattice = field.grid.lattice
+        assert lattice.cols > 1 and lattice.rows > 1
+        # One scalar component plus the zero second component per endpoint.
+        assert len(field.grid.images) == 4
+        values = decode_component(field.grid.images[0])
+        assert values.shape == (lattice.rows, lattice.cols)
+        assert np.isfinite(values).any()
+    finally:
+        model.close()
+
+
 # -------------------------------------------------------------- coverage
 def test_a_covered_camera_move_reuses_the_resident_field(gribs):
     paths, _source = _paths(gribs)

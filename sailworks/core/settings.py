@@ -31,6 +31,9 @@ class SettingsManager(Storage):
         self.gribWindGradientSmooth = True
         self.gribWindGradientLevels = 15
         self.gribWaveOpacity = 0.85
+        # Persisted so the wave layer survives a restart; the wind layer has
+        # always reset, which reads as data loss once waves are in use.
+        self.gribWaveVisible = False
         self.gribWaveSmooth = True
         self.gribWaveLevels = 9
         # Wave direction arrows reuse the wind barbs' density modes, with

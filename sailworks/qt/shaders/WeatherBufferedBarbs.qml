@@ -26,6 +26,26 @@ Item {
         anchors.fill: parent
         visible: false
     }
+    // Wave height is an independent scalar layer; it must exist here too, or
+    // "Show wave height" can never draw while the wind style is barbs.
+    WeatherFill {
+        objectName: "waveFill"
+        anchors.fill: parent
+        visible: false
+        gradientLevels: 9
+        fragmentShader: Qt.resolvedUrl("wave.frag.qsb")
+        property string statusText: ""
+        property bool waveLoading: false
+    }
+    WeatherFill {
+        objectName: "waveFillBack"
+        anchors.fill: parent
+        visible: false
+        gradientLevels: 9
+        fragmentShader: Qt.resolvedUrl("wave.frag.qsb")
+        property string statusText: ""
+        property bool waveLoading: false
+    }
     // Shared node-anchor pool: one provider per atlas slot that both barbs
     // sample. Hidden, unsized and declared before the barbs, so the existing
     // parent chain and stacking are unchanged.

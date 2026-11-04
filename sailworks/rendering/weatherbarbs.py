@@ -200,7 +200,7 @@ def _field_images(staged):
     return tuple(images)
 
 
-def _lattice_plan(sampler, window, index):
+def _lattice_plan(sampler, window, index, parameter="wind"):
     """The gridded form's lattice, and the lattice's nodes the field holds.
 
     The lattice is a regular grid in the viewport's projection, so the GPU's
@@ -215,7 +215,7 @@ def _lattice_plan(sampler, window, index):
     """
     from sailworks.rendering.weathergrid import build_lattice, lattice_spacing
 
-    spacing = lattice_spacing(sampler, window)
+    spacing = lattice_spacing(sampler, window, parameter)
     if not spacing:
         return None
     lattice = build_lattice(window, spacing)
@@ -342,7 +342,7 @@ def stage_field(  # noqa: C901 - native/gridded forms share one sampling pass
     # nodes join the field's own nodes in ONE sampling pass, so the gridded
     # form adds no second pass over the weather; the nodes the field already
     # holds are reused instead of sampled again.
-    plan = _lattice_plan(sampler, window, index) if grid else None
+    plan = _lattice_plan(sampler, window, index, parameter) if grid else None
     query_lats = points[:, 0]
     query_lons = points[:, 1]
     if plan is not None:

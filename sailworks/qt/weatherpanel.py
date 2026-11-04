@@ -226,9 +226,7 @@ class WeatherPanel(QWidget):
         waves.addWidget(section_label("Waves"))
         self.wave = QCheckBox("Show wave height")
         self.wave.setChecked(active_map().wave_visible)
-        self.wave.toggled.connect(
-            lambda enabled: active_map().set_wave_visible(enabled)
-        )
+        self.wave.toggled.connect(self._toggle_wave)
         waves.addWidget(self.wave)
         # The wave display source belongs with the wave layers it switches,
         # not with the routing model selector: it never affects routing.
@@ -504,6 +502,11 @@ class WeatherPanel(QWidget):
         layout.addWidget(value_label)
         control.slider = slider
         return control
+
+    def _toggle_wave(self, enabled):
+        """Switch the wave layer and remember it across restarts."""
+        active_map().set_wave_visible(enabled)
+        self.set_preference("gribWaveVisible", bool(enabled))
 
     def set_preference(self, key, value):
         settings = self.controller.settings

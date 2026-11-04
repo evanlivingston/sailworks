@@ -179,7 +179,7 @@ def _resolution_metres(index):
     return step * METRES_PER_DEGREE
 
 
-def lattice_spacing(sampler, bounds):
+def lattice_spacing(sampler, bounds, parameter="wind"):
     """The lattice's cell, in degrees of the viewport's projection.
 
     The cell is the finest contributing source's own cell -- its latitude
@@ -187,12 +187,19 @@ def lattice_spacing(sampler, bounds):
     centre.  The projection is conformal, so one number serves both axes and
     the cell is square on the ground.  The gridded form therefore carries
     the native resolution and no more.
+
+    ``parameter`` selects the sources that contribute: a wave artifact holds
+    no wind records, so a wind-only selection would report no spacing and
+    deny its field a gridded form.
     """
+    from sailworks.core.gribsampling import FIELDS
+
+    elements = FIELDS[parameter]
     (south, _west), (north, _east) = bounds
     centre = 0.5 * (south + north)
     finest = 0.0
     for index in sampler.indices:
-        if not any(record.element in ("UGRD", "VGRD") for record in index.records):
+        if not any(record.element in elements for record in index.records):
             continue
         metres = _resolution_metres(index)
         if metres and (not finest or metres < finest):

@@ -123,6 +123,27 @@ Item {
         anchors.fill: parent
         visible: false
     }
+    // Wave height is an independent scalar layer; it must exist in the barb
+    // scene too, otherwise selecting "Show wave height" cannot draw anything
+    // when the wind style is barbs.
+    WeatherFill {
+        objectName: "waveFill"
+        anchors.fill: parent
+        visible: false
+        gradientLevels: 9
+        fragmentShader: Qt.resolvedUrl("wave.frag.qsb")
+        property string statusText: ""
+        property bool waveLoading: false
+    }
+    WeatherFill {
+        objectName: "waveFillBack"
+        anchors.fill: parent
+        visible: false
+        gradientLevels: 9
+        fragmentShader: Qt.resolvedUrl("wave.frag.qsb")
+        property string statusText: ""
+        property bool waveLoading: false
+    }
     function batchesReady() {
         let revision = batchRevision
         for (let i = 0; i < batches.count; ++i) {
