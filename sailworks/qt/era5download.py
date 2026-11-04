@@ -78,7 +78,7 @@ class Era5DownloadTab(QWidget):
             models_layout.addWidget(row)
             self.model_checks[model_id] = row.download_check
         models_layout.addStretch(1)
-        columns.addWidget(models_box, 3)
+        columns.addWidget(models_box, 1)
         self.models_box = models_box
 
         parameters_box = QGroupBox("Parameters")
@@ -90,7 +90,7 @@ class Era5DownloadTab(QWidget):
         parameters_layout.addWidget(self.field_wind)
         parameters_layout.addWidget(self.field_pressure)
         parameters_layout.addStretch(1)
-        columns.addWidget(parameters_box, 2)
+        columns.addWidget(parameters_box, 1)
         self.parameters_box = parameters_box
 
         time_box = QGroupBox("Time range")
@@ -109,7 +109,7 @@ class Era5DownloadTab(QWidget):
         time_layout.addLayout(start_row)
         time_layout.addLayout(end_row)
         time_layout.addStretch(1)
-        columns.addWidget(time_box, 2)
+        columns.addWidget(time_box, 1)
         self.time_box = time_box
         layout.addLayout(columns)
 
@@ -142,16 +142,11 @@ class Era5DownloadTab(QWidget):
         actions = QHBoxLayout()
         self.cancel_button = QPushButton("Cancel")
         self.retry_button = QPushButton("Retry")
+        for button in (self.cancel_button, self.retry_button):
+            button.setMinimumWidth(120)
         self.cancel_button.clicked.connect(self.cancel)
         self.retry_button.clicked.connect(self.retry)
-        self.show_button = QPushButton("Show on map")
-        self.show_button.setToolTip(
-            "Publish the downloaded ERA5 chunks as the display forecast and "
-            "jump the clock to their first hour"
-        )
-        self.show_button.clicked.connect(self._publish_history_display)
         actions.addStretch(1)
-        actions.addWidget(self.show_button)
         actions.addWidget(self.cancel_button)
         actions.addWidget(self.retry_button)
         layout.addLayout(actions)
@@ -384,7 +379,6 @@ class Era5DownloadTab(QWidget):
         nbs = self.model_checks["NBS"].isChecked()
         self.field_pressure.setEnabled(era5)
         self.instructions.setVisible(era5)
-        self.show_button.setVisible(era5)
         if not era5 and not nbs:
             self.status.setText("Select at least one model to download.")
         elif nbs and not era5:

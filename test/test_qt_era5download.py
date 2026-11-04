@@ -114,14 +114,12 @@ def test_history_model_list_dispatches_to_checked_models(tmp_path):
     tab.model_checks["ERA5"].setChecked(False)
     tab.model_checks["NBS"].setChecked(True)
     assert tab.instructions.isHidden()
-    assert tab.show_button.isHidden()
     assert not tab.field_pressure.isEnabled()
     tab.start_download()
 
     tab.model_checks["NBS"].setChecked(False)
     tab.model_checks["ERA5"].setChecked(True)
     assert not tab.instructions.isHidden()
-    assert not tab.show_button.isHidden()
     assert tab.field_pressure.isEnabled()
     tab.start_download()
 
