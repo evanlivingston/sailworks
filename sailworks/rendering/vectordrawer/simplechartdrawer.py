@@ -15,6 +15,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
 import math
+from collections import OrderedDict
 
 import cairo
 import numpy as np
@@ -29,6 +30,7 @@ class SimpleChartDrawer(VectorChartDrawer):
     def __init__(self, settings_manager):
         super().__init__(settings_manager)
         self._shorelines = ShorelineGeometryCache()
+        self._coordinate_cache = OrderedDict()
 
     def draw(self, gpsmap, cr, vector_file, bounding):
         stroke_style = Style.chart_palettes[self.palette].land_stroke
@@ -50,8 +52,9 @@ class SimpleChartDrawer(VectorChartDrawer):
                 if not feat:
                     continue
 
+                feature_key = (vector_file.GetDescription(), i, feat.GetFID())
                 geom = self._shorelines.clip(
-                    (vector_file.GetDescription(), i, feat.GetFID()),
+                    feature_key,
                     feat.GetGeometryRef(),
                     bounding,
                 )
@@ -64,6 +67,7 @@ class SimpleChartDrawer(VectorChartDrawer):
                     stroke_style,
                     fill_style,
                     contourn_style,
+                    feature_key,
                 )
                 feat = layer.GetNextFeature()
 
@@ -75,20 +79,27 @@ class SimpleChartDrawer(VectorChartDrawer):
         cr.stroke_preserve()
         cr.fill()
 
-    @staticmethod
-    def _geom_to_screen_batch(gpsmap, g):
+    def _geom_to_screen_batch(self, gpsmap, g, feature_key=None, ring_key=None):
         """Extract OGR geometry points and batch-convert to screen coords."""
         npts = g.GetPointCount()
         if npts == 0:
             return None, None
-        lats = np.empty(npts, dtype=np.float64)
-        lons = np.empty(npts, dtype=np.float64)
-        for ii in range(npts):
-            pt = g.GetPoint(ii)
-            lats[ii] = pt[1]
-            lons[ii] = pt[0]
-        xs, ys = gpsmap.convert_geographic_to_screen_batch(lats, lons)
-        return xs.tolist(), ys.tolist()
+        # WKB distinguishes clipped and simplified rings, including new clip
+        # vertices; retaining only the feature id would reuse stale positions.
+        key = (
+            feature_key,
+            ring_key if ring_key is not None else bytes(g.ExportToWkb()),
+        )
+        if not hasattr(self, "_coordinate_cache"):
+            self._coordinate_cache = OrderedDict()
+        if key not in self._coordinate_cache:
+            points = np.asarray(g.GetPoints(), dtype=np.float64)
+            self._coordinate_cache[key] = (points[:, 1].copy(), points[:, 0].copy())
+            if len(self._coordinate_cache) > 256:
+                self._coordinate_cache.popitem(last=False)
+        self._coordinate_cache.move_to_end(key)
+        lats, lons = self._coordinate_cache[key]
+        return gpsmap.convert_geographic_to_screen_batch(lats, lons)
 
     @staticmethod
     def _simplify_polygon(gpsmap, cr, geom):
@@ -121,7 +132,16 @@ class SimpleChartDrawer(VectorChartDrawer):
         return simplified
 
     def feature_render(
-        self, gpsmap, cr, geom, feat, layer, stroke_style, fill_style, contourn_style
+        self,
+        gpsmap,
+        cr,
+        geom,
+        feat,
+        layer,
+        stroke_style,
+        fill_style,
+        contourn_style,
+        feature_key=None,
     ):
         if geom is None or geom.IsEmpty():
             return
@@ -136,14 +156,18 @@ class SimpleChartDrawer(VectorChartDrawer):
                     stroke_style,
                     fill_style,
                     contourn_style,
+                    feature_key,
                 )
             return
         if geom.GetGeometryName() == "POLYGON":
             geom = self._simplify_polygon(gpsmap, cr, geom)
+        polygon_key = bytes(geom.ExportToWkb())
         cr.new_path()
         for i in range(geom.GetGeometryCount()):
             ring = geom.GetGeometryRef(i)
-            xs, ys = self._geom_to_screen_batch(gpsmap, ring)
+            xs, ys = self._geom_to_screen_batch(
+                gpsmap, ring, feature_key, (polygon_key, i)
+            )
             if xs is None:
                 continue
             cr.move_to(xs[0], ys[0])
