@@ -362,6 +362,12 @@ class Era5DownloadTab(QWidget):
         self.nbs_error = None
         self.nbs_tranche = None
         self.nbs_cancel = threading.Event()
+        self._nbs_status = {
+            "start": plan.start.isoformat(),
+            "end": plan.end.isoformat(),
+            "area": list(plan.area),
+            "status": "Downloading 0%",
+        }
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.progress.setFormat("%p%")
@@ -373,6 +379,8 @@ class Era5DownloadTab(QWidget):
 
         def report(percent, stage):
             self.nbs_progress = {"percent": percent, "stage": stage}
+            if getattr(self, "_nbs_status", None) is not None:
+                self._nbs_status["status"] = stage
 
         def work():
             try:
@@ -388,10 +396,14 @@ class Era5DownloadTab(QWidget):
     def _poll_nbs(self):
         if self.nbs_job.is_alive():
             info = self.nbs_progress or {}
-            self.progress.setValue(int(info.get("percent", 0)))
+            percent = int(info.get("percent", 0))
+            self.progress.setValue(percent)
             stage = info.get("stage")
             if stage:
                 self.status.setText(stage)
+            if getattr(self, "_nbs_status", None) is not None:
+                self._nbs_status["status"] = stage or f"Downloading {percent}%"
+            self.refresh_catalog()
             return
         self.nbs_job = None
         self.cancel_button.setEnabled(False)
@@ -400,12 +412,18 @@ class Era5DownloadTab(QWidget):
         if self.nbs_error:
             self.status.setText(f"Satellite wind download failed: {self.nbs_error}")
             self.progress.hide()
+            if getattr(self, "_nbs_status", None) is not None:
+                self._nbs_status["status"] = f"Failed: {self.nbs_error}"
+            self.refresh_catalog()
             return
         if self.nbs_tranche is not None:
             self.progress.setRange(0, 100)
             self.progress.setValue(100)
             self.progress.setFormat("Complete")
             self.status.setText("NOAA satellite-blended winds published.")
+            if getattr(self, "_nbs_status", None) is not None:
+                self._nbs_status["status"] = "Published"
+            self.refresh_catalog()
             self._show_tranche(self.nbs_tranche)
 
     def retry(self):
@@ -644,6 +662,20 @@ class Era5DownloadTab(QWidget):
                     "created": str(entry.get("created", "")),
                 }
             )
+        nbs_status = getattr(self, "_nbs_status", None)
+        if nbs_status:
+            rows.append(
+                {
+                    "kind": "nbs",
+                    "entry": None,
+                    "start": nbs_status.get("start"),
+                    "end": nbs_status.get("end"),
+                    "area": nbs_status.get("area", []),
+                    "variables": ["u10", "v10"],
+                    "artifact": "",
+                    "status": nbs_status.get("status", ""),
+                }
+            )
         rows.sort(key=lambda row: str(row.get("start") or ""))
         self._rows = rows
         self.catalog.blockSignals(True)
@@ -652,6 +684,9 @@ class Era5DownloadTab(QWidget):
             if row["kind"] == "complete":
                 status = "Downloaded"
                 artifact = str(row["artifact"]).rsplit("/", 1)[-1][:12]
+            elif row["kind"] == "nbs":
+                status = str(row.get("status", "Satellite winds"))
+                artifact = "—"
             else:
                 status = "Queued at CDS"
                 age = self._queued_age(row.get("created"))
@@ -678,9 +713,8 @@ class Era5DownloadTab(QWidget):
                 self.catalog.item(index, 4).setToolTip(str(row["artifact"]))
         self.catalog.blockSignals(False)
         downloaded = sum(1 for row in rows if row["kind"] == "complete")
-        self.history_status.setText(
-            f"{downloaded} downloaded, {len(rows) - downloaded} queued."
-        )
+        queued = sum(1 for row in rows if row["kind"] == "queued")
+        self.history_status.setText(f"{downloaded} downloaded, {queued} queued.")
 
     def _history_selected(self):
         row = self.catalog.currentRow()

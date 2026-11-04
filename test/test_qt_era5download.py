@@ -80,6 +80,22 @@ def test_poll_refreshes_queue_rows_while_download_runs(tmp_path):
     assert label.openExternalLinks()
 
 
+def test_refresh_catalog_shows_satellite_wind_status(tmp_path):
+    app()
+    tab = make_tab(tmp_path)
+    tab._nbs_status = {
+        "start": "2026-05-16T00:00:00+00:00",
+        "end": "2026-05-16T18:00:00+00:00",
+        "area": [49.54, -125.97, 45.2, -121.62],
+        "status": "Downloading NBS 2026-05-16…",
+    }
+
+    tab.refresh_catalog()
+
+    labels = [tab.catalog.item(row, 3).text() for row in range(tab.catalog.rowCount())]
+    assert "Downloading NBS 2026-05-16…" in labels
+
+
 def test_unset_region_is_filled_from_the_visible_map(tmp_path):
     app()
     from sailworks.core.tranchestore import TrancheStore

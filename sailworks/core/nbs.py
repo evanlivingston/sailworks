@@ -95,26 +95,49 @@ def plan_request(start, end, area, *, now=None):
     return NbsPlan(snapped_start, snapped_end, (north, west, south, east), tuple(days))
 
 
-def day_url(day: date):
+def day_url(day: date, *, nrt: bool = False):
+    if nrt:
+        return (
+            "https://coastwatch.noaa.gov/data/pub0015/coastwatch/blended/wind/"
+            f"nrt/uvcomp/6hr/NBSv02_wind_6hourly_{day:%Y%m%d}_nrt.nc"
+        )
     return f"{BASE_URL}/{day:%Y}/NBSv02_wind_6hourly_{day:%Y%m%d}.nc"
 
 
 def download_day(day: date, directory, *, timeout=120):
-    """Download one daily NBS file (cached by name in the directory)."""
+    """Download one daily NBS file, preferring the delayed-mode archive.
+
+    Delayed-mode (science) files lag about a month, so recent dates only exist
+    in the near-real-time tree; fall back to it when the archive lacks the day.
+    """
     import requests
 
     path = Path(directory) / f"NBSv02_wind_6hourly_{day:%Y%m%d}.nc"
     if path.is_file() and path.stat().st_size > 0:
         return path
-    url = day_url(day)
+    nrt_path = Path(directory) / f"NBSv02_wind_6hourly_{day:%Y%m%d}_nrt.nc"
+    if nrt_path.is_file() and nrt_path.stat().st_size > 0:
+        return nrt_path
+    errors = []
     try:
-        response = requests.get(url, timeout=timeout)
-        response.raise_for_status()
+        response = requests.get(day_url(day), timeout=timeout)
+        if response.status_code != 404:
+            response.raise_for_status()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(response.content)
+            return path
+        errors.append("archive file not published yet")
     except Exception as exc:  # network and HTTP failures
-        raise NbsError(f"NBS download failed for {day}: {exc}") from None
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(response.content)
-    return path
+        errors.append(str(exc))
+    try:
+        response = requests.get(day_url(day, nrt=True), timeout=timeout)
+        response.raise_for_status()
+    except Exception as exc:
+        errors.append(str(exc))
+        raise NbsError(f"NBS download failed for {day}: {'; '.join(errors)}") from None
+    nrt_path.parent.mkdir(parents=True, exist_ok=True)
+    nrt_path.write_bytes(response.content)
+    return nrt_path
 
 
 def _open_netcdf(path):
