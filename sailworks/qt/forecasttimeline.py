@@ -624,7 +624,7 @@ class ForecastTimeline(QWidget):
         if not self.bounds:
             return "Choose a display forecast in Weather, or download tides / currents"
         start, end = self.bounds
-        if not (start - 1 <= stamp <= end + 1):
+        if not (start <= stamp <= end):
             return "Selected time is outside the selected time range"
         if not any(
             first - 1 <= stamp <= last + 1
@@ -739,9 +739,7 @@ class ForecastTimeline(QWidget):
             return None
         start, end = self.bounds
         valid = tuple(
-            stamp
-            for stamp in self.day_strip.valid_times
-            if start - 1 <= stamp <= end + 1
+            stamp for stamp in self.day_strip.valid_times if start <= stamp <= end
         )
         return max(valid) if valid else end
 
@@ -794,9 +792,7 @@ class ForecastTimeline(QWidget):
             return now
         start, end = self.bounds
         valid = tuple(
-            stamp
-            for stamp in self.day_strip.valid_times
-            if start - 1 <= stamp <= end + 1
+            stamp for stamp in self.day_strip.valid_times if start <= stamp <= end
         )
         if valid:
             return min(valid, key=lambda stamp: abs(stamp - now))
