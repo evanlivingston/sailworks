@@ -369,6 +369,13 @@ class Era5DownloadTab(QWidget):
             set_time = getattr(self.controller, "time_control", None)
             if set_time is not None:
                 set_time.set_time(utc_to_wall(first_valid))
+            owner = self.parent()
+            while owner is not None:
+                fit_race = getattr(owner, "fit_race", None)
+                if callable(fit_race):
+                    fit_race()
+                    break
+                owner = owner.parent()
             refresh = getattr(analysis, "refresh", None)
             if callable(refresh):
                 refresh()

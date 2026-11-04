@@ -512,6 +512,10 @@ class RacesPanel(QWidget):
         self.refresh_boats()
         self.tracks_changed.emit()
         self.controller.time_control.set_time(utc_to_wall(self.race.start_time))
+        window = self.window()
+        fit_race = getattr(window, "fit_race", None)
+        if callable(fit_race):
+            fit_race()
 
     def show_weather_request(self):
         if self.race is None:

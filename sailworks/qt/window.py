@@ -786,6 +786,20 @@ class PreviewWindow(QMainWindow):
         )
         canvas.fit_track()
 
+    def fit_race(self):
+        race = getattr(self.race_panel, "race", None)
+        if race is None:
+            return
+        coordinates = [
+            (position.latitude, position.longitude)
+            for boat in race.boats
+            for position in boat.positions
+        ]
+        coordinates.extend(point for course in race.course for point in course.points)
+        if coordinates:
+            self.views.setCurrentWidget(self.map)
+            self.map.fit_coordinates(coordinates)
+
     def _fit_route(self):
         self.views.setCurrentWidget(self.map)
         self.map.fit_route()
