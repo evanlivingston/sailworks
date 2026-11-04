@@ -182,6 +182,55 @@ def test_failed_download_completion_consumes_job_error(tmp_path, monkeypatch):
     assert tab.status.text() == "After completion"
 
 
+def test_attached_job_with_different_key_reports_and_consumes_failure(
+    tmp_path, monkeypatch
+):
+    import threading
+
+    from sailworks.core.era5 import job_key, plan_request
+    from sailworks.core.tranchestore import TrancheStore
+
+    app()
+    store = TrancheStore(tmp_path)
+    controller = SimpleNamespace(
+        analysis=SimpleNamespace(state=SimpleNamespace(store=store))
+    )
+    tab = Era5DownloadTab(controller, capture_region=lambda: (50, -10, 40, 5))
+    start = datetime(2026, 5, 14, tzinfo=timezone.utc)
+    original = plan_request(start, start, (50.004999, -10, 40, 5))
+    attached = plan_request(start, start, (50.005001, -10, 40, 5))
+    assert job_key(original) != job_key(attached)
+    release = threading.Event()
+    started = threading.Event()
+
+    def fail_download(*args, **kwargs):
+        started.set()
+        release.wait(timeout=5)
+        raise RuntimeError("attached CDS download failed")
+
+    monkeypatch.setattr(tab.service, "_run", fail_download)
+    job = tab.service.submit(original)
+    try:
+        assert started.wait(timeout=5)
+        monkeypatch.setattr(tab, "_make_plan", lambda fields: attached)
+        tab.submit()
+        assert tab.job is job
+    finally:
+        release.set()
+        job.join(timeout=5)
+    assert not job.is_alive()
+    error = tab.service.error_for(job.era5_key)
+    assert "ERA5 download failed (RuntimeError)" in error
+
+    tab.poll()
+    assert tab.status.text() == error
+    assert tab.service.error_for(job.era5_key) is None
+    assert tab.job is None
+    tab.status.setText("After completion")
+    tab.poll()
+    assert tab.status.text() == "After completion"
+
+
 def test_failed_resume_completion_consumes_job_error(tmp_path):
     app()
     from sailworks.core.era5 import Era5DownloadService, job_key, plan_request
