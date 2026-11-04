@@ -35,6 +35,13 @@ class Fixture(unittest.TestCase):
             QtPreviewChecks.setUp(self)
 
     drain = QtPreviewChecks.drain
+    # The shared setUp settles the display forecast; these fixtures reuse the
+    # same waits without inheriting from QtPreviewChecks.
+    forecast_scan_pending = QtPreviewChecks.forecast_scan_pending
+    settle_forecast = QtPreviewChecks.settle_forecast
+    SETTLE_POLLS = QtPreviewChecks.SETTLE_POLLS
+    SETTLE_POLL_MS = QtPreviewChecks.SETTLE_POLL_MS
+    SETTLE_DEADLINE = QtPreviewChecks.SETTLE_DEADLINE
 
     def wait(self, predicate, timeout=8):
         deadline = time.monotonic() + timeout
