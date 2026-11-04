@@ -39,6 +39,30 @@ Item {
                 objectName: "baseBand"
                 width: mapClip.width
                 height: mapClip.height
+                Item {
+                    id: world
+                    objectName: "worldLayer"
+                    anchors.fill: parent
+                    property real imageX: 0
+                    property real imageY: 0
+                    property real imageWidth: 0
+                    property real imageHeight: 0
+                    property url source
+                    Repeater {
+                        id: worldCopies
+                        model: world.imageWidth > 0 ?
+                                   2 * Math.ceil(world.width / world.imageWidth) + 3 : 0
+                        Image {
+                            x: world.imageX + (index - Math.floor(worldCopies.count / 2)) * world.imageWidth
+                            y: world.imageY
+                            width: world.imageWidth
+                            height: world.imageHeight
+                            source: world.source
+                            cache: false
+                            smooth: true
+                        }
+                    }
+                }
                 ChartLayer {
                     objectName: "baseLayer"
                     anchors.fill: parent
