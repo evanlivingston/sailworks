@@ -42,6 +42,7 @@ def make_tab(tmp_path):
     tab.sample_lat.setValue(45)
     tab.sample_lon.setValue(-120)
     tab.catalog.selectRow(0)
+    tab.nbs_job = None
     return tab
 
 

@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 import json
 import math
+import threading
 
 from PySide6.QtCore import QDate, QDateTime, QTime, QTimer, QTimeZone, Qt
 from PySide6.QtWidgets import (
@@ -91,8 +92,15 @@ class Era5DownloadTab(QWidget):
         self.retry_button.clicked.connect(self.retry)
         self.show_button = QPushButton("Show on map")
         self.show_button.clicked.connect(self._publish_history_display)
+        self.nbs_button = QPushButton("Satellite winds (NBS)")
+        self.nbs_button.setToolTip(
+            "NOAA/NCEI Blended Seawinds: 0.25° 6-hourly satellite-blended wind, "
+            "no CDS queue. Direction comes from ERA5; speed from satellites."
+        )
+        self.nbs_button.clicked.connect(self.submit_nbs)
         row.addWidget(self.request_button)
         row.addWidget(self.show_button)
+        row.addWidget(self.nbs_button)
         row.addWidget(self.cancel_button)
         row.addWidget(self.retry_button)
         layout.addLayout(row)
@@ -148,6 +156,11 @@ class Era5DownloadTab(QWidget):
         self.timer.timeout.connect(self.poll)
         self.timer.start()
         self._poll_count = 0
+        self.nbs_job = None
+        self.nbs_cancel = None
+        self.nbs_progress = None
+        self.nbs_error = None
+        self.nbs_tranche = None
         self._resume_was_active = False
         resume = getattr(self.service, "resume_pending", None)
         if callable(resume):
@@ -271,12 +284,95 @@ class Era5DownloadTab(QWidget):
             self.status.setText(str(exc))
 
     def cancel(self):
+        if self.nbs_cancel is not None:
+            self.nbs_cancel.set()
+            self.status.setText("Cancelling the satellite wind download…")
+            self.cancel_button.setEnabled(False)
+            return
         if self.plan is not None:
             self.service.cancel(self.plan)
             self.status.setText(
                 "Cancellation requested; current CDS transfer may finish before stopping."
             )
             self.cancel_button.setEnabled(False)
+
+    def submit_nbs(self):
+        from sailworks.core import nbs
+
+        if self.job is not None and self.job.is_alive():
+            self.status.setText("Wait for the ERA5 request to finish first.")
+            return
+        if self.nbs_job is not None and self.nbs_job.is_alive():
+            return
+        start, end = self.start.date(), self.end.date()
+        try:
+            plan = nbs.plan_request(
+                datetime(start.year(), start.month(), start.day(), tzinfo=timezone.utc),
+                datetime(end.year(), end.month(), end.day(), 18, tzinfo=timezone.utc),
+                (
+                    self.north.value(),
+                    self.west.value(),
+                    self.south.value(),
+                    self.east.value(),
+                ),
+            )
+        except ValueError as exc:
+            self.status.setText(str(exc))
+            return
+        analysis = getattr(self.controller, "analysis", None)
+        state = getattr(analysis, "state", None)
+        if state is None:
+            self.status.setText("Historical data is not available yet.")
+            return
+        self.nbs_progress = {"percent": 0, "stage": "Starting…"}
+        self.nbs_error = None
+        self.nbs_tranche = None
+        self.nbs_cancel = threading.Event()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setFormat("%p%")
+        self.progress.show()
+        self.status.setText("Downloading NOAA satellite-blended winds…")
+        self.request_button.setEnabled(False)
+        self.nbs_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
+
+        def report(percent, stage):
+            self.nbs_progress = {"percent": percent, "stage": stage}
+
+        def work():
+            try:
+                self.nbs_tranche = nbs.build(
+                    state, plan, progress=report, cancel=self.nbs_cancel
+                )
+            except Exception as exc:
+                self.nbs_error = str(exc)
+
+        self.nbs_job = threading.Thread(target=work, daemon=True)
+        self.nbs_job.start()
+
+    def _poll_nbs(self):
+        if self.nbs_job.is_alive():
+            info = self.nbs_progress or {}
+            self.progress.setValue(int(info.get("percent", 0)))
+            stage = info.get("stage")
+            if stage:
+                self.status.setText(stage)
+            return
+        self.nbs_job = None
+        self.cancel_button.setEnabled(False)
+        self.nbs_button.setEnabled(True)
+        self.request_button.setEnabled(True)
+        if self.nbs_error:
+            self.status.setText(f"Satellite wind download failed: {self.nbs_error}")
+            self.progress.hide()
+            return
+        if self.nbs_tranche is not None:
+            self.progress.setRange(0, 100)
+            self.progress.setValue(100)
+            self.progress.setFormat("Complete")
+            self.status.setText("NOAA satellite-blended winds published.")
+            self._show_tranche(self.nbs_tranche)
 
     def retry(self):
         if self.plan is None or (self.job is not None and self.job.is_alive()):
@@ -292,6 +388,9 @@ class Era5DownloadTab(QWidget):
         self.retry_button.setEnabled(False)
 
     def poll(self):
+        if getattr(self, "nbs_job", None) is not None:
+            self._poll_nbs()
+            return
         resume_active = getattr(self.service, "resume_active", None)
         running = (self.job is not None and self.job.is_alive()) or (
             self.job is None and callable(resume_active) and resume_active()
@@ -375,27 +474,30 @@ class Era5DownloadTab(QWidget):
             return False
         try:
             tranche = publish_history_display(state, entries)
-            # Jump the clock into the freshly published coverage so the wind
-            # layer is visible without scrubbing.
-            first_valid = tranche.entries[0].run_time
-            set_time = getattr(self.controller, "time_control", None)
-            if set_time is not None:
-                set_time.set_time(utc_to_wall(first_valid))
-            owner = self.parent()
-            while owner is not None:
-                fit_race = getattr(owner, "fit_race", None)
-                if callable(fit_race):
-                    fit_race()
-                    break
-                owner = owner.parent()
-            refresh = getattr(analysis, "refresh", None)
-            if callable(refresh):
-                refresh()
+            self._show_tranche(tranche)
             self.history_status.setText("Published ERA5 history as a display forecast.")
             return True
         except Exception as exc:
             self.history_status.setText(f"Could not display ERA5 history: {exc}")
             return False
+
+    def _show_tranche(self, tranche):
+        """Jump to a freshly published tranche and refresh the map."""
+        analysis = getattr(self.controller, "analysis", None)
+        first_valid = tranche.entries[0].run_time
+        set_time = getattr(self.controller, "time_control", None)
+        if set_time is not None:
+            set_time.set_time(utc_to_wall(first_valid))
+        owner = self.parent()
+        while owner is not None:
+            fit_race = getattr(owner, "fit_race", None)
+            if callable(fit_race):
+                fit_race()
+                break
+            owner = owner.parent()
+        refresh = getattr(analysis, "refresh", None)
+        if callable(refresh):
+            refresh()
 
     _VARIABLE_LABELS = {
         "10m_u_component_of_wind": "u10",

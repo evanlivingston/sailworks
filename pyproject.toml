@@ -27,6 +27,7 @@ dependencies = [
     "gpxpy",
     "numpy",
     "netCDF4>=1.6",
+    "eccodes",
     "shapely>=2,<3",
     "pyproj>=3.6,<4",
     "nmeatoolkit>=0.2",
