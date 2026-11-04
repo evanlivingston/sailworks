@@ -1305,14 +1305,26 @@ def test_map_host_publishes_existing_routes_to_the_viewport_overlay_layer():
             return len(self.points)
 
     active_route = Route()
+    from datetime import datetime, timezone
+
+    class TrackCollection(list):
+        revision = 0
+
     host = SimpleNamespace(
         controller=SimpleNamespace(
             chart_errors=(),
             core=SimpleNamespace(
-                routingManager=SimpleNamespace(get_by_name=lambda name: active_route)
+                routingManager=SimpleNamespace(get_by_name=lambda name: active_route),
+                trackManager=TrackCollection(),
+                poiManager=[],
             ),
         ),
-        navigation=SimpleNamespace(hl_routing="selected route"),
+        navigation=SimpleNamespace(
+            hl_routing="selected route",
+            hl_track_item=None,
+            hl_poi=None,
+            route_overlay_data=lambda _: [],
+        ),
         _view_state=ViewportMapState(
             camera=ViewportCameraState(),
             selected_route_point=1,
@@ -1329,9 +1341,17 @@ def test_map_host_publishes_existing_routes_to_the_viewport_overlay_layer():
         _MAX_TRACK_POLYLINE=1500,
         move_callback=None,
         dashboard_visible=True,
+        dashboard=SimpleNamespace(overlay_data=lambda: []),
+        time_control=SimpleNamespace(time=datetime.now(timezone.utc)),
+        ais_visible=False,
+        isochrone_frame=SimpleNamespace(isochrones=()),
     )
 
-    assert ViewportMap.viewport_route_overlay(host) == {
+    overlay = ViewportMap.viewport_route_overlay(host)
+    for key in ("_pois_key", "_tracks_key", "_race_tracks_key"):
+        assert overlay.pop(key) is not None
+    assert overlay.pop("_routes_key") is None
+    assert overlay == {
         "route_plan": [[48.1, -124.1], [48.2, -124.0]],
         "route_preview": [[48.3, -124.3], [48.4, -124.2]],
         "selected_point": [48.5, -124.2],
@@ -1339,6 +1359,13 @@ def test_map_host_publishes_existing_routes_to_the_viewport_overlay_layer():
         "track_position": [48.1, -124.1],
         "track_heading": 123,
         "track_awa": 270,
+        "pois": [],
+        "tracks": [],
+        "race_tracks": [],
+        "routes": [],
+        "ais_targets": [],
+        "isochrones": [],
+        "dashboard": [],
         "caption": "",
         "dashboard_visible": True,
     }
@@ -1351,14 +1378,26 @@ def test_log_boat_heading_falls_back_to_course_between_track_fixes():
         ViewportMap,
     )
 
+    from datetime import datetime, timezone
+
+    class TrackCollection(list):
+        revision = 0
+
     host = SimpleNamespace(
         controller=SimpleNamespace(
             chart_errors=(),
             core=SimpleNamespace(
-                routingManager=SimpleNamespace(get_by_name=lambda _name: None)
+                routingManager=SimpleNamespace(get_by_name=lambda _name: None),
+                trackManager=TrackCollection(),
+                poiManager=[],
             ),
         ),
-        navigation=SimpleNamespace(hl_routing=""),
+        navigation=SimpleNamespace(
+            hl_routing="",
+            hl_track_item=None,
+            hl_poi=None,
+            route_overlay_data=lambda _: [],
+        ),
         _view_state=ViewportMapState(
             camera=ViewportCameraState(),
             points=(
@@ -1371,6 +1410,10 @@ def test_log_boat_heading_falls_back_to_course_between_track_fixes():
         _MAX_TRACK_POLYLINE=1500,
         move_callback=None,
         dashboard_visible=True,
+        dashboard=SimpleNamespace(overlay_data=lambda: []),
+        time_control=SimpleNamespace(time=datetime.now(timezone.utc)),
+        ais_visible=False,
+        isochrone_frame=SimpleNamespace(isochrones=()),
     )
 
     overlay = ViewportMap.viewport_route_overlay(host)

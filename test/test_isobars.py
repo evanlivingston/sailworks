@@ -5,6 +5,19 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
 from types import SimpleNamespace
+
+
+class HashableViewport(SimpleNamespace):
+    """SimpleNamespace defines __eq__ and is unhashable.
+
+    The wind renderer keys per-viewport caches by the viewport itself, so the
+    stand-ins have to be hashable; identity hashing matches how the real
+    viewport objects are used.
+    """
+
+    __hash__ = object.__hash__
+
+
 import unittest
 
 import cairo
@@ -164,7 +177,7 @@ class TestPressureLoading(unittest.TestCase):
             get_pressure=lambda *_: new_points if source is new else old_points
         )
         job = SimpleNamespace(
-            viewport=SimpleNamespace(
+            viewport=HashableViewport(
                 get_bbox=lambda: (
                     SimpleNamespace(get_degrees=lambda: (-1, -1)),
                     SimpleNamespace(get_degrees=lambda: (2, 2)),
@@ -191,7 +204,7 @@ class TestPressureLoading(unittest.TestCase):
         renderer._load_wind = Mock(side_effect=AssertionError("Wind disabled"))
         renderer._load_pressure = Mock(return_value=pressure_columns())
         job = SimpleNamespace(
-            viewport=SimpleNamespace(width=300, height=200),
+            viewport=HashableViewport(width=300, height=200),
             palette=(datetime(2026, 1, 1), 0.4, False, True, False, 8, 0.6, False),
             cancel=Event(),
             factor=1,
@@ -310,7 +323,7 @@ class TestMixedGridIsobars(unittest.TestCase):
         )
         defaults.update(viewport)
         return SimpleNamespace(
-            viewport=SimpleNamespace(**defaults),
+            viewport=HashableViewport(**defaults),
             charts=((self.coarse,), (self.fine,)),
             palette=(datetime(2026, 1, 1, 1), 0.4, False, True, False, 4.0, 0.85, True),
             cancel=Event(),
