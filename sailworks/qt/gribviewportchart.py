@@ -456,8 +456,9 @@ class ViewportChartLayer:
         A retained composition that still covers the camera is reused: no new
         generation is created and nothing is recomposed.  Otherwise a new
         generation supersedes the previous one, which can never publish.
-        Active work is allowed to finish; only the pending slot is replaced.  ``replace`` asks for a new generation even when the
-        same view is already composing or already published.
+        Active work is allowed to finish; only the pending slot is replaced.
+        ``replace`` asks for a new generation even when the same view is
+        already composing or already published.
         """
         with self._condition:
             if self._closed:
