@@ -109,7 +109,8 @@ class Era5DownloadTab(QWidget):
         time_layout.addLayout(start_row)
         time_layout.addLayout(end_row)
         time_layout.addStretch(1)
-        columns.addWidget(time_box, 1)
+        # The UTC window stays as hidden state: the race selection sets it,
+        # otherwise the saved default applies.
         self.time_box = time_box
         layout.addLayout(columns)
 
@@ -133,7 +134,7 @@ class Era5DownloadTab(QWidget):
             "at https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels."
         )
         self.instructions.setWordWrap(True)
-        layout.addWidget(self.instructions)
+        # CDS credentials help is intentionally not shown in the History tab.
 
         self.request_button = QPushButton("Download selected history")
         self.request_button.clicked.connect(self.start_download)
