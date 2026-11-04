@@ -221,6 +221,7 @@ class Era5DownloadService:
         self._lock = threading.Lock()
         self._jobs = {}
         self.errors = {}
+        self.progress = {}
 
     def submit(self, plan, *, retry=False):
         key = (plan.start, plan.end, plan.area)
@@ -229,6 +230,11 @@ class Era5DownloadService:
             if prior and prior[0].is_alive():
                 return prior[0]
             cancel = threading.Event()
+            self.progress[key] = {
+                "done": 0,
+                "total": 0,
+                "stage": "Queued for CDS…",
+            }
             thread = threading.Thread(
                 target=self._run_guarded, args=(key, plan, cancel, retry), daemon=True
             )
@@ -241,6 +247,22 @@ class Era5DownloadService:
             job = self._jobs.get((plan.start, plan.end, plan.area))
             if job:
                 job[1].set()
+
+    def progress_for(self, plan):
+        key = (plan.start, plan.end, plan.area)
+        with self._lock:
+            entry = self.progress.get(key)
+            return dict(entry) if entry is not None else None
+
+    def _set_progress(self, key, *, done=None, total=None, stage=None):
+        with self._lock:
+            entry = self.progress.setdefault(key, {"done": 0, "total": 0, "stage": ""})
+            if done is not None:
+                entry["done"] = done
+            if total is not None:
+                entry["total"] = total
+            if stage is not None:
+                entry["stage"] = stage
 
     def _run_guarded(self, key, plan, cancel, retry):
         try:
@@ -266,21 +288,38 @@ class Era5DownloadService:
                 )
             with self._lock:
                 self.errors[key] = message[:1000]
+            self._set_progress(key, stage="Failed")
 
     def _run(self, plan, cancel, retry):
+        key = (plan.start, plan.end, plan.area)
         root = Path(self.store.root)
         catalog = root / "era5-history.json"
+        pieces = list(split_request(plan))
+        total = len(pieces)
+        self._set_progress(
+            key, done=0, total=total, stage=f"Planning {total} CDS chunk(s)…"
+        )
         staged_chunks = []
         with tempfile.TemporaryDirectory(prefix="era5-") as staging:
-            for n, piece in enumerate(split_request(plan)):
+            for n, piece in enumerate(pieces):
                 if cancel.is_set():
                     raise Era5Error("ERA5 download canceled")
+                self._set_progress(
+                    key, stage=f"Chunk {n + 1}/{total}: requesting from CDS…"
+                )
                 staged_chunks.append(
                     self._stage_chunk(staging, n, piece, cancel, retry)
                 )
+                self._set_progress(
+                    key,
+                    done=n + 1,
+                    stage=f"Chunk {n + 1}/{total}: downloaded and validated",
+                )
             if cancel.is_set():
                 raise Era5Error("ERA5 download canceled")
+            self._set_progress(key, stage="Publishing ERA5 history…")
             self._publish_chunks(root, catalog, staged_chunks, cancel)
+        self._set_progress(key, done=total, stage="Complete")
 
     def _publish_chunks(self, root, catalog, staged_chunks, cancel):
         registered = []

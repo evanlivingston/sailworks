@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -89,6 +90,13 @@ class Era5DownloadTab(QWidget):
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         layout.addWidget(self.status)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setFormat("%p%")
+        self.progress.setTextVisible(True)
+        self.progress.hide()
+        layout.addWidget(self.progress)
         self.catalog = QTableWidget(0, 4)
         self._catalog_entries = []
         self.catalog.setHorizontalHeaderLabels(
@@ -235,6 +243,9 @@ class Era5DownloadTab(QWidget):
                 (self.plan.start, self.plan.end, self.plan.area), None
             )
             self.job = self.service.submit(self.plan)
+            self.progress.setRange(0, 0)
+            self.progress.setFormat("Contacting CDS…")
+            self.progress.show()
             self.status.setText("ERA5 request running in background…")
             self.request_button.setEnabled(False)
             self.cancel_button.setEnabled(True)
@@ -255,25 +266,53 @@ class Era5DownloadTab(QWidget):
             return
         self.service.errors.pop((self.plan.start, self.plan.end, self.plan.area), None)
         self.job = self.service.submit(self.plan, retry=True)
+        self.progress.setRange(0, 0)
+        self.progress.setFormat("Contacting CDS…")
+        self.progress.show()
         self.status.setText("Retrying ERA5 request in background…")
         self.request_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self.retry_button.setEnabled(False)
 
     def poll(self):
-        if self.job is not None and not self.job.is_alive():
-            plan = self.plan
-            if plan is None:
-                self.job = None
-                return
-            key = (plan.start, plan.end, plan.area)
-            error = self.service.errors.pop(key, None)
-            self.status.setText(error or "ERA5 historical request complete.")
+        if self.job is None:
+            return
+        plan = self.plan
+        progress_for = getattr(self.service, "progress_for", None)
+        if self.job.is_alive():
+            info = progress_for(plan) if plan is not None and progress_for else None
+            if info is not None:
+                total = int(info.get("total") or 0)
+                done = int(info.get("done") or 0)
+                if total:
+                    self.progress.setRange(0, total)
+                    self.progress.setValue(min(done, total))
+                    self.progress.setFormat(f"{done}/{total} chunks (%p%)")
+                else:
+                    self.progress.setRange(0, 0)
+                stage = info.get("stage")
+                if stage:
+                    self.status.setText(stage)
+                self.progress.show()
+            return
+        if plan is None:
             self.job = None
-            self.request_button.setEnabled(True)
-            self.cancel_button.setEnabled(False)
-            self.retry_button.setEnabled(bool(error))
-            self.refresh_catalog()
+            return
+        key = (plan.start, plan.end, plan.area)
+        error = self.service.errors.pop(key, None)
+        self.status.setText(error or "ERA5 historical request complete.")
+        self.job = None
+        if error:
+            self.progress.hide()
+        else:
+            self.progress.setRange(0, 100)
+            self.progress.setValue(100)
+            self.progress.setFormat("Complete")
+            self.progress.show()
+        self.request_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
+        self.retry_button.setEnabled(bool(error))
+        self.refresh_catalog()
 
     def refresh_catalog(self):
         path = self.service.store.root / "era5-history.json"

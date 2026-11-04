@@ -287,6 +287,10 @@ def test_successful_era5_import_publishes_catalog_and_artifact(tmp_path):
     planned = plan("2025-01-01T00:00", "2025-01-01T00:00")
     service._run(planned, threading.Event(), False)
 
+    progress = service.progress_for(planned)
+    assert progress["done"] == progress["total"] == 1
+    assert progress["stage"] == "Complete"
+
     catalog = root / "era5-history.json"
     assert catalog.exists()
     entries = json.loads(catalog.read_text())
