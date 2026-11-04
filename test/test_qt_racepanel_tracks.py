@@ -208,6 +208,19 @@ def test_delete_race_removes_entry_tracks_and_file(panel, tmp_path, monkeypatch)
     assert panel.delete_race(race) is False
 
 
+def test_create_track_from_race_uses_course(panel):
+    race = make_race("first")
+    race.course = [RaceCourse(name="Course", points=[(48.0, -123.0), (48.2, -123.2)])]
+    panel._races.append(race)
+
+    track = panel.create_track_from_race(race)
+
+    assert track is not None
+    assert track in panel.controller.core.trackManager
+    assert track.points == [(48.0, -123.0), (48.2, -123.2)]
+    assert panel.controller.core.trackManager.get_active() is track
+
+
 def test_weather_request_fills_and_starts_history(panel):
     race = make_race("first")
     panel._add_race(race)

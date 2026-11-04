@@ -28,6 +28,7 @@ from sailworks.core.race import (
     parse_race,
     race_file_path,
 )
+from sailworks.core.geo.track import Track
 from sailworks.core.timecontrol import utc_to_wall, wall_to_utc
 
 from sailworks.qt.ybracedialog import YBRaceDialog
@@ -437,10 +438,50 @@ class RacesPanel(QWidget):
         unload = menu.addAction("Unload tracks")
         unload.setEnabled(loaded)
         unload.triggered.connect(lambda: self.unload_race_tracks(race))
+        create = menu.addAction("Create track")
+        create.setEnabled(
+            any(course.points for course in race.course)
+            or any(len(boat.positions) >= 2 for boat in race.boats)
+        )
+        create.triggered.connect(lambda: self.create_track_from_race(race))
         menu.addSeparator()
         delete = menu.addAction("Delete race")
         delete.triggered.connect(lambda: self._confirm_delete_race(race))
         menu.exec(self.race_list.viewport().mapToGlobal(position))
+
+    def create_track_from_race(self, race: Race):
+        """Create a normal user track from the race course (or a boat track)."""
+        manager = getattr(getattr(self.controller, "core", None), "trackManager", None)
+        if manager is None:
+            return None
+        courses = [course for course in race.course if len(course.points) >= 2]
+        if courses:
+            course = max(courses, key=lambda item: len(item.points))
+            points = [tuple(point) for point in course.points]
+            base = f"{race.name} - Course"
+        else:
+            boat = max(race.boats, key=lambda item: len(item.positions), default=None)
+            if boat is None or len(boat.positions) < 2:
+                return None
+            points = [
+                (position.latitude, position.longitude) for position in boat.positions
+            ]
+            base = f"{race.name} - {boat.name or boat.boat_id}"
+        track = Track(manager.get_unique_name(base), points, collection=manager)
+        manager.append(track)
+        manager.set_active(track)
+        window = self.window()
+        navigation = getattr(window, "navigation_panel", None)
+        if navigation is not None:
+            navigation.refresh()
+            refresh_points = getattr(navigation, "refresh_points", None)
+            if callable(refresh_points):
+                refresh_points()
+        canvas = getattr(window, "map", None)
+        if canvas is not None:
+            canvas.fit_coordinates(points)
+            canvas.update()
+        return track
 
     def _confirm_delete_race(self, race: Race):
         answer = QMessageBox.question(
