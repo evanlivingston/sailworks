@@ -45,19 +45,15 @@ class Era5DownloadTab(QWidget):
         self.plan = None
         self.job = None
         layout = QVBoxLayout(self)
-        self.intro = QLabel(
-            "Historical weather (UTC), downloaded without activating a forecast. "
-            "Choose a model, then a region and time range."
-        )
+        self.heading = QLabel("Historical weather")
+        self.heading.setStyleSheet("font-weight: 600;")
+        layout.addWidget(self.heading)
+        self.intro = QLabel("Download historical data without activating a forecast.")
+        self.intro.setWordWrap(True)
+        self.intro.setProperty("secondary", True)
         layout.addWidget(self.intro)
-        self.instructions = QLabel(
-            "CDS setup: create ~/.cdsapirc with "
-            "url: https://cds.climate.copernicus.eu/api and "
-            "key: <personal-access-token>, then accept the ERA5 dataset terms "
-            "at https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels."
-        )
-        self.instructions.setWordWrap(True)
-        layout.addWidget(self.instructions)
+
+        columns = QHBoxLayout()
         models_box = QGroupBox("Models")
         models_layout = QVBoxLayout(models_box)
         header = QHBoxLayout()
@@ -81,7 +77,8 @@ class Era5DownloadTab(QWidget):
             row.download_check.toggled.connect(self._models_changed)
             models_layout.addWidget(row)
             self.model_checks[model_id] = row.download_check
-        layout.addWidget(models_box)
+        models_layout.addStretch(1)
+        columns.addWidget(models_box, 3)
         self.models_box = models_box
 
         parameters_box = QGroupBox("Parameters")
@@ -92,41 +89,59 @@ class Era5DownloadTab(QWidget):
         self.field_pressure.setChecked(True)
         parameters_layout.addWidget(self.field_wind)
         parameters_layout.addWidget(self.field_pressure)
-        layout.addWidget(parameters_box)
+        parameters_layout.addStretch(1)
+        columns.addWidget(parameters_box, 2)
         self.parameters_box = parameters_box
-        self.north, self.west = self._coord(90), self._coord(180)
-        self.south, self.east = self._coord(90), self._coord(180)
-        row = QHBoxLayout()
-        for title, control in (
-            ("North", self.north),
-            ("West", self.west),
-            ("South", self.south),
-            ("East", self.east),
-        ):
-            row.addWidget(QLabel(title))
-            row.addWidget(control)
-        self.region_button = QPushButton("Use visible map region")
-        self.region_button.clicked.connect(self.use_visible_region)
-        row.addWidget(self.region_button)
-        layout.addLayout(row)
-        self.region_row = row
+
+        time_box = QGroupBox("Time range")
+        time_layout = QVBoxLayout(time_box)
         now = datetime.now(timezone.utc).replace(
             minute=0, second=0, microsecond=0
         ) - timedelta(days=6)
         self.start = self._date(now - timedelta(days=1))
         self.end = self._date(now)
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Start UTC"))
-        row.addWidget(self.start)
-        row.addWidget(QLabel("End UTC"))
-        row.addWidget(self.end)
-        layout.addLayout(row)
-        self.date_row = row
-        row = QHBoxLayout()
-        self.request_button = QPushButton("Start download")
+        start_row = QHBoxLayout()
+        start_row.addWidget(QLabel("Start UTC"))
+        start_row.addWidget(self.start)
+        end_row = QHBoxLayout()
+        end_row.addWidget(QLabel("End UTC"))
+        end_row.addWidget(self.end)
+        time_layout.addLayout(start_row)
+        time_layout.addLayout(end_row)
+        time_layout.addStretch(1)
+        columns.addWidget(time_box, 2)
+        self.time_box = time_box
+        layout.addLayout(columns)
+
+        # Coordinate state used by the map capture and race requests; the
+        # Forecasts tab shows bounds through the status line instead.
+        self.north, self.west = self._coord(90), self._coord(180)
+        self.south, self.east = self._coord(90), self._coord(180)
+        self.region_row = QHBoxLayout()
+        self.region_button = QPushButton("Update region from current map")
+        self.region_button.clicked.connect(self.use_visible_region)
+        self.region_row.addWidget(self.region_button)
+        self.region_status = QLabel("Using saved region")
+        self.region_status.setProperty("secondary", True)
+        self.region_row.addWidget(self.region_status, 1)
+        layout.addLayout(self.region_row)
+
+        self.instructions = QLabel(
+            "CDS setup: create ~/.cdsapirc with "
+            "url: https://cds.climate.copernicus.eu/api and "
+            "key: <personal-access-token>, then accept the ERA5 dataset terms "
+            "at https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels."
+        )
+        self.instructions.setWordWrap(True)
+        layout.addWidget(self.instructions)
+
+        self.request_button = QPushButton("Download selected history")
+        self.request_button.clicked.connect(self.start_download)
+        layout.addWidget(self.request_button)
+
+        actions = QHBoxLayout()
         self.cancel_button = QPushButton("Cancel")
         self.retry_button = QPushButton("Retry")
-        self.request_button.clicked.connect(self.start_download)
         self.cancel_button.clicked.connect(self.cancel)
         self.retry_button.clicked.connect(self.retry)
         self.show_button = QPushButton("Show on map")
@@ -135,11 +150,13 @@ class Era5DownloadTab(QWidget):
             "jump the clock to their first hour"
         )
         self.show_button.clicked.connect(self._publish_history_display)
-        row.addWidget(self.request_button)
-        row.addWidget(self.show_button)
-        row.addWidget(self.cancel_button)
-        row.addWidget(self.retry_button)
-        layout.addLayout(row)
+        actions.addStretch(1)
+        actions.addWidget(self.show_button)
+        actions.addWidget(self.cancel_button)
+        actions.addWidget(self.retry_button)
+        layout.addLayout(actions)
+        self.actions_row = actions
+
         self.status = QLabel("Select a region and UTC hour range.")
         self.status.setWordWrap(True)
         self.status.setTextInteractionFlags(
@@ -239,11 +256,15 @@ class Era5DownloadTab(QWidget):
                 (self.north, self.west, self.south, self.east), area
             ):
                 control.setValue(value)
-            self.status.setText(
-                f"Using visible bounds N/W/S/E: {north:.2f}, {west:.2f}, {south:.2f}, {east:.2f}"
-            )
+            self.region_status.setText(f"Using visible region · {self._region_label()}")
         except Exception as exc:
             self.status.setText(f"Could not capture visible region: {exc}")
+
+    def _region_label(self):
+        return (
+            f"N {self.north.value():.2f} / W {self.west.value():.2f} / "
+            f"S {self.south.value():.2f} / E {self.east.value():.2f}"
+        )
 
     def _area(self):
         return (
@@ -266,8 +287,7 @@ class Era5DownloadTab(QWidget):
             if self._valid_area():
                 return True
         self.status.setText(
-            "Set the download region first: click 'Use visible map region' or "
-            "type north/west/south/east bounds."
+            "Set the download region first: click 'Update region from current map'."
         )
         return False
 
@@ -306,7 +326,7 @@ class Era5DownloadTab(QWidget):
         self.intro.setVisible(False)
         self.instructions.setVisible(False)
         hide_layout(self.region_row)
-        hide_layout(self.date_row)
+        self.time_box.setVisible(False)
         hide_layout(self.samples_row)
         self.status.setText("Using the selected race's region and UTC time range.")
         if auto_submit:

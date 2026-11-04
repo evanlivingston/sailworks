@@ -171,7 +171,7 @@ def test_unset_region_is_filled_from_the_visible_map(tmp_path):
     assert not tab._valid_area()
     assert tab._ensure_area()
     assert tab._area() == (49.54, -125.97, 45.2, -121.62)
-    assert "Using visible bounds" in tab.status.text()
+    assert "Using visible region" in tab.region_status.text()
 
 
 def test_unset_region_without_capture_explains_what_to_do(tmp_path):
@@ -185,7 +185,7 @@ def test_unset_region_without_capture_explains_what_to_do(tmp_path):
     tab = Era5DownloadTab(controller, capture_region=None)
 
     assert not tab._ensure_area()
-    assert "Use visible map region" in tab.status.text()
+    assert "Update region from current map" in tab.status.text()
 
 
 def test_sample_selected_samples_explicit_hours_without_forecast_activation(
