@@ -309,6 +309,7 @@ class Era5DownloadService:
                 if cancel.is_set():
                     raise Era5Error("ERA5 download canceled")
                 if self._catalog_covers(entries, piece):
+                    self._forget_pending(piece)
                     done += 1
                     self._set_progress(
                         key,
@@ -465,14 +466,19 @@ class Era5DownloadService:
     def resume_pending(self):
         """Resume persisted CDS requests that outlived a previous app run."""
         started = 0
+        root = Path(self.store.root)
+        catalog = self._catalog_entries(root / "era5-history.json")
         for entry in self._load_pending():
             try:
-                key = self._request_key(
-                    datetime.fromisoformat(entry["start"]),
-                    datetime.fromisoformat(entry["end"]),
-                    entry["area"],
-                )
+                start = datetime.fromisoformat(entry["start"])
+                end = datetime.fromisoformat(entry["end"])
+                area = tuple(float(value) for value in entry["area"])
+                key = self._request_key(start, end, area)
             except (KeyError, TypeError, ValueError):
+                continue
+            piece = Era5Request(start, end, area, {})
+            if self._catalog_covers(catalog, piece):
+                self._forget_pending(piece)
                 continue
             with self._lock:
                 if key in self._resuming:
