@@ -64,6 +64,57 @@ from sailworks.qt.viewporttransform import (
 
 logger = logging.getLogger("sailworks")
 
+
+def world_placement(camera):
+    """Place the canonical world; adjacent copies cover the longitude seam."""
+    view = camera.view()
+    size = view.TILE_SIZE * 2.0**camera.zoom
+    longitude = continuous_longitude(camera.center_lon, 0.0)
+    left = camera.width / 2.0 - (longitude + 180.0) / 360.0 * size
+    top = (
+        camera.height / 2.0
+        + view._lat_to_y(view.MAX_LAT)
+        - view._lat_to_y(camera.center_lat)
+    )
+    return left, top, size, size
+
+
+def _render_world(data_dir, palette, factor):
+    """Render the fixed-zoom world using private worker-side chart handles."""
+    from sailworks.core.mapviewport import MapViewport, MercatorProjection
+    from sailworks.core.scheduling import schedule_idle
+    from sailworks.qt.basecharts import BaseChartRenderer
+    from sailworks.qt.gribviewportchart import ChartCamera, _surface_image, base_sources
+    from sailworks.rendering.overlayrenderer import RenderJob
+
+    if data_dir is None:
+        from sailworks.core.storage import DATA_DIR
+
+        data_dir = DATA_DIR
+    sources = base_sources(data_dir)
+    if not sources:
+        raise RuntimeError("No coastline data available for world underlay")
+    size = MercatorProjection.TILE_SIZE * 2**2
+    camera = ViewportCamera(zoom=2, width=size, height=size)
+    canvas = ChartCamera(camera, factor)
+    viewport = MapViewport(canvas)
+    job = RenderJob(
+        (palette, factor, sources),
+        viewport,
+        tuple((s,) for s in sources),
+        factor,
+        palette,
+    )
+    renderer = BaseChartRenderer(schedule_idle)
+    try:
+        surface = renderer._render(job)
+        if surface is None:
+            raise RuntimeError("World underlay rendering returned no image")
+        return _surface_image(surface, factor)
+    finally:
+        renderer._release_resources()
+
+
 # The residency budget of the viewport's field store.  This is a declared
 # ceiling, not a measured optimum, and it was re-derived on 2026-10-19
 # (issue #73) against the recorded runs:
@@ -1392,6 +1443,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
         nativeError = Signal(str)  # noqa: N815 - Qt signal name
         streamlinesPrepared = Signal()  # noqa: N815
         marineStateChanged = Signal(str)  # noqa: N815
+        worldRendered = Signal(object, str)  # noqa: N815
 
         def __init__(
             self,
@@ -1473,6 +1525,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._base_provider = None
             self._base = None
             self._base_key = None
+            self._world_provider = None
+            self._world = None
+            self._world_placement = None
             format_ = QSurfaceFormat()
             format_.setSamples(4)
             format_.setAlphaBufferSize(8)
@@ -1679,6 +1734,35 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     self._base_provider = chart_image_provider("base")
                     self.engine().addImageProvider("base", self._base_provider)
                     self._base = self._weather.findChild(QObject, "baseLayer")
+                # The underlay belongs to every mode: the composed chart layer
+                # covers the whole camera, so the world has to sit beneath it.
+                self._world_provider = chart_image_provider("world")
+                self.engine().addImageProvider("world", self._world_provider)
+                self._world = self._weather.findChild(QObject, "worldLayer")
+                self.worldRendered.connect(
+                    self._world_rendered, Qt.ConnectionType.QueuedConnection
+                )
+                world_factor = max(1, round(self.devicePixelRatio()))
+
+                def render_world():
+                    started = time.perf_counter()
+                    try:
+                        image = _render_world(
+                            chart_data_dir, self._chart_palette, world_factor
+                        )
+                        logger.info(
+                            "World underlay rendered in %.3f s",
+                            time.perf_counter() - started,
+                        )
+                        self.worldRendered.emit(image, "")
+                    except Exception as exc:
+                        logger.warning("World underlay unavailable: %s", exc)
+                        try:
+                            self.worldRendered.emit(None, str(exc))
+                        except RuntimeError:
+                            pass
+
+                Thread(target=render_world, name="world-underlay", daemon=True).start()
                 if self._chart_layer:
                     self._environment_provider = chart_image_provider("environment")
                     self.engine().addImageProvider(
@@ -2172,6 +2256,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 size = image.deviceIndependentSize()
                 self._base_source_camera = (*source_camera, size.width(), size.height())
             self._place_retained_image(self._base, "_base_placement", target)
+            if self._camera is not None:
+                self._place_world(self._camera)
             if getattr(self, "_base_preview_hidden", False):
                 self._base.setProperty("chartLoading", False)
                 self._base.setVisible(True)
@@ -2204,6 +2290,26 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._environment.setVisible(True)
                 self._environment_preview_hidden = False
 
+        def _world_rendered(self, image, error):
+            if self._disposed:
+                return
+            if error:
+                logger.warning("World underlay unavailable: %s", error)
+                return
+            if self._world is not None and self._world_provider is not None:
+                self._world.setProperty(
+                    "source",
+                    QUrl(self._world_provider.publish(image.cacheKey(), image)),
+                )
+                if self._camera is not None:
+                    self._place_world(self._camera)
+
+        def _place_world(self, camera):
+            if self._world is not None:
+                self._place_retained_image(
+                    self._world, "_world_placement", QRectF(*world_placement(camera))
+                )
+
         def _preview_retained_imagery(self, camera):
             """Reproject the existing padded images during a zoom camera tick.
 
@@ -2213,6 +2319,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             centre at the current zoom, as the chart preview does.
             """
             view = camera.view()
+            self._place_world(camera)
             for item, source, attribute, hidden_attribute in (
                 (
                     getattr(self, "_base", None),
@@ -2243,20 +2350,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     - view._lat_to_y(camera.center_lat)
                     - height * scale / 2.0
                 )
-                if (
-                    x > 0
-                    or y > 0
-                    or x + width * scale < camera.width
-                    or y + height * scale < camera.height
-                ):
-                    # The cached pixels cannot cover this camera. The normal
-                    # host update selects/rebuilds its replacement; do not
-                    # stretch a clipped preview as if it were current.
-                    item.setVisible(False)
-                    if item is getattr(self, "_base", None):
-                        item.setProperty("chartLoading", True)
-                    setattr(self, hidden_attribute, True)
-                    continue
+                # Keep the cached pixels on screen at their true position even
+                # when they cannot cover the whole camera: hiding the layer
+                # makes a pan read as "the map vanished". It is slid, never
+                # stretched, so the incomplete edge stays honest until the
+                # host replaces it.
                 self._place_retained_image(
                     item, attribute, QRectF(x, y, width * scale, height * scale)
                 )
@@ -2299,6 +2397,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 navigation.setProperty("imageY", target[1])
                 self._navigation_target = target
             for item, attribute in (
+                (getattr(self, "_world", None), "_world_placement"),
                 (getattr(self, "_base", None), "_base_placement"),
                 (getattr(self, "_environment", None), "_environment_placement"),
             ):
@@ -3592,6 +3691,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._environment_provider.clear()
             if self._base_provider is not None:
                 self._base_provider.clear()
+            if self._world_provider is not None:
+                self._world_provider.clear()
             if shiboken6.isValid(self._weather):
                 self._weather.setVisible(False)
 
@@ -3717,6 +3818,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._retire_barb_anchor_frame(previous_camera, camera, previous_dpr)
                 self._camera = camera
                 map_anchor_changed = self._update_shared_map_pan(camera)
+                self._place_world(camera)
                 # After the shared map reference has been reset for this
                 # camera, a zoom may keep the retained front visible through
                 # the temporary preview transform instead of hiding it.

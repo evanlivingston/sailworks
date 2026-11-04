@@ -5,7 +5,7 @@ unaudited chart types retain ChartCollection's existing path.
 """
 
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import cairo
 from osgeo import ogr
@@ -23,7 +23,7 @@ class BaseSource:
     path: str
     downscale: bool = False
     countries: tuple = ()
-    initial_times: tuple = ()
+    initial_times: tuple = field(default=(), compare=False, hash=False)
     generation: int = 0
 
 
