@@ -663,3 +663,81 @@ def test_refresh_downloads_only_model_with_newer_run(tmp_path):
     # Only GFS had a newer forecast available; HRRR was already current.
     newly_downloaded = [source.name for source in created][len(sources_before) :]
     assert newly_downloaded == ["NOAA GFS"]
+
+
+def seed_artifact(store, tmp_path, payload=b"seed bytes"):
+    source = tmp_path / "seed.grb"
+    source.write_bytes(payload)
+    return store.register_file(source)
+
+
+def test_recorded_download_skips_transfer_and_validates_in_place(tmp_path):
+    store = TrancheStore(tmp_path)
+    cfg = config("GFS")
+    planned = make_plan((cfg,), "GFS").models[0]
+    artifact = seed_artifact(store, tmp_path)
+    store.record_download(planned, artifact)
+    validated = []
+
+    def validator(path, planned, cancel):
+        validated.append(path)
+        return valid_metadata(planned)
+
+    service, created = coordinator(store, (cfg,), validator=validator)
+    service.configure((cfg,), "GFS")
+    result = service.refresh()
+
+    assert created == []
+    assert validated == [store.artifacts / artifact.sha256]
+    assert result.entry.artifacts == (artifact,)
+    assert store.recorded_download(planned) is None
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt"])
+def test_damaged_recorded_artifact_falls_back_to_download(tmp_path, damage):
+    store = TrancheStore(tmp_path)
+    cfg = config("GFS")
+    planned = make_plan((cfg,), "GFS").models[0]
+    artifact = seed_artifact(store, tmp_path)
+    store.record_download(planned, artifact)
+    recorded_path = store.artifacts / artifact.sha256
+    if damage == "missing":
+        recorded_path.unlink()
+    else:
+        recorded_path.chmod(0o644)
+        recorded_path.write_bytes(b"tampered bytes")
+
+    service, created = coordinator(store, (cfg,))
+    service.configure((cfg,), "GFS")
+    result = service.refresh()
+
+    assert [source.name for source in created] == ["NOAA GFS"]
+    assert result.entry.artifacts[0] != artifact
+    assert store.recorded_download(planned) is None
+
+
+def test_failed_validation_keeps_record_for_the_next_attempt(tmp_path):
+    store = TrancheStore(tmp_path)
+    cfg = config("GFS")
+    planned = make_plan((cfg,), "GFS").models[0]
+
+    def failing(path, planned, cancel):
+        raise ValueError("synthetic invalid grib")
+
+    first, created = coordinator(store, (cfg,), validator=failing)
+    first.configure((cfg,), "GFS")
+    with pytest.raises(RefreshExecutionError):
+        first.refresh()
+
+    assert len(created) == 1
+    recorded = store.recorded_download(planned)
+    assert recorded is not None
+
+    # The retry validates the recorded artifact instead of transferring again.
+    second, second_created = coordinator(store, (cfg,))
+    second.configure((cfg,), "GFS")
+    result = second.refresh()
+
+    assert second_created == []
+    assert result.entry.artifacts == (recorded,)
+    assert store.recorded_download(planned) is None

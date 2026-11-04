@@ -129,7 +129,10 @@ class RefreshCoordinator:
         for planned in plan.models:
             if cancel is not None and cancel.is_set():
                 raise RefreshCancelledError("Forecast size estimate cancelled")
-            if self.store.reusable_entry(planned) is not None:
+            if (
+                self.store.reusable_entry(planned) is not None
+                or self.store.recorded_download(planned) is not None
+            ):
                 reusable_models.append(planned.model_id)
                 continue
             source = create_source(planned, self.factories)
@@ -468,6 +471,34 @@ class RefreshCoordinator:
                                 90 + int(9 * (index + 1) / len(plan.models)),
                             )
                             continue
+                        recorded = self.store.recorded_download(planned)
+                        if recorded is not None:
+                            acquired_at = _utc(self.clock(), "acquisition time")
+                            logger.info(
+                                "Reusing already-downloaded artifact model=%s "
+                                "run=%s artifact=%s",
+                                planned.model_id,
+                                planned.run_time.isoformat(),
+                                recorded.sha256,
+                            )
+                            phase = "validation"
+                            self._stage(progress, f"Validating {planned.model_id}…")
+                            metadata = self.validator(
+                                self.store.root / recorded.path,
+                                planned,
+                                combined,
+                            )
+                            entries.append(
+                                self._validated_entry(
+                                    planned, metadata, recorded, acquired_at
+                                )
+                            )
+                            self._progress(
+                                progress,
+                                planned.model_id,
+                                90 + int(9 * (index + 1) / len(plan.models)),
+                            )
+                            continue
                         phase = "download"
                         logger.info(
                             "Downloading forecast model=%s run=%s",
@@ -481,6 +512,16 @@ class RefreshCoordinator:
                         acquired_at = _utc(self.clock(), "acquisition time")
                         phase = "artifact registration"
                         artifact = self.store.register_file(downloaded)
+                        # Record before validation: a later validation failure
+                        # must not orphan bytes that were already transferred.
+                        try:
+                            self.store.record_download(planned, artifact)
+                        except Exception:
+                            logger.warning(
+                                "Could not record download for model=%s",
+                                planned.model_id,
+                                exc_info=True,
+                            )
                         registered = self.store.root / artifact.path
                         self._raise_if_stale_or_cancelled(revision, ticket, cancel)
                         phase = "validation"
@@ -545,6 +586,19 @@ class RefreshCoordinator:
                 self._raise_if_stale_or_cancelled(revision, ticket, cancel)
                 self._stage(progress, "Publishing forecast…")
                 self.store.publish(tranche)
+                # The manifest now covers these requests; drop their download
+                # hints so the index stays a short-lived adoption record.
+                for planned in plan.models:
+                    if planned.model_id not in published_set:
+                        continue
+                    try:
+                        self.store.forget_download(planned)
+                    except Exception:
+                        logger.warning(
+                            "Could not clear recorded download for model=%s",
+                            planned.model_id,
+                            exc_info=True,
+                        )
                 logger.info(
                     "Published forecast tranche=%s models=%s selected=%s",
                     tranche.tranche_id,
