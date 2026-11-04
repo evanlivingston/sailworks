@@ -48,41 +48,71 @@ class ForecastModelSelector(QComboBox):
         self.blockSignals(True)
         try:
             self.clear()
-            if active is None:
+            if analysis is None or active is None:
                 self.addItem("No published model selection", "")
                 return
-            # Known models must be routing-capable, but display-only models
-            # (such as imported ERA5 history) are not in the catalogue and
-            # must still be selectable for rendering.
-            entries = tuple(
-                entry
-                for entry in active.tranche.entries
-                if MODEL_CAPABILITIES.get(entry.model_id) is None
-                or MODEL_CAPABILITIES[entry.model_id].routing_eligible
-            )
-            for entry in entries:
-                self.addItem(display_model_name(entry.model_id), entry.model_id)
-            index = self.findData(active.entry.model_id)
+            choices = self._choices(analysis)
+            for label, data in choices:
+                self.addItem(label, data)
+            key = (active.tranche.tranche_id, active.entry.entry_id)
+            index = self.findData(key)
             if index >= 0:
                 self.setCurrentIndex(index)
-            elif entries:
+            elif choices:
                 self.setCurrentIndex(0)
             else:
                 self.addItem("No wind model available", "")
         finally:
             self.blockSignals(False)
 
+    @staticmethod
+    def _choices(analysis):
+        """Every published wind model, not just the ones in the active tranche."""
+        store = analysis.state.store
+        found = []
+        seen = set()
+        for path in store.manifests.glob("*.json"):
+            try:
+                tranche = store.load(path.stem)
+            except Exception:
+                continue
+            for entry in tranche.entries:
+                if "wind" not in entry.fields:
+                    continue
+                capability = MODEL_CAPABILITIES.get(entry.model_id)
+                if capability is not None and not capability.routing_eligible:
+                    continue
+                key = (entry.model_id, entry.run_time, entry.member)
+                if key in seen:
+                    continue
+                seen.add(key)
+                run = entry.run_time.astimezone().strftime("%d %b %H:%M")
+                label = f"{display_model_name(entry.model_id)} · {run}"
+                found.append(
+                    (
+                        entry.run_time,
+                        label,
+                        (tranche.tranche_id, entry.entry_id),
+                    )
+                )
+        found.sort(key=lambda item: item[0], reverse=True)
+        return [(label, data) for _run, label, data in found]
+
     def _select(self, index):
         analysis = self._analysis()
         if analysis is None or index < 0:
             return
-        model_id = self.itemData(index)
-        if not model_id:
+        data = self.itemData(index)
+        if not isinstance(data, tuple) or len(data) != 2:
             return
+        tranche_id, entry_id = data
         active = getattr(analysis, "active", None)
-        if active is not None and active.entry.model_id == model_id:
+        if active is not None and (
+            active.tranche.tranche_id,
+            active.entry.entry_id,
+        ) == (tranche_id, entry_id):
             return
-        analysis.select_model(model_id)
+        analysis.activate(tranche_id, entry_id)
 
 
 class WeatherPanel(QWidget):
