@@ -67,8 +67,11 @@ class BoundWorkerGrib(WorkerGrib):
         ):
             raise BoundForecastError("Bound forecast artifact identity changed")
         capability = MODEL_CAPABILITIES.get(entry.model_id)
-        if capability is None:
-            raise BoundForecastError("Bound forecast model is unsupported")
+        # Display-only models (for example imported ERA5 history) are not in
+        # the forecast catalogue but still provide valid wind fields.
+        provider_name = (
+            capability.provider_name if capability is not None else entry.model_id
+        )
         wind_times = dict(entry.field_times)["wind"]
         hours = []
         for instant in wind_times:
@@ -79,11 +82,11 @@ class BoundWorkerGrib(WorkerGrib):
                 )
             hours.append(int(seconds // 3600))
         last = max(hours)
-        centre = capability.provider_name.split(" ", 1)[0]
+        centre = provider_name.split(" ", 1)[0]
         south, west, north, east = entry.region
         source = WindFile(
             str(path),
-            capability.provider_name,
+            provider_name,
             centre,
             (west, south, east, north),
             entry.run_time,
@@ -126,7 +129,10 @@ class BoundWorkerGrib(WorkerGrib):
                 raise BoundForecastError(
                     "Bound wind contains a non-deterministic member"
                 )
-            if forecast_model_name(self.dataset, metadata) != entry.model_id:
+            detected = forecast_model_name(self.dataset, metadata)
+            if detected != entry.model_id and not (
+                detected == "Unknown" and entry.model_id not in MODEL_CAPABILITIES
+            ):
                 raise BoundForecastError("Bound wind contains a different model")
             try:
                 reference = number(metadata["GRIB_REF_TIME"])
