@@ -208,6 +208,33 @@ def test_delete_race_removes_entry_tracks_and_file(panel, tmp_path, monkeypatch)
     assert panel.delete_race(race) is False
 
 
+def test_weather_request_fills_and_starts_history(panel):
+    race = make_race("first")
+    panel._add_race(race)
+    calls = []
+    history = SimpleNamespace(
+        apply_race_request=lambda region, start, end: calls.append((region, start, end))
+    )
+    dialog = SimpleNamespace(
+        show=Mock(),
+        raise_=Mock(),
+        activateWindow=Mock(),
+        history=history,
+        tabs=SimpleNamespace(setCurrentWidget=Mock()),
+    )
+    window = SimpleNamespace(_ensure_library=lambda: None, library_dialog=dialog)
+    panel.window = lambda: window
+
+    panel.show_weather_request()
+
+    assert len(calls) == 1
+    region, start, end = calls[0]
+    assert region == race.weather_request()["region"]
+    assert start == race.start_time
+    assert end == race.end_time
+    dialog.tabs.setCurrentWidget.assert_called_once_with(history)
+
+
 def test_scrub_markers_include_track_colour_and_name(panel):
     race = make_race("first")
     panel._add_race(race)

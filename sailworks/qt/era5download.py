@@ -31,22 +31,21 @@ class Era5DownloadTab(QWidget):
         self.plan = None
         self.job = None
         layout = QVBoxLayout(self)
-        layout.addWidget(
-            QLabel(
-                "ERA5 reanalysis history (UTC). Requests are limited to 31 days and "
-                "a bounded area; historical imports never activate a forecast."
-            )
+        self.intro = QLabel(
+            "ERA5 reanalysis history (UTC). Requests are limited to 31 days and "
+            "a bounded area; historical imports never activate a forecast."
         )
-        instructions = QLabel(
+        layout.addWidget(self.intro)
+        self.instructions = QLabel(
             "CDS setup: create ~/.cdsapirc with "
             "url: https://cds.climate.copernicus.eu/api and "
             "key: <personal-access-token>, then accept the ERA5 dataset terms "
             "at https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels."
         )
-        instructions.setWordWrap(True)
-        layout.addWidget(instructions)
+        self.instructions.setWordWrap(True)
+        layout.addWidget(self.instructions)
         self.north, self.west = self._coord(90), self._coord(180)
-        self.south, self.east = self._coord(-90), self._coord(-180)
+        self.south, self.east = self._coord(90), self._coord(180)
         row = QHBoxLayout()
         for title, control in (
             ("North", self.north),
@@ -60,6 +59,7 @@ class Era5DownloadTab(QWidget):
         self.region_button.clicked.connect(self.use_visible_region)
         row.addWidget(self.region_button)
         layout.addLayout(row)
+        self.region_row = row
         now = datetime.now(timezone.utc).replace(
             minute=0, second=0, microsecond=0
         ) - timedelta(days=6)
@@ -71,6 +71,7 @@ class Era5DownloadTab(QWidget):
         row.addWidget(QLabel("End UTC"))
         row.addWidget(self.end)
         layout.addLayout(row)
+        self.date_row = row
         row = QHBoxLayout()
         self.request_button = QPushButton("Start download")
         self.cancel_button = QPushButton("Cancel")
@@ -167,6 +168,46 @@ class Era5DownloadTab(QWidget):
             )
         except Exception as exc:
             self.status.setText(f"Could not capture visible region: {exc}")
+
+    def apply_race_request(self, region, start, end, *, auto_submit=True):
+        """Use the selected race's bounds and UTC window, hiding manual inputs."""
+        if region is not None:
+            south, west, north, east = region
+            for control, value in zip(
+                (self.north, self.west, self.south, self.east),
+                (north, west, south, east),
+            ):
+                control.setValue(float(value))
+        for edit, value, round_up in (
+            (self.start, start, False),
+            (self.end, end, True),
+        ):
+            if value is None:
+                continue
+            whole = value.replace(minute=0, second=0, microsecond=0)
+            if round_up and whole != value:
+                whole += timedelta(hours=1)
+            edit.setDateTime(
+                QDateTime(
+                    QDate(whole.year, whole.month, whole.day),
+                    QTime(whole.hour, whole.minute, whole.second),
+                    Qt.TimeSpec.UTC,
+                )
+            )
+
+        def hide_layout(layout):
+            for index in range(layout.count()):
+                widget = layout.itemAt(index).widget()
+                if widget is not None:
+                    widget.setVisible(False)
+
+        self.intro.setVisible(False)
+        self.instructions.setVisible(False)
+        hide_layout(self.region_row)
+        hide_layout(self.date_row)
+        self.status.setText("Using the selected race's region and UTC time range.")
+        if auto_submit:
+            self.submit()
 
     def _make_plan(self):
         def as_utc(edit):

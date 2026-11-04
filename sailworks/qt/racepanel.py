@@ -521,21 +521,32 @@ class RacesPanel(QWidget):
             try:
                 window._ensure_library()
                 dialog = getattr(window, "library_dialog", None)
-                options = (
-                    getattr(dialog, "forecast_options", None)
-                    if dialog is not None
-                    else None
-                )
+                if dialog is None:
+                    return
+                dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
+                history = getattr(dialog, "history", None)
+                apply_race = getattr(history, "apply_race_request", None)
+                if callable(apply_race):
+                    # The race defines region and times, so hide the manual
+                    # ERA5 controls and start the historical request.
+                    apply_race(
+                        request.get("region"),
+                        request.get("start"),
+                        request.get("end"),
+                    )
+                    tabs = getattr(dialog, "tabs", None)
+                    if tabs is not None:
+                        tabs.setCurrentWidget(history)
+                    return
+                options = getattr(dialog, "forecast_options", None)
                 if options is not None and request.get("region") is not None:
                     options.region = request["region"]
                     if hasattr(options, "region_status"):
                         options.region_status.setText("Using race bounds")
                     if hasattr(options, "_schedule_size_estimate"):
                         options._schedule_size_estimate()
-                if dialog is not None:
-                    dialog.show()
-                    dialog.raise_()
-                    dialog.activateWindow()
             except Exception:
                 return
 
