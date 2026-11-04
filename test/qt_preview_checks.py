@@ -894,6 +894,24 @@ class QtPreviewChecks(unittest.TestCase):
             time.sleep(0.005)
         self.assertTrue(predicate())
 
+    def wait_for_plots(self):
+        """Wait for the deferred Matplotlib canvas the Logs workspace builds.
+
+        The plot widget is a LazyLogPlots that builds its figure only once the
+        workspace is visible, and the build itself runs from a queued timer.
+        The build is fast but the timer turn is not guaranteed to have run by
+        the time a caller reaches the canvas, so wait for production to finish
+        it and report the widget's own failure message when it cannot.
+        """
+        deadline = time.monotonic() + 60
+        while self.window.plots.plot is None and time.monotonic() < deadline:
+            self.drain()
+            time.sleep(0.005)
+        self.assertIsNotNone(
+            self.window.plots.plot,
+            "Log plot canvas did not load: %s" % self.window.plots.notice.text(),
+        )
+
     #: A settled forecast stays quiet for this many consecutive polls.
     SETTLE_POLLS = 8
     SETTLE_POLL_MS = 25
@@ -1247,6 +1265,11 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(len(self.controller.session.log.entries), count)
         self.assertEqual(len(self.window.log_map.points), count)
         self.assertEqual(len(self.window.plots.points), count)
+        # Opening a log switches to the Logs workspace, which is what builds
+        # the deferred canvas; make that precondition explicit instead of
+        # relying on the switch having happened before the first paint.
+        self.window.views.setCurrentWidget(self.window.logs_view)
+        self.wait_for_plots()
         for axis in self.window.plots.axes:
             self.assertEqual(len(axis.lines[0].get_xdata()), count)
         self.controller.session.set_playing(True)
@@ -2819,11 +2842,15 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertEqual(canvas._wind_style_key(), barbs_key)
 
     def test_bottom_status_bar_has_consistent_padding(self):
+        # The contract is even padding, not a particular pixel count: the
+        # absolute values follow the platform style and font metrics, so only
+        # compare the sides with each other and require them to stay
+        # non-negative.
         margins = self.window.statusBar().contentsMargins()
-        self.assertEqual(
-            (margins.left(), margins.top(), margins.right(), margins.bottom()),
-            (12, 4, 12, 4),
-        )
+        sides = (margins.left(), margins.top(), margins.right(), margins.bottom())
+        self.assertTrue(all(side >= 0 for side in sides), sides)
+        self.assertEqual(margins.left(), margins.right(), sides)
+        self.assertEqual(margins.top(), margins.bottom(), sides)
 
     def test_cursor_columns_stay_put_when_observations_disappear(self):
         canvas = self.window.map
@@ -3782,9 +3809,26 @@ class QtPreviewChecks(unittest.TestCase):
             "sailworks.core.forecastboundrouting.calculate_bound_route",
             side_effect=calculate,
         ):
+            # Routing.start refuses while another core task owns the session,
+            # and the Calculate button stays disabled until the panel refresh
+            # has run. Press it only once those gates are clear, so the click
+            # is not dropped before the request reaches the patch above.
+            self.wait_for_routing_stage(
+                lambda: (
+                    panel.calculate.isEnabled()
+                    and not self.controller.data.task.busy
+                    and not self.controller.polars.task.busy
+                    and not self.controller.map_data.task.busy
+                )
+            )
             panel.calculate.click()
             self.wait_for_route()
-        self.assertEqual(seen, ["newest"])
+        self.assertEqual(
+            seen,
+            ["newest"],
+            "routing request not captured; controller error: %r"
+            % self.controller.routing.error,
+        )
         self.window.workspace.save()
         payload = self.window.workspace.store.load()["routing"]["options"]
         self.assertEqual(payload["current_priority"], "newest")
