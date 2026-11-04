@@ -1573,8 +1573,17 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             # the wave bands and never from the wind field: they follow the
             # wave layer's visibility, own their density and publication
             # (LayerRole.WAVE_BARBS) and leave the wind barbs untouched.
-            self._wave_arrows_visible = True
+            self._wave_arrows_visible = False
             self._wave_arrow_density = "standard"
+            # Three scalar workers, one per wave band.  Height, period and
+            # direction are staged and published independently of the wind
+            # field and of the wave fill's own height worker.
+            self._wave_arrow_models = {}
+            self._wave_barbs = None
+            self._wave_barbs_back = None
+            self._wave_barbs_token = None
+            self._wave_arrows_state = "hidden"
+            self._wave_arrows_error = ""
             self._camera = None
             self._weather_display_camera = None
             self._weather_display_dpr = None
@@ -1785,6 +1794,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 if self._wave_fill is not None
                 else None
             )
+            # The wave arrow layer is its own pair of QML items.  It reuses
+            # the scene's shared anchor atlas exactly as the wind barbs do.
+            self._wave_barbs = cast(Any, self._weather.findChild(QObject, "waveBarbs"))
+            self._wave_barbs_back = (
+                cast(Any, self._weather.findChild(QObject, "waveBarbsBack"))
+                if self._wave_barbs is not None
+                else None
+            )
             # Scenes without the image fill (the barbs' own scenes) carry an
             # explicit wave status item instead of a fill, so "waves cannot be
             # drawn here" is stated rather than leaving a silent blank layer.
@@ -1927,6 +1944,17 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 ):
                     getattr(item, signal).connect(
                         lambda *args, slot=item: self._wave_fill_changed(slot)
+                    )
+            for item in (self._wave_barbs, self._wave_barbs_back):
+                if item is None:
+                    continue
+                for signal in (
+                    "preparedChanged",
+                    "shaderErrorChanged",
+                    "sourceErrorChanged",
+                ):
+                    getattr(item, signal).connect(
+                        lambda *args, slot=item: self._wave_barbs_changed(slot)
                     )
             if self._native_weather_fields:
                 from .gpuweathertextures import (
@@ -3282,6 +3310,19 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 item.setVisible(False)
                 for name in ("u0Source", "v0Source", "u1Source", "v1Source"):
                     item.setProperty(name, QUrl())
+            for worker in self._wave_arrow_models.values():
+                worker.on_change = None
+                worker.close()
+            self._wave_arrow_models = {}
+            self._publication_manager.reject_pending(LayerRole.WAVE_BARBS)
+            self._publication_manager.withdraw_visible(LayerRole.WAVE_BARBS)
+            self._provider.release_fields((self, "wave_barbs"))
+            self._wave_barbs_token = None
+            self._wave_arrows_state = "hidden"
+            self._wave_arrows_error = ""
+            for item in (self._wave_barbs, self._wave_barbs_back):
+                if item is not None:
+                    item.setVisible(False)
             from .viewportstreamlines import ViewportStreamlineModel
 
             self._streamline_model.close()
@@ -3403,15 +3444,44 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._update_wave(self._camera)
 
         def set_wave_arrows_visible(self, visible):
-            """Show or hide the wave arrows without touching the height fill."""
-            self._wave_arrows_visible = bool(visible)
+            """Show or hide the wave arrows without touching the height fill.
+
+            The arrows are their own publication layer: this never restages
+            the wind barbs, the wind fill or the wave height fill.
+            """
+            visible = bool(visible)
+            self._wave_arrows_visible = visible
+            if not visible:
+                self._wave_arrows_state = "hidden"
+                self._wave_arrows_error = ""
+                for item in (self._wave_barbs, self._wave_barbs_back):
+                    if item is not None:
+                        item.setVisible(False)
+                return
+            if self._ensure_wave_arrow_models() is None:
+                self._show_wave_arrow_state(
+                    "unavailable", "Wave arrows unavailable here"
+                )
+                return
+            self._show_wave_arrow_state("loading", "Loading wave arrows")
+            self._update_wave_arrows(self._camera)
 
         def wave_arrows_visible(self):
             return self._wave_arrows_visible
 
+        def wave_arrows_state(self):
+            """``hidden``, ``loading``, ``ready`` or ``unavailable``."""
+            return self._wave_arrows_state
+
         def set_wave_arrow_density(self, density):
-            """Set the wave arrow thinning mode, independent of the barbs."""
+            """Re-thin the wave arrows, independent of the wind barbs.
+
+            The density selects the wave layer's own ``gribWaveDensity``
+            layout; the wind barbs keep their camera density untouched.
+            """
             self._wave_arrow_density = str(density)
+            if self._wave_arrows_visible:
+                self._update_wave_arrows(self._camera)
 
         def wave_arrow_density(self):
             return self._wave_arrow_density
@@ -3435,29 +3505,64 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             """``hidden``, ``loading``, ``ready`` or ``unavailable``."""
             return self._wave_state
 
+        def _new_wave_model(self, parameter, grid=False):
+            """Create one scalar wave worker for a single band, or ``None``.
+
+            The fill and the arrow layer share this factory: a band is a
+            one-component field with no selection, so the only thing that
+            differs between the workers is the parameter name.
+            """
+            model = self._model
+            if model is None or not getattr(model, "paths", ()):
+                return None
+            worker = GribViewportModel(
+                model.paths,
+                grid=grid,
+                display_identity=model.display_identity,
+                parameter=parameter,
+                components=1,
+                selection=False,
+            )
+            worker.on_change = self.wavePrepared.emit
+            return worker
+
         def _ensure_wave_model(self):
             """Create the scalar wave worker, if the scene can display it."""
             if self._wave_model is not None:
                 return True
             if self._wave_fill is None:
                 return False
-            model = self._model
-            if model is None or not getattr(model, "paths", ()):
+            worker = self._new_wave_model("wave_height", grid=True)
+            if worker is None:
                 return False
-            self._wave_model = GribViewportModel(
-                model.paths,
-                grid=True,
-                display_identity=model.display_identity,
-                parameter="wave_height",
-                components=1,
-                selection=False,
-            )
-            self._wave_model.on_change = self.wavePrepared.emit
+            self._wave_model = worker
             return True
+
+        def _ensure_wave_arrow_models(self):
+            """The three band workers, or ``None`` when the scene cannot show them.
+
+            Height, period and direction are separate one-component fields so
+            each band is staged and published on its own.  A source missing a
+            band leaves that worker unavailable rather than substituting zero.
+            """
+            if self._wave_barbs is None or self._wave_barbs_back is None:
+                return None
+            if self._model is None:
+                return None
+            for band in WAVE_BANDS:
+                if band in self._wave_arrow_models:
+                    continue
+                worker = self._new_wave_model(band)
+                if worker is None:
+                    return None
+                self._wave_arrow_models[band] = worker
+            return self._wave_arrow_models
 
         def _refresh_wave(self):
             if not self._disposed and self._wave_visible:
                 self._update_wave(self._camera)
+            if not self._disposed and self._wave_arrows_visible:
+                self._update_wave_arrows(self._camera)
 
         def _set_wave_status(self, message, loading=False):
             if self._wave_status is not None:
@@ -3658,6 +3763,290 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
 
         def _wave_timeout(self, token):
             self._fail_wave(token, "Wave height unavailable")
+
+        # ------------------------------------------------- wave arrow layer
+        def _wave_arrow_view(self, camera):
+            """The current view thinned by the wave density, not the barbs'."""
+            return wave_arrow_view(
+                self._barb_reference_view(camera), self._wave_arrow_density
+            )
+
+        def _show_wave_arrow_state(self, state, message=""):
+            self._wave_arrows_state = state
+            self._wave_arrows_error = message
+            if state != "ready":
+                for item in (self._wave_barbs, self._wave_barbs_back):
+                    if item is not None:
+                        item.setVisible(False)
+
+        def _update_wave_arrows(self, camera):
+            """Stage and publish WAVE_BARBS from the three wave bands.
+
+            Each band is its own resident scalar field, and the layout is
+            ``stage_wave_selection``'s: the wind selection's thinning, land
+            policy and cap applied to the wave view's density.  If any band is
+            missing no arrows are published and the explicit unavailable state
+            is set, so a previous forecast's arrows are never left on screen.
+            """
+            if not self._wave_arrows_visible or self._disposed:
+                return
+            models = self._ensure_wave_arrow_models()
+            if models is None:
+                self._show_wave_arrow_state(
+                    "unavailable", "Wave arrows unavailable here"
+                )
+                return
+            if camera is None:
+                return
+            view = self._wave_arrow_view(camera)
+            fields = {}
+            result = "ready"
+            for band in WAVE_BANDS:
+                worker = models[band]
+                if worker.busy():
+                    result = "loading"
+                    continue
+                state, field, _selection = worker.update(
+                    camera, self._barb_reference_view(camera)
+                )
+                fields[band] = field
+                if field is None:
+                    if state == "loading" or result == "loading":
+                        result = "loading"
+                    else:
+                        result = "unavailable"
+            if not wave_bands_ready(fields):
+                self._publication_manager.reject_pending(
+                    LayerRole.WAVE_BARBS, self._wave_barbs_token
+                )
+                self._provider.cancel_field((self, "wave_barbs"))
+                self._wave_barbs_token = None
+                self._show_wave_arrow_state(
+                    result,
+                    (
+                        "Loading wave arrows"
+                        if result == "loading"
+                        else (
+                            next(
+                                (m.error for m in models.values() if m.error),
+                                "",
+                            )
+                            or "Wave direction unavailable"
+                        )
+                    ),
+                )
+                return
+            sampler = getattr(models["wave_height"], "_sampler", None)
+            land = getattr(models["wave_height"], "_land", None)
+            try:
+                selection = stage_wave_selection(
+                    sampler,
+                    fields,
+                    camera.stamp(),
+                    view,
+                    land,
+                    reference=view,
+                )
+            except Exception as exc:  # coverage, land tier or time escape
+                # A band that does not cover this view, or a camera stamp that
+                # crossed a source-selection event, leaves the layer explicitly
+                # unavailable; stale arrows are withdrawn, never kept on screen.
+                logger.debug("Wave arrow selection unavailable: %s", exc)
+                selection = None
+            if selection is None:
+                self._provider.cancel_field((self, "wave_barbs"))
+                self._wave_barbs_token = None
+                self._show_wave_arrow_state("unavailable", "Wave arrows unavailable")
+                return
+            self._publish_wave_barbs(fields, selection, camera)
+
+        def _publish_wave_barbs(self, fields, selection, camera):
+            """Publish six scalar endpoint images and the selection anchors.
+
+            The layer stages under ``LayerRole.WAVE_BARBS`` with its own
+            budget and token, exactly as ``WAVE_FILL`` stages its gridded
+            form.  It binds u0..u5 in ``wave_barbs_images`` order and the
+            node-id/anchor textures the glyph QML expects.
+            """
+            if self._wave_barbs is None or self._wave_barbs_back is None:
+                self._show_wave_arrow_state(
+                    "unavailable", "Wave arrows unavailable here"
+                )
+                return
+            images = wave_barbs_images(fields)
+            stamp = camera.stamp()
+            key = "/".join(f"{band}:{fields[band].generation}" for band in WAVE_BANDS)
+            key = f"{key}/{self._wave_arrow_density}/{stamp}"
+            manager = self._publication_manager
+            layer = manager.layers[LayerRole.WAVE_BARBS]
+            if (
+                layer.visible is not None
+                and layer.visible.generation == manager.current_generation
+                and layer.visible_resources.get("key") == key
+                and layer.pending is None
+            ):
+                self._wave_barbs.setVisible(True)
+                self._show_wave_arrow_state("ready", "")
+                return
+            budget = sum(image.sizeInBytes() for image in images)
+            delta = max(0, budget - layer.pending_budget_bytes)
+            if not manager.budget.can_allocate(LayerRole.WAVE_BARBS, delta):
+                self._show_wave_arrow_state(
+                    "unavailable", "Wave arrow texture budget exceeded"
+                )
+                return
+            try:
+                urls = self._provider.reserve_field((self, "wave_barbs"), images, key)
+                selection_urls = self._provider.publish_selection(
+                    selection.images, f"wave:{selection.generation}"
+                )
+            except ValueError:
+                self._provider.cancel_field((self, "wave_barbs"))
+                self._show_wave_arrow_state(
+                    "unavailable", "Wave arrow texture unavailable"
+                )
+                return
+            token = object()
+            identity = LayerIdentity(
+                role=LayerRole.WAVE_BARBS,
+                generation=manager.current_generation,
+                source_key=(
+                    tuple(fields[band].identity for band in WAVE_BANDS),
+                    key,
+                    stamp,
+                ),
+                content_hash=str((key, selection.generation)),
+            )
+            resources = {
+                ResourceKind.IMAGE: images,
+                "key": key,
+                "urls": urls,
+                "selection_urls": selection_urls,
+            }
+            if not manager.stage_resources(
+                LayerRole.WAVE_BARBS,
+                identity,
+                LayerPlacement(),
+                resources,
+                budget,
+                completion_token=token,
+            ):
+                self._provider.cancel_field((self, "wave_barbs"))
+                self._show_wave_arrow_state(
+                    "unavailable", "Wave arrow texture budget exceeded"
+                )
+                return
+            self._wave_barbs_token = token
+            item = self._wave_barbs_back
+            for name, url in zip(
+                (
+                    "u0Source",
+                    "u1Source",
+                    "u2Source",
+                    "u3Source",
+                    "u4Source",
+                    "u5Source",
+                ),
+                urls,
+            ):
+                item.setProperty(name, QUrl(url))
+            for name, url in zip(
+                ("nodeIdSource", "anchorXSource", "anchorYSource"),
+                selection_urls,
+            ):
+                item.setProperty(name, QUrl(url))
+            # Anchors are encoded for the camera that produced them; a pan
+            # inside one reference reuses them and a rebase invalidates them.
+            offset = self._barb_anchor_offset(camera, selection)
+            item.setProperty("anchorFrameValid", offset is not None)
+            if offset is not None:
+                item.setProperty("anchorOffsetX", offset[0])
+                item.setProperty("anchorOffsetY", offset[1])
+            rows, cols = selection.shape
+            item.setProperty("columns", cols)
+            item.setProperty("rows", rows)
+            item.setProperty("nodeIdIndirection", True)
+            item.setProperty("fieldColumns", FIELD_COLUMNS)
+            item.setProperty("blend", fields["wave_height"].staged.weight(stamp))
+            item.setOpacity(self._wind_opacity)
+            item.setVisible(False)
+            self._try_commit_wave_barbs(token)
+            if isinstance(self, QObject):
+                QTimer.singleShot(
+                    10000, lambda staged=token: self._wave_barbs_timeout(staged)
+                )
+
+        def _wave_barbs_changed(self, item):
+            if not self._disposed and item is self._wave_barbs_back:
+                self._try_commit_wave_barbs(getattr(self, "_wave_barbs_token", None))
+
+        def _try_commit_wave_barbs(self, token):
+            if (
+                self._disposed
+                or token is None
+                or token is not getattr(self, "_wave_barbs_token", None)
+            ):
+                return
+            item = self._wave_barbs_back
+            if item is None:
+                return
+            layer = self._publication_manager.layers[LayerRole.WAVE_BARBS]
+            if layer.pending is None or layer.completion_token is not token:
+                return
+            if item.property("shaderError") or item.property("sourceError"):
+                self._fail_wave_barbs(token, "Wave arrow shader unavailable")
+                return
+            if not item.property("prepared"):
+                return
+            adopted, _ = self._publication_manager.verify_and_adopt(
+                LayerRole.WAVE_BARBS,
+                lambda resources: (
+                    len(resources.get(ResourceKind.IMAGE, ())) == 6
+                    and len(resources.get("urls", ())) == 6
+                    and len(resources.get("selection_urls", ())) == 3
+                ),
+                expected_token=token,
+            )
+            if not adopted:
+                self._fail_wave_barbs(token, "Wave arrow frame rejected")
+                return
+            self._provider.promote_field((self, "wave_barbs"))
+            self._wave_barbs_token = None
+            old = self._wave_barbs
+            if old is not None:
+                old.setVisible(False)
+            self._wave_barbs, self._wave_barbs_back = item, old
+            item.setOpacity(self._wind_opacity)
+            item.setVisible(self._wave_arrows_visible)
+            self._show_wave_arrow_state("ready", "")
+
+        def _fail_wave_barbs(self, token, message):
+            if token is not getattr(self, "_wave_barbs_token", None):
+                return
+            self._publication_manager.reject_pending(
+                LayerRole.WAVE_BARBS, expected_token=token
+            )
+            self._provider.cancel_field((self, "wave_barbs"))
+            self._wave_barbs_token = None
+            back = self._wave_barbs_back
+            if back is not None:
+                back.setVisible(False)
+                for name in (
+                    "u0Source",
+                    "u1Source",
+                    "u2Source",
+                    "u3Source",
+                    "u4Source",
+                    "u5Source",
+                    "nodeIdSource",
+                    "anchorXSource",
+                    "anchorYSource",
+                ):
+                    back.setProperty(name, QUrl())
+            self._show_wave_arrow_state("unavailable", message)
+
+        def _wave_barbs_timeout(self, token):
+            self._fail_wave_barbs(token, "Wave arrows unavailable")
 
         def _refresh_streamlines(self):
             if (
@@ -4187,7 +4576,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._wave_model.on_change = None
                 self._wave_model.close()
                 self._wave_model = None
+            for worker in self._wave_arrow_models.values():
+                worker.on_change = None
+                worker.close()
+            self._wave_arrow_models = {}
             self._provider.release_fields((self, "wave"))
+            self._provider.release_fields((self, "wave_barbs"))
             if shiboken6.isValid(self._chart_timer):
                 self._chart_timer.stop()
             if shiboken6.isValid(self._chart_source_timer):
@@ -4242,6 +4636,34 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 ),
                 (self._fill, ("u0Source", "v0Source", "u1Source", "v1Source")),
                 (self._fill_back, ("u0Source", "v0Source", "u1Source", "v1Source")),
+                (
+                    self._wave_barbs,
+                    (
+                        "u0Source",
+                        "u1Source",
+                        "u2Source",
+                        "u3Source",
+                        "u4Source",
+                        "u5Source",
+                        "nodeIdSource",
+                        "anchorXSource",
+                        "anchorYSource",
+                    ),
+                ),
+                (
+                    self._wave_barbs_back,
+                    (
+                        "u0Source",
+                        "u1Source",
+                        "u2Source",
+                        "u3Source",
+                        "u4Source",
+                        "u5Source",
+                        "nodeIdSource",
+                        "anchorXSource",
+                        "anchorYSource",
+                    ),
+                ),
             ):
                 if item is not None and shiboken6.isValid(item):
                     for name in names:
@@ -4411,12 +4833,20 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                         for item in (self._wave_fill, self._wave_fill_back):
                             if item is not None:
                                 item.setVisible(False)
+                        # The rebase withdrew the wave barbs' generation as
+                        # well: hide the stale arrows until they restage.
+                        self._wave_barbs_token = None
+                        for item in (self._wave_barbs, self._wave_barbs_back):
+                            if item is not None:
+                                item.setVisible(False)
                 else:
                     # No reference yet, create one
                     self._publication_manager.set_reference_camera(camera)
 
                 if self._wave_visible:
                     self._update_wave(camera)
+                if self._wave_arrows_visible:
+                    self._update_wave_arrows(camera)
 
                 if map_anchor_changed or getattr(self, "_map_content", None) is None:
                     self._place_chart()

@@ -108,6 +108,17 @@ Item {
         sharedAnchorX1: anchorAtlasX1
         sharedAnchorY1: anchorAtlasY1
     }
+    WaveBarbs {
+        id: waveBarbs
+        objectName: "waveBarbs"
+        anchors.fill: parent
+        visible: false
+    }
+    WaveBarbs {
+        objectName: "waveBarbsBack"
+        anchors.fill: parent
+        visible: false
+    }
     WeatherStreamlines { objectName: "weatherStreamlines"; anchors.fill: parent; visible: false }
     // Stationary clip container for synthetic markers and future explicit
     // migration. Opt-in only: nothing is reparented here yet, so existing
