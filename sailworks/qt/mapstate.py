@@ -123,6 +123,11 @@ class MapStateMixin:
         self._cancel_cursor()
         self.queue_draw()
 
+    def set_wave_visible(self, visible):
+        self.wave_visible = visible
+        self._cancel_cursor()
+        self.queue_draw()
+
     def invalidate_chart_sources(self):
         """Apply explicit source switches even while a gesture preview is retained."""
         presenter = getattr(self, "_weather_presenter", None)

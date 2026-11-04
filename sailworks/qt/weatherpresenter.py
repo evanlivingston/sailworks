@@ -415,6 +415,18 @@ class WeatherPresenter(QObject):
             self.canvas.controller.settings.gribWindGradientSmooth,
             self.canvas.controller.settings.gribWindGradientLevels,
         )
+        widget.set_wave_visible(self.canvas.wave_visible)
+        widget.set_wave_opacity(self.canvas.controller.settings.gribWaveOpacity)
+        widget.set_wave_gradient_style(
+            self.canvas.controller.settings.gribWaveSmooth,
+            self.canvas.controller.settings.gribWaveLevels,
+        )
+        legend = getattr(self.canvas, "wave_legend", None)
+        if legend is not None:
+            legend.setVisible(bool(self.canvas.wave_visible))
+            if self.canvas.wave_visible:
+                self.canvas._layout_wave_legend()
+                legend.raise_()
         from sailworks.rendering.marinepresentation import chart_instant
 
         marine = self.canvas.marine
@@ -492,6 +504,8 @@ class WeatherPresenter(QObject):
     def _raise_interactive_children(self):
         # Existing interactive widgets must remain above both presentation children.
         self.canvas.coverage_notice.raise_()
+        if hasattr(self.canvas, "wave_legend"):
+            self.canvas.wave_legend.raise_()
         if hasattr(self.canvas, "coverage_fetch"):
             self.canvas.coverage_fetch.raise_()
         coverage_fetch_buttons = getattr(self.canvas, "coverage_fetch_buttons", None)

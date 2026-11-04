@@ -20,6 +20,8 @@ class MapLifecycleMixin:
             self.coverage_notice.setFixedWidth(max(80, min(360, self.width() - 24)))
             self.coverage_notice.adjustSize()
             self._layout_coverage()
+        if hasattr(self, "wave_legend"):
+            self._layout_wave_legend()
         super().resizeEvent(event)
         if getattr(self, "timeline", None) is not None:
             self._layout_timeline()

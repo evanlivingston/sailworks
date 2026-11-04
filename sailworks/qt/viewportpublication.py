@@ -23,6 +23,8 @@ class LayerRole(str, Enum):
     FILL_BACK = "fill_back"
     CHART = "chart"
     STREAMLINES = "streamlines"
+    WAVE_FILL = "wave_fill"
+    WAVE_FILL_BACK = "wave_fill_back"
 
 
 class ResourceKind(str, Enum):
@@ -123,6 +125,9 @@ class PublicationBudget:
             "fill_back": 16 * 1024 * 1024,
             "chart": 64 * 1024 * 1024,
             "streamlines": 8 * 1024 * 1024,
+            # The wave fill is a separate scalar layer with its own budget:
+            # showing waves can never evict the wind fill's resources.
+            "wave_fill": 32 * 1024 * 1024,
         }
         self.current_usage = {
             "barbs": 0,
@@ -131,6 +136,7 @@ class PublicationBudget:
             "fill_back": 0,
             "chart": 0,
             "streamlines": 0,
+            "wave_fill": 0,
         }
 
     def can_allocate(self, role: str, bytes_needed: int) -> bool:
@@ -167,6 +173,7 @@ class PublicationManager:
             "fill_back": LayerState(role="fill_back"),
             "chart": LayerState(role="chart"),
             "streamlines": LayerState(role="streamlines"),
+            "wave_fill": LayerState(role="wave_fill"),
         }
         self.budget = budget or PublicationBudget()
         self.current_generation = 0
@@ -179,6 +186,7 @@ class PublicationManager:
             "fill_back": [],
             "chart": [],
             "streamlines": [],
+            "wave_fill": [],
         }
 
     def stage_resources(

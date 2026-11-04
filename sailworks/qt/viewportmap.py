@@ -39,6 +39,7 @@ class ViewportMapState:
     camera: ViewportCameraState
     dashboard_visible: bool = True
     wind_visible: bool = True
+    wave_visible: bool = False
     ais_targets: tuple = ()
     ais_visible: bool = True
     points: tuple = ()
@@ -50,6 +51,47 @@ class ViewportMapState:
     offsets: tuple = ()
     position: float | None = None
     race_boat_positions: tuple = ()
+
+
+class WaveLegend(QWidget):
+    """The wave-height key: the shader's colour strip and 0-4+ m ticks.
+
+    The strip is drawn from :data:`sailworks.common.WAVE_BUCKET_COLORS`, the
+    same buckets the wave shader and ``wave_color()`` use, so the legend can
+    never drift from the fill it explains.
+    """
+
+    TICKS = ("0", "1", "2", "3", "4+")
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAccessibleName("Wave height legend")
+        self.setToolTip("Significant wave height in metres")
+        self.setFixedSize(176, 56)
+
+    def paintEvent(self, event):  # noqa: N802 - Qt virtual method name
+        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import QColor, QLinearGradient, QPainter
+
+        from sailworks.common import WAVE_BUCKET_COLORS
+
+        painter = QPainter(self)
+        strip = QRectF(8, 8, self.width() - 16, 14)
+        gradient = QLinearGradient(strip.topLeft(), strip.topRight())
+        positions = len(WAVE_BUCKET_COLORS) - 1
+        for index, color in enumerate(WAVE_BUCKET_COLORS):
+            gradient.setColorAt(index / positions, QColor("#" + color))
+        painter.fillRect(strip, gradient)
+        painter.setPen(QColor("#e6edf3"))
+        painter.drawRect(strip)
+        step = strip.width() / positions
+        for index, label in enumerate(self.TICKS):
+            x = strip.left() + index * step
+            painter.drawLine(int(round(x)), 23, int(round(x)), 27)
+            rect = QRectF(x - 12, 29, 24, 16)
+            painter.drawText(rect, Qt.AlignmentFlag.AlignHCenter, label)
+        painter.end()
 
 
 class ViewportMap(
@@ -136,6 +178,10 @@ class ViewportMap(
         )
         self.dashboard_visible = True
         self.wind_visible = True
+        self.wave_visible = False
+        self.wave_legend = WaveLegend(self)
+        self.wave_legend.hide()
+        self._layout_wave_legend()
         self._weather_services.initialize_wind_cursor(self, controller)
         controller.data.changed.connect(self._cancel_cursor)
         self.initialize_coverage_ui(controller)
@@ -162,6 +208,14 @@ class ViewportMap(
             0, max(0, self.height() - height), self.width(), height
         )
         self.timeline.raise_()
+
+    def _layout_wave_legend(self):
+        legend = getattr(self, "wave_legend", None)
+        if legend is None:
+            return
+        legend.move(12, max(0, self.height() - legend.height() - 12))
+        if legend.isVisible():
+            legend.raise_()
 
     def is_moving(self):
         presenter = self._weather_presenter
@@ -292,6 +346,14 @@ class ViewportMap(
     @wind_visible.setter
     def wind_visible(self, visible):
         self._view_state.wind_visible = visible
+
+    @property
+    def wave_visible(self):
+        return self._view_state.wave_visible
+
+    @wave_visible.setter
+    def wave_visible(self, visible):
+        self._view_state.wave_visible = visible
 
     @property
     def camera_state(self):

@@ -216,6 +216,30 @@ class WeatherPanel(QWidget):
         form.addRow("Line density", self.barb_density)
         controls.addLayout(form)
         controls.addWidget(self._section_divider())
+        controls.addWidget(section_label("Waves"))
+        self.wave = QCheckBox("Show wave height")
+        self.wave.setChecked(active_map().wave_visible)
+        self.wave.toggled.connect(
+            lambda enabled: active_map().set_wave_visible(enabled)
+        )
+        controls.addWidget(self.wave)
+        wave_form = QFormLayout()
+        wave_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self.wave_opacity = self.percent("gribWaveOpacity")
+        wave_form.addRow("Wave opacity", self.wave_opacity)
+        self.wave_style = QComboBox()
+        self.wave_style.addItem("Smooth", True)
+        self.wave_style.addItem("Hard transitions", False)
+        self.wave_style.currentIndexChanged.connect(
+            lambda _index: self.set_preference(
+                "gribWaveSmooth", self.wave_style.currentData()
+            )
+        )
+        wave_form.addRow("Gradient style", self.wave_style)
+        self.wave_levels = self.integer_slider("gribWaveLevels", 2, 9)
+        wave_form.addRow("Gradient levels", self.wave_levels)
+        controls.addLayout(wave_form)
+        controls.addWidget(self._section_divider())
         controls.addWidget(section_label("Ship weather observations"))
         self.ship_observations = self.active_map().ship_observations
         self.ship_toggle = QCheckBox("Recent ship observations (NOAA ICOADS)")
@@ -423,6 +447,14 @@ class WeatherPanel(QWidget):
             )
         )
         self.wind_gradient_style.blockSignals(False)
+        self.wave_style.blockSignals(True)
+        self.wave_style.setCurrentIndex(
+            max(
+                0,
+                self.wave_style.findData(self.controller.settings.gribWaveSmooth),
+            )
+        )
+        self.wave_style.blockSignals(False)
         self.barb_density.blockSignals(True)
         self.barb_density.setCurrentIndex(self.density_index())
         self.barb_density.blockSignals(False)
@@ -439,6 +471,9 @@ class WeatherPanel(QWidget):
                 self.controller.settings.gribWindGradientLevels,
             ),
             (self.wind_opacity, round(self.controller.settings.gribArrowOpacity * 100)),
+            (self.wave, self.active_map().wave_visible),
+            (self.wave_opacity, round(self.controller.settings.gribWaveOpacity * 100)),
+            (self.wave_levels, self.controller.settings.gribWaveLevels),
             (self.isobars, self.controller.settings.gribIsobarsVisible),
             (self.interval, self.controller.settings.gribIsobarInterval),
             (

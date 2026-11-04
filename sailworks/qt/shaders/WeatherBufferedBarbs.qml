@@ -4,6 +4,18 @@ import QtQuick
 Item {
     id: root
     property bool fillEnabled: false
+    // This scene has no image fill, so the wave layer cannot be drawn here.
+    // An explicit status line takes the place of a silent, empty fill.
+    Text {
+        objectName: "waveStatus"
+        anchors.left: parent.left
+        anchors.bottom: parent.bottom
+        anchors.margins: 12
+        visible: text !== ""
+        color: "#e6edf3"
+        style: Text.Outline
+        styleColor: "#1e2124"
+    }
     WeatherFill {
         objectName: "weatherFill"
         anchors.fill: parent

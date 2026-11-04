@@ -30,6 +30,9 @@ class SettingsManager(Storage):
         self.gribWindGradientOpacity = 0.12
         self.gribWindGradientSmooth = True
         self.gribWindGradientLevels = 15
+        self.gribWaveOpacity = 0.85
+        self.gribWaveSmooth = True
+        self.gribWaveLevels = 9
         self.weatherRenderer = "viewport"
         self.gribIsobarsVisible = True
         self.gribIsobarInterval = 4.0

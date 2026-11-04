@@ -24,6 +24,44 @@ Item {
         visible: false
         fragmentShader: Qt.resolvedUrl("weather-fill-back.frag.qsb")
     }
+    // The wave height fill. A scalar field travels in u0/u1 with a zero plane
+    // in v0/v1, so it reuses WeatherFill and the weather shader's bilinear
+    // unchanged. All four image slots are bound (u, zero, u1, zero) because
+    // WeatherFill's readiness contract is "all four images ready"; that is
+    // the layout the scalar staging already produces.
+    WeatherFill {
+        id: waveFill
+        objectName: "waveFill"
+        anchors.fill: parent
+        visible: false
+        gradientLevels: 9
+        fragmentShader: Qt.resolvedUrl("wave.frag.qsb")
+        property string statusText: ""
+        property bool waveLoading: false
+    }
+    // The pending wave frame loads beside the one on screen and is swapped in
+    // only after the publication manager adopts it, so a slow publish never
+    // presents a stale or half-loaded field.
+    WeatherFill {
+        id: waveFillBack
+        objectName: "waveFillBack"
+        anchors.fill: parent
+        visible: false
+        gradientLevels: 9
+        fragmentShader: Qt.resolvedUrl("wave.frag.qsb")
+        property string statusText: ""
+        property bool waveLoading: false
+    }
+    Text {
+        objectName: "waveStatus"
+        anchors.left: parent.left
+        anchors.bottom: parent.bottom
+        anchors.margins: 12
+        visible: text !== ""
+        color: "#e6edf3"
+        style: Text.Outline
+        styleColor: "#1e2124"
+    }
     // Shared node-anchor pool: one provider per atlas slot that both barbs
     // sample, so anchor publications are retained once. Hidden, unsized and
     // declared before the barbs, so nothing is reparented and stacking is

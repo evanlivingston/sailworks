@@ -59,6 +59,39 @@ def wind_color(wspeed):  # noqa: C901
     return (a, b, c)
 
 
+# Significant wave height palette over 0-4+ m.  This is the single source of
+# truth for the CPU painter, the Qt viewport legend and the wave shader-stop
+# test; keep all three in lockstep with the buckets below.
+WAVE_BUCKET_COLORS = (
+    "E6F7FF",  # 0.0 m - calm
+    "A6E4FF",  # 0.5 m
+    "4DC3FF",  # 1.0 m
+    "0096E8",  # 1.5 m
+    "0057B7",  # 2.0 m
+    "003C8F",  # 2.5 m
+    "1F2A7A",  # 3.0 m
+    "4B1F8F",  # 3.5 m
+    "6E0B5E",  # 4.0+ m
+)
+
+# The upper edge (metres) of each bucket.  The final bucket covers 4 m and
+# above, so the last colour applies to any height past the last edge.
+_WAVE_BUCKET_EDGES = (0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0)
+
+
+def wave_color(height):
+    bucket = 0
+    for edge in _WAVE_BUCKET_EDGES:
+        if height < edge:
+            break
+        bucket += 1
+    color = WAVE_BUCKET_COLORS[bucket]
+    a = int(color[0:2], 16) / 255.0
+    b = int(color[2:4], 16) / 255.0
+    c = int(color[4:6], 16) / 255.0
+    return (a, b, c)
+
+
 def resource_path(package: str, relative_path: str):
     resource = files(package).joinpath(relative_path)
     with as_file(resource) as path:

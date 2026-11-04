@@ -377,11 +377,19 @@ class GribViewportModel:
         resident_time_window=False,
         grid=False,
         display_identity=None,
+        parameter="wind",
+        components=2,
+        selection=True,
     ):
         self.paths = tuple(str(path) for path in paths)
         if display_identity is not None and len(self.paths) != 1:
             raise ValueError("A display identity must belong to exactly one file")
         self.display_identity = display_identity
+        self._parameter = parameter
+        self._components = int(components)
+        # A scalar layer (wave height) has no barb selection: staging one
+        # would sample a second, 2-component field for nothing.
+        self._selection_enabled = bool(selection)
         self._land_mask = land_mask
         # The gridded form of the field is staged only when the numerical
         # fill needs it.  The default path stages the node list alone, so
@@ -559,6 +567,20 @@ class GribViewportModel:
                     if resource is not None and resource.field is field:
                         self._front_index = index
                         break
+        if field is not None and not self._selection_enabled:
+            # Scalar layers stop at the field: there is no selection to build
+            # and no second sampling pass to pay for.
+            with self._condition:
+                self._field = field
+                self._store.acquire(field.identity)
+                self._store.protect(field.identity)
+                self._state = "ready"
+                self._failed_key = None
+                self._error = ""
+                self._published_generations.add(field.generation)
+                self._published_demands.add(self._request_key(camera))
+                self._recentre_if_needed(camera, previous, field)
+            return ("ready", field, None)
         if field is not None and _covers(field, camera):
             view = camera.view()
             anchor = anchor_view(view, reference)
@@ -1102,7 +1124,7 @@ class GribViewportModel:
                             for event in (
                                 identity[0],
                                 sampler.coverage[identity],
-                                *sampler._times[identity, "wind"],
+                                *sampler._times[identity, self._parameter],
                             )
                         }
                     )
@@ -1254,7 +1276,7 @@ class GribViewportModel:
                         )
                     )
             source = tuple(_source_key(item) for item in self._sources)
-            before, after = time_window(self._sampler, camera.stamp())
+            before, after = time_window(self._sampler, camera.stamp(), self._parameter)
             if target is not None:
                 resolution = target["resolution"]
             else:
@@ -1272,7 +1294,7 @@ class GribViewportModel:
                 )
             identity = FieldIdentity(
                 source=source,
-                parameter="wind",
+                parameter=self._parameter,
                 before=before,
                 after=after,
                 window=window,
@@ -1298,6 +1320,8 @@ class GribViewportModel:
                 geometry=geometry,
                 memo=self._memo,
                 grid=self._grid,
+                parameter=self._parameter,
+                components=self._components,
             )
         except Exception as exc:
             raise ValueError(f"GRIB field preparation failed: {exc}") from exc
@@ -1443,6 +1467,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
         chartStateChanged = Signal(str)  # noqa: N815 - Qt signal name
         nativeError = Signal(str)  # noqa: N815 - Qt signal name
         streamlinesPrepared = Signal()  # noqa: N815
+        wavePrepared = Signal()  # noqa: N815
         marineStateChanged = Signal(str)  # noqa: N815
         worldRendered = Signal(object, str)  # noqa: N815
 
@@ -1472,6 +1497,17 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._wind_gradient_enabled = True
             self._wind_gradient_opacity = 0.12
             self._wind_style = "barbs"
+            # Wave height is a separate scalar layer: its own model (a
+            # one-component ``wave_height`` field), its own QML fill and its
+            # own gradient settings. Hidden until the panel asks for it.
+            self._wave_visible = False
+            self._wave_opacity = 0.85
+            self._wave_gradient_smooth = True
+            self._wave_gradient_levels = 9
+            self._wave_model = None
+            self._wave_fill = None
+            self._wave_state = "unavailable"
+            self._wave_error = ""
             self._camera = None
             self._weather_display_camera = None
             self._weather_display_dpr = None
@@ -1676,6 +1712,19 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 if self._fill is not None
                 else None
             )
+            self._wave_fill = cast(Any, self._weather.findChild(QObject, "waveFill"))
+            self._wave_fill_back = (
+                cast(Any, self._weather.findChild(QObject, "waveFillBack"))
+                if self._wave_fill is not None
+                else None
+            )
+            # Scenes without the image fill (the barbs' own scenes) carry an
+            # explicit wave status item instead of a fill, so "waves cannot be
+            # drawn here" is stated rather than leaving a silent blank layer.
+            self._wave_status = cast(
+                Any, self._weather.findChild(QObject, "waveStatus")
+            )
+            self._wave_token = None
             # The scene may own the node-anchor textures and hand the same
             # Image instances to the front and back barbs.  Two slots let a
             # pending frame load beside the one on screen, and a slot's pair
@@ -1801,6 +1850,17 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                             getattr(item, signal).connect(
                                 lambda *args, slot=item: self._image_fill_changed(slot)
                             )
+            for item in (self._wave_fill, self._wave_fill_back):
+                if item is None:
+                    continue
+                for signal in (
+                    "preparedChanged",
+                    "shaderErrorChanged",
+                    "sourceErrorChanged",
+                ):
+                    getattr(item, signal).connect(
+                        lambda *args, slot=item: self._wave_fill_changed(slot)
+                    )
             if self._native_weather_fields:
                 from .gpuweathertextures import (
                     NativeWeatherBudget,
@@ -1868,6 +1928,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._chart_source_timer.start()
             self._watch_chart_budget()
             self.prepared.connect(self._refresh, Qt.ConnectionType.QueuedConnection)
+            self.wavePrepared.connect(
+                self._refresh_wave, Qt.ConnectionType.QueuedConnection
+            )
             self.chartPublished.connect(
                 self._publish_chart, Qt.ConnectionType.QueuedConnection
             )
@@ -3135,6 +3198,23 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             old.on_change = None
             self._source_generation += 1
             old.close()  # nonjoining; the owning worker releases private handles
+            if self._wave_model is not None:
+                self._wave_model.on_change = None
+                self._wave_model.close()
+                self._wave_model = None
+            self._publication_manager.reject_pending(LayerRole.WAVE_FILL)
+            self._publication_manager.withdraw_visible(LayerRole.WAVE_FILL)
+            self._provider.release_fields((self, "wave"))
+            self._wave_token = None
+            self._wave_state = "hidden"
+            self._wave_error = ""
+            self._set_wave_status("")
+            for item in (self._wave_fill, self._wave_fill_back):
+                if item is None:
+                    continue
+                item.setVisible(False)
+                for name in ("u0Source", "v0Source", "u1Source", "v1Source"):
+                    item.setProperty(name, QUrl())
             from .viewportstreamlines import ViewportStreamlineModel
 
             self._streamline_model.close()
@@ -3228,6 +3308,275 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 if fill is not None:
                     fill.setProperty("gradientSmooth", bool(smooth))
                     fill.setProperty("gradientLevels", max(2, min(15, int(levels))))
+
+        # ------------------------------------------------------- wave layer
+        def set_wave_visible(self, visible):
+            """Show or hide the wave height fill.
+
+            The wave layer is independent of the wind layer: hiding it never
+            hides, restages or recolours the wind fill, and showing it stages
+            only the scalar ``wave_height`` field.
+            """
+            visible = bool(visible)
+            self._wave_visible = visible
+            if not visible:
+                self._wave_state = "hidden"
+                self._wave_error = ""
+                self._set_wave_status("")
+                for item in (self._wave_fill, self._wave_fill_back):
+                    if item is not None:
+                        item.setVisible(False)
+                return
+            if not self._ensure_wave_model():
+                # The scene has no image fill (the barbs' own scenes) or the
+                # source has no field worker: state that, do not draw a blank.
+                self._show_wave_state("unavailable", "Wave height unavailable here")
+                return
+            self._show_wave_state("loading", "Loading wave height")
+            self._update_wave(self._camera)
+
+        def set_wave_opacity(self, opacity):
+            self._wave_opacity = max(0.0, min(1.0, float(opacity)))
+            for item in (self._wave_fill, self._wave_fill_back):
+                if item is not None:
+                    item.setOpacity(self._wave_opacity)
+
+        def set_wave_gradient_style(self, smooth, levels):
+            self._wave_gradient_smooth = bool(smooth)
+            self._wave_gradient_levels = max(2, min(9, int(levels)))
+            for item in (self._wave_fill, self._wave_fill_back):
+                if item is None:
+                    continue
+                item.setProperty("gradientSmooth", self._wave_gradient_smooth)
+                item.setProperty("gradientLevels", self._wave_gradient_levels)
+
+        def wave_state(self):
+            """``hidden``, ``loading``, ``ready`` or ``unavailable``."""
+            return self._wave_state
+
+        def _ensure_wave_model(self):
+            """Create the scalar wave worker, if the scene can display it."""
+            if self._wave_model is not None:
+                return True
+            if self._wave_fill is None:
+                return False
+            model = self._model
+            if model is None or not getattr(model, "paths", ()):
+                return False
+            self._wave_model = GribViewportModel(
+                model.paths,
+                grid=True,
+                display_identity=model.display_identity,
+                parameter="wave_height",
+                components=1,
+                selection=False,
+            )
+            self._wave_model.on_change = self.wavePrepared.emit
+            return True
+
+        def _refresh_wave(self):
+            if not self._disposed and self._wave_visible:
+                self._update_wave(self._camera)
+
+        def _set_wave_status(self, message, loading=False):
+            if self._wave_status is not None:
+                self._wave_status.setProperty("text", message)
+            for item in (self._wave_fill, self._wave_fill_back):
+                if item is None:
+                    continue
+                item.setProperty("statusText", message)
+                item.setProperty("waveLoading", loading)
+
+        def _show_wave_state(self, state, message=""):
+            self._wave_state = state
+            self._wave_error = message
+            self._set_wave_status(message, loading=state == "loading")
+            if state != "ready":
+                for item in (self._wave_fill, self._wave_fill_back):
+                    if item is not None:
+                        item.setVisible(False)
+
+        def _wave_grid_rect(self, camera, lattice):
+            # The wave fill shares the wind fill's reference placement, so a
+            # pan that keeps one reference moves the whole layer together.
+            map_camera = getattr(self, "_map_anchor_camera", None)
+            reference = self._publication_manager.reference_camera
+            if map_camera is not None:
+                return _grid_rect(map_camera.view(), lattice)
+            if reference is not None:
+                ref_pan = PanReference.from_camera(
+                    reference, getattr(reference, "dpr", 1.0)
+                )
+                dx, dy = ref_pan.translation_to(camera)
+                rect = _grid_rect(reference.view(), lattice)
+                return type(rect)(
+                    rect.x() + dx, rect.y() + dy, rect.width(), rect.height()
+                )
+            return _grid_rect(camera.view(), lattice)
+
+        def _update_wave(self, camera):
+            """Publish the wave field's gridded form through the manager.
+
+            The wave layer stages under ``LayerRole.WAVE_FILL`` exactly as the
+            wind fill stages under ``LayerRole.FILL``: its bytes are charged
+            to the wave layer, a replaced publication is rejected by token,
+            and a rebase withdraws the frame, so an old forecast's heights are
+            never drawn beside a new forecast.  A missing sample stays a NaN
+            and the shader discards it, so no zero-height field is invented.
+            """
+            if not self._wave_visible:
+                return
+            if self._wave_fill is None or self._wave_fill_back is None:
+                self._show_wave_state("unavailable", "Wave height unavailable here")
+                return
+            if camera is None:
+                return
+            model = self._wave_model
+            if model is None:
+                if not self._ensure_wave_model():
+                    self._show_wave_state("unavailable", "No wave forecast")
+                    return
+                model = self._wave_model
+            if model.busy():
+                # A preparation is already in flight; a camera change must
+                # not queue a second demand for the same field.
+                if self._wave_state != "ready":
+                    self._show_wave_state("loading", "Loading wave height")
+                return
+            state, field, _selection = model.update(
+                camera, self._barb_reference_view(camera)
+            )
+            if field is None or field.grid is None:
+                self._show_wave_state(
+                    "loading" if state == "loading" else "unavailable",
+                    (
+                        "Loading wave height"
+                        if state == "loading"
+                        else (model.error or "Wave height unavailable")
+                    ),
+                )
+                return
+            grid = field.grid
+            key = f"{field.generation}/wave"
+            manager = self._publication_manager
+            layer = manager.layers[LayerRole.WAVE_FILL]
+            epoch = manager.current_generation
+            if (
+                layer.visible is not None
+                and layer.visible.generation == epoch
+                and layer.visible_resources.get("key") == key
+                and layer.pending is None
+            ):
+                # A covered pan reuses the retained frame: only its placement
+                # moves, nothing is restaged or re-encoded.
+                item = self._wave_fill
+                item.setProperty("blend", field.staged.weight(camera.stamp()))
+                self._place_fill_rect(item, self._wave_grid_rect(camera, grid.lattice))
+                self._show_wave_state("ready", "")
+                item.setVisible(True)
+                return
+            budget = sum(image.sizeInBytes() for image in grid.images)
+            delta = max(0, budget - layer.pending_budget_bytes)
+            if not manager.budget.can_allocate(LayerRole.WAVE_FILL, delta):
+                self._show_wave_state("unavailable", "Wave texture budget exceeded")
+                return
+            try:
+                urls = self._provider.reserve_field((self, "wave"), grid.images, key)
+            except ValueError:
+                self._show_wave_state("unavailable", "Wave texture unavailable")
+                return
+            token = object()
+            identity = LayerIdentity(
+                role=LayerRole.WAVE_FILL,
+                generation=epoch,
+                source_key=(field.identity, key, camera.stamp()),
+                content_hash=getattr(grid, "content_hash", str(grid.images)),
+            )
+            if not manager.stage_resources(
+                LayerRole.WAVE_FILL,
+                identity,
+                LayerPlacement(),
+                {ResourceKind.IMAGE: grid.images, "key": key, "urls": urls},
+                budget,
+                completion_token=token,
+            ):
+                self._provider.cancel_field((self, "wave"))
+                self._show_wave_state("unavailable", "Wave texture budget exceeded")
+                return
+            self._wave_token = token
+            item = self._wave_fill_back
+            item.setProperty("blend", field.staged.weight(camera.stamp()))
+            item.setProperty("gradientSmooth", self._wave_gradient_smooth)
+            item.setProperty("gradientLevels", self._wave_gradient_levels)
+            item.setOpacity(self._wave_opacity)
+            self._place_fill_rect(item, self._wave_grid_rect(camera, grid.lattice))
+            for name, url in zip(
+                ("u0Source", "v0Source", "u1Source", "v1Source"), urls
+            ):
+                item.setProperty(name, QUrl(url))
+            item.setVisible(False)
+            self._try_commit_wave(token)
+            if isinstance(self, QObject):
+                QTimer.singleShot(
+                    10000, lambda staged=token: self._wave_timeout(staged)
+                )
+
+        def _wave_fill_changed(self, item):
+            if not self._disposed and item is self._wave_fill_back:
+                self._try_commit_wave(getattr(self, "_wave_token", None))
+
+        def _try_commit_wave(self, token):
+            if (
+                self._disposed
+                or token is None
+                or token is not getattr(self, "_wave_token", None)
+            ):
+                return
+            item = self._wave_fill_back
+            if item is None:
+                return
+            layer = self._publication_manager.layers[LayerRole.WAVE_FILL]
+            if layer.pending is None or layer.completion_token is not token:
+                return
+            if item.property("shaderError") or item.property("sourceError"):
+                self._fail_wave(token, "Wave shader unavailable")
+                return
+            if not item.property("prepared"):
+                return
+            adopted, _ = self._publication_manager.verify_and_adopt(
+                LayerRole.WAVE_FILL,
+                lambda resources: len(resources.get(ResourceKind.IMAGE, ())) == 4
+                and len(resources.get("urls", ())) == 4,
+                expected_token=token,
+            )
+            if not adopted:
+                self._fail_wave(token, "Wave frame rejected")
+                return
+            self._provider.promote_field((self, "wave"))
+            self._wave_token = None
+            old = self._wave_fill
+            if old is not None:
+                old.setVisible(False)
+            self._wave_fill, self._wave_fill_back = item, old
+            item.setOpacity(self._wave_opacity)
+            self._show_wave_state("ready", "")
+            item.setVisible(self._wave_visible)
+
+        def _fail_wave(self, token, message):
+            if token is not getattr(self, "_wave_token", None):
+                return
+            self._publication_manager.reject_pending(LayerRole.WAVE_FILL, token)
+            self._provider.cancel_field((self, "wave"))
+            self._wave_token = None
+            back = self._wave_fill_back
+            if back is not None:
+                back.setVisible(False)
+                for name in ("u0Source", "v0Source", "u1Source", "v1Source"):
+                    back.setProperty(name, QUrl())
+            self._show_wave_state("unavailable", message)
+
+        def _wave_timeout(self, token):
+            self._fail_wave(token, "Wave height unavailable")
 
         def _refresh_streamlines(self):
             if (
@@ -3753,6 +4102,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._clear_weather_sources()
             self._model.on_change = None
             self._model.close()
+            if self._wave_model is not None:
+                self._wave_model.on_change = None
+                self._wave_model.close()
+                self._wave_model = None
+            self._provider.release_fields((self, "wave"))
             if shiboken6.isValid(self._chart_timer):
                 self._chart_timer.stop()
             if shiboken6.isValid(self._chart_source_timer):
@@ -3970,9 +4324,18 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                         new_gen = self._publication_manager.current_generation + 1
                         self._publication_manager.set_generation(new_gen)
                         self._publication_manager.rebase_all(camera, new_gen)
+                        # The rebase withdrew the wave frame's generation: do
+                        # not keep drawing it while the new one is staged.
+                        self._wave_token = None
+                        for item in (self._wave_fill, self._wave_fill_back):
+                            if item is not None:
+                                item.setVisible(False)
                 else:
                     # No reference yet, create one
                     self._publication_manager.set_reference_camera(camera)
+
+                if self._wave_visible:
+                    self._update_wave(camera)
 
                 if map_anchor_changed or getattr(self, "_map_content", None) is None:
                     self._place_chart()
