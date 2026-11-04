@@ -41,6 +41,48 @@ from .dockchrome import style_scrollarea
 from .theme import section_label
 from .text import qt_text
 
+# Plain-language help for the settings that used to show CDS-style one-liners.
+PARAMETER_HELP = {
+    "subdiv": (
+        "How finely the isochrone search subdivides the grid when checking "
+        "whether a point is reachable. Higher values test more intermediate "
+        "points, giving a smoother and usually more accurate route but taking "
+        "longer to calculate. Lower values are faster and coarser."
+    ),
+    "concurrent": (
+        "Calculate isochrones for several time steps in parallel using more "
+        "CPU cores. Speeds up long routes, but uses more memory and can make "
+        "progress less predictable while it runs."
+    ),
+    "min_increase": (
+        "How much extra distance (in nautical miles) a new candidate point "
+        "must add over the previous isochrone before it is kept. Larger values "
+        "prune more aggressively (faster, possibly less optimal route); smaller "
+        "values search harder."
+    ),
+}
+
+SAFETY_HELP = {
+    "limit_wind": (
+        "Reject route points where the forecast true wind exceeds this speed. "
+        "The router will detour or wait instead of sailing into stronger wind."
+    ),
+    "motor_fallback": (
+        "When the boat's sailing speed drops below this value, continue at the "
+        "motoring speed instead of stalling. Use it to model a motor assist, or "
+        "to keep a minimum rate of progress in light air."
+    ),
+    "motor_speed": (
+        "Speed used while motoring under the fallback above. Set it to roughly "
+        "the boat's motoring speed in calm conditions."
+    ),
+    "wave_proxy": (
+        "Reduces sailing speed when the wind exceeds 20 kn, down to 25% at "
+        "40 kn, as a stand-in for rough sea state. It uses forecast wind speed, "
+        "not wave height, and does not change the motoring speed."
+    ),
+}
+
 
 class RoutingPanel(QWidget):
     plan_changed = Signal(object)
@@ -168,19 +210,34 @@ class RoutingPanel(QWidget):
         self.safety_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
         self.safety_form.addRow(section_label("Routing limits"))
         self.limit_wind = QCheckBox("Maximum true wind")
+        self.limit_wind.setToolTip(SAFETY_HELP["limit_wind"])
         self.maximum_wind = self._speed_control(30, 100)
-        self.safety_form.addRow(self.limit_wind, self.maximum_wind)
-        self.motor_fallback = QCheckBox("Motor when sailing speed is below")
-        self.minimum_sailing_speed = self._speed_control(3, 30)
-        self.safety_form.addRow(self.motor_fallback, self.minimum_sailing_speed)
-        self.motor_speed = self._speed_control(5, 30)
-        self.safety_form.addRow("Motoring speed", self.motor_speed)
-        self.wave_proxy = QCheckBox("Wind-based speed reduction (wave proxy)")
-        self.wave_proxy.setToolTip(
-            "Reduces sailing speed above 20 kn wind, up to 25% at 40 kn. "
-            "Uses wind speed, not wave-height forecasts. Motoring speed is unchanged."
+        self.maximum_wind.setToolTip(SAFETY_HELP["limit_wind"])
+        self.safety_form.addRow(
+            self._row_with_info(self.limit_wind, SAFETY_HELP["limit_wind"]),
+            self.maximum_wind,
         )
-        self.safety_form.addRow(self.wave_proxy)
+        self.motor_fallback = QCheckBox("Motor when sailing speed is below")
+        self.motor_fallback.setToolTip(SAFETY_HELP["motor_fallback"])
+        self.minimum_sailing_speed = self._speed_control(3, 30)
+        self.minimum_sailing_speed.setToolTip(SAFETY_HELP["motor_fallback"])
+        self.safety_form.addRow(
+            self._row_with_info(self.motor_fallback, SAFETY_HELP["motor_fallback"]),
+            self.minimum_sailing_speed,
+        )
+        self.motor_speed = self._speed_control(5, 30)
+        self.motor_speed.setToolTip(SAFETY_HELP["motor_speed"])
+        motor_label = QLabel("Motoring speed")
+        motor_label.setToolTip(SAFETY_HELP["motor_speed"])
+        self.safety_form.addRow(
+            self._row_with_info(motor_label, SAFETY_HELP["motor_speed"]),
+            self.motor_speed,
+        )
+        self.wave_proxy = QCheckBox("Wind-based speed reduction (wave proxy)")
+        self.wave_proxy.setToolTip(SAFETY_HELP["wave_proxy"])
+        self.safety_form.addRow(
+            self._row_with_info(self.wave_proxy, SAFETY_HELP["wave_proxy"])
+        )
         self.parameters_box.layout().addLayout(self.safety_form)
         for control in (self.limit_wind, self.motor_fallback, self.wave_proxy):
             control.toggled.connect(self._safety_changed)
@@ -264,6 +321,7 @@ class RoutingPanel(QWidget):
         button.setText("i")
         button.setAutoRaise(True)
         button.setToolTip(text)
+        button.setToolTipDuration(15000)
         button.setFixedSize(16, 16)
         button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         button.setStyleSheet(
@@ -271,6 +329,15 @@ class RoutingPanel(QWidget):
             " font-size: 9px; padding: 0; }"
         )
         return button
+
+    def _row_with_info(self, widget, text):
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(widget, 1)
+        layout.addWidget(self._info_button(text))
+        return row
 
     def _read_parameters(self):
         return {
@@ -293,7 +360,7 @@ class RoutingPanel(QWidget):
             widget = self._parameter_widget(param, values.get(key, param.value))
             if widget is None:
                 continue
-            widget.setToolTip(param.tooltip)
+            widget.setToolTip(PARAMETER_HELP.get(key, param.tooltip or param.name))
             widget.setAccessibleName(param.name)
             label = QLabel(qt_text(param.name))
             label.setWordWrap(True)
@@ -302,7 +369,9 @@ class RoutingPanel(QWidget):
             label_layout.setContentsMargins(0, 0, 0, 0)
             label_layout.setSpacing(4)
             label_layout.addWidget(label, 1)
-            label_layout.addWidget(self._info_button(param.tooltip or param.name))
+            label_layout.addWidget(
+                self._info_button(PARAMETER_HELP.get(key, param.tooltip or param.name))
+            )
             self.parameter_form.addRow(label_row, widget)
             self.parameter_widgets[key] = widget
         self.parameters_section.setVisible(True)
