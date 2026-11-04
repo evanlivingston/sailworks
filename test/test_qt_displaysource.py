@@ -7,9 +7,10 @@ import pytest
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 
+from sailworks.core.forecastcapabilities import display_model_name
 from sailworks.qt.analysiscontroller import AnalysisController
 from sailworks.qt.analysisdisplay import BoundDisplayForecastSelection
-from sailworks.qt.weatherpanel import ForecastModelSelector
+from sailworks.qt.weatherpanel import ForecastModelSelector, WeatherPanel
 from sailworks.rendering.displayforecast import DisplayForecast
 from test.analysis_qt_fixtures import (
     FakeAnalysisState,
@@ -201,5 +202,163 @@ def test_stale_wave_selection_falls_back_to_the_routing_entry(tmp_path, monkeypa
     assert wave.sources()[0].model_name == "GFS"
     assert wave.sources() == selection.sources()
     assert changes
+    selection.close()
+    controller.close()
+
+
+PANEL_SETTINGS = {
+    "gribWindStyle": "barbs",
+    "gribBarbDensity": "standard",
+    "gribWindGradient": True,
+    "gribWindGradientOpacity": 0.12,
+    "gribWindGradientSmooth": True,
+    "gribWindGradientLevels": 15,
+    "gribArrowOpacity": 0.4,
+    "gribWaveDensity": "standard",
+    "gribWaveOpacity": 0.85,
+    "gribWaveSmooth": True,
+    "gribWaveLevels": 9,
+    "gribIsobarsVisible": True,
+    "gribIsobarInterval": 4.0,
+    "gribIsobarOpacity": 0.85,
+    "gribIsobarLabels": True,
+    "gribWaveSource": "",
+}
+
+
+class SettingsDouble(dict):
+    """Settings double supporting the attribute and item access used in Qt."""
+
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name)
+
+    def __setattr__(self, name, value):
+        self[name] = value
+
+
+class SignalStub:
+    def connect(self, *_args, **_kwargs):
+        pass
+
+    def disconnect(self, *_args, **_kwargs):
+        pass
+
+
+class MapDouble:
+    def __init__(self):
+        self.wind_visible = False
+        self.wave_visible = False
+        self._weather_presenter = None
+        self.ship_observations = SimpleNamespace(
+            visible=False,
+            loading=False,
+            status="",
+            changed=SignalStub(),
+            refresh=lambda: None,
+            set_visible=lambda _visible: None,
+        )
+
+    def queue_draw(self):
+        pass
+
+
+def make_panel(controller, selection, stored=""):
+    settings = SettingsDouble(PANEL_SETTINGS)
+    settings["gribWaveSource"] = stored
+    controller.settings = settings
+    controller.display_forecast = selection
+    controller.data = SimpleNamespace(redraw=lambda: None)
+    active_map = MapDouble()
+    panel = WeatherPanel(controller, lambda: active_map, lambda: None)
+    return panel, settings
+
+
+def test_choosing_a_wave_source_persists_and_clears_the_setting(tmp_path, monkeypatch):
+    application, controller, selection = start(
+        tmp_path, monkeypatch, snapshot_with(tmp_path, wave_entry())
+    )
+    panel, settings = make_panel(controller, selection)
+    key = selection.wave.choices[0].key
+    assert panel.wave_forecast.findData(key) == 1
+
+    panel.wave_forecast.setCurrentIndex(1)
+    assert settings["gribWaveSource"] == key
+    assert selection.wave.selected_key == key
+
+    panel.wave_forecast.setCurrentIndex(0)
+    assert settings["gribWaveSource"] == ""
+    assert selection.wave.selected_key == ""
+    panel.dispose()
+    selection.close()
+    controller.close()
+
+
+def test_stored_wave_source_restores_and_survives_a_rescan(tmp_path, monkeypatch):
+    application, controller, selection = start(
+        tmp_path, monkeypatch, snapshot_with(tmp_path, wave_entry())
+    )
+    key = selection.wave.choices[0].key
+    panel, settings = make_panel(controller, selection, key)
+
+    assert selection.wave.selected_key == key
+    assert panel.wave_forecast.currentData() == key
+    assert selection.wave.sources()[0].model_name == "GFSWAVE"
+
+    # The display scan republishes its choices; the stored key must be applied
+    # once they are known again.
+    selection.refresh()
+    wait_for(
+        lambda: not selection.loading and selection.wave.choices,
+        application,
+        detail=lambda: f"error={selection.error!r}; status={selection.status!r}",
+    )
+    assert selection.wave.selected_key == key
+    assert panel.wave_forecast.currentData() == key
+    assert selection.wave.sources()[0].model_name == "GFSWAVE"
+    assert settings["gribWaveSource"] == key
+    panel.dispose()
+    selection.close()
+    controller.close()
+
+
+def test_unknown_stored_wave_source_falls_back_to_routing_and_clears(
+    tmp_path, monkeypatch
+):
+    application, controller, selection = start(
+        tmp_path, monkeypatch, snapshot_with(tmp_path, wave_entry())
+    )
+    panel, settings = make_panel(controller, selection, "tranche:gone:stale")
+
+    assert panel.wave_forecast.currentData() == ""
+    assert selection.wave.selected_key == ""
+    assert selection.wave.sources()[0].model_name == "GFS"
+    assert settings["gribWaveSource"] == ""
+    panel.dispose()
+    selection.close()
+    controller.close()
+
+
+def test_wave_selector_sits_in_the_waves_section_with_a_short_label(
+    tmp_path, monkeypatch
+):
+    application, controller, selection = start(
+        tmp_path, monkeypatch, snapshot_with(tmp_path, wave_entry())
+    )
+    panel, _settings = make_panel(controller, selection)
+
+    assert panel.waves_section.isAncestorOf(panel.wave_forecast)
+    assert not panel.waves_section.isAncestorOf(panel.forecast_model)
+    assert panel.wave_forecast_row.parent() is panel.waves_section
+    layout = panel.waves_section.layout()
+    assert layout.indexOf(panel.wave) < layout.indexOf(panel.wave_forecast_row)
+
+    expected = f"{display_model_name('GFSWAVE')} · 1 Jan 00:00 UTC"
+    assert panel.wave_forecast.itemText(1) == expected
+    assert "member deterministic" not in panel.wave_forecast.itemText(1)
+    assert "run " not in panel.wave_forecast.itemText(1)
+    panel.dispose()
     selection.close()
     controller.close()

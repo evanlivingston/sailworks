@@ -164,19 +164,6 @@ class WeatherPanel(QWidget):
         model_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.forecast_model = ForecastModelSelector(controller)
         model_form.addRow("Model", self.forecast_model)
-        self.wave_label = QLabel("Wave forecast")
-        self.wave_forecast = QComboBox()
-        self.wave_forecast.setAccessibleName("Wave forecast display")
-        self.wave_forecast.setToolTip(
-            "Show a wave-only published forecast. Routing keeps its own model."
-        )
-        self.wave_forecast.currentIndexChanged.connect(self._select_wave)
-        model_form.addRow(self.wave_label, self.wave_forecast)
-        display = getattr(self.controller, "display_forecast", None)
-        wave = getattr(display, "wave", None)
-        if wave is not None:
-            wave.changed.connect(self._refresh_wave)
-        self._refresh_wave()
         controls.addLayout(model_form)
         controls.addWidget(section_label("Wind"))
         self.wind = QCheckBox("Show wind")
@@ -233,13 +220,36 @@ class WeatherPanel(QWidget):
         form.addRow("Line density", self.barb_density)
         controls.addLayout(form)
         controls.addWidget(self._section_divider())
-        controls.addWidget(section_label("Waves"))
+        self.waves_section = QWidget()
+        waves = QVBoxLayout(self.waves_section)
+        waves.setContentsMargins(0, 0, 0, 0)
+        waves.addWidget(section_label("Waves"))
         self.wave = QCheckBox("Show wave height")
         self.wave.setChecked(active_map().wave_visible)
         self.wave.toggled.connect(
             lambda enabled: active_map().set_wave_visible(enabled)
         )
-        controls.addWidget(self.wave)
+        waves.addWidget(self.wave)
+        # The wave display source belongs with the wave layers it switches,
+        # not with the routing model selector: it never affects routing.
+        self.wave_forecast_row = QWidget()
+        wave_forecast_row = QHBoxLayout(self.wave_forecast_row)
+        wave_forecast_row.setContentsMargins(0, 0, 0, 0)
+        self.wave_label = QLabel("Wave forecast")
+        self.wave_forecast = QComboBox()
+        self.wave_forecast.setAccessibleName("Wave forecast display")
+        self.wave_forecast.setToolTip(
+            "Show a wave-only published forecast. Routing keeps its own model."
+        )
+        self.wave_forecast.currentIndexChanged.connect(self._select_wave)
+        wave_forecast_row.addWidget(self.wave_label)
+        wave_forecast_row.addWidget(self.wave_forecast, 1)
+        waves.addWidget(self.wave_forecast_row)
+        display = getattr(self.controller, "display_forecast", None)
+        wave = getattr(display, "wave", None)
+        if wave is not None:
+            wave.changed.connect(self._refresh_wave)
+        self._refresh_wave()
         wave_form = QFormLayout()
         wave_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         # Wave direction arrows reuse the wind barbs' thinning modes through
@@ -271,7 +281,8 @@ class WeatherPanel(QWidget):
         wave_form.addRow("Gradient style", self.wave_style)
         self.wave_levels = self.integer_slider("gribWaveLevels", 2, 9)
         wave_form.addRow("Gradient levels", self.wave_levels)
-        controls.addLayout(wave_form)
+        waves.addLayout(wave_form)
+        controls.addWidget(self.waves_section)
         controls.addWidget(self._section_divider())
         controls.addWidget(section_label("Ship weather observations"))
         self.ship_observations = self.active_map().ship_observations
@@ -317,24 +328,79 @@ class WeatherPanel(QWidget):
         layout.addWidget(scroll)
         self.refresh()
 
+    def _stored_wave_source(self):
+        settings = getattr(getattr(self, "controller", None), "settings", None)
+        if settings is None:
+            return ""
+        try:
+            return str(settings["gribWaveSource"] or "")
+        except (KeyError, TypeError, AttributeError):
+            return str(getattr(settings, "gribWaveSource", "") or "")
+
+    def _store_wave_source(self, key):
+        """Remember the display-only wave choice; never a routing selection."""
+        settings = getattr(getattr(self, "controller", None), "settings", None)
+        if settings is None:
+            return
+        try:
+            settings["gribWaveSource"] = key
+        except TypeError:
+            settings.gribWaveSource = key
+        except OSError:
+            # A failed save must not break the panel refresh; the choice stays
+            # active for this session.
+            pass
+
+    def _restore_wave_source(self, wave, key):
+        choose = getattr(wave, "choose", None)
+        if not callable(choose):
+            return False
+        if not choose(key):
+            return False
+        presenter = getattr(self.active_map(), "_weather_presenter", None)
+        if presenter is not None:
+            presenter.source_changed()
+        return True
+
     def _refresh_wave(self):
+        if getattr(self, "_choosing_wave", False):
+            # Choosing only changes the selection, not the offered choices;
+            # the combo already shows the chosen row. Rebuilding it from
+            # inside its own currentIndexChanged signal confuses Qt's index.
+            return
         display = getattr(self.controller, "display_forecast", None)
         wave = getattr(display, "wave", None)
         choices = tuple(getattr(wave, "choices", ()) or ())
         selected = getattr(wave, "selected_key", "")
+        loading = bool(getattr(wave, "loading", False)) or bool(
+            getattr(display, "loading", False)
+        )
+        if not selected and choices and not loading:
+            stored = self._stored_wave_source()
+            if stored:
+                if self._restore_wave_source(wave, stored):
+                    # The restoral emits changed, which re-enters this method
+                    # with the selection already in place.
+                    selected = stored
+                else:
+                    # The stored source is gone: fall back and forget it.
+                    self._store_wave_source("")
         self.wave_forecast.blockSignals(True)
         try:
             self.wave_forecast.clear()
             self.wave_forecast.addItem("Routing forecast", "")
             for choice in choices:
-                self.wave_forecast.addItem(choice.label, choice.key)
+                label = getattr(choice, "short_label", None) or choice.label
+                self.wave_forecast.addItem(label, choice.key)
             self.wave_forecast.setCurrentIndex(
                 max(0, self.wave_forecast.findData(selected))
             )
         finally:
             self.wave_forecast.blockSignals(False)
-        self.wave_label.setVisible(bool(choices))
-        self.wave_forecast.setVisible(bool(choices))
+        visible = bool(choices)
+        self.wave_forecast_row.setVisible(visible)
+        self.wave_label.setVisible(visible)
+        self.wave_forecast.setVisible(visible)
 
     def _select_wave_density(self, _index):
         """Store the wave arrow density; the wind barb density is untouched."""
@@ -348,13 +414,29 @@ class WeatherPanel(QWidget):
             settings.gribWaveDensity = value
 
     def _select_wave(self, index):
-        if index < 0:
+        if index < 0 or getattr(self, "_choosing_wave", False):
             return
         display = getattr(self.controller, "display_forecast", None)
         wave = getattr(display, "wave", None)
         choose = getattr(wave, "choose", None)
-        if not callable(choose) or not choose(self.wave_forecast.itemData(index)):
+        key = self.wave_forecast.itemData(index) or ""
+        self._choosing_wave = True
+        try:
+            chosen = callable(choose) and choose(key)
+        finally:
+            self._choosing_wave = False
+        if not chosen:
+            # Leave the combo on the source that is actually in effect.
+            selected = getattr(wave, "selected_key", "")
+            self.wave_forecast.blockSignals(True)
+            try:
+                self.wave_forecast.setCurrentIndex(
+                    max(0, self.wave_forecast.findData(selected))
+                )
+            finally:
+                self.wave_forecast.blockSignals(False)
             return
+        self._store_wave_source(key)
         presenter = getattr(self.active_map(), "_weather_presenter", None)
         if presenter is not None:
             presenter.source_changed()

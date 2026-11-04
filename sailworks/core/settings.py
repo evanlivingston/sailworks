@@ -36,6 +36,9 @@ class SettingsManager(Storage):
         # Wave direction arrows reuse the wind barbs' density modes, with
         # their own setting so the two glyph layers thin independently.
         self.gribWaveDensity = "standard"
+        # Display-only wave source key; empty means the routing forecast.
+        # Restored only when it resolves to a published wave choice.
+        self.gribWaveSource = ""
         self.weatherRenderer = "viewport"
         self.gribIsobarsVisible = True
         self.gribIsobarInterval = 4.0

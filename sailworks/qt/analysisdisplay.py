@@ -1,6 +1,7 @@
 """Display-source adapter bound only to an analysis controller snapshot."""
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from threading import Thread
 
 from PySide6.QtCore import QObject, Signal, Slot
@@ -37,6 +38,29 @@ class BoundDisplayForecast:
     @property
     def label(self):
         return f"{self.metadata.label} · {self.entry_id}"
+
+    @property
+    def short_label(self):
+        """Compact chooser label: display model name and run only.
+
+        The long label repeats "run" and spells out "deterministic", which
+        reads as noise in a dropdown. Ensemble members are still named, since
+        they distinguish otherwise identical choices.
+        """
+        from sailworks.core.forecastcapabilities import display_model_name
+
+        reference, model = self.metadata.display_identity
+        run = datetime.fromtimestamp(reference, timezone.utc)
+        name = (
+            display_model_name(self.metadata.model_name)
+            if self.metadata.model_name
+            else self.metadata.name
+        )
+        label = f"{name} · {run.day} {run:%b %H:%M} UTC"
+        member = "/".join(model[2]) if model[2] else ""
+        if member:
+            label = f"{label} · member {member}"
+        return label
 
     def __getattr__(self, name):
         return getattr(self.metadata, name)
