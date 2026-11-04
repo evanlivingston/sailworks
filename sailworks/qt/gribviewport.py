@@ -2243,20 +2243,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     - view._lat_to_y(camera.center_lat)
                     - height * scale / 2.0
                 )
-                if (
-                    x > 0
-                    or y > 0
-                    or x + width * scale < camera.width
-                    or y + height * scale < camera.height
-                ):
-                    # The cached pixels cannot cover this camera. The normal
-                    # host update selects/rebuilds its replacement; do not
-                    # stretch a clipped preview as if it were current.
-                    item.setVisible(False)
-                    if item is getattr(self, "_base", None):
-                        item.setProperty("chartLoading", True)
-                    setattr(self, hidden_attribute, True)
-                    continue
+                # Keep the cached pixels on screen at their true position even
+                # when they cannot cover the whole camera: hiding the layer
+                # makes a pan read as "the map vanished". It is slid, never
+                # stretched, so the incomplete edge stays honest until the
+                # host replaces it.
                 self._place_retained_image(
                     item, attribute, QRectF(x, y, width * scale, height * scale)
                 )
