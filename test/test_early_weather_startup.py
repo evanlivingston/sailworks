@@ -45,6 +45,9 @@ class Owner(QObject):
             changed=self.data_signal.changed, redraw=lambda: self.calls.append("redraw")
         )
         self.core = SimpleNamespace(grib_manager=SimpleNamespace(gribs=["forecast"]))
+        self.display_forecast = SimpleNamespace(
+            sources=lambda: tuple(self.core.grib_manager.gribs)
+        )
 
     def add(self, value):
         self.charts.charts.append(value)
@@ -171,6 +174,16 @@ class TestEarlyStartup(unittest.TestCase):
         calls = []
 
         class Plot(QWidget):
+            def __init__(self, parent):
+                super().__init__(parent)
+                self.selected_logged_fields = set()
+
+            def set_logged_fields(self, *args, **kwargs):
+                pass
+
+            def set_viewport_callback(self, callback):
+                pass
+
             def set_series(self, *args):
                 calls.append(("series", args))
 

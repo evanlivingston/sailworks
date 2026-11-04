@@ -53,10 +53,9 @@ CHART_PALETTE = "cm93"
 
 #: The settle window the chart layer composes for.  The recorded interaction
 #: sweep delivers its inputs at 30 per second (33 ms apart), so a window of
-#: 500 ms spans more than fifteen inputs: an interaction never triggers a
-#: composition, and the chart layer never competes with the weather
-#: pipeline for the worker.  This is a policy, not a measured threshold.
-CHART_SETTLE_MS = 500
+#: Idle interval before requesting a chart for the latest view.
+CHART_IDLE_MS = 100
+CHART_INTERACTIVE_MS = 150
 
 #: The coastline qualities' initial draw times, as the application's own
 #: ``GSHHSVectorChart`` records them.
@@ -249,8 +248,8 @@ class _ChartComposer:
             viewport = job.viewport
             surface = cairo.ImageSurface(
                 cairo.FORMAT_ARGB32,
-                viewport.width * job.factor,
-                viewport.height * job.factor,
+                max(1, int(round(viewport.width * job.factor))),
+                max(1, int(round(viewport.height * job.factor))),
             )
             surface.set_device_scale(job.factor, job.factor)
             surface.flush()
@@ -288,7 +287,7 @@ class ViewportChartLayer:
         paths,
         data_dir,
         palette=CHART_PALETTE,
-        settle_ms=CHART_SETTLE_MS,
+        settle_ms=CHART_IDLE_MS,
         worker_idle=None,
         current_camera=None,
         on_publish=None,
@@ -319,6 +318,7 @@ class ViewportChartLayer:
         self._thread = None
         self._closed = False
         self._sources = ()
+        self._reset_sources = False
         self._sampler = None
         self._sampler_sources: "tuple[DisplayWeatherSource, ...]" = ()
         self._composer_instance = None
@@ -450,41 +450,46 @@ class ViewportChartLayer:
             }
 
     # ----------------------------------------------------------- requests
-    def request(self, camera, replace=False):
+    def request(self, camera, replace=False, preview=False):
         """Ask for the chart layer at this camera (GUI thread).
 
         A retained composition that still covers the camera is reused: no new
         generation is created and nothing is recomposed.  Otherwise a new
-        generation replaces the previous one, which is cancelled and can
-        never publish.  ``replace`` asks for a new generation even when the
-        same view is already composing or already published.
+        generation supersedes the previous one, which can never publish.
+        Active work is allowed to finish; only the pending slot is replaced.
+        ``replace`` asks for a new generation even when the same view is
+        already composing or already published.
         """
         with self._condition:
             if self._closed:
                 return None
-            if self._sources_changed():
+            if preview and (self._active is not None or self._pending is not None):
+                return None
+            sources_changed = self._sources_changed()
+            basemap_changed = self._basemap_sources_changed()
+            if sources_changed or basemap_changed:
+                self._invalidate_sources_locked()
+            if sources_changed:
                 # The user's own manifest changed: the retained composition
                 # may no longer describe the user's cells, so it is withdrawn
                 # and the cells are composed again.
                 self._published = None
                 self._payload_bytes = 0
                 self._enc_stale = False
-            if self._basemap_sources_changed():
+            if basemap_changed:
                 # The basemap sources changed: the retained composition
                 # may no longer be valid, so it is withdrawn.
                 self._published = None
                 self._payload_bytes = 0
-            reused = self._reuse(camera, replace)
+            reused = self._reuse(camera, replace, preview)
             if reused is not None:
                 return reused
             self._generation += 1
             generation = self._generation
-            for request in (self._pending, self._active):
-                if request is not None:
-                    request[2].set()
-                    self.counters["cancelled"] += 1
-            self._pending = None
-            self._pending = (generation, camera, Event())
+            if self._pending is not None:
+                self._pending[2].set()
+                self.counters["cancelled"] += 1
+            self._pending = (generation, camera, Event(), preview)
             self._state = "loading"
             self._error = ""
             self.counters["requests"] += 1
@@ -503,7 +508,7 @@ class ViewportChartLayer:
             self._condition.notify_all()
         return generation
 
-    def _reuse(self, camera, replace):
+    def _reuse(self, camera, replace, preview=False):
         """The generation that already serves this camera, if there is one.
 
         A composition that is still running serves the same view, and a
@@ -512,22 +517,38 @@ class ViewportChartLayer:
         """
         if replace:
             return None
-        if self._active is not None and self._active[1] == camera:
+        if self._pending is not None:
+            if (
+                self._pending[0] == self._generation
+                and self._pending[1] == camera
+                and self._pending[3] == preview
+            ):
+                return self._pending[0]
+            return None
+        if (
+            self._active is not None
+            and self._active[0] == self._generation
+            and self._active[1] == camera
+            and self._active[3] == preview
+        ):
             # The same view is already composing: asking again would
             # supersede a composition that is still running.
             return self._active[0]
-        if self._published is not None and self._reusable(camera):
+        if self._published is not None and self._reusable(camera, preview):
             self.counters["reuses"] += 1
             return self._published[0]
         return None
 
-    def _reusable(self, camera):
+    def _reusable(self, camera, preview=False):
         """Whether the retained composition still serves this camera."""
         _generation, _image, metadata = cast(tuple, self._published)
+        if metadata.get("preview", False) != preview:
+            return False
         if metadata["time"] != camera.stamp():
             # The isobars belong to the forecast instant.
             return False
-        if metadata.get("factor", 1) != self._dpr:
+        expected_factor = self._dpr * 0.5 if preview else self._dpr
+        if metadata.get("factor", 1) != expected_factor:
             # The composition was made at another device pixel ratio: it is
             # not current, and it may not be resampled into this one.
             return False
@@ -594,6 +615,7 @@ class ViewportChartLayer:
         longer be the user's.
         """
         with self._condition:
+            self._invalidate_sources_locked()
             self._published = None
             self._payload_bytes = 0
             self._enc_stale = False
@@ -603,6 +625,14 @@ class ViewportChartLayer:
                 self._enc_metadata = {}
             # Also recheck basemap sources
             self._check_basemap_sources(self._data_dir)
+
+    def _invalidate_sources_locked(self):
+        """Reject old work and refresh worker-owned source handles."""
+        self._generation += 1
+        self._reset_sources = True
+        for request in (self._pending, self._active):
+            if request is not None:
+                request[2].set()
 
     def enc_status(self):
         """The ENC source's own status text, for the scene."""
@@ -656,7 +686,12 @@ class ViewportChartLayer:
                         return
                     request, self._pending = cast(tuple, self._pending), None
                     self._active = request
-                generation, camera, cancel = request
+                    reset_sources = self._reset_sources
+                    self._reset_sources = False
+                if reset_sources:
+                    self._release()
+                    self._sources = ()
+                generation, camera, cancel, preview = request
                 began = time.perf_counter()
                 error = ""
                 image = None
@@ -664,11 +699,19 @@ class ViewportChartLayer:
                 self._outcome = None
                 try:
                     if not cancel.is_set():
-                        image, metadata = self._compose(camera, cancel)
+                        if preview and not self._await_idle(cancel):
+                            self._outcome = "yielded"
+                        elif preview:
+                            image, metadata = self._compose(
+                                camera, cancel, preview=True
+                            )
+                        else:
+                            image, metadata = self._compose(camera, cancel)
                 except Exception as exc:  # a chart failure is never fatal
                     error = str(exc)
                 ended = time.perf_counter()
                 publish = None
+                notify_state = None
                 with self._condition:
                     self._active = None
                     self._spans.append((began, ended))
@@ -683,7 +726,7 @@ class ViewportChartLayer:
                         # yields, and the layer asks again when the weather
                         # pipeline is idle.
                         self._state = "idle"
-                        self._pending = None
+                        notify_state = "idle"
                     elif (
                         cancel.is_set()
                         or generation != self._generation
@@ -707,8 +750,11 @@ class ViewportChartLayer:
                     else:
                         self.counters["failures"] += 1
                         self._state = "unavailable"
+                        notify_state = "unavailable"
                         self._error = error
                         self._outcomes[generation] = "failed"
+                        self._published = None
+                        self._payload_bytes = 0
                         if self._enc_enabled:
                             # A failed composition never leaves the previous
                             # ENC presented: it is not current, and it is not
@@ -717,8 +763,6 @@ class ViewportChartLayer:
                             self._enc_state = "unavailable"
                             self._enc_stale = False
                             self._enc_metadata = {}
-                            self._published = None
-                            self._payload_bytes = 0
                     self._trim_history()
                 if publish is not None:
                     with self._condition:
@@ -730,8 +774,8 @@ class ViewportChartLayer:
                     if publish is not None:
                         self._notify_publish(publish)
                         self._notify_state("ready")
-                elif error:
-                    self._notify_state("unavailable")
+                elif notify_state is not None:
+                    self._notify_state(notify_state)
         finally:
             self._release()
 
@@ -807,7 +851,7 @@ class ViewportChartLayer:
                 self._enc_source = None
 
     # --------------------------------------------------------- composition
-    def _compose(self, camera, cancel):
+    def _compose(self, camera, cancel, preview=False):
         """Compose the chart layer: the application's base chart and isobars.
 
         The base chart is the application's own composition; the ENC cells
@@ -818,15 +862,16 @@ class ViewportChartLayer:
         """
         from sailworks.core.mapviewport import MapViewport
 
-        canvas = ChartCamera(camera, self._dpr)
+        factor = self._dpr * 0.5 if preview else self._dpr
+        canvas = ChartCamera(camera, factor)
         viewport = MapViewport(canvas, MARGIN, lambda: None)
         viewport.render_cancelled = cancel.is_set
         sources = self._base_sources()
         job = RenderJob(
-            key=(self._palette, self._dpr, sources),
+            key=(self._palette, factor, sources),
             viewport=viewport,
             charts=tuple((source,) for source in sources),
-            factor=self._dpr,
+            factor=factor,
             palette=self._palette,
             cancel=cancel,
         )
@@ -848,12 +893,13 @@ class ViewportChartLayer:
         surface, enc = self._composer().render(job, columns, self._enc_composer())
         if surface is None:
             return None, None
-        image = _surface_image(surface, self._dpr)
+        image = _surface_image(surface, factor)
         metadata = {
             "viewport": viewport,
             "camera": camera,
             "time": camera.stamp(),
-            "factor": self._dpr,
+            "factor": factor,
+            "preview": preview,
             "enc": enc if enc is not None else disabled_enc_metadata(),
         }
         return image, metadata

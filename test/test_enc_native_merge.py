@@ -15,7 +15,7 @@ def test_factory_gets_both_enc_and_native_options(presenter, monkeypatch):
     factory = Mock()
     monkeypatch.setattr(weatherpresenter, "_viewport_widget_class", lambda: factory)
     monkeypatch.setattr(weatherpresenter, "WeatherForeground", Mock())
-    monkeypatch.setattr(presenter, "_model", lambda source: Mock())
+    monkeypatch.setattr(presenter, "_model", lambda source, *, grid: Mock())
     presenter._create(None)
     kwargs = factory.call_args.kwargs
     assert kwargs["chart_layer"] and kwargs["enc_chart_layer"] and kwargs["enc_only"]
@@ -73,6 +73,7 @@ def test_native_host_retirement_rejects_queued_old_signals(presenter):
 
 
 def test_non_native_source_change_replaces_weather_only_once(presenter):
+    presenter.canvas.disposed = False
     widget = Mock()
     presenter.widget = widget
     presenter._model = Mock(return_value=object())

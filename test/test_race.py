@@ -183,8 +183,10 @@ def test_raceboat_shared_positions_and_mutation_reassignment():
     assert b.position_at(first).latitude == 1
 
     shared.timestamp = first + timedelta(hours=2)
-    assert a.position_at(first).latitude == 2
+    # ``first`` now precedes every report, so there is nothing at or before it.
+    assert a.position_at(first) is None
     assert b.position_at(first) is None
+    assert a.position_at(first + timedelta(hours=1)) is later
 
     a.positions = [shared]
     assert a.position_at(first) is None
@@ -813,6 +815,8 @@ def test_raceboat_cached_index_tracks_timestamp_and_list_mutations():
     p1 = RacePosition(datetime(2024, 1, 1, 2), 2.0, 2.0)
     boat.positions.extend([p1])
     boat.positions.reverse()
+    # Reports are ordered by list position among those at or before ``when``:
+    # both qualify, and p0 is the later report in the reversed list.
     assert boat.position_at(datetime(2024, 1, 1, 2)) is p0
     del boat.positions[0]
-    assert boat.position_at(datetime(2024, 1, 1, 2)) is p1
+    assert boat.position_at(datetime(2024, 1, 1, 2)) is p0

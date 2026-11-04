@@ -27,7 +27,7 @@ when the issue body points at it.
 | Document | What it is |
 | --- | --- |
 | [adr-001-grib-rendering-architecture.md](adr-001-grib-rendering-architecture.md) | The accepted architecture decision (D1-D7), the disposition of the seven structural gaps, and the mapping onto issues #62-#70. |
-| [rendering-performance-plan.md](rendering-performance-plan.md) | Current renderer state, the invariants, the acceptance gates and the one next decision. |
+| [rendering-performance-plan.md](rendering-performance-plan.md) | Start with [current chart scheduling and measurement](rendering-performance-plan.md#chart-publication-settle-measurement); also renderer state, invariants, acceptance gates and the next decision. |
 | [rendering-implementation-plan.md](rendering-implementation-plan.md) | The R0-R5 sequence, the layer/ownership model, the non-negotiable invariants and the measurement contract. |
 | [milestones.md](milestones.md) | Local index of epic #51 and issues #62-#73. GitHub remains the authoritative tracker. |
 | [current-routing.md](current-routing.md) | Current-aware routing: the Currents tab, coastline checks, source selection, and how currents enter the calculation. |
@@ -40,7 +40,7 @@ Read the one that covers the area you are changing; skip the rest.
 | --- | --- |
 | [grib-architecture-analysis.md](grib-architecture-analysis.md) | Current-state GRIB loading and visualization architecture with file/line citations, and the seven structural gaps ADR-001 disposes of. |
 | [profiling-priorities.md](profiling-priorities.md) | Already-measured cost slices and their limits. Do not re-measure what is recorded here. |
-| [rendering-m0-measurement-audit.md](rendering-m0-measurement-audit.md) | What the instrumentation can and cannot prove, and why readback is not presentation. |
+| [rendering-m0-measurement-audit.md](rendering-m0-measurement-audit.md) | Measurement endpoint definitions, what instrumentation can and cannot prove, and why readback is not presentation. |
 | [rendering-startup-baseline-2026-10-15.md](rendering-startup-baseline-2026-10-15.md) | The October 15 start-up baseline, kept as historical evidence. The reference workload is the October 16 snapshot identified in the plan; do not recapture either. |
 | [early-weather-startup.md](early-weather-startup.md) | The opt-in `--early-weather` start-up, and what it does and does not change. |
 | [gpu-embedded-rendering.md](gpu-embedded-rendering.md) | The embedded GPU presenter: host choice, resource ledger and the matched CPU/GPU baseline. |

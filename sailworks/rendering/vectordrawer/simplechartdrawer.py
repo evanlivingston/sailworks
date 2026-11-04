@@ -14,19 +14,34 @@ GNU General Public License for more details.
 For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
+import math
+from collections import OrderedDict
+from threading import Lock, Thread
+
 import cairo
 import numpy as np
 
 from sailworks.core.geo.shoreline import ShorelineGeometryCache
 from sailworks.rendering.style import Style
 
+from .coastlinearrays import COASTLINE_ARRAYS, clip_ring
 from .vectorchartdrawer import VectorChartDrawer
+
+#: Datasets currently being extracted on a warm thread, by description.
+_WARMING = set()
+#: Datasets whose warm attempt has finished (success or not); never retried.
+_WARMED = set()
+_WARMING_LOCK = Lock()
 
 
 class SimpleChartDrawer(VectorChartDrawer):
+    #: Draw polygons from pre-extracted arrays when the dataset supports it.
+    use_coastline_arrays = True
+
     def __init__(self, settings_manager):
         super().__init__(settings_manager)
         self._shorelines = ShorelineGeometryCache()
+        self._coordinate_cache = OrderedDict()
 
     def draw(self, gpsmap, cr, vector_file, bounding):
         stroke_style = Style.chart_palettes[self.palette].land_stroke
@@ -37,6 +52,68 @@ class SimpleChartDrawer(VectorChartDrawer):
         self.background_render(gpsmap, cr, sea_style)
         cr.set_line_join(cairo.LINE_JOIN_ROUND)
 
+        if getattr(self, "use_coastline_arrays", True):
+            arrays = COASTLINE_ARRAYS.peek(vector_file)
+            if arrays is None:
+                self._warm_arrays(vector_file)
+            elif self._draw_arrays(
+                gpsmap,
+                cr,
+                vector_file,
+                arrays,
+                bounding,
+                stroke_style,
+                fill_style,
+                contourn_style,
+            ):
+                return
+
+        self._draw_features(
+            gpsmap,
+            cr,
+            vector_file,
+            bounding,
+            stroke_style,
+            fill_style,
+            contourn_style,
+        )
+
+    def _draw_feature(
+        self,
+        gpsmap,
+        cr,
+        vector_file,
+        layer_index,
+        feat,
+        bounding,
+        stroke_style,
+        fill_style,
+        contourn_style,
+    ):
+        feature_key = (vector_file.GetDescription(), layer_index, feat.GetFID())
+        geom = self._shorelines.clip(feature_key, feat.GetGeometryRef(), bounding)
+        self.feature_render(
+            gpsmap,
+            cr,
+            geom,
+            feat,
+            None,
+            stroke_style,
+            fill_style,
+            contourn_style,
+            feature_key,
+        )
+
+    def _draw_features(
+        self,
+        gpsmap,
+        cr,
+        vector_file,
+        bounding,
+        stroke_style,
+        fill_style,
+        contourn_style,
+    ):
         for i in range(vector_file.GetLayerCount()):
             layer = vector_file.GetLayerByIndex(i)
             layer.SetSpatialFilter(bounding)
@@ -48,22 +125,138 @@ class SimpleChartDrawer(VectorChartDrawer):
                 if not feat:
                     continue
 
-                geom = self._shorelines.clip(
-                    (vector_file.GetDescription(), i, feat.GetFID()),
-                    feat.GetGeometryRef(),
-                    bounding,
-                )
-                self.feature_render(
+                self._draw_feature(
                     gpsmap,
                     cr,
-                    geom,
+                    vector_file,
+                    i,
                     feat,
-                    layer,
+                    bounding,
                     stroke_style,
                     fill_style,
                     contourn_style,
                 )
                 feat = layer.GetNextFeature()
+
+    def _warm_arrays(self, vector_file):
+        """Extract a dataset on a warm thread from its own handle."""
+        description = vector_file.GetDescription()
+        with _WARMING_LOCK:
+            if description in _WARMING or description in _WARMED:
+                return
+            _WARMING.add(description)
+
+        def run():
+            try:
+                COASTLINE_ARRAYS.get_by_path(description)
+            finally:
+                with _WARMING_LOCK:
+                    _WARMING.discard(description)
+                    _WARMED.add(description)
+
+        Thread(target=run, daemon=True, name="coastline-arrays").start()
+
+    def _draw_arrays(
+        self,
+        gpsmap,
+        cr,
+        vector_file,
+        arrays,
+        bounding,
+        stroke_style,
+        fill_style,
+        contourn_style,
+    ):
+        """Draw polygons from pre-extracted arrays; False keeps the OGR path."""
+        west, east, south, north = bounding.GetEnvelope()
+        boxes = arrays.bounds
+        if getattr(gpsmap, "_zoom", 0) >= 13:
+            # The deepest tier selects a handful of enormous rings; clipping
+            # them costs more than letting GEOS clip geographically.
+            return False
+        visible = np.nonzero(
+            (boxes[:, 1] >= west)
+            & (boxes[:, 0] <= east)
+            & (boxes[:, 3] >= south)
+            & (boxes[:, 2] <= north)
+        )[0]
+        if len(visible) == 0:
+            return True
+
+        width = float(gpsmap.get_allocated_width())
+        height = float(gpsmap.get_allocated_height())
+        fallback = OrderedDict()
+
+        for index in visible:
+            layer_index, fid, parts = arrays.features[index]
+            if not parts:
+                fallback.setdefault(layer_index, []).append(fid)
+                continue
+            projected = []
+            usable = True
+            for polygon in parts:
+                rings = []
+                for lon, lat in polygon:
+                    # Clip in degrees first: the visible part of a ring is a
+                    # small fraction of it, so projecting only that keeps deep
+                    # zoom bounded by pixels rather than by source vertices.
+                    geographic = clip_ring(lon, lat, west, south, east, north)
+                    if geographic is None:
+                        continue
+                    xs, ys = gpsmap.convert_geographic_to_screen_batch(
+                        geographic[:, 1], geographic[:, 0]
+                    )
+                    if (
+                        len(xs) == 0
+                        or not np.isfinite(xs).all()
+                        or not np.isfinite(ys).all()
+                    ):
+                        usable = False
+                        break
+                    rings.append((xs, ys))
+                if not usable:
+                    break
+                if rings:
+                    projected.append(rings)
+            if not usable:
+                fallback.setdefault(layer_index, []).append(fid)
+                continue
+            for rings in projected:
+                cr.new_path()
+                for xs, ys in rings:
+                    points = clip_ring(xs, ys, 0.0, 0.0, width, height)
+                    if points is None:
+                        continue
+                    cr.move_to(points[0, 0], points[0, 1])
+                    for x, y in points[1:]:
+                        cr.line_to(x, y)
+                    cr.close_path()
+                cr.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)
+                fill_style.apply(cr)
+                cr.fill_preserve()
+                stroke_style.apply(cr)
+                cr.stroke()
+
+        # Unsupported geometry keeps the repaired, geographically clipped path.
+        for layer_index, fids in fallback.items():
+            layer = vector_file.GetLayerByIndex(layer_index)
+            for fid in fids:
+                feat = layer.GetFeature(fid)
+                if not feat:
+                    continue
+                self._draw_feature(
+                    gpsmap,
+                    cr,
+                    vector_file,
+                    layer_index,
+                    feat,
+                    bounding,
+                    stroke_style,
+                    fill_style,
+                    contourn_style,
+                )
+
+        return True
 
     def background_render(self, gpsmap, cr, sea_style):
         width = float(gpsmap.get_allocated_width())
@@ -73,23 +266,69 @@ class SimpleChartDrawer(VectorChartDrawer):
         cr.stroke_preserve()
         cr.fill()
 
-    @staticmethod
-    def _geom_to_screen_batch(gpsmap, g):
+    def _geom_to_screen_batch(self, gpsmap, g, feature_key=None, ring_key=None):
         """Extract OGR geometry points and batch-convert to screen coords."""
         npts = g.GetPointCount()
         if npts == 0:
             return None, None
-        lats = np.empty(npts, dtype=np.float64)
-        lons = np.empty(npts, dtype=np.float64)
-        for ii in range(npts):
-            pt = g.GetPoint(ii)
-            lats[ii] = pt[1]
-            lons[ii] = pt[0]
-        xs, ys = gpsmap.convert_geographic_to_screen_batch(lats, lons)
-        return xs.tolist(), ys.tolist()
+        # WKB distinguishes clipped and simplified rings, including new clip
+        # vertices; retaining only the feature id would reuse stale positions.
+        key = (
+            feature_key,
+            ring_key if ring_key is not None else bytes(g.ExportToWkb()),
+        )
+        if not hasattr(self, "_coordinate_cache"):
+            self._coordinate_cache = OrderedDict()
+        if key not in self._coordinate_cache:
+            points = np.asarray(g.GetPoints(), dtype=np.float64)
+            self._coordinate_cache[key] = (points[:, 1].copy(), points[:, 0].copy())
+            if len(self._coordinate_cache) > 256:
+                self._coordinate_cache.popitem(last=False)
+        self._coordinate_cache.move_to_end(key)
+        lats, lons = self._coordinate_cache[key]
+        return gpsmap.convert_geographic_to_screen_batch(lats, lons)
+
+    @staticmethod
+    def _simplify_polygon(gpsmap, cr, geom):
+        if not all(hasattr(gpsmap, name) for name in ("_zoom", "TILE_SIZE", "MAX_LAT")):
+            return geom
+        if not geom.GetGeometryCount() or any(
+            geom.GetGeometryRef(i).GetPointCount() <= 8
+            for i in range(geom.GetGeometryCount())
+        ):
+            return geom
+        _, _, south, north = geom.GetEnvelope()
+        latitude = min(gpsmap.MAX_LAT, max(abs(south), abs(north)))
+        factor = max(cr.get_target().get_device_scale())
+        try:
+            # 0.3 device pixels at the most distorted latitude keeps the
+            # topology-preserving approximation below a visible pixel.
+            tolerance = (
+                0.3
+                * 360.0
+                * math.cos(math.radians(latitude))
+                / (2.0**gpsmap._zoom * gpsmap.TILE_SIZE * factor)
+            )
+        except (OverflowError, ZeroDivisionError):
+            return geom
+        if not math.isfinite(tolerance) or tolerance <= 0:
+            return geom
+        simplified = geom.SimplifyPreserveTopology(tolerance)
+        if simplified is None or simplified.IsEmpty() or not simplified.IsValid():
+            return geom
+        return simplified
 
     def feature_render(
-        self, gpsmap, cr, geom, feat, layer, stroke_style, fill_style, contourn_style
+        self,
+        gpsmap,
+        cr,
+        geom,
+        feat,
+        layer,
+        stroke_style,
+        fill_style,
+        contourn_style,
+        feature_key=None,
     ):
         if geom is None or geom.IsEmpty():
             return
@@ -104,12 +343,18 @@ class SimpleChartDrawer(VectorChartDrawer):
                     stroke_style,
                     fill_style,
                     contourn_style,
+                    feature_key,
                 )
             return
+        if geom.GetGeometryName() == "POLYGON":
+            geom = self._simplify_polygon(gpsmap, cr, geom)
+        polygon_key = bytes(geom.ExportToWkb())
         cr.new_path()
         for i in range(geom.GetGeometryCount()):
             ring = geom.GetGeometryRef(i)
-            xs, ys = self._geom_to_screen_batch(gpsmap, ring)
+            xs, ys = self._geom_to_screen_batch(
+                gpsmap, ring, feature_key, (polygon_key, i)
+            )
             if xs is None:
                 continue
             cr.move_to(xs[0], ys[0])

@@ -69,6 +69,7 @@ class TestRenderingBenchmark(unittest.TestCase):
                     read_scene(path)
         self.assertEqual(read_scene(), DEFAULT_SCENE)
 
+    @unittest.skip("sailworks.qt.mapcanvas was retired under issue #86")
     @unittest.skipUnless(
         importlib.util.find_spec("PySide6") and sys.platform != "win32",
         "Requires Qt and the macOS/Linux sandbox",

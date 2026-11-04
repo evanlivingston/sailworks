@@ -1,7 +1,10 @@
 # Complete faithful ENC viewport integration (#78)
 
 Issue: https://github.com/evanlivingston/sailworks/issues/78, under #51.
-Experimental integration only; default use/rollout is separate from this issue.
+This records the 2026-10-21 #78-era experimental integration decision, not
+the current default. ENC subsequently shipped enabled by default; see
+[ENC rollout](enc-default-rollout.md) and the
+[performance plan current state](rendering-performance-plan.md#current-state).
 
 ## Implementation contract (before implementation/runs)
 
@@ -71,12 +74,17 @@ own scheduler, behind a **disabled-by-default** flag:
 - no experiment tooling is imported into `sailworks/`, no legacy worker
   scheduling is reused, and no custom vector/tessellator/stroker is introduced.
 
+Current behavior distinguishes a marked, throttled, half-resolution chart
+preview during motion (which can include ENC) from the final settled composition,
+which must be current and exact-scale at full DPR. Old-scale/time ENC is
+withdrawn immediately rather than displayed as a retained scaled preview.
+
 Acceptance A/B/C, the fixed image bounds, the experimental status, the budget
 (4 validation/fix rounds, 3 native processes <=110 s) and the
 `enc-viewport` one-command gate are unchanged. No run had executed under the
 earlier draft wording, so nothing was discarded or re-measured by this amendment.
 
-## Current state
+## Historical #78 state (2026-10-21)
 
 ### Combined-experience acceptance authorized (before runs)
 
@@ -121,9 +129,9 @@ tool/helper flake8 and scoped whitespace checks passed. Evidence:
 in `enc-viewport-experience-1/` under the approved OpenCode temporary directory.
 Decision: **adopt**, and stop measurement after the first passing round. Together
 with the earlier real-cell identity/coverage/detail checks this completes #78's
-user-revised acceptance, without pixel parity. Ready for merge/review, not a
-default switch. Catalogue/platform breadth, presentation endpoint, RSS/VRAM and
-rollout remain the explicitly separate #70 work; no new campaign is implied.
+user-revised acceptance, without pixel parity. At that decision it was ready for
+review, not a default switch. Catalogue/platform breadth, presentation endpoint,
+RSS/VRAM and rollout were separate #70 work; no new campaign was implied.
 
 ### Functional scope revision authorized by the user
 
@@ -169,7 +177,7 @@ This completes the narrowed functional display/lifecycle task. Default rollout,
 combined-experience/performance acceptance, full catalogue/platform testing and
 Phase 2 remain separate. No commit, push, PR or merge is authorized or performed.
 
-### User-authorized check completion
+### Earlier user-authorized check completion
 
 After three native attempts (the first two aborted in the harness), the user
 authorized completing the outstanding checks. Scope: repair the oracle/readback
@@ -181,7 +189,7 @@ claims. Stop after the second round if any acceptance criterion remains open.
 The earlier MAE result is not accepted chart evidence: the harness could read
 the previous camera before its queued GUI publication completed.
 
-### Check-completion results — decision: stop, Phase 1 not accepted
+### Earlier check-completion results — decision: stop, Phase 1 not accepted
 
 The two authorized validation rounds/native processes are exhausted. Native
 artifacts are in `enc-viewport-run-4/` and `enc-viewport-run-5/` under the approved
@@ -210,7 +218,7 @@ OpenCode temporary directory. The fixture matched the recorded SHA in both.
   false behavioral defaults are **not evaluated**, not four demonstrated product
   regressions. The forced-stall correction therefore remains unverified.
 
-Remaining blockers: diagnose SF readiness without forcing or bypassing it;
+At this earlier stop, remaining blockers were: diagnose SF readiness without forcing or bypassing it;
 obtain complete matched SF readbacks; run the corrected forced-stall probe and
 repeat lifecycle checks in the same complete run. No further run is authorized
 by this budget. No Phase 2 entry, rollout, performance acceptance, commit or issue

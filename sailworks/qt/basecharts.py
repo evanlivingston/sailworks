@@ -5,7 +5,7 @@ unaudited chart types retain ChartCollection's existing path.
 """
 
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import cairo
 from osgeo import ogr
@@ -23,7 +23,7 @@ class BaseSource:
     path: str
     downscale: bool = False
     countries: tuple = ()
-    initial_times: tuple = ()
+    initial_times: tuple = field(default=(), compare=False, hash=False)
     generation: int = 0
 
 
@@ -175,8 +175,8 @@ class BaseChartRenderer(OverlayRenderer):
         viewport = job.viewport
         surface = cairo.ImageSurface(
             cairo.FORMAT_ARGB32,
-            viewport.width * job.factor,
-            viewport.height * job.factor,
+            max(1, int(round(viewport.width * job.factor))),
+            max(1, int(round(viewport.height * job.factor))),
         )
         surface.set_device_scale(job.factor, job.factor)
         cr = cairo.Context(surface)

@@ -13,7 +13,6 @@ class TestCoreScheduling(unittest.TestCase):
         for target in (
             "sailworks.core.storage.Storage.load_or_save_default",
             "sailworks.core.storage.Storage.save",
-            "sailworks.core.gribmanager.GribManager.refresh_local_gribs",
             "sailworks.core.polarmanager.PolarManager.refresh_local_polars",
         ):
             mock = patch(target)

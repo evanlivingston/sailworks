@@ -280,9 +280,9 @@ class GSHHSVectorChart(ChartLayer, LinePointValidityProvider):
         elif scale < 15:
             q = "f"
 
-        t = time.time()
+        t = time.perf_counter()
         self.drawer.draw(gpsmap, cr, self.vector_files[q + "1"], bounding_geometry)
-        self.last_time[q] = int(time.time() - t)
+        self.last_time[q] = time.perf_counter() - t
 
         if scale < 4500:
             for c in self.countries:

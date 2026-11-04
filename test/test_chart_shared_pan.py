@@ -64,6 +64,7 @@ def _make_widget(composed, current, viewport, reference, dpr=1.0):
             reference_camera=None, set_reference_camera=lambda camera: None
         ),
         _place_route_overlay=lambda camera, anchor_changed=False: None,
+        _place_world=lambda camera: None,
         _state="ready",
         _presentation_spans=[],
         _set_weather_visible=lambda visible: None,

@@ -31,7 +31,14 @@ def test_source_retirement_clears_barb_and_fill_qml_bindings():
 
     barbs, fill = Item(), Item()
     _viewport_widget_class()._clear_weather_sources(
-        SimpleNamespace(_barbs=barbs, _fill=fill, _native_weather_fields=False)
+        SimpleNamespace(
+            _barbs=barbs,
+            _barbs_back=None,
+            _fill=fill,
+            _fill_back=None,
+            _native_weather_fields=False,
+            _shared_anchor_pool=lambda: None,
+        )
     )
     assert set(barbs.values) == {
         "u0Source",
@@ -41,9 +48,16 @@ def test_source_retirement_clears_barb_and_fill_qml_bindings():
         "nodeIdSource",
         "anchorXSource",
         "anchorYSource",
+        "anchorOffsetX",
+        "anchorOffsetY",
     }
     assert set(fill.values) == {"u0Source", "v0Source", "u1Source", "v1Source"}
-    assert all(url.isEmpty() for url in (*barbs.values.values(), *fill.values.values()))
+    assert barbs.values["anchorOffsetX"] == barbs.values["anchorOffsetY"] == 0.0
+    assert all(
+        value.isEmpty()
+        for name, value in (*barbs.values.items(), *fill.values.items())
+        if name.endswith("Source")
+    )
 
 
 def _resident_fields(model):

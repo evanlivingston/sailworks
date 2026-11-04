@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from sailworks.core.gribsources.options import DownloadOptions
-from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES, display_model_name
+from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES
 from sailworks.core.forecasttranche import ModelConfiguration
 from sailworks.core.weathernextcredentials import describe_access_error
 from .text import qt_text

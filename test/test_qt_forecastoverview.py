@@ -91,7 +91,8 @@ class TestForecastSourceOverview(unittest.TestCase):
         self.assertEqual(self.timeline.slider.maximum(), 21600)
         plot.resize(800, plot.height())
         other_row = next(
-            index for index, item in enumerate(plot.tree_rows)
+            index
+            for index, item in enumerate(plot.tree_rows)
             if item[0] == "leaf" and item[2][0] == "ecmwf"
         )
         points = plot.dot_points(self.other.valid_times, other_row)
@@ -106,7 +107,8 @@ class TestForecastSourceOverview(unittest.TestCase):
         image.fill(0)
         plot.render(image)
         active_row = next(
-            index for index, item in enumerate(plot.tree_rows)
+            index
+            for index, item in enumerate(plot.tree_rows)
             if item[0] == "leaf" and item[2][0] == "gfs"
         )
         point = plot.dot_points(self.active.valid_times, active_row)[1]
@@ -154,6 +156,7 @@ class TestForecastSourceOverview(unittest.TestCase):
         from PySide6.QtCore import QPointF
 
         plot = self.timeline.source_overview.plot
+        plot.resize(self.timeline.day_strip.width(), plot.height())
         self.assertTrue(any(item[0] == "subgroup" for item in plot.tree_rows))
         root = next(item for item in plot.tree_rows if item[0] == "group")
         subgroup = next(item for item in plot.tree_rows if item[0] == "subgroup")
@@ -168,10 +171,14 @@ class TestForecastSourceOverview(unittest.TestCase):
                 [round(point.x()) for point in dots],
                 [round(point.x()) for point in plot.dot_points(expected, row_index)],
             )
-        other_point = plot.dot_points(self.other.valid_times, next(
-            index for index, item in enumerate(plot.tree_rows)
-            if item[0] == "leaf" and item[2][0] == "ecmwf"
-        ))[1]
+        other_point = plot.dot_points(
+            self.other.valid_times,
+            next(
+                index
+                for index, item in enumerate(plot.tree_rows)
+                if item[0] == "leaf" and item[2][0] == "ecmwf"
+            ),
+        )[1]
         scrubber_x = self.timeline.day_strip.axis_left_margin + round(
             (self.other.valid_times[1] - self.timeline.bounds[0])
             / (self.timeline.bounds[1] - self.timeline.bounds[0])
@@ -186,10 +193,18 @@ class TestForecastSourceOverview(unittest.TestCase):
         subgroup_index = next(
             index for index, item in enumerate(plot.tree_rows) if item[0] == "subgroup"
         )
-        plot.mousePressEvent(type("MouseEvent", (), {
-            "position": lambda _self: QPointF(30, subgroup_index * plot.ROW_HEIGHT + 2),
-            "accept": lambda _self: None,
-        })())
+        plot.mousePressEvent(
+            type(
+                "MouseEvent",
+                (),
+                {
+                    "position": lambda _self: QPointF(
+                        30, subgroup_index * plot.ROW_HEIGHT + 2
+                    ),
+                    "accept": lambda _self: None,
+                },
+            )()
+        )
         self.assertFalse(any(item[0] == "leaf" for item in plot.tree_rows))
 
     def test_day_grid_matches_scrubber_cells_and_tooltip_is_not_model_list(self):
@@ -205,6 +220,7 @@ class TestForecastSourceOverview(unittest.TestCase):
         from PySide6.QtGui import QImage
 
         plot = self.timeline.source_overview.plot
+        plot.resize(self.timeline.day_strip.width(), plot.height())
         selected = self.stamp + 3600
         now = self.stamp + 18000
         plot.set_cursors(now, selected)
@@ -267,7 +283,8 @@ class TestForecastSourceOverview(unittest.TestCase):
         self.assertFalse(rows[2][3])
         self.assertEqual(rows[4][2], (self.stamp - 7200, self.stamp + 7200))
         marine_root = next(
-            item for item in self.timeline.source_overview.plot.tree_rows
+            item
+            for item in self.timeline.source_overview.plot.tree_rows
             if item[0] == "group" and item[1] == "Tides"
         )
         self.assertEqual(marine_root[2], rows[2][2])

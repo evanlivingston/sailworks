@@ -234,13 +234,15 @@ def test_window_drop_stitches_stack_once_and_library_opens_whole_timeline_paused
         paths.append(path)
         originals.append(raw)
     decoded = []
-    read = controller_module.read_nmea_log
+    from sailworks.core import ebllog
 
-    def decode(path, progress=None):
-        decoded.append(path)
-        return read(path, progress=progress)
+    read = ebllog.read_ebl_log
 
-    monkeypatch.setattr(controller_module, "read_nmea_log", decode)
+    def decode(paths, progress=None):
+        decoded.append(tuple(paths))
+        return read(paths, progress=progress)
+
+    monkeypatch.setattr(ebllog, "read_ebl_log", decode)
     # QDropEvent borrows the MIME data; retain its Python owner until the drop
     # has been handled instead of passing a temporary with a dangling pointer.
     mime = mime_paths(paths[2], paths[0], paths[1])
@@ -267,8 +269,13 @@ def test_window_drop_stitches_stack_once_and_library_opens_whole_timeline_paused
     items = controller.log_library.entries()
     assert len(items) == 1
     managed = controller.log_library.path(items[0]["id"])
-    assert decoded == [managed]
-    assert managed.read_bytes() == b"".join(originals)
+    assert decoded == [tuple(paths)]
+    # The raw-bytes expectation was dropped: import now stores decoded output.
+    managed_text = managed.read_text(encoding="utf-8")
+    assert managed_text
+    assert managed_text == "".join(
+        packet.serialize() + "\n" for _, packet in controller.session.log.entries
+    )
     assert [path.read_bytes() for path in paths] == originals
     assert [offset for offset, _ in controller.session.log.entries] == [0, 9, 120]
     assert controller.session.log.duration == 120
@@ -280,7 +287,7 @@ def test_window_drop_stitches_stack_once_and_library_opens_whole_timeline_paused
         wait_for_import(app, controller)
         assert not controller.session.playing
         assert len(controller.log_library.entries()) == 1
-        assert decoded == [managed, managed]
+        assert decoded == [tuple(paths)]
         # Core replay remains supported even though the UI is scrub-only.
         controller.session.set_playing(True)
         controller.session.advance(120)
@@ -508,7 +515,7 @@ def test_overlapping_load_paths_latest_request_wins(
     assert len(entries) == len(paths)
     assert {entry["name"] for entry in entries} == {path.name for path in paths}
     for entry in entries:
-        assert "1 sentences" in entry["status"]
+        assert "1 replay entries" in entry["status"]
         assert (
             controller.log_library.path(entry["id"]).read_bytes()
             == (tmp_path / entry["name"]).read_bytes()
@@ -547,13 +554,13 @@ def test_worker_progress_is_queued_visible_and_stage_aware(
             raise TimeoutError("test did not release copy")
         return import_path(path, progress=progress)
 
-    def decode(path, progress=None):
+    def decode(path, progress=None, **kwargs):
         assert get_ident() != gui_thread
         progress(48, 64)
         decode_ready.set()
         if not release_decode.wait(5):
             raise TimeoutError("test did not release decode")
-        return read_nmea_log(path, progress=progress)
+        return read_nmea_log(path, progress=progress, **kwargs)
 
     monkeypatch.setattr(controller.log_library, "import_path", copy)
     monkeypatch.setattr("sailworks.qt.controller.read_nmea_log", decode)

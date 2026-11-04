@@ -1,10 +1,9 @@
 # Rendering performance: current state
 
-Tracking epic: [#51](https://github.com/evanlivingston/sailworks/issues/51).
-This file states the current architecture decision, what shipped, the
-invariants, the acceptance gates and the one next decision. It is not a work
-queue and it is not a log: the issue body is the spec for a task, and past
-experiment records live in [`history/`](history/).
+Tracking epic: [#51](https://github.com/evanlivingston/sailworks/issues/51). This file states the current
+architecture decision, what shipped, the invariants, the acceptance gates and the one next decision. It is not
+a work queue and it is not a log: the issue body is the spec for a task, and past experiment records live in
+[`history/`](history/).
 
 ## How to use this file
 
@@ -17,77 +16,59 @@ experiment records live in [`history/`](history/).
 | Why a past decision was made | [`history/rendering-decision-log.md`](history/rendering-decision-log.md) |
 | What an earlier experiment measured | [`history/rendering-experiment-records.md`](history/rendering-experiment-records.md) |
 
-Read only the section you need. Every result, threshold, negative result and
-budget stays on the record: in this file, in the issue body, or behind a link
-to the document that records it. Nothing is deleted evidence.
+Read only the section you need. Every result, threshold, negative result and budget stays on the record: in
+this file, in the issue body, or behind a link to the document that records it. Nothing is deleted evidence.
 
 ## Current state
 
-**Decision (ADR-001 D1-D8).** The renderer is split into decoupled layers with
-explicit ownership: weather preparation, chart composition and presentation are
-separate, and the Qt viewport owns the scene graph. Issues #62-#73 are closed;
-epic [#51](https://github.com/evanlivingston/sailworks/issues/51) stays
-open for the follow-on work.
+**Decision (ADR-001 D1-D8).** The renderer is split into decoupled layers with explicit ownership: weather
+preparation, chart composition and presentation are separate, and the Qt viewport owns the scene graph. Issues
+#62-#73 are closed; epic [#51](https://github.com/evanlivingston/sailworks/issues/51) stays open for the
+follow-on work.
 
-**What shipped.** Native weather fields are on by default: a GPU-resident field
-cache under one shared session byte budget, merged in PR #82 for
-[#64](https://github.com/evanlivingston/sailworks/issues/64) (closed
-2026-10-21). `--no-native-weather-fields` or `GWR_NATIVE_WEATHER_FIELDS=0`
-restores the Image path, and geographic barb layout is the default
-(`--screen-barbs` restores the old). ENC charts are enabled by default in the
-application viewport (PR #81);
-[#78](https://github.com/evanlivingston/sailworks/issues/78) closed
-2026-10-21 after 13/13 functional and 14/14 combined-experience checks plus 104
-targeted integration passes.
+**What shipped.** Native weather fields are on by default: a GPU-resident field cache under one shared session
+byte budget, merged in PR #82 for [#64](https://github.com/evanlivingston/sailworks/issues/64) (closed
+2026-10-21). `--no-native-weather-fields` or `GWR_NATIVE_WEATHER_FIELDS=0` restores the Image path, and
+geographic barb layout is the default (`--screen-barbs` restores the old). ENC charts are enabled by default
+in the application viewport (PR #81); [#78](https://github.com/evanlivingston/sailworks/issues/78) closed
+2026-10-21 after 13/13 functional and 14/14 combined-experience checks plus 104 targeted integration passes.
 
-**What is not claimed.** The normal Charts/Logs application now uses the
-viewport (PR #91), while `ViewportMap` still inherits the `TrackMap` compatibility
-host during cleanup in [#86](https://github.com/evanlivingston/sailworks/issues/86).
-[#70](https://github.com/evanlivingston/sailworks/issues/70) closed
-2026-10-21 with a **keep-experimental recommendation**; the user's later D7/D8
-decisions direct application use and retirement of the legacy map. This does not
-retroactively pass #70's visual, platform, workload, or performance gaps.
-Presentation and input-to-present latency are unmeasured; the recorded endpoint
-is a render-callback proxy, never FPS. #64's recorded limits stand:
-stale in-flight completions are covered by headless tests only, true device loss
-is not exercisable, there is no single repeatable `residency-native` gate, byte
-figures are texture payload not physical VRAM, upload counts are QRhi
-submissions not GPU completion, and the original-sampler
-([#65](https://github.com/evanlivingston/sailworks/issues/65)) fidelity
-dependency is unchanged.
+**What is not claimed.** The normal Charts/Logs application now uses the viewport (PR #91), while
+`ViewportMap` still inherits the `TrackMap` compatibility host during cleanup in
+[#86](https://github.com/evanlivingston/sailworks/issues/86).
+[#70](https://github.com/evanlivingston/sailworks/issues/70) closed 2026-10-21 with a **keep-experimental
+recommendation**; the user's later D7/D8 decisions direct application use and retirement of the legacy map.
+This does not retroactively pass #70's visual, platform, workload, or performance gaps. Presentation and
+input-to-present latency are unmeasured; the recorded endpoint is a render-callback proxy, never FPS. #64's
+recorded limits stand: stale in-flight completions are covered by headless tests only, true device loss is not
+exercisable, there is no single repeatable `residency-native` gate, byte figures are texture payload not
+physical VRAM, upload counts are QRhi submissions not GPU completion, and the original-sampler
+([#65](https://github.com/evanlivingston/sailworks/issues/65)) fidelity dependency is unchanged.
 
-**Display policy.** The user chooses the forecast in the Weather panel; the
-application must not silently pick a different file/run/member while the user
-pans or changes forecast time. See `Forecast display coherence` below.
+**Display policy.** The user chooses the forecast in the Weather panel; the application must not silently pick
+a different file/run/member while the user pans or changes forecast time. See `Forecast display coherence`
+below.
 
 **Next decision.** Complete the staged removal of the old default map under
-[#86](https://github.com/evanlivingston/sailworks/issues/86), following
-the user's explicit decision not to require legacy CPU recovery. The #70
-evidence remains a recorded limitation, not a passed acceptance gate. The ENC
-chart engine is under
-evaluation against tile57
-([#87](https://github.com/evanlivingston/sailworks/issues/87)); that is an
-evaluation, not a removal.
+[#86](https://github.com/evanlivingston/sailworks/issues/86), following the user's explicit decision not to
+require legacy CPU recovery. The #70 evidence remains a recorded limitation, not a passed acceptance gate. The
+ENC chart engine is under evaluation against tile57
+([#87](https://github.com/evanlivingston/sailworks/issues/87)); that is an evaluation, not a removal.
 
-**Evidence identity.** Per-experiment contracts and results are in the history
-records linked below. Recorded evidence under
-[`profiles/rendering/`](profiles/rendering/) is the reference: do not re-measure
-a baseline the change does not touch, and do not attribute a measurement to a
-later commit than the one it was taken on.
+**Evidence identity.** Per-experiment contracts and results are in the history records linked below. Recorded
+evidence under [`profiles/rendering/`](profiles/rendering/) is the reference: do not re-measure a baseline the
+change does not touch, and do not attribute a measurement to a later commit than the one it was taken on.
 
 ## Forecast display coherence
 
-**Accepted user policy, 2026-10-20; shared path opt-in.** The Models panel and explicit
-`SessionController` analysis paths use one `ForecastAnalysisState` tranche/entry for
-display and routing; old jobs retain their binding. All models share one region captured
-from the current map view, unchanged by later panning. Refresh intent stays separate.
-No legacy files are adopted, deleted or used as fallback. Profiles remain legacy until
-explicit Models opt-in; cleanup awaits validation. This is not viewport or
-performance acceptance. Our static analysis does not prove whole-map pinning or
-multi-run containers; our coherence rule remains stricter.
+**Accepted user policy, 2026-10-20; shared path opt-in.** The Models panel and explicit `SessionController`
+analysis paths use one `ForecastAnalysisState` tranche/entry for display and routing; old jobs retain their
+binding. All models share one region captured from the current map view, unchanged by later panning. Refresh
+intent stays separate. No legacy files are adopted, deleted or used as fallback. Profiles remain legacy until
+explicit Models opt-in; cleanup awaits validation. This is not viewport or performance acceptance. Our static
+analysis does not prove whole-map pinning or multi-run containers; our coherence rule remains stricter.
 
 ### Policy
-
 - Add an explicit Weather-panel selector, distinct from loading/enabling forecast
   files in the data library. Show which file, model run and member are selected;
   unavailable data must remain visible as unavailable, not trigger substitution.
@@ -107,7 +88,6 @@ multi-run containers; our coherence rule remains stricter.
   is different from silently combining enabled forecasts.
 
 ### Why this is separate from the pixel/value differences
-
 The viewport's `viewport-gridded-field-summary.json` reports 0.1256 m/s maximum and
 0.0192 m/s mean wind-speed difference against the original sampler at 40 positions.
 The approximately 4.17e-7 m/s GPU placement/arithmetic check compares interpolation
@@ -115,12 +95,11 @@ of the **same staged lattice**, not the original sampler. Neither proves a gener
 resampling bound. The logical/device-pixel missing-node probe defect is separately
 recorded as corrected; visual fidelity is still deferred.
 
-**No inspected result establishes forecast mixing as the cause of any reported
-resampling or visual mismatch.** Reproduce differences with coherent selection before
-assigning a cause; preserve the old evidence instead of overwriting it.
+**No inspected result establishes forecast mixing as the cause of any reported resampling or visual
+mismatch.** Reproduce differences with coherent selection before assigning a cause; preserve the old evidence
+instead of overwriting it.
 
 ### Code evidence and follow-up contract
-
 Source audit of the viewport branch (initial inspected HEAD `b27d33e`):
 
 - `core/gribsampling.py`, `GridIndex._records` groups by reference/model/level, not
@@ -134,73 +113,59 @@ Source audit of the viewport branch (initial inspected HEAD `b27d33e`):
   reject cross-owner spatial blending. Generation rejection/source signatures ensure
   freshness, not coherence. Permitted mechanisms are not proof of actual fixture mixing.
 
-**Implementation boundary:** select a display file/run before staging; constrain
-components/endpoints; carry structured identity through publication/cache keys and
-invalidate on switches. Do not globally change `WeatherSampler` or routing. Use
-the integrated viewport base; #70's old measurements remain valid only for its
-old candidate/policy, not a changed workload.
+**Implementation boundary:** select a display file/run before staging; constrain components/endpoints; carry
+structured identity through publication/cache keys and invalidate on switches. Do not globally change
+`WeatherSampler` or routing. Use the integrated viewport base; #70's old measurements remain valid only for
+its old candidate/policy, not a changed workload.
 
-**Focused tests:** preserve same-source interpolation, exact-time masks and allowed
-holding; reject unauthorized split-file components/endpoints, older-run gap fill and
-mixed runs/members in one file; test pan/scrub pinning, transitions, provenance/cache
-identity and stale-publication rejection across all displayed weather layers. Keep
-stitching disabled until its boundary policy is explicit. Preserve routing tests.
+**Focused tests:** preserve same-source interpolation, exact-time masks and allowed holding; reject
+unauthorized split-file components/endpoints, older-run gap fill and mixed runs/members in one file; test
+pan/scrub pinning, transitions, provenance/cache identity and stale-publication rejection across all displayed
+weather layers. Keep stitching disabled until its boundary policy is explicit. Preserve routing tests.
 
-**One-view fidelity gate:** freeze a representative view, chosen file/run/member,
-timestamps and geographic probe coordinates. Compare direct sampler and staged-lattice
-U/V, speed and validity with pointwise provenance, including gradients and missing/
-coverage edges; assess matched fill/barb/chart captures separately from timed runs.
-The reported 40-point summary lacks checked-in pointwise reproduction, so retain
-coordinates/results and denominators. Existing numerical/mask/selection gates stay;
-no new approximation tolerance is approved. Record an implementation/measurement
-budget before starting, stop at an explicit pass/revise/blocked fidelity verdict,
-and leave broad performance/rollout gates open. No native work is authorized by the
-documentation-only consolidation phase.
+**One-view fidelity gate:** freeze a representative view, chosen file/run/member, timestamps and geographic
+probe coordinates. Compare direct sampler and staged-lattice U/V, speed and validity with pointwise
+provenance, including gradients and missing/ coverage edges; assess matched fill/barb/chart captures
+separately from timed runs. The reported 40-point summary lacks checked-in pointwise reproduction, so retain
+coordinates/results and denominators. Existing numerical/mask/selection gates stay; no new approximation
+tolerance is approved. Record an implementation/measurement budget before starting, stop at an explicit
+pass/revise/blocked fidelity verdict, and leave broad performance/rollout gates open. No native work is
+authorized by the documentation-only consolidation phase.
 
 ## Reference workload and acceptance
 
-Reuse a verified private startup snapshot, including its source ordering,
-checksums, frozen forecast clock, saved settings/layout, density, and layers.
-The [October 15 report](rendering-startup-baseline-2026-10-15.md) is historical
-evidence, not a current baseline. B1 located and verified the existing October 16
-snapshot referenced by [continuous-pan work](history/rendering-pan-prediction.md). Its
-content hash matches the historical snapshot, but its frozen clock is October 16
-08:00; clock and content identity must both match for comparison. If unavailable
-or no longer representative, record the blocker and version any replacement;
-never silently substitute a new workload.
+Reuse a verified private startup snapshot, including its source ordering, checksums, frozen forecast clock,
+saved settings/layout, density, and layers. The [October 15 report](rendering-startup-baseline-2026-10-15.md)
+is historical evidence, not a current baseline. B1 located and verified the existing October 16 snapshot
+referenced by [continuous-pan work](history/rendering-pan-prediction.md). Its content hash matches the
+historical snapshot, but its frozen clock is October 16 08:00; clock and content identity must both match for
+comparison. If unavailable or no longer representative, record the blocker and version any replacement; never
+silently substitute a new workload.
 
-Replay pan/zoom/reversal and forecast scrubs within/across intervals, charts
-alone and with fill/barbs/contours/streamlines, then both maps visible. The
-existing snapshot has no marine fields according to the October 16 report;
-marine-heavy acceptance therefore uses the separate `marine-current-scrub` gate
-and an explicit `--snapshot` pointing at an installed marine field cache. That
-gate compares warm field-sampling p95 with the legacy point-shoreline predicate
-against unmasked Qt Quick sampling on identical sources, time, camera and
-density; it does not measure viewport presentation callbacks or presentation
-FPS. The companion `marine-current-correctness` gate covers station-current and
-tide annotation geometry/labels and verifies the old Cairo marine modules are
-absent.
+Replay pan/zoom/reversal and forecast scrubs within/across intervals, charts alone and with
+fill/barbs/contours/streamlines, then both maps visible. The existing snapshot has no marine fields according
+to the October 16 report; marine-heavy acceptance therefore uses the separate `marine-current-scrub` gate and
+an explicit `--snapshot` pointing at an installed marine field cache. That gate compares warm field-sampling
+p95 with the legacy point-shoreline predicate against unmasked Qt Quick sampling on identical sources, time,
+camera and density; it does not measure viewport presentation callbacks or presentation FPS. The companion
+`marine-current-correctness` gate covers station-current and tide annotation geometry/labels and verifies the
+old Cairo marine modules are absent.
 
-The locally installed 162-field cache passed the marine scrub gate at dense
-density and a 1024×768 Salish Sea view: masked baseline sampling p95 was
-2647.8 ms, versus 126.9 ms unmasked (95.2% lower), with available field arrows
-increasing from 26 to 27. A separate saved-view check found 11 unmasked samples
-that the old GSHHS predicate classified as land; the selected policy accepts
-that difference, so shoreline pixel fidelity is intentionally not preserved.
-At that saved zoom (12.27), the same experiment measured 20.8 ms masked versus
-28.9 ms unmasked (38.6% slower), while arrows increased from 147 to 156. The
-no-mask policy is therefore a large improvement for the zoom-8 workload that
-triggered multi-second stalls, but is not faster at every camera scale. These
-are local-cache sampling measurements, not a substitute for full
-presentation-path or cross-platform acceptance. The gate records a SHA-256
-fingerprint of selected field manifests/arrays so a changed cache is not
-mistaken for the same workload.
+The locally installed 162-field cache passed the marine scrub gate at dense density and a 1024×768 Salish Sea
+view: masked baseline sampling p95 was 2647.8 ms, versus 126.9 ms unmasked (95.2% lower), with available field
+arrows increasing from 26 to 27. A separate saved-view check found 11 unmasked samples that the old GSHHS
+predicate classified as land; the selected policy accepts that difference, so shoreline pixel fidelity is
+intentionally not preserved. At that saved zoom (12.27), the same experiment measured 20.8 ms masked versus
+28.9 ms unmasked (38.6% slower), while arrows increased from 147 to 156. The no-mask policy is therefore a
+large improvement for the zoom-8 workload that triggered multi-second stalls, but is not faster at every
+camera scale. These are local-cache sampling measurements, not a substitute for full presentation-path or
+cross-platform acceptance. The gate records a SHA-256 fingerprint of selected field manifests/arrays so a
+changed cache is not mistaken for the same workload.
 
-Record input dispatch, GUI work, rendering/submission callbacks, cadence,
-preparation/publication delay, uploads, memory, backend/fallback, and usable-data
-coverage. Distinguish warm interaction, initial load, new coverage, and interval
-crossings. A prepared image enclosing the viewport is not proof of usable
-forecast coverage. Missing content must not count as a speed improvement.
+Record input dispatch, GUI work, rendering/submission callbacks, cadence, preparation/publication delay,
+uploads, memory, backend/fallback, and usable-data coverage. Distinguish warm interaction, initial load, new
+coverage, and interval crossings. A prepared image enclosing the viewport is not proof of usable forecast
+coverage. Missing content must not count as a speed improvement.
 
 Proposed targets (pending explicit ratification before acceptance):
 
@@ -211,21 +176,64 @@ Proposed targets (pending explicit ratification before acceptance):
 - separate numerical limits for cold load, settling, memory, and coverage gaps,
   to be chosen after the baseline, not retrofitted to candidate results.
 
-Qt render/swap callbacks are proxy endpoints, **not** scanout/input-to-photon
-proof. For a QQuickWidget, its offscreen scene rendering alone does not establish
-the top-level widget's presentation. Label each endpoint precisely; leave true
-presentation acceptance unmeasured if the available instrumentation cannot prove
-it. Do not rename request-to-render or grab duration as input-to-present.
+Qt render/swap callbacks are proxy endpoints, **not** scanout/input-to-photon proof. For a QQuickWidget, its
+offscreen scene rendering alone does not establish the top-level widget's presentation. Label each endpoint
+precisely; leave true presentation acceptance unmeasured if the available instrumentation cannot prove it. Do
+not rename request-to-render or grab duration as input-to-present.
 
-All numerical/source-selection and portrayal invariants in the historical
-[implementation specification](rendering-implementation-plan.md#reference-and-invariants)
-remain applicable. Intentional display approximations need documented bounds
-and explicit review. Routing remains unchanged.
+All numerical/source-selection and portrayal invariants in the historical [implementation
+specification](rendering-implementation-plan.md#reference-and-invariants) remain applicable. Intentional
+display approximations need documented bounds and explicit review. Routing remains unchanged.
 
-## Pan/zoom baseline (2026-11-02)
+## Chart publication settle measurement
 
-Two committed references cover the current viewport. Neither is presentation
-FPS or GPU-completion timing.
+**Current scheduling.** The settle gate is a single-shot timer, `CHART_IDLE_MS = 100`, restarted on camera
+change, show/DPR adoption, chart-source invalidation, weather readiness, chart startup, map-data installation,
+and every `_request_chart` early return. A camera-too-recent return re-arms for the remaining idle window, not
+a full interval. The former repeating `CHART_SETTLE_MS = 200` poll added a 0–500 ms phase offset in the legacy
+tree and 70–188 ms in this tree.
+
+**One composition in flight.** A newer camera replaces only the pending slot; it does not cancel the running
+composition, though lifecycle and invalidation paths may cancel or invalidate work. The latest camera is requested when it completes. Retained-imagery pan/zoom preview predates
+this change.
+
+**Interactive previews during motion.** Camera changes may request a coarse composition at DPR × 0.5 (a
+fractional factor, not integer-rounded full resolution), throttled to `CHART_INTERACTIVE_MS = 150` ms. This is
+event-driven, with no repeating timer, and only occurs when no composition is active or pending and weather is
+not busy. Previews are conditional, not guaranteed for each camera event. Quality participates in the reuse
+key, so a preview never satisfies or replaces the settle-time full-quality composition.
+
+**Measurements and revision labels.** The `sailworks/` tree on branch `perf/chart-settle-debounce` (based on
+`origin/dev` c0dff60) used `tools/check_desktop_basemap.py --chart-publication`: GSHHS-only, ENC disabled,
+snapshot `content_sha256` `5579735013e516a30b266c53edb893273e6a9ec80e000b7a85e7dfc83585399d`. All samples were
+`published_match`. Values below are total / settle_and_gating / compose in ms; steady-state samples exclude
+the cold first composition.
+
+- **Baseline, 200 ms polling:** 294.4 / 270.4 / 23.1; 374.5 / 349.2 / 23.6;
+  355.6 / 336.8 / 17.1; 357.1 / 343.5 / 11.9; 402.6 / 388.1 / 11.3.
+  Mean total 356.8 ms; settle 270–388 ms. Cold total 2328.8 ms, compose
+  2046.1 ms.
+- **Post-debounce, before interactive previews:** 145.2 / 118.3 / 20.9;
+  142.7 / 118.9 / 10.1; 121.2 / 104.9 / 8.0; 109.6 / 101.0 / 7.8;
+  129.3 / 110.6 / 15.8. Mean total 129.6 ms. Cold total 2555.3 ms,
+  compose 2397.4 ms, GUI adoption 49.6 ms. Gate trace showed a single timer
+  fire per sample at 101–119 ms, all `requested`; one fired at 98.6 ms,
+  observed `camera_moving`, re-armed and requested at 104.4 ms. Weather readiness
+  was `None` throughout these samples, so weather-priority gating was not exercised.
+- **Current, including previews:** steady-state totals 126.4 / 118.2 / 124.3 /
+  110.9 / 117.7 ms; settle 101–113 ms and compose 8–20 ms. Cold first
+  composition was approximately 2.3 s. Weather readiness was `None` throughout
+  these latest samples, so weather-priority gating was not exercised.
+
+**Caveats.** These are scripted camera-API dispatch to GUI chart adoption on an isolated snapshot, including
+the idle window—not physical input latency, FPS, GPU frame time, display presentation, or input-to-photon.
+Sample counts are small; no statistical comparison was made. Cold-start composition was not optimized. See the
+[measurement audit](rendering-m0-measurement-audit.md) for endpoint definitions.
+
+## Historical pan/zoom baseline (2026-11-02)
+
+These dated references are historical, not current priorities. Neither measures presentation FPS or
+GPU-completion timing; the replay published zero charts.
 
 ### App/viewport replay
 
@@ -245,27 +253,15 @@ FPS or GPU-completion timing.
 | `wheel_zoom` | 10.51 ms | 17.70 ms | 21.58 ms | 25.14 ms |
 | `zoom_out` | 13.00 ms | 23.14 ms | 28.66 ms | 107.64 ms |
 
-Selection uploads (three repeats): `pan` 28, `trackpad_pan` 17, `wheel_zoom`
-540, `zoom_out` 87. Field publications, fill uploads, barbs field uploads and
-chart publications were 0 in these covered scenarios. The Cairo overlay
-rebuild counters are 0 because the replay measures the viewport widget; the
-app-host overlay path is not exercised by this replay.
+Selection uploads (three repeats): `pan` 28, `trackpad_pan` 17, `wheel_zoom` 540, `zoom_out` 87. Field
+publications, fill uploads, barbs field uploads and chart publications were 0 in these covered scenarios. The
+Cairo overlay rebuild counters are 0 because the replay measures the viewport widget; the app-host overlay
+path is not exercised by this replay.
 
-The replay uses the current `SessionController` and viewport widget directly.
-Each run also records `overlay_jobs` with the published wind content identity,
-so `--compare` exercises `weather_content` (`matched_frames` must be non-zero).
+The replay uses `SessionController` and the viewport directly; `overlay_jobs` records published wind identity
+for `weather_content` comparison (nonzero `matched_frames` required).
 
-```bash
-python tools/benchmark_startup_rendering.py \
-  --snapshot <private-snapshot> --output <candidate>.json \
-  --scenarios pan,trackpad_pan,wheel_zoom,zoom_out \
-  --frames 180 --repeats 3 --map-renderer gpu --standalone-viewport
-python tools/benchmark_startup_rendering.py \
-  --compare docs/profiles/rendering/2026-11-02/app-pan-zoom-baseline.json \
-  <candidate>.json --output <comparison>.json
-```
-
-### After-rendering latency trace
+### Historical after-rendering latency trace (2026-11-02)
 
 - Report: [`profiles/rendering/2026-11-02/latency-trace-baseline.json`](profiles/rendering/2026-11-02/latency-trace-baseline.json)
 - Harness: `tools/trace_viewport_latency.py`
@@ -282,18 +278,10 @@ python tools/benchmark_startup_rendering.py \
 | `wheel_zoom` | 11.7 ms | 22.7 ms | 29.0 ms | 123.9 ms | 4.41 ms | 3.35 ms | 0.53 ms |
 | `zoom_out` | 13.2 ms | 26.5 ms | 46.2 ms | 146.5 ms | 6.01 ms | 4.97 ms | 0.45 ms |
 
-The camera/selection/publish work is small. The dominant signal is queued GUI
-dispatch during zoom: inputs arrive more than 100 ms late at p95. Camera
-coalescing (#13) and upload auditing (#14) are therefore not justified from
-this trace; the next investigation is what blocks the GUI/render loop during
-zoom.
-
-```bash
-python tools/trace_viewport_latency.py \
-  --snapshot <private-snapshot> --output <trace>.json \
-  --scenarios pan,trackpad_pan,wheel_zoom,zoom_out \
-  --frames 180 --repeats 3
-```
+In this dated trace, camera/selection/publish work was small. The dominant signal was queued GUI dispatch
+during zoom: inputs arrive more than 100 ms late at p95. Camera coalescing (#13) and upload auditing (#14)
+were not justified by this trace; the proposed investigation was GUI/render-loop blocking during zoom. These
+conclusions are historical, not current priorities.
 
 ### Model-side selection replay
 
@@ -309,24 +297,15 @@ python tools/trace_viewport_latency.py \
   anchor-atlas rebuilds. Counters: 121 covered reuses, 56 misses, 6 field
   preparations, 10 slot handoffs, 79 time-window blocked.
 
-Evaluation rule: rerun the matching harness on the candidate and compare the
-same fields. A ticket passes when its targeted metric improves and no other
-committed metric regresses by more than 2% without an explained cause.
+Evaluation rule: rerun the matching harness on the candidate and compare the same fields. A ticket passes when
+its targeted metric improves and no other committed metric regresses by more than 2% without an explained
+cause.
 
-```bash
-python tools/benchmark_viewport_selection_pan.py \
-  --snapshot <private-snapshot> --output <candidate>.json
-python tools/compare_viewport_selection_baseline.py \
-  docs/profiles/rendering/2026-11-02/selection-pan-baseline.json <candidate>.json \
-  --output <comparison>.json
-```
-
-Optimisation tickets: [#11](https://github.com/evanlivingston/sailworks/issues/11)
-(selection reuse), [#12](https://github.com/evanlivingston/sailworks/issues/12)
-(LOD), [#13](https://github.com/evanlivingston/sailworks/issues/13) (gesture
-coalescing), [#14](https://github.com/evanlivingston/sailworks/issues/14)
-(upload audit), [#15](https://github.com/evanlivingston/sailworks/issues/15)
-(Cairo overlay migration).
+Optimisation tickets: [#11](https://github.com/evanlivingston/sailworks/issues/11) (selection reuse),
+[#12](https://github.com/evanlivingston/sailworks/issues/12) (LOD),
+[#13](https://github.com/evanlivingston/sailworks/issues/13) (gesture coalescing),
+[#14](https://github.com/evanlivingston/sailworks/issues/14) (upload audit),
+[#15](https://github.com/evanlivingston/sailworks/issues/15) (Cairo overlay migration).
 
 ## Overlay ownership (2026-11-03)
 
@@ -340,14 +319,13 @@ The desktop viewport's QML `routeOverlay` Canvas now owns:
 - isochrones
 - dashboard gauges
 
-The Cairo navigation image keeps only the layers not yet migrated and the
-chart/imagery composition. The retained `_race_geometry_image` cache is used
-only when the QML race overlay is inactive (CPU/non-QML hosts). Non-QML
-callers keep the original Cairo paths through the `draw_routes`/
-`draw_navigation`/`draw_race_tracks` defaults.
+The Cairo navigation image keeps only the layers not yet migrated and the chart/imagery composition. The
+retained `_race_geometry_image` cache is used only when the QML race overlay is inactive (CPU/non-QML hosts).
+Non-QML callers keep the original Cairo paths through the `draw_routes`/ `draw_navigation`/`draw_race_tracks`
+defaults.
 
-Visual parity captures for the migrated layers are still pending; this section
-records ownership, not a pixel-parity claim.
+Visual parity captures for the migrated layers are still pending; this section records ownership, not a
+pixel-parity claim.
 
 ## Milestones
 
@@ -359,8 +337,8 @@ records ownership, not a pixel-parity claim.
 | M3 Remaining bottlenecks | Reprofile, then retain contours/streamlines and address charts/navigation only as justified | **Closed** (#69); contours and streamlines stay out of the viewport |
 | M4 Validation + rollout | Soak, lifecycle/DPR/context/backend coverage and explicit approval for rollout | **Closed 2026-10-21: keep-experimental**; the default application path was not switched |
 
-Do not interpret a later milestone as an instruction to implement it before its
-predecessor passes. A negative experiment can close an uncertainty successfully.
+Do not interpret a later milestone as an instruction to implement it before its predecessor passes. A negative
+experiment can close an uncertainty successfully.
 
 ## Hypothesis ledger
 
@@ -391,10 +369,9 @@ predecessor passes. A negative experiment can close an uncertainty successfully.
 
 ## Working/review rules
 
-Each slice identifies its milestone and hypothesis, then records question,
-scope/non-goals, baseline/protocol/success criterion, fidelity gates, budget/stop
-condition, and result/decision. Each PR summarizes:
-**milestone → hypothesis → evidence → decision → remaining gap**.
+Each slice identifies its milestone and hypothesis, then records question, scope/non-goals,
+baseline/protocol/success criterion, fidelity gates, budget/stop condition, and result/decision. Each PR
+summarizes: **milestone → hypothesis → evidence → decision → remaining gap**.
 
 After each experiment/milestone or exhausted budget, record:
 
@@ -403,11 +380,10 @@ After each experiment/milestone or exhausted budget, record:
 3. What uncertainty remains, and is the next step still justified?
 4. **Continue / narrow / pivot / stop**, with rationale and any new budget.
 
-No silent scope expansion or moving acceptance criteria to match results. Keep
-one current milestone and one next decision here and on the epic. Link detailed
-results/child issues instead of proliferating roadmaps. Existing uncommitted work
-and open PRs retain their own scope; this epic does not authorize their overwrite
-or merge. Ask before pushing/creating PRs when not already authorized.
+No silent scope expansion or moving acceptance criteria to match results. Keep one current milestone and one
+next decision here and on the epic. Link detailed results/child issues instead of proliferating roadmaps.
+Existing uncommitted work and open PRs retain their own scope; this epic does not authorize their overwrite or
+merge. Ask before pushing/creating PRs when not already authorized.
 
 ## History
 

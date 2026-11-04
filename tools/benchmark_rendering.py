@@ -246,7 +246,7 @@ def worker(config):
     from sailworks.core.geo.track import Track
     from sailworks.core.mapviewport import MapViewport
     from sailworks.qt.controller import SessionController
-    from sailworks.qt.datacontroller import read_forecast
+    from sailworks.core.grib import Grib
     from sailworks.qt.mapcanvas import (
         TrackMap,
     )  # TODO #86: legacy CPU-rendering benchmark; retarget or replace before deleting mapcanvas.py
@@ -305,7 +305,7 @@ def worker(config):
         if entry["kind"] == "vector":
             controller.charts.load_vector_layer(entry["path"])
         elif entry["kind"] == "grib":
-            controller.core.grib_manager.gribs.append(read_forecast(entry["path"]))
+            controller.core.grib_manager.gribs.append(Grib.parse(entry["path"]))
 
     if synthetic_wind:
         side = scene["wind_side"]

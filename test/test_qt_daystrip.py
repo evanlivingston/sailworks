@@ -19,7 +19,7 @@ class TestDayStrip(unittest.TestCase):
         from sailworks.qt.forecasttimeline import DayStripWidget
 
         self.strip = DayStripWidget()
-        self.strip.resize(400, 56)
+        self.strip.resize(401, 56)
         self.strip.set_bounds(1000.0, 2000.0)
         self.stamps = []
         self.strip.time_selected.connect(self.stamps.append)
