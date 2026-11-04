@@ -334,6 +334,102 @@ def test_successful_era5_import_publishes_catalog_and_artifact(tmp_path):
     assert list(store.manifests.glob("*.json")) == []
 
 
+def test_submitted_cds_request_is_persisted_and_reused(tmp_path):
+    from sailworks.core.tranchestore import TrancheStore
+
+    store = TrancheStore(tmp_path)
+    payload = b"fake era5 grib bytes"
+
+    class Remote:
+        request_id = "rid-1"
+        status = "successful"
+
+        def download(self, target):
+            Path(target).write_bytes(payload)
+
+    class Inner:
+        def __init__(self):
+            self.submitted = []
+
+        def submit(self, _dataset, request):
+            self.submitted.append(request)
+            return Remote()
+
+        def get_remote(self, _request_id):
+            return Remote()
+
+    class Client:
+        def __init__(self):
+            self.client = Inner()
+
+    clients = []
+
+    def factory():
+        client = Client()
+        clients.append(client)
+        return client
+
+    service = Era5DownloadService(
+        store, client_factory=factory, validator=lambda _p, _piece: {"reader": "test"}
+    )
+    planned = plan("2025-01-01T00:00", "2025-01-01T00:00")
+
+    service._run(planned, threading.Event(), False)
+
+    assert len(clients) == 1
+    assert len(clients[0].client.submitted) == 1
+    assert service._load_pending() == []
+    assert (tmp_path / "era5-history.json").exists()
+
+    # A repeated request is served from the catalog: no new CDS submission.
+    repeated = Era5DownloadService(
+        store, client_factory=factory, validator=lambda _p, _piece: {"reader": "test"}
+    )
+    repeated._run(planned, threading.Event(), False)
+    assert len(clients) == 1
+
+
+def test_pending_cds_request_resumes_after_restart(tmp_path):
+    from sailworks.core.tranchestore import TrancheStore
+
+    store = TrancheStore(tmp_path)
+    payload = b"resumed era5 grib bytes"
+
+    class Remote:
+        request_id = "rid-resume"
+        status = "successful"
+
+        def download(self, target):
+            Path(target).write_bytes(payload)
+
+    class Inner:
+        def submit(self, _dataset, _request):
+            raise AssertionError("a pending request must not be submitted again")
+
+        def get_remote(self, request_id):
+            assert request_id == "rid-resume"
+            return Remote()
+
+    class Client:
+        def __init__(self):
+            self.client = Inner()
+
+    service = Era5DownloadService(
+        store, client_factory=Client, validator=lambda _p, _piece: {"reader": "test"}
+    )
+    piece = split_request(plan("2025-01-01T00:00", "2025-01-01T00:00"))[0]
+    service._remember_pending(piece, "rid-resume")
+
+    assert service.resume_pending() == 1
+    for thread in list(service._resume_threads):
+        thread.join(5)
+
+    catalog = tmp_path / "era5-history.json"
+    assert catalog.exists()
+    assert len(json.loads(catalog.read_text())) == 1
+    assert service._load_pending() == []
+
+
 def test_canceled_era5_download_leaves_no_catalog_or_artifacts(tmp_path):
     root = tmp_path
     (root / "artifacts").mkdir()

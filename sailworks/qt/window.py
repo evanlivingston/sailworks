@@ -3,6 +3,7 @@
 import sys
 from bisect import bisect_right
 from datetime import timedelta, timezone
+from pathlib import Path
 from html import escape
 
 from PySide6.QtCore import QEvent, Qt, QTimer, QSize, QSignalBlocker
@@ -93,6 +94,14 @@ class PreviewWindow(QMainWindow):
         self.settings_dialog = None
         self.library_dialog = None
         self.log_library_dialog = None
+        try:
+            pending_era5 = (
+                Path(controller.analysis.state.store.root) / "era5-pending.json"
+            )
+            if pending_era5.exists():
+                QTimer.singleShot(0, self._resume_era5_downloads)
+        except Exception:
+            pass
         self.setAcceptDrops(True)
         self.marine_settings = None
         self.marine_open = {"currents": False, "tides": False}
@@ -1474,6 +1483,19 @@ class PreviewWindow(QMainWindow):
         self.settings_dialog.show()
         self.settings_dialog.raise_()
         self.settings_dialog.activateWindow()
+
+    def _resume_era5_downloads(self):
+        """Resume ERA5 requests persisted before the last shutdown."""
+        if self.library_dialog is not None:
+            return
+        try:
+            self.library_dialog = DataLibrary(
+                self.controller,
+                self,
+                capture_region=self._capture_analysis_region,
+            )
+        except Exception:
+            self.library_dialog = None
 
     def _ensure_library(self, chart_section=None):
         if self.library_dialog is None:

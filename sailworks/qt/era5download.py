@@ -135,6 +135,10 @@ class Era5DownloadTab(QWidget):
         self.timer.setInterval(500)
         self.timer.timeout.connect(self.poll)
         self.timer.start()
+        self._resume_was_active = False
+        resume = getattr(self.service, "resume_pending", None)
+        if callable(resume):
+            resume()
         self.cancel_button.setEnabled(False)
         self.retry_button.setEnabled(False)
         self.refresh_catalog()
@@ -275,7 +279,19 @@ class Era5DownloadTab(QWidget):
         self.retry_button.setEnabled(False)
 
     def poll(self):
+        resume_active = getattr(self.service, "resume_active", None)
         if self.job is None:
+            if callable(resume_active) and resume_active():
+                self._resume_was_active = True
+                self.progress.setRange(0, 0)
+                self.progress.setFormat("Resuming ERA5 request…")
+                self.progress.show()
+                self.status.setText("Resuming queued ERA5 download…")
+            elif getattr(self, "_resume_was_active", False):
+                self._resume_was_active = False
+                self.progress.hide()
+                self.status.setText("ERA5 history updated.")
+                self.refresh_catalog()
             return
         plan = self.plan
         progress_for = getattr(self.service, "progress_for", None)
