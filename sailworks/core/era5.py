@@ -641,14 +641,16 @@ class Era5DownloadService:
         path = self._pending_path()
         with _catalog_lock(path):
             entries = self._load_pending()
-            if self._pending_entry(entries, piece) is not None:
+            if any(
+                str(entry.get("request_id")) == str(request_id) for entry in entries
+            ):
                 return
             entries.append(
                 {
                     "dataset": DATASET,
                     "start": piece.start.isoformat(),
                     "end": piece.end.isoformat(),
-                    "area": list(_canonical_area(piece.area)),
+                    "area": list(piece.area),
                     "variables": list(piece.request.get("variable") or VARIABLES),
                     "request_id": str(request_id),
                     "created": datetime.now(timezone.utc).isoformat(),
@@ -684,15 +686,8 @@ class Era5DownloadService:
         return kept
 
     def _prune_pending(self, entries, catalog):
-        """Keep only outstanding, unique requests.
-
-        Entries whose chunk is already in the catalog are stale bookkeeping
-        from a run that failed before it could forget them, and entries that
-        describe the same chunk (same times, same ERA5 grid cells) are
-        duplicates from a restart. Keeping the newest duplicate lets one
-        superseding request replace a stuck one.
-        """
-        newest = {}
+        """Keep outstanding IDs independently until covered or removed."""
+        kept = []
         for entry in entries:
             try:
                 piece = Era5Request(
@@ -707,13 +702,8 @@ class Era5DownloadService:
                 continue
             if self._catalog_covers(catalog, piece):
                 continue
-            key = job_key(piece)
-            prior = newest.get(key)
-            if prior is None or str(entry.get("created", "")) > str(
-                prior.get("created", "")
-            ):
-                newest[key] = entry
-        return list(newest.values())
+            kept.append(entry)
+        return kept
 
     def pending_count(self):
         return len(self.pending_requests())
@@ -876,12 +866,15 @@ class Era5DownloadService:
             or not hasattr(inner, "get_remote")
         ):
             return None
-        request_id = self._live_request_id(inner, piece)
-        if request_id is not None:
-            return request_id
-        remote = inner.submit(DATASET, piece.request)
-        self._remember_pending(piece, remote.request_id)
-        return str(remote.request_id)
+        # Lock order: submission lock, then pending-file lock; never the reverse.
+        # This also serializes submissions from other service instances/processes.
+        with _catalog_lock(Path(self.store.root) / "era5-submission"):
+            request_id = self._live_request_id(inner, piece)
+            if request_id is not None:
+                return request_id
+            remote = inner.submit(DATASET, piece.request)
+            self._remember_pending(piece, remote.request_id)
+            return str(remote.request_id)
 
     def _live_request_id(self, inner, piece):
         """Return the queued request for this chunk, discarding dead ones.
@@ -899,14 +892,14 @@ class Era5DownloadService:
             status = remote.status
         except Exception:
             self._forget_pending(request_id)
-            return None
+            return self._live_request_id(inner, piece)
         if self._remote_is_stale(remote):
             self._delete_request(inner, request_id)
             self._forget_pending(request_id)
-            return None
+            return self._live_request_id(inner, piece)
         if status in ("failed", "rejected", "dismissed", "deleted"):
             self._forget_pending(request_id)
-            return None
+            return self._live_request_id(inner, piece)
         piece.request["variable"] = list(entry.get("variables") or VARIABLES)
         object.__setattr__(piece, "_pending_request_id", request_id)
         return request_id
@@ -1059,8 +1052,11 @@ def publish_history_display(state, entries, *, model_id="ERA5"):
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)
 
+    published_area = usable[0]["area"]
     variables_by_time = {}
     for entry in usable:
+        if not _areas_close(published_area, entry["area"]):
+            continue
         variables = set(entry.get("variables") or VARIABLES)
         start = datetime.fromisoformat(str(entry["start"]).replace("Z", "+00:00"))
         end = datetime.fromisoformat(str(entry["end"]).replace("Z", "+00:00"))
@@ -1077,17 +1073,7 @@ def publish_history_display(state, entries, *, model_id="ERA5"):
         field: {
             stamp
             for stamp, groups in variables_by_time.items()
-            if any(
-                set(names)
-                <= set().union(
-                    *(
-                        variables
-                        for other_area, variables in groups
-                        if _areas_close(area, other_area)
-                    )
-                )
-                for area, _ in groups
-            )
+            if set(names) <= set().union(*(variables for _, variables in groups))
         }
         for field, names in FIELD_VARIABLES.items()
     }

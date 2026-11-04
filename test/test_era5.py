@@ -47,9 +47,8 @@ def test_pending_removal_uses_request_id(tmp_path):
     service = Era5DownloadService(SimpleNamespace(root=tmp_path))
     request = plan("2025-01-01T00:00", "2025-01-01T00:00")
     service._remember_pending(request, "old")
-    entries = service._load_pending()
-    entries.append({**entries[0], "request_id": "replacement"})
-    service._save_pending(entries)
+    service._remember_pending(request, "replacement")
+    assert len(service.pending_requests()) == 2
     service._forget_pending("old")
     assert [entry["request_id"] for entry in service._load_pending()] == ["replacement"]
 
@@ -89,7 +88,99 @@ def test_job_key_canonicalizes_area_noise(tmp_path):
     assert job_key(first) == job_key(second)
     service = Era5DownloadService(SimpleNamespace(root=tmp_path))
     service._remember_pending(second, "one")
-    assert service._load_pending()[0]["area"] == list(first.area)
+    assert service._load_pending()[0]["area"] == list(second.area)
+
+
+def test_pending_area_matching_uses_original_bounds(tmp_path):
+    service = Era5DownloadService(SimpleNamespace(root=tmp_path))
+    first = plan("2025-01-01T00:00", "2025-01-01T00:00", (50.0049, -10, 40, 5))
+    other = plan("2025-01-01T00:00", "2025-01-01T00:00", (49.9948, -10, 40, 5))
+    service._remember_pending(first, "first")
+    assert service._pending_entry(service._load_pending(), other) is None
+
+
+@pytest.mark.parametrize("disjoint", [False, True])
+def test_concurrent_chunk_submissions_are_serialized(tmp_path, disjoint):
+    from sailworks.core.era5 import job_key
+
+    first = plan("2025-01-01T00:00", "2025-01-01T01:00")
+    second = plan(
+        "2025-01-01T00:00",
+        "2025-01-01T02:00",
+        (30, -10, 20, 5) if disjoint else first.area,
+    )
+    assert job_key(first) != job_key(second)
+    pieces = [split_request(first)[0], split_request(second)[0]]
+    # Use the same overlapping chunk from the distinct plans.
+    if not disjoint:
+        pieces[1] = split_request(plan("2025-01-01T00:00", "2025-01-01T01:00"))[0]
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    class Client:
+        def submit(self, dataset, request):
+            calls.append(request)
+            entered.set()
+            assert release.wait(5)
+            return SimpleNamespace(request_id=str(len(calls)))
+
+        def get_remote(self, request_id):
+            return SimpleNamespace(status="running")
+
+    client = Client()
+    services = [
+        Era5DownloadService(
+            SimpleNamespace(root=tmp_path),
+            client_factory=lambda: SimpleNamespace(client=client),
+        )
+        for _ in range(2)
+    ]
+    results = []
+    threads = [
+        threading.Thread(
+            target=lambda s=s, p=p: results.append(s._ensure_chunk_request(p))
+        )
+        for s, p in zip(services, pieces)
+    ]
+    threads[0].start()
+    assert entered.wait(5)
+    threads[1].start()
+    release.set()
+    for thread in threads:
+        thread.join(5)
+        assert not thread.is_alive()
+    assert len(results) == 2
+    assert len(calls) == (2 if disjoint else 1)
+
+
+def test_history_wave_coverage_is_limited_to_published_area(tmp_path):
+    from sailworks.core.era5 import FIELD_VARIABLES, publish_history_display
+    from sailworks.core.tranchestore import TrancheStore
+
+    (tmp_path / "x.grib").write_bytes(b"x")
+    base = {
+        "artifact": "x.grib",
+        "start": "2025-01-01T00:00:00+00:00",
+        "end": "2025-01-01T01:00:00+00:00",
+        "area": (50, -10, 40, 5),
+        "variables": list(FIELD_VARIABLES["pressure"]),
+    }
+    wave = {
+        **base,
+        "area": (30, -10, 20, 5),
+        "variables": list(FIELD_VARIABLES["wave_height"]),
+    }
+    state = SimpleNamespace(store=TrancheStore(tmp_path))
+    assert (
+        "wave_height"
+        not in publish_history_display(state, [base, wave]).entries[0].fields
+    )
+    wave["area"] = (50.001, -10, 40, 5)
+    (tmp_path / "y.grib").write_bytes(b"y")
+    wave["artifact"] = "y.grib"
+    assert (
+        "wave_height" in publish_history_display(state, [base, wave]).entries[0].fields
+    )
 
 
 def test_jobs_match_area_tolerance_across_rounding_boundary(tmp_path):
@@ -793,9 +884,15 @@ def test_pending_requests_prune_covered_and_duplicate_entries(tmp_path):
         ]
     )
 
-    assert [entry["request_id"] for entry in service.pending_requests()] == ["newer"]
+    assert [entry["request_id"] for entry in service.pending_requests()] == [
+        "older",
+        "newer",
+    ]
     # The prune is persisted, so a later restart does not resurrect old rows.
-    assert [entry["request_id"] for entry in service._load_pending()] == ["newer"]
+    assert [entry["request_id"] for entry in service._load_pending()] == [
+        "older",
+        "newer",
+    ]
 
 
 def test_rounded_area_reuses_pending_request_instead_of_resubmitting(tmp_path):
