@@ -509,7 +509,10 @@ def test_antimeridian_seam_anchors_translate_to_the_current_projection():
             for index, (lat, lon) in enumerate(points)
         },
         staged=SimpleNamespace(
-            first=(zeros,), second=(zeros,), weight=lambda stamp: 0.0
+            first=(zeros,),
+            second=(zeros,),
+            weight=lambda stamp: 0.0,
+            components=2,
         ),
         land_flags=None,
     )

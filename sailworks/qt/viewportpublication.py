@@ -132,6 +132,10 @@ class PublicationBudget:
             # The wave fill is a separate scalar layer with its own budget:
             # showing waves can never evict the wind fill's resources.
             "wave_fill": 32 * 1024 * 1024,
+            # Wave arrows are staged from the three wave bands and published
+            # as six scalar images, so they own a budget separate from both
+            # the wave fill and the wind barbs.
+            "wave_barbs": 16 * 1024 * 1024,
         }
         self.current_usage = {
             "barbs": 0,
@@ -141,6 +145,7 @@ class PublicationBudget:
             "chart": 0,
             "streamlines": 0,
             "wave_fill": 0,
+            "wave_barbs": 0,
         }
 
     def can_allocate(self, role: str, bytes_needed: int) -> bool:
@@ -178,6 +183,7 @@ class PublicationManager:
             "chart": LayerState(role="chart"),
             "streamlines": LayerState(role="streamlines"),
             "wave_fill": LayerState(role="wave_fill"),
+            "wave_barbs": LayerState(role="wave_barbs"),
         }
         self.budget = budget or PublicationBudget()
         self.current_generation = 0
@@ -191,6 +197,7 @@ class PublicationManager:
             "chart": [],
             "streamlines": [],
             "wave_fill": [],
+            "wave_barbs": [],
         }
 
     def stage_resources(

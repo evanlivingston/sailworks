@@ -38,12 +38,14 @@ from sailworks.qt.gpuweatherfields import (
 from sailworks.rendering.weatherbarbs import (
     BarbView,
     FIELD_LATTICE_PX,
+    WAVE_BANDS,
     anchor_view,
     field_window,
     node_anchor_atlas,
     _view_bounds,
     select_resident,
     stage_field,
+    stage_wave_selection,
 )
 from sailworks.rendering.weatherstaging import NodeSampleMemo, time_window
 from sailworks.rendering.windpainter import shoreline_quality
@@ -357,6 +359,65 @@ def _spatial_state(camera):
         camera.zoom,
         camera.width,
         camera.height,
+    )
+
+
+def _band_endpoints(field):
+    """The two time endpoints of one scalar band's stored images.
+
+    A scalar ``GeographicField`` stages each endpoint as a value plane plus
+    the zero U/V companion ``_field_images`` appends for a one-component
+    field, so its images are ``(value A, zero A, value B, zero B)``.  The
+    shader samples only the value planes: indices 0 and 2.  A two-image field
+    is the historical pair form, ``(A, B)``.
+    """
+    images = field.images
+    if len(images) == 4:
+        return images[0], images[2]
+    return images[0], images[1]
+
+
+def wave_barbs_images(fields):
+    """The six wave endpoint images in the glyph shader's binding order.
+
+    ``WAVE_BANDS`` is (height, period, direction) and each scalar field
+    publishes two endpoint images (time A, time B).  The shader expects the
+    three A planes first, then the three B planes:
+
+    u0 height A, u1 period A, u2 direction A,
+    u3 height B, u4 period B, u5 direction B.
+    """
+    endpoints = {band: _band_endpoints(fields[band]) for band in WAVE_BANDS}
+    return (
+        endpoints["wave_height"][0],
+        endpoints["wave_period"][0],
+        endpoints["wave_direction"][0],
+        endpoints["wave_height"][1],
+        endpoints["wave_period"][1],
+        endpoints["wave_direction"][1],
+    )
+
+
+def wave_bands_ready(fields):
+    """True only when all three bands are present, so no partial arrows draw."""
+    return bool(fields) and all(fields.get(band) is not None for band in WAVE_BANDS)
+
+
+def wave_arrow_view(view, density):
+    """The same camera view thinned by a wave density.
+
+    The returned view is a copy: the wind barbs keep their own density in the
+    original view, so changing the wave density never re-thins the wind layer.
+    """
+    return BarbView(
+        view.width,
+        view.height,
+        view._center_lat,
+        view._center_lon,
+        view._zoom,
+        str(density),
+        view.over_land,
+        view.geographic,
     )
 
 
