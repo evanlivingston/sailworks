@@ -109,13 +109,9 @@ class Era5DownloadTab(QWidget):
         time_layout.addLayout(start_row)
         time_layout.addLayout(end_row)
         time_layout.addStretch(1)
-        # The UTC window stays as hidden state: the race selection sets it,
-        # otherwise the saved default applies.
         self.time_box = time_box
         layout.addLayout(columns)
 
-        # Coordinate state used by the map capture and race requests; the
-        # Forecasts tab shows bounds through the status line instead.
         self.north, self.west = self._coord(90), self._coord(180)
         self.south, self.east = self._coord(90), self._coord(180)
         self.region_row = QHBoxLayout()
@@ -134,7 +130,6 @@ class Era5DownloadTab(QWidget):
             "at https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels."
         )
         self.instructions.setWordWrap(True)
-        # CDS credentials help is intentionally not shown in the History tab.
 
         self.request_button = QPushButton("Download selected history")
         self.request_button.clicked.connect(self.start_download)
@@ -198,9 +193,6 @@ class Era5DownloadTab(QWidget):
             "Select an imported history row to enable sampling."
         )
         samples.addWidget(self.history_status)
-        # Point sampling stays available to code paths that reference it, but
-        # the History tab itself mirrors Forecasts and shows only the download
-        # controls, the status line and the catalog table.
         self.samples_row = samples
         self.timer = QTimer(self)
         self.timer.setInterval(500)
