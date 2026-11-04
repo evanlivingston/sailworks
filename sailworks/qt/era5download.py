@@ -122,6 +122,7 @@ class Era5DownloadTab(QWidget):
         )
         samples.addWidget(self.history_status)
         layout.addLayout(samples)
+        self.samples_row = samples
         self.timer = QTimer(self)
         self.timer.setInterval(500)
         self.timer.timeout.connect(self.poll)
@@ -205,6 +206,7 @@ class Era5DownloadTab(QWidget):
         self.instructions.setVisible(False)
         hide_layout(self.region_row)
         hide_layout(self.date_row)
+        hide_layout(self.samples_row)
         self.status.setText("Using the selected race's region and UTC time range.")
         if auto_submit:
             self.submit()
