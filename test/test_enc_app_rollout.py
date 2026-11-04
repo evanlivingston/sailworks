@@ -1526,16 +1526,18 @@ def test_viewport_dashboard_layer_publishes_and_clears_the_cached_image():
 def test_chart_idle_timer_debounces_camera_changes(presenter):
     import time
 
-    from PySide6.QtCore import QObject, Qt
-    from PySide6.QtTest import QTest
+    from PySide6.QtCore import QEventLoop, QObject, QTimer, Qt
 
     from sailworks.qt.gribviewport import _viewport_widget_class
     from sailworks.qt.gribviewportchart import CHART_IDLE_MS
 
     calls = []
+    settled = QEventLoop()
 
     def request(camera, preview=False):
-        calls.append((time.monotonic(), camera, preview))
+        calls.append((time.perf_counter(), camera, preview))
+        if not preview:
+            settled.quit()
         return len(calls)
 
     cls = _viewport_widget_class()
@@ -1570,20 +1572,24 @@ def test_chart_idle_timer_debounces_camera_changes(presenter):
     # to settle before the second camera change is delivered.
     assert len(calls) <= 1
     assert all(preview for _, _, preview in calls)
-    changed = time.monotonic()
     widget._camera = "second"
     widget._chart_camera_changed = time.perf_counter()
+    changed = widget._chart_camera_changed
     widget._restart_chart_settle()
     widget._request_interactive_chart()
     assert len(calls) <= 1
     assert all(preview for _, _, preview in calls)
-    QTest.qWait(CHART_IDLE_MS)
+    watchdog = QTimer()
+    watchdog.setSingleShot(True)
+    watchdog.timeout.connect(settled.quit)
+    watchdog.start(CHART_IDLE_MS * 20)
+    settled.exec()
+    watchdog.stop()
     full = [(when, camera) for when, camera, preview in calls if not preview]
     assert len(full) == 1
     assert full[0][1] == "second"
     assert full[0][0] - changed >= CHART_IDLE_MS / 1000
-    QTest.qWait(CHART_IDLE_MS)
-    assert len([call for call in calls if not call[2]]) == 1
+    assert not timer.isActive()
     viewport.close()
 
 
