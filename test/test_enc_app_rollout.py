@@ -1368,6 +1368,8 @@ def test_map_host_publishes_existing_routes_to_the_viewport_overlay_layer():
         "pois": [],
         "tracks": [],
         "race_tracks": [],
+        "race_courses": [],
+        "race_positions": [],
         "routes": [],
         "ais_targets": [],
         "isochrones": {"frontiers": [], "path": [], "exclusions": []},
