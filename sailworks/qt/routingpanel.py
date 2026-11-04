@@ -108,10 +108,13 @@ class RoutingPanel(QWidget):
         self.coastline_clearance.setToolTip(
             "Reject route legs within this distance of the coastline."
         )
-        form.addRow("Keep off coast", self.coastline_clearance)
+        self.coastline_label = QLabel("Keep off coast")
+        form.addRow(self.coastline_label, self.coastline_clearance)
         self.coastline_clearance.valueChanged.connect(
             lambda *_: self.options_changed.emit()
         )
+        self.coastlines.toggled.connect(self._sync_coastline_clearance)
+        self._sync_coastline_clearance(self.coastlines.isChecked())
         setup_layout.addLayout(form)
         hint = QLabel(
             "Choose a waypoint track or saved POI. "
@@ -142,7 +145,8 @@ class RoutingPanel(QWidget):
             )
             combo.setMinimumContentsLength(14)
         self._build_advanced_pages()
-        self._build_safety_controls(form)
+        self._build_safety_controls()
+        form.addRow(self.parameters_section)
         self.inputs = (
             self.polar,
             self.algorithm,
@@ -158,22 +162,25 @@ class RoutingPanel(QWidget):
         self.refresh_destinations()
         self.refresh()
 
-    def _build_safety_controls(self, form):
-        form.addRow(section_label("Routing limits"))
+    def _build_safety_controls(self):
+        self.safety_form = QFormLayout()
+        self.safety_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        self.safety_form.addRow(section_label("Routing limits"))
         self.limit_wind = QCheckBox("Maximum true wind")
         self.maximum_wind = self._speed_control(30, 100)
-        form.addRow(self.limit_wind, self.maximum_wind)
+        self.safety_form.addRow(self.limit_wind, self.maximum_wind)
         self.motor_fallback = QCheckBox("Motor when sailing speed is below")
         self.minimum_sailing_speed = self._speed_control(3, 30)
-        form.addRow(self.motor_fallback, self.minimum_sailing_speed)
+        self.safety_form.addRow(self.motor_fallback, self.minimum_sailing_speed)
         self.motor_speed = self._speed_control(5, 30)
-        form.addRow("Motoring speed", self.motor_speed)
+        self.safety_form.addRow("Motoring speed", self.motor_speed)
         self.wave_proxy = QCheckBox("Wind-based speed reduction (wave proxy)")
         self.wave_proxy.setToolTip(
             "Reduces sailing speed above 20 kn wind, up to 25% at 40 kn. "
             "Uses wind speed, not wave-height forecasts. Motoring speed is unchanged."
         )
-        form.addRow(self.wave_proxy)
+        self.safety_form.addRow(self.wave_proxy)
+        self.parameters_box.layout().addLayout(self.safety_form)
         for control in (self.limit_wind, self.motor_fallback, self.wave_proxy):
             control.toggled.connect(self._safety_changed)
         for control in (
@@ -245,6 +252,10 @@ class RoutingPanel(QWidget):
         )
         self.parameters_box.setVisible(expanded)
 
+    def _sync_coastline_clearance(self, checked):
+        self.coastline_label.setVisible(checked)
+        self.coastline_clearance.setVisible(checked)
+
     @staticmethod
     def _info_button(text):
         button = QToolButton()
@@ -292,10 +303,7 @@ class RoutingPanel(QWidget):
             label_layout.addWidget(self._info_button(param.tooltip or param.name))
             self.parameter_form.addRow(label_row, widget)
             self.parameter_widgets[key] = widget
-        self.parameters_section.setVisible(bool(self.parameter_widgets))
-        if not self.parameter_widgets:
-            self.parameters_header.setChecked(False)
-            self.parameters_box.setVisible(False)
+        self.parameters_section.setVisible(True)
         self.options_changed.emit()
 
     def _parameter_widget(self, param, value):
