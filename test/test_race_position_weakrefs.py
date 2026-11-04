@@ -6,16 +6,24 @@ from sailworks.core.race import RaceBoat, RacePosition
 def test_position_append_does_not_traverse_existing_positions(monkeypatch):
     boat = RaceBoat(boat_id="append")
 
-    class ExistingPosition(RacePosition):
+    reads = []
+
+    class CountedPosition(RacePosition):
         def __getattribute__(self, name):
             if name == "_boats":
-                raise AssertionError("existing position was traversed")
+                reads.append(self)
             return super().__getattribute__(name)
 
-    # Populate before guarding access: each append must only register the new
-    # position, not inspect all previously tracked entries.
+    # Populate first: the guard below measures only what the next append does.
     for index in range(8):
-        boat.positions.append(ExistingPosition())
+        boat.positions.append(CountedPosition())
+    reads.clear()
+
+    added = CountedPosition()
+    boat.positions.append(added)
+
+    # An append inspects only the new position, never the tracked entries.
+    assert reads and all(position is added for position in reads)
 
 
 def test_equal_boats_keep_separate_position_invalidation_registrations():
