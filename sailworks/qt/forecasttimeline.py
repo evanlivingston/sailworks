@@ -638,9 +638,10 @@ class ForecastTimeline(QWidget):
                 self.source_overview.set_cursors(
                     self.day_strip.now, instant.timestamp()
                 )
+                inside = start - 1 <= instant.timestamp() <= end + 1
                 self.caption.setText(
                     "Selected time is outside the loaded forecast range"
-                    if not start <= instant.timestamp() <= end
+                    if not inside
                     else ""
                 )
             else:
