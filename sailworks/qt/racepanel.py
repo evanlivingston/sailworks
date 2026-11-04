@@ -71,6 +71,10 @@ class RacesPanel(QWidget):
         self._race_tracks: dict[str, list[RaceTrack]] = {}
         self.active_race_track: RaceTrack | None = None
         self._syncing_boats = False
+        manager = getattr(getattr(controller, "core", None), "trackManager", None)
+        flush = getattr(manager, "flush_async", None)
+        if flush is not None:
+            self.destroyed.connect(lambda *_: flush())
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -138,6 +142,13 @@ class RacesPanel(QWidget):
         self._purge_legacy_race_tracks()
         self._load_saved_races()
         self.refresh_boats()
+
+    def closeEvent(self, event):
+        manager = getattr(getattr(self.controller, "core", None), "trackManager", None)
+        flush = getattr(manager, "flush_async", None)
+        if flush is not None:
+            flush()
+        super().closeEvent(event)
 
     def import_race(self):
         dialog = YBRaceDialog(self)
@@ -480,7 +491,7 @@ class RacesPanel(QWidget):
         if not callable(remove):
             return
         remove([track.name for track in legacy], save=False)
-        save = getattr(manager, "save", None)
+        save = getattr(manager, "save_async", None) or getattr(manager, "save", None)
         if callable(save):
             save()
 

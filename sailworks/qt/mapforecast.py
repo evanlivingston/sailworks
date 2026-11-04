@@ -2,6 +2,7 @@
 
 import math
 import sys
+from datetime import datetime
 
 
 class MapForecastMixin:
@@ -17,7 +18,13 @@ class MapForecastMixin:
         if self._weather_presenter is not None:
             self._weather_presenter.source_changed()
         if sources:
-            self.time_control.set_time(sources[0].start_time)
+            # start_time is the model run, which is before the first valid step.
+            # Jump to the first valid time so the clock starts inside coverage.
+            stamps = tuple(getattr(sources[0], "valid_times", ()) or ())
+            if stamps:
+                self.time_control.set_time(datetime.fromtimestamp(stamps[0]))
+            else:
+                self.time_control.set_time(sources[0].start_time)
         self.queue_draw()
         self.view_changed.emit()
 

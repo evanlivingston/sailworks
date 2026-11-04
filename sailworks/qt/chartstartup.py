@@ -9,6 +9,7 @@ import time
 from typing import Any
 
 from PySide6.QtCore import QObject, QTimer, Signal
+from sailworks.rendering.chartclasses import saved_chart_enabled
 
 
 class ChartStartup(QObject):
@@ -26,6 +27,8 @@ class ChartStartup(QObject):
         self.jobs = None
         self.staged = []
         self.stages = []
+        self.failed = set()
+        self.owner.charts.chart_startup = self
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self.advance)
@@ -88,6 +91,8 @@ class ChartStartup(QObject):
             return
         if not self.jobs:
             self.owner.charts.charts = self.staged
+            self.owner.charts.chart_startup = None
+            self.owner.charts.load_deferred_charts(skip=self.failed)
             self.state = "ready"
             self.message = (
                 "Charts initialized"
@@ -104,6 +109,11 @@ class ChartStartup(QObject):
             self.finished.emit()
             return
         name, loader, entry = self.jobs.pop(0)
+        if entry is not None:
+            kind = loader.__name__.removeprefix("load_").removesuffix("_layer")
+            if not saved_chart_enabled(self.owner.settings, kind, entry):
+                self.timer.start(0)
+                return
         visible = self.owner.charts.charts
         self.owner.charts.charts = self.staged
         began = time.monotonic()
@@ -115,6 +125,8 @@ class ChartStartup(QObject):
                 loader(entry["path"], entry.get("metadata"), entry.get("enabled", True))
         except Exception as exc:
             error = str(exc)
+            if entry is not None:
+                self.failed.add((kind, entry["path"]))
             self.owner.chart_errors.append(f"{name}: {error}")
         finally:
             self.staged = self.owner.charts.charts
@@ -128,10 +140,19 @@ class ChartStartup(QObject):
         self.changed.emit()
         self.timer.start(10)
 
+    def class_changed(self, kind, enabled):
+        if not enabled:
+            visible = self.owner.charts.charts
+            self.owner.charts.charts = self.staged
+            self.owner.charts.remove_chart_class(kind)
+            self.staged = self.owner.charts.charts
+            self.owner.charts.charts = visible
+
     def close(self):
         if self.state == "closed":
             return
         self.timer.stop()
+        self.owner.charts.chart_startup = None
         self.state = "closed"
         self.jobs = []
         self.canvas = None

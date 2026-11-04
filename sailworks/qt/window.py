@@ -396,14 +396,12 @@ class PreviewWindow(QMainWindow):
 
     def _build_plots(self, controller):
         """Build the log plot canvas, deferring Matplotlib when it is unused."""
-        if getattr(controller, "early_weather", False):
-            from .lazyplots import LazyLogPlots
+        from .lazyplots import LazyLogPlots
 
-            return LazyLogPlots(
-                self,
-                factory=lambda parent: self._interactive_plots(parent, controller),
-            )
-        return self._interactive_plots(self, controller)
+        return LazyLogPlots(
+            self,
+            factory=lambda parent: self._interactive_plots(parent, controller),
+        )
 
     @staticmethod
     def _interactive_plots(parent, controller):
@@ -844,7 +842,7 @@ class PreviewWindow(QMainWindow):
                     end.replace(tzinfo=timezone.utc).timestamp(),
                     position_times,
                 )
-        self._apply_race_timeline_bounds()
+        self._apply_race_timeline_bounds(force=True)
         self._apply_race_course(race)
 
     def _apply_race_course(self, race):
@@ -878,7 +876,7 @@ class PreviewWindow(QMainWindow):
             except Exception:
                 pass
 
-    def _apply_race_timeline_bounds(self):
+    def _apply_race_timeline_bounds(self, *_args, force=False):
         bounds = getattr(self, "_race_timeline_bounds", None)
         timeline = getattr(self.map, "timeline", None)
         if timeline is None:
@@ -887,7 +885,19 @@ class PreviewWindow(QMainWindow):
             timeline.clear_bounds_override()
             return
         start, end, valid_times = bounds
+        if not force and not self._race_window_in_forecast(start, end):
+            timeline.clear_bounds_override()
+            return
         timeline.set_bounds_override(start, end, valid_times)
+
+    def _race_window_in_forecast(self, start, end):
+        try:
+            return any(
+                source.first_valid <= end and source.last_valid >= start
+                for source in self.controller.display_forecast.sources() or ()
+            )
+        except Exception:
+            return False
 
     def _race_tracks_changed(self):
         self._publish_race_track_overlay()

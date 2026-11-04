@@ -125,6 +125,19 @@ def validate_grid(dataset, model, requested):
                 "HRDPS grid is not the supported rotated 0.0225 degree grid"
             )
         resolution = "0.0225deg-rotated"
+    elif model == "WEATHERNEXT":
+        if (
+            not geographic
+            or derived
+            or gt[2]
+            or gt[4]
+            or abs(x_axis - 0.1) > 1e-6
+            or abs(y_axis - 0.1) > 1e-6
+        ):
+            raise ForecastGridError(
+                "WeatherNext grid is not the supported 0.1 degree geographic grid"
+            )
+        resolution = "0.1deg"
     else:
         raise ForecastGridError(f"Unsupported forecast grid model: {model}")
 

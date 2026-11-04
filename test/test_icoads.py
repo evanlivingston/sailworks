@@ -23,6 +23,90 @@ def setUpModule():
 
 
 class IcoadsStateTests(TestCase):
+    def test_position_cache_invalidation_and_covered_pan(self):
+        from dataclasses import replace
+        from PySide6.QtQuick import QQuickItem
+        from sailworks.core.mapviewport import MercatorProjection
+        from sailworks.qt.gribviewport import ViewportCamera
+
+        instant = datetime(2026, 10, 27, tzinfo=timezone.utc)
+        reference = ViewportCamera(10, 20, 9, 900, 700, instant)
+        reports = (ShipReport(10, 20, instant), ShipReport(10, 21, instant))
+        parent = QQuickItem()
+        item = IcoadsQuickItem(parent)
+        item.set_camera(reference, reference=reference)
+        item.set_reports(reports)
+        original = MercatorProjection.convert_geographic_to_screen
+        calls = []
+
+        def project(view, point):
+            calls.append(point)
+            return original(view, point)
+
+        with patch.object(MercatorProjection, "convert_geographic_to_screen", project):
+            positions = item._positions()
+            self.assertIs(item._positions(), positions)
+            initial_count = len(calls)
+            self.assertGreater(initial_count, 0)
+            item.set_camera(replace(reference, center_lon=20.01), reference=reference)
+            self.assertIs(item._positions(), positions)
+            self.assertEqual(len(calls), initial_count)
+            item.set_reports(reports)
+            item._positions()
+            self.assertEqual(len(calls), 2 * initial_count)
+            for change in (
+                {"center_lat": 11},
+                {"center_lon": 21},
+                {"zoom": 8},
+                {"width": 800},
+                {"height": 600},
+            ):
+                camera = replace(reference, **change)
+                item.set_camera(camera, reference=camera)
+                count = len(calls)
+                item._positions()
+                self.assertGreater(len(calls), count)
+            item._padding += 1
+            count = len(calls)
+            item._positions()
+            self.assertGreater(len(calls), count)
+            count = len(calls)
+            item.setWidth(item.width() + 1)
+            item._positions()
+            self.assertGreater(len(calls), count)
+            count = len(calls)
+            item.setHeight(item.height() + 1)
+            item._positions()
+            self.assertGreater(len(calls), count)
+
+    def test_cached_positions_hover_and_paint_match_projection(self):
+        from PySide6.QtCore import QPointF
+        from unittest.mock import Mock
+
+        instant = datetime(2026, 10, 27, tzinfo=timezone.utc)
+        reports = tuple(
+            ShipReport(lat, lon, instant)
+            for lat, lon in ((12, 18), (15, 20), (-1, 0), (101, 1), (100, 100))
+        )
+        project = Mock(side_effect=lambda point: point.get_degrees())
+        camera = SimpleNamespace(
+            view=lambda: SimpleNamespace(convert_geographic_to_screen=project)
+        )
+        item = IcoadsQuickItem()
+        item.setWidth(100)
+        item.setHeight(100)
+        item.set_reports(reports, camera)
+        expected = ((12, 18, reports[0]), (15, 20, reports[1]), (100, 100, reports[4]))
+        self.assertEqual(item._positions(), expected)
+        self.assertIs(item._report_at(15, 20), reports[1])
+        item.hoverMoveEvent(SimpleNamespace(position=lambda: QPointF(15, 20)))
+        self.assertIs(item._selected_report, reports[1])
+        item._selected_report = None
+        painter = Mock()
+        item.paint(painter)
+        self.assertEqual(painter.drawEllipse.call_count, 3)
+        self.assertEqual(project.call_count, len(reports))
+
     def test_covered_pan_does_not_repaint_unchanged_marker_surface(self):
         from PySide6.QtQuick import QQuickItem
         from sailworks.qt.gribviewport import ViewportCamera

@@ -19,11 +19,39 @@ import logging
 import os
 import platform
 import sys
+import tempfile
+import threading
 from datetime import date, datetime
 
 from sailworks import log  # noqa: F401
 
 logger = logging.getLogger("sailworks")
+
+_file_locks_guard = threading.Lock()
+_file_locks = {}
+
+
+def _file_lock(path):
+    path = os.path.realpath(path)
+    with _file_locks_guard:
+        return _file_locks.setdefault(path, threading.Lock())
+
+
+def _write_json(path, payload):
+    text = json.dumps(payload, sort_keys=True, indent=4, default=json_serial)
+    with _file_lock(path):
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=os.path.dirname(path), delete=False
+            ) as stream:
+                temporary = stream.name
+                stream.write(text)
+            os.replace(temporary, path)
+            temporary = None
+        finally:
+            if temporary is not None:
+                os.unlink(temporary)
 
 
 def json_serial(obj):
@@ -84,6 +112,10 @@ class Storage(dict):
     def __init__(self, filename=None, parent=None, *args, **kwargs):
         super(Storage, self).__init__(*args, **kwargs)
 
+        self.__dict__["_async_lock"] = threading.Lock()
+        self.__dict__["_async_thread"] = None
+        self.__dict__["_async_pending"] = None
+
         self.__parent = parent
         self.__filename = filename
         self.__handlers = {}
@@ -105,8 +137,6 @@ class Storage(dict):
 
     def __setattr__(self, key, value):
         self.__setitem__(key, value)
-        self.save()
-        self.notify_change(key, value)
 
     def __setitem__(self, key, value):
         super(Storage, self).__setitem__(key, value)
@@ -116,7 +146,6 @@ class Storage(dict):
 
     def __delattr__(self, item):
         self.__delitem__(item)
-        self.save()
 
     def __delitem__(self, key):
         super(Storage, self).__delitem__(key)
@@ -137,13 +166,42 @@ class Storage(dict):
         if not self.__filename or not self.__init:
             return
 
-        with open(DATA_DIR + "/" + self.__filename + ".json", "w") as f:
-            f.write(
-                json.dumps(
-                    self.to_dict(), sort_keys=True, indent=4, default=json_serial
-                )
-            )
-            # logger.debug ('Configuration saved to %s/%s.json' % (DATA_DIR, self.__filename))
+        self.flush_async()
+        _write_json(DATA_DIR + "/" + self.__filename + ".json", self.to_dict())
+
+    def save_async_data(self, data):
+        """Update collection data and queue only the latest immutable snapshot."""
+        # Bypass the normal setter, which saves synchronously.
+        dict.__setitem__(self, "data", data)
+        self.__dict__["data"] = data
+        payload = self.to_dict()
+        with self._async_lock:
+            self.__dict__["_async_pending"] = payload
+            if self._async_thread is None:
+                thread = threading.Thread(target=self._async_writer, daemon=True)
+                self.__dict__["_async_thread"] = thread
+                thread.start()
+
+    def _async_writer(self):
+        while True:
+            with self._async_lock:
+                payload = self._async_pending
+                self.__dict__["_async_pending"] = None
+                if payload is None:
+                    self.__dict__["_async_thread"] = None
+                    return
+            try:
+                _write_json(DATA_DIR + "/" + self.__filename + ".json", payload)
+            except Exception:
+                logger.exception("Failed to save %s asynchronously", self.__filename)
+
+    def flush_async(self):
+        while True:
+            with self._async_lock:
+                thread = self._async_thread
+            if thread is None:
+                return
+            thread.join()
 
     def load(self):
         if self.__parent:
@@ -162,7 +220,8 @@ class Storage(dict):
     def load_or_save_default(self):
         try:
             self.load()
-            self.__init = True
+            # Bypass attribute hooks so loading does not immediately rewrite the file.
+            self.__dict__["_Storage__init"] = True
         except Exception:
             self.__init = True
             self.save()

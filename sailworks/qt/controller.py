@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QMessageBox, QWidget
 from sailworks.core import Core, TimeControl
 from sailworks.core.settings import SettingsManager
 from sailworks.rendering.chartcollection import ChartCollection
+from sailworks.rendering.chartclasses import saved_chart_enabled
 from sailworks.core.nmeasession import read_nmea_log, ripple_delete_log
 from sailworks.core.n2kdevices import captured_device_from_dict
 from sailworks.core.loglibrary import LogLibrary
@@ -78,6 +79,11 @@ class SessionController(QObject):
         )
         self.time_control = TimeControl()
         self.settings = SettingsManager()
+        from sailworks.core.weathernextcredentials import WeatherNextCredentials
+
+        self.weathernext_credentials = WeatherNextCredentials(
+            self.settings.get("weatherNextCredentialsPath")
+        )
         self.closed = False
         if analysis_root is not None and analysis_state is not None:
             raise ValueError("provide analysis_root or analysis_state, not both")
@@ -95,11 +101,17 @@ class SessionController(QObject):
         )
         self.charts = ChartCollection(self.settings, self.scheduler.submit)
         self.chart_errors = []
+        self.charts.load_saved_on_change = load_charts
+        self.charts.chart_load_error = lambda path, exc: self.chart_errors.append(
+            f"{path}: {exc}"
+        )
         if load_charts and not early_weather:
             self.charts.load_base_chart()
             for kind in ("vector", "raster", "mbtiles"):
                 loader = getattr(self.charts, "load_" + kind + "_layer")
                 for entry in self.settings[kind + "Charts"]:
+                    if not saved_chart_enabled(self.settings, kind, entry):
+                        continue
                     try:
                         loader(
                             entry["path"],
@@ -124,10 +136,13 @@ class SessionController(QObject):
         self.routing = RoutingController(self)
         self.connection_task = BackgroundTask(self)
         self.data = DataController(self)
+        self.charts.chart_sources_changed = self.data.changed.emit
         self.analysis = self.prepare_model_analysis()
         from .analysisdisplay import BoundDisplayForecastSelection
 
         self.display_forecast = BoundDisplayForecastSelection(self.analysis, self)
+        self._last_forecast_selection = None
+        self.analysis.changed.connect(self._forecast_selection_changed)
         self.polars = PolarController(self)
         self.map_data = MapDataController(self)
         self.points = []
@@ -232,6 +247,36 @@ class SessionController(QObject):
             self.connection_task.start(
                 "Disconnecting instruments…", lambda _: self.connections.stop_polling()
             )
+
+    def _forecast_selection_changed(self):
+        """Keep the map clock inside the active forecast's valid range."""
+        active = getattr(self.analysis, "active", None)
+        if active is None:
+            return
+        key = (active.tranche.tranche_id, active.entry.entry_id)
+        if key != getattr(self, "_last_forecast_selection", None):
+            self._last_forecast_selection = key
+            for canvas in list(getattr(self.charts, "maps", ())):
+                timeline = getattr(canvas, "timeline", None)
+                clear = getattr(timeline, "clear_bounds_override", None)
+                if callable(clear):
+                    clear()
+        self._align_clock_to_forecast(active)
+
+    def _align_clock_to_forecast(self, active):
+        times = getattr(active.entry, "time_steps", ())
+        if not times:
+            return
+        current = self.time_control.time
+        try:
+            inside = current is not None and (
+                times[0].timestamp() <= current.timestamp() <= times[-1].timestamp()
+            )
+        except Exception:
+            inside = False
+        if not inside:
+            # TimeControl shows naive wall time, so convert from UTC stamps.
+            self.time_control.set_time(datetime.fromtimestamp(times[0].timestamp()))
 
     def _changed(self, _):
         seek_timer = getattr(self, "seek_timer", None)
@@ -658,6 +703,10 @@ class SessionController(QObject):
         if self.closed:
             return
         self.closed = True
+        track_manager = getattr(self.core, "trackManager", None)
+        flush_tracks = getattr(track_manager, "flush_async", None)
+        if flush_tracks is not None:
+            flush_tracks()
         if self._load_error_dialog is not None:
             self._load_error_dialog.close()
             self._load_error_dialog = None

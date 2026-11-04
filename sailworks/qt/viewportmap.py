@@ -449,13 +449,6 @@ class ViewportMap(
             True,
         )
 
-    def refresh_route_overlay(self):
-        """Publish the current overlay data to the QML scene."""
-        presenter = getattr(self, "_weather_presenter", None)
-        widget = getattr(presenter, "widget", None)
-        if widget is not None:
-            widget.set_route_overlay(self.viewport_route_overlay())
-
     def adopt_viewport_camera(self, camera):
         """Mirror viewport-owned camera state for existing map APIs/overlays."""
         state = (camera.center_lat, camera.center_lon, camera.zoom)
@@ -544,6 +537,100 @@ class ViewportMap(
             track_position = [point.lat, point.lon]
             track_heading = _track_point_heading(state.points, marker_index)
             track_awa = getattr(point, "awa", None)
+        manager = self.controller.core.trackManager
+        race_tracks = list(getattr(self, "race_tracks_overlay", ()) or ())
+        race_courses = list(getattr(self, "race_courses", ()) or ())
+        race_positions = list(getattr(self, "race_boat_markers", ()) or ())
+        race_tracks_key = repr(race_tracks)
+        visible_tracks = tuple(track for track in manager if track.visible)
+        tracks_key = (
+            id(manager),
+            manager.revision,
+            tuple(
+                (
+                    id(track),
+                    track.revision,
+                    str(track.name),
+                    (
+                        tuple(track.color)
+                        if getattr(track, "color", None) is not None
+                        else None
+                    ),
+                    bool(manager.is_active(track)),
+                    self.navigation.edit_track is track,
+                )
+                for track in visible_tracks
+            ),
+            self.navigation.hl_track_item,
+        )
+        tracks_cache = getattr(self, "_viewport_tracks_cache", None)
+        if tracks_cache is None or tracks_cache[0] != tracks_key:
+            tracks = [
+                {
+                    "name": str(track.name),
+                    "points": [[float(point[0]), float(point[1])] for point in track],
+                    "active": bool(manager.is_active(track)),
+                    "highlight": (
+                        int(self.navigation.hl_track_item)
+                        if manager.is_active(track)
+                        and self.navigation.hl_track_item is not None
+                        else -1
+                    ),
+                    "editing": self.navigation.edit_track is track,
+                }
+                for track in visible_tracks
+            ]
+            tracks_cache = (tracks_key, tracks, object())
+            self._viewport_tracks_cache = tracks_cache
+        poi_manager = self.controller.core.poiManager
+        visible_pois = tuple(
+            poi for poi in poi_manager if poi.visible and poi.position is not None
+        )
+        poi_key = (
+            id(poi_manager),
+            getattr(poi_manager, "revision", None),
+            tuple(
+                (id(poi), poi.revision, str(poi.name), tuple(poi.position))
+                for poi in visible_pois
+            ),
+            self.navigation.hl_poi,
+        )
+        poi_cache = _viewport_section_cache(
+            self,
+            "pois",
+            poi_key,
+            lambda: [
+                [
+                    float(poi.position[0]),
+                    float(poi.position[1]),
+                    str(poi.name),
+                    poi.name == self.navigation.hl_poi,
+                ]
+                for poi in visible_pois
+            ],
+        )
+        routing_manager = self.controller.core.routingManager
+        timestamp = self.time_control.time.timestamp()
+        if hasattr(routing_manager, "revision"):
+            route_key = (
+                id(routing_manager),
+                routing_manager.revision,
+                tuple(
+                    (id(route), route.revision, str(route.name))
+                    for route in routing_manager
+                    if route.visible
+                ),
+                self.navigation.hl_routing,
+                timestamp,
+            )
+            route_cache = _viewport_section_cache(
+                self,
+                "routes",
+                route_key,
+                lambda: self.navigation.route_overlay_data(timestamp),
+            )
+        else:
+            route_cache = (None, self.navigation.route_overlay_data(timestamp), None)
         return {
             "route_plan": [list(point) for point in state.route_plan],
             "route_preview": [list(point) for point in state.route_preview],
@@ -552,38 +639,16 @@ class ViewportMap(
             "track_position": track_position,
             "track_heading": track_heading,
             "track_awa": track_awa,
-            "pois": [
-                [
-                    float(poi.position[0]),
-                    float(poi.position[1]),
-                    str(poi.name),
-                    poi.name == self.navigation.hl_poi,
-                ]
-                for poi in self.controller.core.poiManager
-                if poi.visible and poi.position is not None
-            ],
-            "tracks": [
-                {
-                    "name": str(track.name),
-                    "points": [[float(point[0]), float(point[1])] for point in track],
-                    "active": bool(self.controller.core.trackManager.is_active(track)),
-                    "highlight": (
-                        int(self.navigation.hl_track_item)
-                        if self.controller.core.trackManager.is_active(track)
-                        and self.navigation.hl_track_item is not None
-                        else -1
-                    ),
-                    "editing": self.navigation.edit_track is track,
-                }
-                for track in self.controller.core.trackManager
-                if track.visible and not getattr(track, "race_track", False)
-            ],
-            "race_tracks": getattr(self, "race_tracks_overlay", []),
-            "race_courses": getattr(self, "race_courses", []),
-            "race_positions": list(getattr(self, "race_boat_markers", ()) or ()),
-            "routes": self.navigation.route_overlay_data(
-                self.time_control.time.timestamp()
-            ),
+            "pois": poi_cache[1],
+            "_pois_key": poi_cache[2],
+            "tracks": tracks_cache[1],
+            "_tracks_key": tracks_cache[2],
+            "race_tracks": race_tracks,
+            "_race_tracks_key": race_tracks_key,
+            "race_courses": race_courses,
+            "race_positions": race_positions,
+            "routes": route_cache[1],
+            "_routes_key": route_cache[2],
             "ais_targets": (
                 [
                     {
@@ -615,6 +680,15 @@ class ViewportMap(
             ),
             "dashboard_visible": self.dashboard_visible,
         }
+
+
+def _viewport_section_cache(host, section, key, build):
+    attribute = "_viewport_" + section + "_cache"
+    cache = getattr(host, attribute, None)
+    if cache is None or cache[0] != key:
+        cache = (key, build(), object())
+        setattr(host, attribute, cache)
+    return cache
 
 
 def _track_point_heading(points, index):

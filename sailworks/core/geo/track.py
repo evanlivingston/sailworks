@@ -48,9 +48,12 @@ class Track(ElementMultiPoint):
             d.visible,
             color=j.get("color"),
         )
-        # Older versions persisted race boat tracks in the user collection.
-        # Flag them so the race panel can purge them on startup.
-        track._legacy_race_track = bool(j.get("race_track", False))
+        # Older versions persisted race boat tracks in the user collection
+        # (both the original flag and the later race-key scheme). Flag them so
+        # the race panel can purge them on startup.
+        track._legacy_race_track = bool(
+            j.get("race_track") or j.get("race_key") or j.get("race_boat_key")
+        )
         return track
 
     def to_gpx_object(self):

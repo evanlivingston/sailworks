@@ -32,7 +32,11 @@ def make_race(race_id):
 def panel(qtbot, monkeypatch):
     monkeypatch.setattr(
         "sailworks.core.geo.collection.CollectionStorage",
-        lambda name: SimpleNamespace(data={}),
+        lambda name: SimpleNamespace(
+            data={},
+            save_async_data=lambda payload: None,
+            flush_async=lambda: None,
+        ),
     )
     monkeypatch.setattr("sailworks.qt.racepanel.load_saved_races", lambda: [])
     manager = TrackCollection()
@@ -171,8 +175,8 @@ def test_race_timeline_bounds_fall_back_to_positions():
     window = SimpleNamespace(
         _race_timeline_bounds=None, map=SimpleNamespace(timeline=timeline)
     )
-    window._apply_race_timeline_bounds = lambda: (
-        PreviewWindow._apply_race_timeline_bounds(window)
+    window._apply_race_timeline_bounds = lambda *args, **kwargs: (
+        PreviewWindow._apply_race_timeline_bounds(window, *args, **kwargs)
     )
     window._apply_race_course = Mock()
 

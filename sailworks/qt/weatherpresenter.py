@@ -4,7 +4,7 @@ from PySide6.QtCore import QCoreApplication, QEvent, QObject, QTimer, Qt, Signal
 from PySide6.QtGui import QGuiApplication, QPainter
 from PySide6.QtWidgets import QLabel, QWidget
 
-from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES
+from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES, display_model_name
 
 from .gribviewport import GribViewportModel, ViewportCamera, _viewport_widget_class
 
@@ -328,7 +328,7 @@ class WeatherPresenter(QObject):
         if not model_id:
             return selection.status
         capabilities = MODEL_CAPABILITIES.get(model_id)
-        model_name = capabilities.provider_name if capabilities else model_id
+        model_name = display_model_name(model_id) if capabilities else model_id
         return f"Model: {model_name}"
 
     def _drop_widget(self):

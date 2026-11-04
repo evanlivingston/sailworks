@@ -42,10 +42,17 @@ class _TrackManager(list):
         super().__init__()
         self.removed_names = []
         self.appended_batches = []
+        self.removed_batches = []
+        self.saves = 0
         self.active = None
 
     def get_unique_name(self, name):
-        return name
+        candidate = name
+        suffix = 1
+        while any(t.name == candidate for t in self):
+            candidate = f"{name}-{suffix}"
+            suffix += 1
+        return candidate
 
     def exists(self, name):
         return any(track.name == name for track in self)
@@ -68,6 +75,9 @@ class _TrackManager(list):
 
     def set_active(self, track, save=True):
         self.active = track
+
+    def save_async(self):
+        self.saves += 1
 
     def get_active(self):
         return self.active

@@ -58,6 +58,24 @@ def field(resolution=500, masked=False, start=START):
     )
 
 
+def test_current_field_metadata_is_parsed_once_and_manifest_is_fresh():
+    loads = json.loads
+    with patch("sailworks.core.marine.fields.json.loads", wraps=loads) as parse:
+        value = field()
+        first = value.manifest()
+        expected = dict(first)
+        expected["bounds"] = list(first["bounds"])
+        assert value.resolution_m == 500
+        value.content_key
+        first["resolution_m"] = 1
+        first["bounds"].append(0)
+        second = value.manifest()
+        assert second is not first
+        assert second == expected
+        assert value.manifest() == expected
+        parse.assert_called_once_with(value.metadata_json)
+
+
 def netcdf(path):
     dataset = gdal.GetDriverByName("netCDF").CreateMultiDimensional(str(path))
     root = dataset.GetRootGroup()

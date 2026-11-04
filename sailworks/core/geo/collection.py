@@ -28,6 +28,17 @@ from sailworks.core.utils import unique_name
 T = TypeVar("T", bound=Element)
 
 
+def _snapshot_json(value):
+    """Copy JSON containers without copying tracked-list owners or collections."""
+    if isinstance(value, dict):
+        return {key: _snapshot_json(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_snapshot_json(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_snapshot_json(item) for item in value)
+    return value
+
+
 class CollectionStorage(Storage):
     def __init__(self, name):
         Storage.__init__(self, name)
@@ -51,6 +62,12 @@ class Collection(Generic[T]):
 
     def save(self):
         self.storage.data = self.to_json()
+
+    def save_async(self):
+        self.storage.save_async_data(_snapshot_json(self.to_json()))
+
+    def flush_async(self):
+        self.storage.flush_async()
 
     def __iter__(self):
         return iter(self.elements)
@@ -80,16 +97,12 @@ class Collection(Generic[T]):
         # Load in memory without persisting after every element: the stored
         # file already contains this data, and saving per element is O(n^2)
         # because each save re-serialises the whole collection.
-        self.elements = []
-
-        if "elements" not in j:
-            self.touch()
-            return
-
-        for x in j["elements"]:
+        elements = []
+        for x in j.get("elements", []):
             e = self.of.from_json(x)
             e.collection = self
-            self.elements.append(e)
+            elements.append(e)
+        self.elements = elements
         self.touch()
 
     def get_unique_name(self, base_name=None) -> str:

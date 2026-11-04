@@ -11,6 +11,7 @@ class ModelCapabilities:
     provider_name: str
     native_resolution: str
     default_hours: int = 120
+    display_name: str | None = None
     intervals: tuple[int, ...] = (0, 1, 3, 6, 12)
     global_download: bool = False
     attribution: str = ""
@@ -41,6 +42,10 @@ class ModelCapabilities:
             return 360 if run_hour is None or run_hour in (0, 12) else 144
         if self.model_id in ("AIFS", "AIGFS"):
             return 360 if self.model_id == "AIFS" else 384
+        if self.model_id == "WEATHERNEXT":
+            # Interim runs (any cycle off 00/06/12/18) publish only 48 leads;
+            # synoptic runs publish the full 360.
+            return 360 if run_hour is None or run_hour % 6 == 0 else 48
         raise ValueError(f"No forecast horizon defined for {self.model_id}")
 
     def available_steps(self, run_hour, field):
@@ -66,11 +71,21 @@ class ModelCapabilities:
             return tuple(range(0, 361, 6))
         if self.model_id == "AIGFS":
             return tuple(range(0, 385, 6))
+        if self.model_id == "WEATHERNEXT":
+            return tuple(range(1, self.max_horizon(run_hour) + 1))
         if self.model_id == "HRRR" and field == "gust":
             return tuple(range(maximum + 1))
         if self.model_id == "HRDPS" and field == "pressure":
             return tuple(range(0, maximum + 1, 3))
         return tuple(range(maximum + 1))
+
+
+def display_model_name(model_id):
+    """Short user-facing model name; provider_name stays the stable identity."""
+    capability = MODEL_CAPABILITIES.get(model_id)
+    if capability is None:
+        return model_id
+    return capability.display_name or capability.provider_name
 
 
 MODEL_CAPABILITIES = MappingProxyType(
@@ -125,6 +140,23 @@ MODEL_CAPABILITIES = MappingProxyType(
             grib_subcenter="0",
             grib_product=(2, 0, 137),
             grib_type=1,
+        ),
+        "WEATHERNEXT": ModelCapabilities(
+            "WEATHERNEXT",
+            "Google WeatherNext 3",
+            "0.1deg",
+            default_hours=120,
+            display_name="WN3",
+            intervals=(0, 1, 3, 6, 12),
+            attribution="Google WeatherNext 3 statistics (ensemble means)",
+            license_url="https://cloud.google.com/terms/",
+            data_url="gs://weathernext3_statistics_spatial/",
+            cycles=tuple(range(24)),
+            grib_center="250",
+            grib_subcenter="0",
+            grib_product=(0, 255, 128),
+            grib_type=2,
+            grib_pdt="0",
         ),
         "GFSWAVE": ModelCapabilities(
             "GFSWAVE",

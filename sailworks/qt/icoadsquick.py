@@ -5,6 +5,8 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtQuick import QQuickItem, QQuickPaintedItem
 from datetime import datetime, timezone
 
+DISPLAY_LOD_THRESHOLD = 2000
+
 
 class IcoadsQuickItem(QQuickPaintedItem):
     """Paint neutral report markers; reports are observations, not live AIS."""
@@ -12,6 +14,9 @@ class IcoadsQuickItem(QQuickPaintedItem):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._reports = ()
+        self._positions_key = None
+        self._positions_cache = ()
+        self._positions_camera = None
         self._camera = None
         self._ref_camera = None
         self._offset_x = 0.0
@@ -25,6 +30,7 @@ class IcoadsQuickItem(QQuickPaintedItem):
 
     def set_reports(self, reports, camera=None, on_select=None):
         self._reports = tuple(reports or ())
+        self._positions_key = None
         if camera is not None:
             self._camera = camera
             if self._ref_camera is None:
@@ -81,13 +87,62 @@ class IcoadsQuickItem(QQuickPaintedItem):
     def _positions(self):
         if self._ref_camera is None:
             return ()
-        from sailworks.core.mapviewport import MapPoint
+        camera = self._ref_camera
+        key = (
+            id(self._reports),
+            len(self._reports),
+            id(camera),
+            *(
+                getattr(camera, name, None)
+                for name in (
+                    "center_lat",
+                    "center_lon",
+                    "zoom",
+                    "width",
+                    "height",
+                    "time",
+                )
+            ),
+            self._padding,
+            self.width(),
+            self.height(),
+            id(self._selected_report),
+        )
+        if camera is self._positions_camera and key == self._positions_key:
+            return self._positions_cache
+        from sailworks.core.mapviewport import MapPoint, MercatorProjection
+
+        view = camera.view()
+        bounds = None
+        if isinstance(view, MercatorProjection):
+            top, left = view.convert_screen_to_geographic(
+                -self._padding, -self._padding
+            ).get_degrees()
+            bottom, right = view.convert_screen_to_geographic(
+                self.width() - self._padding, self.height() - self._padding
+            ).get_degrees()
+            # Roundoff in the inverse must never reject an edge marker.
+            epsilon = 1e-9
+            bounds = (bottom - epsilon, top + epsilon, left - epsilon, right + epsilon)
 
         result = []
         for report in self._reports:
             try:
-                # Project against reference camera
-                x, y = self._ref_camera.view().convert_geographic_to_screen(
+                if bounds is not None:
+                    bottom, top, left, right = bounds
+                    lat = max(-view.MAX_LAT, min(view.MAX_LAT, float(report.latitude)))
+                    lon = float(report.longitude)
+                    if lat < bottom or lat > top:
+                        continue
+                    # Include wrapped candidates conservatively. The existing
+                    # projection itself is unwrapped, and remains authoritative.
+                    if right - left < 360 and not (
+                        left <= lon <= right
+                        or left <= lon - 360 <= right
+                        or left <= lon + 360 <= right
+                    ):
+                        continue
+                x, y = view.convert_geographic_to_screen(
                     MapPoint(report.latitude, report.longitude)
                 )
                 # Paint the padded reference surface once; the stationary map
@@ -97,7 +152,20 @@ class IcoadsQuickItem(QQuickPaintedItem):
                     result.append((local_x, local_y, report))
             except (AttributeError, TypeError, ValueError):
                 continue
-        return tuple(result)
+        if len(result) > DISPLAY_LOD_THRESHOLD:
+            stride = (len(result) + DISPLAY_LOD_THRESHOLD - 1) // DISPLAY_LOD_THRESHOLD
+            last = len(result) - 1
+            result = [
+                entry
+                for index, entry in enumerate(result)
+                if index % stride == 0
+                or index == last
+                or entry[2] is self._selected_report
+            ]
+        self._positions_cache = tuple(result)
+        self._positions_key = key
+        self._positions_camera = camera
+        return self._positions_cache
 
     def paint(self, painter):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -126,7 +194,9 @@ class IcoadsQuickItem(QQuickPaintedItem):
     @classmethod
     def _paint_details(cls, painter, report, offset_x=0, offset_y=0):
         lines = cls._detail_lines(report)
-        painter.setFont(QFont("Sans Serif", 9))
+        font = QFont()
+        font.setPointSize(9)
+        painter.setFont(font)
         metrics = painter.fontMetrics()
         padding = 10
         width = max(metrics.horizontalAdvance(line) for line in lines) + 2 * padding
@@ -145,6 +215,7 @@ class IcoadsQuickItem(QQuickPaintedItem):
             )
 
     def _report_at(self, x, y):
+        """Hit-test displayed markers, including the selected marker if visible."""
         nearest = min(
             self._positions(),
             key=lambda item: (item[0] - x) ** 2 + (item[1] - y) ** 2,

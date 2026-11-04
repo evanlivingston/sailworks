@@ -14,11 +14,12 @@ GNU General Public License for more details.
 For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
+import builtins
 import os
 import tempfile
 import unittest
 from datetime import date, datetime
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from sailworks.core.storage import Storage, json_serial
 
@@ -78,6 +79,44 @@ class TestStorage(unittest.TestCase):
         del s.todel
         self.assertNotIn("todel", s)
 
+    def test_attribute_assignment_saves_and_notifies_once(self):
+        s = Storage("attribute", parent=None)
+        s.load_or_save_default()
+        s.watched = "initial"
+        callback = MagicMock()
+        s.register_on_change("watched", callback)
+        callback.reset_mock()
+
+        with patch.object(
+            Storage, "save", autospec=True, side_effect=Storage.save
+        ) as save:
+            s.watched = "updated"
+        save.assert_called_once_with(s)
+        callback.assert_called_once_with("updated")
+
+        reloaded = Storage("attribute", parent=None)
+        reloaded.load()
+        self.assertEqual(reloaded.watched, "updated")
+
+    def test_attribute_deletion_saves_once_without_notification(self):
+        s = Storage("attribute_delete", parent=None)
+        s.load_or_save_default()
+        s.watched = "initial"
+        callback = MagicMock()
+        s.register_on_change("watched", callback)
+        callback.reset_mock()
+
+        with patch.object(
+            Storage, "save", autospec=True, side_effect=Storage.save
+        ) as save:
+            del s.watched
+        save.assert_called_once_with(s)
+        callback.assert_not_called()
+
+        reloaded = Storage("attribute_delete", parent=None)
+        reloaded.load()
+        self.assertNotIn("watched", reloaded)
+
     def test_delitem(self):
         s = Storage("teststorage", parent=None)
         s._Storage__init = True
@@ -106,9 +145,37 @@ class TestStorage(unittest.TestCase):
         self.assertFalse(os.path.exists(path))
 
         s = Storage("newfile", parent=None)
+        s["default"] = "value"
         s.load_or_save_default()
 
         self.assertTrue(os.path.exists(path))
+        reloaded = Storage("newfile", parent=None)
+        reloaded.load_or_save_default()
+        self.assertEqual(reloaded.default, "value")
+
+    def test_load_existing_does_not_write_and_later_changes_persist(self):
+        path = os.path.join(self.tmpdir, "existing.json")
+        original = b'{ "greeting": "hello", "count": 42 }\n'
+        with open(path, "wb") as f:
+            f.write(original)
+        mtime = os.stat(path).st_mtime_ns
+
+        s = Storage("existing", parent=None)
+        with patch("sailworks.core.storage.open", wraps=builtins.open) as opened:
+            s.load_or_save_default()
+        self.assertFalse(any("w" in call.args[1] for call in opened.call_args_list))
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), original)
+        self.assertEqual(os.stat(path).st_mtime_ns, mtime)
+        self.assertEqual(s.greeting, "hello")
+        self.assertEqual(s.count, 42)
+        self.assertNotIn("_Storage__init", s.to_dict())
+
+        s.greeting = "updated"
+        reloaded = Storage("existing", parent=None)
+        reloaded.load_or_save_default()
+        self.assertEqual(reloaded.greeting, "updated")
+        self.assertEqual(reloaded.count, 42)
 
     def test_to_dict_excludes_storage_keys(self):
         s = Storage("dicttest", parent=None)

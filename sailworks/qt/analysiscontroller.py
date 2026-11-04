@@ -7,6 +7,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from sailworks.core.forecaststate import NoActiveForecastError
 from sailworks.core.forecastrefresh import RefreshCancelledError
 from sailworks.core.forecasttranche import ModelConfiguration
+from sailworks.core.weathernextcredentials import describe_access_error
 
 
 class AnalysisController(QObject):
@@ -168,17 +169,22 @@ class AnalysisController(QObject):
             or action_token != self._progress_token
         ):
             return
-        if (
-            isinstance(value, tuple)
-            and len(value) == 2
-            and isinstance(value[0], str)
-            and isinstance(value[1], int)
-        ):
-            model_id, percent = value
-            self.progress = min(100, max(0, percent))
-            self.status = f"Downloading {model_id}…"
-        else:
-            self.status = str(value)
+        if isinstance(value, tuple) and len(value) == 2:
+            model_id, detail = value
+            if isinstance(detail, int):
+                self.progress = min(100, max(0, detail))
+                if model_id:
+                    from sailworks.core.forecastcapabilities import display_model_name
+
+                    self.status = f"Downloading {display_model_name(model_id)}…"
+                self.changed.emit()
+                return
+            if isinstance(detail, str):
+                # Stage name from the refresh: planning, validating, publishing…
+                self.status = detail
+                self.changed.emit()
+                return
+        self.status = str(value)
         self.changed.emit()
 
     @Slot(int, str, object, object)
@@ -190,6 +196,10 @@ class AnalysisController(QObject):
         self.progress = 100 if error is None else self.progress
         if error is not None:
             self.error = str(error) or type(error).__name__
+            if action == "refresh" and (
+                "WEATHERNEXT:" in self.error or "WEATHERNEXT " in self.error
+            ):
+                self.error = describe_access_error(error)
             if reconciliation_error is not None:
                 self.error += "; current published forecast could not be resolved: " + (
                     str(reconciliation_error) or type(reconciliation_error).__name__

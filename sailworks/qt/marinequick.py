@@ -122,7 +122,10 @@ class MarineLabelItem(QQuickPaintedItem):
         self.update()
 
     def paint(self, painter):
-        painter.setFont(QFont("Sans Serif", 10, QFont.Weight.Bold))
+        font = QFont()
+        font.setPointSize(10)
+        font.setBold(True)
+        painter.setFont(font)
         for x, y, text in self.labels:
             path = QPainterPath()
             path.addText(x, y, painter.font(), text)

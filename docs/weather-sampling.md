@@ -134,3 +134,12 @@ against meridian convergence before bilinear interpolation.
 
 Vector interpretation follows [GRIB2 flag table 3.3](https://codes.ecmwf.int/grib/format/grib2/ctables/3/3/).
 HRDPS grid details are published by [ECCC](https://eccc-msc.github.io/open-data/msc-data/nwp_hrdps/readme_hrdps-datamart_en/).
+
+## WeatherNext 3
+
+Google WeatherNext 3 is published as Zarr statistics, not GRIB. Sailworks reads a bounded
+0.1° latitude/longitude slice, maps 10 m U/V wind and mean-sea-level pressure into a GRIB2
+artifact, then validates it through the normal forecast path. The values are ensemble means,
+not deterministic members; no ensemble spread is carried into routing. Google Cloud
+credentials are required, and access/terms are specific to the user's Google Cloud project
+and the event's sailing instructions.
