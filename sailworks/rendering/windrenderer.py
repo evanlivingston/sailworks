@@ -141,6 +141,7 @@ class DisplayGrib(Grib):
             source.bounds,
             source.start_time,
             source.last_forecast,
+            getattr(source, "model_name", "Unknown"),
         )
         self._arrays = OrderedDict()
         from .displayforecast import display_selection
