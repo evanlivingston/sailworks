@@ -24,8 +24,6 @@ class SettingsManager(Storage):
         self.gribArrowOpacity = 0.4
         self.gribArrowOnGround = False
         self.gribBarbDensity = "standard"
-        self.gribStreamlineDensity = "standard"
-        self.gribWindSampling = "interpolated"
         self.marineCurrentDensity = "standard"
         self.gribWindStyle = "barbs"
         self.gribWindGradient = True

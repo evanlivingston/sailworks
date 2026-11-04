@@ -243,13 +243,10 @@ class DisplayGridIndex(GridIndex):
 
 
 class DisplayWeatherSource(Grib):
-    def __init__(
-        self, *args, band_cache, display_identity=None, interpolate=True, **kwargs
-    ):
+    def __init__(self, *args, band_cache, display_identity=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.band_cache = band_cache
         self.display_identity = display_identity
-        self.interpolate = bool(interpolate)
 
     @property
     def sampling(self):

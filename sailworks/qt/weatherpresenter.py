@@ -208,20 +208,15 @@ class WeatherPresenter(QObject):
                 widget.deleteLater()
             raise
 
-    def _model(self, source, grid=False):
+    @staticmethod
+    def _model(source, grid=False):
         from sailworks.rendering.displayforecast import display_selection
 
-        settings = self.canvas.controller.settings
         return GribViewportModel(
             () if source is None else (source.path,),
             display_identity=None if source is None else display_selection(source),
             resident_time_window=True,
             grid=grid,
-            interpolate=(
-                True
-                if settings is None
-                else getattr(settings, "gribWindSampling", "interpolated") != "native"
-            ),
         )
 
     def _qml_status(self, status):
@@ -268,12 +263,6 @@ class WeatherPresenter(QObject):
             return
         self._label()
 
-    def _density(self):
-        settings = self.canvas.controller.settings
-        if settings.gribWindStyle == "streamlines":
-            return getattr(settings, "gribStreamlineDensity", "standard")
-        return getattr(settings, "gribBarbDensity", "standard")
-
     def _label(self):  # noqa: C901 - status composition spans independent fallbacks
         if self.closed:
             return
@@ -291,8 +280,11 @@ class WeatherPresenter(QObject):
             mode = "Wind hidden"
         elif self.canvas.controller.settings.gribWindStyle == "streamlines":
             mode = "Viewport streamlines: " + self._state
-        elif self._density() == "all":
-            mode = "Viewport wind (all grid points, unthinned): " + self._state
+        elif (
+            getattr(self.canvas.controller.settings, "gribBarbDensity", "standard")
+            == "all"
+        ):
+            mode = "Viewport wind (all forecast points, unthinned): " + self._state
         else:
             mode = "Viewport wind: " + self._state
         charts = getattr(self.canvas, "charts", None)
@@ -375,7 +367,7 @@ class WeatherPresenter(QObject):
                 self.canvas.width(),
                 self.canvas.height(),
                 self.canvas.time_control.time,
-                self._density(),
+                self.canvas.controller.settings.gribBarbDensity,
                 True,
             )
         )
