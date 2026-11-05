@@ -1547,16 +1547,33 @@ def _prepare_wave_layer(viewport):
         setattr(viewport, name, default)
 
 
-def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event methods
-    """Build the render-context widget class on demand.
+def _viewport_window_class():
+    """The same viewport hosted in a native QQuickView.
 
-    Qt is imported lazily so the model and the tests stay usable headless.
+    A QQuickWidget renders into an offscreen FBO that is then composited
+    through the widget stack; on macOS that path presents at 60 Hz even when
+    the scene costs a couple of milliseconds.  A native Quick window presents
+    at the display rate, so the desktop map can host the identical scene here
+    once its overlays no longer need QWidget stacking.
+    """
+    return _viewport_widget_class("window")
+
+
+def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
+    """Build the render-context class on demand.
+
+    ``host`` selects the Qt Quick host: ``"widget"`` is the embedded
+    QQuickWidget, ``"window"`` is a native QQuickView.  Qt is imported lazily
+    so the model and the tests stay usable headless.
     """
     from PySide6.QtCore import QEvent, QObject, QRectF, QTimer, QUrl, Qt, Signal
     from PySide6.QtGui import QSurfaceFormat, QVector2D
+    from PySide6.QtQuick import QQuickView
     from PySide6.QtQuickWidgets import QQuickWidget
     from PySide6.QtWidgets import QLabel
     import shiboken6
+
+    host_base = QQuickWidget if host == "widget" else QQuickView
 
     from sailworks.qt.gpuweather import WeatherImageProvider
     from sailworks.qt.gribviewportchart import (
@@ -1568,7 +1585,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
         chart_placement,
     )
 
-    class GribViewport(QQuickWidget):
+    class GribViewport(host_base):
         """The viewport's render context: the GPU side of the split.
 
         The field's endpoint images are published once and stay resident; the
@@ -1741,10 +1758,19 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._satellite_visible_generation = None
             format_ = QSurfaceFormat()
             format_.setSamples(4)
-            format_.setAlphaBufferSize(8)
+            if host == "widget":
+                format_.setAlphaBufferSize(8)
             self.setFormat(format_)
-            self.setClearColor(Qt.GlobalColor.transparent)
-            self.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
+            if host == "widget":
+                self.setClearColor(Qt.GlobalColor.transparent)
+                self.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
+            else:
+                # A native window cannot be stacked under QWidget overlays, so
+                # it paints the theme background behind the scene instead of a
+                # transparent surface.  It also requests no alpha buffer: a
+                # transparent native surface is not what the scene needs.
+                self.setColor(Qt.GlobalColor.black)
+                self.setResizeMode(QQuickView.ResizeMode.SizeRootObjectToView)
             self._provider = WeatherImageProvider()
             self.engine().addImageProvider("weather", self._provider)
             from .viewportstreamlines import StreamlineImageProvider
@@ -2153,7 +2179,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                             owner.deleteLater()
 
                 self.destroyed.connect(release_native_owners)
-            self._status = QLabel("Wind loading…", self)
+            # A native Quick window is not a QWidget and cannot parent a
+            # QLabel; the host assigns the status widget to its container.
+            status_parent = self if host == "widget" else None
+            self._status = QLabel("Wind loading…", status_parent)
             self._status.setStyleSheet(
                 "background: rgba(0,0,0,190); color: white; padding: 6px"
             )
@@ -5078,6 +5107,25 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._streamline_urls = ()
             self._streamline_publication = None
 
+        def measurement_canvas(self):
+            """The viewport host that owns measurement mode, if any.
+
+            A QQuickWidget can walk up to its parent widget; a native
+            QQuickView cannot, so the host is assigned explicitly.
+            """
+            parent_widget = getattr(self, "parentWidget", None)
+            if parent_widget is not None:
+                canvas = parent_widget()
+                if canvas is not None:
+                    return canvas
+            return getattr(self, "_measurement_canvas", None)
+
+        def quickWindow(self):  # noqa: N802 - matches the QQuickWidget API
+            """The scene window, whichever host is in use."""
+            if host == "window":
+                return self
+            return super().quickWindow()
+
         def dispose(self):
             if self._disposed:
                 return
@@ -6889,8 +6937,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
 
         def mousePressEvent(self, event):  # noqa: N802 - Qt virtual method name
             if event.button() == Qt.MouseButton.LeftButton:
-                parent_widget = getattr(self, "parentWidget", None)
-                canvas = parent_widget() if parent_widget else None
+                canvas = self.measurement_canvas()
                 record_measurement = getattr(canvas, "_record_measurement_click", None)
                 if record_measurement and record_measurement(
                     event.position().x(), event.position().y()
@@ -6908,8 +6955,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 super().mousePressEvent(event)
 
         def mouseMoveEvent(self, event):  # noqa: N802 - Qt virtual method name
-            parent_widget = getattr(self, "parentWidget", None)
-            canvas = parent_widget() if parent_widget else None
+            canvas = self.measurement_canvas()
             update_preview = getattr(canvas, "_update_measurement_preview", None)
             if update_preview and update_preview(
                 event.position().x(), event.position().y()
