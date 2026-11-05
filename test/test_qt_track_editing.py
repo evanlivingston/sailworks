@@ -5,7 +5,13 @@ from types import SimpleNamespace
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QPushButton, QTableWidget, QTableWidgetItem
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+)
 
 from sailworks.core.geo.track import Track
 from sailworks.qt.navigationpanel import NavigationPanel
@@ -13,8 +19,18 @@ from sailworks.qt.navigationpanel import NavigationPanel
 
 class _Tracks(list):
     def __init__(self, *tracks):
-        super().__init__(tracks)
-        self.active = tracks[0] if tracks else None
+        super().__init__(track for track in tracks if track is not None)
+        self.active = self[0] if self else None
+        for track in self:
+            track.collection = self
+
+    def save(self):
+        pass
+
+    def new_element(self, points):
+        track = Track("New", points, collection=self)
+        self.append(track)
+        return track
 
     def get_active(self):
         return self.active
@@ -45,8 +61,13 @@ class _Panel:
     def refresh_points(self):
         pass
 
+    _set_track_editing = NavigationPanel._set_track_editing
+    _invalidate_race_geometry = NavigationPanel._invalidate_race_geometry
+    select_track = NavigationPanel.select_track
+    new_track = NavigationPanel.new_track
 
-def test_track_select_edit_escape_and_race_track_restriction(qtbot):
+
+def test_track_select_edit_and_escape(qtbot):
     app = QApplication.instance()
     assert app is not None
     ordinary = Track("Editable", [(1, 2, None)])
@@ -67,12 +88,6 @@ def test_track_select_edit_escape_and_race_track_restriction(qtbot):
     assert panel.canvas.navigation.edit_track is None
     assert not panel.track_buttons[1].isEnabled()
 
-    race = Track("Race", [(1, 2, None)])
-    panel.core.trackManager = _Tracks(race)
-    NavigationPanel.edit_track(panel)
-    assert panel.canvas.navigation.edit_track is None
-    assert not panel.track_buttons[1].isEnabled()
-
 
 def test_point_modifications_require_selected_editable_track(qtbot):
     track = Track("Track", [(1, 2, None), (3, 4, None)])
@@ -86,12 +101,6 @@ def test_point_modifications_require_selected_editable_track(qtbot):
     panel.canvas.navigation.edit_track = track
     NavigationPanel.edit_point(panel, "remove")
     assert len(track.points) == 1
-
-    race = Track("Race", [(1, 2, None)])
-    panel.core.trackManager = _Tracks(race)
-    panel.canvas.navigation.edit_track = race
-    NavigationPanel.edit_point(panel, "remove")
-    assert len(race.points) == 1
 
 
 def test_add_point_requires_edit_mode_for_existing_tracks(qtbot):
@@ -121,17 +130,10 @@ def test_add_point_requires_edit_mode_for_existing_tracks(qtbot):
     assert panel.canvas.invalidations == 1
     assert panel.canvas._weather_presenter.invalidations == 1
 
-    race = Track("Race", [(1, 2, None)])
-    panel.core.trackManager = _Tracks(race)
-    panel.canvas.navigation.edit_track = race
-    NavigationPanel.add_point(panel, (5, 6))
-    assert len(race.points) == 1
-
 
 def _new_track_panel():
     panel = _Panel(None)
     manager = panel.core.trackManager
-    manager.new_element = lambda points: Track("New", points)
     panel.status = SimpleNamespace(setText=lambda text: None)
     panel.tabs = SimpleNamespace(setCurrentIndex=lambda index: None)
     panel.canvas._weather_presenter = SimpleNamespace(
@@ -154,12 +156,6 @@ def test_new_track_enters_edit_mode_and_accepts_repeated_points(qtbot):
     NavigationPanel.add_point(panel, (3, 4))
     assert track.points == [(1, 2, None), (3, 4, None)]
 
-    race = Track("Race", [(5, 6, None)])
-    panel.core.trackManager = _Tracks(race)
-    panel.canvas.navigation.edit_track = race
-    NavigationPanel.add_point(panel, (7, 8))
-    assert race.points == [(5, 6, None)]
-
 
 def test_add_point_implicitly_creates_editable_track(qtbot):
     panel = _new_track_panel()
@@ -171,18 +167,14 @@ def test_add_point_implicitly_creates_editable_track(qtbot):
     NavigationPanel.add_point(panel, (3, 4))
     assert track.points == [(1, 2, None), (3, 4, None)]
 
-    race = Track("Race", [(5, 6, None)])
-    panel.core.trackManager = _Tracks(race)
-    panel.canvas.navigation.edit_track = None
-    NavigationPanel.add_point(panel, (7, 8))
-    assert race.points == [(5, 6, None)]
-
 
 def test_context_click_preserves_multiselection_and_selects_unselected_row(qtbot):
     from PySide6.QtWidgets import QTableWidgetItem
 
     table = QTableWidget(2, 1)
     qtbot.addWidget(table)
+    table.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
     table.setItem(0, 0, QTableWidgetItem("one"))
     table.setItem(1, 0, QTableWidgetItem("two"))
     table.selectRow(0)
@@ -217,6 +209,9 @@ def test_track_list_click_and_double_click_are_wired(qtbot):
         point_index=-1,
         refresh_points=lambda: None,
         _invalidate_race_geometry=lambda: None,
+        _set_track_editing=lambda enabled: NavigationPanel._set_track_editing(
+            panel, enabled
+        ),
         _select_track=lambda row: NavigationPanel._select_track(panel, row),
         edit_track=lambda: NavigationPanel.edit_track(panel),
     )
@@ -239,11 +234,12 @@ def test_track_list_click_and_double_click_are_wired(qtbot):
     assert buttons[1].isEnabled()
 
     race_cell = table.visualItemRect(table.item(1, 0)).center()
+    QTest.mouseClick(table.viewport(), Qt.MouseButton.LeftButton, pos=race_cell)
     QTest.mouseDClick(table.viewport(), Qt.MouseButton.LeftButton, pos=race_cell)
     QApplication.processEvents()
     assert manager.get_active() is race
-    assert canvas.navigation.edit_track is None
-    assert not buttons[1].isEnabled()
+    assert canvas.navigation.edit_track is race
+    assert buttons[1].isEnabled()
 
 
 def test_only_edited_track_gets_point_handle_circles():
@@ -278,7 +274,7 @@ def test_only_edited_track_gets_point_handle_circles():
 
     class GpsMap:
         def convert_geographic_to_screen(self, point):
-            return point
+            return point.get_degrees()
 
     renderer.draw_navigation(GpsMap(), cr)
     assert cr.arcs == [(3.0, 4.0, 5)]

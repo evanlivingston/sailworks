@@ -449,14 +449,6 @@ class WeatherPresenter(QObject):
         route_overlay = getattr(self.canvas, "viewport_route_overlay", None)
         if route_overlay is not None:
             widget.set_route_overlay(route_overlay())
-        if not getattr(self.canvas, "_desktop_viewport", False):
-            cache, target = self.canvas._resolve_reusable_layer(
-                self.canvas._base_cache,
-                self.canvas._base_key(),
-                self.canvas._base_image,
-            )
-            self.canvas._base_cache = cache
-            widget.set_base(cache[4], target, cache[1:4])
         if widget._environment is not None:
             cache, target = self.canvas._resolve_reusable_layer(
                 self.canvas._environment_cache,

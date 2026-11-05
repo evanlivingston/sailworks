@@ -2022,8 +2022,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     # QQuickWidget's scene graph has invalidated before QObject
                     # destruction. Keep GUI receivers alive until that boundary.
                     for owner in owners:
-                        owner.close()
-                        owner.deleteLater()
+                        if shiboken6.isValid(owner):
+                            owner.close()
+                            owner.deleteLater()
 
                 self.destroyed.connect(release_native_owners)
             self._status = QLabel("Wind loading…", self)

@@ -58,6 +58,15 @@ Remote results are tracked on fork PR #25; pending jobs are not local passes.
 The Windows runtime uses the existing MSYS2 dependency approach and its
 [PySide6 package](https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-pyside6).
 
+The desktop UI harness is opt-in because it asserts window geometry, dock
+layout, font metrics, sockets and timing, none of which are stable on headless
+runners. It skips unless `GWR_RUN_DESKTOP_UI=1` is set, so it is not a required
+CI gate. Run it locally with:
+
+```bash
+GWR_RUN_DESKTOP_UI=1 python -m unittest test.test_launcher test.test_qt_preview -v
+```
+
 Physical NMEA hardware has not been confirmed. The saved serial configuration
 uses a local pseudo-terminal; it was not consumed or reconfigured for these
 checks. Local sockets and newly created pseudo-terminals establish the software
