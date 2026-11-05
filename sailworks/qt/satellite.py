@@ -24,14 +24,13 @@ from threading import Condition, Lock, Thread
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QImage
 
-#: Public-domain CONUS imagery. The default source is display-only and does not
-#: grant offline redistribution rights; a configured pack is used instead when
-#: the user has one.
+#: Public display imagery with global coverage, including water and Canada.
+#: The default source is display-only; offline packs are user-supplied.
 DEFAULT_TILE_URL = (
-    "https://basemap.nationalmap.gov/arcgis/rest/services/"
-    "USGSImageryOnly/MapServer/tile/{z}/{y}/{x}"
+    "https://server.arcgisonline.com/ArcGIS/rest/services/"
+    "World_Imagery/MapServer/tile/{z}/{y}/{x}"
 )
-DEFAULT_ATTRIBUTION = "USGS The National Map"
+DEFAULT_ATTRIBUTION = "Esri, Maxar, Earthstar Geographics"
 PACK_SUFFIXES = (".mbtiles", ".pmtiles")
 
 

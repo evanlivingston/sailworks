@@ -152,7 +152,7 @@ def test_pack_source_is_hybrid_in_the_style(tmp_path):
     ]
     assert style["sources"]["satellite-underlay"]["type"] == "raster"
     assert style["sources"]["satellite"]["type"] == "raster"
-    assert "USGS" in style["sources"]["satellite-underlay"]["attribution"]
+    assert "Esri" in style["sources"]["satellite-underlay"]["attribution"]
     assert "Offline imagery pack" in style["sources"]["satellite"]["attribution"]
 
 
