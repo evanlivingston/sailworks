@@ -172,14 +172,21 @@ def test_renderer_rejects_an_empty_frame():
 
 def test_worker_renders_the_latest_request(qtbot, monkeypatch):
     class FakeRenderer:
-        def __init__(self, source, cache_dir=""):
+        instances = []
+
+        def __init__(self, source: SatelliteSource, cache_dir: str = ""):
             self.source = source
             self.cache_dir = cache_dir
             self.calls = []
+            FakeRenderer.instances.append(self)
 
-        def render(self, lat, lon, zoom, width, height, timeout=12.0):
-            self.calls.append((lat, lon, zoom, width, height))
-            image = QImage(width, height, QImage.Format.Format_RGBA8888)
+        def render(self, lat, lon, zoom, width, height, scale=1.0, timeout=12.0):
+            self.calls.append((lat, lon, zoom, width, height, scale))
+            image = QImage(
+                round(width * scale),
+                round(height * scale),
+                QImage.Format.Format_RGBA8888,
+            )
             image.fill(0)
             return image
 
@@ -203,6 +210,7 @@ def test_worker_renders_the_latest_request(qtbot, monkeypatch):
         assert isinstance(image, QImage)
         assert image.size().width() == 80
         assert image.size().height() == 60
+        assert FakeRenderer.instances[0].calls[-1][-1] == 2.0
     finally:
         worker.stop()
         worker._thread.join(5)

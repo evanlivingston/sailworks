@@ -230,6 +230,10 @@ def _expanded(camera, factor):
 #: changes which symbols a viewport shows.
 SELECTION_REUSE_MARGIN = 32.0
 
+#: Satellite frames are padded like the chart composition, so a pan exposes
+#: already-rendered imagery instead of the bare chart until the next frame.
+SATELLITE_MARGIN = 256
+
 
 def _selection_translation(first, second):
     """Logical-pixel translation from ``first`` to ``second`` at one zoom."""
@@ -1721,11 +1725,17 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._satellite_source_camera = None
             self._satellite_placement = None
             self._satellite_source = None
+            self._satellite_base_source = None
             self._satellite_attribution = ""
             self._satellite_error = ""
             self._satellite_fatal = False
             self._satellite_retry_at = 0.0
             self._satellite_network = None
+            self._satellite_front_slot = 0
+            self._satellite_pending_token = None
+            self._satellite_token = 0
+            self._satellite_status_text = ""
+            self._satellite_visible_generation = None
             format_ = QSurfaceFormat()
             format_.setSamples(4)
             format_.setAlphaBufferSize(8)
@@ -1965,11 +1975,18 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._satellite = self._weather.findChild(QObject, "satelliteLayer")
                 self._satellite_provider = chart_image_provider("satellite")
                 self.engine().addImageProvider("satellite", self._satellite_provider)
-                self.cameraChanged.connect(self._satellite_camera_changed)
+                getattr(self._satellite, "slotResult").connect(
+                    self._satellite_slot_result
+                )
                 self._satellite_timer = QTimer(self)
                 self._satellite_timer.setSingleShot(True)
                 self._satellite_timer.setInterval(220)
                 self._satellite_timer.timeout.connect(self._request_satellite)
+                self._satellite_retry_timer = QTimer(self)
+                self._satellite_retry_timer.setSingleShot(True)
+                self._satellite_retry_timer.timeout.connect(
+                    lambda: self._satellite_camera_changed(self._camera)
+                )
                 try:
                     from PySide6.QtNetwork import QNetworkInformation
 
@@ -2630,21 +2647,62 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._satellite_failed, Qt.ConnectionType.QueuedConnection
             )
             self._satellite_worker = worker
+            self._satellite_base_source = source
             self._satellite_source = source
-            self._satellite_attribution = source.attribution
-            self._weather.setProperty(
-                "satelliteAttribution", self._satellite_attribution
-            )
+            self._set_satellite_attribution(source.attribution)
             logger.info("Satellite basemap source: %s", source.tiles[0][:80])
             return True
 
+        def _set_satellite_attribution(self, text):
+            self._satellite_attribution = text
+            if self._weather is not None:
+                self._weather.setProperty("satelliteAttribution", text)
+
         def _set_satellite_status(self, text):
+            if text == self._satellite_status_text:
+                return
+            self._satellite_status_text = text
             if self._weather is not None:
                 self._weather.setProperty("satelliteStatus", text)
+
+        def _satellite_disconnected(self):
+            if self._satellite_network is None:
+                return False
+            try:
+                from PySide6.QtNetwork import QNetworkInformation
+
+                return (
+                    self._satellite_network.reachability()
+                    == QNetworkInformation.Reachability.Disconnected
+                )
+            except Exception:  # noqa: BLE001 - reachability is advisory
+                return False
+
+        def _satellite_sync_source(self):
+            """Drop the online underlay while disconnected so a pack can render."""
+            base = self._satellite_base_source
+            if base is None:
+                return
+            offline = self._satellite_disconnected()
+            if offline and base.underlay is not None:
+                desired = replace(
+                    base,
+                    underlay=None,
+                    attribution="Offline imagery pack",
+                )
+            else:
+                desired = base
+            if desired == self._satellite_source:
+                return
+            self._satellite_source = desired
+            if self._satellite_worker is not None:
+                self._satellite_worker.set_source(desired)
+            self._set_satellite_attribution(desired.attribution)
 
         def _satellite_reachability_changed(self, _reachability):
             if self._satellite_visible:
                 self._satellite_retry_at = 0.0
+                self._satellite_sync_source()
                 self._satellite_camera_changed(self._camera)
 
         def set_satellite_visible(self, visible):
@@ -2659,37 +2717,64 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._satellite_camera = self._camera
                 if self._start_satellite():
                     self._satellite_camera_changed(self._camera)
-            elif self._satellite_timer is not None:
-                self._satellite_timer.stop()
+            else:
+                if self._satellite_timer is not None:
+                    self._satellite_timer.stop()
+                if self._satellite_retry_timer is not None:
+                    self._satellite_retry_timer.stop()
 
         def _satellite_camera_changed(self, camera):
             if not self._satellite_visible or camera is None:
                 return
             if not self._start_satellite():
                 return
-            if time.monotonic() < self._satellite_retry_at:
-                return
-            if (
-                self._satellite_source is not None
-                and self._satellite_source.requires_network
-                and not self._satellite_source.offline_capable
-                and self._satellite_network is not None
-            ):
-                try:
-                    from PySide6.QtNetwork import QNetworkInformation
-
-                    if (
-                        self._satellite_network.reachability()
-                        == QNetworkInformation.Reachability.Disconnected
-                    ):
-                        self._set_satellite_status("Satellite offline — no connection")
-                        return
-                except Exception:  # noqa: BLE001 - reachability is advisory
-                    pass
-            self._set_satellite_status("")
+            self._satellite_sync_source()
             self._satellite_camera = camera
+            now = time.monotonic()
+            if now < self._satellite_retry_at:
+                if self._satellite_retry_timer is not None:
+                    self._satellite_retry_timer.start(
+                        max(50, int((self._satellite_retry_at - now) * 1000))
+                    )
+                return
+            source = self._satellite_source
+            if (
+                source is not None
+                and source.requires_network
+                and not source.offline_capable
+                and self._satellite_disconnected()
+            ):
+                self._set_satellite_status("Satellite offline — no connection")
+                return
+            if self._satellite_covers(camera):
+                self._set_satellite_status("")
+                self._place_satellite(camera)
+                return
+            self._set_satellite_status("")
             if self._satellite_timer is not None:
                 self._satellite_timer.start()
+
+        def _satellite_continuous_source(self, source, camera):
+            lon = continuous_longitude(source.center_lon, camera.center_lon)
+            if lon == source.center_lon:
+                return source
+            return replace(source, center_lon=lon)
+
+        def _satellite_covers(self, camera):
+            """Whether the retained frame still covers the whole viewport."""
+            source = self._satellite_source_camera
+            if source is None:
+                return False
+            target = chart_placement(
+                self._satellite_continuous_source(source, camera).view(), camera
+            )
+            x, y, width, height = target
+            return (
+                x <= 0
+                and y <= 0
+                and x + width >= camera.width
+                and y + height >= camera.height
+            )
 
         def _request_satellite(self):
             if not self._satellite_visible or self._satellite_worker is None:
@@ -2697,10 +2782,15 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             camera = self._satellite_camera or self._camera
             if camera is None:
                 return
+            padded = replace(
+                camera,
+                width=camera.width + 2 * SATELLITE_MARGIN,
+                height=camera.height + 2 * SATELLITE_MARGIN,
+            )
             self._satellite_generation += 1
-            self._satellite_pending_camera = camera
+            self._satellite_pending_camera = padded
             self._satellite_worker.submit(
-                self._satellite_generation, camera, self.devicePixelRatioF()
+                self._satellite_generation, padded, self.devicePixelRatioF()
             )
 
         def _satellite_rendered(self, generation, image):
@@ -2710,13 +2800,39 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 return
             if self._satellite is None or self._satellite_provider is None:
                 return
-            self._satellite.setProperty(
-                "source",
-                QUrl(self._satellite_provider.publish(image.cacheKey(), image)),
+            slot = 1 - self._satellite_front_slot
+            self._satellite_token += 1
+            token = str(self._satellite_token)
+            url = self._satellite_provider.publish_retained(
+                generation, image, self._satellite_visible_generation
             )
+            self._satellite_pending_token = (slot, token, generation)
+            self._satellite.setProperty(f"slot{slot}Token", token)
+            self._satellite.setProperty(f"slot{slot}Source", QUrl(url))
+
+        def _satellite_slot_result(self, slot, token, success):
+            pending = self._satellite_pending_token
+            if pending is None or (slot, token) != pending[:2]:
+                return
+            generation = pending[2]
+            self._satellite_pending_token = None
+            if not success:
+                self._satellite.setProperty(f"slot{slot}Token", "")
+                self._satellite.setProperty(f"slot{slot}Source", QUrl(""))
+                self._satellite_failed(self._satellite_generation, "image load failed")
+                return
+            previous = self._satellite_front_slot
+            self._satellite_front_slot = slot
+            self._satellite.setProperty("frontSlot", slot)
+            self._satellite.setProperty(f"slot{previous}Token", "")
+            self._satellite.setProperty(f"slot{previous}Source", QUrl(""))
             self._satellite_source_camera = self._satellite_pending_camera
+            self._satellite_visible_generation = generation
+            self._satellite_provider.retain(generation)
             if self._camera is not None:
                 self._place_satellite(self._camera)
+                if not self._satellite_covers(self._camera):
+                    self._satellite_timer.start()
             self._set_satellite_status("")
 
         def _satellite_failed(self, generation, reason):
@@ -2727,15 +2843,17 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._satellite_error = reason
             self._satellite_retry_at = time.monotonic() + 15.0
             self._set_satellite_status("Satellite unavailable")
+            if self._satellite_retry_timer is not None:
+                self._satellite_retry_timer.start(15000)
 
         def _place_satellite(self, camera):
             source = self._satellite_source_camera
             if self._satellite is None or source is None:
                 return
+            source = self._satellite_continuous_source(source, camera)
             # The target is current-camera-relative; the shared map parent owns
             # the pan, so convert through the same retained-image placement the
-            # chart, world and environment layers use. Setting the properties
-            # directly desynchronises the layer from mapContent during a pan.
+            # chart, world and environment layers use.
             self._place_retained_image(
                 self._satellite,
                 "_satellite_placement",
@@ -2752,7 +2870,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             """
             view = camera.view()
             self._place_world(camera)
-            self._place_satellite(camera)
+            place_satellite = getattr(self, "_place_satellite", None)
+            if place_satellite is not None:
+                place_satellite(camera)
             for item, source, attribute, hidden_attribute in (
                 (
                     getattr(self, "_base", None),
@@ -2833,6 +2953,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 (getattr(self, "_world", None), "_world_placement"),
                 (getattr(self, "_base", None), "_base_placement"),
                 (getattr(self, "_environment", None), "_environment_placement"),
+                (getattr(self, "_satellite", None), "_satellite_placement"),
             ):
                 placement = getattr(self, attribute, None)
                 if item is not None and placement is not None:
@@ -4962,8 +5083,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._world_provider.clear()
             if self._satellite_timer is not None:
                 self._satellite_timer.stop()
+            if self._satellite_retry_timer is not None:
+                self._satellite_retry_timer.stop()
             if self._satellite_worker is not None:
                 self._satellite_worker.stop()
+                self._satellite_worker.join(2.0)
                 self._satellite_worker = None
             if self._satellite_provider is not None:
                 self._satellite_provider.clear()

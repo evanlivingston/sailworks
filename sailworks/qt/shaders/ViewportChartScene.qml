@@ -82,13 +82,14 @@ Item {
                 objectName: "chartLayer"
                 anchors.fill: parent
             }
-            // Satellite sits above the chart for now: the composed chart paints
-            // an opaque sea/land background, so a layer beneath it is invisible.
+            // Satellite sits above the chart: the composed chart paints an
+            // opaque sea/land background, so a layer beneath it is invisible.
             // The opacity keeps coastlines and soundings legible under imagery.
             ChartLayer {
                 objectName: "satelliteLayer"
                 anchors.fill: parent
                 opacity: 0.9
+                smooth: true
                 visible: root.satelliteVisible
                 Text {
                     anchors.right: parent.right

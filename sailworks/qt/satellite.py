@@ -17,6 +17,7 @@ import os
 import sqlite3
 import struct
 import sys
+import time
 from dataclasses import dataclass, replace
 from threading import Condition, Lock, Thread
 
@@ -260,6 +261,10 @@ class SatelliteRenderer:
         self._size = None
         self._style = None
 
+    @property
+    def source(self) -> SatelliteSource:
+        return self._source
+
     def render(
         self,
         center_lat: float,
@@ -267,30 +272,41 @@ class SatelliteRenderer:
         zoom: float,
         width: int,
         height: int,
+        scale: float = 1.0,
         timeout: float = 12.0,
     ) -> QImage:
         if width < 1 or height < 1:
             raise SatelliteError("satellite frame has no size")
         if not -90.0 <= center_lat <= 90.0:
             raise SatelliteError("satellite frame has an invalid latitude")
+        deadline = time.monotonic() + timeout
+
+        def remaining() -> float:
+            return max(0.1, deadline - time.monotonic())
+
         with self._lock:
             try:
-                module = self._acquire(width, height)
+                module = self._acquire(width, height, scale, remaining)
                 self._map.update_camera(
                     module.CameraUpdate(
                         module.CameraUpdateMode.JUMP,
                         module.CameraOptions(
                             center=module.LatLng(float(center_lat), float(center_lon)),
-                            zoom=float(zoom),
+                            # MapLibre projects zoom on 512 px tiles; Sailworks
+                            # uses 256, so its camera zoom is one level lower.
+                            zoom=float(zoom) - 1.0,
                             bearing=0.0,
                             pitch=0.0,
                         ),
                     )
-                ).result(timeout=timeout)
-                self._map.request_still_image().result(timeout=timeout)
-                readback = self._session.read_texture().result(timeout=timeout)
+                ).result(timeout=remaining())
+                self._map.request_still_image().result(timeout=remaining())
+                readback = self._session.read_texture().result(timeout=remaining())
                 data = bytes(readback.data)
             except TimeoutError as exc:
+                # A timed-out native render may still be running; rebuild the
+                # map/session rather than reusing undefined state.
+                self._release_graphics()
                 raise SatelliteError("satellite tiles timed out") from exc
             except Exception as exc:  # noqa: BLE001 - FFI failures are display state
                 raise SatelliteError(str(exc)) from exc
@@ -315,10 +331,9 @@ class SatelliteRenderer:
                     pass
             self._runtime = None
 
-    def _acquire(self, width: int, height: int):
+    def _acquire(self, width: int, height: int, scale: float, remaining):
         import maplibre_native_ffi as module
 
-        self._ffi = module
         if self._runtime is None:
             options = None
             if self._cache_dir:
@@ -331,33 +346,29 @@ class SatelliteRenderer:
                 try:
                     self._runtime.set_maximum_ambient_cache_size(
                         256 * 1024 * 1024
-                    ).result(timeout=5.0)
+                    ).result(timeout=remaining())
                 except Exception:  # noqa: BLE001 - cache budget is best effort
                     pass
-        if self._size != (width, height):
+        if self._size != (width, height, scale):
             self._release_graphics()
+            extent = module.LogicalExtent(width, height, scale)
             created = self._runtime.create_map(
-                module.MapOptions(
-                    module.LogicalExtent(width, height, 1.0),
-                    module.MapMode.STATIC,
-                )
+                module.MapOptions(extent, module.MapMode.STATIC)
             )
-            created.ready.result()
+            created.ready.result(timeout=remaining())
             self._map = created.map
             self._device = module.GraphicsDeviceHandle.create()
             attached = self._map.attach_graphics_device_texture(
                 self._device,
-                module.GraphicsDeviceTextureDescriptor(
-                    module.LogicalExtent(width, height, 1.0)
-                ),
+                module.GraphicsDeviceTextureDescriptor(extent),
                 module.RenderSessionAttachOptions(module.RenderDriverKind.CORE_WORKER),
             )
             self._session = attached.session
-            self._size = (width, height)
+            self._size = (width, height, scale)
             self._style = None
         style = self._source.style()
         if style != self._style:
-            self._map.set_style_json(style).result()
+            self._map.set_style_json(style).result(timeout=remaining())
             self._style = style
         return module
 
@@ -405,10 +416,20 @@ class SatelliteWorker(QObject):
             self._job = (generation, camera, scale)
             self._condition.notify()
 
+    def set_source(self, source: SatelliteSource) -> None:
+        """Swap the source on the worker; the next frame rebuilds the map."""
+        with self._condition:
+            if source != self._source:
+                self._source = source
+                self._condition.notify()
+
     def stop(self) -> None:
         with self._condition:
             self._stop = True
             self._condition.notify()
+
+    def join(self, timeout: float = 2.0) -> None:
+        self._thread.join(timeout)
 
     def _run(self) -> None:
         renderer = None
@@ -421,17 +442,20 @@ class SatelliteWorker(QObject):
                         return
                     generation, camera, scale = self._job
                     self._job = None
+                    source = self._source
+                if renderer is not None and renderer.source != source:
+                    renderer.close()
+                    renderer = None
                 if renderer is None:
-                    renderer = SatelliteRenderer(self._source, self._cache_dir)
-                width = max(1, round(camera.width * scale))
-                height = max(1, round(camera.height * scale))
+                    renderer = SatelliteRenderer(source, self._cache_dir)
                 try:
                     image = renderer.render(
                         camera.center_lat,
                         camera.center_lon,
                         camera.zoom,
-                        width,
-                        height,
+                        camera.width,
+                        camera.height,
+                        scale,
                     )
                 except SatelliteError as exc:
                     self.failed.emit(generation, str(exc))
