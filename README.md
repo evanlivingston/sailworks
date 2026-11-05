@@ -72,7 +72,7 @@ up-to-date charts and your own seamanship for navigation.
 
 ## Installation
 
-Sailworks runs from source: Python 3.11 or newer, the GDAL Python bindings built against a
+Sailworks runs from source: Python 3.12 or newer, the GDAL Python bindings built against a
 matching native GDAL, and Cairo for the chart renderer.
 
 Install those with your OS package manager first (Homebrew, apt, pacman — package names vary),
@@ -92,6 +92,16 @@ credentials:
 pip install ".[weathernext]"
 # then use Application Default Credentials or choose a service-account JSON in Settings
 ```
+
+The optional satellite basemap uses MapLibre Native and needs Python 3.12:
+
+```bash
+pip install ".[satellite]"
+```
+
+It renders online imagery by default. Drop a `.pmtiles` or `.mbtiles` pack in the
+`satellite` folder of the application data directory to use it offline; the layer is
+enabled under Chart layers.
 
 ### macOS
 

@@ -140,6 +140,22 @@ class WeatherPresenter(QObject):
                 gpu_streamlines=getattr(
                     self.canvas.controller, "gpu_streamlines", True
                 ),
+                satellite_visible=bool(
+                    getattr(
+                        self.canvas.controller.settings,
+                        "chartSatelliteVisible",
+                        False,
+                    )
+                ),
+                satellite_pack=getattr(
+                    self.canvas.controller.settings, "satellitePack", ""
+                ),
+                basemap_visible=bool(
+                    getattr(self.canvas.controller.settings, "chartWorldVisible", True)
+                ),
+                enc_visible=bool(
+                    getattr(self.canvas.controller.settings, "chartENCVisible", True)
+                ),
             )
             if self.native_fields:
                 kwargs["native_weather_fields"] = True
@@ -147,6 +163,23 @@ class WeatherPresenter(QObject):
                     self.canvas.controller.native_weather_budget
                 )
             widget = _viewport_widget_class()(model, self.canvas, **kwargs)
+            settings = self.canvas.controller.settings
+            register = getattr(settings, "register_on_change", None)
+            if register is not None:
+                for key, layer in (
+                    ("chartSatelliteVisible", "satellite"),
+                    ("chartWorldVisible", "basemap"),
+                    ("chartENCVisible", "enc"),
+                ):
+                    register(
+                        key,
+                        lambda value, layer=layer: widget.set_layer_visible(
+                            layer, bool(value)
+                        ),
+                    )
+            layer_changed = getattr(widget, "layerVisibilityChanged", None)
+            if layer_changed is not None:
+                layer_changed.connect(self._layer_visibility_changed)
             widget.marineStateChanged.connect(
                 lambda state: self._marine_state_changed(generation, state)
             )
@@ -588,6 +621,15 @@ class WeatherPresenter(QObject):
             QCoreApplication.sendEvent(self.canvas, event)
             return True
         return super().eventFilter(watched, event)
+
+    def _layer_visibility_changed(self, layer, visible):
+        key = {
+            "satellite": "chartSatelliteVisible",
+            "basemap": "chartWorldVisible",
+            "enc": "chartENCVisible",
+        }.get(layer)
+        if key is not None:
+            self.canvas.controller.settings[key] = bool(visible)
 
     def _camera_changed(self, camera):
         """Mirror the viewport-owned camera for existing overlays and app APIs."""

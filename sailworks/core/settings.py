@@ -58,6 +58,8 @@ class SettingsManager(Storage):
         self.weatherNextCredentialsPath = ""
         self.canadianCharts = True
         self.chartWorldVisible = True
+        self.chartSatelliteVisible = False
+        self.satellitePack = ""
         self.chartENCVisible = True
         self.chartRasterVisible = True
         self.chartMBTilesVisible = True

@@ -1,4 +1,4 @@
 brew "gdal"
 brew "cairo"
 brew "pkg-config"
-brew "python@3.11"
+brew "python@3.12"
