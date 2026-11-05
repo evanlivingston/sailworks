@@ -2002,7 +2002,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 except Exception:  # noqa: BLE001 - reachability is advisory
                     self._satellite_network = None
                 self._weather.setProperty("satelliteVisible", self._satellite_visible)
-                self._base_layer_item = self._weather.findChild(QObject, "baseLayer")
+                # The vector world underlay is the basemap; the composed chart
+                # layer carries the ENC portrayal. They are distinct items.
+                self._base_layer_item = self._weather.findChild(QObject, "worldLayer")
                 self._layer_basemap_visible = bool(basemap_visible)
                 self._layer_enc_visible = bool(enc_visible)
                 self._weather.setProperty("basemapVisible", self._layer_basemap_visible)
