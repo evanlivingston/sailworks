@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+import os
 from threading import Event
 
 import pytest
@@ -85,6 +86,40 @@ def install_tranche(
 def _write(path, data):
     path.write_bytes(data)
     return path
+
+
+def publish_tranche(
+    store, tranche_id, refreshed_at, models=("GFS",), *, entry_id_prefix=None
+):
+    configurations = tuple(config(model) for model in models)
+    entries = []
+    prefix = entry_id_prefix or tranche_id
+    for model in models:
+        artifact = store.register_file(
+            _write(
+                store.root / f"{prefix}-{model}.src",
+                f"{prefix}-{model}".encode(),
+            )
+        )
+        entries.append(
+            ModelEntry(
+                f"{prefix}-{model}",
+                model,
+                RUN,
+                "deterministic",
+                ("wind",),
+                ("10-HTGL",),
+                (-1, -1, 1, 1),
+                MODEL_CAPABILITIES[model].native_resolution,
+                (RUN,),
+                (artifact,),
+                refreshed_at,
+                (("wind", (RUN,)),),
+            )
+        )
+    tranche = ForecastTranche(tranche_id, refreshed_at, configurations, tuple(entries))
+    store.publish(tranche)
+    return tranche, entries
 
 
 def test_configuration_roundtrip_save_and_restart(tmp_path):
@@ -205,6 +240,76 @@ def test_clear_selection_removes_only_pointer_and_missing_snapshot_is_explicit(
     with pytest.raises(NoActiveForecastError):
         state.snapshot()
     assert state.clear_selection() is None
+
+
+def test_restore_picks_newest_tranche_containing_the_model(tmp_path):
+    store = TrancheStore(tmp_path)
+    older, _ = publish_tranche(store, "older", ACQUIRED, ("GFS", "HRRR"))
+    newer, newer_entries = publish_tranche(
+        store, "newer", ACQUIRED + timedelta(hours=2), ("GFS", "HRRR")
+    )
+    store.activate(AnalysisSelection(newer.tranche_id, newer_entries[1].entry_id))
+    state = ForecastAnalysisState(tmp_path)
+
+    restored = state.select_model("GFS")
+
+    assert restored.tranche.tranche_id == newer.tranche_id
+    assert restored.entry.model_id == "GFS"
+    assert store.active_selection().tranche_id == newer.tranche_id
+    assert older.tranche_id != store.active_selection().tranche_id
+
+
+def test_restore_uses_manifest_mtime_to_break_a_refresh_tie(tmp_path):
+    store = TrancheStore(tmp_path)
+    older, older_entries = publish_tranche(store, "older", ACQUIRED, ("GFS",))
+    newer, newer_entries = publish_tranche(store, "newer", ACQUIRED, ("GFS",))
+    # Same refreshed_at; the manifest mtime decides.
+    older_path = store.manifests / f"{older.tranche_id}.json"
+    os.utime(older_path, ns=(1_000_000_000, 1_000_000_000))
+    store.activate(AnalysisSelection(newer.tranche_id, newer_entries[0].entry_id))
+    state = ForecastAnalysisState(tmp_path)
+
+    restored = state.select_model("GFS")
+
+    assert restored.tranche.tranche_id == newer.tranche_id
+    assert older_entries[0].entry_id != restored.entry.entry_id
+
+
+def test_restore_keeps_binding_when_the_active_tranche_is_newest(tmp_path):
+    store = TrancheStore(tmp_path)
+    publish_tranche(store, "older", ACQUIRED, ("GFS",))
+    newest, newest_entries = publish_tranche(
+        store, "newest", ACQUIRED + timedelta(hours=1), ("GFS",)
+    )
+    store.activate(AnalysisSelection(newest.tranche_id, newest_entries[0].entry_id))
+    state = ForecastAnalysisState(tmp_path)
+    activations = []
+    original_activate = store.activate
+
+    def tracking_activate(selection, *, commit_guard=None):
+        activations.append(selection)
+        return original_activate(selection, commit_guard=commit_guard)
+
+    store.activate = tracking_activate
+
+    selected = state.select_model("GFS")
+
+    assert activations == []
+    assert selected.selection == AnalysisSelection(
+        newest.tranche_id, newest_entries[0].entry_id
+    )
+
+
+def test_restore_of_a_model_in_no_tranche_keeps_the_existing_error(tmp_path):
+    store = TrancheStore(tmp_path)
+    only, entries = publish_tranche(store, "only", ACQUIRED, ("GFS",))
+    store.activate(AnalysisSelection(only.tranche_id, entries[0].entry_id))
+    state = ForecastAnalysisState(tmp_path)
+
+    with pytest.raises(
+        ForecastUnavailableError, match="not present in the active tranche"
+    ):
+        state.select_model("HRRR")
 
 
 def test_refresh_prefers_active_model_over_saved_refresh_model(tmp_path, monkeypatch):

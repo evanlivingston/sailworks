@@ -979,14 +979,13 @@ class QtPreviewChecks(unittest.TestCase):
         """Pin the forecast timeline to a deterministic one-hour window."""
         from datetime import datetime, timedelta
 
-        # Startup selects the bundled race and applies its bounds override on
-        # the display-forecast signal; let that settle before pinning ours.
+        # Startup selects the bundled race and applies its time region on the
+        # display-forecast signal; let that settle before pinning ours.
         self.settle_forecast()
         start = datetime(2026, 1, 1, 12)
-        self.window.timeline.set_bounds_override(
+        self.window.timeline.set_region(
             start.timestamp(),
             (start + timedelta(hours=1)).timestamp(),
-            (start.timestamp(),),
         )
         self.controller.time_control.set_time(start)
         return start
@@ -2863,7 +2862,7 @@ class QtPreviewChecks(unittest.TestCase):
             patch.object(canvas._wind_cursor, "request") as wind,
         ):
             canvas._hover(QPointF(100, 100))
-            wind.call_args.args[-1](((180, 10), None))
+            wind.call_args.args[-1](((180, 10), None, None))
             QApplication.processEvents()
             positions = {key: label.x() for key, label in status.fields.items()}
             canvas._cursor_parts["depth"] = ""
@@ -2906,7 +2905,7 @@ class QtPreviewChecks(unittest.TestCase):
             canvas._hover(QPointF(100, 100))
             lookup.assert_called_once()
             self.assertIn("12.4 m (35 m away)", self.window.cursor_status.text())
-            wind.call_args.args[-1](((180, 10), None))
+            wind.call_args.args[-1](((180, 10), None, None))
             text = self.window.cursor_status.text()
             self.assertIn("12.4 m (35 m away)", text)
             self.assertIn("Sounding", text)
@@ -2926,7 +2925,7 @@ class QtPreviewChecks(unittest.TestCase):
         ):
             canvas._hover(QPointF(100, 100))
             self.assertIn("Wind …", self.window.cursor_status.text())
-            request.call_args.args[-1](((180, 10), 5.0))
+            request.call_args.args[-1](((180, 10), 5.0, None))
             text = self.window.cursor_status.text()
             self.assertIn("Wind 180.0°, 19.4 kts", text)
             self.assertIn("Gust 9.7 kts", text)
@@ -2940,7 +2939,7 @@ class QtPreviewChecks(unittest.TestCase):
             patch.object(canvas._wind_cursor, "request") as request,
         ):
             canvas._hover(QPointF(100, 100))
-            request.call_args.args[-1]((None, None))
+            request.call_args.args[-1]((None, None, None))
             self.assertIn("Wind unavailable", self.window.cursor_status.text())
             self.assertNotIn("Gust", self.window.cursor_status.text())
 
@@ -3090,15 +3089,40 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(
             self.controller.time_control.time, start + timedelta(minutes=59, seconds=30)
         )
-        with patch("sailworks.core.timecontrol.datetime.datetime") as clock_datetime:
-            clock_datetime.now.return_value = datetime(2026, 1, 5, 14, 32)
-            # Keep the pinned one-hour window so "Now" is unambiguously after
-            # it, independent of whatever forecast the install carries.
-            with patch.object(timeline, "clear_bounds_override"):
-                timeline.now_button.click()
-        self.assertEqual(self.controller.time_control.time, datetime(2026, 1, 5, 14))
-        self.assertIn("outside", timeline.caption.text())
-        self.assertEqual(timeline.slider.value(), timeline.slider.maximum())
+
+        # "Now" claims the region [wall-24h, wall+48h] and lands inside it:
+        # it snaps to the nearest loaded valid time within the region, or
+        # stays on the wall clock when the model has no coverage there.
+        class _FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 1, 5, 14, 32)
+
+        wall = datetime(2026, 1, 5, 14, 32).timestamp()
+        with patch("sailworks.qt.forecasttimeline.datetime", _FixedDatetime):
+            timeline.now_button.click()
+        region_start, region_end = timeline.region
+        self.assertAlmostEqual(region_start, wall - 24 * 3600, delta=1)
+        self.assertAlmostEqual(region_end, wall + 48 * 3600, delta=1)
+        self.assertEqual(timeline.bounds, timeline.region)
+        snapped = self.controller.time_control.time
+        self.assertGreaterEqual(snapped.timestamp(), region_start - 1)
+        self.assertLessEqual(snapped.timestamp(), region_end + 1)
+        covered = any(
+            first - 1 <= snapped.timestamp() <= last + 1
+            for first, last in timeline._model_intervals
+        )
+        self.assertEqual(
+            timeline.caption.text(),
+            "" if covered else "No model data for the selected time",
+        )
+        self.assertLess(timeline.slider.value(), timeline.slider.maximum())
+        # Dev's older assertion (caption contains "outside", slider pinned to
+        # max, time snapped to the wall-clock hour) targeted the removed
+        # `clear_bounds_override` API. Our branch replaced it with the
+        # user-owned `region`, so the equivalent guarantees are asserted above:
+        # the region is exactly [wall-24h, wall+48h] and the caption reports
+        # missing model coverage instead of "outside".
         timeline.pause_button.click()
         self.assertFalse(timeline.playing)
 

@@ -45,6 +45,37 @@ def _inside(gt, forward, lon, lat, width, height, wrap_longitude):
     raise ForecastGridError("forecast grid does not contain requested region")
 
 
+def _on_grid_step(value, step, tolerance=1e-6):
+    """True when value is a multiple of step within tolerance of a step."""
+    ratio = value / step
+    return abs(ratio - round(ratio)) <= tolerance
+
+
+# GDAL derives a pixel size that is not bit-exact (0.2500000111 for 0.25), and
+# the error accumulates across 1440 cells to ~1.6e-5 degrees. A global axis is
+# therefore checked to a fraction of a cell rather than to floating precision;
+# a half-cell shift (0.125 degrees) is still rejected comfortably.
+_GLOBAL_AXIS_TOLERANCE = 1e-3
+
+
+def _longitude_axis_ok(gt, model, width):
+    """Check the longitude convention this model's source is verified to use."""
+    if model == "GFSWAVE":
+        # GFS-Wave products ship 0-360 degree longitude, so accept either
+        # convention as long as one row spans the globe from a cell edge.
+        return abs(
+            abs(gt[1]) * width - 360.0
+        ) <= _GLOBAL_AXIS_TOLERANCE and _on_grid_step(
+            gt[0] + gt[1] * 0.5, gt[1], tolerance=_GLOBAL_AXIS_TOLERANCE
+        )
+    # ECMWF-style products are only verified in the -180..180 convention:
+    # the first cell centre sits on -180 and the last on 179.75.
+    return (
+        abs((gt[0] + gt[1] * 0.5) + 180.0) <= 1e-6
+        and abs((gt[0] + gt[1] * (width - 0.5)) - 179.75) <= 1e-6
+    )
+
+
 def validate_grid(dataset, model, requested):
     """Validate supported native resolution and sample requested boundary.
 
@@ -93,8 +124,7 @@ def validate_grid(dataset, model, requested):
             or abs(gt[5] + 0.25) > 1e-6
             or gt[2]
             or gt[4]
-            or abs((gt[0] + gt[1] * 0.5) + 180.0) > 1e-6
-            or abs((gt[0] + gt[1] * (width - 0.5)) - 179.75) > 1e-6
+            or not _longitude_axis_ok(gt, model, width)
             or abs((gt[3] + gt[5] * 0.5) - 90.0) > 1e-6
             or abs((gt[3] + gt[5] * (height - 0.5)) + 90.0) > 1e-6
         ):

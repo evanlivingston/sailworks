@@ -269,6 +269,7 @@ class NOAAHRRRSource(GribSource):
                     request,
                     check_cancel,
                     percentage_callback,
+                    model="HRRR",
                 )
             check_cancel()
             if bytes_written == 0:

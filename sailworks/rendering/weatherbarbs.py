@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
+from sailworks.core.gribsampling import FIELDS
 from sailworks.core.mapviewport import MercatorProjection
 from sailworks.rendering.weatherstaging import (
     StagedWind,
@@ -77,25 +78,26 @@ class BarbAtlas:
         return sum(image.sizeInBytes() for image in self.images)
 
 
-def _native_points(sampler, bounds, cancel):
-    """The unique native nodes of every gridded wind source in the bounds."""
+def _native_points(sampler, bounds, cancel, parameter="wind"):
+    """The unique native nodes of every gridded source in the bounds."""
+    elements = FIELDS[parameter]
     nodes = []
     count = 0
     for index in sampler.indices:
         if cancel():
             return None
-        if not any(r.element in ("UGRD", "VGRD") for r in index.records):
+        if not any(r.element in elements for r in index.records):
             continue
         candidates = index.nodes(bounds)
         count += len(candidates)
         if count > 262144:
-            raise ValueError("Wind native-node staging exceeds point budget")
+            raise ValueError("Native-node staging exceeds point budget")
         nodes.append(candidates)
     if not nodes:
-        raise ValueError("No gridded wind sources")
+        raise ValueError("No gridded sources for " + parameter)
     points = np.unique(np.concatenate(nodes), axis=0)
     if not len(points):
-        raise ValueError("No native wind nodes in view")
+        raise ValueError("No native nodes in view")
     # Wind columns are longitude-major, then latitude-major on the CPU path.
     return points[np.lexsort((points[:, 0], points[:, 1]))]
 
@@ -171,25 +173,34 @@ def _field_images(staged):
     The nodes are laid out in rows of ``FIELD_COLUMNS``; the node id is the
     row-major index.  A missing endpoint stays a NaN, so the shader discards
     it exactly as the historical path discards a missing mesh cell.
+
+    A scalar field (``components == 1``) binds its value into the u0/u1
+    planes and a zero plane into v0/v1, so the shader's ``length(vec2(s, 0))``
+    is the scalar itself.
     """
     from sailworks.qt.gpuweather import encode_component
     from sailworks.qt.gpuweatherfields import FIELD_COLUMNS
 
-    first = np.asarray(staged.first[0]).reshape(-1, 2)
-    second = np.asarray(staged.second[0]).reshape(-1, 2)
+    components = staged.components
+    first = np.asarray(staged.first[0]).reshape(-1, components)
+    second = np.asarray(staged.second[0]).reshape(-1, components)
     count = len(first)
     rows = max(1, math.ceil(count / FIELD_COLUMNS))
     images = []
     # Match WeatherTexturePair and the scene bindings: U0, V0, U1, V1.
     for endpoint in (first, second):
-        for component in range(2):
+        for component in range(components):
             plane = np.full((rows, FIELD_COLUMNS), np.nan, dtype=np.float32)
             plane.reshape(-1)[:count] = endpoint[:, component]
             images.append(encode_component(plane))
+        if components == 1:
+            images.append(
+                encode_component(np.zeros((rows, FIELD_COLUMNS), dtype=np.float32))
+            )
     return tuple(images)
 
 
-def _lattice_plan(sampler, window, index):
+def _lattice_plan(sampler, window, index, parameter="wind"):
     """The gridded form's lattice, and the lattice's nodes the field holds.
 
     The lattice is a regular grid in the viewport's projection, so the GPU's
@@ -204,7 +215,7 @@ def _lattice_plan(sampler, window, index):
     """
     from sailworks.rendering.weathergrid import build_lattice, lattice_spacing
 
-    spacing = lattice_spacing(sampler, window)
+    spacing = lattice_spacing(sampler, window, parameter)
     if not spacing:
         return None
     lattice = build_lattice(window, spacing)
@@ -232,7 +243,8 @@ def _gridded_form(plan, staged, offset, field_staged):
 
     lattice, _lons, lats, held = plan
     count = len(lats)
-    values = np.full((count, 2), np.nan)
+    components = staged.components
+    values = np.full((count, components), np.nan)
     second = np.full_like(values, np.nan)
     origins = [""] * count
     missing = held < 0
@@ -245,24 +257,23 @@ def _gridded_form(plan, staged, offset, field_staged):
     kept = np.flatnonzero(~missing)
     if len(kept):
         nodes = held[kept]
-        values[kept] = np.asarray(field_staged.first[0]).reshape(-1, 2)[nodes]
-        second[kept] = np.asarray(field_staged.second[0]).reshape(-1, 2)[nodes]
+        values[kept] = np.asarray(field_staged.first[0]).reshape(-1, components)[nodes]
+        second[kept] = np.asarray(field_staged.second[0]).reshape(-1, components)[nodes]
         for position, node in zip(kept, nodes):
             origins[position] = field_staged.sources[node]
     rows, cols = lattice.shape
-    grid = np.asarray(values).reshape(cols, rows, 2).transpose(1, 0, 2)
-    other = np.asarray(second).reshape(cols, rows, 2).transpose(1, 0, 2)
-    images = tuple(
-        encode_component(plane)
-        for plane in (
-            grid[:, :, 0],
-            grid[:, :, 1],
-            other[:, :, 0],
-            other[:, :, 1],
-        )
+    grid = np.asarray(values).reshape(cols, rows, components).transpose(1, 0, 2)
+    other = np.asarray(second).reshape(cols, rows, components).transpose(1, 0, 2)
+    images = []
+    for endpoint in (grid, other):
+        for component in range(components):
+            images.append(encode_component(endpoint[:, :, component]))
+        if components == 1:
+            images.append(encode_component(np.zeros((rows, cols), dtype=np.float32)))
+    grid_staged = StagedWind(
+        staged.before, staged.after, grid, other, tuple(origins), components
     )
-    grid_staged = StagedWind(staged.before, staged.after, grid, other, tuple(origins))
-    return GriddedField(lattice=lattice, staged=grid_staged, images=images)
+    return GriddedField(lattice=lattice, staged=grid_staged, images=tuple(images))
 
 
 def stage_field(  # noqa: C901 - native/gridded forms share one sampling pass
@@ -277,13 +288,17 @@ def stage_field(  # noqa: C901 - native/gridded forms share one sampling pass
     geometry=None,
     memo=None,
     grid=False,
+    parameter="wind",
+    components=2,
 ):
     """Stage the geographic numerical field of one spatial window.
 
     The field is the native nodes of the window and the endpoint values of
-    the wind parameter at those nodes.  It does not depend on the exact
-    view, so a covered camera move reuses it without decoding weather or
-    sampling it again.
+    ``parameter`` at those nodes.  It does not depend on the exact view, so a
+    covered camera move reuses it without decoding weather or sampling it
+    again.  ``parameter`` selects the sampled field (e.g. ``"wind"`` or
+    ``"wave_height"``); ``components`` is its per-node width (2 for wind U/V,
+    1 for a scalar such as wave height).
 
     With ``grid`` the field also carries its *gridded form*: the same values
     on a regular lattice in the viewport's projection, which is what the GPU's
@@ -296,6 +311,8 @@ def stage_field(  # noqa: C901 - native/gridded forms share one sampling pass
     NodeSampleMemo`) lets a re-centred window reuse the per-node endpoints and
     land decisions of the window it overlaps.  The memo is a pure function of
     the same inputs, so the staged field is bit-identical to a cold staging.
+    A scalar field bypasses the memo's fixed 2-component sample entries (it
+    still reuses land decisions), so ``stage_wind`` receives ``memo=None``.
     """
     from sailworks.qt.gpuweatherfields import GeographicField, NativeGridGeometry
 
@@ -311,7 +328,9 @@ def stage_field(  # noqa: C901 - native/gridded forms share one sampling pass
             )
         )
     )
-    points = geometry.points if reuse else _native_points(sampler, window, cancel)
+    points = (
+        geometry.points if reuse else _native_points(sampler, window, cancel, parameter)
+    )
     if points is None:
         return None
     index = (
@@ -323,7 +342,7 @@ def stage_field(  # noqa: C901 - native/gridded forms share one sampling pass
     # nodes join the field's own nodes in ONE sampling pass, so the gridded
     # form adds no second pass over the weather; the nodes the field already
     # holds are reused instead of sampled again.
-    plan = _lattice_plan(sampler, window, index) if grid else None
+    plan = _lattice_plan(sampler, window, index, parameter) if grid else None
     query_lats = points[:, 0]
     query_lons = points[:, 1]
     if plan is not None:
@@ -337,9 +356,11 @@ def stage_field(  # noqa: C901 - native/gridded forms share one sampling pass
         query_lats[None, :],
         query_lons[None, :],
         cancel,
-        memo=memo,
+        memo=memo if components == 2 else None,
         memo_namespace=(identity.source, identity.before, identity.after),
         node_key=_node_key,
+        parameter=parameter,
+        components=components,
     )
     if staged is None:
         return None
@@ -350,8 +371,9 @@ def stage_field(  # noqa: C901 - native/gridded forms share one sampling pass
         staged.first[:, :count],
         staged.second[:, :count],
         staged.sources[:count],
+        components,
     )
-    if any(
+    if components == 2 and any(
         np.any(np.linalg.norm(a, axis=-1) > 250)
         for a in (field_staged.first, field_staged.second)
     ):
@@ -381,7 +403,7 @@ def stage_field(  # noqa: C901 - native/gridded forms share one sampling pass
     # stage_wind above still evaluates every source under the existing policy.
     grids: dict[tuple, Any] = {}
     for grid in sampler.indices:
-        if any(record.element in ("UGRD", "VGRD") for record in grid.records):
+        if any(record.element in FIELDS[parameter] for record in grid.records):
             geometry = NativeGridGeometry.from_index(grid)
             grids.setdefault(geometry.key(), geometry)
     grid_field = (
@@ -506,6 +528,7 @@ def stage_selection(
     reference=None,
     anchor_atlas=None,
     margin=32.0,
+    values_for=None,
 ):
     """The exact current-view selection of a resident field.
 
@@ -518,6 +541,10 @@ def stage_selection(
     per field generation and anchor camera, and a mesh slot permutation inside
     that camera reuses it byte for byte.  ``anchor_atlas`` lets a caller pass
     a cached atlas; otherwise it is encoded here.
+
+    ``values_for`` overrides the sampled values (a callable from node ids to
+    an array); the wave selection uses it to carry height, period and
+    direction from three scalar fields on the same placement.
     """
     from sailworks.qt.gpuweather import encode_component
     from sailworks.qt.gpuweatherfields import BarbSelection
@@ -546,10 +573,11 @@ def stage_selection(
     )
     if np.any(node_ids < 0):
         raise FieldCoverageError("The resident field does not cover this view")
-    first = np.asarray(field.staged.first[0]).reshape(-1, 2)[node_ids]
-    second = np.asarray(field.staged.second[0]).reshape(-1, 2)[node_ids]
-    weight = field.staged.weight(stamp)
-    uv = first + (second - first) * weight
+    values = (
+        _blended_values(field, stamp, node_ids)
+        if values_for is None
+        else np.asarray(values_for(node_ids))
+    )
     xx, yy = mercator_project_flat(
         points[:, 0],
         points[:, 1],
@@ -571,7 +599,7 @@ def stage_selection(
         & (xx <= view.width + margin)
         & (yy >= -margin)
         & (yy <= view.height + margin)
-        & np.isfinite(uv).all(axis=1)
+        & np.isfinite(values).all(axis=1)
         & np.isfinite(xx)
         & np.isfinite(yy)
     )
@@ -625,6 +653,74 @@ def stage_selection(
         field=field,
         node_image=encode_component(selection_ids.reshape(rows, cols)),
         anchor_reference=_anchor_reference(anchor_camera),
+    )
+
+
+def _blended_values(field, stamp, node_ids):
+    """The field's temporally blended values at the given node ids."""
+    components = field.staged.components or 1
+    first = np.asarray(field.staged.first[0]).reshape(-1, components)[node_ids]
+    second = np.asarray(field.staged.second[0]).reshape(-1, components)[node_ids]
+    weight = field.staged.weight(stamp)
+    return first + (second - first) * weight
+
+
+#: The three bands a wave arrow needs; a source missing any of them draws
+#: no arrows at all rather than inventing a direction.
+WAVE_BANDS = ("wave_height", "wave_period", "wave_direction")
+
+
+def stage_wave_selection(
+    sampler,
+    fields,
+    stamp,
+    view,
+    land_mask,
+    cancel=lambda: False,
+    reference=None,
+    anchor_atlas=None,
+    margin=32.0,
+):
+    """Select wave arrow glyphs from the three wave bands.
+
+    Placement, thinning, the land policy and the symbol cap are the wind
+    selection's own (``stage_selection``), so a wave arrow density means the
+    same thing as a wind barb density. The values are the three bands'
+    blended height (m), period (s) and *coming-from* direction (degrees
+    true), the same meteorological convention as the wind barbs.
+
+    All three bands are required: a source that lacks height, period or
+    direction yields ``None``, so the viewport shows its explicit
+    wave-unavailable state instead of fabricating a 0 degree direction.
+    """
+    if not fields:
+        return None
+    heights = fields.get("wave_height")
+    periods = fields.get("wave_period")
+    directions = fields.get("wave_direction")
+    if heights is None or periods is None or directions is None:
+        return None
+
+    def values(node_ids):
+        return np.column_stack(
+            (
+                _blended_values(heights, stamp, node_ids),
+                _blended_values(periods, stamp, node_ids),
+                _blended_values(directions, stamp, node_ids),
+            )
+        )
+
+    return stage_selection(
+        sampler,
+        heights,
+        stamp,
+        view,
+        land_mask,
+        cancel,
+        reference,
+        anchor_atlas,
+        margin,
+        values_for=values,
     )
 
 

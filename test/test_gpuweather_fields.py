@@ -5,6 +5,8 @@ selection is the exact current-view artefact and is published per view.
 """
 
 from datetime import timedelta
+import re
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -22,6 +24,7 @@ from sailworks.rendering.weatherbarbs import (
     BarbView,
     field_window,
     stage_barbs,
+    stage_field,
 )
 from sailworks.rendering.weatherstaging import time_window
 from test.test_weather_barbs import Land
@@ -62,6 +65,47 @@ def _stage(sampler, view, stamp, store=None, source=None, grid=False, reference=
 def _sources(gribs):
     source = gribs.file(gribs.field(0) + gribs.field(3), end=3)
     return source, WeatherSampler([source]), (source_key(source),)
+
+
+def _wave_source(gribs):
+    """A scalar wave forecast: ``HTSGW`` in metres at 0 h and 3 h."""
+    y, x = np.mgrid[:2, :2]
+    records = [
+        (
+            "HTSGW",
+            hour,
+            0.5 + x + 2 * y + 0.25 * hour,
+            {"GRIB_SHORT_NAME": "0-SFC", "GRIB_UNIT": "[m]"},
+        )
+        for hour in (0, 3)
+    ]
+    return gribs.file(records, end=3)
+
+
+def _wave_field(gribs, sampler=None, grid=False, stamp=None):
+    """Stage the scalar wave field exactly as the wave layer does."""
+    source = _wave_source(gribs)
+    sampler = sampler or WeatherSampler([source])
+    stamp = START.timestamp() + 3600 if stamp is None else stamp
+    window = ((-1.0, -1.0), (2.0, 2.0))
+    identity = FieldIdentity(
+        source=(source_key(source),),
+        parameter="wave_height",
+        before=stamp,
+        after=stamp,
+        window=window,
+        resolution=(2, 2),
+    )
+    return stage_field(
+        sampler,
+        stamp,
+        window,
+        identity,
+        lambda: False,
+        grid=grid,
+        parameter="wave_height",
+        components=1,
+    )
 
 
 # ---------------------------------------------------------------- identity
@@ -114,6 +158,78 @@ def test_the_field_budget_accounts_values_coordinates_and_lookup(gribs):
     assert field.grid is not None
     assert field.grid_bytes == field.grid.value_bytes + field.grid.texture_bytes
     assert field.grid_bytes > 0
+
+
+def test_value_bytes_is_component_aware(gribs):
+    """A scalar field pays for one array per endpoint, not two."""
+    wave = _wave_field(gribs)
+    assert wave.staged.components == 1
+    assert wave.staged.first.shape[-1] == 1
+    assert wave.staged.second.shape[-1] == 1
+    # Both endpoint arrays are accounted, and only their true float32 width.
+    assert wave.value_bytes == wave.staged.first.nbytes + wave.staged.second.nbytes
+    assert wave.value_bytes == wave.node_count * 4 * 2
+
+    source, sampler, signature = _sources(gribs)
+    view = BarbView(640, 480, 0.5, 0.5, 9, "standard", False)
+    wind = _stage(
+        sampler, view, START.timestamp() + 3600, FieldStore(1 << 24), signature
+    ).field
+    assert wind.staged.components == 2
+    assert wind.value_bytes == wind.staged.first.nbytes + wind.staged.second.nbytes
+    assert wind.value_bytes == wind.node_count * 4 * 2 * 2
+    assert wave.value_bytes < wind.value_bytes
+
+
+def test_wave_identity_keys_separately_from_wind_and_pressure():
+    wind = identity()
+    wave = identity(parameter="wave_height")
+    pressure = identity(parameter="pressure")
+    # The parameter is part of the resource identity, so a scalar wave field
+    # never reuses a wind or pressure publication.
+    assert len({wind.key(), wave.key(), pressure.key()}) == 3
+    assert wave.key() == identity(parameter="wave_height").key()
+    assert wave.key() != identity(parameter="wind").key()
+
+
+def test_wave_staging_samples_once_and_binds_the_scalar_into_u0(gribs, monkeypatch):
+    from sailworks.qt.gpuweather import decode_component
+    from sailworks.rendering import weatherbarbs
+
+    source = _wave_source(gribs)
+    sampler = WeatherSampler([source])
+    stages = []
+    samples = []
+    original_stage = weatherbarbs.stage_wind
+    original_sample = sampler.sample_timestamps
+
+    def counted_stage(*args, **kwargs):
+        stages.append(kwargs.get("parameter"))
+        return original_stage(*args, **kwargs)
+
+    def counted_sample(field, *args, **kwargs):
+        samples.append(field)
+        return original_sample(field, *args, **kwargs)
+
+    monkeypatch.setattr(weatherbarbs, "stage_wind", counted_stage)
+    sampler.sample_timestamps = counted_sample
+    # An exact-instant wave field samples once, through the public sampler.
+    field = _wave_field(gribs, sampler=sampler, stamp=START.timestamp())
+
+    # One staging pass and one sampler call for the whole scalar field.
+    assert stages == ["wave_height"]
+    assert samples == ["wave_height"]
+    assert field.staged.components == 1
+    assert field.staged.first.shape[-1] == 1
+    # The scalar travels in u0 and a zero plane in v0, so the shader's
+    # length(vec2(s, 0)) is the wave height itself.
+    pair = field.staged.texture_pair()
+    u0 = decode_component(pair.images[0]).ravel()
+    v0 = decode_component(pair.images[1]).ravel()
+    scalar = np.asarray(field.staged.first[..., 0]).ravel()
+    np.testing.assert_array_equal(u0, scalar)
+    assert v0.shape == u0.shape
+    assert np.all(v0 == 0.0)
 
 
 def test_allocation_eviction_and_release_are_bounded(gribs):
@@ -393,7 +509,10 @@ def test_antimeridian_seam_anchors_translate_to_the_current_projection():
             for index, (lat, lon) in enumerate(points)
         },
         staged=SimpleNamespace(
-            first=(zeros,), second=(zeros,), weight=lambda stamp: 0.0
+            first=(zeros,),
+            second=(zeros,),
+            weight=lambda stamp: 0.0,
+            components=2,
         ),
         land_flags=None,
     )
@@ -783,3 +902,95 @@ def test_the_default_path_keeps_the_historical_publication(gribs):
     second = provider.publish(atlas)
     assert first != second
     assert all(url.startswith("image://weather/") for url in first)
+
+
+# ------------------------------------------------------------- wave layer
+def _wave_host(**attributes):
+    """A headless host with the render context's real wave methods bound.
+
+    The viewport is a ``QQuickWidget``; these checks stay model-level and call
+    the production methods on a plain host, as the repo's other headless
+    viewport checks do.
+    """
+    from types import SimpleNamespace
+
+    from sailworks.qt import gribviewport
+
+    viewport = gribviewport._viewport_widget_class()
+    host = SimpleNamespace(**attributes)
+    for name in (
+        "_show_wave_state",
+        "_show_wave_fill",
+        "_set_wave_status",
+        "_update_wave",
+        "set_wave_visible",
+        "wave_state",
+    ):
+        setattr(host, name, getattr(viewport, name).__get__(host))
+    return host
+
+
+def test_wave_visibility_never_touches_the_wind_fill():
+    """Hiding the wave layer leaves the wind layer's state exactly as it was."""
+    from unittest.mock import Mock
+
+    wave_fill, wave_back, wind_fill = Mock(), Mock(), Mock()
+    host = _wave_host(
+        _wave_visible=True,
+        _wave_state="ready",
+        _wave_fill=wave_fill,
+        _wave_fill_back=wave_back,
+        _wave_status=Mock(),
+        _wind_opacity=0.42,
+        _wind_gradient_enabled=True,
+        _wind_gradient_opacity=0.12,
+        _fill=wind_fill,
+    )
+    host.set_wave_visible(False)
+    assert host.wave_state() == "hidden"
+    assert host._wave_visible is False
+    wave_fill.setVisible.assert_called_once_with(False)
+    wave_back.setVisible.assert_called_once_with(False)
+    # The wind fill is enabled, opaque and untouched by the wave toggle.
+    assert host._wind_opacity == 0.42
+    assert host._wind_gradient_enabled is True
+    assert host._wind_gradient_opacity == 0.12
+    assert not wind_fill.setVisible.called
+    assert not wind_fill.setOpacity.called
+
+
+def test_missing_wave_data_is_an_explicit_unavailable_state():
+    """No wave field is published as zero height; the status says why."""
+    from unittest.mock import Mock
+
+    class _Model:
+        error = "No wave forecast"
+
+        def busy(self):
+            return False
+
+        def update(self, camera, reference):
+            return "unavailable", None, None
+
+    wave_fill, wave_back, status = Mock(), Mock(), Mock()
+    host = _wave_host(
+        _wave_visible=True,
+        _wave_state="loading",
+        _wave_error="",
+        _wave_fill=wave_fill,
+        _wave_fill_back=wave_back,
+        _wave_status=status,
+        _wave_model=_Model(),
+        _camera=object(),
+        _disposed=False,
+        _barb_reference_view=lambda camera: None,
+    )
+    host._update_wave(host._camera)
+    assert host.wave_state() == "unavailable"
+    status.setProperty.assert_called_with("text", "No wave forecast")
+    # The fill is never shown; the status, not a zero-height field, carries
+    # the failure.
+    for item in (wave_fill, wave_back):
+        item.setVisible.assert_called_once_with(False)
+        item.setProperty.assert_any_call("statusText", "No wave forecast")
+        item.setProperty.assert_any_call("waveLoading", False)

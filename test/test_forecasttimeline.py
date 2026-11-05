@@ -16,6 +16,94 @@ from sailworks.core.timecontrol import TimeControl
 
 
 class TestForecastTimeline(unittest.TestCase):
+    def _now(self, valid_times, now):
+        """Run ForecastTimeline.now() against a minimal stand-in widget."""
+        from sailworks.qt.forecasttimeline import ForecastTimeline
+
+        class _FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now
+
+        clock = TimeControl()
+        timeline = SimpleNamespace(
+            closed=False,
+            bounds=None,
+            region=None,
+            clock=clock,
+            day_strip=SimpleNamespace(valid_times=tuple(valid_times)),
+            pause=lambda: None,
+            cancel_commit=lambda: None,
+        )
+        regions = []
+
+        def set_region(start, end):
+            regions.append((start, end))
+            timeline.region = (start, end)
+            timeline.bounds = (start, end)
+
+        timeline.set_region = set_region
+        timeline._now_stamp = lambda: ForecastTimeline._now_stamp(timeline)
+        with patch("sailworks.qt.forecasttimeline.datetime", _FixedDatetime):
+            ForecastTimeline.now(timeline)
+        return regions, clock.time.timestamp()
+
+    def test_now_sets_a_region_from_the_wall_clock(self):
+        wall = datetime(2026, 1, 5, 14, 32)
+        regions, _stamp = self._now((), wall)
+        self.assertEqual(len(regions), 1)
+        start, end = regions[0]
+        self.assertAlmostEqual(start, wall.timestamp() - 24 * 3600, delta=1)
+        self.assertAlmostEqual(end, wall.timestamp() + 48 * 3600, delta=1)
+
+    def test_now_snaps_to_the_nearest_loaded_valid_time_inside_the_region(self):
+        wall = datetime(2026, 1, 5, 14, 32)
+        early = datetime(2026, 1, 5, 13, 0).timestamp()
+        late = datetime(2026, 1, 5, 18, 0).timestamp()
+        _regions, stamp = self._now((early, late), wall)
+        # 14:32 is closer to 13:00 than to 18:00, and both are inside
+        # [now-24h, now+48h].
+        self.assertEqual(stamp, early)
+
+    def test_now_ignores_valid_times_outside_the_region(self):
+        wall = datetime(2026, 1, 5, 14, 32)
+        stale = datetime(2026, 1, 1, 0, 0).timestamp()
+        _regions, stamp = self._now((stale,), wall)
+        # The only loaded time predates now-24h, so the wall clock stands.
+        self.assertAlmostEqual(stamp, wall.timestamp(), delta=1)
+
+    def test_now_falls_back_to_the_wall_clock_without_coverage(self):
+        wall = datetime(2026, 1, 5, 14, 32)
+        _regions, stamp = self._now((), wall)
+        self.assertAlmostEqual(stamp, wall.timestamp(), delta=1)
+
+    def test_timeline_captions_distinguish_region_from_model_coverage(self):
+        from sailworks.qt.forecasttimeline import ForecastTimeline
+
+        start = datetime(2026, 1, 5, 12, 0).timestamp()
+        end = datetime(2026, 1, 5, 20, 0).timestamp()
+        timeline = SimpleNamespace(
+            bounds=(start, end),
+            _model_intervals=(
+                (
+                    datetime(2026, 1, 5, 12, 0).timestamp(),
+                    datetime(2026, 1, 5, 15, 0).timestamp(),
+                ),
+            ),
+        )
+        caption = ForecastTimeline._caption_for
+        self.assertEqual(
+            caption(timeline, datetime(2026, 1, 5, 11, 0).timestamp()),
+            "Selected time is outside the selected time range",
+        )
+        self.assertEqual(caption(timeline, datetime(2026, 1, 5, 13, 0).timestamp()), "")
+        self.assertEqual(
+            caption(timeline, datetime(2026, 1, 5, 18, 0).timestamp()),
+            "No model data for the selected time",
+        )
+        timeline.bounds = None
+        self.assertIn("Choose a display forecast", caption(timeline, start))
+
     def test_bounds_union_only_enabled_metadata_without_opening_forecasts(self):
         start = datetime(2040, 1, 1, tzinfo=timezone.utc)
         grib = SimpleNamespace(

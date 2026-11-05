@@ -101,6 +101,7 @@ class StagedWind:
     first: np.ndarray
     second: np.ndarray
     sources: tuple
+    components: int = 2
 
     def contains(self, stamp):
         return (
@@ -122,6 +123,21 @@ class StagedWind:
         # Keep Qt out of worker-selection imports until transport is needed.
         from sailworks.qt.gpuweather import WeatherTexturePair
 
+        if self.components == 1:
+            # A scalar field (wave height) travels through the existing U/V
+            # binding: the scalar goes into u0/u1 and a zero plane into v0/v1,
+            # so the shader's length(vec2(s, 0)) reduces to the scalar itself.
+            u0 = self.first[..., 0]
+            u1 = self.second[..., 0]
+            zero = np.zeros_like(u0)
+            return WeatherTexturePair.from_arrays(
+                datetime.fromtimestamp(self.before),
+                datetime.fromtimestamp(self.after),
+                u0,
+                zero,
+                u1,
+                zero,
+            )
         return WeatherTexturePair.from_arrays(
             datetime.fromtimestamp(self.before),
             datetime.fromtimestamp(self.after),
@@ -132,7 +148,7 @@ class StagedWind:
         )
 
 
-def time_window(sampler, stamp):
+def time_window(sampler, stamp, parameter="wind"):
     """The resident time window that serves ``stamp``.
 
     An instant that is itself a selection event gets a singleton window, so
@@ -147,7 +163,7 @@ def time_window(sampler, stamp):
             for event in (
                 identity[0],
                 sampler.coverage[identity],
-                *sampler._times[identity, "wind"],
+                *sampler._times[identity, parameter],
             )
         }
     )
@@ -167,16 +183,20 @@ def _exact_snapshot(
     memo=None,
     memo_namespace=None,
     node_key=None,
+    parameter="wind",
+    components=2,
 ):
     """The snapshot of one exact instant, with the memo's endpoints reused.
 
     The memo holds the exact float32 pair of the nodes it has already
     sampled for the same ``(source set, time window)``, so a re-centred
     window only samples the nodes it does not have.  A restored node is
-    bit-identical to sampling it again.
+    bit-identical to sampling it again.  A scalar field (``components == 1``)
+    bypasses the memo: its entries store a 2-component wind pair, so callers
+    pass ``memo=None`` rather than widening the memo's fixed-width entry.
     """
     lat, lon = lats.ravel(), lons.ravel()
-    values = np.full((len(lat), 2), np.nan)
+    values = np.full((len(lat), components), np.nan)
     origins = np.full(len(lat), "", dtype=object)
     keys = None
     if memo is not None and memo_namespace is not None and node_key is not None:
@@ -185,12 +205,12 @@ def _exact_snapshot(
             entry = memo.get_sample(memo_namespace, key)
             if entry is None:
                 continue
-            values[position] = entry[0:2]
+            values[position] = entry[0:components]
             origins[position] = entry[4]
     missing = ~np.isfinite(values).all(axis=1)
     if missing.any():
         sampled = sampler.sample_timestamps(
-            "wind", stamp, lat[missing], lon[missing], cancel
+            parameter, stamp, lat[missing], lon[missing], cancel
         )
         if cancel():
             return None
@@ -199,10 +219,10 @@ def _exact_snapshot(
             origins[node_index] = name
     if cancel():
         return None
-    first = np.array(values.reshape(shape + (2,)), dtype=np.float32)
+    first = np.array(values.reshape(shape + (components,)), dtype=np.float32)
     first.setflags(write=False)
     if keys is not None:
-        flat = first.reshape(-1, 2)
+        flat = first.reshape(-1, components)
         for node_index in np.flatnonzero(np.isfinite(flat).all(axis=1)):
             memo.put_sample(
                 memo_namespace,
@@ -211,7 +231,7 @@ def _exact_snapshot(
                 flat[node_index],
                 origins[node_index],
             )
-    return StagedWind(stamp, stamp, first, first, tuple(origins))
+    return StagedWind(stamp, stamp, first, first, tuple(origins), components)
 
 
 def stage_wind(  # noqa: C901 - staging, memo reuse and cancellation kept together
@@ -225,6 +245,8 @@ def stage_wind(  # noqa: C901 - staging, memo reuse and cancellation kept togeth
     memo=None,
     memo_namespace=None,
     node_key=None,
+    parameter="wind",
+    components=2,
 ):
     """Stage a fixed query grid using a worker-private WeatherSampler.
 
@@ -236,25 +258,39 @@ def stage_wind(  # noqa: C901 - staging, memo reuse and cancellation kept togeth
     A supplied ``memo`` (a :class:`NodeSampleMemo`) prefills the endpoints of
     nodes already sampled for the same ``(source set, time window)``.  The
     memo stores the exact float32 pair, so a prefilled node is bit-identical
-    to sampling it again; only finite pairs are stored.
+    to sampling it again; only finite pairs are stored.  A scalar field
+    (``components == 1``, e.g. ``wave_height``) bypasses the memo: its entries
+    store a 2-component wind pair, so pass ``memo=None`` rather than widening
+    the fixed-width entry.
     """
     lats, lons = np.broadcast_arrays(np.asarray(lats), np.asarray(lons))
     shape = lats.shape
     if len(shape) != 2 or not lats.size:
         raise ValueError("Expected a nonempty two-dimensional query grid")
-    # Two float32 U/V arrays, excluding the sampler's own bounded band cache.
-    if lats.size * 16 > byte_limit:
+    # Two float32 endpoint planes per component, excluding the sampler's own
+    # bounded band cache.
+    if lats.size * 4 * components > byte_limit:
         raise ValueError("Staged wind exceeds memory budget")
     if not np.isfinite(stamp):
         raise ValueError("Invalid forecast time")
-    before, after = time_window(sampler, stamp)
+    before, after = time_window(sampler, stamp, parameter)
     if before == after:
         return _exact_snapshot(
-            sampler, stamp, lats, lons, shape, cancel, memo, memo_namespace, node_key
+            sampler,
+            stamp,
+            lats,
+            lons,
+            shape,
+            cancel,
+            memo,
+            memo_namespace,
+            node_key,
+            parameter,
+            components,
         )
     # Use the requested interior instant, not a rounded hour or midpoint.
     lat, lon = lats.ravel(), lons.ravel()
-    first = np.full((len(lat), 2), np.nan)
+    first = np.full((len(lat), components), np.nan)
     second = np.full_like(first, np.nan)
     origins = np.full(len(lat), "", dtype=object)
     keys = None
@@ -264,8 +300,8 @@ def stage_wind(  # noqa: C901 - staging, memo reuse and cancellation kept togeth
             entry = memo.get_sample(memo_namespace, key)
             if entry is None:
                 continue
-            first[position] = entry[0:2]
-            second[position] = entry[2:4]
+            first[position] = entry[0:components]
+            second[position] = entry[components : 2 * components]
             origins[position] = entry[4]
     for identity in sampler.order:
         if cancel():
@@ -278,25 +314,27 @@ def stage_wind(  # noqa: C901 - staging, memo reuse and cancellation kept togeth
         if not use.any():
             continue
         group = sampler.groups[identity]
-        times = sampler._times[identity, "wind"]
+        times = sampler._times[identity, parameter]
         query = np.full(use.sum(), stamp)
         a, ta, sa = sampler._side(
-            group, reversed(times), "wind", lat[use], lon[use], query, True, cancel
+            group, reversed(times), parameter, lat[use], lon[use], query, True, cancel
         )
         b, tb, sb = sampler._side(
-            group, times, "wind", lat[use], lon[use], query, False, cancel
+            group, times, parameter, lat[use], lon[use], query, False, cancel
         )
         left, names = sampler._blend(a, ta, sa, b, tb, sb, np.full(use.sum(), before))
         right, _ = sampler._blend(a, ta, sa, b, tb, sb, np.full(use.sum(), after))
         first[use], second[use], origins[use] = left, right, names
     if cancel():
         return None
-    first = first.reshape(shape + (2,)).astype(np.float32)
-    second = second.reshape(shape + (2,)).astype(np.float32)
+    first = first.reshape(shape + (components,)).astype(np.float32)
+    second = second.reshape(shape + (components,)).astype(np.float32)
     first.setflags(write=False)
     second.setflags(write=False)
     if keys is not None:
-        flat_first, flat_second = first.reshape(-1, 2), second.reshape(-1, 2)
+        flat_first, flat_second = first.reshape(-1, components), second.reshape(
+            -1, components
+        )
         finite = np.isfinite(flat_first).all(axis=1) & np.isfinite(flat_second).all(
             axis=1
         )
@@ -316,6 +354,7 @@ def stage_wind(  # noqa: C901 - staging, memo reuse and cancellation kept togeth
         tuple(
             ", ".join(origin.split("\x1f")) if origin else None for origin in origins
         ),
+        components,
     )
 
 

@@ -26,6 +26,9 @@ FIELD_VARIABLES = {
         "10m_v_component_of_wind",
     ),
     "pressure": ("mean_sea_level_pressure",),
+    "wave_height": ("significant_height_of_combined_wind_waves_and_swell",),
+    "wave_period": ("mean_wave_period",),
+    "wave_direction": ("mean_wave_direction",),
 }
 DEFAULT_FIELDS = ("wind", "pressure")
 VARIABLES = FIELD_VARIABLES["wind"] + FIELD_VARIABLES["pressure"]
@@ -57,6 +60,10 @@ def _areas_close(left, right):
     )
 
 
+def _canonical_area(area):
+    return tuple(round(float(value), 2) for value in area)
+
+
 def _is_queue_limit_error(exc):
     text = str(exc).lower()
     return "maximum number queued" in text or "queued requests for this dataset" in text
@@ -68,6 +75,17 @@ class Era5Request:
     end: datetime
     area: tuple[float, float, float, float]
     request: dict
+
+
+def job_key(plan):
+    """Return the complete identity of an ERA5 job."""
+    return (
+        plan.start,
+        plan.end,
+        _canonical_area(plan.area),
+        DATASET,
+        tuple(sorted(plan.request.get("variable") or VARIABLES)),
+    )
 
 
 def plan_request(
@@ -114,7 +132,7 @@ def plan_request(
 def _field_variables(fields):
     selected = tuple(fields)
     if not selected or any(field not in FIELD_VARIABLES for field in selected):
-        raise ValueError("fields must be wind, pressure, or both")
+        raise ValueError("fields must be supported ERA5 field names")
     if len(set(selected)) != len(selected):
         raise ValueError("duplicate ERA5 field")
     return [name for field in selected for name in FIELD_VARIABLES[field]]
@@ -247,6 +265,23 @@ def validate_grib(path, piece, *, dataset_opener=None):
                 element == "MSL" and level == "0-SFC"
             ):
                 field = VARIABLES[2]
+            elif element in (
+                "SWH",
+                "HTSGW",
+                "MWP",
+                "PERPW",
+                "MWD",
+                "DIRPW",
+            ) and level in ("0-SFC", "1-SFC"):
+                name = {
+                    "SWH": "wave_height",
+                    "HTSGW": "wave_height",
+                    "MWP": "wave_period",
+                    "PERPW": "wave_period",
+                    "MWD": "wave_direction",
+                    "DIRPW": "wave_direction",
+                }[element]
+                field = FIELD_VARIABLES[name][0]
             else:
                 raise Era5Error(
                     f"Unsupported GRIB element/level band: {element or '<unknown>'}/"
@@ -300,18 +335,42 @@ class Era5DownloadService:
         self.validator = validator
         self._lock = threading.Lock()
         self._jobs = {}
+        self._job_plans = {}
         self.errors = {}
         self.progress = {}
         self._resume_threads = []
         self._resuming = set()
+        self._completed_resumes = []
+
+    _job_key = staticmethod(job_key)
+
+    def _matching_key(self, plan):
+        key = self._job_key(plan)
+        # Tolerance closeness is not transitive, so it cannot be encoded in a key.
+        matches = (
+            candidate
+            for candidate, stored in self._job_plans.items()
+            if candidate[:2] == key[:2]
+            and candidate[3:] == key[3:]
+            and _areas_close(stored.area, plan.area)
+        )
+        found = list(matches)
+        return next((k for k in found if k in self._jobs), next(iter(found), None))
+
+    def key_for(self, plan):
+        """Return the stored identity for the job matching a request, if any."""
+        with self._lock:
+            return self._matching_key(plan)
 
     def submit(self, plan, *, retry=False):
-        key = (plan.start, plan.end, plan.area)
+        key = self._job_key(plan)
         with self._lock:
-            prior = self._jobs.get(key)
+            matched = self._matching_key(plan)
+            prior = self._jobs.get(matched)
             if prior and prior[0].is_alive():
                 return prior[0]
             cancel = threading.Event()
+            self.errors.pop(key, None)
             self.progress[key] = {
                 "done": 0,
                 "total": 0,
@@ -320,21 +379,45 @@ class Era5DownloadService:
             thread = threading.Thread(
                 target=self._run_guarded, args=(key, plan, cancel, retry), daemon=True
             )
+            thread.era5_key = key
             self._jobs[key] = (thread, cancel)
+            self._job_plans[key] = plan
             thread.start()
             return thread
 
     def cancel(self, plan):
         with self._lock:
-            job = self._jobs.get((plan.start, plan.end, plan.area))
+            job = self._jobs.get(self._matching_key(plan))
             if job:
                 job[1].set()
 
     def progress_for(self, plan):
-        key = (plan.start, plan.end, plan.area)
         with self._lock:
+            key = self._matching_key(plan) or self._job_key(plan)
             entry = self.progress.get(key)
             return dict(entry) if entry is not None else None
+
+    def error_for(self, key):
+        with self._lock:
+            return self.errors.get(key)
+
+    def clear_error(self, key):
+        with self._lock:
+            return self.errors.pop(key, None)
+
+    def _trim_finished(self):
+        # Retain the most recent 128 completed results, excluding running jobs.
+        for registry in (self.progress, self.errors):
+            finished = [key for key in registry if key not in self._jobs]
+            for key in finished[:-128]:
+                del registry[key]
+        for key in list(self._job_plans):
+            if (
+                key not in self._jobs
+                and key not in self.progress
+                and key not in self.errors
+            ):
+                del self._job_plans[key]
 
     def _set_progress(self, key, *, done=None, total=None, stage=None):
         with self._lock:
@@ -371,9 +454,15 @@ class Era5DownloadService:
             with self._lock:
                 self.errors[key] = message[:1000]
             self._set_progress(key, stage="Failed")
+        finally:
+            with self._lock:
+                job = self._jobs.get(key)
+                if job and job[0] is threading.current_thread():
+                    del self._jobs[key]
+                self._trim_finished()
 
     def _run(self, plan, cancel, retry):
-        key = (plan.start, plan.end, plan.area)
+        key = self._job_key(plan)
         root = Path(self.store.root)
         catalog = root / "era5-history.json"
         pieces = list(split_request(plan))
@@ -393,7 +482,16 @@ class Era5DownloadService:
                 if cancel.is_set():
                     raise Era5Error("ERA5 download canceled")
                 if self._catalog_covers(entries, piece):
-                    self._forget_pending(piece)
+                    pending = self._pending_entry(self._load_pending(), piece)
+                    if pending:
+                        pending_piece = Era5Request(
+                            datetime.fromisoformat(pending["start"]),
+                            datetime.fromisoformat(pending["end"]),
+                            tuple(pending["area"]),
+                            {"variable": pending.get("variables")},
+                        )
+                        if self._catalog_covers(entries, pending_piece):
+                            self._forget_pending(pending.get("request_id"))
                     done += 1
                     self._set_progress(
                         key,
@@ -456,7 +554,7 @@ class Era5DownloadService:
             self._set_progress(key, stage="Publishing ERA5 history…")
             self._publish_chunks(root, catalog, staged_chunks, cancel)
             for _path, piece, _provenance in staged_chunks:
-                self._forget_pending(piece)
+                self._forget_pending(getattr(piece, "_pending_request_id", None))
         self._set_progress(key, done=total, stage="Complete")
 
     def _catalog_entries(self, catalog):
@@ -498,14 +596,6 @@ class Era5DownloadService:
     def _pending_path(self):
         return Path(self.store.root) / "era5-pending.json"
 
-    @staticmethod
-    def _request_key(start, end, area):
-        return (
-            start.astimezone(timezone.utc).isoformat(),
-            end.astimezone(timezone.utc).isoformat(),
-            tuple(round(float(value), 2) for value in area),
-        )
-
     def _load_pending(self):
         try:
             data = json.loads(self._pending_path().read_text())
@@ -539,6 +629,10 @@ class Era5DownloadService:
                 start == piece.start
                 and end == piece.end
                 and _areas_close(area, piece.area)
+                # A queued request only contains its submitted variables.
+                and entry.get("dataset", DATASET) == DATASET
+                and set(piece.request.get("variable") or VARIABLES)
+                <= set(entry.get("variables") or VARIABLES)
             ):
                 return entry
         return None
@@ -547,7 +641,9 @@ class Era5DownloadService:
         path = self._pending_path()
         with _catalog_lock(path):
             entries = self._load_pending()
-            if self._pending_entry(entries, piece) is not None:
+            if any(
+                str(entry.get("request_id")) == str(request_id) for entry in entries
+            ):
                 return
             entries.append(
                 {
@@ -562,14 +658,16 @@ class Era5DownloadService:
             )
             self._save_pending(entries)
 
-    def _forget_pending(self, piece):
+    def _forget_pending(self, request_id):
+        if request_id is None:
+            return
         path = self._pending_path()
         with _catalog_lock(path):
             entries = self._load_pending()
             kept = [
                 entry
                 for entry in entries
-                if self._pending_entry([entry], piece) is None
+                if str(entry.get("request_id")) != str(request_id)
             ]
             if len(kept) != len(entries):
                 self._save_pending(kept)
@@ -588,43 +686,37 @@ class Era5DownloadService:
         return kept
 
     def _prune_pending(self, entries, catalog):
-        """Keep only outstanding, unique requests.
-
-        Entries whose chunk is already in the catalog are stale bookkeeping
-        from a run that failed before it could forget them, and entries that
-        describe the same chunk (same times, same ERA5 grid cells) are
-        duplicates from a restart. Keeping the newest duplicate lets one
-        superseding request replace a stuck one.
-        """
-        newest = {}
+        """Keep outstanding IDs independently until covered or removed."""
+        kept = []
         for entry in entries:
             try:
                 piece = Era5Request(
                     datetime.fromisoformat(entry["start"]),
                     datetime.fromisoformat(entry["end"]),
                     tuple(float(value) for value in entry["area"]),
-                    {},
+                    {"variable": entry.get("variables") or VARIABLES},
                 )
             except (KeyError, TypeError, ValueError):
                 continue
+            if entry.get("dataset", DATASET) != DATASET:
+                continue
             if self._catalog_covers(catalog, piece):
                 continue
-            key = self._request_key(piece.start, piece.end, piece.area)
-            prior = newest.get(key)
-            if prior is None or str(entry.get("created", "")) > str(
-                prior.get("created", "")
-            ):
-                newest[key] = entry
-        return list(newest.values())
+            kept.append(entry)
+        return kept
 
     def pending_count(self):
         return len(self.pending_requests())
 
     def resume_active(self):
-        self._resume_threads = [
-            thread for thread in self._resume_threads if thread.is_alive()
-        ]
-        return len(self._resume_threads)
+        with self._lock:
+            return len(self._resume_threads)
+
+    def completed_resume_keys(self):
+        with self._lock:
+            keys = self._completed_resumes
+            self._completed_resumes = []
+            return keys
 
     def resume_pending(self):
         """Resume persisted CDS requests that outlived a previous app run."""
@@ -636,7 +728,9 @@ class Era5DownloadService:
                 start = datetime.fromisoformat(entry["start"])
                 end = datetime.fromisoformat(entry["end"])
                 area = tuple(float(value) for value in entry["area"])
-                key = self._request_key(start, end, area)
+                key = job_key(
+                    Era5Request(start, end, area, {"variable": entry.get("variables")})
+                )
             except (KeyError, TypeError, ValueError):
                 continue
             piece = Era5Request(
@@ -646,17 +740,18 @@ class Era5DownloadService:
                 _chunk_payload(start, end, area, variables=entry.get("variables")),
             )
             if self._catalog_covers(catalog, piece):
-                self._forget_pending(piece)
+                self._forget_pending(entry.get("request_id"))
                 continue
             with self._lock:
                 if key in self._resuming:
                     continue
                 self._resuming.add(key)
-            thread = threading.Thread(
-                target=self._resume_entry, args=(entry, key), daemon=True
-            )
-            self._resume_threads.append(thread)
-            thread.start()
+                self.errors.pop(key, None)
+                thread = threading.Thread(
+                    target=self._resume_entry, args=(entry, key), daemon=True
+                )
+                self._resume_threads.append(thread)
+                thread.start()
             started += 1
         return started
 
@@ -698,13 +793,16 @@ class Era5DownloadService:
                     [(path, piece, provenance)],
                     threading.Event(),
                 )
-            self._forget_pending(piece)
+            self._forget_pending(getattr(piece, "_pending_request_id", None))
         except Exception as exc:
             with self._lock:
                 self.errors[key] = str(exc)[:1000]
+                self._trim_finished()
         finally:
             with self._lock:
                 self._resuming.discard(key)
+                self._resume_threads.remove(threading.current_thread())
+                self._completed_resumes.append(key)
 
     def _publish_chunks(self, root, catalog, staged_chunks, cancel):
         registered = []
@@ -768,12 +866,15 @@ class Era5DownloadService:
             or not hasattr(inner, "get_remote")
         ):
             return None
-        request_id = self._live_request_id(inner, piece)
-        if request_id is not None:
-            return request_id
-        remote = inner.submit(DATASET, piece.request)
-        self._remember_pending(piece, remote.request_id)
-        return str(remote.request_id)
+        # Lock order: submission lock, then pending-file lock; never the reverse.
+        # This also serializes submissions from other service instances/processes.
+        with _catalog_lock(Path(self.store.root) / "era5-submission"):
+            request_id = self._live_request_id(inner, piece)
+            if request_id is not None:
+                return request_id
+            remote = inner.submit(DATASET, piece.request)
+            self._remember_pending(piece, remote.request_id)
+            return str(remote.request_id)
 
     def _live_request_id(self, inner, piece):
         """Return the queued request for this chunk, discarding dead ones.
@@ -790,15 +891,17 @@ class Era5DownloadService:
             remote = inner.get_remote(request_id)
             status = remote.status
         except Exception:
-            self._forget_pending(piece)
-            return None
+            self._forget_pending(request_id)
+            return self._live_request_id(inner, piece)
         if self._remote_is_stale(remote):
             self._delete_request(inner, request_id)
-            self._forget_pending(piece)
-            return None
+            self._forget_pending(request_id)
+            return self._live_request_id(inner, piece)
         if status in ("failed", "rejected", "dismissed", "deleted"):
-            self._forget_pending(piece)
-            return None
+            self._forget_pending(request_id)
+            return self._live_request_id(inner, piece)
+        piece.request["variable"] = list(entry.get("variables") or VARIABLES)
+        object.__setattr__(piece, "_pending_request_id", request_id)
         return request_id
 
     @staticmethod
@@ -860,9 +963,10 @@ class Era5DownloadService:
         if remote is None:
             remote = inner.submit(DATASET, piece.request)
             self._remember_pending(piece, remote.request_id)
+        object.__setattr__(piece, "_pending_request_id", str(remote.request_id))
         status = remote.status
         if status in ("failed", "rejected", "dismissed", "deleted"):
-            self._forget_pending(piece)
+            self._forget_pending(str(remote.request_id))
             raise Era5Error(f"ERA5 CDS request {remote.request_id} was {status}")
         remote.download(str(path))
 
@@ -948,8 +1052,12 @@ def publish_history_display(state, entries, *, model_id="ERA5"):
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)
 
-    times = []
+    published_area = usable[0]["area"]
+    variables_by_time = {}
     for entry in usable:
+        if not _areas_close(published_area, entry["area"]):
+            continue
+        variables = set(entry.get("variables") or VARIABLES)
         start = datetime.fromisoformat(str(entry["start"]).replace("Z", "+00:00"))
         end = datetime.fromisoformat(str(entry["end"]).replace("Z", "+00:00"))
         if start.tzinfo is None:
@@ -959,9 +1067,18 @@ def publish_history_display(state, entries, *, model_id="ERA5"):
         cursor = start.astimezone(timezone.utc)
         finish = end.astimezone(timezone.utc)
         while cursor <= finish:
-            times.append(cursor)
+            variables_by_time.setdefault(cursor, []).append((entry["area"], variables))
             cursor += timedelta(hours=1)
-    times = tuple(sorted(set(times)))
+    field_time_sets = {
+        field: {
+            stamp
+            for stamp, groups in variables_by_time.items()
+            if set(names) <= set().union(*(variables for _, variables in groups))
+        }
+        for field, names in FIELD_VARIABLES.items()
+    }
+    fields = tuple(field for field, values in field_time_sets.items() if values)
+    times = tuple(sorted(set().union(*(field_time_sets[field] for field in fields))))
     if len(times) < 2:
         raise Era5Error("ERA5 history needs at least two hours to display")
 
@@ -969,18 +1086,20 @@ def publish_history_display(state, entries, *, model_id="ERA5"):
     region = (south, west, north, east)
     run_time = times[0]
     hours = int((times[-1] - run_time).total_seconds() // 3600)
-    variables = {str(value) for item in usable for value in item.get("variables", ())}
-    fields = tuple(
-        name
-        for name, names in FIELD_VARIABLES.items()
-        if all(value in variables for value in names)
-    )
     if not fields:
-        raise Era5Error("ERA5 history has no wind or pressure fields to display")
+        raise Era5Error("ERA5 history has no supported fields to display")
     levels = tuple(
-        level
-        for field, level in (("wind", "10-HTGL"), ("pressure", "0-MSL"))
-        if field in fields
+        dict.fromkeys(
+            level
+            for field, level in (
+                ("wind", "10-HTGL"),
+                ("pressure", "0-MSL"),
+                ("wave_height", "0-SFC"),
+                ("wave_period", "0-SFC"),
+                ("wave_direction", "0-SFC"),
+            )
+            if field in fields
+        )
     )
     config = ModelConfiguration(
         model_id,
@@ -988,7 +1107,7 @@ def publish_history_display(state, entries, *, model_id="ERA5"):
         region,
         "0.25",
         hours,
-        tuple(range(hours + 1)),
+        tuple(int((instant - run_time).total_seconds() // 3600) for instant in times),
         1,
     )
     now = datetime.now(timezone.utc)
@@ -1004,7 +1123,9 @@ def publish_history_display(state, entries, *, model_id="ERA5"):
         times,
         (Artifact(artifact.path, artifact.sha256, artifact.size),),
         now,
-        field_times=tuple((field, times) for field in fields),
+        field_times=tuple(
+            (field, tuple(sorted(field_time_sets[field]))) for field in fields
+        ),
     )
     tranche = ForecastTranche(
         f"era5-{artifact.sha256[:16]}-v2", now, (config,), (entry,)

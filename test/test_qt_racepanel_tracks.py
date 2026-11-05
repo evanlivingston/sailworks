@@ -183,12 +183,11 @@ def test_race_timeline_bounds_fall_back_to_positions():
 
     PreviewWindow._race_selected(window, race)
 
-    start, end, valid = timeline.set_bounds_override.call_args.args
+    start, end = timeline.set_region.call_args.args
     assert (start, end) == (
         race.boats[0].positions[0].epoch,
         race.boats[0].positions[1].epoch,
     )
-    assert valid == (start, end)
 
 
 def test_delete_race_removes_entry_tracks_and_file(panel, tmp_path, monkeypatch):

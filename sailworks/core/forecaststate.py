@@ -133,6 +133,11 @@ class ForecastAnalysisState:
         with self._lock:
             return self._configuration_error
 
+    @property
+    def refresh_warning(self):
+        """Partial download/validation failures from the last refresh."""
+        return self.coordinator.refresh_warning
+
     def _load_configuration(self):
         if self.configuration_path.is_symlink():
             self._configuration_error = "Saved forecast configuration is a symlink"
@@ -264,16 +269,24 @@ class ForecastAnalysisState:
                 raise NoActiveForecastError("No active forecast selection")
             generation = action_token
         current = self.store.resolve(expected)
-        tranche = current.tranche
-        entry = next(
-            (item for item in tranche.entries if item.model_id == model_id), None
-        )
-        if entry is None:
-            raise ForecastUnavailableError(
-                f"Model {model_id!r} is not present in the active tranche"
+        target = self.store.newest_selection(model_id)
+        if target is not None and target == expected:
+            # Already bound to the newest tranche holding this model.
+            return current
+        if target is None:
+            # Unknown model: keep the active tranche's own resolution so the
+            # existing error message and edge cases are unchanged.
+            entry = next(
+                (item for item in current.tranche.entries if item.model_id == model_id),
+                None,
             )
-        target = AnalysisSelection(tranche.tranche_id, entry.entry_id)
-        self._validate_analysis(self.store.resolve(target), entry.fields)
+            if entry is None:
+                raise ForecastUnavailableError(
+                    f"Model {model_id!r} is not present in the active tranche"
+                )
+            target = AnalysisSelection(current.tranche.tranche_id, entry.entry_id)
+        resolved = self.store.resolve(target)
+        self._validate_analysis(resolved, resolved.entry.fields)
         return self.store.activate(
             target,
             commit_guard=self._action_guard(generation, expected, cancel),

@@ -24,7 +24,19 @@ import numpy as np
 
 from .forecastcapabilities import model_from_grib_metadata
 from .gribfields import PRESSURE_ELEMENTS as _PRESSURE_ELEMENTS
+from .gribfields import WAVE_DIRECTION_ELEMENTS as _WAVE_DIRECTION_ELEMENTS
+from .gribfields import WAVE_HEIGHT_ELEMENTS as _WAVE_HEIGHT_ELEMENTS
+from .gribfields import WAVE_PERIOD_ELEMENTS as _WAVE_PERIOD_ELEMENTS
 from .gribfields import is_mean_sea_level_pressure
+
+# Wind, pressure and wave bands all identify a displayable forecast run.
+_SUPPORTED_ELEMENTS = (
+    "UGRD",
+    "VGRD",
+    *_WAVE_HEIGHT_ELEMENTS,
+    *_WAVE_PERIOD_ELEMENTS,
+    *_WAVE_DIRECTION_ELEMENTS,
+)
 from .gribsampling import GridIndex, WeatherSampler, number
 
 import weatherrouting
@@ -329,8 +341,7 @@ class Grib(weatherrouting.Grib):
             metadata = band.GetMetadata()
 
             if metadata.get("GRIB_ELEMENT") in (
-                "UGRD",
-                "VGRD",
+                _SUPPORTED_ELEMENTS
             ) or is_mean_sea_level_pressure(metadata):
                 models.add(forecast_model_name(dataset, metadata))
                 centre = metadata.get("GRIB_CENTER", "")
@@ -359,7 +370,7 @@ class Grib(weatherrouting.Grib):
 
         if start_time is None or hours_forecasted is None:
             raise ValueError(
-                "Forecast contains no supported wind or pressure records: " + path
+                "Forecast contains no supported wind, pressure or wave records: " + path
             )
         return MetaGrib(
             path,

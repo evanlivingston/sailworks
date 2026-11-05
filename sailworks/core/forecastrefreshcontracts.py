@@ -1,6 +1,6 @@
 """Immutable public contracts for pinned forecast refresh plans."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 
@@ -78,12 +78,12 @@ class PlannedModel:
             for item in raw_steps
         ):
             raise ValueError("field schedules must be (field, hours) pairs")
-        steps = tuple((field, tuple(hours)) for field, hours in raw_steps)
-        if tuple(field for field, _ in steps) != self.configuration.fields:
+        steps = tuple((name, tuple(hours)) for name, hours in raw_steps)
+        if tuple(name for name, _ in steps) != self.configuration.fields:
             raise ValueError("field schedules must match configured fields in order")
-        for field, hours in steps:
+        for name, hours in steps:
             if (
-                not isinstance(field, str)
+                not isinstance(name, str)
                 or not hours
                 or any(
                     type(hour) is not int
@@ -98,14 +98,14 @@ class PlannedModel:
                 )
         supported_union = set()
         field_supported = {}
-        for field in self.configuration.fields:
-            supported = capability.available_steps(run_time.hour, field)
-            field_supported[field] = supported
+        for name in self.configuration.fields:
+            supported = capability.available_steps(run_time.hour, name)
+            field_supported[name] = supported
             supported_union.update(supported)
         if any(hour not in supported_union for hour in self.configuration.steps):
             raise ValueError("configuration requests unsupported provider steps")
-        for field, hours in steps:
-            supported_hours = field_supported[field]
+        for name, hours in steps:
+            supported_hours = field_supported[name]
             expected = tuple(
                 hour
                 for hour in supported_hours
@@ -141,20 +141,49 @@ class PlannedModel:
         return self.configuration.model_id
 
 
+def failure_reason(error):
+    """Describe a per-model failure with a reason that is never empty.
+
+    Exceptions such as a bare ``RuntimeError()`` stringify to ``""``, so fall
+    back to the exception class name. Reasons reach the plan contract, which
+    requires them to be non-empty.
+    """
+    if isinstance(error, BaseException):
+        message = str(error).strip()
+        return message or type(error).__name__
+    return str(error).strip() or "unspecified failure"
+
+
 @dataclass(frozen=True)
 class ForecastRefreshPlan:
     models: tuple[PlannedModel, ...]
     selected_model_id: str
+    planning_failures: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self):
         models = tuple(self.models)
         if not models or any(not isinstance(model, PlannedModel) for model in models):
             raise ValueError("plan needs non-empty PlannedModel values")
         ids = tuple(model.model_id for model in models)
-        if len(set(ids)) != len(ids) or self.selected_model_id not in ids:
-            raise ValueError("selected model must identify one unique planned model")
+        if len(set(ids)) != len(ids):
+            raise ValueError("plan models must be unique")
+        # Normalize reasons here as well so an empty reason can never make
+        # construction fail: the contract guarantees a non-empty reason.
+        failures = {
+            model_id: failure_reason(reason)
+            for model_id, reason in self.planning_failures.items()
+        }
+        if any(not isinstance(model_id, str) or not model_id for model_id in failures):
+            raise ValueError("planning failures need non-empty model ids")
+        if set(ids) & set(failures):
+            raise ValueError("a planned model cannot also be a planning failure")
+        if self.selected_model_id not in ids and self.selected_model_id not in failures:
+            raise ValueError(
+                "selected model must identify one planned model or planning failure"
+            )
         shared_requested_region(tuple(model.configuration for model in models))
         object.__setattr__(self, "models", models)
+        object.__setattr__(self, "planning_failures", failures)
 
     @property
     def configurations(self):

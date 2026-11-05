@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
@@ -292,3 +293,147 @@ def test_symlinked_backing_files_are_rejected(tmp_path):
     manifest.symlink_to(source)
     with pytest.raises(ValueError):
         store.load("batch")
+
+
+def planned_download(model="GFS", region=(0, -1, 1, 1)):
+    from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES
+    from sailworks.core.forecastrefreshcontracts import PlannedModel
+
+    configuration = ModelConfiguration(model, ("wind",), region, "native", 3, (), 3)
+    capability = MODEL_CAPABILITIES[model]
+    field_steps = tuple(
+        (
+            field,
+            tuple(
+                hour
+                for hour in capability.available_steps(0, field)
+                if hour <= 3 and hour % 3 == 0
+            ),
+        )
+        for field in configuration.fields
+    )
+    union = sorted({hour for _field, hours in field_steps for hour in hours})
+    identifier = json.dumps(
+        {
+            "source": capability.provider_name,
+            "date": "20250101",
+            "cycle": "00",
+            "hours": max(union),
+            "steps": union,
+            "fields": list(configuration.fields),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return PlannedModel(
+        configuration,
+        datetime(2025, 1, 1, tzinfo=timezone.utc),
+        capability.provider_name,
+        identifier,
+        capability.native_resolution,
+        field_steps,
+    )
+
+
+def test_record_download_adopts_existing_artifact_and_forgets_it(tmp_path):
+    from sailworks.core.tranchestore import MAX_DOWNLOAD_RECORDS
+
+    store = TrancheStore(tmp_path)
+    planned = planned_download()
+    source = tmp_path / "seed.grb"
+    source.write_bytes(b"seed bytes")
+    artifact = store.register_file(source)
+
+    assert store.recorded_download(planned) is None
+    key = store.record_download(planned, artifact)
+    assert len(key) == 64
+    assert store.recorded_download(planned) == artifact
+
+    reopened = TrancheStore(tmp_path)
+    assert reopened.recorded_download(planned) == artifact
+    record = json.loads((tmp_path / "downloads.json").read_text())["requests"][key]
+    assert record["sha256"] == artifact.sha256
+    assert record["size"] == artifact.size
+    assert record["model_id"] == "GFS"
+    assert record["run_time"] == "2025-01-01T00:00:00+00:00"
+    assert record["region"] == [0, -1, 1, 1]
+    assert record["fields"] == ["wind"]
+    assert record["steps"] == [0, 3]
+    assert record["member"] == "deterministic"
+    assert MAX_DOWNLOAD_RECORDS == 64
+
+    assert store.forget_download(planned) is True
+    assert store.recorded_download(planned) is None
+    assert store.forget_download(planned) is False
+
+
+def test_record_download_accepts_a_path_inside_the_store(tmp_path):
+    store = TrancheStore(tmp_path)
+    planned = planned_download()
+    source = tmp_path / "seed.grb"
+    source.write_bytes(b"path adopted bytes")
+    artifact = store.register_file(source)
+
+    key = store.record_download(planned, artifact.path)
+    assert len(key) == 64
+    assert store.recorded_download(planned) == artifact
+    with pytest.raises(ValueError):
+        store.record_download(planned, source)
+
+
+def test_recorded_download_ignores_missing_corrupt_and_malformed_records(tmp_path):
+    store = TrancheStore(tmp_path)
+    planned = planned_download()
+    source = tmp_path / "seed.grb"
+    source.write_bytes(b"recorded bytes")
+    artifact = store.register_file(source)
+    store.record_download(planned, artifact)
+    blob = store.artifacts / artifact.sha256
+
+    blob.chmod(0o644)
+    blob.write_bytes(b"tampered bytes")
+    assert store.recorded_download(planned) is None
+
+    blob.unlink()
+    assert store.recorded_download(planned) is None
+
+    (tmp_path / "downloads.json").write_text("{not json")
+    assert store.recorded_download(planned) is None
+
+    (tmp_path / "downloads.json").write_text('{"requests": []}')
+    assert store.recorded_download(planned) is None
+
+
+def test_concurrent_download_records_do_not_lose_entries(tmp_path):
+    store = TrancheStore(tmp_path)
+    source = tmp_path / "seed.grb"
+    source.write_bytes(b"shared bytes")
+    artifact = store.register_file(source)
+    plans = [planned_download(region=(index, -1, index + 1, 1)) for index in range(12)]
+
+    def record(planned):
+        return store.record_download(planned, artifact)
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        keys = list(pool.map(record, plans))
+
+    assert len(set(keys)) == len(plans)
+    payload = json.loads((tmp_path / "downloads.json").read_text())
+    assert set(payload["requests"]) == set(keys)
+    assert all(store.recorded_download(planned) == artifact for planned in plans)
+
+
+def test_download_index_is_bounded(tmp_path):
+    from sailworks.core.tranchestore import MAX_DOWNLOAD_RECORDS
+
+    store = TrancheStore(tmp_path)
+    source = tmp_path / "seed.grb"
+    source.write_bytes(b"shared bytes")
+    artifact = store.register_file(source)
+    for index in range(MAX_DOWNLOAD_RECORDS + 6):
+        store.record_download(
+            planned_download(region=(index, -1, index + 1, 1)), artifact
+        )
+
+    payload = json.loads((tmp_path / "downloads.json").read_text())
+    assert len(payload["requests"]) == MAX_DOWNLOAD_RECORDS

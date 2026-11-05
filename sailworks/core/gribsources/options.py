@@ -56,13 +56,16 @@ def selection(config, available, defaults):
 
 
 def custom_rows(source, options, runs, available, estimate):
-    """One row per run, reporting the actual selected hours for that model."""
+    """One row per run, reporting the actual selected hours for that model.
+
+    A run may carry an optional trailing dict of extra identifier fields.
+    """
     rows = []
     supported = getattr(source, "download_fields", DEFAULT_FIELDS)
     fields = tuple(field for field in options.fields if field in supported)
     if not fields:
         return rows
-    for date, cycle, run_label, hours in runs:
+    for date, cycle, run_label, hours, *extra in runs:
         steps = options.select(available(cycle, fields, hours))
         if not steps:
             continue
@@ -74,6 +77,8 @@ def custom_rows(source, options, runs, available, estimate):
             "steps": steps,
             "fields": fields,
         }
+        if extra and extra[0]:
+            config.update(extra[0])
         coverage = f"{min(steps)}–{max(steps)} h · {len(steps)} times"
         rows.append(
             [

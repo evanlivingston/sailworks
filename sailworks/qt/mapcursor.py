@@ -12,6 +12,7 @@ class MapCursorMixin:
             self.width(),
             self.height(),
             self.wind_visible,
+            self.wave_visible,
             self.marine.sources,
             self.marine.currents_visible,
         )
@@ -24,6 +25,7 @@ class MapCursorMixin:
             "wind": "",
             "gust": "",
             "current": "",
+            "wave": "",
             "depth": "",
         }
         self.cursor_readout.emit("")
@@ -35,6 +37,7 @@ class MapCursorMixin:
                 self._cursor_parts["wind"],
                 self._cursor_parts["gust"],
                 self._cursor_parts["current"],
+                self._cursor_parts["wave"],
                 self._cursor_parts["depth"],
             )
             if part
@@ -82,6 +85,7 @@ class MapCursorMixin:
             "wind": "Wind …",
             "gust": "",
             "current": "",
+            "wave": "",
             "depth": "",
         }
         point = (lat, lon)
@@ -95,14 +99,19 @@ class MapCursorMixin:
         if self.is_moving() or self.move_callback is not None or not self.isVisible():
             self._wind_cursor.cancel()
             self._cursor_parts["wind"] = "Wind unavailable"
+            self._cursor_parts["wave"] = "Waves unavailable"
             self._emit_cursor_readout()
             return
         sources = context[1]
         if not sources:
             self._wind_cursor.cancel()
             self._cursor_parts["wind"] = "Wind unavailable"
+            self._cursor_parts["wave"] = "Waves unavailable"
             self._emit_cursor_readout()
             return
+        if not self.wave_visible:
+            self._cursor_parts["wave"] = "Waves unavailable"
+            self._emit_cursor_readout()
 
         def show(weather):
             if (
@@ -113,7 +122,7 @@ class MapCursorMixin:
                 or context != self._weather_context()
             ):
                 return
-            wind, gust = weather
+            wind, gust, waves = weather
             self._cursor_parts["wind"] = (
                 "Wind %.1f°, %.1f kts" % (wind[0], wind[1] * 1.94384)
                 if wind is not None
@@ -122,6 +131,13 @@ class MapCursorMixin:
             self._cursor_parts["gust"] = (
                 "Gust %.1f kts" % (gust * 1.94384) if gust is not None else ""
             )
+            self._cursor_parts["wave"] = (
+                "Wave %.1f m · %.0f s · %.0f°" % waves
+                if waves is not None
+                else "Waves unavailable"
+            )
             self._emit_cursor_readout()
 
-        self._wind_cursor.request(sources, context[0], lat, lon, show)
+        self._wind_cursor.request(
+            sources, context[0], lat, lon, show, wave_visible=self.wave_visible
+        )

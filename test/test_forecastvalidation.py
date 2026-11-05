@@ -279,6 +279,92 @@ def test_inspects_gfswave_as_separate_wave_only_model():
     }
 
 
+class _ZeroOriginGlobalGrid(Dataset):
+    """1440x721 global grid whose longitude origin the test supplies."""
+
+    RasterXSize = 1440
+    RasterYSize = 721
+
+    def __init__(self, bands, geotransform):
+        super().__init__(bands)
+        self.geotransform = geotransform
+
+    def GetGeoTransform(self):
+        return self.geotransform
+
+
+def test_ifs_rejects_zero_origin_global_grid():
+    """Only GFS-Wave accepts the 0-360 convention; ECMWF grids stay strict."""
+    request = planned(("wind",), model="IFS")
+    dataset = _ZeroOriginGlobalGrid(
+        [band("UGRD", 0), band("VGRD", 0), band("UGRD", 3), band("VGRD", 3)],
+        geotransform=(-0.125, 0.25, 0.0, 90.125, 0.0, -0.25),
+    )
+    with pytest.raises(ForecastValidationError, match="IFS grid"):
+        inspect_fake("ifs.grib2", request, dataset)
+
+
+def _wave_bands():
+    return [
+        band(element, hour, model="GFSWAVE")
+        for hour in (0, 3)
+        for element in ("HTSGW", "PERPW", "DIRPW")
+    ]
+
+
+def _wave_request():
+    return planned(
+        ("wave_height", "wave_period", "wave_direction"),
+        {
+            "wave_height": (0, 3),
+            "wave_period": (0, 3),
+            "wave_direction": (0, 3),
+        },
+        model="GFSWAVE",
+    )
+
+
+def test_accepts_gfswave_global_grid_in_either_longitude_convention():
+    request = _wave_request()
+    conventions = {
+        "zero_to_360": (-0.125, 0.25, 0.0, 90.125, 0.0, -0.25),
+        "minus_180": (-180.125, 0.25, 0.0, 90.125, 0.0, -0.25),
+    }
+    for name, geotransform in conventions.items():
+        dataset = GFSWaveGlobalDataset(_wave_bands(), geotransform=geotransform)
+        result = inspect_fake("wave.grib2", request, dataset)
+        assert result.model_id == "GFSWAVE", name
+
+
+def test_rejects_gfswave_grids_that_are_not_exact_global_instances():
+    request = _wave_request()
+    half_cell = GFSWaveGlobalDataset(
+        _wave_bands(), geotransform=(0.0, 0.25, 0.0, 90.125, 0.0, -0.25)
+    )
+    with pytest.raises(ForecastValidationError, match="GFSWAVE grid"):
+        inspect_fake("wave.grib2", request, half_cell)
+
+    regional = GFSWaveGlobalDataset(_wave_bands())
+    regional.RasterXSize = 720
+    regional.RasterYSize = 361
+    with pytest.raises(ForecastValidationError, match="GFSWAVE grid"):
+        inspect_fake("wave.grib2", request, regional)
+
+    sheared = GFSWaveGlobalDataset(
+        _wave_bands(), geotransform=(-180.125, 0.25, 0.1, 90.125, 0.0, -0.25)
+    )
+    with pytest.raises(ForecastValidationError, match="GFSWAVE grid"):
+        inspect_fake("wave.grib2", request, sheared)
+
+    rotated = RotatedDataset(_wave_bands())
+    with pytest.raises(ForecastValidationError, match="GFSWAVE grid"):
+        inspect_fake("wave.grib2", request, rotated)
+
+    projected = ProjectedDataset(_wave_bands())
+    with pytest.raises(ForecastValidationError, match="GFSWAVE grid"):
+        inspect_fake("wave.grib2", request, projected)
+
+
 def test_supported_grid_relative_vectors_and_unknown_flags():
     ds = dataset_for()
     result = inspect_fake("fake.grib", planned(), ds, flags=[True] * ds.RasterCount)

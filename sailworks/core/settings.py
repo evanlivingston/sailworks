@@ -30,6 +30,18 @@ class SettingsManager(Storage):
         self.gribWindGradientOpacity = 0.12
         self.gribWindGradientSmooth = True
         self.gribWindGradientLevels = 15
+        self.gribWaveOpacity = 0.85
+        # Persisted so the wave layer survives a restart; the wind layer has
+        # always reset, which reads as data loss once waves are in use.
+        self.gribWaveVisible = False
+        self.gribWaveSmooth = True
+        self.gribWaveLevels = 9
+        # Wave direction arrows reuse the wind barbs' density modes, with
+        # their own setting so the two glyph layers thin independently.
+        self.gribWaveDensity = "standard"
+        # Display-only wave source key; empty means the routing forecast.
+        # Restored only when it resolves to a published wave choice.
+        self.gribWaveSource = ""
         self.weatherRenderer = "viewport"
         self.gribIsobarsVisible = True
         self.gribIsobarInterval = 4.0

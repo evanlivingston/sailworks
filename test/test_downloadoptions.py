@@ -14,13 +14,15 @@ from sailworks.core.gribsources.noaagfs import NOAAGFSSource
 from sailworks.core.gribsources.noaahrrr import NOAAHRRRSource
 from sailworks.core.gribsources.eccchrdps import ECCHRDPSource
 from sailworks.core.gribsources.parallel import (
+    NonGribStepResponseError,
     write_ordered_forecasts,
     write_ordered_payloads,
 )
 
 
-def response_with(content=b"GRIB-fixture"):
+def response_with(content=b"GRIB-fixture", status=200):
     response = MagicMock()
+    response.status_code = status
     response.iter_content.return_value = [content]
     return response
 
@@ -92,7 +94,7 @@ class DownloadSelectionTests(unittest.TestCase):
             patch(
                 "sailworks.core.gribsources.noaagfs.requests.get",
                 side_effect=lambda *_args, **kwargs: response_with(
-                    kwargs["params"]["file"][-3:].encode()
+                    b"GRIB" + kwargs["params"]["file"][-3:].encode()
                 ),
             ) as get,
         ):
@@ -101,7 +103,7 @@ class DownloadSelectionTests(unittest.TestCase):
             self.assertEqual(get.call_count, 3)
             requests = [call.kwargs["params"] for call in get.call_args_list]
             self.assertEqual({r["file"][-3:] for r in requests}, {"000", "009", "024"})
-            self.assertEqual(Path(output).read_bytes(), b"000009024")
+            self.assertEqual(Path(output).read_bytes(), b"GRIB000GRIB009GRIB024")
             for params in requests:
                 self.assertIn("var_PRMSL", params)
                 self.assertNotIn("var_UGRD", params)
@@ -145,6 +147,8 @@ class DownloadSelectionTests(unittest.TestCase):
         peak_active = 0
 
         class Response:
+            status_code = 200
+
             def __init__(self, step):
                 self.step = step
 
@@ -154,7 +158,7 @@ class DownloadSelectionTests(unittest.TestCase):
             def iter_content(self, chunk_size):
                 if self.step == 0:
                     self.assert_second_step_completed()
-                yield bytes((self.step,))
+                yield b"GRIB" + bytes((self.step,))
 
             @staticmethod
             def assert_second_step_completed():
@@ -188,8 +192,10 @@ class DownloadSelectionTests(unittest.TestCase):
         )
 
         self.assertEqual(peak_active, 4)
-        self.assertEqual(written, 5)
-        self.assertEqual(output.getvalue(), bytes(range(5)))
+        self.assertEqual(written, 25)
+        self.assertEqual(
+            output.getvalue(), b"".join(b"GRIB" + bytes((step,)) for step in range(5))
+        )
         self.assertEqual(progress, [20, 40, 60, 80, 100])
 
     def test_streaming_forecast_cancel_closes_active_response(self):
@@ -197,6 +203,7 @@ class DownloadSelectionTests(unittest.TestCase):
 
         class Response:
             closed = False
+            status_code = 200
 
             def raise_for_status(self):
                 pass
@@ -220,6 +227,86 @@ class DownloadSelectionTests(unittest.TestCase):
                 BytesIO(), (0,), lambda _: response, check_cancel, lambda _: None
             )
         self.assertTrue(response.closed)
+
+    def test_forecast_redirect_html_step_is_rejected_without_writing_html(self):
+        html = b"<html><body>Over Rate Limit</body></html>"
+        output = BytesIO()
+
+        def request(step):
+            if step == 3:
+                return response_with(html, status=302)
+            return response_with(b"GRIB" + bytes((step,)))
+
+        with self.assertRaisesRegex(
+            NonGribStepResponseError,
+            r"HRRR f003 returned HTTP 302 \(server is rate limiting",
+        ):
+            write_ordered_forecasts(
+                output,
+                (0, 3),
+                request,
+                lambda: None,
+                lambda _: None,
+                model="HRRR",
+            )
+        self.assertNotIn(b"Over Rate Limit", output.getvalue())
+
+    def test_forecast_html_body_under_http_200_is_rejected(self):
+        output = BytesIO()
+
+        with self.assertRaisesRegex(
+            NonGribStepResponseError,
+            r"GFS f006 returned HTTP 200 \(response body is not a GRIB file\)",
+        ):
+            write_ordered_forecasts(
+                output,
+                (6,),
+                lambda _: response_with(b"<html>Rate limit</html>", status=200),
+                lambda: None,
+                lambda _: None,
+                model="GFS",
+            )
+        self.assertEqual(output.getvalue(), b"")
+
+    def test_forecast_grib_steps_concatenate_in_order(self):
+        payloads = {step: b"GRIB" + bytes((step,)) for step in (0, 3, 6)}
+        output = BytesIO()
+        progress = []
+
+        written = write_ordered_forecasts(
+            output,
+            tuple(payloads),
+            lambda step: response_with(payloads[step]),
+            lambda: None,
+            progress.append,
+            model="HRRR",
+        )
+
+        self.assertEqual(output.getvalue(), b"GRIB\x00GRIB\x03GRIB\x06")
+        self.assertEqual(written, 15)
+        self.assertEqual(progress, [33, 66, 100])
+
+    def test_hrrr_download_rejects_rate_limit_page_and_keeps_no_output(self):
+        source = NOAAHRRRSource()
+        run = datetime(2026, 10, 15, 3, tzinfo=timezone.utc)
+        with patch.object(source, "_get_available_cycles", return_value=[run]):
+            row = source.get_download_list(DownloadOptions(3, 3, ("wind",), (0, 3)))[0]
+
+        def get(_url, *, params, **_kwargs):
+            if params["file"].endswith("f03.grib2"):
+                return response_with(b"<html>Over Rate Limit</html>", status=302)
+            return response_with(b"GRIB-step")
+
+        with tempfile.TemporaryDirectory() as directory:
+            with patch(
+                "sailworks.core.gribsources.noaahrrr.requests.get", side_effect=get
+            ):
+                with self.assertRaisesRegex(
+                    NonGribStepResponseError,
+                    r"HRRR f003 returned HTTP 302",
+                ):
+                    source.download(row[4], directory, lambda _: None)
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
     def test_generic_payload_writer_orders_progress_and_closes_submission_window(self):
         from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor

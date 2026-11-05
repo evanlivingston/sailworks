@@ -49,6 +49,16 @@ def _make_widget(composed, current, viewport, reference, dpr=1.0):
         _published=1,
         _weather_display_camera=None,
         _native_weather_fields=False,
+        # Wave layers stay unbound in this headless double; the camera pass
+        # reads their visibility and the retained items on a rebase.
+        _wave_visible=False,
+        _wave_arrows_visible=False,
+        _wave_fill=None,
+        _wave_fill_back=None,
+        _wave_barbs=None,
+        _wave_barbs_back=None,
+        _wave_token=None,
+        _wave_barbs_token=None,
         _wind_style="streamlines",
         cameraChanged=SimpleNamespace(emit=mock.Mock()),
         _show_state=mock.Mock(),

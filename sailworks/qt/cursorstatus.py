@@ -17,6 +17,7 @@ class CursorStatus(QWidget):
         for key, sample in (
             ("wind", "Wind 359.9°, 99.9 kts"),
             ("gust", "Gust 99.9 kts"),
+            ("wave", "Wave 99.9 m · 99 s · 359°"),
             ("depth", "Sounding 999.9 m (999 m away)"),
             ("coords", "Lat -89.999999°  Lon -179.999999°"),
             ("current", None),

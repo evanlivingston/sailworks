@@ -8,6 +8,7 @@ import logging
 from threading import RLock
 from uuid import uuid4
 
+from .forecastrefreshcontracts import failure_reason
 from .forecastrefreshplan import (
     RefreshCancelledError,
     create_source,
@@ -30,6 +31,16 @@ class RefreshExecutionError(RuntimeError):
 
 class RefreshSupersededError(RuntimeError):
     """A newer refresh or configuration retired this refresh ticket."""
+
+
+def _partial_failure_message(failures, published):
+    """Summarize which planned models failed when others were published."""
+    if not failures:
+        return ""
+    reasons = "; ".join(
+        f"{model_id}: {reason}" for model_id, reason in failures.items()
+    )
+    return f"{reasons}. Other models downloaded: {', '.join(published)}."
 
 
 def _utc(value, label):
@@ -81,6 +92,8 @@ class RefreshCoordinator:
         self._ticket = 0
         self._configurations = ()
         self._selected_model_id = None
+        self._partial_failures = {}
+        self._refresh_warning = ""
 
     def configure(self, configurations, selected_model_id):
         configs = tuple(configurations)
@@ -116,7 +129,10 @@ class RefreshCoordinator:
         for planned in plan.models:
             if cancel is not None and cancel.is_set():
                 raise RefreshCancelledError("Forecast size estimate cancelled")
-            if self.store.reusable_entry(planned) is not None:
+            if (
+                self.store.reusable_entry(planned) is not None
+                or self.store.recorded_download(planned) is not None
+            ):
                 reusable_models.append(planned.model_id)
                 continue
             source = create_source(planned, self.factories)
@@ -163,7 +179,17 @@ class RefreshCoordinator:
         already covers every planned run.
         """
         for planned in plan.models:
-            if self.store.reusable_entry(planned) is None:
+            try:
+                reusable = self.store.reusable_entry(planned)
+            except Exception:
+                # The per-model refresh loop reports local-store errors. Treat
+                # an unreadable entry as not current so the loop can do that
+                # without aborting every other model.
+                logger.exception(
+                    "Local reuse lookup failed for model=%s", planned.model_id
+                )
+                return False
+            if reusable is None:
                 return False
         return True
 
@@ -202,6 +228,26 @@ class RefreshCoordinator:
     def _is_current(self, revision, ticket):
         with self._lock:
             return revision == self._revision and ticket == self._ticket
+
+    @property
+    def partial_failures(self):
+        """Failures from the last completed refresh, as {model_id: reason}."""
+        with self._lock:
+            return dict(self._partial_failures)
+
+    @property
+    def refresh_warning(self):
+        """Partial-failure summary for the last refresh, or an empty string."""
+        with self._lock:
+            return self._refresh_warning
+
+    def _record_outcome(self, revision, ticket, failures, published):
+        """Publish the last refresh's partial failures for the UI to display."""
+        with self._lock:
+            if revision != self._revision or ticket != self._ticket:
+                return
+            self._partial_failures = dict(failures)
+            self._refresh_warning = _partial_failure_message(failures, published)
 
     def _raise_if_stale_or_cancelled(self, revision, ticket, cancel):
         if not self._is_current(revision, ticket):
@@ -349,8 +395,18 @@ class RefreshCoordinator:
             self._raise_if_stale_or_cancelled(revision, ticket, cancel)
             logger.exception("Forecast refresh planning failed")
             raise RefreshExecutionError(f"planning failed: {exc}") from exc
+        expected_by_id = {
+            configuration.model_id: configuration for configuration in configurations
+        }
+        planned_ids = {item.model_id for item in plan.models}
+        failed_ids = set(plan.planning_failures)
         if (
-            plan.configurations != configurations
+            planned_ids | failed_ids != set(expected_by_id)
+            or planned_ids & failed_ids
+            or any(
+                item.configuration != expected_by_id[item.model_id]
+                for item in plan.models
+            )
             or plan.selected_model_id != selected_model_id
         ):
             raise RefreshExecutionError(
@@ -374,9 +430,22 @@ class RefreshCoordinator:
                     ",".join(item.model_id for item in plan.models),
                     selected_model_id,
                 )
+                if plan.planning_failures:
+                    self._record_outcome(
+                        revision,
+                        ticket,
+                        dict(plan.planning_failures),
+                        tuple(item.model_id for item in plan.models),
+                    )
                 return current
 
         entries = []
+        # Planning failures are per-model and belong in the same summary as
+        # failures that happen later during download, registration or validation.
+        failures = dict(plan.planning_failures)
+        published = []
+        selection = None
+        self._record_outcome(revision, ticket, {}, ())
         try:
             with tempfile.TemporaryDirectory(
                 dir=self.store.root, prefix=".refresh-"
@@ -384,24 +453,53 @@ class RefreshCoordinator:
                 stage = Path(tmp)
                 for index, planned in enumerate(plan.models):
                     self._raise_if_stale_or_cancelled(revision, ticket, cancel)
-                    reusable = self.store.reusable_entry(planned)
-                    if reusable is not None:
-                        entry, _path = reusable
-                        logger.info(
-                            "Reusing local forecast model=%s run=%s artifact=%s",
-                            planned.model_id,
-                            planned.run_time.isoformat(),
-                            entry.artifacts[0].sha256,
-                        )
-                        entries.append(entry)
-                        self._progress(
-                            progress,
-                            planned.model_id,
-                            90 + int(9 * (index + 1) / len(plan.models)),
-                        )
-                        continue
-                    phase = "download"
+                    phase = "local reuse"
                     try:
+                        reusable = self.store.reusable_entry(planned)
+                        if reusable is not None:
+                            entry, _path = reusable
+                            logger.info(
+                                "Reusing local forecast model=%s run=%s artifact=%s",
+                                planned.model_id,
+                                planned.run_time.isoformat(),
+                                entry.artifacts[0].sha256,
+                            )
+                            entries.append(entry)
+                            self._progress(
+                                progress,
+                                planned.model_id,
+                                90 + int(9 * (index + 1) / len(plan.models)),
+                            )
+                            continue
+                        recorded = self.store.recorded_download(planned)
+                        if recorded is not None:
+                            acquired_at = _utc(self.clock(), "acquisition time")
+                            logger.info(
+                                "Reusing already-downloaded artifact model=%s "
+                                "run=%s artifact=%s",
+                                planned.model_id,
+                                planned.run_time.isoformat(),
+                                recorded.sha256,
+                            )
+                            phase = "validation"
+                            self._stage(progress, f"Validating {planned.model_id}…")
+                            metadata = self.validator(
+                                self.store.root / recorded.path,
+                                planned,
+                                combined,
+                            )
+                            entries.append(
+                                self._validated_entry(
+                                    planned, metadata, recorded, acquired_at
+                                )
+                            )
+                            self._progress(
+                                progress,
+                                planned.model_id,
+                                90 + int(9 * (index + 1) / len(plan.models)),
+                            )
+                            continue
+                        phase = "download"
                         logger.info(
                             "Downloading forecast model=%s run=%s",
                             planned.model_id,
@@ -414,6 +512,16 @@ class RefreshCoordinator:
                         acquired_at = _utc(self.clock(), "acquisition time")
                         phase = "artifact registration"
                         artifact = self.store.register_file(downloaded)
+                        # Record before validation: a later validation failure
+                        # must not orphan bytes that were already transferred.
+                        try:
+                            self.store.record_download(planned, artifact)
+                        except Exception:
+                            logger.warning(
+                                "Could not record download for model=%s",
+                                planned.model_id,
+                                exc_info=True,
+                            )
                         registered = self.store.root / artifact.path
                         self._raise_if_stale_or_cancelled(revision, ticket, cancel)
                         phase = "validation"
@@ -438,31 +546,67 @@ class RefreshCoordinator:
                     except (RefreshCancelledError, RefreshSupersededError):
                         raise
                     except Exception as exc:
+                        # One model's failure must not block the others: record
+                        # it and continue with the remaining planned models.
                         self._raise_if_stale_or_cancelled(revision, ticket, cancel)
                         logger.exception(
                             "Forecast model %s failed during %s",
                             planned.model_id,
                             phase,
                         )
-                        raise RefreshExecutionError(
-                            f"{planned.model_id} {phase} failed: {exc}"
-                        ) from exc
+                        failures[planned.model_id] = (
+                            f"{phase} failed: {failure_reason(exc)}"
+                        )
                 self._raise_if_stale_or_cancelled(revision, ticket, cancel)
+                published = [entry.model_id for entry in entries]
+                if not entries:
+                    reasons = "; ".join(
+                        f"{model_id} {reason}" for model_id, reason in failures.items()
+                    )
+                    raise RefreshExecutionError(
+                        f"every planned model failed: {reasons}"
+                        if reasons
+                        else "the plan contained no models"
+                    )
                 refreshed_at = _utc(self.clock(), "refresh time")
+                published_set = {entry.model_id for entry in entries}
+                # A tranche declares exactly the models it actually contains, so
+                # models that failed are not advertised as published.
                 tranche = ForecastTranche(
-                    self.id_factory(), refreshed_at, plan.configurations, tuple(entries)
+                    self.id_factory(),
+                    refreshed_at,
+                    tuple(
+                        planned.configuration
+                        for planned in plan.models
+                        if planned.model_id in published_set
+                    ),
+                    tuple(entries),
                 )
                 self._progress(progress, selected_model_id, 99)
                 self._raise_if_stale_or_cancelled(revision, ticket, cancel)
                 self._stage(progress, "Publishing forecast…")
                 self.store.publish(tranche)
+                # The manifest now covers these requests; drop their download
+                # hints so the index stays a short-lived adoption record.
+                for planned in plan.models:
+                    if planned.model_id not in published_set:
+                        continue
+                    try:
+                        self.store.forget_download(planned)
+                    except Exception:
+                        logger.warning(
+                            "Could not clear recorded download for model=%s",
+                            planned.model_id,
+                            exc_info=True,
+                        )
                 logger.info(
                     "Published forecast tranche=%s models=%s selected=%s",
                     tranche.tranche_id,
                     ",".join(entry.model_id for entry in tranche.entries),
                     selected_model_id,
                 )
-                selection = AnalysisSelection(tranche.tranche_id, selected_model_id)
+                if selected_model_id in {entry.model_id for entry in entries}:
+                    selection = AnalysisSelection(tranche.tranche_id, selected_model_id)
             # The owned stage is removed before activation; cleanup failure cannot
             # occur after the active pointer has committed.
         except (RefreshCancelledError, RefreshSupersededError):
@@ -471,6 +615,17 @@ class RefreshCoordinator:
             self._raise_if_stale_or_cancelled(revision, ticket, cancel)
             logger.exception("Forecast refresh preparation failed")
             raise RefreshExecutionError(f"refresh preparation failed: {exc}") from exc
+        self._record_outcome(revision, ticket, failures, published)
+        if selection is None:
+            # The requested model failed but others published. Never switch the
+            # user's selection silently; leave the previous active selection.
+            current = self.store.active()
+            logger.info(
+                "Forecast refresh kept previous selection; models=%s failed=%s",
+                ",".join(published),
+                ",".join(failures),
+            )
+            return current
         self._raise_if_stale_or_cancelled(revision, ticket, cancel)
         try:
             return self.store.activate(

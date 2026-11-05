@@ -79,6 +79,15 @@ class Era5DownloadTab(QWidget):
         self.field_pressure.setChecked(True)
         parameters_layout.addWidget(self.field_wind)
         parameters_layout.addWidget(self.field_pressure)
+        self.field_wave_height = QCheckBox("Significant wave height")
+        self.field_wave_period = QCheckBox("Wave period")
+        self.field_wave_direction = QCheckBox("Wave direction")
+        for check in (
+            self.field_wave_height,
+            self.field_wave_period,
+            self.field_wave_direction,
+        ):
+            parameters_layout.addWidget(check)
         parameters_layout.addStretch(1)
         columns.addWidget(parameters_box, 1)
         self.parameters_box = parameters_box
@@ -149,7 +158,7 @@ class Era5DownloadTab(QWidget):
         self._resume_was_active = False
         resume = getattr(self.service, "resume_pending", None)
         if callable(resume):
-            resume()
+            self._resume_was_active = bool(resume())
         self.cancel_button.setEnabled(False)
         self.retry_button.setEnabled(False)
         self._models_changed()
@@ -244,7 +253,7 @@ class Era5DownloadTab(QWidget):
         if not models:
             self.status.setText("Select at least one model to download.")
             return
-        if not self.field_wind.isChecked():
+        if "NBS" in models and not self.field_wind.isChecked():
             self.status.setText(
                 "Wind at 10 m is required for a usable historical field."
             )
@@ -267,12 +276,26 @@ class Era5DownloadTab(QWidget):
             fields.append("wind")
         if self.field_pressure.isChecked() and self.model_checks["ERA5"].isChecked():
             fields.append("pressure")
+        if self.model_checks["ERA5"].isChecked():
+            for field, check in (
+                ("wave_height", self.field_wave_height),
+                ("wave_period", self.field_wave_period),
+                ("wave_direction", self.field_wave_direction),
+            ):
+                if check.isChecked():
+                    fields.append(field)
         return tuple(fields) or ("wind",)
 
     def _models_changed(self, *_):
         era5 = self.model_checks["ERA5"].isChecked()
         nbs = self.model_checks["NBS"].isChecked()
         self.field_pressure.setEnabled(era5)
+        for check in (
+            self.field_wave_height,
+            self.field_wave_period,
+            self.field_wave_direction,
+        ):
+            check.setEnabled(era5)
         if not era5 and not nbs:
             self.status.setText("Select at least one model to download.")
         elif nbs and not era5:
@@ -289,9 +312,7 @@ class Era5DownloadTab(QWidget):
             return
         try:
             self.plan = self._make_plan(fields)
-            self.service.errors.pop(
-                (self.plan.start, self.plan.end, self.plan.area), None
-            )
+            self.service.clear_error(self.service.key_for(self.plan))
             self.job = self.service.submit(self.plan)
             self.progress.setRange(0, 0)
             self.progress.setFormat("Contacting CDS…")
@@ -415,7 +436,12 @@ class Era5DownloadTab(QWidget):
     def retry(self):
         if self.plan is None or (self.job is not None and self.job.is_alive()):
             return
-        self.service.errors.pop((self.plan.start, self.plan.end, self.plan.area), None)
+        key = (
+            self.job.era5_key
+            if self.job is not None
+            else self.service.key_for(self.plan)
+        )
+        self.service.clear_error(key)
         self.job = self.service.submit(self.plan, retry=True)
         self.progress.setRange(0, 0)
         self.progress.setFormat("Contacting CDS…")
@@ -448,6 +474,15 @@ class Era5DownloadTab(QWidget):
             elif getattr(self, "_resume_was_active", False):
                 self._resume_was_active = False
                 self.progress.hide()
+                completed_keys = getattr(
+                    self.service, "completed_resume_keys", lambda: []
+                )()
+                errors = [self.service.clear_error(key) for key in completed_keys]
+                errors = [error for error in errors if error]
+                if errors:
+                    self.status.setText("ERA5 resume failed: " + "; ".join(errors))
+                    self.refresh_catalog()
+                    return
                 self.status.setText("ERA5 history updated.")
                 self.refresh_catalog()
                 self._publish_history_display()
@@ -473,8 +508,7 @@ class Era5DownloadTab(QWidget):
         if plan is None:
             self.job = None
             return
-        key = (plan.start, plan.end, plan.area)
-        error = self.service.errors.pop(key, None)
+        error = self.service.clear_error(self.job.era5_key)
         info = progress_for(plan) if progress_for else None
         stage = (info or {}).get("stage")
         if error:

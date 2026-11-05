@@ -9,6 +9,10 @@ import QtQuick
 Item {
     id: root
     property bool fillEnabled: false
+    // The wave height fill's front slot, driven exactly like the wind fill
+    // above: the viewport writes this property, so the binding follows the
+    // current scene instance rather than a slot held from a replaced one.
+    property bool waveFillEnabled: false
     WeatherFill {
         id: fill
         objectName: "weatherFill"
@@ -23,6 +27,44 @@ Item {
         anchors.fill: parent
         visible: false
         fragmentShader: Qt.resolvedUrl("weather-fill-back.frag.qsb")
+    }
+    // The wave height fill. A scalar field travels in u0/u1 with a zero plane
+    // in v0/v1, so it reuses WeatherFill and the weather shader's bilinear
+    // unchanged. All four image slots are bound (u, zero, u1, zero) because
+    // WeatherFill's readiness contract is "all four images ready"; that is
+    // the layout the scalar staging already produces.
+    WeatherFill {
+        id: waveFill
+        objectName: "waveFill"
+        anchors.fill: parent
+        visible: root.waveFillEnabled
+        gradientLevels: 9
+        fragmentShader: Qt.resolvedUrl("wave.frag.qsb")
+        property string statusText: ""
+        property bool waveLoading: false
+    }
+    // The pending wave frame loads beside the one on screen and is swapped in
+    // only after the publication manager adopts it, so a slow publish never
+    // presents a stale or half-loaded field.
+    WeatherFill {
+        id: waveFillBack
+        objectName: "waveFillBack"
+        anchors.fill: parent
+        visible: false
+        gradientLevels: 9
+        fragmentShader: Qt.resolvedUrl("wave.frag.qsb")
+        property string statusText: ""
+        property bool waveLoading: false
+    }
+    Text {
+        objectName: "waveStatus"
+        anchors.left: parent.left
+        anchors.bottom: parent.bottom
+        anchors.margins: 12
+        visible: text !== ""
+        color: "#e6edf3"
+        style: Text.Outline
+        styleColor: "#1e2124"
     }
     // Shared node-anchor pool: one provider per atlas slot that both barbs
     // sample, so anchor publications are retained once. Hidden, unsized and
@@ -69,6 +111,17 @@ Item {
         sharedAnchorY0: anchorAtlasY0
         sharedAnchorX1: anchorAtlasX1
         sharedAnchorY1: anchorAtlasY1
+    }
+    WaveBarbs {
+        id: waveBarbs
+        objectName: "waveBarbs"
+        anchors.fill: parent
+        visible: false
+    }
+    WaveBarbs {
+        objectName: "waveBarbsBack"
+        anchors.fill: parent
+        visible: false
     }
     WeatherStreamlines { objectName: "weatherStreamlines"; anchors.fill: parent; visible: false }
     // Stationary clip container for synthetic markers and future explicit

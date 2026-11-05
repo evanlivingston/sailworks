@@ -11,7 +11,50 @@ import numpy as np
 from osgeo import gdal
 
 from sailworks.core.grib import Grib
+from sailworks.core.gribsampling import WeatherSampler
 from sailworks.rendering.windcursor import CursorGrib, WindCursorSampler
+
+WIND_RECORDS = (
+    (0, "UGRD", 2, "10-HTGL"),
+    (0, "VGRD", 4, "10-HTGL"),
+    (0, "GUST", 6, "0-SFC"),
+    (3, "UGRD", 8, "10-HTGL"),
+    (3, "VGRD", 10, "10-HTGL"),
+    (3, "GUST", 12, "0-SFC"),
+)
+
+WAVE_RECORDS = (
+    (0, "HTSGW", 1, "0-SFC"),
+    (0, "PERPW", 6, "0-SFC"),
+    (0, "DIRPW", 240, "0-SFC"),
+    (3, "HTSGW", 2, "0-SFC"),
+    (3, "PERPW", 9, "0-SFC"),
+    (3, "DIRPW", 260, "0-SFC"),
+)
+
+UNITS = {"HTSGW": "[m]", "PERPW": "[s]", "DIRPW": "[Deg]"}
+
+
+def write_grib(path, records):
+    dataset = gdal.GetDriverByName("GTiff").Create(
+        str(path), 4, 3, len(records), gdal.GDT_Float32
+    )
+    dataset.SetGeoTransform((-124.5, 1, 0, 50.5, 0, -1))
+    for index, (hour, element, value, short_name) in enumerate(records, 1):
+        band = dataset.GetRasterBand(index)
+        band.SetMetadata(
+            dict(
+                GRIB_ELEMENT=element,
+                GRIB_FORECAST_SECONDS=str(hour * 3600),
+                GRIB_SHORT_NAME=short_name,
+                GRIB_UNIT=UNITS.get(element, "[m/s]"),
+            )
+        )
+        values = np.full((3, 4), value, dtype=np.float32)
+        if element not in UNITS:
+            values += np.arange(12, dtype=np.float32).reshape(3, 4) * 0.25
+        band.WriteArray(values)
+    dataset = None
 
 
 class TestCursorGrib(unittest.TestCase):
@@ -19,37 +62,14 @@ class TestCursorGrib(unittest.TestCase):
         self.directory = TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name) / "wind.tif"
-        dataset = gdal.GetDriverByName("GTiff").Create(
-            str(self.path), 4, 3, 6, gdal.GDT_Float32
-        )
-        dataset.SetGeoTransform((-124.5, 1, 0, 50.5, 0, -1))
-        for index, (hour, element, value) in enumerate(
-            (
-                (0, "UGRD", 2),
-                (0, "VGRD", 4),
-                (0, "GUST", 6),
-                (3, "UGRD", 8),
-                (3, "VGRD", 10),
-                (3, "GUST", 12),
-            ),
-            1,
-        ):
-            band = dataset.GetRasterBand(index)
-            band.SetMetadata(
-                dict(
-                    GRIB_ELEMENT=element,
-                    GRIB_FORECAST_SECONDS=str(hour * 3600),
-                    GRIB_SHORT_NAME="0-SFC" if element == "GUST" else "10-HTGL",
-                    GRIB_UNIT="[m/s]",
-                )
-            )
-            band.WriteArray(
-                np.full((3, 4), value, dtype=np.float32)
-                + np.arange(12, dtype=np.float32).reshape(3, 4) * 0.25
-            )
-        band = dataset = None
+        write_grib(self.path, WIND_RECORDS)
         self.start = datetime(2026, 1, 1)
         self.source = Grib(str(self.path), "wind", "test", [], self.start, 3)
+
+    def wave_source(self):
+        path = Path(self.directory.name) / "wind-waves.tif"
+        write_grib(path, WIND_RECORDS + WAVE_RECORDS)
+        return Grib(str(path), "waves", "test", [], self.start, 3)
 
     def test_private_sampling_matches_legacy_at_multiple_times_and_positions(self):
         private = CursorGrib(self.source)
@@ -108,9 +128,69 @@ class TestCursorGrib(unittest.TestCase):
         sampler = WindCursorSampler(Mock())
         self.addCleanup(sampler.close)
         instant = self.start + timedelta(minutes=90)
-        wind, gust = sampler._sample_weather([self.source], instant, 49, -123)
+        wind, gust, waves = sampler._sample_weather([self.source], instant, 49, -123)
         self.assertEqual(wind, self.source.get_wind_at(instant, 49, -123))
         self.assertAlmostEqual(gust, 10.25)
+        self.assertIsNone(waves)
+
+    def test_cursor_weather_includes_interpolated_waves(self):
+        source = self.wave_source()
+        sampler = WindCursorSampler(Mock())
+        self.addCleanup(sampler.close)
+        instant = self.start + timedelta(minutes=90)
+        wind, gust, waves = sampler._sample_weather([source], instant, 49, -123, True)
+        self.assertEqual(wind, source.get_wind_at(instant, 49, -123))
+        self.assertAlmostEqual(gust, 10.25)
+        self.assertAlmostEqual(waves[0], 1.5)
+        self.assertAlmostEqual(waves[1], 7.5)
+        self.assertAlmostEqual(waves[2], 250)
+        self.assertEqual(len(sampler._gribs), 1)
+
+    def test_absent_wave_bands_leave_wind_and_gust_available(self):
+        sampler = WindCursorSampler(Mock())
+        self.addCleanup(sampler.close)
+        instant = self.start + timedelta(minutes=90)
+        wind, gust, waves = sampler._sample_weather(
+            [self.source], instant, 49, -123, True
+        )
+        self.assertIsNotNone(wind)
+        self.assertAlmostEqual(gust, 10.25)
+        self.assertIsNone(waves)
+
+    def test_wave_bands_are_not_sampled_when_the_layer_is_hidden(self):
+        source = self.wave_source()
+        sampler = WindCursorSampler(Mock())
+        self.addCleanup(sampler.close)
+        instant = self.start + timedelta(minutes=90)
+        fields = []
+        sample = WeatherSampler.sample
+
+        def spy(instance, field, *args, **kwargs):
+            fields.append(field)
+            return sample(instance, field, *args, **kwargs)
+
+        with patch.object(WeatherSampler, "sample", spy):
+            wind, gust, waves = sampler._sample_weather(
+                [source], instant, 49, -123, False
+            )
+        self.assertIsNotNone(wind)
+        self.assertAlmostEqual(gust, 10.25)
+        self.assertIsNone(waves)
+        self.assertNotIn("wave_height", fields)
+        self.assertNotIn("wave_period", fields)
+        self.assertNotIn("wave_direction", fields)
+
+    def test_wave_sample_reuses_the_wind_handle(self):
+        source = self.wave_source()
+        sampler = WindCursorSampler(Mock())
+        self.addCleanup(sampler.close)
+        instant = self.start + timedelta(minutes=90)
+        sampler._sample_weather([source], instant, 49, -123, False)
+        grib = sampler._gribs[source]
+        sampler._sample_weather([source], instant, 49, -123, True)
+        self.assertIs(sampler._gribs[source], grib)
+        self.assertEqual(len(sampler._gribs), 1)
+        self.assertLessEqual(len(grib._arrays), 4)
 
     def test_cursor_sampling_starts_without_a_debounce_timer(self):
         sampler = WindCursorSampler(Mock())

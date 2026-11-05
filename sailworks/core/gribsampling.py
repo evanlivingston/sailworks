@@ -18,7 +18,14 @@ from osgeo import gdal
 from pyproj import CRS, Transformer, Geod
 
 from .gribvectors import vector_flags
-from .gribfields import GUST_ELEMENTS, PRESSURE_ELEMENTS, is_mean_sea_level_pressure
+from .gribfields import (
+    GUST_ELEMENTS,
+    PRESSURE_ELEMENTS,
+    WAVE_HEIGHT_ELEMENTS,
+    WAVE_PERIOD_ELEMENTS,
+    WAVE_DIRECTION_ELEMENTS,
+    is_mean_sea_level_pressure,
+)
 
 logger = logging.getLogger("sailworks")
 
@@ -26,6 +33,9 @@ FIELDS = {
     "wind": ("UGRD", "VGRD"),
     "pressure": PRESSURE_ELEMENTS,
     "gust": GUST_ELEMENTS,
+    "wave_height": WAVE_HEIGHT_ELEMENTS,
+    "wave_period": WAVE_PERIOD_ELEMENTS,
+    "wave_direction": WAVE_DIRECTION_ELEMENTS,
 }
 
 
@@ -37,6 +47,31 @@ def number(value):
 def wind_value(uv):
     u, v = uv
     return (math.degrees(math.atan2(-u, -v)) + 360) % 360, math.hypot(u, v)
+
+
+CIRCULAR_EPSILON = 1e-10
+
+
+def _circular_result(sine, cosine, total, fallback):
+    # A near-zero resultant uses the largest-weight bearing, first on ties.
+    result = np.degrees(np.arctan2(sine, cosine)) % 360
+    result = np.where(
+        np.hypot(sine, cosine) < CIRCULAR_EPSILON * total,
+        np.nan_to_num(fallback) % 360,
+        result,
+    )
+    return np.where(np.isfinite(result) & (result < 360), result, 0)
+
+
+def _circular_blend(a, b, t):
+    ar, br = np.deg2rad(a), np.deg2rad(b)
+    wa, wb = 1 - t, t
+    return _circular_result(
+        wa * np.sin(ar) + wb * np.sin(br),
+        wa * np.cos(ar) + wb * np.cos(br),
+        np.abs(wa) + np.abs(wb),
+        np.where(wa >= wb, a, b),
+    )
 
 
 def model_key(metadata, source):
@@ -120,7 +155,7 @@ class GridIndex:
         records = []
         for band_id in range(1, self.dataset.RasterCount + 1):
             metadata = self.dataset.GetRasterBand(band_id).GetMetadata()
-            element = metadata.get("GRIB_ELEMENT")
+            element = metadata.get("GRIB_ELEMENT", "").upper()
             # ERA5 single-level CDS GRIB uses ecCodes short aliases. Normalize
             # only those unambiguous element/level pairs for the shared sampler.
             level = metadata.get("GRIB_SHORT_NAME", "")
@@ -141,7 +176,11 @@ class GridIndex:
             is_wind = element in FIELDS["wind"]
             is_gust = element in FIELDS["gust"]
             is_pressure = is_mean_sea_level_pressure(metadata)
-            if not (is_wind or is_gust or is_pressure):
+            is_wave = any(
+                element in FIELDS[field]
+                for field in ("wave_height", "wave_period", "wave_direction")
+            )
+            if not (is_wind or is_gust or is_pressure or is_wave):
                 continue
             accepted_levels: tuple[str, ...]
             if is_wind:
@@ -150,6 +189,9 @@ class GridIndex:
             elif is_gust:
                 expected = level or "0-SFC"
                 accepted_levels = ("0-SFC", "10-HTGL")
+            elif is_wave:
+                expected = level or "0-SFC"
+                accepted_levels = ("0-SFC", "1-SFC")
             else:
                 expected = "0-MSL"
                 accepted_levels = (expected,)
@@ -186,7 +228,19 @@ class GridIndex:
                 scale = 0.514444
             elif is_gust and unit.lower().strip("[] ") in ("km/h", "kph"):
                 scale = 1.0 / 3.6
+            elif element in FIELDS["wave_height"] and unit.lower().strip("[] ") in (
+                "cm",
+                "km",
+            ):
+                scale = {"cm": 0.01, "km": 1000.0}[unit.lower().strip("[] ")]
+            elif element in FIELDS["wave_period"] and unit.lower().strip("[] ") in (
+                "min",
+                "minute",
+                "minutes",
+            ):
+                scale = 60.0
             else:
+                # Wave direction stays in meteorological degrees, coming from.
                 scale = 1.0
             records.append(
                 Record(
@@ -289,16 +343,33 @@ class GridIndex:
             (x1, y1, dx * dy),
         )
         bases = self._corner_basis(record, corners) if vector else None
+        circular = not vector and record.element in WAVE_DIRECTION_ELEMENTS
+        sine = np.zeros(lats.shape) if circular else None
+        cosine = np.zeros(lats.shape) if circular else None
+        best_weight = np.full(lats.shape, -1.0) if circular else None
+        fallback = np.zeros(lats.shape) if circular else None
+        total_weight = np.zeros(lats.shape) if circular else None
         for position, (xx, yy, weight) in enumerate(corners):
             corner = array[yy, xx]
             needed = weight > 1e-12
             inside &= ~needed | np.isfinite(corner)
             contribution = np.where(needed, np.nan_to_num(corner) * weight, 0)
+            if circular:
+                better = weight > best_weight
+                fallback = np.where(better, np.nan_to_num(corner), fallback)
+                best_weight = np.where(better, weight, best_weight)
+                total_weight += weight
+                radians = np.deg2rad(np.nan_to_num(corner))
+                sine += np.sin(radians) * weight
+                cosine += np.cos(radians) * weight
+                continue
             if vector:
                 contribution = (
                     contribution[:, None] * cast("list[np.ndarray]", bases)[position]
                 )
             value += contribution
+        if circular:
+            value = _circular_result(sine, cosine, total_weight, fallback)
         return np.where(inside[:, None] if vector else inside, value, np.nan)
 
     def _corner_basis(self, record, corners):
@@ -539,10 +610,10 @@ class WeatherSampler:
             sorted({getattr(r.index.source, "name", "unknown") for r in records})
         )
 
-    def _pressure_at_time(self, records, lats, lons):
+    def _scalar_at_time(self, records, field, lats, lons):
         result = np.full((len(lats), 1), np.nan)
         origins = np.full(len(lats), "", dtype=object)
-        for element in FIELDS["pressure"]:
+        for element in FIELDS[field]:
             for record in records.get(element, ()):
                 use = ~np.isfinite(result[:, 0])
                 if not use.any():
@@ -586,8 +657,8 @@ class WeatherSampler:
         ]
 
     def _at_time(self, records, field, lats, lons):
-        if field == "pressure":
-            return self._pressure_at_time(records, lats, lons)
+        if field != "wind" and field != "gust":
+            return self._scalar_at_time(records, field, lats, lons)
         if field == "gust":
             return self._gust_at_time(records, lats, lons)
         result = np.full((len(lats), 2), np.nan)
@@ -632,13 +703,16 @@ class WeatherSampler:
         return values, stamps, origins
 
     @staticmethod
-    def _blend(a, ta, sa, b, tb, sb, stamps):
+    def _blend(a, ta, sa, b, tb, sb, stamps, field=None):
         av, bv = np.isfinite(ta), np.isfinite(tb)
         values = np.where(av[:, None], a, b)
         names = np.where(av, sa, sb)
         both = av & bv & (tb > ta)
         weight = (stamps[both] - ta[both]) / (tb[both] - ta[both])
-        values[both] = a[both] + (b[both] - a[both]) * weight[:, None]
+        if field == "wave_direction":
+            values[both] = _circular_blend(a[both], b[both], weight[:, None])
+        else:
+            values[both] = a[both] + (b[both] - a[both]) * weight[:, None]
         for i in np.flatnonzero(both):
             names[i] = "\x1f".join(
                 sorted(set(sa[i].split("\x1f")) | set(sb[i].split("\x1f")))
@@ -682,7 +756,9 @@ class WeatherSampler:
             b, tb, sb = self._side(
                 group, times, field, lats[use], lons[use], stamps[use], False, cancel
             )
-            result[use], origins[use] = self._blend(a, ta, sa, b, tb, sb, stamps[use])
+            result[use], origins[use] = self._blend(
+                a, ta, sa, b, tb, sb, stamps[use], field
+            )
         self.last_sources = {
             name for origin in origins for name in origin.split("\x1f") if name
         }

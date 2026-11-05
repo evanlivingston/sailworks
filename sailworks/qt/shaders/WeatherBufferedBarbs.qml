@@ -4,6 +4,18 @@ import QtQuick
 Item {
     id: root
     property bool fillEnabled: false
+    // This scene has no image fill, so the wave layer cannot be drawn here.
+    // An explicit status line takes the place of a silent, empty fill.
+    Text {
+        objectName: "waveStatus"
+        anchors.left: parent.left
+        anchors.bottom: parent.bottom
+        anchors.margins: 12
+        visible: text !== ""
+        color: "#e6edf3"
+        style: Text.Outline
+        styleColor: "#1e2124"
+    }
     WeatherFill {
         objectName: "weatherFill"
         anchors.fill: parent
@@ -13,6 +25,26 @@ Item {
         objectName: "weatherFillBack"
         anchors.fill: parent
         visible: false
+    }
+    // Wave height is an independent scalar layer; it must exist here too, or
+    // "Show wave height" can never draw while the wind style is barbs.
+    WeatherFill {
+        objectName: "waveFill"
+        anchors.fill: parent
+        visible: false
+        gradientLevels: 9
+        fragmentShader: Qt.resolvedUrl("wave.frag.qsb")
+        property string statusText: ""
+        property bool waveLoading: false
+    }
+    WeatherFill {
+        objectName: "waveFillBack"
+        anchors.fill: parent
+        visible: false
+        gradientLevels: 9
+        fragmentShader: Qt.resolvedUrl("wave.frag.qsb")
+        property string statusText: ""
+        property bool waveLoading: false
     }
     // Shared node-anchor pool: one provider per atlas slot that both barbs
     // sample. Hidden, unsized and declared before the barbs, so the existing
@@ -57,6 +89,20 @@ Item {
         sharedAnchorY0: anchorAtlasY0
         sharedAnchorX1: anchorAtlasX1
         sharedAnchorY1: anchorAtlasY1
+    }
+    // Wave arrows read their own anchor sources: the wave publication binds
+    // anchorXSource/anchorYSource directly rather than through the shared
+    // wind atlas, so these items must not claim the shared pool.
+    WaveBarbs {
+        id: waveBarbs
+        objectName: "waveBarbs"
+        anchors.fill: parent
+        visible: false
+    }
+    WaveBarbs {
+        objectName: "waveBarbsBack"
+        anchors.fill: parent
+        visible: false
     }
     WeatherStreamlines { objectName: "weatherStreamlines"; anchors.fill: parent; visible: false }
 }

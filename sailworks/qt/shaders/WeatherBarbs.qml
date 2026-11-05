@@ -3,6 +3,18 @@ import QtQuick
 Item {
     id: root
     property bool fillEnabled: false
+    // This scene has no image fill, so the wave layer cannot be drawn here.
+    // An explicit status line takes the place of a silent, empty fill.
+    Text {
+        objectName: "waveStatus"
+        anchors.left: parent.left
+        anchors.bottom: parent.bottom
+        anchors.margins: 12
+        visible: text !== ""
+        color: "#e6edf3"
+        style: Text.Outline
+        styleColor: "#1e2124"
+    }
     property alias u0Source: imageU0.source
     property alias v0Source: imageV0.source
     property alias u1Source: imageU1.source
@@ -111,6 +123,11 @@ Item {
         anchors.fill: parent
         visible: false
     }
+    // The wave height fill is the scene's, not this component's: this
+    // component is instantiated as both the front and the staging band, and
+    // the staging band stays hidden, so a wave fill parented here could never
+    // be rendered or compiled.  A scene that draws the numerical fill owns
+    // the wave pair beside the wind pair.
     function batchesReady() {
         let revision = batchRevision
         for (let i = 0; i < batches.count; ++i) {
@@ -204,5 +221,20 @@ Item {
         vertexShader: "barbs.vert.qsb"
         fragmentShader: "barbs.frag.qsb"
     }
+    }
+    // Wave arrows are a layer of their own, exactly as in WeatherScene.qml.
+    // This scene draws the wave height fill, so it must also declare the
+    // glyph layer: the viewport finds it by objectName and drives its
+    // visibility, and a scene without it reports "Wave arrows unavailable".
+    WaveBarbs {
+        id: waveBarbs
+        objectName: "waveBarbs"
+        anchors.fill: parent
+        visible: false
+    }
+    WaveBarbs {
+        objectName: "waveBarbsBack"
+        anchors.fill: parent
+        visible: false
     }
 }

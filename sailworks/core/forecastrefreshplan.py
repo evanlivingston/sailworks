@@ -6,10 +6,17 @@ Catalogue freshness is provider-dependent and is not asserted to be latest-publi
 
 from datetime import datetime, timezone
 import json
+import logging
 
 from .forecastcapabilities import MODEL_CAPABILITIES
-from .forecastrefreshcontracts import ForecastRefreshPlan, PlannedModel
+from .forecastrefreshcontracts import (
+    ForecastRefreshPlan,
+    PlannedModel,
+    failure_reason,
+)
 from .forecasttranche import ModelConfiguration, shared_requested_region
+
+logger = logging.getLogger(__name__)
 
 
 class RefreshPlanningError(ValueError):
@@ -276,16 +283,15 @@ def plan_refresh(configurations, selected_model_id, *, factories=None, cancel=No
             raise UnsupportedConfigurationError(
                 f"{configuration.model_id}: no provider factory configured"
             )
-    sources = []
-    for configuration in configs:
+    plans = []
+    planning_failures = {}
+    for configuration, capability in zip(configs, capabilities):
         _cancelled(cancel)
         try:
-            sources.append(create_source(configuration, provider_factories))
-        except Exception as exc:
-            raise RefreshPlanningError(f"{configuration.model_id}: {exc}") from exc
-    for configuration, capability, source in zip(configs, capabilities, sources):
-        _cancelled(cancel)
-        try:
+            # Catalogue access is isolated per configuration: a provider error
+            # (for example a rate limit or outage) must not discard the plans
+            # that other models could still build.
+            source = create_source(configuration, provider_factories)
             from .gribsources.options import DownloadOptions
 
             options = DownloadOptions(
@@ -316,10 +322,20 @@ def plan_refresh(configurations, selected_model_id, *, factories=None, cancel=No
             else:
                 if isinstance(exc, DownloadCancelledError):
                     raise
-            if isinstance(exc, RefreshPlanningError):
-                detail = str(exc)
-            else:
-                detail = str(exc)
-            raise RefreshPlanningError(f"{configuration.model_id}: {detail}") from exc
+            logger.warning(
+                "Forecast planning failed for model=%s: %s",
+                configuration.model_id,
+                exc,
+            )
+            planning_failures[configuration.model_id] = failure_reason(exc)
         _cancelled(cancel)
-    return ForecastRefreshPlan(tuple(plans), selected_model_id)
+    if not plans:
+        reasons = "; ".join(
+            f"{model_id}: {reason}" for model_id, reason in planning_failures.items()
+        )
+        raise RefreshPlanningError(
+            f"every model failed to plan: {reasons}"
+            if reasons
+            else "the plan contained no models"
+        )
+    return ForecastRefreshPlan(tuple(plans), selected_model_id, planning_failures)

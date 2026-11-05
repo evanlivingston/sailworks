@@ -1,4 +1,4 @@
-"""Race timeline overrides follow explicit selections and forecast coverage."""
+"""Race timeline regions follow explicit selections and forecast coverage."""
 
 import unittest
 from datetime import datetime, timezone
@@ -39,15 +39,13 @@ class TestRaceTimeline(unittest.TestCase):
                 self.forecast.sources.return_value = sources
                 self.window_class._apply_race_timeline_bounds(self.window)
                 if overlaps:
-                    self.timeline.set_bounds_override.assert_called_once_with(
-                        100, 200, (150,)
-                    )
-                    self.timeline.clear_bounds_override.assert_not_called()
+                    self.timeline.set_region.assert_called_once_with(100, 200)
+                    self.timeline.clear_region.assert_not_called()
                 else:
-                    self.timeline.clear_bounds_override.assert_called_once_with()
-                    self.timeline.set_bounds_override.assert_not_called()
+                    self.timeline.clear_region.assert_called_once_with()
+                    self.timeline.set_region.assert_not_called()
 
-    def test_race_selection_forces_override_without_forecast_overlap(self):
+    def test_race_selection_forces_region_without_forecast_overlap(self):
         self.forecast.sources.return_value = []
         race = SimpleNamespace(
             start_time=datetime.fromtimestamp(100, timezone.utc),
@@ -55,14 +53,14 @@ class TestRaceTimeline(unittest.TestCase):
             boats=(),
         )
         self.window_class._race_selected(self.window, race)
-        self.timeline.set_bounds_override.assert_called_once_with(100, 200, ())
+        self.timeline.set_region.assert_called_once_with(100, 200)
 
-    def test_missing_bounds_and_forecast_errors_clear_override(self):
+    def test_missing_bounds_and_forecast_errors_clear_region(self):
         self.window._race_timeline_bounds = None
         self.window_class._apply_race_timeline_bounds(self.window)
-        self.timeline.clear_bounds_override.assert_called_once_with()
+        self.timeline.clear_region.assert_called_once_with()
         self.timeline.reset_mock()
         self.window._race_timeline_bounds = (100, 200, ())
         self.forecast.sources.side_effect = RuntimeError("unavailable")
         self.window_class._apply_race_timeline_bounds(self.window)
-        self.timeline.clear_bounds_override.assert_called_once_with()
+        self.timeline.clear_region.assert_called_once_with()

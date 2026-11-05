@@ -318,7 +318,9 @@ class ForecastTimeline(QWidget):
         self.clock = controller.time_control
         self.marine = controller.core.marine_manager
         self.bounds = None
-        self._bounds_override = None
+        # User-owned time region; selecting a model never rewrites it.
+        self.region = None
+        self._model_intervals = ()
         self._signature = None
         self._syncing = False
         self._pending = None
@@ -543,15 +545,14 @@ class ForecastTimeline(QWidget):
                 sorted({stamp for source in sources for stamp in source.valid_times})
             )
             forecast_range = forecast_bounds(intervals)
-            candidate_bounds = (
-                self._bounds_override[:2] if self._bounds_override else forecast_range
-            )
-            if self._bounds_override:
-                valid_times = self._bounds_override[2]
-            signature = (intervals, valid_times, self._bounds_override)
+            # The user's region wins; the model range is only a fallback, so a
+            # model selection can never move the time window on its own.
+            bounds = self.region or forecast_range
+            signature = (intervals, valid_times, self.region)
             if signature != self._signature:
                 self._signature = signature
-                self.bounds = candidate_bounds
+                self._model_intervals = intervals
+                self.bounds = bounds
                 self.cancel_commit()
                 self._syncing = True
                 if self.bounds:
@@ -586,7 +587,7 @@ class ForecastTimeline(QWidget):
             try:
                 self.source_overview.set_rows(
                     source_rows(self.controller.display_forecast, self.marine),
-                    forecast_range,
+                    self.bounds,
                 )
                 self.day_strip.axis_left_margin = self.source_overview.plot.label_width
                 self._sync_time_axis_geometry()
@@ -597,22 +598,40 @@ class ForecastTimeline(QWidget):
             logger.warning("ForecastTimeline refresh error: %s", exc)
             self._syncing = False
 
-    def set_bounds_override(self, start, end, valid_times=()):
-        """Temporarily make the timeline span an imported race's time range."""
-        self._bounds_override = (
-            float(start),
-            float(end),
-            tuple(sorted(set(valid_times))),
-        )
+    def set_region(self, start, end):
+        """Set the user-owned time region the scrubber spans.
+
+        The region survives model selections; only an explicit region change
+        (this call, "Select now", or a race window) rewrites it.
+        """
+        region = (float(start), float(end))
+        if region == self.region:
+            return
+        self.region = region
         self._signature = None
         self.refresh()
 
-    def clear_bounds_override(self):
-        if self._bounds_override is None:
+    def clear_region(self):
+        """Drop the user region and fall back to the loaded model range."""
+        if self.region is None:
             return
-        self._bounds_override = None
+        self.region = None
         self._signature = None
         self.refresh()
+
+    def _caption_for(self, stamp):
+        """Explain why the selected time is not usable, or return ""."""
+        if not self.bounds:
+            return "Choose a display forecast in Weather, or download tides / currents"
+        start, end = self.bounds
+        if not (start <= stamp <= end):
+            return "Selected time is outside the selected time range"
+        if not any(
+            first - 1 <= stamp <= last + 1
+            for first, last in getattr(self, "_model_intervals", ())
+        ):
+            return "No model data for the selected time"
+        return ""
 
     def _time_changed(self, instant):
         if self.closed:
@@ -638,19 +657,11 @@ class ForecastTimeline(QWidget):
                 self.source_overview.set_cursors(
                     self.day_strip.now, instant.timestamp()
                 )
-                inside = start - 1 <= instant.timestamp() <= end + 1
-                self.caption.setText(
-                    "Selected time is outside the loaded forecast range"
-                    if not inside
-                    else ""
-                )
             else:
                 self.day_strip.set_position(None)
                 self.day_strip.set_marker(None)
                 self.source_overview.set_cursors(self.day_strip.now, None)
-                self.caption.setText(
-                    "Choose a display forecast in Weather, or download tides / currents"
-                )
+            self.caption.setText(self._caption_for(instant.timestamp()))
             self.caption.setToolTip(self.caption.text())
             self._syncing = False
         except Exception as exc:  # Never let a time change crash the app
@@ -722,12 +733,27 @@ class ForecastTimeline(QWidget):
         except Exception as exc:  # Never let a pause crash the app
             logger.warning("ForecastTimeline pause error: %s", exc)
 
+    def _playback_limit(self):
+        """Last playable instant: the last model valid time, else the region end."""
+        if not self.bounds:
+            return None
+        start, end = self.bounds
+        valid = tuple(
+            stamp for stamp in self.day_strip.valid_times if start <= stamp <= end
+        )
+        return max(valid) if valid else end
+
     def tick(self):
         if self.closed or not self.playing:
             return False
         try:
+            limit = self._playback_limit()
+            if limit is not None and self.clock.time.timestamp() + 120 >= limit:
+                self.clock.set_time(datetime.fromtimestamp(limit))
+                self.pause()
+                return self.playing
             self.step(120)
-            if self.bounds and self.clock.time.timestamp() >= self.bounds[1]:
+            if limit is not None and self.clock.time.timestamp() >= limit:
                 self.pause()
         except Exception as exc:  # Never let a tick crash the app
             logger.warning("ForecastTimeline tick error: %s", exc)
@@ -739,14 +765,38 @@ class ForecastTimeline(QWidget):
         try:
             self.pause()
             self.cancel_commit()
-            # Leaving a race/imported bounds override in place would keep the
-            # scrubber pinned to that (often historical) range, so "Now" could
-            # never reach the current time. Drop it and restore the loaded
-            # forecast range first.
-            self.clear_bounds_override()
-            self.clock.now()
         except Exception as exc:  # Never let a now crash the app
             logger.warning("ForecastTimeline now error: %s", exc)
+            return
+        try:
+            wall = datetime.now().timestamp()
+            # "Now" is an explicit user region request: now-24h .. now+48h.
+            self.set_region(wall - 24 * 3600, wall + 48 * 3600)
+            # The wall clock is frequently outside the downloaded model window
+            # (a stale download, or a first step after the current hour). Seek
+            # to the nearest loaded valid time inside the region instead;
+            # without model coverage there the wall clock itself stands, so an
+            # empty model still shows an explicit no-data state.
+            self.clock.set_time(datetime.fromtimestamp(self._now_stamp()))
+        except Exception as exc:  # Never let a now crash the app
+            logger.warning("ForecastTimeline now error: %s", exc)
+
+    def _now_stamp(self):
+        """Nearest loaded valid time to the wall clock inside the region.
+
+        Without a region or model coverage the wall clock stands, clamped into
+        the region.
+        """
+        now = datetime.now().timestamp()
+        if not self.bounds:
+            return now
+        start, end = self.bounds
+        valid = tuple(
+            stamp for stamp in self.day_strip.valid_times if start <= stamp <= end
+        )
+        if valid:
+            return min(valid, key=lambda stamp: abs(stamp - now))
+        return max(start, min(end, now))
 
     def select_time(self):
         try:

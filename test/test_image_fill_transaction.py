@@ -65,6 +65,16 @@ class Scene:
         self._state = "loading"
         self._disposed = False
         self._camera = _camera()
+        # Wave layers stay unbound in this headless scene; the camera pass
+        # reads their visibility and the retained items on a rebase.
+        self._wave_visible = False
+        self._wave_arrows_visible = False
+        self._wave_fill = None
+        self._wave_fill_back = None
+        self._wave_barbs = None
+        self._wave_barbs_back = None
+        self._wave_token = None
+        self._wave_barbs_token = None
         self.counters = dict(fill_publications=0, fill_uploads=0)
 
     def __getattr__(self, name):

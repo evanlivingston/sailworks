@@ -415,6 +415,29 @@ class WeatherPresenter(QObject):
             self.canvas.controller.settings.gribWindGradientSmooth,
             self.canvas.controller.settings.gribWindGradientLevels,
         )
+        widget.set_wave_visible(self.canvas.wave_visible)
+        # The wave settings are optional on a reduced presenter harness: an
+        # absent value falls back to the layer's own default rather than
+        # failing the whole weather refresh.
+        settings = self.canvas.controller.settings
+        widget.set_wave_opacity(getattr(settings, "gribWaveOpacity", 0.85))
+        widget.set_wave_gradient_style(
+            getattr(settings, "gribWaveSmooth", True),
+            getattr(settings, "gribWaveLevels", 9),
+        )
+        # The wave toggle governs both the height fill and the direction
+        # arrows; the arrow density stays an independent setting so the two
+        # glyph layers thin separately.
+        widget.set_wave_arrows_visible(self.canvas.wave_visible)
+        widget.set_wave_arrow_density(
+            getattr(self.canvas.controller.settings, "gribWaveDensity", "standard")
+        )
+        legend = getattr(self.canvas, "wave_legend", None)
+        if legend is not None:
+            legend.setVisible(bool(self.canvas.wave_visible))
+            if self.canvas.wave_visible:
+                self.canvas._layout_wave_legend()
+                legend.raise_()
         from sailworks.rendering.marinepresentation import chart_instant
 
         marine = self.canvas.marine
@@ -450,10 +473,22 @@ class WeatherPresenter(QObject):
     def sync(self):
         if self.closed or self.canvas.disposed or not self.canvas.isVisible():
             return
-        sources = self.canvas.controller.display_forecast.sources()
-        source = sources[0] if sources else None
-        self._sync_weather(source)
+        self._sync_weather(self._display_source())
         self._raise_interactive_children()
+
+    def _display_source(self):
+        # A wave-only choice replaces the displayed forecast but never the
+        # routing model; without one this is the active routing entry.
+        from .analysisdisplay import DisplaySourceSelection
+
+        selection = self.canvas.controller.display_forecast
+        wave = getattr(selection, "wave", None)
+        sources = (
+            wave.sources()
+            if isinstance(wave, DisplaySourceSelection)
+            else selection.sources()
+        )
+        return sources[0] if sources else None
 
     def _sync_weather(self, source):
         if self.active:
@@ -472,6 +507,8 @@ class WeatherPresenter(QObject):
     def _raise_interactive_children(self):
         # Existing interactive widgets must remain above both presentation children.
         self.canvas.coverage_notice.raise_()
+        if hasattr(self.canvas, "wave_legend"):
+            self.canvas.wave_legend.raise_()
         if hasattr(self.canvas, "coverage_fetch"):
             self.canvas.coverage_fetch.raise_()
         coverage_fetch_buttons = getattr(self.canvas, "coverage_fetch_buttons", None)

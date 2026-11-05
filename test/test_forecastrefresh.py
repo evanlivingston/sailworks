@@ -264,19 +264,11 @@ def test_estimate_excludes_reused_models_from_network_total(tmp_path):
     assert models[0][2] is True
 
 
-@pytest.mark.parametrize("failure", ["download", "validation", "second-model"])
-def test_any_model_failure_preserves_old_active_binding(tmp_path, failure):
+@pytest.mark.parametrize("failure", ["download", "validation"])
+def test_failing_model_does_not_block_other_models(tmp_path, failure):
     store = TrancheStore(tmp_path)
-    initial, _ = coordinator(store, (config(),))
-    initial.configure((config(),), "GFS")
-    prior = initial.refresh()
-    pointer = store.active_path.read_bytes()
     configs = (config("GFS"), config("HRRR"))
-    behaviors = (
-        {"HRRR": {"download_error": True}}
-        if failure in ("download", "second-model")
-        else None
-    )
+    behaviors = {"HRRR": {"download_error": True}} if failure == "download" else None
 
     def validator(path, planned, cancel):
         if failure == "validation" and planned.model_id == "HRRR":
@@ -285,10 +277,115 @@ def test_any_model_failure_preserves_old_active_binding(tmp_path, failure):
 
     service, _ = coordinator(store, configs, behaviors=behaviors, validator=validator)
     service.configure(configs, "GFS")
-    with pytest.raises(RefreshExecutionError):
-        service.refresh()
+    result = service.refresh()
+
+    assert {entry.model_id for entry in result.tranche.entries} == {"GFS"}
+    assert result.selection.entry_id == "GFS"
+    reason = (
+        "download failed: synthetic download error"
+        if failure == "download"
+        else "validation failed: synthetic validation failure"
+    )
+    assert service.partial_failures == {"HRRR": reason}
+    message = service.refresh_warning
+    assert message == f"HRRR: {reason}. Other models downloaded: GFS."
+
+
+def test_selected_model_failure_keeps_previous_selection(tmp_path):
+    store = TrancheStore(tmp_path)
+    gfs = config("GFS")
+    initial, _ = coordinator(store, (gfs,))
+    initial.configure((gfs,), "GFS")
+    prior = initial.refresh()
+    pointer = store.active_path.read_bytes()
+    manifests = len(list(store.manifests.glob("*.json")))
+    configs = (gfs, config("HRRR"))
+
+    def validator(path, planned, cancel):
+        if planned.model_id == "HRRR":
+            raise ValueError("synthetic validation failure")
+        return valid_metadata(planned)
+
+    service, _ = coordinator(store, configs, validator=validator)
+    service.configure(configs, "HRRR")
+    result = service.refresh()
+
+    # The requested model failed, so the previous selection stays active even
+    # though the other model published into the library.
+    assert result.tranche.tranche_id == prior.tranche.tranche_id
     assert store.active_path.read_bytes() == pointer
-    assert store.active().tranche.tranche_id == prior.tranche.tranche_id
+    assert store.active_selection().entry_id == "GFS"
+    assert len(list(store.manifests.glob("*.json"))) == manifests + 1
+    assert "HRRR" in service.refresh_warning
+
+
+def test_all_models_failing_raises_with_every_reason(tmp_path):
+    store = TrancheStore(tmp_path)
+    configs = (config("GFS"), config("HRRR"))
+
+    def validator(path, planned, cancel):
+        raise ValueError(f"{planned.model_id} synthetic failure")
+
+    service, _ = coordinator(store, configs, validator=validator)
+    service.configure(configs, "GFS")
+    with pytest.raises(RefreshExecutionError) as excinfo:
+        service.refresh()
+    message = str(excinfo.value)
+    assert "GFS validation failed: GFS synthetic failure" in message
+    assert "HRRR validation failed: HRRR synthetic failure" in message
+    assert store.active() is None
+    assert not list(tmp_path.glob(".refresh-*"))
+
+
+def test_reusable_entry_failure_does_not_abort_other_models(tmp_path, monkeypatch):
+    store = TrancheStore(tmp_path)
+    configs = (config("GFS"), config("HRRR"))
+    original = store.reusable_entry
+
+    def reusable(planned):
+        if planned.model_id == "GFS":
+            raise OSError("synthetic store failure")
+        return original(planned)
+
+    monkeypatch.setattr(store, "reusable_entry", reusable)
+    service, _ = coordinator(store, configs)
+    service.configure(configs, "HRRR")
+    result = service.refresh()
+
+    assert {entry.model_id for entry in result.tranche.entries} == {"HRRR"}
+    assert result.selection.entry_id == "HRRR"
+    assert service.partial_failures == {
+        "GFS": "local reuse failed: synthetic store failure"
+    }
+    assert "GFS: local reuse failed: synthetic store failure" in (
+        service.refresh_warning
+    )
+
+
+def test_planning_failure_is_reported_while_other_models_publish(tmp_path):
+    store = TrancheStore(tmp_path)
+    configs = (config("GFS"), config("HRRR"))
+    full = make_plan(configs, "HRRR")
+    partial = ForecastRefreshPlan(
+        (full.models[1],), "HRRR", {"GFS": "catalogue unavailable"}
+    )
+
+    factories, _ = make_factories()
+    service = RefreshCoordinator(
+        store,
+        factories=factories,
+        planner=lambda requested, selected, **kwargs: partial,
+        validator=lambda path, planned, cancel: valid_metadata(planned),
+        clock=lambda: ACQUIRED,
+        id_factory=lambda: "tranche-0",
+    )
+    service.configure(configs, "HRRR")
+    result = service.refresh()
+
+    assert {entry.model_id for entry in result.tranche.entries} == {"HRRR"}
+    assert result.selection.entry_id == "HRRR"
+    assert service.partial_failures == {"GFS": "catalogue unavailable"}
+    assert service.refresh_warning.startswith("GFS: catalogue unavailable.")
 
 
 def test_configuration_edit_during_download_retires_ticket(tmp_path):
@@ -566,3 +663,81 @@ def test_refresh_downloads_only_model_with_newer_run(tmp_path):
     # Only GFS had a newer forecast available; HRRR was already current.
     newly_downloaded = [source.name for source in created][len(sources_before) :]
     assert newly_downloaded == ["NOAA GFS"]
+
+
+def seed_artifact(store, tmp_path, payload=b"seed bytes"):
+    source = tmp_path / "seed.grb"
+    source.write_bytes(payload)
+    return store.register_file(source)
+
+
+def test_recorded_download_skips_transfer_and_validates_in_place(tmp_path):
+    store = TrancheStore(tmp_path)
+    cfg = config("GFS")
+    planned = make_plan((cfg,), "GFS").models[0]
+    artifact = seed_artifact(store, tmp_path)
+    store.record_download(planned, artifact)
+    validated = []
+
+    def validator(path, planned, cancel):
+        validated.append(path)
+        return valid_metadata(planned)
+
+    service, created = coordinator(store, (cfg,), validator=validator)
+    service.configure((cfg,), "GFS")
+    result = service.refresh()
+
+    assert created == []
+    assert validated == [store.artifacts / artifact.sha256]
+    assert result.entry.artifacts == (artifact,)
+    assert store.recorded_download(planned) is None
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt"])
+def test_damaged_recorded_artifact_falls_back_to_download(tmp_path, damage):
+    store = TrancheStore(tmp_path)
+    cfg = config("GFS")
+    planned = make_plan((cfg,), "GFS").models[0]
+    artifact = seed_artifact(store, tmp_path)
+    store.record_download(planned, artifact)
+    recorded_path = store.artifacts / artifact.sha256
+    if damage == "missing":
+        recorded_path.unlink()
+    else:
+        recorded_path.chmod(0o644)
+        recorded_path.write_bytes(b"tampered bytes")
+
+    service, created = coordinator(store, (cfg,))
+    service.configure((cfg,), "GFS")
+    result = service.refresh()
+
+    assert [source.name for source in created] == ["NOAA GFS"]
+    assert result.entry.artifacts[0] != artifact
+    assert store.recorded_download(planned) is None
+
+
+def test_failed_validation_keeps_record_for_the_next_attempt(tmp_path):
+    store = TrancheStore(tmp_path)
+    cfg = config("GFS")
+    planned = make_plan((cfg,), "GFS").models[0]
+
+    def failing(path, planned, cancel):
+        raise ValueError("synthetic invalid grib")
+
+    first, created = coordinator(store, (cfg,), validator=failing)
+    first.configure((cfg,), "GFS")
+    with pytest.raises(RefreshExecutionError):
+        first.refresh()
+
+    assert len(created) == 1
+    recorded = store.recorded_download(planned)
+    assert recorded is not None
+
+    # The retry validates the recorded artifact instead of transferring again.
+    second, second_created = coordinator(store, (cfg,))
+    second.configure((cfg,), "GFS")
+    result = second.refresh()
+
+    assert second_created == []
+    assert result.entry.artifacts == (recorded,)
+    assert store.recorded_download(planned) is None

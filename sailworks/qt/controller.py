@@ -26,6 +26,7 @@ from .backgroundtask import BackgroundTask
 from .datacontroller import DataController
 from .polarcontroller import PolarController
 from .mapdatasetup import MapDataController
+from .mapforecast import region_contains
 
 
 class SessionController(QObject):
@@ -249,18 +250,18 @@ class SessionController(QObject):
             )
 
     def _forecast_selection_changed(self):
-        """Keep the map clock inside the active forecast's valid range."""
+        """Keep the map clock inside the active forecast's valid range.
+
+        The timeline's user-owned region is deliberately left alone: selecting
+        a model must not rewrite the time window.
+        """
         active = getattr(self.analysis, "active", None)
         if active is None:
             return
-        key = (active.tranche.tranche_id, active.entry.entry_id)
-        if key != getattr(self, "_last_forecast_selection", None):
-            self._last_forecast_selection = key
-            for canvas in list(getattr(self.charts, "maps", ())):
-                timeline = getattr(canvas, "timeline", None)
-                clear = getattr(timeline, "clear_bounds_override", None)
-                if callable(clear):
-                    clear()
+        self._last_forecast_selection = (
+            active.tranche.tranche_id,
+            active.entry.entry_id,
+        )
         self._align_clock_to_forecast(active)
 
     def _align_clock_to_forecast(self, active):
@@ -268,6 +269,18 @@ class SessionController(QObject):
         if not times:
             return
         current = self.time_control.time
+        timeline = self._forecast_timeline()
+        if getattr(timeline, "region", None) is not None:
+            if region_contains(timeline, current):
+                # The user's time is inside the region they own. Leave it
+                # even when the newly selected model has no step for it; the
+                # timeline captions that as "No model data for the selected
+                # time" instead of silently relocating the clock.
+                return
+            # Outside the region is a stale clock: snap to the model's first
+            # step so the map shows the newly selected forecast.
+            self.time_control.set_time(datetime.fromtimestamp(times[0].timestamp()))
+            return
         try:
             inside = current is not None and (
                 times[0].timestamp() <= current.timestamp() <= times[-1].timestamp()
@@ -277,6 +290,14 @@ class SessionController(QObject):
         if not inside:
             # TimeControl shows naive wall time, so convert from UTC stamps.
             self.time_control.set_time(datetime.fromtimestamp(times[0].timestamp()))
+
+    def _forecast_timeline(self):
+        """The timeline owned by a registered map, if one exists."""
+        for canvas in getattr(self.charts, "maps", ()):
+            timeline = getattr(canvas, "timeline", None)
+            if timeline is not None:
+                return timeline
+        return None
 
     def _changed(self, _):
         seek_timer = getattr(self, "seek_timer", None)

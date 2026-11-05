@@ -4,6 +4,7 @@ import pytest
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 
+from sailworks.core.forecastcapabilities import display_model_name
 from sailworks.core.forecasttranche import ModelConfiguration
 from sailworks.qt.analysiscontroller import AnalysisController
 from test.analysis_qt_fixtures import FakeAnalysisState, make_snapshot
@@ -124,7 +125,7 @@ def test_progress_report_exposes_current_model_and_percentage(tmp_path):
     controller._progress_token = "progress-token"
     controller._progress(controller._generation, "progress-token", ("HRRR", 42))
 
-    assert controller.status == "Downloading NOAA HRRR…"
+    assert controller.status == f"Downloading {display_model_name('HRRR')}…"
     assert controller.progress == 42
     controller.close()
 
@@ -160,6 +161,27 @@ def test_configuration_persists_intent_without_replacing_active_snapshot(tmp_pat
     controller.configure((configuration,), "GFS")
     assert state.configuration.refresh_model_id == "GFS"
     assert controller.active is old
+    controller.close()
+
+
+def test_configuration_error_and_partial_refresh_warning_both_surface(tmp_path):
+    application = app()
+    state = FakeAnalysisState(tmp_path, make_snapshot(tmp_path))
+    controller = AnalysisController(state=state)
+    wait_for(lambda: not controller.loading, application)
+
+    state.configuration_error = "saved refresh configuration is invalid"
+    state.refresh_warning = (
+        "HRRR: download failed: synthetic failure. Other models downloaded: GFS."
+    )
+    state.next_refresh = make_snapshot(tmp_path, "tranche-b", "GFS")
+    assert controller.refresh()
+    wait_for(lambda: not controller.loading, application)
+
+    assert "saved refresh configuration is invalid" in controller.error
+    assert "HRRR: download failed: synthetic failure" in controller.error
+    assert controller.error.index("saved refresh") < controller.error.index("HRRR")
+    assert "invalid" in controller.status
     controller.close()
 
 

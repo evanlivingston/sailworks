@@ -13,6 +13,7 @@ from pathlib import Path
 import hashlib
 import json
 import threading
+from types import SimpleNamespace
 
 
 def plan(start, end, area=(50, -10, 40, 5)):
@@ -24,6 +25,339 @@ def plan(start, end, area=(50, -10, 40, 5)):
     )
 
 
+def test_failed_job_error_is_consumed_and_registry_pruned(tmp_path):
+    from sailworks.core.era5 import job_key
+
+    service = Era5DownloadService(SimpleNamespace(root=tmp_path))
+    request = plan("2025-01-01T00:00", "2025-01-01T00:00")
+
+    def fail(*args):
+        raise Era5Error("download failed")
+
+    service._run = fail
+    thread = service.submit(request)
+    thread.join()
+    assert service.error_for(job_key(request)) == "download failed"
+    assert service.clear_error(job_key(request)) == "download failed"
+    assert service.clear_error(job_key(request)) is None
+    assert not service._jobs
+
+
+def test_pending_removal_uses_request_id(tmp_path):
+    service = Era5DownloadService(SimpleNamespace(root=tmp_path))
+    request = plan("2025-01-01T00:00", "2025-01-01T00:00")
+    service._remember_pending(request, "old")
+    service._remember_pending(request, "replacement")
+    assert len(service.pending_requests()) == 2
+    service._forget_pending("old")
+    assert [entry["request_id"] for entry in service._load_pending()] == ["replacement"]
+
+
+@pytest.mark.parametrize("fully_covered", [False, True])
+def test_catalog_subset_does_not_forget_pending_superset(tmp_path, fully_covered):
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    area = (50, -10, 40, 5)
+    wind = plan_request(start, start, area, fields=("wind",))
+    both = plan_request(start, start, area, fields=("wind", "pressure"))
+    service = Era5DownloadService(SimpleNamespace(root=tmp_path))
+    service._remember_pending(both, "pending")
+    (tmp_path / "existing.grib").write_bytes(b"existing")
+    (tmp_path / "era5-history.json").write_text(
+        json.dumps(
+            [
+                {
+                    "start": start.isoformat(),
+                    "end": start.isoformat(),
+                    "area": area,
+                    "artifact": "existing.grib",
+                    "variables": (both if fully_covered else wind).request["variable"],
+                }
+            ]
+        )
+    )
+    service._run(wind, threading.Event(), False)
+    assert bool(service._load_pending()) is not fully_covered
+
+
+def test_job_key_canonicalizes_area_noise(tmp_path):
+    from sailworks.core.era5 import _areas_close, job_key
+
+    first = plan("2025-01-01T00:00", "2025-01-01T00:00")
+    second = plan("2025-01-01T00:00", "2025-01-01T00:00", (50.00001, -10, 40, 5))
+    assert _areas_close(first.area, second.area)
+    assert job_key(first) == job_key(second)
+    service = Era5DownloadService(SimpleNamespace(root=tmp_path))
+    service._remember_pending(second, "one")
+    assert service._load_pending()[0]["area"] == list(second.area)
+
+
+def test_pending_area_matching_uses_original_bounds(tmp_path):
+    service = Era5DownloadService(SimpleNamespace(root=tmp_path))
+    first = plan("2025-01-01T00:00", "2025-01-01T00:00", (50.0049, -10, 40, 5))
+    other = plan("2025-01-01T00:00", "2025-01-01T00:00", (49.9948, -10, 40, 5))
+    service._remember_pending(first, "first")
+    assert service._pending_entry(service._load_pending(), other) is None
+
+
+@pytest.mark.parametrize("disjoint", [False, True])
+def test_concurrent_chunk_submissions_are_serialized(tmp_path, disjoint):
+    from sailworks.core.era5 import job_key
+
+    first = plan("2025-01-01T00:00", "2025-01-01T01:00")
+    second = plan(
+        "2025-01-01T00:00",
+        "2025-01-01T02:00",
+        (30, -10, 20, 5) if disjoint else first.area,
+    )
+    assert job_key(first) != job_key(second)
+    pieces = [split_request(first)[0], split_request(second)[0]]
+    # Use the same overlapping chunk from the distinct plans.
+    if not disjoint:
+        pieces[1] = split_request(plan("2025-01-01T00:00", "2025-01-01T01:00"))[0]
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    class Client:
+        def submit(self, dataset, request):
+            calls.append(request)
+            entered.set()
+            assert release.wait(5)
+            return SimpleNamespace(request_id=str(len(calls)))
+
+        def get_remote(self, request_id):
+            return SimpleNamespace(status="running")
+
+    client = Client()
+    services = [
+        Era5DownloadService(
+            SimpleNamespace(root=tmp_path),
+            client_factory=lambda: SimpleNamespace(client=client),
+        )
+        for _ in range(2)
+    ]
+    results = []
+    threads = [
+        threading.Thread(
+            target=lambda s=s, p=p: results.append(s._ensure_chunk_request(p))
+        )
+        for s, p in zip(services, pieces)
+    ]
+    threads[0].start()
+    assert entered.wait(5)
+    threads[1].start()
+    release.set()
+    for thread in threads:
+        thread.join(5)
+        assert not thread.is_alive()
+    assert len(results) == 2
+    assert len(calls) == (2 if disjoint else 1)
+
+
+def test_history_wave_coverage_is_limited_to_published_area(tmp_path):
+    from sailworks.core.era5 import FIELD_VARIABLES, publish_history_display
+    from sailworks.core.tranchestore import TrancheStore
+
+    (tmp_path / "x.grib").write_bytes(b"x")
+    base = {
+        "artifact": "x.grib",
+        "start": "2025-01-01T00:00:00+00:00",
+        "end": "2025-01-01T01:00:00+00:00",
+        "area": (50, -10, 40, 5),
+        "variables": list(FIELD_VARIABLES["pressure"]),
+    }
+    wave = {
+        **base,
+        "area": (30, -10, 20, 5),
+        "variables": list(FIELD_VARIABLES["wave_height"]),
+    }
+    state = SimpleNamespace(store=TrancheStore(tmp_path))
+    assert (
+        "wave_height"
+        not in publish_history_display(state, [base, wave]).entries[0].fields
+    )
+    wave["area"] = (50.001, -10, 40, 5)
+    (tmp_path / "y.grib").write_bytes(b"y")
+    wave["artifact"] = "y.grib"
+    assert (
+        "wave_height" in publish_history_display(state, [base, wave]).entries[0].fields
+    )
+
+
+def test_jobs_match_area_tolerance_across_rounding_boundary(tmp_path):
+    from sailworks.core.era5 import job_key
+
+    service = Era5DownloadService(SimpleNamespace(root=tmp_path))
+    first = plan("2025-01-01T00:00", "2025-01-01T00:00", (50.004999, -10, 40, 5))
+    nearby = plan("2025-01-01T00:00", "2025-01-01T00:00", (50.005001, -10, 40, 5))
+    distant = plan("2025-01-01T00:00", "2025-01-01T00:00", (50.024999, -10, 40, 5))
+    assert job_key(first) != job_key(nearby)
+    entered, release = threading.Event(), threading.Event()
+
+    def run(request, cancel, retry):
+        entered.set()
+        assert release.wait(5)
+        if request is first:
+            raise Era5Error("download failed")
+
+    service._run = run
+    try:
+        running = service.submit(first)
+        assert entered.wait(5)
+        assert service.submit(nearby) is running
+        assert service.key_for(nearby) == running.era5_key == job_key(first)
+        assert service.progress_for(nearby) == service.progress_for(first)
+        other = service.submit(distant)
+        assert other is not running
+        service.cancel(nearby)
+        assert service._jobs[job_key(first)][1].is_set()
+    finally:
+        release.set()
+        running.join(5)
+        other.join(5)
+    assert service.error_for(running.era5_key) == "download failed"
+    assert service.clear_error(service.key_for(nearby)) == "download failed"
+
+
+def test_area_exact_tolerance_matches_and_running_preferred(tmp_path):
+    from sailworks.core.era5 import job_key
+
+    service = Era5DownloadService(SimpleNamespace(root=tmp_path))
+    base = plan("2025-01-01T00:00", "2025-01-01T00:00", (50, 0, 40, 5))
+    edge = plan("2025-01-01T00:00", "2025-01-01T00:00", (50, 0.01, 40, 5))
+    beyond = plan("2025-01-01T00:00", "2025-01-01T00:00", (50, 0.02, 40, 5))
+    entered, release = threading.Event(), threading.Event()
+
+    def run(request, cancel, retry):
+        if request is beyond:
+            entered.set()
+            assert release.wait(5)
+
+    service._run = run
+    service.submit(base).join(5)
+    running = service.submit(beyond)
+    try:
+        assert entered.wait(5)
+        assert service.submit(edge) is running
+        assert service.key_for(edge) == job_key(beyond)
+    finally:
+        release.set()
+        running.join(5)
+
+
+def test_resume_threads_pruned_without_polling(tmp_path):
+    service = Era5DownloadService(SimpleNamespace(root=tmp_path))
+    first = plan("2025-01-01T00:00", "2025-01-01T00:00")
+    second = plan("2025-01-01T01:00", "2025-01-01T01:00")
+    service._remember_pending(first, "first")
+    service._remember_pending(second, "second")
+    entered, release = threading.Event(), threading.Event()
+
+    def client():
+        entered.set()
+        assert release.wait(5)
+        return SimpleNamespace(client=None)
+
+    service.client_factory = client
+    assert service.resume_pending() == 2
+    assert entered.wait(5)
+    with service._lock:
+        threads = list(service._resume_threads)
+    assert len(threads) == 2
+    release.set()
+    for thread in threads:
+        thread.join(5)
+        assert not thread.is_alive()
+    assert service._resume_threads == []
+
+
+def test_history_vector_components_require_matching_area(tmp_path):
+    from sailworks.core.era5 import FIELD_VARIABLES, publish_history_display
+    from sailworks.core.tranchestore import TrancheStore
+
+    (tmp_path / "x.grib").write_bytes(b"x")
+    base = {
+        "artifact": "x.grib",
+        "start": "2025-01-01T00:00:00+00:00",
+        "end": "2025-01-01T01:00:00+00:00",
+        "area": (50, -10, 40, 5),
+    }
+    u, v = FIELD_VARIABLES["wind"]
+    pressure = FIELD_VARIABLES["pressure"][0]
+    entries = [
+        {**base, "variables": [u, pressure]},
+        {**base, "variables": [v], "area": (30, -10, 20, 5)},
+    ]
+    state = SimpleNamespace(store=TrancheStore(tmp_path))
+    assert publish_history_display(state, entries).entries[0].fields == ("pressure",)
+    entries[1]["area"] = (50.001, -10, 40, 5)
+    (tmp_path / "y.grib").write_bytes(b"y")
+    entries[1]["artifact"] = "y.grib"
+    assert publish_history_display(state, entries).entries[0].fields == (
+        "wind",
+        "pressure",
+    )
+
+
+def test_job_retention_preserves_running_and_isolates_progress(tmp_path):
+    from datetime import timedelta
+    from sailworks.core.era5 import job_key
+
+    service = Era5DownloadService(SimpleNamespace(root=tmp_path))
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    wind = plan_request(start, start, (50, -10, 40, 5), fields=("wind",))
+    wave = plan_request(start, start, wind.area, fields=("wave_height",))
+    entered, release = threading.Event(), threading.Event()
+
+    def run(request, cancel, retry):
+        if request is wind:
+            service._set_progress(job_key(request), stage="wind")
+            entered.set()
+            assert release.wait(10)
+        else:
+            service._set_progress(job_key(request), stage="wave")
+
+    service._run = run
+    running = service.submit(wind)
+    assert entered.wait(10)
+    service.submit(wave).join()
+    assert service.progress_for(wind)["stage"] == "wind"
+    assert service.progress_for(wave)["stage"] == "wave"
+    for hour in range(140):
+        stamp = start + timedelta(hours=hour + 1)
+        service.submit(plan_request(stamp, stamp, wind.area)).join()
+    assert running.is_alive() and job_key(wind) in service._jobs
+    assert len(service.progress) <= 129
+    release.set()
+    running.join()
+    assert not service._jobs
+
+
+def test_history_coverage_edge_cases(tmp_path):
+    from sailworks.core.era5 import FIELD_VARIABLES, publish_history_display
+    from sailworks.core.tranchestore import TrancheStore
+
+    store = TrancheStore(tmp_path)
+    state = SimpleNamespace(store=store)
+    with pytest.raises(Era5Error, match="No downloaded"):
+        publish_history_display(state, [])
+    (tmp_path / "x.grib").write_bytes(b"x")
+    base = {
+        "artifact": "x.grib",
+        "start": "2025-01-01T00:00:00+00:00",
+        "end": "2025-01-01T01:00:00+00:00",
+        "area": (50, -10, 40, 5),
+    }
+    legacy = publish_history_display(state, [base, base])
+    assert legacy.entries[0].fields == ("wind", "pressure")
+    assert all(len(times) == 2 for _, times in legacy.entries[0].field_times)
+    (tmp_path / "y.grib").write_bytes(b"y")
+    split = [{**base, "variables": [variable]} for variable in FIELD_VARIABLES["wind"]]
+    split[1]["artifact"] = "y.grib"
+    combined = publish_history_display(state, split)
+    assert combined.entries[0].fields == ("wind",)
+    assert len(combined.entries[0].field_times[0][1]) == 2
+
+
 def test_plan_inclusive_utc_and_contract():
     planned = plan("2025-01-31T23:00", "2025-02-01T01:00")
     pieces = split_request(planned)
@@ -33,6 +367,75 @@ def test_plan_inclusive_utc_and_contract():
     assert planned.request["product_type"] == ["reanalysis"]
     assert planned.request["data_format"] == "grib"
     assert planned.request["download_format"] == "unarchived"
+
+
+def test_wave_request_and_pending_identity(tmp_path):
+    from types import SimpleNamespace
+    from sailworks.core.era5 import FIELD_VARIABLES
+
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    fields = ("wave_height", "wave_period", "wave_direction")
+    wave = plan_request(start, start, (50, -10, 40, 5), fields=fields)
+    wind = plan_request(start, start, (50, -10, 40, 5), fields=("wind",))
+    assert wave.request["variable"] == [FIELD_VARIABLES[f][0] for f in fields]
+    service = Era5DownloadService(SimpleNamespace(root=tmp_path))
+    service._remember_pending(wind, "wind")
+    assert service._pending_entry(service._load_pending(), wave) is None
+    service._remember_pending(wave, "wave")
+    assert service._pending_entry(service._load_pending(), wave)["request_id"] == "wave"
+    assert len(service.pending_requests()) == 2
+
+
+def test_validate_and_publish_wave_history(tmp_path):
+    from types import SimpleNamespace
+    from sailworks.core.era5 import publish_history_display
+    from sailworks.core.tranchestore import TrancheStore
+
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2025, 1, 1, 1, tzinfo=timezone.utc)
+    fields = ("wave_height", "wave_period", "wave_direction")
+    piece = plan_request(start, end, (50, -10, 40, 5), fields=fields)
+
+    class Band:
+        def __init__(self, element, stamp):
+            self.element, self.stamp = element, stamp
+
+        def GetMetadata(self):
+            return {
+                "GRIB_ELEMENT": self.element,
+                "GRIB_SHORT_NAME": "0-SFC",
+                "GRIB_VALID_TIME": str(self.stamp),
+            }
+
+    bands = [
+        Band(element, int(stamp.timestamp()))
+        for stamp in (start, end)
+        for element in ("swh", "mwp", "mwd")
+    ]
+    dataset = SimpleNamespace(
+        RasterCount=len(bands), GetRasterBand=lambda n: bands[n - 1]
+    )
+    assert (
+        validate_grib(tmp_path / "x", piece, dataset_opener=lambda _: dataset)[
+            "validated_hours"
+        ]
+        == 2
+    )
+    store = TrancheStore(tmp_path)
+    artifact = tmp_path / "waves.grib"
+    artifact.write_bytes(b"waves")
+    entries = [
+        {
+            "artifact": artifact.name,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "area": piece.area,
+            "variables": piece.request["variable"],
+        }
+    ]
+    tranche = publish_history_display(SimpleNamespace(store=store), entries)
+    assert tranche.entries[0].fields == fields
+    assert all(times == (start, end) for _, times in tranche.entries[0].field_times)
 
 
 @pytest.mark.parametrize("area", [(10, 170, 0, -170), (91, 0, 0, 10)])
@@ -481,9 +884,15 @@ def test_pending_requests_prune_covered_and_duplicate_entries(tmp_path):
         ]
     )
 
-    assert [entry["request_id"] for entry in service.pending_requests()] == ["newer"]
+    assert [entry["request_id"] for entry in service.pending_requests()] == [
+        "older",
+        "newer",
+    ]
     # The prune is persisted, so a later restart does not resurrect old rows.
-    assert [entry["request_id"] for entry in service._load_pending()] == ["newer"]
+    assert [entry["request_id"] for entry in service._load_pending()] == [
+        "older",
+        "newer",
+    ]
 
 
 def test_rounded_area_reuses_pending_request_instead_of_resubmitting(tmp_path):
@@ -748,6 +1157,137 @@ def test_publish_history_display_keeps_requested_fields(tmp_path):
     assert entry.fields == ("wind",)
     assert entry.levels == ("10-HTGL",)
     assert dict(entry.field_times)["wind"] == entry.time_steps
+
+
+def test_history_field_times_follow_each_artifact(tmp_path):
+    from types import SimpleNamespace
+    from sailworks.core.era5 import FIELD_VARIABLES, VARIABLES, publish_history_display
+    from sailworks.core.tranchestore import TrancheStore
+
+    store = TrancheStore(tmp_path)
+    source = tmp_path / "chunk.grib"
+    source.write_bytes(b"era5")
+    artifact = store.register_file(source)
+
+    def entry(hour, variables):
+        stamp = f"2025-01-01T{hour:02d}:00:00+00:00"
+        return {
+            "artifact": artifact.path,
+            "start": stamp,
+            "end": stamp,
+            "area": [50, -10, 40, 5],
+            "variables": list(variables),
+        }
+
+    mixed = publish_history_display(
+        SimpleNamespace(store=store),
+        [entry(0, VARIABLES), entry(6, FIELD_VARIABLES["wave_height"])],
+    ).entries[0]
+    coverage = dict(mixed.field_times)
+    assert [t.hour for t in coverage["wind"]] == [0]
+    assert coverage["pressure"] == coverage["wind"]
+    assert [t.hour for t in coverage["wave_height"]] == [6]
+    assert [t.hour for t in mixed.time_steps] == [0, 6]
+    source.write_bytes(b"different era5")
+    artifact = store.register_file(source)
+    homogeneous = publish_history_display(
+        SimpleNamespace(store=store), [entry(0, VARIABLES), entry(6, VARIABLES)]
+    ).entries[0]
+    assert all(times == homogeneous.time_steps for _, times in homogeneous.field_times)
+
+
+def test_pending_superset_is_published_and_reused(tmp_path):
+    from sailworks.core.era5 import FIELD_VARIABLES
+    from sailworks.core.tranchestore import TrancheStore
+
+    class Remote:
+        request_id = "superset"
+        status = "successful"
+
+        def download(self, target):
+            Path(target).write_bytes(b"superset grib")
+
+    class Inner:
+        def submit(self, *_args):
+            raise AssertionError("unexpected request")
+
+        def get_remote(self, _request_id):
+            return Remote()
+
+    class Client:
+        client = Inner()
+
+    store = TrancheStore(tmp_path)
+    seen = []
+    service = Era5DownloadService(
+        store,
+        client_factory=Client,
+        validator=lambda _p, piece: seen.append(set(piece.request["variable"]))
+        or {"reader": "test"},
+    )
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+
+    def request(fields):
+        return plan_request(
+            start,
+            start,
+            (50, -10, 40, 5),
+            fields=fields,
+            now=datetime(2025, 2, 20, tzinfo=timezone.utc),
+        )
+
+    superset = request(("wind", "wave_height"))
+    service._remember_pending(split_request(superset)[0], "superset")
+    service._run(request(("wind",)), threading.Event(), False)
+    expected = set(FIELD_VARIABLES["wind"] + FIELD_VARIABLES["wave_height"])
+    assert seen == [expected]
+    assert (
+        set(service._catalog_entries(tmp_path / "era5-history.json")[0]["variables"])
+        == expected
+    )
+    assert service._load_pending() == []
+    service._run(request(("wave_height",)), threading.Event(), False)
+    assert seen == [expected]
+
+
+def test_active_jobs_distinguish_variables(tmp_path):
+    from sailworks.core.tranchestore import TrancheStore
+
+    service = Era5DownloadService(TrancheStore(tmp_path))
+    started = threading.Event()
+    release = threading.Event()
+
+    def run(_plan, _cancel, _retry):
+        started.set()
+        release.wait(5)
+
+    service._run = run
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+
+    def request(field):
+        return plan_request(
+            start,
+            start,
+            (50, -10, 40, 5),
+            fields=(field,),
+            now=datetime(2025, 2, 20, tzinfo=timezone.utc),
+        )
+
+    wind, wave = request("wind"), request("wave_height")
+    try:
+        first = service.submit(wind)
+        assert started.wait(5)
+        second = service.submit(wave)
+        assert first is not second
+        assert service.submit(wind) is first
+        assert service.submit(wave) is second
+        service.cancel(wind)
+        assert service._jobs[service._job_key(wind)][1].is_set()
+        assert not service._jobs[service._job_key(wave)][1].is_set()
+    finally:
+        release.set()
+        first.join(5)
+        second.join(5)
 
 
 def test_canceled_era5_download_leaves_no_catalog_or_artifacts(tmp_path):

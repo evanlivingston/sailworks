@@ -2,12 +2,21 @@
 
 import hashlib
 import json
-from contextlib import nullcontext
-from datetime import timedelta
+from contextlib import contextmanager, nullcontext
+from datetime import datetime, timedelta, timezone
 import os
 from dataclasses import dataclass
 from pathlib import Path
 import tempfile
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX platforms
+    fcntl = None
+
+# Downloads are large and expensive, but the index is a hint: bound it so a
+# long-lived installation cannot grow it without limit.
+MAX_DOWNLOAD_RECORDS = 64
 
 from .forecasttranche import (
     AnalysisSelection,
@@ -34,6 +43,8 @@ class TrancheStore:
         self.manifests.mkdir(parents=True, exist_ok=True)
         self.artifacts.mkdir(parents=True, exist_ok=True)
         self.active_path = self.root / "active.json"
+        self.downloads_path = self.root / "downloads.json"
+        self.downloads_lock_path = self.root / "downloads.lock"
 
     @staticmethod
     def _fsync_dir(path):
@@ -75,6 +86,174 @@ class TrancheStore:
         finally:
             if not committed and os.path.exists(name):
                 os.unlink(name)
+
+    @contextmanager
+    def _downloads_lock(self):
+        """Serialize read-modify-write of the download index across writers."""
+        if fcntl is None:  # pragma: no cover - non-POSIX platforms
+            yield
+            return
+        fd = os.open(self.downloads_lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
+    @staticmethod
+    def download_key(planned):
+        """Stable identity for a planned download, independent of transport tags.
+
+        The planned identifier already pins source, run date/cycle, fields and
+        steps; model, region, member and native resolution complete the request.
+        """
+        from .forecastrefreshcontracts import PlannedModel
+
+        if not isinstance(planned, PlannedModel):
+            raise TypeError("expected PlannedModel")
+        payload = {
+            "model_id": planned.model_id,
+            "identifier": json.loads(planned.identifier),
+            "region": list(planned.configuration.region),
+            "member": planned.member,
+            "resolution": planned.native_resolution,
+        }
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode("utf8")).hexdigest()
+
+    def _download_records(self):
+        """Return the record mapping, ignoring a missing or malformed index."""
+        path = self.downloads_path
+        if path.is_symlink():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf8"))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        records = payload.get("requests")
+        return records if isinstance(records, dict) else {}
+
+    def _write_downloads(self, records):
+        """Atomically replace the index; call with the download lock held."""
+        fd, name = tempfile.mkstemp(dir=self.root, prefix=".downloads-")
+        try:
+            with os.fdopen(fd, "w", encoding="utf8") as stream:
+                json.dump(
+                    {"version": 1, "requests": records},
+                    stream,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.chmod(name, 0o644)
+            # Replace is the commit point so readers never observe a partial
+            # index, even when two refreshes record downloads at once.
+            os.replace(name, self.downloads_path)
+            self._fsync_dir(self.root)
+        finally:
+            if os.path.exists(name):
+                os.unlink(name)
+
+    @staticmethod
+    def _bounded(records, limit):
+        if len(records) <= limit:
+            return records
+
+        def created(item):
+            record = item[1]
+            return record.get("created", "") if isinstance(record, dict) else ""
+
+        return dict(sorted(records.items(), key=created)[-limit:])
+
+    def _coerce_artifact(self, artifact):
+        if isinstance(artifact, Artifact):
+            self._artifact_path(artifact)
+            return artifact
+        if isinstance(artifact, (str, os.PathLike)):
+            path = Path(artifact)
+            if not path.is_absolute():
+                path = self.root / path
+            if path.is_symlink() or not path.is_file():
+                raise ValueError("adopted artifact is not a regular local file")
+            if path.resolve().parent != self.artifacts:
+                raise ValueError("adopted artifact must live in the artifact store")
+            digest, size = self._hash(path)
+            if path.name != digest:
+                raise ValueError("artifact filename is not its content hash")
+            return Artifact(f"artifacts/{digest}", digest, size)
+        raise TypeError("expected Artifact or artifact path")
+
+    def record_download(self, planned, artifact):
+        """Register an existing artifact for a planned download.
+
+        Callable by refresh itself and by an operator adopting bytes that are
+        already in the artifact store, so a completed transfer is never repeated
+        just because its manifest was not published.
+
+        ``artifact`` may be an ``Artifact`` or a path inside ``artifacts/``.
+        Returns the request key written.
+        """
+        key = self.download_key(planned)
+        artifact = self._coerce_artifact(artifact)
+        record = {
+            "artifact": artifact.path,
+            "sha256": artifact.sha256,
+            "size": artifact.size,
+            "model_id": planned.model_id,
+            "run_time": planned.run_time.isoformat(),
+            "region": list(planned.configuration.region),
+            "fields": list(planned.configuration.fields),
+            "steps": sorted(
+                {hour for _field, hours in planned.field_steps for hour in hours}
+            ),
+            "member": planned.member,
+            "created": datetime.now(timezone.utc).isoformat(),
+        }
+        with self._downloads_lock():
+            records = self._download_records()
+            records[key] = record
+            self._write_downloads(self._bounded(records, MAX_DOWNLOAD_RECORDS))
+        return key
+
+    def recorded_download(self, planned):
+        """Return the verified artifact recorded for this request, or None."""
+        key = self.download_key(planned)
+        record = self._download_records().get(key)
+        if not isinstance(record, dict):
+            return None
+        if (
+            record.get("model_id") != planned.model_id
+            or record.get("run_time") != planned.run_time.isoformat()
+        ):
+            return None
+        sha256, size = record.get("sha256"), record.get("size")
+        path = record.get("artifact")
+        if not isinstance(sha256, str) or type(size) is not int:
+            return None
+        if not isinstance(path, str) or Path(path).name != sha256:
+            return None
+        try:
+            artifact = Artifact(path, sha256, size)
+            self._artifact_path(artifact)
+        except (OSError, ValueError):
+            return None
+        return artifact
+
+    def forget_download(self, planned):
+        """Drop the recorded download for a request now covered by a manifest."""
+        key = self.download_key(planned)
+        with self._downloads_lock():
+            records = self._download_records()
+            if records.pop(key, None) is None:
+                return False
+            self._write_downloads(records)
+        return True
 
     def register_file(self, source):
         """Register a local input by copying it into canonical immutable storage."""
@@ -240,6 +419,34 @@ class TrancheStore:
             return None
         _acquired_at, entry, path = max(matches, key=lambda item: item[0])
         return entry, path
+
+    def newest_selection(self, model_id):
+        """The newest published selection holding a model.
+
+        Recency is the tranche refresh time; the manifest mtime only breaks
+        ties between tranches published during the same refresh. Older
+        tranches are never returned for a model they do not contain.
+        """
+        newest = None
+        for path in self.manifests.glob("*.json"):
+            try:
+                tranche = self.load(path.stem)
+                mtime = path.stat().st_mtime_ns
+            except Exception:
+                continue
+            entry = next(
+                (item for item in tranche.entries if item.model_id == model_id),
+                None,
+            )
+            if entry is None:
+                continue
+            key = (tranche.refreshed_at, mtime)
+            if newest is None or key > newest[0]:
+                newest = (
+                    key,
+                    AnalysisSelection(tranche.tranche_id, entry.entry_id),
+                )
+        return None if newest is None else newest[1]
 
     def resolve(self, selection):
         if not isinstance(selection, AnalysisSelection):
