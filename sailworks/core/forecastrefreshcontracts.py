@@ -78,12 +78,12 @@ class PlannedModel:
             for item in raw_steps
         ):
             raise ValueError("field schedules must be (field, hours) pairs")
-        steps = tuple((field, tuple(hours)) for field, hours in raw_steps)
-        if tuple(field for field, _ in steps) != self.configuration.fields:
+        steps = tuple((name, tuple(hours)) for name, hours in raw_steps)
+        if tuple(name for name, _ in steps) != self.configuration.fields:
             raise ValueError("field schedules must match configured fields in order")
-        for field, hours in steps:
+        for name, hours in steps:
             if (
-                not isinstance(field, str)
+                not isinstance(name, str)
                 or not hours
                 or any(
                     type(hour) is not int
@@ -98,14 +98,14 @@ class PlannedModel:
                 )
         supported_union = set()
         field_supported = {}
-        for field in self.configuration.fields:
-            supported = capability.available_steps(run_time.hour, field)
-            field_supported[field] = supported
+        for name in self.configuration.fields:
+            supported = capability.available_steps(run_time.hour, name)
+            field_supported[name] = supported
             supported_union.update(supported)
         if any(hour not in supported_union for hour in self.configuration.steps):
             raise ValueError("configuration requests unsupported provider steps")
-        for field, hours in steps:
-            supported_hours = field_supported[field]
+        for name, hours in steps:
+            supported_hours = field_supported[name]
             expected = tuple(
                 hour
                 for hour in supported_hours
