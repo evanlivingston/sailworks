@@ -1598,6 +1598,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
         wavePrepared = Signal()  # noqa: N815
         marineStateChanged = Signal(str)  # noqa: N815
         worldRendered = Signal(object, str)  # noqa: N815
+        layerVisibilityChanged = Signal(str, bool)  # noqa: N815
 
         def __init__(
             self,
@@ -1615,6 +1616,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             gpu_streamlines=True,
             satellite_visible=False,
             satellite_pack="",
+            basemap_visible=True,
+            enc_visible=True,
         ):
             super().__init__(parent)
             self._model = model
@@ -1999,6 +2002,18 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 except Exception:  # noqa: BLE001 - reachability is advisory
                     self._satellite_network = None
                 self._weather.setProperty("satelliteVisible", self._satellite_visible)
+                self._base_layer_item = self._weather.findChild(QObject, "baseLayer")
+                self._layer_basemap_visible = bool(basemap_visible)
+                self._layer_enc_visible = bool(enc_visible)
+                self._weather.setProperty("basemapVisible", self._layer_basemap_visible)
+                self._weather.setProperty("encVisible", self._layer_enc_visible)
+                if self._base_layer_item is not None:
+                    self._base_layer_item.setProperty(
+                        "visible", self._layer_basemap_visible
+                    )
+                if self._chart is not None:
+                    self._chart.setProperty("visible", self._layer_enc_visible)
+                getattr(self._weather, "layerToggled").connect(self._layer_toggled)
                 if self._satellite_visible:
                     self._satellite_camera = self._camera
                     self._start_satellite()
@@ -2723,6 +2738,28 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     self._satellite_timer.stop()
                 if self._satellite_retry_timer is not None:
                     self._satellite_retry_timer.stop()
+
+        def set_layer_visible(self, layer, visible):
+            """Apply a layer switch from the scene or the settings panels."""
+            visible = bool(visible)
+            if layer == "satellite":
+                self.set_satellite_visible(visible)
+            elif layer == "basemap":
+                self._layer_basemap_visible = visible
+                if self._weather is not None:
+                    self._weather.setProperty("basemapVisible", visible)
+                if self._base_layer_item is not None:
+                    self._base_layer_item.setProperty("visible", visible)
+            elif layer == "enc":
+                self._layer_enc_visible = visible
+                if self._weather is not None:
+                    self._weather.setProperty("encVisible", visible)
+                if self._chart is not None:
+                    self._chart.setProperty("visible", visible)
+
+        def _layer_toggled(self, layer, visible):
+            self.set_layer_visible(layer, visible)
+            self.layerVisibilityChanged.emit(layer, bool(visible))
 
         def _satellite_camera_changed(self, camera):
             if not self._satellite_visible or camera is None:

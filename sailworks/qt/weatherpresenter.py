@@ -144,6 +144,8 @@ class WeatherPresenter(QObject):
                     self.canvas.controller.settings.chartSatelliteVisible
                 ),
                 satellite_pack=self.canvas.controller.settings.satellitePack,
+                basemap_visible=bool(self.canvas.controller.settings.chartWorldVisible),
+                enc_visible=bool(self.canvas.controller.settings.chartENCVisible),
             )
             if self.native_fields:
                 kwargs["native_weather_fields"] = True
@@ -151,10 +153,19 @@ class WeatherPresenter(QObject):
                     self.canvas.controller.native_weather_budget
                 )
             widget = _viewport_widget_class()(model, self.canvas, **kwargs)
-            self.canvas.controller.settings.register_on_change(
-                "chartSatelliteVisible",
-                lambda value: widget.set_satellite_visible(bool(value)),
-            )
+            settings = self.canvas.controller.settings
+            for key, layer in (
+                ("chartSatelliteVisible", "satellite"),
+                ("chartWorldVisible", "basemap"),
+                ("chartENCVisible", "enc"),
+            ):
+                settings.register_on_change(
+                    key,
+                    lambda value, layer=layer: widget.set_layer_visible(
+                        layer, bool(value)
+                    ),
+                )
+            widget.layerVisibilityChanged.connect(self._layer_visibility_changed)
             widget.marineStateChanged.connect(
                 lambda state: self._marine_state_changed(generation, state)
             )
@@ -596,6 +607,15 @@ class WeatherPresenter(QObject):
             QCoreApplication.sendEvent(self.canvas, event)
             return True
         return super().eventFilter(watched, event)
+
+    def _layer_visibility_changed(self, layer, visible):
+        key = {
+            "satellite": "chartSatelliteVisible",
+            "basemap": "chartWorldVisible",
+            "enc": "chartENCVisible",
+        }.get(layer)
+        if key is not None:
+            self.canvas.controller.settings[key] = bool(visible)
 
     def _camera_changed(self, camera):
         """Mirror the viewport-owned camera for existing overlays and app APIs."""

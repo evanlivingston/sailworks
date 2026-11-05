@@ -27,8 +27,11 @@ Item {
     // Satellite imagery is a raster layer below the composed chart. The
     // image arrives from MapLibre; the attribution is shown with it.
     property bool satelliteVisible: false
+    property bool basemapVisible: true
+    property bool encVisible: true
     property string satelliteAttribution: ""
     property string satelliteStatus: ""
+    signal layerToggled(string layer, bool visible)
     // Embedded use supplies the world/raster base here. It must not depend
     // on QWidget parent pixels showing through the Quick host.
     Item {
@@ -929,6 +932,55 @@ Item {
             color: "white"
             font.pixelSize: 12
             text: root.encStatus
+        }
+    }
+    // Layer switcher: satellite, vector basemap and ENC, top-right.
+    Rectangle {
+        id: layerSwitcher
+        objectName: "layerSwitcher"
+        anchors.top: parent.top
+        anchors.right: parent.right
+        anchors.topMargin: 10
+        anchors.rightMargin: 10
+        width: layerRow.implicitWidth + 12
+        height: 34
+        radius: 8
+        color: "#000000c0"
+        border.width: 1
+        border.color: "#33ffffff"
+        Row {
+            id: layerRow
+            anchors.centerIn: parent
+            spacing: 4
+            Repeater {
+                model: [
+                    { key: "satellite", label: "Satellite" },
+                    { key: "basemap", label: "Basemap" },
+                    { key: "enc", label: "ENC" }
+                ]
+                delegate: Rectangle {
+                    property bool active: modelData.key === "satellite"
+                                           ? root.satelliteVisible
+                                           : modelData.key === "basemap"
+                                             ? root.basemapVisible
+                                             : root.encVisible
+                    width: layerLabel.implicitWidth + 16
+                    height: 26
+                    radius: 6
+                    color: active ? "#e8e8e8" : "#14ffffff"
+                    Text {
+                        id: layerLabel
+                        anchors.centerIn: parent
+                        text: modelData.label
+                        color: parent.active ? "#111111" : "#dddddd"
+                        font.pixelSize: 12
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: root.layerToggled(modelData.key, !parent.active)
+                    }
+                }
+            }
         }
     }
 }
