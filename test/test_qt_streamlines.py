@@ -650,8 +650,8 @@ class TestStreamlineShaderPixels(unittest.TestCase):
         rendered, so the wait has to drive the real render loop instead of
         only pumping events. A platform with no usable RHI backend renders
         through the software adapter, which never compiles custom shaders:
-        the batches then stay Uncompiled with no shaderError and the pixel
-        contract below cannot be observed there.
+        the batches then stay Uncompiled, which the layer reports as a shader
+        error, and the pixel contract below cannot be observed there.
         """
         deadline = time.monotonic() + 5.0
         frames = 0
@@ -660,7 +660,7 @@ class TestStreamlineShaderPixels(unittest.TestCase):
             QTest.qWait(10)
             self.app.processEvents()
             frames += 1
-            if layer.property("ready") or layer.property("shaderError"):
+            if layer.property("ready"):
                 return
             if frames >= 5:
                 statuses = [
@@ -668,12 +668,27 @@ class TestStreamlineShaderPixels(unittest.TestCase):
                     for batch in self._batch_delegates(layer)
                 ]
                 # ShaderEffect.Compiled is 0, Uncompiled is 1, Error is 2.
+                # The layer now reports any non-compiled status as a shader
+                # error, so a status is the only thing that separates "this
+                # platform cannot run custom shaders" from a real failure:
+                # every batch stuck at Uncompiled is the software adapter,
+                # while Error (or a mixed result) must still reach the
+                # assertions below.
                 if statuses and all(status == 1 for status in statuses):
+                    # Regression guard for a shader this platform never
+                    # compiles: the layer must not look ready and must say
+                    # why, or readiness stays silent instead of unavailable.
+                    self.assertFalse(layer.property("ready"))
+                    self.assertTrue(
+                        layer.property("shaderError"),
+                        "a ShaderEffect that never compiles must report an error",
+                    )
                     self.skipTest(
                         "This Qt platform cannot compile ShaderEffect shaders: "
                         f"batch effect statuses {statuses} stayed Uncompiled "
                         f"after {frames} rendered frames"
                     )
+                return
 
     def test_qquickwindow_draws_and_withdraws_streamlines(self):
         shader_dir = Path(__file__).parents[1] / "sailworks/qt/shaders"
