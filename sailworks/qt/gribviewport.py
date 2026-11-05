@@ -2807,7 +2807,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             scale, otherwise the retained image is stretched and permanently
             soft, even though it technically covers the view.
             """
-            source = self._satellite_source_camera
+            source = getattr(self, "_satellite_source_camera", None)
             if source is None:
                 return False
             if abs(source.zoom - camera.zoom) > 1e-6:
@@ -2891,12 +2891,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._satellite_error = reason
             self._satellite_retry_at = time.monotonic() + 15.0
             self._set_satellite_status("Satellite unavailable")
-            if self._satellite_retry_timer is not None:
-                self._satellite_retry_timer.start(15000)
+            retry = getattr(self, "_satellite_retry_timer", None)
+            if retry is not None:
+                retry.start(15000)
 
         def _place_satellite(self, camera):
-            source = self._satellite_source_camera
-            if self._satellite is None or source is None:
+            source = getattr(self, "_satellite_source_camera", None)
+            item = getattr(self, "_satellite", None)
+            if item is None or source is None:
                 return
             source = self._satellite_continuous_source(source, camera)
             # The target is current-camera-relative; the shared map parent owns
@@ -5129,16 +5131,20 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._base_provider.clear()
             if self._world_provider is not None:
                 self._world_provider.clear()
-            if self._satellite_timer is not None:
-                self._satellite_timer.stop()
-            if self._satellite_retry_timer is not None:
-                self._satellite_retry_timer.stop()
-            if self._satellite_worker is not None:
-                self._satellite_worker.stop()
-                self._satellite_worker.join(2.0)
+            timer = getattr(self, "_satellite_timer", None)
+            if timer is not None:
+                timer.stop()
+            retry = getattr(self, "_satellite_retry_timer", None)
+            if retry is not None:
+                retry.stop()
+            worker = getattr(self, "_satellite_worker", None)
+            if worker is not None:
+                worker.stop()
+                worker.join(2.0)
                 self._satellite_worker = None
-            if self._satellite_provider is not None:
-                self._satellite_provider.clear()
+            provider = getattr(self, "_satellite_provider", None)
+            if provider is not None:
+                provider.clear()
             if shiboken6.isValid(self._weather):
                 self._weather.setVisible(False)
 
