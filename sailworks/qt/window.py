@@ -213,6 +213,7 @@ class PreviewWindow(QMainWindow):
         self._ais_updated(tuple(self.navigation_panel.ais_targets))
         self._race_boat_positions = []
         self._race_timeline_bounds = None
+        self._race_region_installed = False
         self.race_panel = RacesPanel(controller)
         self.race_panel.tracks_changed.connect(self._race_tracks_changed)
         self.race_panel.race_selected.connect(self._race_selected)
@@ -392,7 +393,6 @@ class PreviewWindow(QMainWindow):
         view_menu.addAction("Reset layout", self.workspace.reset_layout)
         log_menu = self.menuBar().addMenu("Logs")
         log_menu.addAction("Log library…", self.show_log_library)
-        QTimer.singleShot(0, self._offer_map_data)
 
     def _show_startup_status(self, controller):
         """Report staged chart initialization while it is pending."""
@@ -402,7 +402,6 @@ class PreviewWindow(QMainWindow):
         self.startup_status = QLabel(startup.message)
         self.statusBar().addPermanentWidget(self.startup_status)
         startup.changed.connect(lambda: self.startup_status.setText(startup.message))
-        startup.finished.connect(self._offer_map_data)
 
     def _build_plots(self, controller):
         """Build the log plot canvas, deferring Matplotlib when it is unused."""
@@ -437,18 +436,6 @@ class PreviewWindow(QMainWindow):
                 self.statusBar().showMessage("Saved edited log", 3000)
         except Exception as exc:
             QMessageBox.warning(self, "Unable to save log", str(exc))
-
-    def _offer_map_data(self):
-        if (
-            not self.controller.closed
-            and self.controller.load_charts
-            and (
-                self.controller.chart_startup is None
-                or self.controller.chart_startup.state == "ready"
-            )
-            and any(self.controller.map_data.missing().values())
-        ):
-            self._ensure_library(chart_section=2)
 
     def _create_marine_panels(self, controller):
         self.marine_panels = {}
@@ -906,13 +893,17 @@ class PreviewWindow(QMainWindow):
         if timeline is None:
             return
         if bounds is None:
-            timeline.clear_region()
+            if getattr(self, "_race_region_installed", False):
+                timeline.clear_region()
+                self._race_region_installed = False
             return
         start, end, _valid_times = bounds
         if not force and not self._race_window_in_forecast(start, end):
             timeline.clear_region()
+            self._race_region_installed = False
             return
         timeline.set_region(start, end)
+        self._race_region_installed = True
 
     def _race_window_in_forecast(self, start, end):
         try:

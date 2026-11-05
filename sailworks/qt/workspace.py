@@ -2,7 +2,9 @@
 
 import base64
 import binascii
+from datetime import datetime
 import logging
+import math
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QEvent, QObject, QTimer
@@ -106,6 +108,7 @@ class WorkspacePreferences(QObject):
             panel.toggle.toggled.connect(self.changed)
         window.routing_panel.options_changed.connect(self.changed)
         window.timeline.step_changed.connect(self.changed)
+        window.timeline.region_changed.connect(self.changed)
         window.workspace_toolbar.visibilityChanged.connect(self.changed)
 
     def eventFilter(self, watched, event):  # noqa: N802 - Qt virtual method name
@@ -169,7 +172,15 @@ class WorkspacePreferences(QObject):
             "view": window.views.tabText(window.views.currentIndex()),
             "polars_visited": window.polars_visited,
             "nmea_source": window.session.source,
-            "forecast": {"step": window.timeline.step_combo.currentText()},
+            "forecast": {
+                "step": window.timeline.step_combo.currentText(),
+                "region": (
+                    list(window.timeline.region)
+                    if getattr(window.timeline, "region", None) is not None
+                    else None
+                ),
+                "time": window.controller.time_control.time.isoformat(),
+            },
             "weather": {"open": window.weather_open},
             "marine": {
                 "open": dict(window.marine_open),
@@ -292,6 +303,35 @@ class WorkspacePreferences(QObject):
             and self.window.timeline.step_combo.findText(step) >= 0
         ):
             self.window.timeline.step_combo.setCurrentText(step)
+        forecast = mapping(state.get("forecast"))
+        region = forecast.get("region")
+        if (
+            isinstance(region, (list, tuple))
+            and len(region) == 2
+            and not isinstance(region[0], bool)
+            and not isinstance(region[1], bool)
+        ):
+            try:
+                start = float(region[0])
+                end = float(region[1])
+            except (TypeError, ValueError):
+                start = end = None
+            if (
+                start is not None
+                and end is not None
+                and math.isfinite(start)
+                and math.isfinite(end)
+                and start < end
+            ):
+                self.window.timeline.set_region(start, end)
+        time_value = forecast.get("time")
+        if isinstance(time_value, str):
+            try:
+                parsed = datetime.fromisoformat(time_value)
+            except ValueError:
+                parsed = None
+            if parsed is not None:
+                self.window.controller.time_control.set_time(parsed)
 
     def _restore_window(self, saved):
         if saved:
