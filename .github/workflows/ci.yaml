@@ -9,30 +9,6 @@ on:
     types: [opened, synchronize, reopened]
 
 jobs:
-  build:
-    runs-on: ubuntu-24.04
-
-    strategy:
-      matrix:
-        python-version: ["3.12", "3.13"]
-
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
-
-    - name: Install dependencies
-      run: |
-        bash .github/workflows/script/ubuntu_dep.sh
-        bash .github/workflows/script/python_dep.sh
-
-    - name: Install gww
-      run: pip install .
-
   linters:
     runs-on: ubuntu-24.04
 
