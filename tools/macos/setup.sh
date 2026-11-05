@@ -9,14 +9,14 @@ fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
-brew install gdal cairo pkg-config python@3.11
+brew install gdal cairo pkg-config python@3.12
 
 BREW_PREFIX="$(brew --prefix)"
-export PATH="$(brew --prefix python@3.11)/bin:$BREW_PREFIX/bin:$PATH"
+export PATH="$(brew --prefix python@3.12)/bin:$BREW_PREFIX/bin:$PATH"
 export PKG_CONFIG_PATH="$BREW_PREFIX/lib/pkgconfig:$BREW_PREFIX/share/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 
 if [[ ! -d .venv ]]; then
-    python3.11 -m venv .venv
+    python3.12 -m venv .venv
 fi
 
 source .venv/bin/activate
