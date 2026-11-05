@@ -36,6 +36,10 @@ def test_source_retirement_clears_barb_and_fill_qml_bindings():
             _barbs_back=None,
             _fill=fill,
             _fill_back=None,
+            _wave_barbs=None,
+            _wave_barbs_back=None,
+            _wave_fill=None,
+            _wave_fill_back=None,
             _native_weather_fields=False,
             _shared_anchor_pool=lambda: None,
         )

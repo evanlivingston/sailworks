@@ -52,7 +52,23 @@ marine-global = ["copernicusmarine>=2.2,<3"]
 weathernext = ["xarray", "zarr>=3", "gcsfs", "dask[array]", "eccodes"]
 
 [dependency-groups]
-dev = ["black", "pytest", "pytest-qt"]
+# The one declaration of what the test suite needs. tox reads this group
+# directly (see tox.ini) and `uv sync --group test` installs it for a local
+# workspace, so neither place keeps its own copy.
+test = [
+    "pytest",
+    "pytest-qt",
+    "pytest-cov",
+    "pyais",
+    "eccodes",
+    "eccodeslib",
+    "gcsfs",
+    "google-auth",
+]
+dev = [
+    "black",
+    {include-group = "test"},
+]
 
 [project.urls]
 Homepage = "https://github.com/evanlivingston/sailworks"
