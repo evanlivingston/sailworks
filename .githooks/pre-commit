@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Block commits made directly in the main (coordination) worktree on any branch
+# other than dev. Work belongs in a worktree created by tools/wt-new.sh.
+set -euo pipefail
+
+COMMON="$(git rev-parse --path-format=absolute --git-common-dir)"
+GITDIR="$(git rev-parse --path-format=absolute --git-dir)"
+
+# Only enforce in the main worktree, not in linked worktrees.
+[ "$COMMON" = "$GITDIR" ] || exit 0
+
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+[ "$BRANCH" = "dev" ] && exit 0
+
+echo "pre-commit: refusing to commit on '$BRANCH' in the main coordination tree." >&2
+echo "Start a worktree instead:  tools/wt-new.sh <slug>" >&2
+exit 1
