@@ -63,6 +63,9 @@ Item {
                          ? effect.status !== ShaderEffect.Error
                          : effect.status === ShaderEffect.Compiled)
     property string shaderError: effect.status === ShaderEffect.Error ? effect.log : ""
+    // An error's log can be empty, so callers that must not publish a failed
+    // program test this flag rather than the message.
+    readonly property bool shaderFailed: effect.status === ShaderEffect.Error
     readonly property int shaderStatus: effect.status
     readonly property bool effectVisible: effect.visible
     Image {

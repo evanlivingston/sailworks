@@ -1440,6 +1440,22 @@ def _source_key(source):
     )
 
 
+def _connect_signal(item, name, slot):
+    """Connect ``slot`` to ``name`` when the item declares that signal.
+
+    A QML ``ShaderEffect`` declares ``shaderErrorChanged`` and
+    ``sourceErrorChanged``; the object a scene yields can still be a plain
+    ``QQuickItem``, where a generic connect raises.  Ask the meta-object
+    first, so a scene without the signal is skipped rather than taking the
+    viewport down.  Returns whether the connection was made.
+    """
+    signal = getattr(item, name, None)
+    if signal is None:
+        return False
+    signal.connect(slot)
+    return True
+
+
 def _grid_rect(view, lattice):
     """The gridded field's rectangle in the scene's pixels.
 
@@ -1931,8 +1947,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                             "shaderErrorChanged",
                             "sourceErrorChanged",
                         ):
-                            getattr(item, signal).connect(
-                                lambda *args, slot=item: self._image_fill_changed(slot)
+                            _connect_signal(
+                                item,
+                                signal,
+                                lambda *args, slot=item: self._image_fill_changed(slot),
                             )
             for item in (self._wave_fill, self._wave_fill_back):
                 if item is None:
@@ -1942,8 +1960,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     "shaderErrorChanged",
                     "sourceErrorChanged",
                 ):
-                    getattr(item, signal).connect(
-                        lambda *args, slot=item: self._wave_fill_changed(slot)
+                    _connect_signal(
+                        item,
+                        signal,
+                        lambda *args, slot=item: self._wave_fill_changed(slot),
                     )
             for item in (self._wave_barbs, self._wave_barbs_back):
                 if item is None:
@@ -1953,8 +1973,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     "shaderErrorChanged",
                     "sourceErrorChanged",
                 ):
-                    getattr(item, signal).connect(
-                        lambda *args, slot=item: self._wave_barbs_changed(slot)
+                    _connect_signal(
+                        item,
+                        signal,
+                        lambda *args, slot=item: self._wave_barbs_changed(slot),
                     )
             if self._native_weather_fields:
                 from .gpuweathertextures import (
@@ -3431,16 +3453,23 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._wave_state = "hidden"
                 self._wave_error = ""
                 self._set_wave_status("")
-                for item in (self._wave_fill, self._wave_fill_back):
-                    if item is not None:
-                        item.setVisible(False)
+                self._show_wave_fill(False)
+                if self._wave_fill_back is not None:
+                    self._wave_fill_back.setVisible(False)
                 return
             if not self._ensure_wave_model():
                 # The scene has no image fill (the barbs' own scenes) or the
                 # source has no field worker: state that, do not draw a blank.
                 self._show_wave_state("unavailable", "Wave height unavailable here")
                 return
-            self._show_wave_state("loading", "Loading wave height")
+            # The caption states what is *not* on screen yet.  Re-applying the
+            # toggle -- the presenter does that whenever the arrows are synced
+            # -- must not paint "Loading" over a frame that was already
+            # adopted, so a ready layer keeps its caption cleared.  A state
+            # that is loading or unavailable is re-announced, which is what
+            # retries a previously failed stage.
+            if self._wave_state != "ready":
+                self._show_wave_state("loading", "Loading wave height")
             self._update_wave(self._camera)
 
         def set_wave_arrows_visible(self, visible):
@@ -3578,9 +3607,48 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._wave_error = message
             self._set_wave_status(message, loading=state == "loading")
             if state != "ready":
-                for item in (self._wave_fill, self._wave_fill_back):
-                    if item is not None:
-                        item.setVisible(False)
+                self._show_wave_fill(False)
+                if self._wave_fill_back is not None:
+                    self._wave_fill_back.setVisible(False)
+
+        def _show_wave_fill(self, visible):
+            """Show or hide the wave front slot through the scene property.
+
+            The scene binds ``waveFill.visible`` to ``root.waveFillEnabled``,
+            exactly as it binds the wind fill to ``root.fillEnabled``.  The
+            property write is what survives a scene rebuild: it lands on the
+            scene instance the viewport currently holds, while the item slot
+            is only a handle onto one instance's child.  The direct
+            ``setVisible`` keeps the slot in step when a scene does not carry
+            the property at all (the barbs-only scenes).
+            """
+            visible = bool(visible)
+            root = getattr(self, "_weather", None)
+            if root is not None and root.property("waveFillEnabled") is not None:
+                root.setProperty("waveFillEnabled", visible)
+            item = self._wave_fill
+            if item is not None:
+                item.setVisible(visible)
+
+        def _show_wave_stage(self, item):
+            """Draw the wave staging slot so its shader can compile.
+
+            Qt Quick compiles a ``ShaderEffect`` only while it is rendered, so
+            a slot that is not effectively visible never satisfies
+            ``prepared``.  ``visible`` alone is not enough: a hidden container
+            keeps the slot unrendered.  A container carries no content of its
+            own, so it is unhidden the way ``_publish`` unhides the wind
+            staging band; the slot's own opacity stays at the low staging
+            value set by the caller.
+            """
+            item.setVisible(True)
+            root = getattr(self, "_weather", None)
+            parent_item = getattr(item, "parentItem", None)
+            parent = parent_item() if parent_item is not None else None
+            while parent is not None and parent is not root:
+                if not parent.isVisible():
+                    parent.setVisible(True)
+                parent = parent.parentItem()
 
         def _wave_grid_rect(self, camera, lattice):
             # The wave fill shares the wind fill's reference placement, so a
@@ -3659,7 +3727,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 item.setProperty("blend", field.staged.weight(camera.stamp()))
                 self._place_fill_rect(item, self._wave_grid_rect(camera, grid.lattice))
                 self._show_wave_state("ready", "")
-                item.setVisible(True)
+                self._show_wave_fill(True)
                 return
             budget = sum(image.sizeInBytes() for image in grid.images)
             delta = max(0, budget - layer.pending_budget_bytes)
@@ -3700,7 +3768,15 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 ("u0Source", "v0Source", "u1Source", "v1Source"), urls
             ):
                 item.setProperty(name, QUrl(url))
-            item.setVisible(False)
+            # Qt Quick compiles a ShaderEffect only when it is rendered, so a
+            # fully hidden staging slot would never satisfy ``prepared`` and
+            # the fill would always time out.  Draw it at 1% opacity -- the
+            # same trick the native weather staging slots use -- so the
+            # program compiles; the adoption gate still refuses to publish a
+            # frame whose shader errored, and the opacity is restored to the
+            # requested value when the slot is adopted.
+            item.setOpacity(0.01)
+            self._show_wave_stage(item)
             self._try_commit_wave(token)
             if isinstance(self, QObject):
                 QTimer.singleShot(
@@ -3724,9 +3800,16 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             layer = self._publication_manager.layers[LayerRole.WAVE_FILL]
             if layer.pending is None or layer.completion_token is not token:
                 return
-            if item.property("shaderError") or item.property("sourceError"):
+            if item.property("shaderFailed") or item.property("sourceError"):
                 self._fail_wave(token, "Wave shader unavailable")
                 return
+            # A ShaderEffect is compiled only once it is rendered, so the
+            # staging slot is drawn at 1% opacity while it waits (see
+            # ``_update_wave``).  ``prepared`` is therefore "all four images
+            # ready and the shader compiled", and waiting on it is what
+            # guarantees the adopted frame can actually be drawn.  A failed
+            # shader is reported by ``shaderFailed``; its ``shaderError`` log
+            # can be empty, so that string alone is not a reliable signal.
             if not item.property("prepared"):
                 return
             adopted, _ = self._publication_manager.verify_and_adopt(
@@ -3746,7 +3829,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._wave_fill, self._wave_fill_back = item, old
             item.setOpacity(self._wave_opacity)
             self._show_wave_state("ready", "")
-            item.setVisible(self._wave_visible)
+            self._show_wave_fill(self._wave_visible)
 
         def _fail_wave(self, token, message):
             if token is not getattr(self, "_wave_token", None):
@@ -3772,6 +3855,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             )
 
         def _show_wave_arrow_state(self, state, message=""):
+            """Record the arrow layer's state without touching the caption.
+
+            The height fill owns the shared caption: an arrow update runs on
+            its own cadence (every arrow adoption and camera change), so it
+            must never put a loading string back over a drawn, adopted height
+            field.  It only withdraws stale arrows.
+            """
             self._wave_arrows_state = state
             self._wave_arrows_error = message
             if state != "ready":

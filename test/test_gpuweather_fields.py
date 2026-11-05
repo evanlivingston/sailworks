@@ -920,6 +920,7 @@ def _wave_host(**attributes):
     host = SimpleNamespace(**attributes)
     for name in (
         "_show_wave_state",
+        "_show_wave_fill",
         "_set_wave_status",
         "_update_wave",
         "set_wave_visible",

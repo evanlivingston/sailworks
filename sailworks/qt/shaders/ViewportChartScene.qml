@@ -17,6 +17,10 @@ import QtQuick
 Item {
     id: root
     property bool fillEnabled: false
+    // The wave height fill's front slot, driven exactly like the wind fill:
+    // the scene property is what the viewport writes, so the binding lands on
+    // the current scene instance and not on a slot held from a replaced one.
+    property bool waveFillEnabled: false
     // The ENC source's own state, in the scene's own words.  An empty
     // string means there is nothing to report.
     property string encStatus: ""
@@ -81,6 +85,33 @@ Item {
                 ChartLayer {
                     objectName: "environmentLayer"
                     anchors.fill: parent
+                }
+                // The wave height fill is the wind fill's sibling and lives in
+                // this always-drawn band for the same reason: Qt Quick
+                // compiles a ShaderEffect only while it is rendered, and a
+                // slot inside a hidden staging band never compiles.  A scalar
+                // field travels in u0/u1 with a zero plane in v0/v1, so it
+                // reuses WeatherFill and the weather shader unchanged.
+                WeatherFill {
+                    id: waveFill
+                    objectName: "waveFill"
+                    anchors.fill: parent
+                    visible: root.waveFillEnabled
+                    gradientLevels: 9
+                    fragmentShader: Qt.resolvedUrl("wave.frag.qsb")
+                    property string statusText: ""
+                    property bool waveLoading: false
+                }
+                // The pending wave frame is drawn at the same low opacity the
+                // wind staging slot uses, and swapped in only when adopted.
+                WeatherFill {
+                    objectName: "waveFillBack"
+                    anchors.fill: parent
+                    visible: false
+                    gradientLevels: 9
+                    fragmentShader: Qt.resolvedUrl("wave.frag.qsb")
+                    property string statusText: ""
+                    property bool waveLoading: false
                 }
                 WeatherFill {
                     id: fill

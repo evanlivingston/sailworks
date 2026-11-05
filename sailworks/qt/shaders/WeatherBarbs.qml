@@ -123,27 +123,11 @@ Item {
         anchors.fill: parent
         visible: false
     }
-    // Wave height is an independent scalar layer; it must exist in the barb
-    // scene too, otherwise selecting "Show wave height" cannot draw anything
-    // when the wind style is barbs.
-    WeatherFill {
-        objectName: "waveFill"
-        anchors.fill: parent
-        visible: false
-        gradientLevels: 9
-        fragmentShader: Qt.resolvedUrl("wave.frag.qsb")
-        property string statusText: ""
-        property bool waveLoading: false
-    }
-    WeatherFill {
-        objectName: "waveFillBack"
-        anchors.fill: parent
-        visible: false
-        gradientLevels: 9
-        fragmentShader: Qt.resolvedUrl("wave.frag.qsb")
-        property string statusText: ""
-        property bool waveLoading: false
-    }
+    // The wave height fill is the scene's, not this component's: this
+    // component is instantiated as both the front and the staging band, and
+    // the staging band stays hidden, so a wave fill parented here could never
+    // be rendered or compiled.  A scene that draws the numerical fill owns
+    // the wave pair beside the wind pair.
     function batchesReady() {
         let revision = batchRevision
         for (let i = 0; i < batches.count; ++i) {
@@ -237,5 +221,20 @@ Item {
         vertexShader: "barbs.vert.qsb"
         fragmentShader: "barbs.frag.qsb"
     }
+    }
+    // Wave arrows are a layer of their own, exactly as in WeatherScene.qml.
+    // This scene draws the wave height fill, so it must also declare the
+    // glyph layer: the viewport finds it by objectName and drives its
+    // visibility, and a scene without it reports "Wave arrows unavailable".
+    WaveBarbs {
+        id: waveBarbs
+        objectName: "waveBarbs"
+        anchors.fill: parent
+        visible: false
+    }
+    WaveBarbs {
+        objectName: "waveBarbsBack"
+        anchors.fill: parent
+        visible: false
     }
 }

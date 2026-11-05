@@ -90,5 +90,19 @@ Item {
         sharedAnchorX1: anchorAtlasX1
         sharedAnchorY1: anchorAtlasY1
     }
+    // Wave arrows read their own anchor sources: the wave publication binds
+    // anchorXSource/anchorYSource directly rather than through the shared
+    // wind atlas, so these items must not claim the shared pool.
+    WaveBarbs {
+        id: waveBarbs
+        objectName: "waveBarbs"
+        anchors.fill: parent
+        visible: false
+    }
+    WaveBarbs {
+        objectName: "waveBarbsBack"
+        anchors.fill: parent
+        visible: false
+    }
     WeatherStreamlines { objectName: "weatherStreamlines"; anchors.fill: parent; visible: false }
 }

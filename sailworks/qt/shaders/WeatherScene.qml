@@ -9,6 +9,10 @@ import QtQuick
 Item {
     id: root
     property bool fillEnabled: false
+    // The wave height fill's front slot, driven exactly like the wind fill
+    // above: the viewport writes this property, so the binding follows the
+    // current scene instance rather than a slot held from a replaced one.
+    property bool waveFillEnabled: false
     WeatherFill {
         id: fill
         objectName: "weatherFill"
@@ -33,7 +37,7 @@ Item {
         id: waveFill
         objectName: "waveFill"
         anchors.fill: parent
-        visible: false
+        visible: root.waveFillEnabled
         gradientLevels: 9
         fragmentShader: Qt.resolvedUrl("wave.frag.qsb")
         property string statusText: ""

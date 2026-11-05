@@ -308,6 +308,224 @@ def test_a_scalar_wave_worker_publishes_its_gridded_form(gribs):
         model.close()
 
 
+def _staged_wave_fill(images_ready, prepared, shader_failed=False):
+    """A staged wave slot reporting the readiness Qt would report, no GPU."""
+    from types import MethodType, SimpleNamespace
+
+    from sailworks.qt.gribviewport import _viewport_widget_class
+    from sailworks.qt.viewportpublication import (
+        LayerIdentity,
+        LayerPlacement,
+        LayerRole,
+        PublicationManager,
+        ResourceKind,
+    )
+
+    class _Item:
+        def __init__(self, images_ready, prepared, shader_failed=False):
+            self.properties = {
+                "imagesReady": images_ready,
+                "prepared": prepared,
+                # Qt can report Error with an empty log, so the failure flag
+                # is the contract the viewport reads.
+                "shaderError": "",
+                "shaderFailed": shader_failed,
+                "sourceError": "",
+                "shaderStatus": 2 if shader_failed else 0,
+            }
+            self.visible = None
+            self.opacity = None
+
+        def property(self, name):
+            return self.properties.get(name)
+
+        def setProperty(self, name, value):
+            self.properties[name] = value
+
+        def setVisible(self, visible):
+            self.visible = visible
+
+        def setOpacity(self, opacity):
+            self.opacity = opacity
+
+        def isVisible(self):
+            return bool(self.visible)
+
+        def opacity(self):
+            return self.opacity
+
+    class _Image:
+        def sizeInBytes(self):
+            return 1024
+
+    class _Provider:
+        def __init__(self):
+            self.promoted = []
+            self.cancelled = []
+
+        def promote_field(self, key):
+            self.promoted.append(key)
+
+        def cancel_field(self, key):
+            self.cancelled.append(key)
+
+    token = object()
+    manager = PublicationManager()
+    key = "1/wave"
+    assert manager.stage_resources(
+        LayerRole.WAVE_FILL,
+        LayerIdentity(
+            role=LayerRole.WAVE_FILL,
+            generation=manager.current_generation,
+            source_key=("wave", key),
+            content_hash=key,
+        ),
+        LayerPlacement(),
+        {
+            ResourceKind.IMAGE: tuple(_Image() for _ in range(4)),
+            "urls": ("u0", "v0", "u1", "v1"),
+            "key": key,
+        },
+        4096,
+        completion_token=token,
+    )
+    front = _Item(True, True)
+    back = _Item(images_ready, prepared, shader_failed)
+
+    class _Status:
+        """The caption item: QML binds ``visible`` to ``text !== ""``."""
+
+        def __init__(self):
+            self.text = ""
+
+        def property(self, name):
+            return self.text if name == "text" else None
+
+        def setProperty(self, name, value):
+            assert name == "text"
+            self.text = value
+
+    status = _Status()
+    widget_class = _viewport_widget_class()
+    widget = SimpleNamespace(
+        _disposed=False,
+        _wave_token=token,
+        _wave_fill=front,
+        _wave_fill_back=back,
+        _wave_visible=True,
+        _wave_opacity=0.85,
+        _wave_state="loading",
+        _wave_error="",
+        _wave_status=status,
+        _wave_barbs=None,
+        _wave_barbs_back=None,
+        _wave_arrows_state="hidden",
+        _wave_arrows_error="",
+        _camera=None,
+        _publication_manager=manager,
+        _provider=_Provider(),
+    )
+    setattr(widget, "_ensure_wave_model", lambda: True)
+    setattr(widget, "_update_wave", lambda camera: None)
+    for name in (
+        "_try_commit_wave",
+        "_fail_wave",
+        "_show_wave_state",
+        "_show_wave_fill",
+        "_show_wave_arrow_state",
+        "_set_wave_status",
+        "set_wave_visible",
+    ):
+        setattr(widget, name, MethodType(getattr(widget_class, name), widget))
+    return SimpleNamespace(
+        widget=widget,
+        manager=manager,
+        layer=manager.layers[LayerRole.WAVE_FILL],
+        token=token,
+        front=front,
+        back=back,
+        status=status,
+        provider=widget._provider,
+    )
+
+
+def test_a_staged_wave_fill_is_adopted_once_its_shader_is_prepared():
+    """The staging slot is drawn at 1% opacity so its program can compile.
+
+    Qt Quick only compiles a ShaderEffect that is rendered, so waiting on
+    ``prepared`` in a fully hidden slot would never finish.  The slot is
+    therefore staged visibly (and transparently), and adoption still waits
+    for ``prepared`` -- four images ready *and* the shader compiled.
+    """
+    case = _staged_wave_fill(images_ready=True, prepared=True)
+
+    case.widget._try_commit_wave(case.token)
+
+    assert case.layer.visible is not None, "a compiled staging buffer was not adopted"
+    assert case.layer.pending is None
+    assert case.layer.completion_token is None
+    assert case.widget._wave_fill is case.back
+    assert case.back.visible is True
+    assert case.back.opacity == 0.85, "the adopted slot kept its staging opacity"
+    assert case.front.visible is False
+    assert case.provider.promoted == [(case.widget, "wave")]
+    assert case.widget._wave_state == "ready"
+
+
+def test_a_staged_wave_fill_is_not_adopted_before_its_shader_compiles():
+    case = _staged_wave_fill(images_ready=True, prepared=False)
+
+    case.widget._try_commit_wave(case.token)
+
+    assert case.layer.visible is None
+    assert case.layer.pending is not None, "the frame was released before compiling"
+    assert case.widget._wave_fill is case.front
+
+
+def test_a_failed_wave_shader_is_never_adopted():
+    """An Error status with an empty log must still block adoption."""
+    case = _staged_wave_fill(images_ready=True, prepared=False, shader_failed=True)
+
+    case.widget._try_commit_wave(case.token)
+
+    assert case.layer.visible is None
+    assert case.layer.pending is None
+    assert case.widget._wave_fill is case.front
+    assert case.back.visible is False
+    assert case.provider.promoted == []
+    assert case.widget._wave_state == "unavailable"
+
+
+def test_an_adopted_wave_fill_clears_the_caption_and_keeps_it_cleared():
+    """A drawn field shows no stale "Loading" text.
+
+    The caption is cleared when the fill is adopted.  The presenter re-applies
+    the wave toggle on every wave sync (it syncs the arrows in the same
+    pass), so re-showing a ready layer, or an arrow update on its own cadence,
+    must not put the loading string back over the adopted frame.
+    """
+    case = _staged_wave_fill(images_ready=True, prepared=True)
+    case.widget._set_wave_status("Loading wave height", loading=True)
+    assert case.status.text == "Loading wave height"
+
+    case.widget._try_commit_wave(case.token)
+
+    assert case.widget._wave_state == "ready"
+    assert case.status.text == "", "the adopted frame kept its loading caption"
+    assert case.back.properties["waveLoading"] is False
+    assert case.back.properties["statusText"] == ""
+
+    # The presenter's wave sync: the fill toggle, then the arrow layer.
+    case.widget.set_wave_visible(True)
+    assert case.status.text == "", "re-showing a ready layer restored 'Loading'"
+
+    case.widget._show_wave_arrow_state("loading", "Loading wave arrows")
+    assert case.status.text == "", "the arrow layer overwrote the cleared caption"
+
+    case.widget._show_wave_arrow_state("ready", "")
+    assert case.status.text == ""
+
+
 # -------------------------------------------------------------- coverage
 def test_a_covered_camera_move_reuses_the_resident_field(gribs):
     paths, _source = _paths(gribs)
@@ -1762,3 +1980,57 @@ def test_chart_surface_fractional_scale_rounding_and_image_dpr():
         for surface in surfaces:
             assert (surface.get_width(), surface.get_height()) == expected
             assert _surface_image(surface, factor).devicePixelRatio() == factor
+
+
+# ------------------------------------------------------- shader signal wiring
+def test_signal_wiring_skips_a_signal_the_object_does_not_declare():
+    """A generic QObject item has no ShaderEffect-only sourceErrorChanged."""
+    pytest.importorskip("PySide6.QtCore")
+    from PySide6.QtCore import QObject
+
+    from sailworks.qt.gribviewport import _connect_signal
+
+    item = QObject()
+    received = []
+    assert _connect_signal(item, "sourceErrorChanged", received.append) is False
+    assert received == []
+
+
+def test_signal_wiring_still_connects_a_declared_signal():
+    """shaderErrorChanged exists, so the fast-fail connection is not dropped."""
+    pytest.importorskip("PySide6.QtCore")
+    from PySide6.QtCore import QObject, Signal
+
+    from sailworks.qt.gribviewport import _connect_signal
+
+    class ShaderLikeItem(QObject):
+        shaderErrorChanged = Signal()
+
+    item = ShaderLikeItem()
+    received = []
+    assert (
+        _connect_signal(item, "shaderErrorChanged", lambda *args: received.append(args))
+        is True
+    )
+    assert _connect_signal(item, "sourceErrorChanged", received.append) is False
+    item.shaderErrorChanged.emit()
+    assert received == [()]
+
+
+def test_wiring_a_plain_qquickitem_does_not_raise():
+    """The item resolved from QML is a QQuickItem: no sourceErrorChanged."""
+    pytest.importorskip("PySide6.QtCore")
+    qtquick = pytest.importorskip("PySide6.QtQuick")
+    qtgui = pytest.importorskip("PySide6.QtGui")
+
+    from sailworks.qt.gribviewport import _connect_signal
+
+    qtgui.QGuiApplication.instance() or qtgui.QGuiApplication([])
+    try:
+        item = qtquick.QQuickItem()
+    except Exception:  # pragma: no cover - needs a graphical platform
+        pytest.skip("QQuickItem is unavailable on this platform")
+    assert not hasattr(item, "sourceErrorChanged")
+    assert _connect_signal(item, "sourceErrorChanged", lambda *args: None) is False
+    if hasattr(item, "shaderErrorChanged"):
+        assert _connect_signal(item, "shaderErrorChanged", lambda *args: None) is True
