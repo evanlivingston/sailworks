@@ -203,8 +203,10 @@ from sailworks.core.race import (
     YBRaceError,
     fetch_yb_positions,
     download_yb_race,
+    merge_race_setup,
     normalize_yb_race_slug,
     load_saved_races,
+    parse_race,
 )
 
 
@@ -399,6 +401,194 @@ def test_download_failure_preserves_previous_file(tmp_path):
     with pytest.raises(YBRaceError):
         download_yb_race("abc", session=session, directory=tmp_path)
     assert path.read_text(encoding="utf-8") == before
+
+
+class _RoutingSession:
+    def __init__(self, route):
+        self.route = route
+        self.calls = []
+
+    def get(self, url, timeout=None, stream=None, allow_redirects=True, **kwargs):
+        self.calls.append(url)
+        return self.route(url)
+
+
+def _setup_payload():
+    return {
+        "title": "The Sample Race",
+        "start": 1700000000,
+        "stop": 1700036000,
+        "course": {
+            "nodes": [
+                {"name": "Start", "lat": 33.0, "lon": -117.0},
+                {"lat": 33.1, "lon": -117.1},
+                {"name": "Finish", "lat": 33.2, "lon": -117.2},
+            ]
+        },
+        "poi": {
+            "lines": [
+                {
+                    "name": "START",
+                    "nodes": "33.0,-117.0,33.05,-117.05",
+                    "polygon": False,
+                },
+                {
+                    "name": "Shipping Lanes",
+                    "nodes": "33.0,-117.0,33.2,-117.2",
+                    "polygon": True,
+                },
+                {
+                    "name": "Duntze Rock",
+                    "nodes": "33.1,-117.1,33.15,-117.15",
+                    "polygon": False,
+                },
+            ]
+        },
+    }
+
+
+def _positions_payload_without_name():
+    payload = _valid_race_payload()
+    payload.pop("name", None)
+    return payload
+
+
+def test_merge_race_setup_adds_title_start_course_and_marks():
+    merged = merge_race_setup(_positions_payload_without_name(), _setup_payload())
+
+    assert merged["name"] == "The Sample Race"
+    assert merged["start"] == 1700000000
+    assert merged["course"]["nodes"] == _setup_payload()["course"]["nodes"]
+    # Shipping lanes are viewer decoration, not part of the race course.
+    assert [line["name"] for line in merged["poi"]["lines"]] == [
+        "START",
+        "Duntze Rock",
+    ]
+
+
+def test_boat_id_falls_back_to_serial_and_reads_class_fields():
+    payload = {
+        "race": "abc",
+        "teams": [
+            {
+                "serial": 20104,
+                "name": "Absolutely",
+                "sail": "3909",
+                "model": "Farr 39 ML",
+                "type": "MONO_M",
+                "country": "United States",
+                "flag": "US",
+                "colour": "F0E68C",
+                "tcf1": "1.000",
+                "tcf2": "1.000",
+                "tcf3": "1.000",
+                "status": "RACING",
+                "positions": [{"gpsAt": 1700000000, "lat": 33.0, "lon": -117.0}],
+            }
+        ],
+    }
+
+    boat = parse_race(payload).boat(20104)
+
+    assert boat is not None
+    assert boat.boat_type == "MONO_M"
+    assert boat.model == "Farr 39 ML"
+    assert boat.country == "United States"
+    assert boat.flag == "US"
+    assert boat.colour == "F0E68C"
+    assert boat.tcf1 == "1.000"
+    assert boat.to_dict()["type"] == "MONO_M"
+
+
+def test_merge_race_setup_enriches_boat_metadata():
+    payload = {
+        "raceUrl": "abc",
+        "teams": [
+            {
+                "marker": 1,
+                "name": "Boat",
+                "positions": [{"gpsAt": 1700000000, "lat": 33.0, "lon": -117.0}],
+            }
+        ],
+    }
+    setup = {
+        "teams": [
+            {
+                "id": 7,
+                "markerText": "1",
+                "name": "Boat",
+                "sail": "3909",
+                "model": "Farr 39 ML",
+                "type": "MONO_M",
+                "country": "United States",
+                "flag": "US",
+                "colour": "F0E68C",
+                "tcf1": "1.01",
+                "tcf2": "1.02",
+                "tcf3": "1.03",
+                "status": "RACING",
+            }
+        ]
+    }
+
+    boat = parse_race(merge_race_setup(payload, setup)).boats[0]
+
+    assert boat.boat_id == 7
+    assert boat.name == "Boat"
+    assert boat.sail == "3909"
+    assert boat.model == "Farr 39 ML"
+    assert boat.boat_type == "MONO_M"
+    assert boat.country == "United States"
+    assert boat.flag == "US"
+    assert boat.colour == "F0E68C"
+    assert boat.status == "RACING"
+    assert (boat.tcf1, boat.tcf2, boat.tcf3) == ("1.01", "1.02", "1.03")
+
+
+def test_parse_race_reads_course_nodes():
+    merged = merge_race_setup(_positions_payload_without_name(), _setup_payload())
+    race = parse_race(merged)
+
+    assert race.name == "The Sample Race"
+    assert sum(len(course.points) for course in race.course) == 3 + 2 + 2
+
+
+def test_download_fetches_race_setup(tmp_path):
+    positions = _FakeResponse(
+        content=json.dumps(_positions_payload_without_name()).encode("utf-8")
+    )
+    setup = _FakeResponse(content=json.dumps(_setup_payload()).encode("utf-8"))
+    session = _RoutingSession(
+        lambda url: setup if url.endswith("/RaceSetup") else positions
+    )
+
+    race = download_yb_race("abc", session=session, directory=tmp_path)
+
+    assert any(url.endswith("/JSON/abc/RaceSetup") for url in session.calls)
+    assert race.name == "The Sample Race"
+    assert sum(len(course.points) for course in race.course) == 7
+    saved = json.loads((tmp_path / "abc.json").read_text(encoding="utf-8"))
+    assert saved["name"] == "The Sample Race"
+    assert saved["course"]
+
+
+def test_download_keeps_positions_when_setup_fails(tmp_path):
+    positions = _FakeResponse(
+        content=json.dumps(_positions_payload_without_name()).encode("utf-8")
+    )
+
+    def route(url):
+        if url.endswith("/RaceSetup"):
+            return _FakeResponse(status_code=500, content=b"", reason="Error")
+        return positions
+
+    session = _RoutingSession(route)
+    race = download_yb_race("abc", session=session, directory=tmp_path)
+
+    assert race.race_id == "abc"
+    assert len(race.boats) == 1
+    assert len(race.boats[0].positions) == 2
+    assert race.course == []
 
 
 def test_fetch_disables_redirects():

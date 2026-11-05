@@ -50,7 +50,7 @@ not merging it. The old
 worktree's local runner configuration is preserved; this worktree also uses the
 user-requested free runner locally, excluded from product changes.
 
-## Results / decision: adopt, corrected application check passed
+## Pre-merge results / decision (2026-10-21): adopt, corrected check passed
 
 The user authorized one additional native process after the earlier budget stop.
 The corrected `enc-app-rollout` gate **passed 13/13**, complete, in 18.143 seconds
@@ -69,10 +69,11 @@ changed-file Black/scoped flake8/whitespace clean. No rerun was needed for those
 unchanged files. Raw final evidence is `enc-app-rollout-3/` beneath the approved
 OpenCode temporary directory.
 
-Decision: **adopt the application wiring**, ready for review. The prior hold and
-invalid early transition evidence below are preserved as history, not current
-blockers. Implementation is prepared for a PR from `feature/enc-default-rollout`;
-the normal app on `dev` is unchanged until merge.
+The 2026-10-21 pre-merge decision was to **adopt the application wiring**,
+ready for review; at that point `dev` remained unchanged until merge. The prior
+hold and invalid early transition evidence below are preserved as history, not
+current blockers. For the subsequently shipped default, see the
+[performance plan current state](rendering-performance-plan.md#current-state).
 The #70 soak/platform/presentation/RSS/VRAM work is not claimed complete.
 
 ### Earlier rounds (superseded hold, preserved evidence)

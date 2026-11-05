@@ -1,7 +1,31 @@
 """Terminal and visibility lifecycle shared by Qt map hosts."""
 
+from PySide6.QtCore import QTimer
+
 
 class MapLifecycleMixin:
+    def add_tick_callback(self, callback):
+        """Run callback(host, frame_clock) every frame until it returns false."""
+        self._next_tick += 1
+        token = self._next_tick
+        timer = QTimer(self)
+        timer.setInterval(16)
+
+        def tick():
+            if not callback(self, None):
+                self.remove_tick_callback(token)
+
+        timer.timeout.connect(tick)
+        self._ticks[token] = timer
+        timer.start()
+        return token
+
+    def remove_tick_callback(self, token):
+        timer = self._ticks.pop(token, None)
+        if timer is not None:
+            timer.stop()
+            timer.deleteLater()
+
     def showEvent(self, event):  # noqa: N802 - Qt virtual method name
         super().showEvent(event)
         if getattr(self, "timeline", None) is not None:

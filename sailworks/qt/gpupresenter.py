@@ -1,4 +1,12 @@
-"""Optional QQuickWidget map host; the application map host owns input and state."""
+"""Optional QQuickWidget map host; the application map host owns input and state.
+
+This path is unreachable in the current application. ``ViewportMap`` sets
+``_gpu`` to ``None`` in ``__init__`` and never constructs ``GpuPresenter``, and
+the hooks this module drives were retired: ``canvas._gpu_frame`` has no
+definition, and ``DynamicOverlay`` still calls the removed
+``_paint_route_overlay``/``_paint_track_overlay``/``_paint_caption`` painters.
+Retained as dead code; no raster frame producer exists to rebuild it against.
+"""
 
 import logging
 import math

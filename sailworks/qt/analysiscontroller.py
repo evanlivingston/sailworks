@@ -259,6 +259,14 @@ class AnalysisController(QObject):
 
         return self._start("select", select, reserve_action=True)
 
+    def activate(self, tranche_id, entry_id):
+        def activate(event, report, token):
+            return self.state.activate(
+                tranche_id, entry_id, action_token=token, cancel=event
+            )
+
+        return self._start("activate", activate, reserve_action=True)
+
     def clear_selection(self):
         def clear(event, report, token):
             return self.state.clear_selection(action_token=token, cancel=event)

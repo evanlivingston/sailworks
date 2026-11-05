@@ -28,6 +28,7 @@ from sailworks.core.nmea2000datasource import N2K_FORMATS
 from sailworks.core.serialdatasource import SerialDataSource
 from sailworks.core.weathernextcredentials import describe_access_error
 from .marinesettings import CurrentsAccount
+from .text import qt_text
 
 
 def combo(entries):
@@ -217,7 +218,7 @@ class SettingsDialog(QDialog):
             ("Smooth zoom", "smoothZoom"),
             ("Pan inertia", "panInertia"),
         ):
-            checkbox = QCheckBox(label)
+            checkbox = QCheckBox(qt_text(label))
             checkbox.setChecked(bool(controller.settings[key]))
             checkbox.toggled.connect(
                 lambda value, key=key: self.set_preference(key, value)

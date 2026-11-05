@@ -279,6 +279,21 @@ class ForecastAnalysisState:
             commit_guard=self._action_guard(generation, expected, cancel),
         )
 
+    def activate(self, tranche_id, entry_id, *, action_token=None, cancel=None):
+        if action_token is None:
+            action_token = self.begin_action()
+        with self._lock:
+            self._check_action(action_token, cancel)
+            expected = self.store.active_selection()
+            generation = action_token
+        target = AnalysisSelection(tranche_id, entry_id)
+        resolved = self.store.resolve(target)
+        self._validate_analysis(resolved, resolved.entry.fields)
+        return self.store.activate(
+            target,
+            commit_guard=self._action_guard(generation, expected, cancel),
+        )
+
     def clear_selection(self, *, action_token=None, cancel=None):
         if action_token is None:
             action_token = self.begin_action()

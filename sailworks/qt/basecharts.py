@@ -175,8 +175,8 @@ class BaseChartRenderer(OverlayRenderer):
         viewport = job.viewport
         surface = cairo.ImageSurface(
             cairo.FORMAT_ARGB32,
-            viewport.width * job.factor,
-            viewport.height * job.factor,
+            max(1, int(round(viewport.width * job.factor))),
+            max(1, int(round(viewport.height * job.factor))),
         )
         surface.set_device_scale(job.factor, job.factor)
         cr = cairo.Context(surface)

@@ -54,6 +54,10 @@ class Scene:
         self._publication_manager = PublicationManager()
         self._publication_manager.set_reference_camera(_camera())
         self._native_weather_fields = False
+        # The viewport owns a world underlay layer; None until the QML world
+        # layer is bound, which is what a headless scene always sees.
+        self._world = None
+        self._world_provider = None
         self._chart_layer = True
         self._wind_gradient_enabled = True
         self._wind_gradient_opacity = 1.0

@@ -141,9 +141,12 @@ class DisplayGrib(Grib):
             source.bounds,
             source.start_time,
             source.last_forecast,
+            getattr(source, "model_name", "Unknown"),
         )
         self._arrays = OrderedDict()
-        self.display_identity = getattr(source, "display_identity", None)
+        from .displayforecast import display_selection
+
+        self.display_identity = display_selection(source)
         self._pressure_arrays = OrderedDict()
         transform = self.dataset.GetGeoTransform()
         self._lons = (

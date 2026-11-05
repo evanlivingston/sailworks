@@ -137,10 +137,11 @@ quantization; the transport unit test separately checks all float32 bits.
 
 `test/test_gpu_barbs_native.py` compares shader silhouettes and colors with the
 existing Cairo geometry. Worker tests exercise coalescing, stale-work rejection
-and shutdown. `test/test_gpu_weather_map.py` runs an isolated native map through
-time changes, background-cache reuse, panning, style fallback, source removal
-and worker shutdown. It verifies unchanged numerical image-provider requests
-through a 120-frame time scrub.
+and shutdown. The map-level integration check (`test/test_gpu_weather_map.py`
+and `test/qt_gpu_weather_checks.py`) was removed: the Qt map host never
+constructs `GpuPresenter`, `canvas._gpu_frame` has no definition and
+`DynamicOverlay` calls retired painters, so the check had no reachable producer
+and could not run against the current product.
 
 The native test has passed on Metal with Qt 6.12. Other backends and the minimum
 supported Qt 6.8 runtime have not been executed. The baked pack uses Qt 6.5's
@@ -149,7 +150,7 @@ serialization format for compatibility with the declared Qt 6.8 minimum.
 ```sh
 python -m pytest -q test/test_gpu_weather.py test/test_weather_staging.py
 env -u QT_QPA_PLATFORM GWR_NATIVE_GPU_TEST=1 python -m pytest -q -s test/test_gpu_weather_native.py
-env -u QT_QPA_PLATFORM GWR_NATIVE_GPU_TEST=1 python -m pytest -q -s test/test_gpu_barbs_native.py test/test_gpu_weather_map.py
+env -u QT_QPA_PLATFORM GWR_NATIVE_GPU_TEST=1 python -m pytest -q -s test/test_gpu_barbs_native.py
 ```
 
 Rebuild the checked-in shader pack with PySide6's `qsb` executable:

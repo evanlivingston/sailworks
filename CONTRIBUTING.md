@@ -19,6 +19,22 @@ We also suggest to use `pyenv` to create an isolated pip environment:
 - Activate it: ```pyenv activate sailworks-env```
 
 
+### Test environment
+
+The test requirements are declared once, in the `test` dependency group in
+`pyproject.toml`. tox reads that group and installs the project for its runtime
+dependencies, so there is no second list to keep in step.
+
+```bash
+uv sync --group test   # runtime + test dependencies into .venv
+python -m pytest -q    # run the suite
+tox -e unit-tests      # the same suite in tox's isolated environment
+```
+
+`pyais`, `eccodes`, `eccodeslib`, `gcsfs` and `google-auth` are part of that
+group; without them parts of the suite fail for missing imports rather than for
+real defects.
+
 ### Working on the code
 
 1. Now that you have your local copy of sailworks, you can start working on the code; first, search or create the issue you want to contribute to in the sailworks issue tracker, and ask

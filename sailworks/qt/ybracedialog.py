@@ -20,6 +20,8 @@ from sailworks.core.race import (
     normalize_yb_race_slug,
 )
 
+from .text import qt_text
+
 _ORIGINAL_DOWNLOAD_YB = download_yb_race
 
 
@@ -217,7 +219,7 @@ class YBRaceDialog(QDialog):
             return
         self.downloaded_race = race
         self._set_busy(False)
-        self._set_status(f"Downloaded {race.name}: {len(race.boats)} boats.")
+        self._set_status(f"Downloaded {qt_text(race.name)}: {len(race.boats)} boats.")
         self.download_finished.emit(race)
         self.download_completed.emit(race, "")
         self.completed.emit(race, "")

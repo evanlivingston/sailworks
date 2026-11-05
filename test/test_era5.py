@@ -287,6 +287,10 @@ def test_successful_era5_import_publishes_catalog_and_artifact(tmp_path):
     planned = plan("2025-01-01T00:00", "2025-01-01T00:00")
     service._run(planned, threading.Event(), False)
 
+    progress = service.progress_for(planned)
+    assert progress["done"] == progress["total"] == 1
+    assert progress["stage"] == "Complete"
+
     catalog = root / "era5-history.json"
     assert catalog.exists()
     entries = json.loads(catalog.read_text())
@@ -314,11 +318,436 @@ def test_successful_era5_import_publishes_catalog_and_artifact(tmp_path):
     assert hashlib.sha256(artifact_path.read_bytes()).hexdigest() == digest
     assert artifact_path.stat().st_size == size
 
+    class NoClient:
+        def retrieve(self, *_args):
+            raise AssertionError("covered ERA5 data must be reused")
+
+    reuse = Era5DownloadService(store, client_factory=NoClient, validator=validate)
+    reuse._run(planned, threading.Event(), False)
+    assert reuse.progress_for(planned)["stage"] == "Already available"
+    assert len(json.loads(catalog.read_text())) == 1
+
     active_after = store.active_path.read_bytes()
     assert active_after == active_before
     assert active_after == sentinel
 
     assert list(store.manifests.glob("*.json")) == []
+
+
+def test_submitted_cds_request_is_persisted_and_reused(tmp_path):
+    from sailworks.core.tranchestore import TrancheStore
+
+    store = TrancheStore(tmp_path)
+    payload = b"fake era5 grib bytes"
+
+    class Remote:
+        request_id = "rid-1"
+        status = "successful"
+
+        def download(self, target):
+            Path(target).write_bytes(payload)
+
+    class Inner:
+        def __init__(self):
+            self.submitted = []
+
+        def submit(self, _dataset, request):
+            self.submitted.append(request)
+            return Remote()
+
+        def get_remote(self, _request_id):
+            return Remote()
+
+    class Client:
+        def __init__(self):
+            self.client = Inner()
+
+    clients = []
+
+    def factory():
+        client = Client()
+        clients.append(client)
+        return client
+
+    service = Era5DownloadService(
+        store, client_factory=factory, validator=lambda _p, _piece: {"reader": "test"}
+    )
+    planned = plan("2025-01-01T00:00", "2025-01-01T00:00")
+
+    service._run(planned, threading.Event(), False)
+
+    assert sum(len(client.client.submitted) for client in clients) == 1
+    assert service._load_pending() == []
+    assert (tmp_path / "era5-history.json").exists()
+
+    # A repeated request is served from the catalog: no new CDS submission.
+    before = len(clients)
+    repeated = Era5DownloadService(
+        store, client_factory=factory, validator=lambda _p, _piece: {"reader": "test"}
+    )
+    repeated._run(planned, threading.Event(), False)
+    assert len(clients) == before
+
+
+def test_pending_cds_request_resumes_after_restart(tmp_path):
+    from sailworks.core.tranchestore import TrancheStore
+
+    store = TrancheStore(tmp_path)
+    payload = b"resumed era5 grib bytes"
+
+    class Remote:
+        request_id = "rid-resume"
+        status = "successful"
+
+        def download(self, target):
+            Path(target).write_bytes(payload)
+
+    class Inner:
+        def submit(self, _dataset, _request):
+            raise AssertionError("a pending request must not be submitted again")
+
+        def get_remote(self, request_id):
+            assert request_id == "rid-resume"
+            return Remote()
+
+    class Client:
+        def __init__(self):
+            self.client = Inner()
+
+    service = Era5DownloadService(
+        store, client_factory=Client, validator=lambda _p, _piece: {"reader": "test"}
+    )
+    piece = split_request(plan("2025-01-01T00:00", "2025-01-01T00:00"))[0]
+    service._remember_pending(piece, "rid-resume")
+
+    assert service.resume_pending() == 1
+    for thread in list(service._resume_threads):
+        thread.join(5)
+
+    catalog = tmp_path / "era5-history.json"
+    assert catalog.exists()
+    assert len(json.loads(catalog.read_text())) == 1
+    assert service._load_pending() == []
+
+
+def test_pending_requests_prune_covered_and_duplicate_entries(tmp_path):
+    from sailworks.core.tranchestore import TrancheStore
+
+    store = TrancheStore(tmp_path)
+    service = Era5DownloadService(
+        store, client_factory=lambda: None, validator=lambda _p, _piece: {}
+    )
+    piece = split_request(plan("2025-01-01T00:00", "2025-01-01T00:00"))[0]
+    other = split_request(plan("2025-01-02T00:00", "2025-01-02T00:00"))[0]
+
+    artifact = tmp_path / "artifacts" / "existing"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_bytes(b"cached")
+    (tmp_path / "era5-history.json").write_text(
+        json.dumps(
+            [
+                {
+                    "start": piece.start.isoformat(),
+                    "end": piece.end.isoformat(),
+                    "area": list(piece.area),
+                    "artifact": "artifacts/existing",
+                }
+            ]
+        )
+    )
+    service._save_pending(
+        [
+            {
+                "start": piece.start.isoformat(),
+                "end": piece.end.isoformat(),
+                "area": list(piece.area),
+                "request_id": "covered",
+                "created": "2025-01-01T00:00:00+00:00",
+            },
+            {
+                "start": other.start.isoformat(),
+                "end": other.end.isoformat(),
+                "area": [round(value, 4) for value in other.area],
+                "request_id": "older",
+                "created": "2025-01-01T00:00:05+00:00",
+            },
+            {
+                "start": other.start.isoformat(),
+                "end": other.end.isoformat(),
+                "area": [round(value, 2) for value in other.area],
+                "request_id": "newer",
+                "created": "2025-01-01T00:00:10+00:00",
+            },
+        ]
+    )
+
+    assert [entry["request_id"] for entry in service.pending_requests()] == ["newer"]
+    # The prune is persisted, so a later restart does not resurrect old rows.
+    assert [entry["request_id"] for entry in service._load_pending()] == ["newer"]
+
+
+def test_rounded_area_reuses_pending_request_instead_of_resubmitting(tmp_path):
+    from sailworks.core.tranchestore import TrancheStore
+
+    store = TrancheStore(tmp_path)
+
+    class Remote:
+        request_id = "rid-rounded"
+        status = "successful"
+
+        def download(self, target):
+            Path(target).write_bytes(b"rounded area request")
+
+    class Inner:
+        def submit(self, _dataset, _request):
+            raise AssertionError("a pending request must be reused")
+
+        def get_remote(self, request_id):
+            assert request_id == "rid-rounded"
+            return Remote()
+
+    class Client:
+        def __init__(self):
+            self.client = Inner()
+
+    service = Era5DownloadService(
+        store, client_factory=Client, validator=lambda _p, _piece: {"reader": "test"}
+    )
+    piece = split_request(plan("2025-01-01T00:00", "2025-01-01T00:00"))[0]
+    service._save_pending(
+        [
+            {
+                "start": piece.start.isoformat(),
+                "end": piece.end.isoformat(),
+                "area": [round(value, 4) for value in piece.area],
+                "request_id": "rid-rounded",
+                "created": "2025-01-01T00:00:00+00:00",
+            }
+        ]
+    )
+
+    service._run(plan("2025-01-01T00:00", "2025-01-01T00:00"), threading.Event(), False)
+
+    assert service._load_pending() == []
+    assert (tmp_path / "era5-history.json").exists()
+
+
+def test_stale_accepted_request_is_deleted_and_resubmitted(tmp_path):
+    from datetime import timedelta
+
+    from sailworks.core.tranchestore import TrancheStore
+
+    store = TrancheStore(tmp_path)
+    created = datetime.now(timezone.utc) - timedelta(hours=8)
+
+    class Stale:
+        request_id = "rid-stale"
+        status = "accepted"
+        created_at = created
+        updated_at = created
+
+        def download(self, target):
+            raise AssertionError("a stuck request must not be downloaded")
+
+    class Fresh:
+        request_id = "rid-fresh"
+        status = "successful"
+
+        def download(self, target):
+            Path(target).write_bytes(b"resubmitted")
+
+    class Inner:
+        def __init__(self):
+            self.deleted = []
+            self.submitted = 0
+
+        def submit(self, _dataset, _request):
+            self.submitted += 1
+            return Fresh()
+
+        def get_remote(self, request_id):
+            return Stale() if request_id == "rid-stale" else Fresh()
+
+        def delete(self, request_id):
+            self.deleted.append(request_id)
+
+    class Client:
+        def __init__(self):
+            self.client = Inner()
+
+    client = Client()
+    service = Era5DownloadService(
+        store,
+        client_factory=lambda: client,
+        validator=lambda _p, _piece: {"reader": "test"},
+    )
+    piece = split_request(plan("2025-01-01T00:00", "2025-01-01T00:00"))[0]
+    service._remember_pending(piece, "rid-stale")
+
+    service._run(plan("2025-01-01T00:00", "2025-01-01T00:00"), threading.Event(), False)
+
+    assert client.client.deleted == ["rid-stale"]
+    assert client.client.submitted == 1
+    assert service._load_pending() == []
+
+
+def test_queue_limit_is_waited_out_instead_of_failing(tmp_path, monkeypatch):
+    import sailworks.core.era5 as era5
+    from sailworks.core.tranchestore import TrancheStore
+
+    monkeypatch.setattr(era5, "QUEUE_RETRY_SECONDS", 0)
+    store = TrancheStore(tmp_path)
+
+    class Remote:
+        request_id = "rid-queued"
+        status = "successful"
+
+        def download(self, target):
+            Path(target).write_bytes(b"queued then accepted")
+
+    class Inner:
+        def __init__(self):
+            self.submitted = 0
+
+        def submit(self, _dataset, _request):
+            self.submitted += 1
+            if self.submitted == 1:
+                raise RuntimeError(
+                    "Maximum number queued requests for this dataset has been "
+                    "reached. Please configure your scripts to request data "
+                    "sequentially"
+                )
+            return Remote()
+
+        def get_remote(self, _request_id):
+            return Remote()
+
+    class Client:
+        def __init__(self):
+            self.client = Inner()
+
+    client = Client()
+    service = Era5DownloadService(
+        store,
+        client_factory=lambda: client,
+        validator=lambda _p, _piece: {"reader": "test"},
+    )
+
+    service._run(plan("2025-01-01T00:00", "2025-01-01T00:00"), threading.Event(), False)
+
+    assert client.client.submitted == 2
+    assert (tmp_path / "era5-history.json").exists()
+
+
+def test_resume_resubmits_dead_request_with_full_payload(tmp_path):
+    from sailworks.core.tranchestore import TrancheStore
+
+    store = TrancheStore(tmp_path)
+    submitted = []
+
+    class Remote:
+        request_id = "rid-new"
+        status = "successful"
+
+        def download(self, target):
+            Path(target).write_bytes(b"resubmitted era5 grib bytes")
+
+    class Inner:
+        def submit(self, _dataset, request):
+            submitted.append(request)
+            return Remote()
+
+        def get_remote(self, request_id):
+            if request_id == "rid-dead":
+                raise RuntimeError("404 not found")
+            return Remote()
+
+    class Client:
+        def __init__(self):
+            self.client = Inner()
+
+    service = Era5DownloadService(
+        store, client_factory=Client, validator=lambda _p, _piece: {"reader": "test"}
+    )
+    piece = split_request(plan("2025-01-01T00:00", "2025-01-01T00:00"))[0]
+    service._remember_pending(piece, "rid-dead")
+
+    assert service.resume_pending() == 1
+    for thread in list(service._resume_threads):
+        thread.join(5)
+
+    assert len(submitted) == 1
+    assert submitted[0]["year"] == ["2025"]
+    assert submitted[0]["month"] == ["01"]
+    assert submitted[0]["day"] == ["01"]
+    assert submitted[0]["time"] == ["00:00"]
+    assert submitted[0]["area"] == list(piece.area)
+    assert submitted[0]["variable"]
+    assert (tmp_path / "era5-history.json").exists()
+
+
+def test_wind_only_plan_and_validation(tmp_path):
+    from sailworks.core.era5 import FIELD_VARIABLES
+
+    planned = plan_request(
+        datetime(2025, 1, 1, tzinfo=timezone.utc),
+        datetime(2025, 1, 1, tzinfo=timezone.utc),
+        (50, -10, 40, 5),
+        fields=("wind",),
+        now=datetime(2025, 2, 20, tzinfo=timezone.utc),
+    )
+    piece = split_request(planned)[0]
+    assert piece.request["variable"] == list(FIELD_VARIABLES["wind"])
+
+    class Band:
+        def __init__(self, element, short):
+            self.element, self.short = element, short
+
+        def GetMetadata(self):
+            return {
+                "GRIB_ELEMENT": self.element,
+                "GRIB_SHORT_NAME": self.short,
+                "GRIB_VALID_TIME": "1735689600 sec UTC",
+            }
+
+    class Dataset:
+        RasterCount = 2
+
+        def GetRasterBand(self, number):
+            return [Band("UGRD", "10-HTGL"), Band("VGRD", "10-HTGL")][number - 1]
+
+    result = validate_grib(
+        tmp_path / "unused", piece, dataset_opener=lambda _path: Dataset()
+    )
+    assert result["validated_hours"] == 1
+
+
+def test_publish_history_display_keeps_requested_fields(tmp_path):
+    from types import SimpleNamespace
+
+    from sailworks.core.era5 import FIELD_VARIABLES, publish_history_display
+    from sailworks.core.tranchestore import TrancheStore
+
+    store = TrancheStore(tmp_path)
+    source = tmp_path / "chunk.grib"
+    source.write_bytes(b"fake era5 grib bytes")
+    artifact = store.register_file(source)
+    entries = [
+        {
+            "artifact": artifact.path,
+            "start": "2025-01-01T00:00:00+00:00",
+            "end": "2025-01-01T01:00:00+00:00",
+            "area": [50, -10, 40, 5],
+            "variables": list(FIELD_VARIABLES["wind"]),
+        }
+    ]
+
+    tranche = publish_history_display(SimpleNamespace(store=store), entries)
+
+    entry = tranche.entries[0]
+    assert entry.fields == ("wind",)
+    assert entry.levels == ("10-HTGL",)
+    assert dict(entry.field_times)["wind"] == entry.time_steps
 
 
 def test_canceled_era5_download_leaves_no_catalog_or_artifacts(tmp_path):

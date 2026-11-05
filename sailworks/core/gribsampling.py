@@ -6,7 +6,7 @@ See docs/weather-sampling.md for selection and fallback policy.
 """
 
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 import math
 import logging
@@ -200,6 +200,23 @@ class GridIndex:
                     bool(relative),
                 )
             )
+        # Analysis sources (ERA5, NBS) have no run time: every message's
+        # reference is its valid time. Group them under one identity so
+        # off-hour queries interpolate between surrounding fields instead of
+        # falling outside each one-hour coverage.
+        if (
+            len({record.reference for record in records}) > 1
+            and getattr(self.source, "model_name", "") in ("ERA5", "NBS")
+            and all(abs(record.reference - record.valid) <= 1e-6 for record in records)
+        ):
+            first = min(record.reference for record in records)
+            records = [
+                replace(
+                    record,
+                    identity=(first, record.identity[1], record.identity[2]),
+                )
+                for record in records
+            ]
         return records
 
     def array(self, record):

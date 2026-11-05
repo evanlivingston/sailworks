@@ -18,7 +18,7 @@ def data_dir(tmp_path, monkeypatch):
 def test_roundtrip_hydrates_without_saving(data_dir):
     original = TrackCollection()
     original.append(Track("duplicate", [[1.25, -2.5]], visible=False, color="red"))
-    original.append(Track("duplicate", [[3.5, 4.75]], race_track=True))
+    original.append(Track("duplicate", [[3.5, 4.75]], color="blue"))
     original.set_active(original[0])
     expected = original.to_json()
     path = data_dir / "track.json"

@@ -180,6 +180,7 @@ def apply_theme(app: QApplication):
         QPushButton { min-height: 24px; padding: 4px 10px; border-radius: 6px;
                       background: #303030; border: 1px solid #454545; }
         QPushButton:hover { background: #3c3c3c; }
+        QPushButton:pressed { background: #242424; border-color: #3584e4; }
         QPushButton:disabled { color: #777774; background: #292929; }
         QPushButton#instruments-toggle:checked { background: #344966;
                                                   border-color: #3584e4; }
@@ -189,6 +190,7 @@ def apply_theme(app: QApplication):
         QPushButton[primary="true"] { background: #3584e4; color: white;
                                        border: 1px solid #3584e4; }
         QPushButton[primary="true"]:hover { background: #4b93eb; }
+        QPushButton[primary="true"]:pressed { background: #2d6fc0; }
         QPushButton[primary="true"]:disabled { background: #3a4656; color: #9b9b98; }
         QComboBox, QDateTimeEdit, QDoubleSpinBox { min-height: 24px; padding: 3px;
             border: 1px solid #454545; border-radius: 6px; background: #1e1e1e; }

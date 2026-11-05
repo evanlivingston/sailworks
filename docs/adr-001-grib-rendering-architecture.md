@@ -11,25 +11,17 @@
   (the R0–R5 sequence and the invariants at lines 43–70), as recorded in §6.
 - **Related epic:** [#51](https://github.com/evanlivingston/sailworks/issues/51)
 
-This ADR is **not** a new architecture. The target architecture already exists in
-[`rendering-implementation-plan.md`](rendering-implementation-plan.md) — see "Architecture
-and ownership" (lines 71–123) and the R0–R5 implementation sequence (lines 130–266).
-This document reconciles that specification with the 2026-10-19 current-state analysis and
-the reference-technique analysis, records the resulting decisions, and maps them to
-executable issues. It deliberately does **not** restate the specification; it links to it.
+This ADR is **not** a new architecture. The target architecture already exists in [`rendering-implementation-plan.md`](rendering-implementation-plan.md) — see "Architecture and
+ownership" (lines 71–123) and the R0–R5 implementation sequence (lines 130–266). This document reconciles that specification with the 2026-10-19 current-state analysis and the
+reference-technique analysis, records the resulting decisions, and maps them to executable issues. It deliberately does **not** restate the specification; it links to it.
 
 ## Current checkpoint
 
-**ENC application rollout direction (after #80):** the user authorized enabling
-the completed ENC worker in the normal application viewport, retaining legacy
-recovery, without a pixel-for-pixel legacy matching requirement. The bounded
-implementation/acceptance contract is [enc-default-rollout.md](enc-default-rollout.md).
-This revises the default-off direction for this ENC slice only, subject to its
-application-level functional gate. That gate subsequently passed 13/13 on the
-verified fixture (current pan/zoom/resize/time views and legacy recovery), with
-140 targeted passes and one known base failure; see the rollout evidence.
-It does not declare the #70 platform/soak or
-presentation-latency program complete and does not change numerical sampling.
+**ENC application rollout direction (after #80):** the user authorized enabling the completed ENC worker in the normal application viewport, retaining legacy recovery, without a
+pixel-for-pixel legacy matching requirement. The bounded implementation/acceptance contract is [enc-default-rollout.md](enc-default-rollout.md). This revises the default-off
+direction for this ENC slice only, subject to its application-level functional gate. That gate subsequently passed 13/13 on the verified fixture (current pan/zoom/resize/time views
+and legacy recovery), with 140 targeted passes and one known base failure; see the rollout evidence. It does not declare the #70 platform/soak or presentation-latency program
+complete and does not change numerical sampling.
 
 - **Canonical current state and invariants:**
   [`rendering-performance-plan.md`](rendering-performance-plan.md) — start at its
@@ -74,10 +66,8 @@ Two conclusions from the reference analysis materially shape this ADR:
 2. **The reference was not observed to have a unified residency budget or eviction**
    (T7). Our D1 therefore extends, rather than mirrors.
 
-Four of the seven gaps have a direct reference analogue (T1/T4 async structure, T2 tiled
-storage, T3 retained scene graph, T5 animation-state time switching). Three do not
-(GPU spatial interpolation, unified GPU budget, cache-key coherence) and are places where
-we can exceed the reference.
+Four of the seven gaps have a direct reference analogue (T1/T4 async structure, T2 tiled storage, T3 retained scene graph, T5 animation-state time switching). Three do not (GPU
+spatial interpolation, unified GPU budget, cache-key coherence) and are places where we can exceed the reference.
 
 ### 1.2 What the existing specification already settles
 
@@ -96,13 +86,10 @@ These are **not** re-decided here. Citing them so that no agent reopens them.
 
 ## 2. Scope of this ADR
 
-**In scope:** layer boundaries, ownership, data representations, scheduling model, and
-the disposition of the seven structural gaps.
+**In scope:** layer boundaries, ownership, data representations, scheduling model, and the disposition of the seven structural gaps.
 
-**Explicitly out of scope (unchanged non-negotiables):** routing calculations, source
-selection and ordering, weather value fidelity, portrayal density/thinning/geometry,
-the CPU fallback path, the GTK frontend, network acquisition policy, and user-data
-mutation. These remain as stated in
+**Explicitly out of scope (unchanged non-negotiables):** routing calculations, source selection and ordering, weather value fidelity, portrayal density/thinning/geometry, the CPU
+fallback path, the GTK frontend, network acquisition policy, and user-data mutation. These remain as stated in
 [`rendering-implementation-plan.md`](rendering-implementation-plan.md) lines 56–70.
 
 ---
@@ -121,8 +108,7 @@ The seven gaps, as named in [`grib-architecture-analysis.md`](grib-architecture-
 | G6 | Memory management: per-worker CPU byte limits, no GPU budget | **Closed** | D1 | [#64](https://github.com/evanlivingston/sailworks/issues/64) |
 | G7 | Threading model: serialized daemon threads, no overlap | **Closed** | D3 | [#66](https://github.com/evanlivingston/sailworks/issues/66) |
 
-The analysis's comparison table additionally lists *resource granularity* (full-frame
-textures). That is a consequence of G2 and is addressed by D1, not tracked separately.
+The analysis's comparison table additionally lists *resource granularity* (full-frame textures). That is a consequence of G2 and is addressed by D1, not tracked separately.
 
 ---
 
@@ -132,22 +118,15 @@ textures). That is a consequence of G2 and is addressed by D1, not tracked separ
 
 **Decision.** Add a **GPU-resident numerical field** alongside `LayerFrame`.
 
-`LayerFrame` is currently defined as "immutable pixels or geometry plus content key…"
-([`rendering-implementation-plan.md`](rendering-implementation-plan.md) lines 106–109) —
-i.e. a CPU-produced artifact handed to a presenter. Weather fields additionally need a
-form whose *numeric values* live on the GPU and are addressed by a stable identity, so
-that a time change or a pan within covered area reads the resident resource rather than
-re-uploading.
+`LayerFrame` is currently defined as "immutable pixels or geometry plus content key…" ([`rendering-implementation-plan.md`](rendering-implementation-plan.md) lines 106–109) — i.e.
+a CPU-produced artifact handed to a presenter. Weather fields additionally need a form whose *numeric values* live on the GPU and are addressed by a stable identity, so that a time
+change or a pan within covered area reads the resident resource rather than re-uploading.
 
-**Field identity** is: source + parameter + time instant + spatial window + resolution.
-It is deliberately **not** a per-frame image identity.
+**Field identity** is: source + parameter + time instant + spatial window + resolution. It is deliberately **not** a per-frame image identity.
 
-**Revises:** the `LayerFrame` definition (lines 106–109) and extends the R5 resource
-ledger (lines 251–253) to account for GPU-resident numerical fields alongside GPU
-textures.
+**Revises:** the `LayerFrame` definition (lines 106–109) and extends the R5 resource ledger (lines 251–253) to account for GPU-resident numerical fields alongside GPU textures.
 
-**Transport format.** Native float textures, with explicit shader arithmetic for
-interpolation, replacing the current RGBA8888 bit-packing. Justification:
+**Transport format.** Native float textures, with explicit shader arithmetic for interpolation, replacing the current RGBA8888 bit-packing. Justification:
 
 - Hardware linear filtering on native float textures **failed** the 2e-5 gate (max error
   2.6e-3); explicit `texelFetch` + manual bilinear arithmetic **passed** (max error
@@ -156,21 +135,18 @@ interpolation, replacing the current RGBA8888 bit-packing. Justification:
   validity checks, finite missing-cell outputs, explicit validity discard) is the
   validated pattern — [`rendering-a0k-shader-safety.md`](history/rendering-a0k-shader-safety.md).
 
-**Residency budget.** The existing ledger is extended, not replaced. Eviction protects
-visible content first and reduces speculation before it reduces selected-source
-fidelity, per lines 257–259.
+**Residency budget.** The existing ledger is extended, not replaced. Eviction protects visible content first and reduces speculation before it reduces selected-source fidelity, per
+lines 257–259.
 
 **Issue:** [#64](https://github.com/evanlivingston/sailworks/issues/64)
 
 ### 4.2 D2 — GPU spatial interpolation (**DECIDED 2026-10-19: option (a)**)
 
-**Conflict.** [`rendering-implementation-plan.md`](rendering-implementation-plan.md)
-line 216 states, under R3:
+**Conflict.** [`rendering-implementation-plan.md`](rendering-implementation-plan.md) line 216 states, under R3:
 
 > Keep the routing/sampling numerical interface stable.
 
-Moving spatial sampling onto the GPU changes that interface. This cannot be left
-implicit: the R3 invariant and the target architecture would then disagree.
+Moving spatial sampling onto the GPU changes that interface. This cannot be left implicit: the R3 invariant and the target architecture would then disagree.
 
 **Options.**
 
@@ -182,30 +158,21 @@ implicit: the R3 invariant and the target architecture would then disagree.
 | Benefit | Removes the largest remaining CPU cost from the interaction path | Removes per-frame upload only; CPU sampling cost remains |
 | Reference parity | **Beyond the reference** — the reference samples on the CPU (T6) | Matches the reference |
 
-**Decision: option (a) — amend the invariant.** Spatial interpolation may be evaluated
-on the GPU against a resident numeric field, bounded by the existing 2e-5 gate. The
-amendment is applied to
-[`rendering-implementation-plan.md`](rendering-implementation-plan.md) at R3 item 4 and
-recorded in §6.
+**Decision: option (a) — amend the invariant.** Spatial interpolation may be evaluated on the GPU against a resident numeric field, bounded by the existing 2e-5 gate. The amendment
+is applied to [`rendering-implementation-plan.md`](rendering-implementation-plan.md) at R3 item 4 and recorded in §6.
 
-This is an **advance beyond the reference**, which samples on the CPU (T6). It must not
-be described as parity. The CPU sampler remains the reference authority and the
-fallback path, and the 2e-5 gate is unchanged.
+This is an **advance beyond the reference**, which samples on the CPU (T6). It must not be described as parity. The CPU sampler remains the reference authority and the fallback
+path, and the 2e-5 gate is unchanged.
 
-**Issue:** [#65](https://github.com/evanlivingston/sailworks/issues/65) — now
-unblocked.
+**Issue:** [#65](https://github.com/evanlivingston/sailworks/issues/65) — now unblocked.
 
 ### 4.3 D3 — Frame N / N+1 overlap
 
-**Decision.** The pipeline model gains explicit **double buffering**: two sets of
-prepared resources alternate, so preparation of frame N+1 overlaps presentation of frame
-N.
+**Decision.** The pipeline model gains explicit **double buffering**: two sets of prepared resources alternate, so preparation of frame N+1 overlaps presentation of frame N.
 
-This extends, and does not replace, the existing scheduling work. R2 already requires
-that no file access or expensive portrayal happen on the interaction thread and that
-requests be coalesced (lines 201–203); R4 already defines the priority order
-visible > predicted > nearby > adjacent zoom (lines 231–232). Neither states that two
-preparations may be in flight, nor that a superseded request must not publish.
+This extends, and does not replace, the existing scheduling work. R2 already requires that no file access or expensive portrayal happen on the interaction thread and that requests
+be coalesced (lines 201–203); R4 already defines the priority order visible > predicted > nearby > adjacent zoom (lines 231–232). Neither states that two preparations may be in
+flight, nor that a superseded request must not publish.
 
 **Added requirements:**
 
@@ -216,15 +183,13 @@ preparations may be in flight, nor that a superseded request must not publish.
   distinguishable from preview/current/missing/unavailable coverage (extends line 120).
 - No stale or clipped content may be presented as current.
 
-**Revises:** the pipeline diagram (lines 77–93) and adds the generation/overlap
-requirements to R2 and R4.
+**Revises:** the pipeline diagram (lines 77–93) and adds the generation/overlap requirements to R2 and R4.
 
 **Issue:** [#66](https://github.com/evanlivingston/sailworks/issues/66)
 
 ### 4.4 D4 — Resident time windows
 
-**Decision.** `ContentKey`'s "forecast instant/bracket" (line 103) is extended to a
-**resident time window** covering multiple forecast instants over one spatial window.
+**Decision.** `ContentKey`'s "forecast instant/bracket" (line 103) is extended to a **resident time window** covering multiple forecast instants over one spatial window.
 
 Consequences:
 
@@ -238,8 +203,7 @@ Consequences:
   crossing does not stall. Interval crossings, source changes, and coverage misses show
   an accurate loading state — a cached smooth scrub must not conceal poor settling.
 
-**Revises:** the `ContentKey` definition (line 103) and extends R3's reuse requirement
-(lines 212–215) from spatial to temporal reuse.
+**Revises:** the `ContentKey` definition (line 103) and extends R3's reuse requirement (lines 212–215) from spatial to temporal reuse.
 
 **Issue:** [#67](https://github.com/evanlivingston/sailworks/issues/67)
 
@@ -247,25 +211,18 @@ Consequences:
 
 **Decision.** GPU-side GRIB decompression is **deferred**, with no near-term issue.
 
-Reasoning: R3 already warns "Do not assume windowed GRIB reads avoid full decoding;
-measure actual driver behavior before choosing that optimization" (lines 222–223). The
-profiled cost that matters for interaction is not the decompression itself but the
-per-frame re-upload and the CPU sampling loop, which D1 and D2 address. GPU decode
-would additionally require a decoder available to the GPU, which is a much larger
-dependency than the residency work, and would change the numerical values produced.
+Reasoning: R3 already warns "Do not assume windowed GRIB reads avoid full decoding; measure actual driver behavior before choosing that optimization" (lines 222–223). The profiled
+cost that matters for interaction is not the decompression itself but the per-frame re-upload and the CPU sampling loop, which D1 and D2 address. GPU decode would additionally
+require a decoder available to the GPU, which is a much larger dependency than the residency work, and would change the numerical values produced.
 
-**Revisit when:** D1 and D2 are landed and the remaining decode cost is re-profiled
-against the new baseline. It is a separate decision, not a silent omission.
+**Revisit when:** D1 and D2 are landed and the remaining decode cost is re-profiled against the new baseline. It is a separate decision, not a silent omission.
 
 ### 4.6 D6 — Independent viewport is the target weather interaction path
 
-**Decision (2026-10-19).** The independent GRIB viewport
-(`sailworks/qt/gribviewport.py`) is the target weather interaction path.
-The existing weather frame path (`TrackMap._gpu_frame` / MapFrame / MapScene /
-WeatherStager / ContentKey) is legacy and is retired once #69 and #70 complete the
-layer migration. The viewport owns camera/time state, field demand and
-field/selection portrayal, and reuses the existing decoder, sampler, source
-semantics and shaders.
+**Decision (2026-10-19).** The independent GRIB viewport (`sailworks/qt/gribviewport.py`) is the target weather interaction path. The existing weather frame path
+(`TrackMap._gpu_frame` / MapFrame / MapScene / WeatherStager / ContentKey) is legacy and is retired once #69 and
+#70 complete the layer migration. The viewport owns camera/time state, field demand and field/selection portrayal, and reuses the existing
+decoder, sampler, source semantics and shaders.
 
 Consequences:
 
@@ -279,31 +236,24 @@ Consequences:
 - Numerical, mask, source-order and selection gates are unchanged. Visual
   fidelity remains a separate, currently deferred gate.
 
-**Revises:** the program target implied by §4.1–§4.4 and the issue mapping in §3.
-**Issues:** [#64](https://github.com/evanlivingston/sailworks/issues/64)–[#70](https://github.com/evanlivingston/sailworks/issues/70);
-review vehicle [#72](https://github.com/evanlivingston/sailworks/pull/72).
+**Revises:** the program target implied by §4.1–§4.4 and the issue mapping in §3. **Issues:**
+[#64](https://github.com/evanlivingston/sailworks/issues/64)–[#70](https://github.com/evanlivingston/sailworks/issues/70); review vehicle
+[#72](https://github.com/evanlivingston/sailworks/pull/72).
 
 ### 4.7 D7 — User-directed application use (2026-10-20; implemented in PR #91)
 
-**User decision after reviewing the proposal:** start using the new viewport in the
-normal application, and add explicit forecast selection to the **Weather panel**.
-Prioritize these two implementation tasks over further issue/branch cleanup. The
-choice of forecast belongs to the user, not an automatic multi-file fallback policy.
+**User decision after reviewing the proposal:** start using the new viewport in the normal application, and add explicit forecast selection to the **Weather panel**. Prioritize
+these two implementation tasks over further issue/branch cleanup. The choice of forecast belongs to the user, not an automatic multi-file fallback policy.
 
-This authorizes the integration/default-use direction despite the recorded open
-checks; it does **not** claim that those checks passed. PR #91 moved normal
-Charts/Logs presentation onto the viewport without silently changing forecast
-selection. D8 below supersedes D7's legacy recovery requirement. Unsupported
-states remain explicit; routing calculations remain unchanged.
+This authorizes the integration/default-use direction despite the recorded open checks; it does **not** claim that those checks passed. PR
+#91 moved normal Charts/Logs presentation onto the viewport without silently changing forecast selection. D8 below supersedes D7's legacy
+recovery requirement. Unsupported states remain explicit; routing calculations remain unchanged.
 
-**Original #70 recommendation, retained as evidence rather than the current usage
-decision:** keep the independent viewport **experimental**. Do **not** switch the
-application's default weather interaction path to it on the evidence recorded by
-[#70](https://github.com/evanlivingston/sailworks/issues/70).
+**Original #70 recommendation, retained as evidence rather than the current usage decision:** keep the independent viewport **experimental**. Do **not** switch the application's
+default weather interaction path to it on the evidence recorded by [#70](https://github.com/evanlivingston/sailworks/issues/70).
 
-D6 named the viewport as the target interaction path and reserved the usage decision
-for the user. That decision is now recorded above; the evidence and limitations
-below are unchanged by the decision to begin using it.
+D6 named the viewport as the target interaction path and reserved the usage decision for the user. That decision is now recorded above; the evidence and limitations below are
+unchanged by the decision to begin using it.
 
 **What the evidence says (measured, 2026-10-20, fixture `1ed1bca1…`).**
 
@@ -317,59 +267,37 @@ below are unchanged by the decision to begin using it.
 | Is the platform matrix complete? | **No.** A device-pixel-ratio change and a Metal device loss cannot be exercised on this host; the OpenGL backend does not reproduce the Metal result (its framebuffer readback is empty); the Vulkan and software backends do not present the viewport at all. | the same summary |
 | Is the workload matrix complete? | **No.** A marine-heavy workload and the application's two-map view are not in the vehicle at all. | the same summary |
 
-**Why #70 recommended *keep-experimental*, not evidence-based acceptance.** The interaction
-contract is the strongest result this program has produced, and it is not
-enough to switch a default: visual fidelity is still failed and deferred, the
-measurement endpoint is a render-callback proxy (presentation latency and
-input-to-present latency are **unmeasured**), two workload cells and three
-platform conditions are reported as gaps rather than closed, and the soak's
-plateau criterion and the three separate limits are **unratified** — the
-numbers are reported, but no recorded acceptance bound backs them.
+**Why #70 recommended *keep-experimental*, not evidence-based acceptance.** The interaction contract is the strongest result this program has produced, and it is not enough to
+switch a default: visual fidelity is still failed and deferred, the measurement endpoint is a render-callback proxy (presentation latency and input-to-present latency are
+**unmeasured**), two workload cells and three platform conditions are reported as gaps rather than closed, and the soak's plateau criterion and the three separate limits are
+**unratified** — the numbers are reported, but no recorded acceptance bound backs them.
 
-**What the proposal does not cover.** Visual fidelity. Presentation or
-input-to-present latency. A device-pixel-ratio change. A Metal device loss.
-Marine layers. The application's two-map layout. The default application's own
-start-up and draw path.
+**What the proposal does not cover.** Visual fidelity. Presentation or input-to-present latency. A device-pixel-ratio change. A Metal device loss. Marine layers. The application's
+two-map layout. The default application's own start-up and draw path.
 
-**Original proposal's consequences (not the user's chosen implementation priority).**
+**Original proposal's consequences (superseded):** retain the default path and experimental flags, and postpone retirement of the legacy frame assembler pending user approval. The
+#70 summary's `recommendation.next_concrete_steps` calls for ratifying or deliberately leaving unratified the plateau and limit bounds, measuring presentation at the compositor,
+closing or recording the marine and two-map cells, and deciding the OpenGL backend.
 
-- The application's default weather interaction path stays as it is; the
-  viewport stays behind its standalone entry point and its runtime flags.
-- The legacy frame assembler is **not** retired by this proposal; D6's
-  retirement step waits for a later, user-approved rollout.
-- The next concrete steps are listed in the #70 summary's
-  `recommendation.next_concrete_steps`: ratify or deliberately leave unratified
-  the plateau and limit bounds, measure the presentation endpoint with an
-  instrument that can see the compositor, close or permanently record the
-  marine and two-map cells, and decide the OpenGL backend.
-
-**Issues:** [#70](https://github.com/evanlivingston/sailworks/issues/70),
-[#51](https://github.com/evanlivingston/sailworks/issues/51).
+**Issues:** [#70](https://github.com/evanlivingston/sailworks/issues/70), [#51](https://github.com/evanlivingston/sailworks/issues/51).
 
 ### 4.8 D8 — Retire the legacy map without CPU recovery (2026-10-22)
 
-**User decision after PR #91:** continue the application migration by retiring
-`TrackMap`/`mapcanvas.py`. The old QWidget map and its CPU rendering/recovery path
-are not required as a fallback. If viewport rendering is unavailable, report that
-state explicitly; do not silently present a blank or stale map.
+**User decision after PR #91:** continue the application migration by retiring `TrackMap`/`mapcanvas.py`. The old QWidget map and its CPU rendering/recovery path are not required
+as a fallback. If viewport rendering is unavailable, report that state explicitly; do not silently present a blank or stale map.
 
-This supersedes D7's requirement to preserve the legacy renderer as a recovery
-path and #86's original prerequisite to retain the old map until #70's full gate
-passes. It does **not** change the #70 evidence: the viewport's presentation
-latency, visual fidelity, unsupported backends, marine-heavy workload and
-two-map workload remain recorded limitations, not passed results. No performance
-claim is made by this decision.
+This supersedes D7's requirement to preserve the legacy renderer as a recovery path and #86's original prerequisite to retain the old map until #70's full gate passes. It does
+**not** change the #70 evidence: the viewport's presentation latency, visual fidelity, unsupported backends, marine-heavy workload and two-map workload remain recorded limitations,
+not passed results. No performance claim is made by this decision.
 
-The old base-chart painting defect in #84 will not be repaired in the legacy
-path; once that path is removed, #84 should be closed as superseded, with the
-viewport's own missing-data/error reporting retained.
+The old base-chart painting defect in #84 will not be repaired in the legacy path; once that path is removed, #84 should be closed as superseded, with the viewport's own
+missing-data/error reporting retained.
 
 ---
 
 ## 5. Relationship to the existing sequences
 
-Three numbering schemes now coexist. This section fixes their relationship so that
-agents do not follow the wrong one.
+Three numbering schemes now coexist. This section fixes their relationship so that agents do not follow the wrong one.
 
 | Scheme | Scope | Granularity | Authority |
 | --- | --- | --- | --- |
@@ -377,17 +305,14 @@ agents do not follow the wrong one.
 | **M0–M4** (epic #51, GitHub milestones) | Program phase | Phase | Canonical for program phase and target ratification. |
 | **#62–#70** (GitHub issues) | Executable unit | Single bounded change with one gate | Canonical for what an agent works on. |
 
-**Rule.** An agent works **one issue**. An issue's scope is a *subset* of the relevant
-R-slice; the R-slice exit criteria still apply and are not weakened. Where this ADR and
-the R-sequence disagree, **this ADR wins** (it is the later decision), and the
-R-sequence is amended as recorded in §6.
+**Rule.** An agent works **one issue**. An issue's scope is a *subset* of the relevant R-slice; the R-slice exit criteria still apply and are not weakened. Where this ADR and the
+R-sequence disagree, **this ADR wins** (it is the later decision), and the R-sequence is amended as recorded in §6.
 
 ---
 
 ## 6. Amendments to `rendering-implementation-plan.md`
 
-Applied on 2026-10-19, when D2 was decided. Listed explicitly so the spec
-remains the single roadmap.
+Applied on 2026-10-19, when D2 was decided. Listed explicitly so the spec remains the single roadmap.
 
 | Location | Amendment |
 | --- | --- |
@@ -401,8 +326,7 @@ remains the single roadmap.
 | §4.7 (user direction, 2026-10-20) | **Implemented in PR #91:** use the new viewport in the application with user-controlled forecast selection. The original #70 keep-experimental recommendation and open checks remain evidence, not retroactively passed gates. (D7) |
 | §4.8 (user direction, 2026-10-22) | **In progress under #86:** retire the old map without requiring its CPU recovery renderer; unavailable viewport states remain explicit. The #70 evidence gaps remain documented. (D8) |
 
-**Deferred and not amended:** R1 (host), R0.3/R0.4 (resource envelope, platform matrix),
-R5 (retention hardening, rollout). R0.2 is discharged by
+**Deferred and not amended:** R1 (host), R0.3/R0.4 (resource envelope, platform matrix), R5 (retention hardening, rollout). R0.2 is discharged by
 [`gpu-embedded-rendering.md`](gpu-embedded-rendering.md).
 
 ---
@@ -429,23 +353,18 @@ R5 (retention hardening, rollout). R0.2 is discharged by
 
 ## 8. Open questions
 
-D7 application integration, §10 Weather-panel selection and the fidelity/acceptance
-ledger remain implementation work. The user has decided the usage direction, not
-passed the open gates. Earlier architecture questions are settled: Q1 (D2) was decided on
-2026-10-19 in favour of option (a). Q2 (ADR naming
-convention) resolved: ADRs live flat in `docs/` as `adr-NNN-slug.md`. Q3 (whether the
-R-sequence's "Immediate implementation order" was still authoritative) resolved: R0.1
-and R0.2 are discharged, and the live sequence is now the issue program. Q4 (whether
-issue #69's Part 2 needs its own issue) resolved: it does not; Part 2 stays inside
+D7 application integration was delivered by PR #91; the status of §10 Weather-panel selection needs verification. The fidelity/acceptance gates remain open. Earlier architecture
+questions are settled: Q1 (D2) was decided on 2026-10-19 in favour of option (a). Q2 (ADR naming convention) resolved: ADRs live flat in `docs/` as `adr-NNN-slug.md`. Q3 (whether
+the R-sequence's "Immediate implementation order" was still authoritative) resolved: R0.1 and R0.2 are discharged, and the live sequence is now the issue program. Q4 (whether issue
+#69's Part 2 needs its own issue) resolved: it does not; Part 2 stays inside
 #69 and begins only after Part 1 is measured.
 
 ---
 
 ## 9. Supersedes / standing constraints
 
-This ADR does not supersede the canonical performance roadmap
-([`rendering-performance-plan.md`](rendering-performance-plan.md)) or the implementation
-specification. It amends them as recorded in §6.
+This ADR does not supersede the canonical performance roadmap ([`rendering-performance-plan.md`](rendering-performance-plan.md)) or the implementation specification. It amends them
+as recorded in §6.
 
 Standing constraints carried by every implementing issue:
 
@@ -458,22 +377,15 @@ Standing constraints carried by every implementing issue:
 
 ## 10. Display forecast coherence — accepted policy; shared path opt-in
 
-The 2026-10-20 user review of epic #51 requires one explicitly chosen file and
-coherent model run/member for display. Within that identity, spatial/time interpolation
-is allowed; implicit cross-file components, endpoints, older-run gap filling and
-spatial blending across forecast ownership are not. A multi-run/member file must
-respect the chosen identity; ensemble statistics are explicit products, not fallback.
+The 2026-10-20 user review of epic #51 requires one explicitly chosen file and coherent model run/member for display. Within that identity, spatial/time interpolation is allowed;
+implicit cross-file components, endpoints, older-run gap filling and spatial blending across forecast ownership are not. A multi-run/member file must respect the chosen identity;
+ensemble statistics are explicit products, not fallback.
 
-Issue #101 adds an opt-in Models panel and explicit `SessionController` analysis paths.
-One shared region is captured from the current map view; later panning does not change
-it. `ForecastAnalysisState` binds display and new routes to one active tranche/entry;
-running routes retain their inputs. Saved refresh intent is separate from active data.
-Missing or unsupported data fails visibly, without legacy-file fallback. Explicitly
-choosing Models persists that profile mode; otherwise legacy selection remains the
-default. No legacy data is adopted or deleted; cleanup still awaits validation.
+Issue #101 adds an opt-in Models panel and explicit `SessionController` analysis paths. One shared region is captured from the current map view; later panning does not change it.
+`ForecastAnalysisState` binds display and new routes to one active tranche/entry; running routes retain their inputs. Saved refresh intent is separate from active data. Missing or
+unsupported data fails visibly, without legacy-file fallback. Explicitly choosing Models persists that profile mode; otherwise legacy selection remains the default. No legacy data
+is adopted or deleted; cleanup still awaits validation.
 
-This does not claim default cutover, real-viewport acceptance, performance acceptance
-or complete feature parity; #70's measured candidate is unchanged. See
-[forecast display coherence](rendering-performance-plan.md#forecast-display-coherence)
-for the source audit, remaining acceptance gates and resampling question; the #51
-checkpoint is in the [archived decision log](history/rendering-decision-log.md).
+This does not claim default cutover, real-viewport acceptance, performance acceptance or complete feature parity; #70's measured candidate is unchanged. See [forecast display
+coherence](rendering-performance-plan.md#forecast-display-coherence) for the source audit, remaining acceptance gates and resampling question; the #51 checkpoint is in the
+[archived decision log](history/rendering-decision-log.md).

@@ -2,7 +2,6 @@
 
 import hashlib
 from threading import Event, RLock
-from types import SimpleNamespace
 
 from .forecastcapabilities import MODEL_CAPABILITIES
 from .gribmanager import GribManager
@@ -17,6 +16,9 @@ from .routingjob import (
     close_requested_routing,
 )
 from .tranchestore import ResolvedForecast
+
+_WIND_U = {"UGRD", "10U"}
+_WIND_V = {"VGRD", "10V"}
 
 
 class BoundForecastError(ValueError):
@@ -67,8 +69,11 @@ class BoundWorkerGrib(WorkerGrib):
         ):
             raise BoundForecastError("Bound forecast artifact identity changed")
         capability = MODEL_CAPABILITIES.get(entry.model_id)
-        if capability is None:
-            raise BoundForecastError("Bound forecast model is unsupported")
+        # Display-only models (for example imported ERA5 history) are not in
+        # the forecast catalogue but still provide valid wind fields.
+        provider_name = (
+            capability.provider_name if capability is not None else entry.model_id
+        )
         wind_times = dict(entry.field_times)["wind"]
         hours = []
         for instant in wind_times:
@@ -79,11 +84,11 @@ class BoundWorkerGrib(WorkerGrib):
                 )
             hours.append(int(seconds // 3600))
         last = max(hours)
-        centre = capability.provider_name.split(" ", 1)[0]
+        centre = provider_name.split(" ", 1)[0]
         south, west, north, east = entry.region
         source = WindFile(
             str(path),
-            capability.provider_name,
+            provider_name,
             centre,
             (west, south, east, north),
             entry.run_time,
@@ -105,6 +110,7 @@ class BoundWorkerGrib(WorkerGrib):
 
     def _validate_records(self, binding):
         entry = binding.entry
+        display_only = entry.model_id not in MODEL_CAPABILITIES
         expected_times = tuple(dict(entry.field_times)["wind"])
         expected_hours = {
             int((instant - entry.run_time).total_seconds() // 3600): instant
@@ -112,21 +118,25 @@ class BoundWorkerGrib(WorkerGrib):
         }
         if not expected_hours or len(expected_hours) != len(expected_times):
             raise BoundForecastError("Bound wind schedule is invalid")
-        identity_source = SimpleNamespace(
-            centre="", model=entry.model_id, path=self.path
-        )
         identities = set()
         seen = {}
         for band_id in range(1, self.dataset.RasterCount + 1):
             metadata = self.dataset.GetRasterBand(band_id).GetMetadata() or {}
             element = metadata.get("GRIB_ELEMENT")
-            if element not in ("UGRD", "VGRD"):
+            if element in _WIND_U:
+                component = "UGRD"
+            elif element in _WIND_V:
+                component = "VGRD"
+            else:
                 continue
-            if metadata.get("GRIB_PDS_PDTN") != "0":
+            if metadata.get("GRIB_PDS_PDTN", "0") != "0":
                 raise BoundForecastError(
                     "Bound wind contains a non-deterministic member"
                 )
-            if forecast_model_name(self.dataset, metadata) != entry.model_id:
+            detected = forecast_model_name(self.dataset, metadata)
+            if detected != entry.model_id and not (
+                detected == "Unknown" and entry.model_id not in MODEL_CAPABILITIES
+            ):
                 raise BoundForecastError("Bound wind contains a different model")
             try:
                 reference = number(metadata["GRIB_REF_TIME"])
@@ -136,25 +146,35 @@ class BoundWorkerGrib(WorkerGrib):
                 raise BoundForecastError(
                     "Bound wind record has invalid time metadata"
                 ) from exc
-            if (
-                reference != entry.run_time.timestamp()
-                or not seconds.is_integer()
-                or seconds % 3600
-                or valid != reference + seconds
-            ):
+            normal_reference = (
+                reference == entry.run_time.timestamp()
+                and seconds.is_integer()
+                and seconds % 3600 == 0
+                and valid == reference + seconds
+            )
+            # Reanalysis (ERA5) marks every valid time as its own reference.
+            reanalysis_reference = (
+                display_only and seconds == 0 and abs(reference - valid) <= 1e-6
+            )
+            if not (normal_reference or reanalysis_reference):
                 raise BoundForecastError(
                     "Bound wind contains a different run or valid time"
                 )
-            hour = int(seconds // 3600)
+            hour = int(
+                (valid - entry.run_time.timestamp()) // 3600
+                if display_only
+                else seconds // 3600
+            )
             if hour not in expected_hours:
                 raise BoundForecastError(
                     "Bound wind contains an unplanned forecast time"
                 )
-            if metadata.get("GRIB_SHORT_NAME") != "10-HTGL":
+            short_name = metadata.get("GRIB_SHORT_NAME")
+            if short_name != "10-HTGL" and not (display_only and short_name == "0-SFC"):
                 raise BoundForecastError("Bound wind contains an unsupported level")
-            identity = model_key(metadata, identity_source)
+            identity = model_key(metadata, self)
             identities.add(identity)
-            key = (hour, element)
+            key = (hour, component)
             seen[key] = seen.get(key, 0) + 1
             if seen[key] > 1:
                 raise BoundForecastError("Bound wind contains duplicate components")
@@ -167,12 +187,19 @@ class BoundWorkerGrib(WorkerGrib):
                 )
         index = self.sampling
         indexed = [
-            record for record in index.records if record.element in ("UGRD", "VGRD")
+            record
+            for record in index.records
+            if record.element in _WIND_U or record.element in _WIND_V
         ]
+        expected_stamps = {instant.timestamp() for instant in expected_times}
         if len(indexed) != sum(seen.values()) or any(
-            record.reference != entry.run_time.timestamp()
+            (
+                record.reference != entry.run_time.timestamp()
+                if not display_only
+                else abs(record.reference - record.valid) > 1e-6
+            )
             or record.identity[1] not in identities
-            or record.valid not in {instant.timestamp() for instant in expected_times}
+            or record.valid not in expected_stamps
             for record in indexed
         ):
             raise BoundForecastError(

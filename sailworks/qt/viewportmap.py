@@ -7,7 +7,6 @@ gestures to the Qt Quick viewport. It does not depend on the retired map widget.
 from bisect import bisect_right
 from dataclasses import dataclass
 import math
-import random
 
 from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import QWidget
@@ -449,6 +448,13 @@ class ViewportMap(
             True,
         )
 
+    def refresh_route_overlay(self):
+        """Publish the current overlay data to the QML scene."""
+        presenter = getattr(self, "_weather_presenter", None)
+        widget = getattr(presenter, "widget", None)
+        if widget is not None:
+            widget.set_route_overlay(self.viewport_route_overlay())
+
     def adopt_viewport_camera(self, camera):
         """Mirror viewport-owned camera state for existing map APIs/overlays."""
         state = (camera.center_lat, camera.center_lon, camera.zoom)
@@ -538,59 +544,11 @@ class ViewportMap(
             track_heading = _track_point_heading(state.points, marker_index)
             track_awa = getattr(point, "awa", None)
         manager = self.controller.core.trackManager
-        visible_race_tracks = tuple(
-            track
-            for track in manager
-            if track.visible and getattr(track, "race_track", False)
-        )
-        # Structural revision and ordered visible identities cover collection and
-        # visibility edits; names, colors and active flags also affect styling.
-        # Coordinate edits must bump Element.revision (touch); this matches the
-        # length cache contract.
-        race_key = (
-            id(manager),
-            manager.revision,
-            tuple(
-                (
-                    id(track),
-                    track.revision,
-                    str(track.name),
-                    (
-                        tuple(track.color)
-                        if getattr(track, "color", None) is not None
-                        else None
-                    ),
-                    bool(manager.is_active(track)),
-                )
-                for track in visible_race_tracks
-            ),
-        )
-        cache = getattr(self, "_viewport_race_tracks_cache", None)
-        if cache is None or cache[0] != race_key:
-            race_tracks = []
-            for track in visible_race_tracks:
-                color = getattr(track, "color", None)
-                if color is None:
-                    rng = random.Random(str(track.name))
-                    color = [rng.random(), rng.random(), rng.random()]
-                race_tracks.append(
-                    {
-                        "name": str(track.name),
-                        "points": [
-                            [float(point[0]), float(point[1])] for point in track
-                        ],
-                        "color": [float(channel) for channel in color],
-                        "active": bool(manager.is_active(track)),
-                    }
-                )
-            cache = (race_key, race_tracks, object())
-            self._viewport_race_tracks_cache = cache
-        race_tracks = cache[1]
-        visible_tracks = tuple(
-            track
-            for track in manager
-            if track.visible and not getattr(track, "race_track", False)
-        )
+        race_tracks = list(getattr(self, "race_tracks_overlay", ()) or ())
+        race_courses = list(getattr(self, "race_courses", ()) or ())
+        race_positions = list(getattr(self, "race_boat_markers", ()) or ())
+        race_tracks_key = repr(race_tracks)
+        visible_tracks = tuple(track for track in manager if track.visible)
         tracks_key = (
             id(manager),
             manager.revision,
@@ -692,7 +650,9 @@ class ViewportMap(
             "tracks": tracks_cache[1],
             "_tracks_key": tracks_cache[2],
             "race_tracks": race_tracks,
-            "_race_tracks_key": cache[2],
+            "_race_tracks_key": race_tracks_key,
+            "race_courses": race_courses,
+            "race_positions": race_positions,
             "routes": route_cache[1],
             "_routes_key": route_cache[2],
             "ais_targets": (

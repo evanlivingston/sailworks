@@ -124,7 +124,7 @@ def test_progress_report_exposes_current_model_and_percentage(tmp_path):
     controller._progress_token = "progress-token"
     controller._progress(controller._generation, "progress-token", ("HRRR", 42))
 
-    assert controller.status == "Downloading HRRR…"
+    assert controller.status == "Downloading NOAA HRRR…"
     assert controller.progress == 42
     controller.close()
 
