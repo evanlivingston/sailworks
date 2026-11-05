@@ -69,6 +69,33 @@ def _widget():
     return widget, calls
 
 
+def test_overlay_payload_is_reused_until_content_changes():
+    host, _manager = _host()
+    first = _build(host)
+    assert _build(host) is first
+    host._view_state.position = 3
+    assert _build(host) is not first
+
+
+def test_publish_route_overlay_skips_unchanged_camera_pans():
+    from unittest.mock import Mock
+
+    payload = {"route_plan": [], "route_preview": [], "caption": ""}
+    widget = SimpleNamespace(set_route_overlay=Mock())
+    host = SimpleNamespace(
+        _weather_presenter=SimpleNamespace(widget=widget),
+        viewport_route_overlay=Mock(return_value=payload),
+    )
+    assert ViewportMap.publish_route_overlay(host)
+    assert not ViewportMap.publish_route_overlay(host)
+    assert widget.set_route_overlay.call_count == 1
+
+    changed = {"route_plan": [[1.0, 2.0]], "route_preview": [], "caption": ""}
+    host.viewport_route_overlay.return_value = changed
+    assert ViewportMap.publish_route_overlay(host)
+    assert widget.set_route_overlay.call_args.args == (changed,)
+
+
 def test_race_payload_comes_from_the_overlay_and_is_reused():
     host, manager = _host()
     manager.append(Track("ordinary", [(1, 2), (3, 4)]))

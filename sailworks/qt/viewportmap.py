@@ -512,11 +512,33 @@ class ViewportMap(
         )
 
     def refresh_route_overlay(self):
-        """Publish the current overlay data to the QML scene."""
+        """Publish current overlay data after an explicit content edit."""
+        self.publish_route_overlay(force=True)
+
+    def publish_route_overlay(self, force=False):
+        """Publish the overlay only when its content or host changed.
+
+        A camera-only change moves the retained overlay through the viewport's
+        own pan window; it must not rebuild or re-key the content.
+        """
         presenter = getattr(self, "_weather_presenter", None)
         widget = getattr(presenter, "widget", None)
-        if widget is not None:
-            widget.set_route_overlay(self.viewport_route_overlay())
+        if widget is None:
+            return False
+        overlay = self.viewport_route_overlay()
+        published = getattr(self, "_viewport_overlay_published", None)
+        if (
+            not force
+            and published is not None
+            and published[0] is widget
+            and published[1] is overlay
+        ):
+            return False
+        if not widget.set_route_overlay(overlay):
+            # The retained Canvas or its camera is not ready; retry later.
+            return False
+        self._viewport_overlay_published = (widget, overlay)
+        return True
 
     def adopt_viewport_camera(self, camera):
         """Mirror viewport-owned camera state for existing map APIs/overlays."""
@@ -552,7 +574,7 @@ class ViewportMap(
                 foreground.update()
         widget = getattr(presenter, "widget", None)
         if widget is not None:
-            widget.set_route_overlay(self.viewport_route_overlay())
+            self.publish_route_overlay()
         return True
 
     def _refresh_cursor_after_motion(self):
@@ -569,186 +591,290 @@ class ViewportMap(
             self._hover(position)
 
     def viewport_route_overlay(self):
-        """Route and log-track geometry for the viewport's top scene layer."""
+        """Return the overlay payload, rebuilding it only when content changed."""
+        key = _viewport_overlay_key(self)
+        cached = getattr(self, "_viewport_overlay_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        overlay = _build_viewport_route_overlay(self)
         state = self._view_state
-        selected_point = []
-        active_route = self.controller.core.routingManager.get_by_name(
-            self.navigation.hl_routing
+        # Keep the identified inputs alive: an id() in the key must not be
+        # reused by a different object while its payload is still cached.
+        guard = (
+            getattr(self, "isochrone_frame", None),
+            getattr(self, "race_tracks_overlay", None),
+            getattr(self, "race_courses", None),
+            getattr(self, "race_boat_markers", None),
+            getattr(self, "ais_targets", ()),
+            state.points,
+            getattr(state, "offsets", None),
+            getattr(state, "route_plan", ()),
+            getattr(state, "route_preview", ()),
+            getattr(self, "dashboard", None),
         )
-        if (
-            active_route is not None
-            and active_route.visible
-            and 0 <= state.selected_route_point < len(active_route)
-        ):
-            point = active_route.points[state.selected_route_point]
-            selected_point = [point[0], point[1]]
-        track_points = []
-        track_position = []
-        track_heading = None
-        track_awa = None
-        if state.points:
-            count = len(state.points)
-            stride = -(-count // self._MAX_TRACK_POLYLINE)
-            selected_indices = list(range(0, count, stride))
-            if selected_indices[-1] != count - 1:
-                selected_indices.append(count - 1)
-            track_points = [
-                [state.points[index].lat, state.points[index].lon]
-                for index in selected_indices
-            ]
-            marker_index = count - 1
-            if state.position is not None and state.offsets:
-                marker_index = max(
-                    0,
-                    min(marker_index, bisect_right(state.offsets, state.position) - 1),
-                )
-            point = state.points[marker_index]
-            track_position = [point.lat, point.lon]
-            track_heading = _track_point_heading(state.points, marker_index)
-            track_awa = getattr(point, "awa", None)
-        manager = self.controller.core.trackManager
-        race_tracks = list(getattr(self, "race_tracks_overlay", ()) or ())
-        race_courses = list(getattr(self, "race_courses", ()) or ())
-        race_positions = list(getattr(self, "race_boat_markers", ()) or ())
-        race_tracks_key = repr(race_tracks)
-        visible_tracks = tuple(track for track in manager if track.visible)
-        tracks_key = (
-            id(manager),
-            manager.revision,
-            tuple(
-                (
-                    id(track),
-                    track.revision,
-                    str(track.name),
-                    (
-                        tuple(track.color)
-                        if getattr(track, "color", None) is not None
-                        else None
-                    ),
-                    bool(manager.is_active(track)),
-                    self.navigation.edit_track is track,
-                )
-                for track in visible_tracks
-            ),
-            self.navigation.hl_track_item,
-        )
-        tracks_cache = getattr(self, "_viewport_tracks_cache", None)
-        if tracks_cache is None or tracks_cache[0] != tracks_key:
-            tracks = [
-                {
-                    "name": str(track.name),
-                    "points": [[float(point[0]), float(point[1])] for point in track],
-                    "active": bool(manager.is_active(track)),
-                    "highlight": (
-                        int(self.navigation.hl_track_item)
-                        if manager.is_active(track)
-                        and self.navigation.hl_track_item is not None
-                        else -1
-                    ),
-                    "editing": self.navigation.edit_track is track,
-                }
-                for track in visible_tracks
-            ]
-            tracks_cache = (tracks_key, tracks, object())
-            self._viewport_tracks_cache = tracks_cache
-        poi_manager = self.controller.core.poiManager
-        visible_pois = tuple(
-            poi for poi in poi_manager if poi.visible and poi.position is not None
-        )
-        poi_key = (
-            id(poi_manager),
-            getattr(poi_manager, "revision", None),
-            tuple(
-                (id(poi), poi.revision, str(poi.name), tuple(poi.position))
-                for poi in visible_pois
-            ),
-            self.navigation.hl_poi,
-        )
-        poi_cache = _viewport_section_cache(
-            self,
-            "pois",
-            poi_key,
-            lambda: [
-                [
-                    float(poi.position[0]),
-                    float(poi.position[1]),
-                    str(poi.name),
-                    poi.name == self.navigation.hl_poi,
-                ]
-                for poi in visible_pois
-            ],
-        )
-        routing_manager = self.controller.core.routingManager
-        timestamp = self.time_control.time.timestamp()
-        if hasattr(routing_manager, "revision"):
-            route_key = (
-                id(routing_manager),
-                routing_manager.revision,
-                tuple(
-                    (id(route), route.revision, str(route.name))
-                    for route in routing_manager
-                    if route.visible
+        self._viewport_overlay_cache = (key, overlay, guard)
+        return overlay
+
+
+def _viewport_overlay_key(host):
+    """Identify overlay content without formatting or resampling it."""
+    state = host._view_state
+    frame = getattr(host, "isochrone_frame", None)
+    boat = getattr(host.controller.core, "boat_info", None)
+    return (
+        _overlay_pois(host)[0],
+        _overlay_tracks(host)[0],
+        _overlay_routes(host, host.time_control.time.timestamp()),
+        tuple(tuple(point) for point in (state.route_plan or ())),
+        tuple(tuple(point) for point in (state.route_preview or ())),
+        getattr(state, "selected_route_point", -1),
+        id(state.points),
+        len(state.points),
+        getattr(state, "position", None),
+        id(getattr(state, "offsets", None)),
+        id(getattr(host, "race_tracks_overlay", None)),
+        _overlay_size(getattr(host, "race_tracks_overlay", ())),
+        id(getattr(host, "race_courses", None)),
+        _overlay_size(getattr(host, "race_courses", ())),
+        id(getattr(host, "race_boat_markers", None)),
+        _overlay_size(getattr(host, "race_boat_markers", ())),
+        _overlay_ais(host),
+        id(frame),
+        _overlay_size(getattr(frame, "isochrones", ())),
+        _overlay_size(getattr(frame, "path", ())),
+        _overlay_size(getattr(frame, "exclusions", ())),
+        id(getattr(host, "dashboard", None)),
+        bool(getattr(host, "dashboard_visible", False)),
+        (
+            (boat.sog, boat.cog, boat.aws, boat.awa, boat.tws, boat.twa, boat.depth)
+            if boat is not None
+            else None
+        ),
+        getattr(host, "move_callback", None) is not None,
+        bool(getattr(host.controller, "chart_errors", None)),
+    )
+
+
+def _build_viewport_route_overlay(host):
+    """Route and log-track geometry for the viewport's top scene layer."""
+    state = host._view_state
+    selected_point = []
+    active_route = host.controller.core.routingManager.get_by_name(
+        host.navigation.hl_routing
+    )
+    if (
+        active_route is not None
+        and active_route.visible
+        and 0 <= state.selected_route_point < len(active_route)
+    ):
+        point = active_route.points[state.selected_route_point]
+        selected_point = [point[0], point[1]]
+    track_points = []
+    track_position = []
+    track_heading = None
+    track_awa = None
+    if state.points:
+        count = len(state.points)
+        stride = -(-count // host._MAX_TRACK_POLYLINE)
+        selected_indices = list(range(0, count, stride))
+        if selected_indices[-1] != count - 1:
+            selected_indices.append(count - 1)
+        track_points = [
+            [state.points[index].lat, state.points[index].lon]
+            for index in selected_indices
+        ]
+        marker_index = count - 1
+        if state.position is not None and state.offsets:
+            marker_index = max(
+                0,
+                min(marker_index, bisect_right(state.offsets, state.position) - 1),
+            )
+        point = state.points[marker_index]
+        track_position = [point.lat, point.lon]
+        track_heading = _track_point_heading(state.points, marker_index)
+        track_awa = getattr(point, "awa", None)
+    manager = host.controller.core.trackManager
+    race_tracks = list(getattr(host, "race_tracks_overlay", ()) or ())
+    race_courses = list(getattr(host, "race_courses", ()) or ())
+    race_positions = list(getattr(host, "race_boat_markers", ()) or ())
+    race_tracks_key = repr(race_tracks)
+    tracks_key, visible_tracks = _overlay_tracks(host)
+    tracks_cache = getattr(host, "_viewport_tracks_cache", None)
+    if tracks_cache is None or tracks_cache[0] != tracks_key:
+        tracks = [
+            {
+                "name": str(track.name),
+                "points": [[float(point[0]), float(point[1])] for point in track],
+                "active": bool(manager.is_active(track)),
+                "highlight": (
+                    int(host.navigation.hl_track_item)
+                    if manager.is_active(track)
+                    and host.navigation.hl_track_item is not None
+                    else -1
                 ),
-                self.navigation.hl_routing,
-                timestamp,
+                "editing": host.navigation.edit_track is track,
+            }
+            for track in visible_tracks
+        ]
+        tracks_cache = (tracks_key, tracks, object())
+        host._viewport_tracks_cache = tracks_cache
+    poi_key, visible_pois = _overlay_pois(host)
+    poi_cache = _viewport_section_cache(
+        host,
+        "pois",
+        poi_key,
+        lambda: [
+            [
+                float(poi.position[0]),
+                float(poi.position[1]),
+                str(poi.name),
+                poi.name == host.navigation.hl_poi,
+            ]
+            for poi in visible_pois
+        ],
+    )
+    timestamp = host.time_control.time.timestamp()
+    route_key = _overlay_routes(host, timestamp)
+    if route_key is not None:
+        route_cache = _viewport_section_cache(
+            host,
+            "routes",
+            route_key,
+            lambda: host.navigation.route_overlay_data(timestamp),
+        )
+    else:
+        route_cache = (None, host.navigation.route_overlay_data(timestamp), None)
+    return {
+        "route_plan": [list(point) for point in state.route_plan],
+        "route_preview": [list(point) for point in state.route_preview],
+        "selected_point": selected_point,
+        "track_points": track_points,
+        "track_position": track_position,
+        "track_heading": track_heading,
+        "track_awa": track_awa,
+        "pois": poi_cache[1],
+        "_pois_key": poi_cache[2],
+        "tracks": tracks_cache[1],
+        "_tracks_key": tracks_cache[2],
+        "race_tracks": race_tracks,
+        "_race_tracks_key": race_tracks_key,
+        "race_courses": race_courses,
+        "race_positions": race_positions,
+        "routes": route_cache[1],
+        "_routes_key": route_cache[2],
+        "ais_targets": (
+            [
+                {
+                    "lat": float(target.latitude),
+                    "lon": float(target.longitude),
+                    "angle": float(
+                        target.cog
+                        if target.cog is not None
+                        else (target.heading or 0.0)
+                    ),
+                    "sog": float(target.sog or 0.0),
+                    "color": list(
+                        SHIP_TYPE_COLORS.get(target.category, (0.5, 0.5, 0.5))
+                    ),
+                    "label": target.name or str(target.mmsi),
+                }
+                for target in host.ais_targets
+                if target.has_valid_position()
+            ]
+            if host.ais_visible
+            else []
+        ),
+        "isochrones": isochrone_overlay_data(host.isochrone_frame),
+        "dashboard": (host.dashboard.overlay_data() if host.dashboard_visible else []),
+        "caption": _viewport_caption(host.move_callback, host.controller.chart_errors),
+        "dashboard_visible": host.dashboard_visible,
+    }
+
+
+def _overlay_size(value):
+    try:
+        return len(value)
+    except TypeError:
+        return -1
+
+
+def _overlay_pois(host):
+    """The POI cache key and the visible POIs it identifies."""
+    manager = host.controller.core.poiManager
+    visible = tuple(poi for poi in manager if poi.visible and poi.position is not None)
+    return (
+        id(manager),
+        getattr(manager, "revision", None),
+        tuple(
+            (id(poi), poi.revision, str(poi.name), tuple(poi.position))
+            for poi in visible
+        ),
+        host.navigation.hl_poi,
+    ), visible
+
+
+def _overlay_tracks(host):
+    """The track cache key and the visible tracks it identifies."""
+    manager = host.controller.core.trackManager
+    visible = tuple(track for track in manager if track.visible)
+    return (
+        id(manager),
+        getattr(manager, "revision", 0),
+        tuple(
+            (
+                id(track),
+                track.revision,
+                str(track.name),
+                (
+                    tuple(track.color)
+                    if getattr(track, "color", None) is not None
+                    else None
+                ),
+                bool(manager.is_active(track)),
+                host.navigation.edit_track is track,
             )
-            route_cache = _viewport_section_cache(
-                self,
-                "routes",
-                route_key,
-                lambda: self.navigation.route_overlay_data(timestamp),
-            )
-        else:
-            route_cache = (None, self.navigation.route_overlay_data(timestamp), None)
-        return {
-            "route_plan": [list(point) for point in state.route_plan],
-            "route_preview": [list(point) for point in state.route_preview],
-            "selected_point": selected_point,
-            "track_points": track_points,
-            "track_position": track_position,
-            "track_heading": track_heading,
-            "track_awa": track_awa,
-            "pois": poi_cache[1],
-            "_pois_key": poi_cache[2],
-            "tracks": tracks_cache[1],
-            "_tracks_key": tracks_cache[2],
-            "race_tracks": race_tracks,
-            "_race_tracks_key": race_tracks_key,
-            "race_courses": race_courses,
-            "race_positions": race_positions,
-            "routes": route_cache[1],
-            "_routes_key": route_cache[2],
-            "ais_targets": (
-                [
-                    {
-                        "lat": float(target.latitude),
-                        "lon": float(target.longitude),
-                        "angle": float(
-                            target.cog
-                            if target.cog is not None
-                            else (target.heading or 0.0)
-                        ),
-                        "sog": float(target.sog or 0.0),
-                        "color": list(
-                            SHIP_TYPE_COLORS.get(target.category, (0.5, 0.5, 0.5))
-                        ),
-                        "label": target.name or str(target.mmsi),
-                    }
-                    for target in self.ais_targets
-                    if target.has_valid_position()
-                ]
-                if self.ais_visible
-                else []
-            ),
-            "isochrones": isochrone_overlay_data(self.isochrone_frame),
-            "dashboard": (
-                self.dashboard.overlay_data() if self.dashboard_visible else []
-            ),
-            "caption": _viewport_caption(
-                self.move_callback, self.controller.chart_errors
-            ),
-            "dashboard_visible": self.dashboard_visible,
-        }
+            for track in visible
+        ),
+        host.navigation.hl_track_item,
+    ), visible
+
+
+def _overlay_routes(host, timestamp):
+    """The route cache key, or None when a host does not identify routes."""
+    manager = host.controller.core.routingManager
+    if not hasattr(manager, "revision"):
+        return None
+    return (
+        id(manager),
+        manager.revision,
+        tuple(
+            (id(route), route.revision, str(route.name))
+            for route in manager
+            if route.visible
+        ),
+        host.navigation.hl_routing,
+        timestamp,
+    )
+
+
+def _overlay_ais(host):
+    """The AIS values the overlay draws, not just their positions."""
+    if not getattr(host, "ais_visible", False):
+        return ()
+    return tuple(
+        (
+            getattr(target, "mmsi", None),
+            round(float(target.latitude), 5),
+            round(float(target.longitude), 5),
+            getattr(target, "cog", None),
+            getattr(target, "heading", None),
+            getattr(target, "sog", None),
+            getattr(target, "name", None),
+            getattr(target, "category", None),
+        )
+        for target in host.ais_targets
+        if target.has_valid_position()
+    )
 
 
 def _viewport_section_cache(host, section, key, build):
