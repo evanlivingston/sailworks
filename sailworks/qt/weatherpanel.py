@@ -505,7 +505,7 @@ class WeatherPanel(QWidget):
 
     def _toggle_wave(self, enabled):
         """Switch the wave layer and remember it across restarts."""
-        active_map().set_wave_visible(enabled)
+        self.active_map().set_wave_visible(enabled)
         self.set_preference("gribWaveVisible", bool(enabled))
 
     def set_preference(self, key, value):
