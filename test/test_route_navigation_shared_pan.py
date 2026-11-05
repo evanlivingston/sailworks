@@ -95,6 +95,16 @@ def test_set_camera_moves_route_canvas_in_camera_pass_without_content_callback()
         ),
         _native_publication_dpr=lambda: 1.0,
         _native_weather_fields=False,
+        # Wave layers stay unbound in this headless double; the camera pass
+        # reads their visibility and the retained items on a rebase.
+        _wave_visible=False,
+        _wave_arrows_visible=False,
+        _wave_fill=None,
+        _wave_fill_back=None,
+        _wave_barbs=None,
+        _wave_barbs_back=None,
+        _wave_token=None,
+        _wave_barbs_token=None,
         _native_active_camera=None,
         _native_pending_camera=None,
         _native_active_dpr=None,

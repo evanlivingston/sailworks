@@ -213,6 +213,9 @@ class TestStreamlineModel(unittest.TestCase):
             gribWindGradientOpacity=0.12,
             gribWindGradientSmooth=True,
             gribWindGradientLevels=15,
+            gribWaveOpacity=0.85,
+            gribWaveSmooth=True,
+            gribWaveLevels=9,
         )
         canvas, widget, presenter = Mock(), Mock(), Mock()
         canvas.controller.settings = settings
