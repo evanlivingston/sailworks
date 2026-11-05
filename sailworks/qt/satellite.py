@@ -195,6 +195,28 @@ def pack_source(path: str) -> SatelliteSource:
     )
 
 
+def _mask_blank_white(data: bytes, width: int, height: int, stride: int) -> bytes:
+    """Make the provider's blank white no-data pixels transparent.
+
+    USGS (and packs built from it) return a plain white tile where it has no
+    imagery, notably open water and outside the US. Drawing that white over
+    the chart hides the chart and reads as missing data; transparent lets the
+    chart show through while real land imagery stays.
+    """
+    try:
+        import numpy as np
+    except ImportError:  # pragma: no cover - numpy is a runtime dependency
+        return data
+    if width < 1 or height < 1 or stride < width * 4:
+        return data
+    buffer = bytearray(data)
+    rows = np.frombuffer(buffer, dtype=np.uint8).reshape(height, stride)
+    rgba = rows[:, : width * 4].reshape(height, width, 4)
+    blank = (rgba[:, :, 0] == 255) & (rgba[:, :, 1] == 255) & (rgba[:, :, 2] == 255)
+    rgba[blank, 3] = 0
+    return bytes(buffer)
+
+
 def available() -> bool:
     """Whether this interpreter can import a MapLibre runtime."""
     if sys.version_info < (3, 12):
@@ -311,6 +333,7 @@ class SatelliteRenderer:
             except Exception as exc:  # noqa: BLE001 - FFI failures are display state
                 raise SatelliteError(str(exc)) from exc
             info = readback.info
+            data = _mask_blank_white(data, info.width, info.height, info.stride)
             image = QImage(
                 data,
                 info.width,

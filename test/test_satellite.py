@@ -15,6 +15,7 @@ from sailworks.qt.satellite import (
     SatelliteRenderer,
     SatelliteSource,
     SatelliteWorker,
+    _mask_blank_white,
     available,
     configured_source,
     online_source,
@@ -75,6 +76,20 @@ def test_online_source_requires_network_but_a_pack_does_not(tmp_path):
     pack = tmp_path / "area.pmtiles"
     pack.write_bytes(b"")
     assert pack_source(str(pack)).requires_network is False
+
+
+def test_blank_white_pixels_become_transparent():
+    data = bytes([255, 255, 255, 255, 0, 0, 255, 255])
+
+    masked = _mask_blank_white(data, 2, 1, 8)
+
+    assert list(masked) == [255, 255, 255, 0, 0, 0, 255, 255]
+
+
+def test_non_white_pixels_keep_their_alpha():
+    data = bytes([250, 250, 250, 255])
+
+    assert list(_mask_blank_white(data, 1, 1, 4)) == [250, 250, 250, 255]
 
 
 def test_available_reports_a_boolean():
