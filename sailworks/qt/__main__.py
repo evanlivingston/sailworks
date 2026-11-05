@@ -38,16 +38,20 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
     try:
+        from PySide6.QtGui import QIcon
         from PySide6.QtWidgets import QApplication
     except ImportError:
         parser.error("Qt requires PySide6; reinstall Sailworks with its dependencies")
+    from sailworks.common import resource_path
     from .controller import SessionController
     from .window import PreviewWindow
     from .theme import apply_theme
+    from .tray import install_tray_icon
 
     app = cast(QApplication, QApplication.instance()) or QApplication([sys.argv[0]])
     app.setApplicationName("Sailworks")
     app.setApplicationDisplayName("Sailworks")
+    app.setWindowIcon(QIcon(resource_path("sailworks", "data/icon.png")))
     apply_theme(app)
     controller = SessionController(
         map_renderer=args.map_renderer,
@@ -57,6 +61,7 @@ def main(argv=None):
         native_weather_fields=args.native_weather_fields,
     )
     window = PreviewWindow(controller)
+    install_tray_icon(window)
     app.aboutToQuit.connect(window.workspace.close)
     if window.timeline is not None:
         app.aboutToQuit.connect(window.timeline.dispose)
