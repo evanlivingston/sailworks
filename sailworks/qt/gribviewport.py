@@ -230,6 +230,12 @@ def _expanded(camera, factor):
 #: changes which symbols a viewport shows.
 SELECTION_REUSE_MARGIN = 32.0
 
+#: Zoom levels a cached selection may be reused across while a zoom gesture is
+#: in flight.  The retained anchors are placed by the zoom preview transform
+#: until the gesture settles, so this bounds how far that preview may scale
+#: before a fresh selection is sampled.  A settled camera always re-samples.
+SELECTION_ZOOM_REUSE_STEPS = 0.15
+
 #: Satellite frames are padded like the chart composition, so a pan exposes
 #: already-rendered imagery instead of the bare chart until the next frame.
 SATELLITE_MARGIN = 256
@@ -244,13 +250,19 @@ def _selection_translation(first, second):
     return dx, dy
 
 
-def _selection_reusable(computed_view, current_view):
-    """Whether a padded selection still covers the current camera."""
+def _selection_reusable(computed_view, current_view, zoom_tolerance=0.0):
+    """Whether a padded selection still covers the current camera.
+
+    ``zoom_tolerance`` lets an in-flight zoom gesture keep the selection it
+    already has: the retained anchors are placed by the zoom preview transform
+    until the gesture settles, and a settled camera passes zero and re-samples.
+    """
     if (
-        computed_view._zoom != current_view._zoom
-        or computed_view.width != current_view.width
+        computed_view.width != current_view.width
         or computed_view.height != current_view.height
     ):
+        return False
+    if abs(computed_view._zoom - current_view._zoom) > max(0.0, zoom_tolerance):
         return False
     dx, dy = _selection_translation(computed_view, current_view)
     return abs(dx) <= SELECTION_REUSE_MARGIN and abs(dy) <= SELECTION_REUSE_MARGIN
@@ -486,6 +498,10 @@ class GribViewportModel:
         self._prepared_by = {}
         self._selection_cache = {}
         self._selection_cache_order = []
+        # The last selection served for this field/frame/size, with the view
+        # it was sampled at, so an in-flight zoom gesture can reuse it even
+        # though the exact-zoom cache key no longer matches.
+        self._reusable_selection = None
         # Node-indexed anchor atlases outlive a mesh slot permutation: one
         # atlas per field generation and anchor camera.  A pan inside one pan
         # reference reuses it instead of re-projecting every field node.
@@ -572,11 +588,15 @@ class GribViewportModel:
             )
 
     # ----------------------------------------------------------- camera
-    def update(self, camera, reference=None):  # noqa: C901 - coverage transition
+    def update(
+        self, camera, reference=None, zoom_tolerance=0.0
+    ):  # noqa: C901 - coverage transition
         """Adopt a camera and return the portrayal that may be shown.
 
         ``reference`` is the map pan reference the selection anchors are
         encoded against; a covered pan then resolves the same anchor bytes.
+        ``zoom_tolerance`` keeps the cached selection while an interactive
+        zoom gesture is in flight; the caller restages once it settles.
 
         Returns ``(state, field, selection)``.  ``state`` is ``ready`` only
         when the selection belongs to the field that is actually published.
@@ -672,7 +692,8 @@ class GribViewportModel:
             # shared layer, so the atlas is built from the current view.  Key
             # it by the frame that is actually projected, not by the reference
             # that was offered: an incompatible reference must not reuse the
-            # atlas of a previous compatible one.
+            # atlas of a previous compatible one.  A reused selection needs no
+            # atlas at all, so it is built only when this camera must sample.
             atlas_key = (
                 field.generation,
                 anchor._center_lat,
@@ -681,28 +702,65 @@ class GribViewportModel:
                 anchor.width,
                 anchor.height,
             )
-            atlas = self._anchor_atlas_cache.get(atlas_key)
-            if atlas is None:
-                try:
-                    atlas = node_anchor_atlas(field, anchor)
-                except Exception as exc:  # projection metadata escape
-                    logger.debug("Resident anchor atlas unavailable: %s", exc)
-                    atlas = None
-                if atlas is not None:
-                    if len(self._anchor_atlas_cache) >= 8:
-                        oldest = self._anchor_atlas_cache_order.pop(0)
-                        self._anchor_atlas_cache.pop(oldest, None)
-                    self._anchor_atlas_cache[atlas_key] = atlas
-                    self._anchor_atlas_cache_order.append(atlas_key)
+            atlas = None
+            selection_context = (
+                field.generation,
+                field.identity.key(),
+                camera.stamp(),
+                view.width,
+                view.height,
+                view.density,
+                view.over_land,
+                view.geographic,
+            )
             cached = self._selection_cache.get(cache_key)
+            if cached is None and zoom_tolerance > 0.0:
+                # The cache is keyed by the exact zoom.  While a zoom gesture
+                # is in flight, fall back to the last selection sampled for
+                # this field, frame, size and coverage when it is still within
+                # the gesture's tolerance.
+                reusable = self._reusable_selection
+                if (
+                    reusable is not None
+                    and reusable[0] == selection_context
+                    and _selection_reusable(reusable[1], view, zoom_tolerance)
+                ):
+                    cached = (reusable[2], reusable[1])
             selection = None
+            fresh = False
             if cached is not None:
                 cached_selection, computed_view = cached
                 # A covered pan reuses the padded selection and lets the
                 # shared layer translate; recompute only when the padding is
-                # exhausted.
-                if _selection_reusable(computed_view, view):
+                # exhausted.  An in-flight zoom gesture may reuse it across a
+                # bounded zoom change, placed by the zoom preview until it
+                # settles.
+                if _selection_reusable(computed_view, view, zoom_tolerance):
                     selection = cached_selection
+            # A reused selection needs no anchor atlas, so it is projected
+            # only when this camera must sample.  The exception is an offered
+            # reference that cannot place the shared layer: that reference is
+            # projected at the current view and keyed there, as before, so an
+            # incompatible reference still leaves its own atlas entry.
+            reference_places = reference is None or (
+                reference._zoom,
+                reference.width,
+                reference.height,
+            ) == (view._zoom, view.width, view.height)
+            if selection is None or not reference_places:
+                atlas = self._anchor_atlas_cache.get(atlas_key)
+                if atlas is None:
+                    try:
+                        atlas = node_anchor_atlas(field, anchor)
+                    except Exception as exc:  # projection metadata escape
+                        logger.debug("Resident anchor atlas unavailable: %s", exc)
+                        atlas = None
+                    if atlas is not None:
+                        if len(self._anchor_atlas_cache) >= 8:
+                            oldest = self._anchor_atlas_cache_order.pop(0)
+                            self._anchor_atlas_cache.pop(oldest, None)
+                        self._anchor_atlas_cache[atlas_key] = atlas
+                        self._anchor_atlas_cache_order.append(atlas_key)
             if selection is None:
                 try:
                     selection = select_resident(
@@ -716,7 +774,8 @@ class GribViewportModel:
                 except Exception as exc:  # coverage or time escape
                     logger.debug("Resident selection unavailable: %s", exc)
                     selection = None
-                if selection is not None:
+                fresh = selection is not None
+                if fresh:
                     if cache_key in self._selection_cache:
                         self._selection_cache[cache_key] = (selection, view)
                     else:
@@ -725,6 +784,8 @@ class GribViewportModel:
                             self._selection_cache.pop(oldest, None)
                         self._selection_cache[cache_key] = (selection, view)
                         self._selection_cache_order.append(cache_key)
+            if selection is not None:
+                self._reusable_selection = (selection_context, view, selection)
             if selection is not None:
                 with self._condition:
                     self.counters["covered_reuses"] += 1
@@ -1915,6 +1976,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._shared_anchor_urls = [None, None]
             self._shared_anchor_front = None
             self._shared_anchor_pending = None
+            # An interactive zoom keeps the retained selection and places it
+            # with the zoom preview; it is re-sampled once the gesture settles.
+            self._zoom_reuse_served = False
+            self._force_exact_selection = False
             self._fill_staging = False
             self._image_fill_token = None
             self._image_fill_pending_epoch = None
@@ -5413,8 +5478,20 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     self.cameraChanged.emit(camera)
                     return self._state
                 state, field, selection = self._model.update(
-                    camera, self._barb_reference_view(camera)
+                    camera,
+                    self._barb_reference_view(camera),
+                    (
+                        SELECTION_ZOOM_REUSE_STEPS
+                        if self.is_moving() and not self._force_exact_selection
+                        else 0.0
+                    ),
                 )
+                anchor = getattr(selection, "anchor_reference", None)
+                if anchor is not None and len(anchor) == 5:
+                    # A selection served for another zoom is placed by the
+                    # preview transform; the gesture's end re-samples at the
+                    # settled camera so no approximation is left on screen.
+                    self._zoom_reuse_served = float(anchor[2]) != float(camera.zoom)
                 if state != "ready":
                     previous = self._weather_display_camera
                     preview = (
@@ -5605,6 +5682,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     self._native_pending_camera == camera
                     and self._native_pending_identity == field.identity
                     and getattr(self, "_native_pending_dpr", None) == dpr
+                    # The same camera may carry a different selection: an
+                    # interactive zoom stages the retained selection, and the
+                    # settled camera re-samples it exactly.
+                    and self._native_pending_selection is selection
                 )
             ):
                 return True
@@ -6317,9 +6398,20 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             except (AttributeError, TypeError, ValueError):
                 return False
             # The front must have been displayable at the frame it portrays.
-            if not self._barb_anchor_frame_places(
+            # While a zoom gesture carries it, the preview transform places
+            # anchors across a zoom change, so the frame only has to match on
+            # everything a zoom does not change.
+            places = self._barb_anchor_frame_places(
                 active_camera, previous_dpr, previous_camera, current_dpr
-            ):
+            )
+            if not places and getattr(self, "_zoom_reuse_served", False):
+                places = self._barb_zoom_frame_matches(
+                    active_camera,
+                    getattr(self, "_native_active_dpr", previous_dpr),
+                    camera,
+                    current_dpr,
+                )
+            if not places:
                 return False
             self._barb_zoom_preview = {
                 "anchor": PanReference(*anchor, dpr=current_dpr or 1.0),
@@ -6480,6 +6572,36 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 return reference.classify(camera, current_dpr) == CameraChange.PAN
             except (AttributeError, TypeError, ValueError):
                 return False
+
+        @staticmethod
+        def _barb_zoom_frame_matches(frame_camera, frame_dpr, camera, current_dpr):
+            """Whether a frame differs from ``camera`` only by zoom.
+
+            The zoom preview scales the retained anchor positions about the
+            frame's centre, so a zoom change is placeable while the viewport
+            size, forecast time and device ratio are unchanged.
+            """
+            if frame_camera is None or camera is None:
+                return False
+            if frame_dpr is not None and current_dpr is not None:
+                if float(frame_dpr) != float(current_dpr):
+                    return False
+            try:
+                if float(frame_camera.width) != float(camera.width):
+                    return False
+                if float(frame_camera.height) != float(camera.height):
+                    return False
+                if frame_camera.stamp() != camera.stamp():
+                    return False
+                requested_source = getattr(camera, "source", None)
+                if (
+                    requested_source is not None
+                    and getattr(frame_camera, "source", None) != requested_source
+                ):
+                    return False
+            except (AttributeError, TypeError, ValueError):
+                return False
+            return True
 
         @staticmethod
         def _set_barb_anchor_frame_valid(item, valid):
@@ -6681,6 +6803,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._pan_inertia_tick.stop()
             self._pan_inertia = None
             self._pan_inertia_last_tick = None
+            self._end_zoom_gesture()
 
         def finish_motion(self):
             """Finish an anchored wheel zoom, then clear pending motion state."""
@@ -6753,6 +6876,18 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._wheel_zoom_target = None
             self._wheel_zoom_anchor = None
             self._wheel_zoom_last_tick = None
+            self._end_zoom_gesture()
+
+        def _end_zoom_gesture(self):
+            """Re-sample the retained selection at the settled zoom."""
+            if not self._zoom_reuse_served or self._disposed or self._camera is None:
+                return
+            self._zoom_reuse_served = False
+            self._force_exact_selection = True
+            try:
+                self.set_camera(self._camera)
+            finally:
+                self._force_exact_selection = False
 
         def _handle_desktop_wheel(self, event):
             if getattr(self, "_native_gesture_active", False):
@@ -6868,6 +7003,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._native_gesture_active = True
             elif kind == Qt.NativeGestureType.EndNativeGesture:
                 self._native_gesture_active = False
+                self._end_zoom_gesture()
             elif kind == Qt.NativeGestureType.ZoomNativeGesture:
                 scale = 1.0 + event.value()
                 if math.isfinite(scale) and scale > 0:
