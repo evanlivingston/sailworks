@@ -140,6 +140,10 @@ class WeatherPresenter(QObject):
                 gpu_streamlines=getattr(
                     self.canvas.controller, "gpu_streamlines", True
                 ),
+                satellite_visible=bool(
+                    self.canvas.controller.settings.chartSatelliteVisible
+                ),
+                satellite_pack=self.canvas.controller.settings.satellitePack,
             )
             if self.native_fields:
                 kwargs["native_weather_fields"] = True
@@ -147,6 +151,10 @@ class WeatherPresenter(QObject):
                     self.canvas.controller.native_weather_budget
                 )
             widget = _viewport_widget_class()(model, self.canvas, **kwargs)
+            self.canvas.controller.settings.register_on_change(
+                "chartSatelliteVisible",
+                lambda value: widget.set_satellite_visible(bool(value)),
+            )
             widget.marineStateChanged.connect(
                 lambda state: self._marine_state_changed(generation, state)
             )

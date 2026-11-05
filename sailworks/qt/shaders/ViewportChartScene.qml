@@ -24,6 +24,11 @@ Item {
     // The ENC source's own state, in the scene's own words.  An empty
     // string means there is nothing to report.
     property string encStatus: ""
+    // Satellite imagery is a raster layer below the composed chart. The
+    // image arrives from MapLibre; the attribution is shown with it.
+    property bool satelliteVisible: false
+    property string satelliteAttribution: ""
+    property string satelliteStatus: ""
     // Embedded use supplies the world/raster base here. It must not depend
     // on QWidget parent pixels showing through the Quick host.
     Item {
@@ -76,6 +81,26 @@ Item {
                 id: chart
                 objectName: "chartLayer"
                 anchors.fill: parent
+            }
+            // Satellite sits above the chart for now: the composed chart paints
+            // an opaque sea/land background, so a layer beneath it is invisible.
+            // The opacity keeps coastlines and soundings legible under imagery.
+            ChartLayer {
+                objectName: "satelliteLayer"
+                anchors.fill: parent
+                opacity: 0.9
+                visible: root.satelliteVisible
+                Text {
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    anchors.margins: 6
+                    text: root.satelliteStatus !== "" ? root.satelliteStatus : root.satelliteAttribution
+                    color: root.satelliteStatus !== "" ? "#ffd479" : "#ffffffdd"
+                    font.pixelSize: 11
+                    style: Text.Outline
+                    styleColor: "#000000"
+                    visible: text !== ""
+                }
             }
             // Images and numerical fill are reference-local.
             Item {

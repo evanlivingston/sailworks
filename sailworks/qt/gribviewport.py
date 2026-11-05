@@ -1609,6 +1609,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             chart_palette=CHART_PALETTE,
             enc_only=False,
             gpu_streamlines=True,
+            satellite_visible=False,
+            satellite_pack="",
         ):
             super().__init__(parent)
             self._model = model
@@ -1704,6 +1706,26 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._world_provider = None
             self._world = None
             self._world_placement = None
+            self._chart_data_dir = chart_data_dir
+            # Satellite imagery is an optional raster layer below the chart.
+            # The worker exists only while the layer is on.
+            self._satellite_visible = bool(satellite_visible)
+            self._satellite_pack = satellite_pack or ""
+            self._satellite = None
+            self._satellite_provider = None
+            self._satellite_worker = None
+            self._satellite_timer = None
+            self._satellite_generation = 0
+            self._satellite_camera = None
+            self._satellite_pending_camera = None
+            self._satellite_source_camera = None
+            self._satellite_placement = None
+            self._satellite_source = None
+            self._satellite_attribution = ""
+            self._satellite_error = ""
+            self._satellite_fatal = False
+            self._satellite_retry_at = 0.0
+            self._satellite_network = None
             format_ = QSurfaceFormat()
             format_.setSamples(4)
             format_.setAlphaBufferSize(8)
@@ -1940,6 +1962,28 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self.worldRendered.connect(
                     self._world_rendered, Qt.ConnectionType.QueuedConnection
                 )
+                self._satellite = self._weather.findChild(QObject, "satelliteLayer")
+                self._satellite_provider = chart_image_provider("satellite")
+                self.engine().addImageProvider("satellite", self._satellite_provider)
+                self.cameraChanged.connect(self._satellite_camera_changed)
+                self._satellite_timer = QTimer(self)
+                self._satellite_timer.setSingleShot(True)
+                self._satellite_timer.setInterval(220)
+                self._satellite_timer.timeout.connect(self._request_satellite)
+                try:
+                    from PySide6.QtNetwork import QNetworkInformation
+
+                    if QNetworkInformation.loadDefaultBackend():
+                        self._satellite_network = QNetworkInformation.instance()
+                        self._satellite_network.reachabilityChanged.connect(
+                            self._satellite_reachability_changed
+                        )
+                except Exception:  # noqa: BLE001 - reachability is advisory
+                    self._satellite_network = None
+                self._weather.setProperty("satelliteVisible", self._satellite_visible)
+                if self._satellite_visible:
+                    self._satellite_camera = self._camera
+                    self._start_satellite()
                 world_factor = max(1, round(self.devicePixelRatio()))
 
                 def render_world():
@@ -2549,6 +2593,155 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     self._world, "_world_placement", QRectF(*world_placement(camera))
                 )
 
+        def _start_satellite(self):
+            """Create the satellite worker on first use; report why it cannot."""
+            if self._satellite_worker is not None:
+                return True
+            if self._satellite_fatal:
+                return False
+            if self._satellite is None:
+                self._satellite_error = "satellite layer is not in the scene"
+                self._satellite_fatal = True
+                return False
+            from .satellite import SatelliteWorker, available, configured_source
+
+            if not available():
+                self._satellite_error = "MapLibre satellite support is not installed"
+                self._satellite_fatal = True
+                logger.info("Satellite basemap unavailable: %s", self._satellite_error)
+                return False
+            try:
+                source = configured_source(
+                    self._satellite_pack, self._chart_data_dir or ""
+                )
+                cache_dir = ""
+                if self._chart_data_dir:
+                    cache_dir = str(Path(self._chart_data_dir) / "satellite" / "cache")
+                worker = SatelliteWorker(source, cache_dir)
+            except Exception as exc:  # noqa: BLE001 - display state, not a crash
+                self._satellite_error = str(exc)
+                self._satellite_fatal = True
+                logger.warning("Satellite basemap unavailable: %s", exc)
+                return False
+            worker.rendered.connect(
+                self._satellite_rendered, Qt.ConnectionType.QueuedConnection
+            )
+            worker.failed.connect(
+                self._satellite_failed, Qt.ConnectionType.QueuedConnection
+            )
+            self._satellite_worker = worker
+            self._satellite_source = source
+            self._satellite_attribution = source.attribution
+            self._weather.setProperty(
+                "satelliteAttribution", self._satellite_attribution
+            )
+            logger.info("Satellite basemap source: %s", source.tiles[0][:80])
+            return True
+
+        def _set_satellite_status(self, text):
+            if self._weather is not None:
+                self._weather.setProperty("satelliteStatus", text)
+
+        def _satellite_reachability_changed(self, _reachability):
+            if self._satellite_visible:
+                self._satellite_retry_at = 0.0
+                self._satellite_camera_changed(self._camera)
+
+        def set_satellite_visible(self, visible):
+            """Show or hide the satellite layer, starting its worker on demand."""
+            visible = bool(visible)
+            if visible == self._satellite_visible:
+                return
+            self._satellite_visible = visible
+            if self._weather is not None:
+                self._weather.setProperty("satelliteVisible", visible)
+            if visible:
+                self._satellite_camera = self._camera
+                if self._start_satellite():
+                    self._satellite_camera_changed(self._camera)
+            elif self._satellite_timer is not None:
+                self._satellite_timer.stop()
+
+        def _satellite_camera_changed(self, camera):
+            if not self._satellite_visible or camera is None:
+                return
+            if not self._start_satellite():
+                return
+            if time.monotonic() < self._satellite_retry_at:
+                return
+            if (
+                self._satellite_source is not None
+                and self._satellite_source.requires_network
+                and not self._satellite_source.offline_capable
+                and self._satellite_network is not None
+            ):
+                try:
+                    from PySide6.QtNetwork import QNetworkInformation
+
+                    if (
+                        self._satellite_network.reachability()
+                        == QNetworkInformation.Reachability.Disconnected
+                    ):
+                        self._set_satellite_status("Satellite offline — no connection")
+                        return
+                except Exception:  # noqa: BLE001 - reachability is advisory
+                    pass
+            self._set_satellite_status("")
+            self._satellite_camera = camera
+            if self._satellite_timer is not None:
+                self._satellite_timer.start()
+
+        def _request_satellite(self):
+            if not self._satellite_visible or self._satellite_worker is None:
+                return
+            camera = self._satellite_camera or self._camera
+            if camera is None:
+                return
+            self._satellite_generation += 1
+            self._satellite_pending_camera = camera
+            self._satellite_worker.submit(
+                self._satellite_generation, camera, self.devicePixelRatioF()
+            )
+
+        def _satellite_rendered(self, generation, image):
+            if self._disposed or not self._satellite_visible:
+                return
+            if generation != self._satellite_generation:
+                return
+            if self._satellite is None or self._satellite_provider is None:
+                return
+            self._satellite.setProperty(
+                "source",
+                QUrl(self._satellite_provider.publish(image.cacheKey(), image)),
+            )
+            self._satellite_source_camera = self._satellite_pending_camera
+            if self._camera is not None:
+                self._place_satellite(self._camera)
+            self._set_satellite_status("")
+
+        def _satellite_failed(self, generation, reason):
+            if generation != self._satellite_generation:
+                return
+            if not self._satellite_error:
+                logger.warning("Satellite basemap frame unavailable: %s", reason)
+            self._satellite_error = reason
+            self._satellite_retry_at = time.monotonic() + 15.0
+            self._set_satellite_status("Satellite unavailable")
+
+        def _place_satellite(self, camera):
+            source = self._satellite_source_camera
+            if self._satellite is None or source is None:
+                return
+            # The target is current-camera-relative; the shared map parent owns
+            # the pan, so convert through the same retained-image placement the
+            # chart, world and environment layers use. Setting the properties
+            # directly desynchronises the layer from mapContent during a pan.
+            self._place_retained_image(
+                self._satellite,
+                "_satellite_placement",
+                QRectF(*chart_placement(source.view(), camera)),
+            )
+
         def _preview_retained_imagery(self, camera):
             """Reproject the existing padded images during a zoom camera tick.
 
@@ -2559,6 +2752,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             """
             view = camera.view()
             self._place_world(camera)
+            self._place_satellite(camera)
             for item, source, attribute, hidden_attribute in (
                 (
                     getattr(self, "_base", None),
@@ -4766,6 +4960,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._base_provider.clear()
             if self._world_provider is not None:
                 self._world_provider.clear()
+            if self._satellite_timer is not None:
+                self._satellite_timer.stop()
+            if self._satellite_worker is not None:
+                self._satellite_worker.stop()
+                self._satellite_worker = None
+            if self._satellite_provider is not None:
+                self._satellite_provider.clear()
             if shiboken6.isValid(self._weather):
                 self._weather.setVisible(False)
 
@@ -4921,6 +5122,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 # a pan or rebase keeps its anchors displayable.
                 self._retire_barb_anchor_frame(previous_camera, camera, previous_dpr)
                 self._camera = camera
+                self._satellite_camera_changed(camera)
                 map_anchor_changed = self._update_shared_map_pan(camera)
                 self._place_world(camera)
                 # After the shared map reference has been reset for this

@@ -17,6 +17,7 @@ class ChartLayersPanel(QWidget):
         layout.addWidget(hint)
         rows = [("canadianCharts", "Canadian online tiles (CHS)")]
         rows.extend((key, label) for _, key, label in CHART_CLASSES)
+        rows.append(("chartSatelliteVisible", "Satellite basemap"))
         for key, label in rows:
             checkbox = QCheckBox(label)
             checkbox.setToolTip(
