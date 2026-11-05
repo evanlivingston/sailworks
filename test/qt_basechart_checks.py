@@ -1,7 +1,10 @@
 """Qt-only base portrayal worker checks, run in an isolated process."""
 
 import json
+import os
+import sys
 import threading
+import unittest
 from unittest.mock import patch
 
 import cairo
@@ -288,3 +291,26 @@ class BaseChartChecks(Fixture):
                 self.controller.charts.do_draw(canvas, cr)
             synchronous.assert_called_once()
             self.assertEqual(render.call_count, 1)
+
+
+def main():
+    """Run the checks, then leave before interpreter finalization.
+
+    The checks keep live GDAL and Qt handles until shutdown.  On CPython 3.11
+    the collector reaches one of them while the interpreter is finalizing, and
+    a C extension frees a shared bool below its refcount, aborting the process
+    after a passing run (``Fatal Python error: bool_dealloc``).  The status
+    below is the runner's own result: ``os._exit`` is only reached once the
+    runner has returned, so a failing, erroring or crashing run is not hidden.
+    """
+    suite = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])
+    result = unittest.TextTestRunner(verbosity=1).run(suite)
+    if not result.testsRun:
+        sys.stderr.write("No checks were collected\n")
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0 if result.wasSuccessful() and result.testsRun else 1)
+
+
+if __name__ == "__main__":
+    main()
