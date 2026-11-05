@@ -416,10 +416,14 @@ class WeatherPresenter(QObject):
             self.canvas.controller.settings.gribWindGradientLevels,
         )
         widget.set_wave_visible(self.canvas.wave_visible)
-        widget.set_wave_opacity(self.canvas.controller.settings.gribWaveOpacity)
+        # The wave settings are optional on a reduced presenter harness: an
+        # absent value falls back to the layer's own default rather than
+        # failing the whole weather refresh.
+        settings = self.canvas.controller.settings
+        widget.set_wave_opacity(getattr(settings, "gribWaveOpacity", 0.85))
         widget.set_wave_gradient_style(
-            self.canvas.controller.settings.gribWaveSmooth,
-            self.canvas.controller.settings.gribWaveLevels,
+            getattr(settings, "gribWaveSmooth", True),
+            getattr(settings, "gribWaveLevels", 9),
         )
         # The wave toggle governs both the height fill and the direction
         # arrows; the arrow density stays an independent setting so the two

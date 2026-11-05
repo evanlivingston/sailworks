@@ -1496,6 +1496,53 @@ def chart_withdrawn_on_camera_change(previous, camera, published):
     return previous.zoom != camera.zoom or previous.stamp() != camera.stamp()
 
 
+# Wave height and wave arrows are optional layers.  Scenes, reduced viewports
+# and test harnesses that predate them carry none of the wave members, so each
+# wave entry point resolves the absent ones to the inert value the layer starts
+# from and degrades to a no-op, exactly as the wind path tolerates a partial
+# viewport.  A real ``GribViewport`` initialises every one of them, so the
+# resolution is a no-op there.
+_WAVE_MEMBER_DEFAULTS = {
+    "_wave_visible": False,
+    "_wave_opacity": 0.85,
+    "_wave_gradient_smooth": True,
+    "_wave_gradient_levels": 9,
+    "_wave_model": None,
+    "_wave_fill": None,
+    "_wave_fill_back": None,
+    "_wave_state": "unavailable",
+    "_wave_error": "",
+    "_wave_token": None,
+    "_wave_status": None,
+    "_wave_arrows_visible": False,
+    "_wave_arrow_density": "standard",
+    "_wave_arrow_models": {},
+    "_wave_barbs": None,
+    "_wave_barbs_back": None,
+    "_wave_barbs_token": None,
+    "_wave_arrows_state": "hidden",
+    "_wave_arrows_error": "",
+}
+
+
+def _prepare_wave_layer(viewport):
+    """Install the inert wave members an incomplete viewport lacks.
+
+    ``__init__`` and the QML binding pass set all of them on a real viewport,
+    so this returns immediately there.  A reduced scene gets the defaults
+    instead of an ``AttributeError``; it then stages nothing because it has no
+    fill or arrow slots, which is the documented optional-layer behaviour.
+    """
+    if all(hasattr(viewport, name) for name in _WAVE_MEMBER_DEFAULTS):
+        return
+    for name, default in _WAVE_MEMBER_DEFAULTS.items():
+        if hasattr(viewport, name):
+            continue
+        if isinstance(default, dict):
+            default = dict(default)
+        setattr(viewport, name, default)
+
+
 def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event methods
     """Build the render-context widget class on demand.
 
@@ -3441,6 +3488,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                     fill.setProperty("gradientLevels", max(2, min(15, int(levels))))
 
         # ------------------------------------------------------- wave layer
+        # The wave layer is optional: every entry point below resolves its
+        # members through ``_prepare_wave_layer`` so a scene that lacks them
+        # degrades to a no-op instead of raising (see that helper).
         def set_wave_visible(self, visible):
             """Show or hide the wave height fill.
 
@@ -3448,6 +3498,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             hides, restages or recolours the wind fill, and showing it stages
             only the scalar ``wave_height`` field.
             """
+            _prepare_wave_layer(self)
             visible = bool(visible)
             self._wave_visible = visible
             if not visible:
@@ -3458,7 +3509,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 if self._wave_fill_back is not None:
                     self._wave_fill_back.setVisible(False)
                 return
-            if not self._ensure_wave_model():
+            ensure_wave_model = getattr(self, "_ensure_wave_model", None)
+            if ensure_wave_model is None or not ensure_wave_model():
                 # The scene has no image fill (the barbs' own scenes) or the
                 # source has no field worker: state that, do not draw a blank.
                 self._show_wave_state("unavailable", "Wave height unavailable here")
@@ -3479,6 +3531,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             The arrows are their own publication layer: this never restages
             the wind barbs, the wind fill or the wave height fill.
             """
+            _prepare_wave_layer(self)
             visible = bool(visible)
             self._wave_arrows_visible = visible
             if not visible:
@@ -3497,11 +3550,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._update_wave_arrows(self._camera)
 
         def wave_arrows_visible(self):
-            return self._wave_arrows_visible
+            return getattr(self, "_wave_arrows_visible", False)
 
         def wave_arrows_state(self):
             """``hidden``, ``loading``, ``ready`` or ``unavailable``."""
-            return self._wave_arrows_state
+            return getattr(self, "_wave_arrows_state", "hidden")
 
         def set_wave_arrow_density(self, density):
             """Re-thin the wave arrows, independent of the wind barbs.
@@ -3509,20 +3562,23 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             The density selects the wave layer's own ``gribWaveDensity``
             layout; the wind barbs keep their camera density untouched.
             """
+            _prepare_wave_layer(self)
             self._wave_arrow_density = str(density)
             if self._wave_arrows_visible:
                 self._update_wave_arrows(self._camera)
 
         def wave_arrow_density(self):
-            return self._wave_arrow_density
+            return getattr(self, "_wave_arrow_density", "standard")
 
         def set_wave_opacity(self, opacity):
+            _prepare_wave_layer(self)
             self._wave_opacity = max(0.0, min(1.0, float(opacity)))
             for item in (self._wave_fill, self._wave_fill_back):
                 if item is not None:
                     item.setOpacity(self._wave_opacity)
 
         def set_wave_gradient_style(self, smooth, levels):
+            _prepare_wave_layer(self)
             self._wave_gradient_smooth = bool(smooth)
             self._wave_gradient_levels = max(2, min(9, int(levels)))
             for item in (self._wave_fill, self._wave_fill_back):
@@ -3533,7 +3589,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
 
         def wave_state(self):
             """``hidden``, ``loading``, ``ready`` or ``unavailable``."""
-            return self._wave_state
+            return getattr(self, "_wave_state", "unavailable")
 
         def _new_wave_model(self, parameter, grid=False):
             """Create one scalar wave worker for a single band, or ``None``.
@@ -3589,28 +3645,35 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             return self._wave_arrow_models
 
         def _refresh_wave(self):
+            _prepare_wave_layer(self)
             if not self._disposed and self._wave_visible:
                 self._update_wave(self._camera)
             if not self._disposed and self._wave_arrows_visible:
                 self._update_wave_arrows(self._camera)
 
         def _set_wave_status(self, message, loading=False):
-            if self._wave_status is not None:
-                self._wave_status.setProperty("text", message)
-            for item in (self._wave_fill, self._wave_fill_back):
+            status = getattr(self, "_wave_status", None)
+            if status is not None:
+                status.setProperty("text", message)
+            for item in (
+                getattr(self, "_wave_fill", None),
+                getattr(self, "_wave_fill_back", None),
+            ):
                 if item is None:
                     continue
                 item.setProperty("statusText", message)
                 item.setProperty("waveLoading", loading)
 
         def _show_wave_state(self, state, message=""):
+            _prepare_wave_layer(self)
             self._wave_state = state
             self._wave_error = message
             self._set_wave_status(message, loading=state == "loading")
             if state != "ready":
                 self._show_wave_fill(False)
-                if self._wave_fill_back is not None:
-                    self._wave_fill_back.setVisible(False)
+                back = getattr(self, "_wave_fill_back", None)
+                if back is not None:
+                    back.setVisible(False)
 
         def _show_wave_fill(self, visible):
             """Show or hide the wave front slot through the scene property.
@@ -3627,7 +3690,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             root = getattr(self, "_weather", None)
             if root is not None and root.property("waveFillEnabled") is not None:
                 root.setProperty("waveFillEnabled", visible)
-            item = self._wave_fill
+            item = getattr(self, "_wave_fill", None)
             if item is not None:
                 item.setVisible(visible)
 
@@ -3642,6 +3705,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             staging band; the slot's own opacity stays at the low staging
             value set by the caller.
             """
+            if item is None:
+                return
             item.setVisible(True)
             root = getattr(self, "_weather", None)
             parent_item = getattr(item, "parentItem", None)
@@ -3679,16 +3744,20 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             never drawn beside a new forecast.  A missing sample stays a NaN
             and the shader discards it, so no zero-height field is invented.
             """
-            if not self._wave_visible:
+            if not getattr(self, "_wave_visible", False):
                 return
-            if self._wave_fill is None or self._wave_fill_back is None:
+            if (
+                getattr(self, "_wave_fill", None) is None
+                or getattr(self, "_wave_fill_back", None) is None
+            ):
                 self._show_wave_state("unavailable", "Wave height unavailable here")
                 return
             if camera is None:
                 return
             model = self._wave_model
             if model is None:
-                if not self._ensure_wave_model():
+                ensure_wave_model = getattr(self, "_ensure_wave_model", None)
+                if ensure_wave_model is None or not ensure_wave_model():
                     self._show_wave_state("unavailable", "No wave forecast")
                     return
                 model = self._wave_model
@@ -3830,7 +3899,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             self._wave_fill, self._wave_fill_back = item, old
             item.setOpacity(self._wave_opacity)
             self._show_wave_state("ready", "")
-            self._show_wave_fill(self._wave_visible)
+            self._show_wave_fill(getattr(self, "_wave_visible", False))
 
         def _fail_wave(self, token, message):
             if token is not getattr(self, "_wave_token", None):
@@ -3863,10 +3932,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             must never put a loading string back over a drawn, adopted height
             field.  It only withdraws stale arrows.
             """
+            _prepare_wave_layer(self)
             self._wave_arrows_state = state
             self._wave_arrows_error = message
             if state != "ready":
-                for item in (self._wave_barbs, self._wave_barbs_back):
+                for item in (
+                    getattr(self, "_wave_barbs", None),
+                    getattr(self, "_wave_barbs_back", None),
+                ):
                     if item is not None:
                         item.setVisible(False)
 
@@ -3879,7 +3952,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             missing no arrows are published and the explicit unavailable state
             is set, so a previous forecast's arrows are never left on screen.
             """
-            if not self._wave_arrows_visible or self._disposed:
+            if not getattr(self, "_wave_arrows_visible", False) or self._disposed:
                 return
             models = self._ensure_wave_arrow_models()
             if models is None:
@@ -4108,7 +4181,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 old.setVisible(False)
             self._wave_barbs, self._wave_barbs_back = item, old
             item.setOpacity(self._wind_opacity)
-            item.setVisible(self._wave_arrows_visible)
+            item.setVisible(getattr(self, "_wave_arrows_visible", False))
             self._show_wave_arrow_state("ready", "")
 
         def _fail_wave_barbs(self, token, message):
@@ -4697,6 +4770,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._weather.setVisible(False)
 
         def _clear_weather_sources(self):
+            _prepare_wave_layer(self)
             # Clearing the CPU provider alone leaves QML Images holding the
             # previous source's native textures. Retire both ownership layers.
             pool = self._shared_anchor_pool()
@@ -4899,6 +4973,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                         # the settle timer or the replacement worker finishes.
                         self._clear_chart()
                 # Check if the camera change invalidates the pan reference
+                # The wave layer is optional: resolve its members before the
+                # rebase and refresh branches read or write them.
+                _prepare_wave_layer(self)
                 dpr = self.devicePixelRatio()
                 reference = self._publication_manager.reference_camera
                 if reference is not None:
@@ -4921,22 +4998,28 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                         # The rebase withdrew the wave frame's generation: do
                         # not keep drawing it while the new one is staged.
                         self._wave_token = None
-                        for item in (self._wave_fill, self._wave_fill_back):
+                        for item in (
+                            getattr(self, "_wave_fill", None),
+                            getattr(self, "_wave_fill_back", None),
+                        ):
                             if item is not None:
                                 item.setVisible(False)
                         # The rebase withdrew the wave barbs' generation as
                         # well: hide the stale arrows until they restage.
                         self._wave_barbs_token = None
-                        for item in (self._wave_barbs, self._wave_barbs_back):
+                        for item in (
+                            getattr(self, "_wave_barbs", None),
+                            getattr(self, "_wave_barbs_back", None),
+                        ):
                             if item is not None:
                                 item.setVisible(False)
                 else:
                     # No reference yet, create one
                     self._publication_manager.set_reference_camera(camera)
 
-                if self._wave_visible:
+                if getattr(self, "_wave_visible", False):
                     self._update_wave(camera)
-                if self._wave_arrows_visible:
+                if getattr(self, "_wave_arrows_visible", False):
                     self._update_wave_arrows(camera)
 
                 if map_anchor_changed or getattr(self, "_map_content", None) is None:

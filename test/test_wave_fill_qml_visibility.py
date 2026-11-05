@@ -13,7 +13,7 @@ front slot to a scene property (``root.fillEnabled`` for wind,
 import os
 import time
 from pathlib import Path
-from types import MethodType
+from types import MethodType, SimpleNamespace
 
 import pytest
 from PySide6.QtCore import QObject, QUrl
@@ -269,3 +269,34 @@ def test_stage_unhides_a_hidden_container(app):
     assert band.isVisible() is True, "the hidden container was not unhidden"
     assert slot.isVisible() is True
     assert slot.shaderStatus == SHADER_COMPILED
+
+
+def test_wave_entry_points_tolerate_a_viewport_without_wave_members():
+    """A reduced viewport that predates the wave layer must not raise.
+
+    The chart, streamline and resident-field suites drive the camera pass and
+    the weather retirement on objects that carry only the wind members.  Every
+    wave entry point must degrade to a no-op there instead of insisting on
+    attributes such a harness never had; the optional layer stays inert.
+    """
+    viewport_class = _viewport_widget_class()
+    stand_in = SimpleNamespace()
+    wave_methods = [
+        name
+        for name in dir(viewport_class)
+        if "wave" in name.lower()
+        and not name.startswith("__")
+        and callable(getattr(viewport_class, name, None))
+    ]
+    for name in wave_methods:
+        setattr(stand_in, name, MethodType(getattr(viewport_class, name), stand_in))
+
+    stand_in.set_wave_visible(True)
+    stand_in.set_wave_opacity(0.5)
+    stand_in.set_wave_gradient_style(True, 5)
+    stand_in.set_wave_arrows_visible(True)
+
+    assert stand_in.wave_state() == "unavailable", "no fill slots: never ready"
+    assert stand_in._wave_fill is None
+    assert stand_in.wave_arrows_visible() is True
+    assert stand_in.wave_arrows_state() == "unavailable", "no arrow slots: inert"
