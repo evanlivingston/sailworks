@@ -1975,6 +1975,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 self._satellite = self._weather.findChild(QObject, "satelliteLayer")
                 self._satellite_provider = chart_image_provider("satellite")
                 self.engine().addImageProvider("satellite", self._satellite_provider)
+                self.cameraChanged.connect(self._satellite_camera_changed)
                 getattr(self._satellite, "slotResult").connect(
                     self._satellite_slot_result
                 )
@@ -2789,9 +2790,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             )
             self._satellite_generation += 1
             self._satellite_pending_camera = padded
-            self._satellite_worker.submit(
-                self._satellite_generation, padded, self.devicePixelRatioF()
-            )
+            # Raster context is worth a full-density frame only up to 2x, the
+            # point where most panels stop gaining visible detail.
+            scale = min(self.devicePixelRatioF(), 2.0)
+            self._satellite_worker.submit(self._satellite_generation, padded, scale)
 
         def _satellite_rendered(self, generation, image):
             if self._disposed or not self._satellite_visible:
@@ -5246,7 +5248,6 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 # a pan or rebase keeps its anchors displayable.
                 self._retire_barb_anchor_frame(previous_camera, camera, previous_dpr)
                 self._camera = camera
-                self._satellite_camera_changed(camera)
                 map_anchor_changed = self._update_shared_map_pan(camera)
                 self._place_world(camera)
                 # After the shared map reference has been reset for this
