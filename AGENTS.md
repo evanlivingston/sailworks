@@ -50,6 +50,22 @@ and `session_move` to the path it prints. Reads need no worktree.
 - Read the `AGENTS.md` files that cover the directories you touch; they load
   when you read those directories.
 
+## Code navigation
+
+Reading whole files is the largest avoidable cost: every result is re-sent on
+each later turn, so one oversized read early in a session costs many times its
+own size.
+
+- Outline before reading: `python tools/outline.py <file or dir>` prints
+  definitions with line ranges.
+- Never read a file over ~300 lines in full. Grep for the symbol, then read the
+  matching range with `offset`/`limit`.
+- Never read the same file twice. Keep the range or the fact you needed.
+- Batch related searches into one command; avoid one grep per question.
+- These files are large and are almost never needed whole:
+  `test/qt_preview_checks.py`, `sailworks/qt/window.py`,
+  `sailworks/qt/workspace.py`, `sailworks/qt/forecasttimeline.py`.
+
 ## Validation
 
 - Delegate test runs and validation commands to the `test-runner` subagent.
