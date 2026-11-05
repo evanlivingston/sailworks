@@ -627,6 +627,54 @@ class TestStreamlineShaderPixels(unittest.TestCase):
 
         cls.app = QApplication.instance() or QApplication([])
 
+    @staticmethod
+    def _batch_delegates(layer):
+        """Yield the streamline batch delegates.
+
+        Repeater delegates are visual children, not QObject children, so
+        findChildren() never reaches them.
+        """
+        pending = [layer]
+        while pending:
+            item = pending.pop()
+            for child in item.childItems():
+                if child.objectName() == "streamlineBatch":
+                    yield child
+                pending.append(child)
+
+    def _wait_until_ready(self, layer, window):
+        """Render frames until the layer is ready or reports a shader error.
+
+        WeatherStreamlines.qml reports ready only after every batch's
+        ShaderEffect has compiled, and compilation happens while a frame is
+        rendered, so the wait has to drive the real render loop instead of
+        only pumping events. A platform with no usable RHI backend renders
+        through the software adapter, which never compiles custom shaders:
+        the batches then stay Uncompiled with no shaderError and the pixel
+        contract below cannot be observed there.
+        """
+        deadline = time.monotonic() + 5.0
+        frames = 0
+        while time.monotonic() < deadline:
+            window.grabWindow()
+            QTest.qWait(10)
+            self.app.processEvents()
+            frames += 1
+            if layer.property("ready") or layer.property("shaderError"):
+                return
+            if frames >= 5:
+                statuses = [
+                    batch.property("effectStatus")
+                    for batch in self._batch_delegates(layer)
+                ]
+                # ShaderEffect.Compiled is 0, Uncompiled is 1, Error is 2.
+                if statuses and all(status == 1 for status in statuses):
+                    self.skipTest(
+                        "This Qt platform cannot compile ShaderEffect shaders: "
+                        f"batch effect statuses {statuses} stayed Uncompiled "
+                        f"after {frames} rendered frames"
+                    )
+
     def test_qquickwindow_draws_and_withdraws_streamlines(self):
         shader_dir = Path(__file__).parents[1] / "sailworks/qt/shaders"
         engine = QQmlEngine()
@@ -680,14 +728,7 @@ class TestStreamlineShaderPixels(unittest.TestCase):
                 __import__("PySide6.QtGui", fromlist=["QVector2D"]).QVector2D(0.5, 0.5),
             )
             layer.setProperty("cameraZoom", 0)
-            deadline = time.monotonic() + 2.0
-            while (
-                not layer.property("ready")
-                and not layer.property("shaderError")
-                and time.monotonic() < deadline
-            ):
-                QTest.qWait(10)
-                self.app.processEvents()
+            self._wait_until_ready(layer, window)
             self.assertTrue(
                 layer.property("ready"),
                 f"root error={layer.property('shaderError')!r}; "
@@ -791,8 +832,10 @@ class TestStreamlineShaderPixels(unittest.TestCase):
         )
         try:
             layer.setParentItem(window.contentItem())
-            layer.setWidth(window.contentItem().width())
-            layer.setHeight(window.contentItem().height())
+            # The content item still has its zero pre-show size here, so size
+            # the layer from the window that was configured above instead.
+            layer.setWidth(window.width())
+            layer.setHeight(window.height())
             window.show()
             self._pump()
             image_url, count = provider.publish(
@@ -814,17 +857,13 @@ class TestStreamlineShaderPixels(unittest.TestCase):
 
             layer.setProperty("cameraCenter", QVector2D(0.5, 0.5))
             layer.setProperty("cameraZoom", 0)
-            deadline = time.monotonic() + 2.0
-            while (
-                not layer.property("ready")
-                and not layer.property("shaderError")
-                and time.monotonic() < deadline
-            ):
-                QTest.qWait(10)
-                self.app.processEvents()
+            self._wait_until_ready(layer, window)
             self.assertTrue(
                 layer.property("ready"),
-                f"root error={layer.property('shaderError')!r}; {layer.property('batchDiagnostics')}",
+                "root error={!r}; {}".format(
+                    layer.property("shaderError"),
+                    layer.property("batchDiagnostics"),
+                ),
             )
             self.assertFalse(layer.property("shaderError"))
             pixels = window.grabWindow()

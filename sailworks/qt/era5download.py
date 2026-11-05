@@ -1,6 +1,6 @@
 """User-directed, isolated ERA5 historical acquisition UI."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import json
 import threading
 

@@ -11,8 +11,11 @@ import unittest
 @unittest.skipUnless(importlib.util.find_spec("PySide6"), "Qt dependencies")
 class TestQtBaseCharts(unittest.TestCase):
     def test_base_chart_worker(self):
+        # The module exits from its own runner: on CPython 3.11 the
+        # finalization GC can trip a refcount bug in a C extension after the
+        # tests have passed (see test/qt_basechart_checks.main).
         result = subprocess.run(
-            [sys.executable, "-m", "unittest", "test.qt_basechart_checks", "-q"],
+            [sys.executable, "-m", "test.qt_basechart_checks"],
             cwd=Path(__file__).resolve().parents[1],
             env=dict(os.environ, QT_QPA_PLATFORM="offscreen"),
             capture_output=True,

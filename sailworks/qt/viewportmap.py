@@ -7,7 +7,6 @@ gestures to the Qt Quick viewport. It does not depend on the retired map widget.
 from bisect import bisect_right
 from dataclasses import dataclass
 import math
-import random
 
 from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import QWidget

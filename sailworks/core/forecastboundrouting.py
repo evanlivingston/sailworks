@@ -2,7 +2,6 @@
 
 import hashlib
 from threading import Event, RLock
-from types import SimpleNamespace
 
 from .forecastcapabilities import MODEL_CAPABILITIES
 from .gribmanager import GribManager
