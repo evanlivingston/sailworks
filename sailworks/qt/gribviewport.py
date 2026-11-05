@@ -2799,9 +2799,16 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             return replace(source, center_lon=lon)
 
         def _satellite_covers(self, camera):
-            """Whether the retained frame still covers the whole viewport."""
+            """Whether the retained frame still covers the whole viewport.
+
+            Coverage only excuses a pan. A zoom needs a new frame at the new
+            scale, otherwise the retained image is stretched and permanently
+            soft, even though it technically covers the view.
+            """
             source = self._satellite_source_camera
             if source is None:
+                return False
+            if abs(source.zoom - camera.zoom) > 1e-6:
                 return False
             target = chart_placement(
                 self._satellite_continuous_source(source, camera).view(), camera
