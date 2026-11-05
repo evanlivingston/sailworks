@@ -57,6 +57,7 @@ class TestRaceTimeline(unittest.TestCase):
 
     def test_missing_bounds_and_forecast_errors_clear_region(self):
         self.window._race_timeline_bounds = None
+        self.window._race_region_installed = True
         self.window_class._apply_race_timeline_bounds(self.window)
         self.timeline.clear_region.assert_called_once_with()
         self.timeline.reset_mock()

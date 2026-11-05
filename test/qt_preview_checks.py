@@ -3250,9 +3250,23 @@ class QtPreviewChecks(unittest.TestCase):
         timeline.play()
         self.window.workspace.save()
         payload = self.window.workspace.store.load()
-        self.assertEqual(payload["forecast"], {"step": "3h"})
+        self.assertEqual(
+            payload["forecast"],
+            {
+                "step": "3h",
+                "region": [start.timestamp(), (start + timedelta(hours=1)).timestamp()],
+                "time": (start + timedelta(minutes=2)).isoformat(),
+            },
+        )
         self.restart_workspace()
         self.assertEqual(self.window.timeline.step_combo.currentText(), "3h")
+        self.assertEqual(
+            self.window.timeline.region,
+            (start.timestamp(), (start + timedelta(hours=1)).timestamp()),
+        )
+        self.assertEqual(
+            self.controller.time_control.time, start + timedelta(minutes=2)
+        )
         self.assertFalse(self.window.timeline.playing)
         self.assertFalse(self.controller.session.playing)
         self.window.workspace_toolbar.hide()
@@ -3927,11 +3941,12 @@ class QtPreviewChecks(unittest.TestCase):
             start.assert_called_once_with(("seamarks",))
         library.hide()
         self.controller.load_charts = True
-        self.window._offer_map_data()
-        # _offer_map_data() now shows library if there's missing map data
+        # No startup path opens the Data Library, even when map data is
+        # missing; the user opens it from the menu.
+        self.assertTrue(library.isHidden())
+        self.window.show_library()
         self.assertTrue(library.isVisible())
         self.assertIs(library.tabs.currentWidget(), library.charts_page)
-        self.assertEqual(library.chart_sections.currentIndex(), 2)
         self.assertIsNone(self.window.settings_dialog)
 
     def test_map_data_real_coastline_install_reloads_on_ui_thread_without_duplicates(
@@ -4017,14 +4032,10 @@ class QtPreviewChecks(unittest.TestCase):
             self.assertTrue(all(not b.isEnabled() for b in page.downloads.values()))
             self.window.library_dialog.hide()
             self.controller.load_charts = True
-            self.window._offer_map_data()
-            # The startup offer only interrupts the user when map data is
-            # missing; with everything installed the library stays closed.
+            # The library is never opened automatically, whatever the map
+            # state; only the explicit action opens it.
             self.assertTrue(self.window.library_dialog.isHidden())
-            with patch.object(
-                self.controller.map_data, "missing", return_value={"coastlines": True}
-            ):
-                self.window._offer_map_data()
+            self.window.show_library()
             self.assertTrue(self.window.library_dialog.isVisible())
 
     def test_map_data_cancel_and_close_reject_late_chart_attachment(self):

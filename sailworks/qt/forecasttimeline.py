@@ -310,6 +310,7 @@ class DayStripWidget(QWidget):
 class ForecastTimeline(QWidget):
     step_changed = Signal()
     expansion_changed = Signal()
+    region_changed = Signal()
 
     def __init__(self, controller, parent=None):
         super().__init__(parent)
@@ -609,6 +610,7 @@ class ForecastTimeline(QWidget):
             return
         self.region = region
         self._signature = None
+        self.region_changed.emit()
         self.refresh()
 
     def clear_region(self):
@@ -617,6 +619,7 @@ class ForecastTimeline(QWidget):
             return
         self.region = None
         self._signature = None
+        self.region_changed.emit()
         self.refresh()
 
     def _caption_for(self, stamp):
