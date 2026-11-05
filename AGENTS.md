@@ -28,16 +28,8 @@ we do not prepare upstream contributions or track upstream PRs.
 
 ## Session start
 
-Before making the first file change in a session, if the working directory is the
-main coordination tree (`/Users/elivingston/gweatherrouting`), create an isolated
-worktree first:
-
-1. Run `tools/wt-new.sh <slug>`, picking a short kebab-case `<slug>` for the task.
-2. Call `session_move` with the absolute path it prints.
-3. State the new directory in one short line.
-
-Do this once per session, before editing anything. Questions, searches and reads
-need no worktree — only changes do. The main tree stays on `dev` and clean.
+Before editing files in the main coordination tree, run `tools/wt-new.sh <slug>`
+and `session_move` to the path it prints. Reads need no worktree.
 
 ## Context economy
 
