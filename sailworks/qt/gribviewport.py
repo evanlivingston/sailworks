@@ -3067,7 +3067,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
             item = self._route_overlay
             camera = self._camera
             if item is None or camera is None:
-                return
+                return False
             content = (
                 overlay["route_plan"],
                 overlay["route_preview"],
@@ -3164,6 +3164,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory includes Qt event met
                 item.setProperty("panY", 0.0)
 
             self._place_route_overlay(camera, content_changed=content_changed)
+            return True
 
         def _place_route_overlay(
             self, camera, anchor_changed=False, content_changed=False

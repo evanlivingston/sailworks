@@ -8,6 +8,8 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import numpy as np
+
 from sailworks.core.marine.manager import MarineManager
 from sailworks.core.marine.models import Capability
 from sailworks.core.settings import SettingsManager
@@ -59,8 +61,11 @@ class TestCurrentDensity(unittest.TestCase):
                     key,
                 )
                 selection = Mock()
-                selection.sample.return_value = SimpleNamespace(
-                    status="available", values=(1, 0)
+                selection.sample_arrays.side_effect = lambda positions, times: (
+                    SimpleNamespace(
+                        status=np.full(len(positions), "available", dtype=object),
+                        values=np.tile([[1.0, 0.0]], (len(positions), 1)),
+                    )
                 )
                 with patch(
                     "sailworks.rendering.marinesnapshot.FieldSelection",
