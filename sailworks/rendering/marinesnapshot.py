@@ -3,9 +3,17 @@
 from dataclasses import dataclass
 from math import asinh, atan, ceil, cos, degrees, floor, pi, radians, sin, sinh, tan
 
+import numpy as np
+
 from sailworks.core.mapviewport import MapPoint, MapViewport
 from sailworks.core.marine.fields import FieldSelection
+from sailworks.core.marine.models import utc_time
 from .marinepresentation import current_grid_spacing, current_style, flow
+
+# One batched selection call samples this many view anchors before the worker
+# checks for a newer camera. Scalar sampling cost grows with the field
+# precedence list, so the bound keeps a superseded request short.
+SAMPLE_BATCH = 512
 
 
 @dataclass(frozen=True)
@@ -32,6 +40,7 @@ def sample_currents(sources, instant, camera, cancelled):
 
     Station coordinates are never thinned or displaced to the field lattice.
     """
+    timestamp = utc_time(instant).timestamp()
     view = camera.view()
     arrows = []
     selection = FieldSelection(sources.fields)
@@ -65,15 +74,28 @@ def sample_currents(sources, instant, camera, cancelled):
                 i % cells for i in range(ceil(left * cells), floor(right * cells) + 1)
             )
         )
+        positions = []
         for row in range(ceil(top * cells), floor(bottom * cells) + 1):
-            if cancelled():
-                return None
             lat = degrees(atan(sinh(pi * (1 - 2 * row / cells))))
             for column in columns:
-                lon = column / cells * 360 - 180
-                result = selection.sample(lat, lon, instant)
-                if result.status == "available":
-                    arrows.append(CurrentArrow(lat, lon, *result.values))
+                positions.append((lat, column / cells * 360 - 180))
+        # The precedence, masks and bounded recovery stay the scalar selection's
+        # own; only the per-anchor Python call is replaced by a batched one.
+        for start in range(0, len(positions), SAMPLE_BATCH):
+            if cancelled():
+                return None
+            chunk = positions[start : start + SAMPLE_BATCH]
+            samples = selection.sample_arrays(
+                np.asarray(chunk, dtype=float),
+                np.full(len(chunk), timestamp),
+            )
+            for (lat, lon), status, values in zip(
+                chunk, samples.status, samples.values
+            ):
+                if status == "available":
+                    arrows.append(
+                        CurrentArrow(lat, lon, float(values[0]), float(values[1]))
+                    )
     seen = set()
     for dataset in sources.currents.datasets:
         if cancelled():

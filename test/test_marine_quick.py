@@ -234,8 +234,9 @@ class TestMarineQuick(unittest.TestCase):
         instant = chart_instant(START.astimezone().replace(tzinfo=None))
         camera = replace(self.camera, time=START + timedelta(days=100), density="all")
         selected = Mock()
-        selected.sample.return_value = SimpleNamespace(
-            status="available", values=(3, 4)
+        selected.sample_arrays.side_effect = lambda positions, times: SimpleNamespace(
+            status=np.full(len(positions), "available", dtype=object),
+            values=np.tile([[3.0, 4.0]], (len(positions), 1)),
         )
         with patch(
             "sailworks.rendering.marinesnapshot.FieldSelection",
@@ -244,7 +245,10 @@ class TestMarineQuick(unittest.TestCase):
             result = sample_currents(self.sources, instant, camera, lambda: False)
         selection.assert_called_once_with(self.sources.fields)
         self.assertTrue(
-            all(c.args[2] == instant for c in selected.sample.call_args_list)
+            all(
+                np.allclose(call.args[1], instant.timestamp())
+                for call in selected.sample_arrays.call_args_list
+            )
         )
         self.assertTrue(
             all((a.east, a.north) == (3, 4) for a in result.arrows if not a.station)
@@ -308,12 +312,13 @@ class TestMarineQuick(unittest.TestCase):
 
     def test_field_lattice_wraps_clips_and_samples_actual_anchors(self):
         selection = Mock()
-        selection.sample.return_value = SimpleNamespace(
-            status="available", values=(1, 0)
+        selection.sample_arrays.side_effect = lambda positions, times: SimpleNamespace(
+            status=np.full(len(positions), "available", dtype=object),
+            values=np.tile([[1.0, 0.0]], (len(positions), 1)),
         )
         for latitude in (-85, 0, 85):
             camera = replace(self.camera, center_lat=latitude, center_lon=179, zoom=2)
-            selection.sample.reset_mock()
+            selection.sample_arrays.reset_mock()
             with patch(
                 "sailworks.rendering.marinesnapshot.FieldSelection",
                 return_value=selection,
@@ -326,7 +331,11 @@ class TestMarineQuick(unittest.TestCase):
             self.assertEqual(len(anchors), len(set(anchors)))
             self.assertEqual(
                 anchors,
-                [c.args[:2] for c in selection.sample.call_args_list],
+                [
+                    tuple(position)
+                    for call in selection.sample_arrays.call_args_list
+                    for position in call.args[0]
+                ],
             )
             self.assertTrue(
                 all(
