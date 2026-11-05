@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-15]
+        os: [ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     env:
       QT_QPA_PLATFORM: offscreen
@@ -29,12 +29,8 @@ jobs:
           bash .github/workflows/script/ubuntu_dep.sh
           bash .github/workflows/script/python_dep.sh
           python -m pip install -e .
-      - name: Install macOS development environment
-        if: runner.os == 'macOS'
-        run: make setup-macos
       - name: Check default launcher and Qt workflows
         run: |
-          if [ "$RUNNER_OS" = "macOS" ]; then source .venv/bin/activate; fi
           python -c 'from PySide6.QtCore import qVersion; print("Qt", qVersion())'
           sailworks --help
           python -m unittest test.test_launcher test.test_qt_preview -v

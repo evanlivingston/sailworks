@@ -52,7 +52,7 @@ in this check is complete.
 
 The dedicated [Qt validation workflow](../.github/workflows/qt-validation.yaml)
 installs Qt and runs the default-launcher and isolated workflow checks on
-Ubuntu, macOS and Windows/MSYS2 UCRT64. It imports Qt explicitly so an unavailable Qt
+Ubuntu and Windows/MSYS2 UCRT64. It imports Qt explicitly so an unavailable Qt
 installation cannot be reported as a skipped, successful frontend check.
 Remote results are tracked on fork PR #25; pending jobs are not local passes.
 The Windows runtime uses the existing MSYS2 dependency approach and its
