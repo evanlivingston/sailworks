@@ -790,3 +790,46 @@ class TestGribSampling(unittest.TestCase):
             ]
         )
         self.assertIsNone(WeatherSampler([source]).gust_at(START, 0.5, 0.5))
+
+
+def test_grid_relative_wind_samples_each_component_once():
+    class Index:
+        def __init__(self, ux, vy):
+            self.scalar = 0
+            self.vector = 0
+            self.source = SimpleNamespace(name="test")
+            self._ux = ux
+            self._vy = vy
+
+        def sample(self, record, lats, lons, vector=False):
+            if vector:
+                self.vector += 1
+                return np.column_stack(
+                    (
+                        np.full(len(lats), self._ux),
+                        np.full(len(lats), self._vy),
+                    )
+                )
+            self.scalar += 1
+            return np.ones(len(lats))
+
+    u_index, v_index = Index(1.0, 2.0), Index(3.0, 4.0)
+    u = SimpleNamespace(index=u_index, grid_relative=True, scale=1.0)
+    v = SimpleNamespace(index=v_index, grid_relative=True, scale=1.0)
+    sampler = SimpleNamespace(
+        _sample_record=WeatherSampler._sample_record,
+        _origin=WeatherSampler._origin,
+    )
+
+    result, _origins = WeatherSampler._at_time(
+        sampler,
+        {},
+        "wind",
+        np.array([1.0, 2.0]),
+        np.array([3.0, 4.0]),
+        ((u, v),),
+    )
+
+    assert (u_index.scalar, v_index.scalar) == (0, 0)
+    assert (u_index.vector, v_index.vector) == (1, 1)
+    np.testing.assert_allclose(result, [[4.0, 6.0], [4.0, 6.0]])

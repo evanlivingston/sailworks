@@ -656,33 +656,34 @@ class WeatherSampler:
             and u.grid_relative == v.grid_relative
         ]
 
-    def _at_time(self, records, field, lats, lons):
+    def _at_time(self, records, field, lats, lons, pairs=()):
         if field != "wind" and field != "gust":
             return self._scalar_at_time(records, field, lats, lons)
         if field == "gust":
             return self._gust_at_time(records, lats, lons)
         result = np.full((len(lats), 2), np.nan)
         origins = np.full(len(lats), "", dtype=object)
-        for u, v in self._wind_pairs(records):
+        for u, v in pairs:
             use = ~np.isfinite(result).all(axis=1)
             if not use.any():
                 break
-            candidate = np.column_stack(
-                (
-                    self._sample_record(u, lats[use], lons[use]),
-                    self._sample_record(v, lats[use], lons[use]),
-                )
-            )
             if u.grid_relative:
                 candidate = u.index.sample(u, lats[use], lons[use], vector=True)
                 candidate += v.index.sample(v, lats[use], lons[use], vector=True)
+            else:
+                candidate = np.column_stack(
+                    (
+                        self._sample_record(u, lats[use], lons[use]),
+                        self._sample_record(v, lats[use], lons[use]),
+                    )
+                )
             good = np.isfinite(candidate).all(axis=1)
             ids = np.flatnonzero(use)[good]
             result[ids] = candidate[good]
             origins[ids] = self._origin(u, v)
         return result, origins
 
-    def _side(self, group, times, field, lats, lons, query, before, cancel):
+    def _side(self, identity, group, times, field, lats, lons, query, before, cancel):
         values = np.full((len(lats), 2 if field == "wind" else 1), np.nan)
         stamps = np.full(len(lats), np.nan)
         origins = np.full(len(lats), "", dtype=object)
@@ -694,7 +695,10 @@ class WeatherSampler:
             )
             if not use.any():
                 continue
-            candidate, names = self._at_time(group[valid], field, lats[use], lons[use])
+            pairs = self._pairs[identity, valid] if field == "wind" else ()
+            candidate, names = self._at_time(
+                group[valid], field, lats[use], lons[use], pairs
+            )
             good = np.isfinite(candidate).all(axis=1)
             ids = np.flatnonzero(use)[good]
             values[ids], stamps[ids], origins[ids] = candidate[good], valid, names[good]
@@ -744,6 +748,7 @@ class WeatherSampler:
             group = self.groups[identity]
             times = self._times[identity, field]
             a, ta, sa = self._side(
+                identity,
                 group,
                 reversed(times),
                 field,
@@ -754,7 +759,15 @@ class WeatherSampler:
                 cancel,
             )
             b, tb, sb = self._side(
-                group, times, field, lats[use], lons[use], stamps[use], False, cancel
+                identity,
+                group,
+                times,
+                field,
+                lats[use],
+                lons[use],
+                stamps[use],
+                False,
+                cancel,
             )
             result[use], origins[use] = self._blend(
                 a, ta, sa, b, tb, sb, stamps[use], field
