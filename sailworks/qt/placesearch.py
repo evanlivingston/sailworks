@@ -2,7 +2,6 @@
 
 from PySide6.QtCore import QEvent, QPoint, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
-    QApplication,
     QHBoxLayout,
     QLineEdit,
     QListWidget,
@@ -43,11 +42,14 @@ class PlaceSearch(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.edit)
-        self.results = QListWidget(self)
+        # Keep the result list inside the main window rather than a Qt.Popup:
+        # a popup grabs the keyboard and stops the line edit from receiving
+        # further keystrokes.
+        self.results = QListWidget(self.window())
         self.results.setObjectName("placeSearchResults")
-        self.results.setWindowFlags(Qt.WindowType.Popup)
         self.results.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.results.setMouseTracking(True)
+        self.results.hide()
         self.results.itemClicked.connect(self._activated)
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
@@ -89,7 +91,8 @@ class PlaceSearch(QWidget):
         if not self._places:
             self.results.hide()
             return
-        below = self.edit.mapToGlobal(QPoint(0, self.edit.height() + 2))
+        parent = self.results.parentWidget() or self
+        below = self.edit.mapTo(parent, QPoint(0, self.edit.height() + 2))
         width = max(self.edit.width(), 380)
         height = min(320, self.results.sizeHintForRow(0) * len(self._places) + 6)
         self.results.setGeometry(below.x(), below.y(), width, height)
@@ -148,8 +151,5 @@ class PlaceSearch(QWidget):
         return super().eventFilter(watched, event)
 
     def _hide_if_unfocused(self):
-        if (
-            not self.edit.hasFocus()
-            and QApplication.activePopupWidget() is not self.results
-        ):
+        if not self.edit.hasFocus():
             self.results.hide()

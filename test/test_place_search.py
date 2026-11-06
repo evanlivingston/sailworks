@@ -6,6 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from sailworks.core.places import Place, PlaceIndex
@@ -25,7 +26,9 @@ def make_search():
             Place("Auckland", "port", -36.84, 174.76, "New Zealand"),
         )
     )
-    return PlaceSearch(index)
+    search = PlaceSearch(index)
+    search.show()
+    return search
 
 
 def test_typing_shows_ranked_results_and_clicking_emits_the_place(app):
@@ -63,6 +66,23 @@ def test_return_chooses_the_first_result_and_escape_closes_the_popup(app):
     assert search.results.isVisible()
     search.results.hide()
     assert not search.results.isVisible()
+
+
+def test_typing_continues_after_the_result_list_opens(app):
+    search = make_search()
+    search.show()
+    search.edit.setFocus()
+    QTest.keyClicks(search.edit, "se")
+    QTest.qWait(180)
+    assert search.edit.text() == "se"
+    assert search.results.isVisible()
+
+    QTest.keyClicks(search.edit, "at")
+    QTest.qWait(180)
+    assert search.edit.text() == "seat"
+    assert search.results.isVisible()
+    assert search.results.count() == 1
+    search.close()
 
 
 def test_empty_and_missing_queries_hide_the_popup(app):
