@@ -35,6 +35,7 @@ class SessionController(QObject):
     model_changed = Signal()
     load_finished = Signal(int, object, object)
     log_edit_finished = Signal(object, object, object)
+    log_saved = Signal(object, object)
     packets = Signal(object, int)
     renderer_changed = Signal()
     log_library_changed = Signal()
@@ -159,6 +160,9 @@ class SessionController(QObject):
         self.load_finished.connect(self._finish_load)
         self.log_edit_finished.connect(
             self._finish_log_range_delete, Qt.ConnectionType.QueuedConnection
+        )
+        self.log_saved.connect(
+            self._finish_log_save, Qt.ConnectionType.QueuedConnection
         )
         self.load_progress.connect(
             self._receive_load_progress, Qt.ConnectionType.QueuedConnection
@@ -444,10 +448,43 @@ class SessionController(QObject):
     def save_log_edits(self):
         if self.closed or self.log_edit_busy or not self.session.log_edits_dirty:
             return False
-        self.log_library.save_log(self.session.log)
-        self.session.mark_log_saved()
-        self.log_library_changed.emit()
+        self.seek_timer.stop()
+        self.log_edit_busy = True
+        self.log_edit_error = None
+        self.changed.emit()
+        log = self.session.log
+
+        def save():
+            try:
+                self.log_library.save_log(log)
+                error = None
+            except Exception as exc:
+                error = exc
+            self.log_saved.emit(log, error)
+
+        self._log_edit_thread = Thread(target=save, name="log-save", daemon=True)
+        self._log_edit_thread.start()
         return True
+
+    @Slot(object, object)
+    def _finish_log_save(self, log, error):
+        if self.closed:
+            return
+        self.log_edit_busy = False
+        self._log_edit_thread = None
+        if error is not None:
+            self.log_edit_error = str(error)
+            logging.getLogger(__name__).error(
+                "Background log save failed: %s",
+                error,
+                exc_info=(type(error), error, error.__traceback__),
+            )
+            self.changed.emit()
+            return
+        if self.session.log is log:
+            self.session.mark_log_saved()
+        self.log_library_changed.emit()
+        self.changed.emit()
 
     def _seek_tick(self):
         if self.closed:

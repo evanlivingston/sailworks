@@ -834,3 +834,53 @@ def test_plot_data_refresh_reuses_axes_and_lines():
     assert plots._plot_lines == lines
     assert list(lines[0].get_xdata()) == [0.0, 1.0]
     plots.close()
+
+
+def test_save_log_edits_runs_in_a_worker_and_marks_saved_on_completion():
+    import threading
+
+    app = QApplication.instance() or QApplication([])
+
+    class WorkerController(QObject):
+        changed = Signal()
+        log_library_changed = Signal()
+        log_saved = Signal(object, object)
+        save_log_edits = SessionController.save_log_edits
+        _finish_log_save = SessionController._finish_log_save
+
+        def __init__(self):
+            super().__init__()
+            self.closed = False
+            self.log_edit_busy = False
+            self.log_edit_error = None
+            self.seek_timer = QTimer(self)
+            self.saved_thread = None
+            self.session = SimpleNamespace(
+                log=SimpleNamespace(),
+                log_edits_dirty=True,
+                mark_log_saved=Mock(return_value=True),
+            )
+            self.log_library = SimpleNamespace(save_log=self._save)
+            self.log_saved.connect(
+                self._finish_log_save, Qt.ConnectionType.QueuedConnection
+            )
+
+        def _save(self, _log):
+            self.saved_thread = threading.get_ident()
+
+    controller = WorkerController()
+    try:
+        assert controller.save_log_edits()
+        assert controller.log_edit_busy
+        deadline = time.monotonic() + 5
+        while controller.log_edit_busy and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.001)
+        app.processEvents()
+        assert not controller.log_edit_busy
+        assert controller.log_edit_error is None
+        assert controller.saved_thread != threading.get_ident()
+        controller.session.mark_log_saved.assert_called_once_with()
+    finally:
+        controller.seek_timer.stop()
+        controller.deleteLater()
