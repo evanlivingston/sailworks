@@ -816,3 +816,21 @@ def test_gps_picker_updates_plot_both_maps_and_marker_without_replay(transport):
     finally:
         picker.close()
         group.close()
+
+
+def test_plot_data_refresh_reuses_axes_and_lines():
+    app = QApplication.instance() or QApplication([])
+    plots = LogPlots()
+    points = [SimpleNamespace(speed=1.0, tws=8.0, hdg=90.0)]
+    plots.set_points(points, [0.0], False)
+    axes = list(plots.axes)
+    lines = list(plots._plot_lines)
+    assert lines and axes
+
+    points.append(SimpleNamespace(speed=2.0, tws=9.0, hdg=91.0))
+    plots.set_points(points, [0.0, 1.0], False)
+
+    assert plots.axes == axes
+    assert plots._plot_lines == lines
+    assert list(lines[0].get_xdata()) == [0.0, 1.0]
+    plots.close()

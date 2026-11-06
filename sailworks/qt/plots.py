@@ -65,6 +65,8 @@ class LogPlots(FigureCanvasQTAgg):
         self._selecting = False
         self._selection_start = None
         self._selection_artists = []
+        self._plot_signature = None
+        self._plot_lines = []
         self.mpl_connect("draw_event", self._drawn)
         self._scrubbing = False
         self._scrub_last_position = None
@@ -167,7 +169,6 @@ class LogPlots(FigureCanvasQTAgg):
             self.seek(position)
 
     def set_points(self, points, offsets, playback):
-        old_view = self.view_range
         old_points = self.points
         self._scrubbing = False
         self._scrub_last_position = None
@@ -177,18 +178,26 @@ class LogPlots(FigureCanvasQTAgg):
         if self.points is not old_points:
             self._clear_selection(draw=False)
         self.background = None
-        self.cursors = []
-        self.hover_cursors = []
-        self.hover_labels = []
-        self._hover_values = []
-        self._hover_index = None
-        self._hover_position = None
         groups = self._plot_groups()
         selected_fields = [
             field
             for field in self.logged_fields
             if field.key in self.selected_logged_fields
         ]
+        signature = (
+            tuple((label, tuple(series)) for label, series in groups),
+            tuple((field.key, field.label) for field in selected_fields),
+        )
+        if signature == self._plot_signature and self.axes:
+            self._update_plot_data(groups, selected_fields)
+            return
+        old_view = self.view_range
+        self.cursors = []
+        self.hover_cursors = []
+        self.hover_labels = []
+        self._hover_values = []
+        self._hover_index = None
+        self._hover_position = None
         self.figure.clear()
         self._selection_artists = []
         self.axes = list(
@@ -198,6 +207,7 @@ class LogPlots(FigureCanvasQTAgg):
                 squeeze=False,
             )[:, 0]
         )
+        lines = []
 
         def add_axis_tools(axis, values):
             self._hover_values.append(values)
@@ -255,6 +265,7 @@ class LogPlots(FigureCanvasQTAgg):
                 line = axis.plot(
                     offsets, values, color=color, linewidth=0.9, label=legend
                 )[0]
+                lines.append(line)
                 path = line.get_path()
                 path.should_simplify = True
                 path.simplify_threshold = 0.35
@@ -280,6 +291,7 @@ class LogPlots(FigureCanvasQTAgg):
                 linewidth=0.9,
                 label=field.label,
             )[0]
+            lines.append(line)
             path = line.get_path()
             path.should_simplify = True
             path.simplify_threshold = 0.35
@@ -317,6 +329,41 @@ class LogPlots(FigureCanvasQTAgg):
             self._apply_view_range(*old_view, emit=False, draw=False)
         elif self.time_bounds[1] > self.time_bounds[0]:
             self._apply_view_range(*self.time_bounds, emit=False, draw=False)
+        self._plot_lines = lines
+        self._plot_signature = signature
+        self._draw_selection()
+        self.draw_idle()
+
+    def _update_plot_data(self, groups, selected_fields):
+        """Refresh series data without rebuilding axes, legends or artists."""
+        offsets = self.offsets
+        cursor_visible = self.playback and bool(self.points)
+        self._hover_values = []
+        line_index = 0
+        for _axis, (_label, series) in zip(self.axes, groups):
+            series_values = []
+            for field, legend, _color in series:
+                values = [self._value(point, field) for point in self.points]
+                series_values.append((legend, offsets, values))
+                self._plot_lines[line_index].set_data(offsets, values)
+                line_index += 1
+            self._hover_values.append(series_values)
+        for field in selected_fields:
+            self._hover_values.append([(field.label, field.offsets, field.values)])
+            self._plot_lines[line_index].set_data(field.offsets, field.values)
+            line_index += 1
+        for cursor in self.cursors:
+            cursor.set_visible(cursor_visible)
+            cursor.set_xdata([self.position, self.position])
+        for cursor, label in zip(self.hover_cursors, self.hover_labels):
+            cursor.set_visible(False)
+            label.set_visible(False)
+        self._hover_index = None
+        self._hover_position = None
+        if self.time_bounds[1] <= self.time_bounds[0]:
+            self.time_bounds = (
+                (float(offsets[0]), float(offsets[-1])) if offsets else (0.0, 0.0)
+            )
         self._draw_selection()
         self.draw_idle()
 
