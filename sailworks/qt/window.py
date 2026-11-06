@@ -145,6 +145,8 @@ class PreviewWindow(QMainWindow):
         self.plots = self._build_plots(controller)
         self.log_time = TimeControl()
         self.log_map = ViewportMap(controller, self, time_control=self.log_time)
+        for canvas in (self.map, self.log_map):
+            canvas.drawer_toggle_requested.connect(self._toggle_drawer)
         self.log_plot_panel = QWidget(self)
         plot_layout = QVBoxLayout(self.log_plot_panel)
         plot_layout.setContentsMargins(0, 0, 0, 0)
@@ -182,6 +184,7 @@ class PreviewWindow(QMainWindow):
         self.views.tabBar().hide()
         self.workspace_tabs.currentChanged.connect(self.views.setCurrentIndex)
         self.views.currentChanged.connect(self.workspace_tabs.setCurrentIndex)
+        self.views.currentChanged.connect(lambda _: self._position_drawer_flags())
         self.setCentralWidget(self.views)
         self.nmea_dock = QDockWidget("NMEA", self)
         self.nmea_dock.setObjectName("nmea")
@@ -592,6 +595,10 @@ class PreviewWindow(QMainWindow):
         self._update_drawer_flags()
         central = self.views.geometry()
         top = central.top() + max(0, (central.height() - 64) // 2)
+        map_active = self.views.currentWidget() in (
+            getattr(self, "map", None),
+            getattr(self, "logs_view", None),
+        )
         for side, flag in self.drawer_flags.items():
             if side == "left":
                 x = central.left()
@@ -599,8 +606,16 @@ class PreviewWindow(QMainWindow):
                 x = central.right() + 1 - 18
             x = max(0, min(self.width() - 18, x))
             flag.setGeometry(x, top, 18, 64)
-            flag.show()
-            flag.raise_()
+            # A map tab draws its own scene tabs; the other workspaces keep
+            # the QWidget flags.
+            flag.setVisible(not map_active)
+            if not map_active:
+                flag.raise_()
+        for canvas in (getattr(self, "map", None), getattr(self, "log_map", None)):
+            if canvas is not None:
+                canvas.set_drawer_state(
+                    self._drawer_closed("left"), self._drawer_closed("right")
+                )
 
     def _toggle_drawer(self, side):
         if self._drawer_closed(side):

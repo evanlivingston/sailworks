@@ -1,6 +1,7 @@
 """Qt Quick weather/chart child hosted by the desktop viewport map."""
 
 import time
+from dataclasses import replace
 
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, QTimer, Qt, Signal
 from PySide6.QtGui import QGuiApplication
@@ -111,10 +112,12 @@ class WeatherPresenter(QObject):
     def _host_rect(self):
         """The canvas area available to the native window.
 
-        A native child window cannot reliably be covered by QWidget siblings,
-        so the forecast timeline gets its own strip below the Quick view
-        instead of being stacked above it.
+        The viewport owns the overlay policy: the forecast timeline is a
+        native overlay inside the canvas, so it does not shorten the host.
         """
+        viewport_rect = getattr(self.canvas, "viewport_rect", None)
+        if viewport_rect is not None:
+            return viewport_rect()
         rect = self.canvas.rect()
         timeline = getattr(self.canvas, "timeline", None)
         if timeline is not None and timeline.isVisible():
@@ -177,6 +180,10 @@ class WeatherPresenter(QObject):
             from PySide6.QtGui import QWindow
 
             widget = _viewport_widget_class()(model, None, **kwargs)
+            drawer_toggle = getattr(widget, "drawerToggleRequested", None)
+            request_toggle = getattr(self.canvas, "_drawer_toggle_requested", None)
+            if drawer_toggle is not None and request_toggle is not None:
+                drawer_toggle.connect(request_toggle)
             if isinstance(widget, QWindow):
                 self.host_widget = QWidget.createWindowContainer(widget, self.canvas)
             else:
@@ -431,6 +438,22 @@ class WeatherPresenter(QObject):
         host = getattr(self, "host_widget", None)
         if host is not None:
             self._layout_host()
+            # The host is the authoritative visible viewport.  Adopt its size
+            # after layout so a component that shrinks or grows the map area
+            # cannot leave the camera (and therefore the chart, satellite and
+            # geographic overlays) at the previous size.
+            size = host.size()
+            if size.width() > 0 and size.height() > 0:
+                if (camera.width, camera.height) != (size.width(), size.height()):
+                    camera = replace(camera, width=size.width(), height=size.height())
+                    if widget._camera != camera or widget._state == "loading":
+                        widget.set_camera(camera)
+        set_drawer_state = getattr(widget, "set_drawer_state", None)
+        drawer_state = getattr(self.canvas, "drawer_state", None)
+        if set_drawer_state is not None and drawer_state is not None:
+            state = drawer_state()
+            if isinstance(state, tuple) and len(state) == 2:
+                set_drawer_state(*state)
         widget._smooth_zoom = getattr(self.canvas, "_smooth_zoom", True)
         widget._pan_inertia_enabled = getattr(self.canvas, "_pan_inertia_enabled", True)
         widget.set_wind_opacity(

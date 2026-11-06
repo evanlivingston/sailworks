@@ -116,6 +116,7 @@ class ViewportMap(
     view_changed = Signal()
     navigation_request = Signal(str, object)
     cursor_readout = Signal(str)
+    drawer_toggle_requested = Signal(str)
 
     def __init__(self, controller, parent=None, time_control=None, show_timeline=False):
         super().__init__(parent)
@@ -134,6 +135,7 @@ class ViewportMap(
 
         self.background = None
         self._render_padding = 0
+        self._drawer_state = (False, False)
         self._base_cache = None
         self._environment_cache = None
         self._nav_cache = None
@@ -197,6 +199,9 @@ class ViewportMap(
 
             self.timeline = ForecastTimeline(controller, self)
             self.timeline.setAutoFillBackground(True)
+            # A native overlay stays above the Quick view; the map keeps its
+            # full size and renders behind the expanded panel.
+            self.timeline.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
             self.timeline.expansion_changed.connect(self._layout_timeline)
             self._layout_timeline()
 
@@ -499,17 +504,53 @@ class ViewportMap(
     def _zoom(self, value):
         self._camera_state.zoom = value
 
+    def drawer_state(self):
+        return self._drawer_state
+
+    def set_drawer_state(self, left_closed, right_closed):
+        """Mirror the window's sidebar drawers in the scene's edge tabs."""
+        closed = (bool(left_closed), bool(right_closed))
+        if closed == self._drawer_state:
+            return
+        self._drawer_state = closed
+        presenter = getattr(self, "_weather_presenter", None)
+        widget = getattr(presenter, "widget", None) if presenter is not None else None
+        set_drawer_state = getattr(widget, "set_drawer_state", None)
+        if set_drawer_state is not None:
+            set_drawer_state(*closed)
+
+    def _drawer_toggle_requested(self, side):
+        self.drawer_toggle_requested.emit(side)
+
+    def viewport_rect(self):
+        """The canvas area the native viewport actually presents.
+
+        The forecast timeline is a native overlay above the Quick view, so it
+        does not shorten the camera or reflow the chart when it opens.
+        """
+        return self.rect()
+
+    def _view_pixel_size(self):
+        """Layer placement uses the viewport the scene actually presents."""
+        rect = self.viewport_rect()
+        return (
+            rect.width(),
+            rect.height(),
+            round(float(self.devicePixelRatioF()), 3),
+        )
+
     def requested_viewport_camera(self):
         """Translate app map controls into the viewport's camera contract."""
         from .gribviewport import ViewportCamera
 
+        viewport = self.viewport_rect()
         camera_state = self.camera_state
         return ViewportCamera(
             camera_state.center_lat,
             camera_state.center_lon,
             camera_state.zoom,
-            self.width(),
-            self.height(),
+            viewport.width(),
+            viewport.height(),
             self.time_control.time,
             self.controller.settings.gribBarbDensity,
             True,

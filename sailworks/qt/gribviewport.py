@@ -1704,6 +1704,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
         marineStateChanged = Signal(str)  # noqa: N815
         worldRendered = Signal(object, str)  # noqa: N815
         layerVisibilityChanged = Signal(str, bool)  # noqa: N815
+        drawerToggleRequested = Signal(str)  # noqa: N815
 
         def __init__(
             self,
@@ -2126,6 +2127,9 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 if self._chart is not None:
                     self._chart.setProperty("visible", self._layer_enc_visible)
                 getattr(self._weather, "layerToggled").connect(self._layer_toggled)
+                getattr(self._weather, "drawerToggled").connect(
+                    self.drawerToggleRequested.emit
+                )
                 if self._satellite_visible:
                     self._satellite_camera = self._camera
                     self._start_satellite()
@@ -2860,6 +2864,16 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     self._satellite_timer.stop()
                 if self._satellite_retry_timer is not None:
                     self._satellite_retry_timer.stop()
+
+        def set_drawer_state(self, left_closed, right_closed):
+            """Reflect the window's sidebar drawer state in the scene tabs."""
+            closed = (bool(left_closed), bool(right_closed))
+            if closed == getattr(self, "_drawer_closed_state", None):
+                return
+            self._drawer_closed_state = closed
+            if self._weather is not None:
+                self._weather.setProperty("leftDrawerClosed", closed[0])
+                self._weather.setProperty("rightDrawerClosed", closed[1])
 
         def set_layer_visible(self, layer, visible):
             """Apply a layer switch from the scene or the settings panels."""

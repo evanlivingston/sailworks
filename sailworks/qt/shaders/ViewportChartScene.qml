@@ -31,7 +31,12 @@ Item {
     property bool encVisible: true
     property string satelliteAttribution: ""
     property string satelliteStatus: ""
+    // The window's sidebar drawers.  Their tabs live in the scene because a
+    // native Quick host always draws above the window's QWidget children.
+    property bool leftDrawerClosed: false
+    property bool rightDrawerClosed: false
     signal layerToggled(string layer, bool visible)
+    signal drawerToggled(string side)
     // Embedded use supplies the world/raster base here. It must not depend
     // on QWidget parent pixels showing through the Quick host.
     Item {
@@ -1050,6 +1055,62 @@ Item {
                     }
                 }
             }
+        }
+    }
+    // Sidebar drawer tabs.  They sit at the map's mid-height edges and are part
+    // of the scene, so they stay above the native viewport and its imagery.
+    Rectangle {
+        id: leftDrawerTab
+        objectName: "leftDrawerTab"
+        width: 18
+        height: 64
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
+        z: 1000
+        radius: 6
+        color: leftDrawerArea.containsMouse ? "#3c3c3c" : "#303030"
+        border.width: 1
+        border.color: "#454545"
+        Text {
+            anchors.centerIn: parent
+            text: root.leftDrawerClosed ? "\u203a" : "\u2039"
+            color: leftDrawerArea.containsMouse ? "#ffffff" : "#c8c8c5"
+            font.pixelSize: 16
+            font.bold: true
+        }
+        MouseArea {
+            id: leftDrawerArea
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.drawerToggled("left")
+        }
+    }
+    Rectangle {
+        id: rightDrawerTab
+        objectName: "rightDrawerTab"
+        width: 18
+        height: 64
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        z: 1000
+        radius: 6
+        color: rightDrawerArea.containsMouse ? "#3c3c3c" : "#303030"
+        border.width: 1
+        border.color: "#454545"
+        Text {
+            anchors.centerIn: parent
+            text: root.rightDrawerClosed ? "\u2039" : "\u203a"
+            color: rightDrawerArea.containsMouse ? "#ffffff" : "#c8c8c5"
+            font.pixelSize: 16
+            font.bold: true
+        }
+        MouseArea {
+            id: rightDrawerArea
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.drawerToggled("right")
         }
     }
 }
