@@ -2909,7 +2909,9 @@ def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
             self._satellite_pending_camera = padded
             # Raster context is worth a full-density frame only up to 2x, the
             # point where most panels stop gaining visible detail.
-            scale = min(self.devicePixelRatioF(), 2.0)
+            # QQuickWindow exposes devicePixelRatio(), not the QWidget
+            # devicePixelRatioF(); the native host must use the portable one.
+            scale = min(self.devicePixelRatio(), 2.0)
             self._satellite_worker.submit(self._satellite_generation, padded, scale)
 
         def _satellite_rendered(self, generation, image):
