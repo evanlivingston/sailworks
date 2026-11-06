@@ -1,11 +1,17 @@
 """Focused viewport streamline ownership, invalidation and display checks."""
 
 import os
+import sys
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# The streamline pixel tests need a backend that can compile custom shaders.
+# Qt's offscreen plugin uses the software renderer on macOS, which cannot, so
+# let macOS use its native backend; CI sets QT_QPA_PLATFORM explicitly.
+if sys.platform != "darwin":
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from dataclasses import replace
 from datetime import timedelta
+import types
 from types import SimpleNamespace
 import unittest
 import time
@@ -34,7 +40,7 @@ from sailworks.qt.weatherpresenter import WeatherPresenter
 from sailworks.rendering.streamlines import density_parameters, geometry_for_view
 from sailworks.qt.gpustreamlines import GpuTraceInput, jittered_seed_positions
 from sailworks.core.mapviewport import MapViewport
-from sailworks.qt.viewporttransform import PanReference, _world_x
+from sailworks.qt.viewporttransform import PanReference
 from test.map_helpers import MapCanvas
 
 
@@ -510,7 +516,7 @@ class TestStreamlinePublicationScheduling(unittest.TestCase):
 
 
 class TestStreamlineSharedPan(unittest.TestCase):
-    """Streamlines lock to the shared pan reference: pan, rebase, wrap, identity."""
+    """Streamlines project with the on-screen camera while geometry is reused."""
 
     @classmethod
     def setUpClass(cls):
@@ -551,30 +557,31 @@ class TestStreamlineSharedPan(unittest.TestCase):
                 zoom = call.args[1]
         return center, zoom
 
-    def test_pan_lock_derives_camera_from_shared_pan_reference(self):
+    def test_projection_uses_the_camera_on_screen(self):
         ref = PanReference.from_camera(self.camera())
         camera = replace(self.camera(), center_lon=10.0)
         host = self.make_camera_host(ref)
         center, zoom = self.camera_center_and_zoom(host, camera)
-        self.assertEqual(zoom, ref.zoom)
-        # Reference centre (lon 0) is west of camera (lon 10), so the
-        # streamline origin sits left of screen centre: cameraCenter.x > 0.5.
-        self.assertGreater(center.x(), 0.5)
-        self.assertAlmostEqual(center.y(), 0.5)
+        self.assertEqual(zoom, camera.zoom)
+        # Packed segments are absolute normalized Mercator coordinates, so the
+        # shader origin is the camera centre, not a reference-relative 0.5.
+        view = camera.view()
+        size = 256.0 * 2.0**camera.zoom
+        self.assertAlmostEqual(center.x(), view._lon_to_x(10.0) / size)
+        self.assertAlmostEqual(center.y(), view._lat_to_y(0.0) / size)
 
-    def test_pan_lock_keeps_streamlines_at_same_screen_place_on_pan(self):
+    def test_pan_projects_at_the_current_camera(self):
         ref = PanReference.from_camera(self.camera())
         camera = replace(self.camera(), center_lon=10.0)
         host = self.make_camera_host(ref)
         center, _ = self.camera_center_and_zoom(host, camera)
-        # Translating the reference to the camera places the streamline origin
-        # at the reference's geographic location, which is 10 deg west of
-        # screen centre. Normalized offset at zoom 3 is 10/360.
+        # The retained geometry still moves with the map during a pan: the
+        # projection follows the camera that is now on screen.
+        view = camera.view()
         size = 256.0 * 2.0**ref.zoom
-        expected_x = 0.5 - (_world_x(0.0, ref.zoom) - _world_x(10.0, ref.zoom)) / size
-        self.assertAlmostEqual(center.x(), expected_x, places=6)
+        self.assertAlmostEqual(center.x(), view._lon_to_x(10.0) / size)
 
-    def test_rebase_uses_new_reference_camera(self):
+    def test_rebase_does_not_move_the_projection(self):
         ref1 = PanReference.from_camera(self.camera(center_lon=0.0))
         ref2 = PanReference.from_camera(self.camera(center_lon=10.0))
         camera = self.camera(center_lon=5.0)
@@ -582,15 +589,22 @@ class TestStreamlineSharedPan(unittest.TestCase):
         center1, _ = self.camera_center_and_zoom(host, camera)
         host._map_pan_reference = ref2
         center2, _ = self.camera_center_and_zoom(host, camera)
-        self.assertNotAlmostEqual(center1.x(), center2.x())
+        # Rebasing retains the same on-screen camera, so the projection of the
+        # retained geometry does not jump.
+        self.assertAlmostEqual(center1.x(), center2.x())
+        self.assertAlmostEqual(center1.y(), center2.y())
 
     def test_antimeridian_wrap_does_not_jump_world_width(self):
         ref = PanReference.from_camera(self.camera(center_lon=170.0))
         camera = self.camera(center_lon=-170.0)  # continuous with lon 190
         host = self.make_camera_host(ref)
         center, _ = self.camera_center_and_zoom(host, camera)
-        # Continuous longitude keeps the offset small; no world-width jump.
-        self.assertLess(abs(center.x() - 0.5), 0.1)
+        # The centre sits at the seam, not a world width away from it; the
+        # vertex shader wraps segment longitudes around that centre.
+        view = camera.view()
+        size = 256.0 * 2.0**camera.zoom
+        self.assertAlmostEqual(center.x(), view._lon_to_x(-170.0) / size)
+        self.assertLess(abs(center.x()), 0.05)
 
     def test_no_reference_falls_back_to_current_camera(self):
         host = self.make_camera_host(None)
@@ -603,6 +617,74 @@ class TestStreamlineSharedPan(unittest.TestCase):
         expected_y = view._lat_to_y(camera.center_lat) / size
         self.assertAlmostEqual(center.x(), expected_x)
         self.assertAlmostEqual(center.y(), expected_y)
+
+    def test_reentrant_ready_signal_does_not_clear_promoted_buffer(self):
+        """Setting frontBuffer re-enters readiness through readyChanged."""
+
+        class ReentrantLayer:
+            def __init__(self):
+                self.values = {
+                    "ready": False,
+                    "pendingReady": True,
+                    "pendingError": "",
+                    "shaderError": "",
+                    "frontBuffer": -1,
+                    "pendingBuffer": 0,
+                    "buffer0Groups": [{"source": "new"}],
+                }
+                self.host = None
+                self.calls = []
+
+            def property(self, name):
+                return self.values.get(name)
+
+            def setProperty(self, name, value):
+                self.calls.append((name, value))
+                self.values[name] = value
+                if name == "frontBuffer":
+                    self.host._streamline_readiness_changed()
+
+            def setOpacity(self, value):
+                self.values["opacity"] = value
+
+            def setVisible(self, value):
+                self.values["visible"] = value
+
+            def opacity(self):
+                return 1.0
+
+            def isVisible(self):
+                return True
+
+        layer = ReentrantLayer()
+        camera = self.camera()
+        host = SimpleNamespace(
+            _disposed=False,
+            _wind_style="streamlines",
+            _wind_opacity=1,
+            _streamlines=layer,
+            _streamline_model=SimpleNamespace(_state="ready"),
+            _streamline_publication=(1, camera),
+            _streamline_display_camera=camera,
+            _streamline_urls=(),
+            _pending_streamline_publication=(2, camera),
+            _pending_streamline_camera=camera,
+            _pending_streamline_buffer=0,
+            _pending_streamline_groups=[{"source": "new"}],
+            _pending_streamline_urls=("new",),
+            _streamline_provider=Mock(),
+            _show_state=Mock(),
+            _status=Mock(),
+        )
+        layer.host = host
+        host._streamline_readiness_changed = types.MethodType(
+            self.widget_class._streamline_readiness_changed, host
+        )
+        host._streamline_readiness_changed()
+        self.assertEqual(layer.values["frontBuffer"], 0)
+        self.assertEqual(layer.values["pendingBuffer"], -1)
+        self.assertEqual(layer.values["buffer0Groups"], [{"source": "new"}])
+        self.assertEqual(host._pending_streamline_buffer, -1)
 
     def test_identity_preserved_reuses_without_retrace(self):
         prior = self.camera()
@@ -652,7 +734,11 @@ class TestStreamlineShaderStructure(unittest.TestCase):
         self.assertIn("abs(marker - round(marker)) > 0.00001", fragment)
         self.assertIn("Math.max(1, segmentCount * (arrow ? 4 : 2) - 1)", qml)
         self.assertIn("required property var modelData", qml)
-        self.assertIn("effect.status === ShaderEffect.Compiled", qml)
+        # Qt reports Compiled only on the effect that triggered the compile of a
+        # shader program, so readiness must not gate on it: later effects (and
+        # every delegate created after) render while staying Uncompiled.
+        self.assertNotIn("effect.status === ShaderEffect.Compiled", qml)
+        self.assertIn("effect.status !== ShaderEffect.Error", qml)
         self.assertIn("property vector2d cameraCenter", qml)
         self.assertNotIn("previewScale", qml)
         self.assertIn("Math.min(8192, batchSize)", qml)
@@ -691,15 +777,14 @@ class TestStreamlineShaderPixels(unittest.TestCase):
                 pending.append(child)
 
     def _wait_until_ready(self, layer, window):
-        """Render frames until the layer is ready or reports a shader error.
+        """Render frames until the layer is ready.
 
-        WeatherStreamlines.qml reports ready only after every batch's
-        ShaderEffect has compiled, and compilation happens while a frame is
-        rendered, so the wait has to drive the real render loop instead of
-        only pumping events. A platform with no usable RHI backend renders
-        through the software adapter, which never compiles custom shaders:
-        the batches then stay Uncompiled, which the layer reports as a shader
-        error, and the pixel contract below cannot be observed there.
+        WeatherStreamlines.qml reports ready once every batch's texture has
+        loaded and no ShaderEffect reported a compile error. Driving the real
+        frame loop is still needed for the texture upload and the first draw.
+        A platform with no hardware scene graph renders through the software
+        adapter, which cannot compile any custom shader, so the pixel contract
+        below cannot be observed there.
         """
         deadline = time.monotonic() + 5.0
         frames = 0
@@ -708,34 +793,18 @@ class TestStreamlineShaderPixels(unittest.TestCase):
             QTest.qWait(10)
             self.app.processEvents()
             frames += 1
+            from PySide6.QtQuick import QSGRendererInterface
+
+            api = window.rendererInterface().graphicsApi()
+            if api in (
+                QSGRendererInterface.GraphicsApi.Software,
+                QSGRendererInterface.GraphicsApi.Null,
+            ) or (frames >= 5 and api == QSGRendererInterface.GraphicsApi.Unknown):
+                self.skipTest(
+                    "This Qt platform has no hardware scene graph: "
+                    f"renderer API {api.name} cannot compile ShaderEffect shaders"
+                )
             if layer.property("ready"):
-                return
-            if frames >= 5:
-                statuses = [
-                    batch.property("effectStatus")
-                    for batch in self._batch_delegates(layer)
-                ]
-                # ShaderEffect.Compiled is 0, Uncompiled is 1, Error is 2.
-                # The layer now reports any non-compiled status as a shader
-                # error, so a status is the only thing that separates "this
-                # platform cannot run custom shaders" from a real failure:
-                # every batch stuck at Uncompiled is the software adapter,
-                # while Error (or a mixed result) must still reach the
-                # assertions below.
-                if statuses and all(status == 1 for status in statuses):
-                    # Regression guard for a shader this platform never
-                    # compiles: the layer must not look ready and must say
-                    # why, or readiness stays silent instead of unavailable.
-                    self.assertFalse(layer.property("ready"))
-                    self.assertTrue(
-                        layer.property("shaderError"),
-                        "a ShaderEffect that never compiles must report an error",
-                    )
-                    self.skipTest(
-                        "This Qt platform cannot compile ShaderEffect shaders: "
-                        f"batch effect statuses {statuses} stayed Uncompiled "
-                        f"after {frames} rendered frames"
-                    )
                 return
 
     def test_qquickwindow_draws_and_withdraws_streamlines(self):
