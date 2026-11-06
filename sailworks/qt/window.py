@@ -135,6 +135,13 @@ class PreviewWindow(QMainWindow):
         header.addWidget(self.place_search)
         self.place_index_task = BackgroundTask(self)
         self.place_index_task.finished.connect(self._chart_places_ready)
+        self._indexed_chart_paths = frozenset()
+        self._indexing_chart_paths = frozenset()
+        self._chart_place_timer = QTimer(self)
+        self._chart_place_timer.setSingleShot(True)
+        self._chart_place_timer.setInterval(1500)
+        self._chart_place_timer.timeout.connect(self._index_chart_places)
+        controller.data.changed.connect(self._schedule_chart_places)
         self.plots = self._build_plots(controller)
         self.log_time = TimeControl()
         self.log_map = ViewportMap(controller, self, time_control=self.log_time)
@@ -736,19 +743,28 @@ class PreviewWindow(QMainWindow):
         self.place_search.edit.selectAll()
 
     def _index_chart_places(self):
-        paths = tuple(
+        paths = frozenset(
             chart.path
             for chart in getattr(self.controller.charts, "charts", ())
             if str(chart.path).lower().endswith(".000")
         )
-        if not paths or self.place_index_task.busy:
+        if (
+            not paths
+            or self.place_index_task.busy
+            or paths == self._indexed_chart_paths
+        ):
             return
+        self._indexing_chart_paths = paths
         self.place_index_task.start(
             "Indexing chart place names",
-            lambda progress: index_chart_files(paths, progress=progress),
+            lambda progress: index_chart_files(tuple(paths), progress=progress),
         )
 
+    def _schedule_chart_places(self):
+        self._chart_place_timer.start()
+
     def _chart_places_ready(self, places, error):
+        self._indexed_chart_paths = self._indexing_chart_paths
         if error is not None or not places:
             return
         self.place_index.add_places(places, merge_radius_km=5.0)
@@ -1591,6 +1607,7 @@ class PreviewWindow(QMainWindow):
         self.navigation_panel.dispose()
         self.polar_workspace.dispose()
         self.live_timer.stop()
+        self._chart_place_timer.stop()
         self.place_index_task.close()
         self.controller.close()
         event.accept()
