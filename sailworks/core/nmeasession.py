@@ -468,6 +468,20 @@ def slice_log(log, start, end):
     )
 
 
+_LOG_EDIT_UNDO_LIMIT = 50
+_LOG_EDIT_UNDO_BYTES = 256 * 1024 * 1024
+
+
+def _retained_log_bytes(log):
+    """Estimate the containers and numeric arrays an undo snapshot retains."""
+    total = len(log.entries) * 40
+    for series in log.numeric_series or ():
+        total += getattr(series.values, "nbytes", 0)
+    for track in (log.source_tracks or {}).values():
+        total += len(getattr(track, "points", ())) * 16
+    return total
+
+
 class NMEASession(EventDispatcher):
     """Shared state; callers schedule advance() and marshal UI notifications.
 
@@ -502,6 +516,7 @@ class NMEASession(EventDispatcher):
         )
         self._generation = 0
         self._log_edit_undo = []
+        self._log_edit_undo_bytes = 0
         self._saved_log = None
         connections.connect("data", self._live_data)
         connections.connect("nmea2000", self._record_raw)
@@ -568,6 +583,7 @@ class NMEASession(EventDispatcher):
             if log is not None:
                 self.log = log
                 self._log_edit_undo.clear()
+                self._log_edit_undo_bytes = 0
                 self._saved_log = log
                 self.source = "log"
                 self.restart()
@@ -654,9 +670,15 @@ class NMEASession(EventDispatcher):
                 logger.info("Discarded stale ripple delete result")
                 return False
             previous_count = len(source_log.entries)
-            self._log_edit_undo.append(self.log)
-            if len(self._log_edit_undo) > 50:
-                del self._log_edit_undo[0]
+            weight = _retained_log_bytes(self.log)
+            self._log_edit_undo.append((self.log, weight))
+            self._log_edit_undo_bytes += weight
+            while self._log_edit_undo and (
+                len(self._log_edit_undo) > _LOG_EDIT_UNDO_LIMIT
+                or self._log_edit_undo_bytes > _LOG_EDIT_UNDO_BYTES
+            ):
+                _, dropped = self._log_edit_undo.pop(0)
+                self._log_edit_undo_bytes -= dropped
             self.log = edited
             self.playing = False
             self.cancel_seek()
@@ -683,7 +705,9 @@ class NMEASession(EventDispatcher):
         with self.lock:
             if self._closed or self.loading or not self._log_edit_undo:
                 return False
-            self.log = self._log_edit_undo.pop()
+            log, weight = self._log_edit_undo.pop()
+            self._log_edit_undo_bytes -= weight
+            self.log = log
             self.playing = False
             self.cancel_seek()
             self.position = 0.0

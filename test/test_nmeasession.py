@@ -95,6 +95,22 @@ class TestNMEASession(unittest.TestCase):
         self.assertIs(self.session.log, original)
         self.assertFalse(self.session.log_edits_dirty)
 
+    def test_undo_history_is_bounded_by_estimated_bytes(self):
+        import sailworks.core.nmeasession as module
+
+        original = module._LOG_EDIT_UNDO_BYTES
+        self.addCleanup(setattr, module, "_LOG_EDIT_UNDO_BYTES", original)
+        self.load([rmc("120000"), rmc("120010"), rmc("120020")])
+        module._LOG_EDIT_UNDO_BYTES = module._retained_log_bytes(self.session.log)
+
+        self.assertTrue(self.session.delete_log_range(0, 1))
+        self.assertTrue(self.session.delete_log_range(0, 1))
+
+        self.assertLessEqual(len(self.session._log_edit_undo), 1)
+        self.assertLessEqual(
+            self.session._log_edit_undo_bytes, module._LOG_EDIT_UNDO_BYTES
+        )
+
     def test_saved_edit_becomes_undo_baseline(self):
         self.load([rmc("120000"), rmc("120010"), rmc("120020")])
         self.assertTrue(self.session.delete_log_range(5, 15))
