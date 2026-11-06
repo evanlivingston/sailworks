@@ -159,16 +159,14 @@ class MapStateMixin:
                 self._finish_zoom_silent()
                 self.view_changed.emit()
 
-        timer = getattr(self, "_fly_tick", None)
-        if timer is None:
-            timer = QTimer(self)
-            timer.setInterval(16)
-            self._fly_tick = timer
-        try:
-            timer.timeout.disconnect()
-        except (RuntimeError, TypeError):
-            pass
+        timer = QTimer(self)
+        timer.setInterval(16)
         timer.timeout.connect(advance)
+        old = getattr(self, "_fly_tick", None)
+        if old is not None:
+            old.stop()
+            old.deleteLater()
+        self._fly_tick = timer
         timer.start()
 
     def set_points(self, points, offsets, fit=False):
