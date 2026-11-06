@@ -1,11 +1,11 @@
-"""Offline place search box with a keyboard-accessible result popup."""
+"""Offline place search box backed by QCompleter."""
 
-from PySide6.QtCore import QEvent, QPoint, QTimer, Qt, Signal
+from PySide6.QtCore import QEvent, QModelIndex, QTimer, Qt, Signal
+from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
+    QCompleter,
     QHBoxLayout,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QSizePolicy,
     QWidget,
 )
@@ -42,21 +42,27 @@ class PlaceSearch(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.edit)
-        # Keep the result list inside the main window rather than a Qt.Popup:
-        # a popup grabs the keyboard and stops the line edit from receiving
-        # further keystrokes.
-        self.results = QListWidget(self.window())
-        self.results.setObjectName("placeSearchResults")
-        self.results.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.results.setMouseTracking(True)
-        self.results.hide()
-        self.results.itemClicked.connect(self._activated)
+
+        # QCompleter owns a top-level popup and keeps keyboard focus in the
+        # line edit while it is visible. A plain Qt.Popup QListWidget grabs the
+        # keyboard instead, so typing stopped after the first result appeared.
+        self.model = QStandardItemModel(self)
+        self.completer = QCompleter(self.model, self)
+        self.completer.setCompletionMode(
+            QCompleter.CompletionMode.UnfilteredPopupCompletion
+        )
+        self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.completer.setMaxVisibleItems(12)
+        self.completer.activated[QModelIndex].connect(self._activated)
+        self.completer.popup().setObjectName("placeSearchResults")
+        self.completer.popup().setMinimumWidth(380)
+        self.edit.setCompleter(self.completer)
+
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.setInterval(120)
         self.timer.timeout.connect(self._refresh)
         self.edit.textChanged.connect(self._text_changed)
-        self.edit.returnPressed.connect(self._choose_current)
 
     def set_index(self, index):
         self.index = index
@@ -82,41 +88,40 @@ class PlaceSearch(QWidget):
     def _refresh(self):
         text = self.edit.text().strip()
         self._places = self.index.search(text, limit=12, near=self._near_point())
-        self.results.clear()
+        self.model.clear()
         for place in self._places:
-            item = QListWidgetItem(place.label)
-            item.setData(Qt.ItemDataRole.UserRole, place)
+            item = QStandardItem(place.label)
+            item.setData(place, Qt.ItemDataRole.UserRole)
             item.setToolTip(place.label)
-            self.results.addItem(item)
+            self.model.appendRow(item)
         if not self._places:
-            self.results.hide()
+            self.completer.popup().hide()
             return
-        parent = self.results.parentWidget() or self
-        below = self.edit.mapTo(parent, QPoint(0, self.edit.height() + 2))
-        width = max(self.edit.width(), 380)
-        height = min(320, self.results.sizeHintForRow(0) * len(self._places) + 6)
-        self.results.setGeometry(below.x(), below.y(), width, height)
-        self.results.show()
-        self.results.raise_()
+        self.completer.complete()
 
-    def _selected_place(self):
-        item = self.results.currentItem()
-        if item is None and self.results.count():
-            item = self.results.item(0)
-        return None if item is None else item.data(Qt.ItemDataRole.UserRole)
-
-    def _choose_current(self):
-        place = self._selected_place()
+    def _activated(self, index):
+        place = index.data(Qt.ItemDataRole.UserRole) if index is not None else None
         if place is not None:
             self._select(place)
 
-    def _activated(self, item):
-        place = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
-        if place is not None:
-            self._select(place)
+    def eventFilter(self, watched, event):  # noqa: N802 - Qt virtual name
+        if watched is self.edit and event.type() == QEvent.Type.KeyPress:
+            popup = self.completer.popup()
+            key = event.key()
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and popup.isVisible():
+                index = popup.currentIndex()
+                if not index.isValid():
+                    index = self.model.index(0, 0)
+                if index.isValid():
+                    self._activated(index)
+                    return True
+            if key == Qt.Key.Key_Escape and popup.isVisible():
+                popup.hide()
+                return True
+        return super().eventFilter(watched, event)
 
     def _select(self, place):
-        self.results.hide()
+        self.completer.popup().hide()
         self._suppress = True
         try:
             self.edit.setText(place.name)
@@ -124,32 +129,3 @@ class PlaceSearch(QWidget):
         finally:
             self._suppress = False
         self.place_selected.emit(place)
-
-    def _move_selection(self, step):
-        if not self.results.isVisible() or not self.results.count():
-            return False
-        row = self.results.currentRow()
-        row = 0 if row < 0 else max(0, min(self.results.count() - 1, row + step))
-        self.results.setCurrentRow(row)
-        return True
-
-    def eventFilter(self, watched, event):  # noqa: N802 - Qt virtual name
-        if watched is self.edit and event.type() == QEvent.Type.KeyPress:
-            key = event.key()
-            if key == Qt.Key.Key_Down and self._move_selection(1):
-                return True
-            if key == Qt.Key.Key_Up and self._move_selection(-1):
-                return True
-            if key == Qt.Key.Key_Return or key == Qt.Key.Key_Enter:
-                self._choose_current()
-                return True
-            if key == Qt.Key.Key_Escape:
-                self.results.hide()
-                return False
-        if watched is self.edit and event.type() == QEvent.Type.FocusOut:
-            QTimer.singleShot(150, self._hide_if_unfocused)
-        return super().eventFilter(watched, event)
-
-    def _hide_if_unfocused(self):
-        if not self.edit.hasFocus():
-            self.results.hide()

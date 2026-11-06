@@ -39,15 +39,16 @@ def test_typing_shows_ranked_results_and_clicking_emits_the_place(app):
     search.edit.setText("seat")
     search._refresh()
 
-    assert search.results.isVisible()
-    assert search.results.count() == 1
-    item = search.results.item(0)
+    popup = search.completer.popup()
+    assert popup.isVisible()
+    assert search.model.rowCount() == 1
+    item = search.model.item(0)
     place = item.data(Qt.ItemDataRole.UserRole)
     assert place.name == "Seattle"
 
-    search._activated(item)
+    search._activated(search.model.index(0, 0))
     assert selected == [place]
-    assert not search.results.isVisible()
+    assert not popup.isVisible()
     assert search.edit.text() == "Seattle"
 
 
@@ -55,17 +56,19 @@ def test_return_chooses_the_first_result_and_escape_closes_the_popup(app):
     search = make_search()
     selected = []
     search.place_selected.connect(selected.append)
+    search.edit.setFocus()
     search.edit.setText("port t")
     search._refresh()
 
-    search._choose_current()
+    QTest.keyClick(search.edit, Qt.Key.Key_Return)
     assert selected and selected[0].name == "Port Townsend"
 
     search.edit.setText("auckland")
     search._refresh()
-    assert search.results.isVisible()
-    search.results.hide()
-    assert not search.results.isVisible()
+    popup = search.completer.popup()
+    assert popup.isVisible()
+    popup.hide()
+    assert not popup.isVisible()
 
 
 def test_typing_continues_after_the_result_list_opens(app):
@@ -75,21 +78,22 @@ def test_typing_continues_after_the_result_list_opens(app):
     QTest.keyClicks(search.edit, "se")
     QTest.qWait(180)
     assert search.edit.text() == "se"
-    assert search.results.isVisible()
+    assert search.completer.popup().isVisible()
 
     QTest.keyClicks(search.edit, "at")
     QTest.qWait(180)
     assert search.edit.text() == "seat"
-    assert search.results.isVisible()
-    assert search.results.count() == 1
+    assert search.completer.popup().isVisible()
+    assert search.model.rowCount() == 1
     search.close()
 
 
 def test_empty_and_missing_queries_hide_the_popup(app):
     search = make_search()
+    popup = search.completer.popup()
     search.edit.setText("zzzznotaplace")
     search._refresh()
-    assert not search.results.isVisible()
+    assert not popup.isVisible()
     search.edit.setText("")
     search._refresh()
-    assert not search.results.isVisible()
+    assert not popup.isVisible()
