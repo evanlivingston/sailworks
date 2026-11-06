@@ -108,6 +108,24 @@ class WeatherPresenter(QObject):
             host.deleteLater()
         self.canvas._invalidate_base()
 
+    def _host_rect(self):
+        """The canvas area available to the native window.
+
+        A native child window cannot reliably be covered by QWidget siblings,
+        so the forecast timeline gets its own strip below the Quick view
+        instead of being stacked above it.
+        """
+        rect = self.canvas.rect()
+        timeline = getattr(self.canvas, "timeline", None)
+        if timeline is not None and timeline.isVisible():
+            rect.setHeight(max(0, rect.height() - timeline.height()))
+        return rect
+
+    def _layout_host(self):
+        host = getattr(self, "host_widget", None)
+        if host is not None:
+            host.setGeometry(self._host_rect())
+
     def _create(self, source):
         if QGuiApplication.platformName() in ("offscreen", "minimal"):
             raise RuntimeError("hardware weather unavailable on this Qt platform")
@@ -412,7 +430,7 @@ class WeatherPresenter(QObject):
             widget.set_camera(camera)
         host = getattr(self, "host_widget", None)
         if host is not None:
-            host.setGeometry(self.canvas.rect())
+            self._layout_host()
         widget._smooth_zoom = getattr(self.canvas, "_smooth_zoom", True)
         widget._pan_inertia_enabled = getattr(self.canvas, "_pan_inertia_enabled", True)
         widget.set_wind_opacity(

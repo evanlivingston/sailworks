@@ -208,6 +208,10 @@ class ViewportMap(
             0, max(0, self.height() - height), self.width(), height
         )
         self.timeline.raise_()
+        presenter = getattr(self, "_weather_presenter", None)
+        layout_host = getattr(presenter, "_layout_host", None)
+        if layout_host is not None:
+            layout_host()
 
     def _layout_wave_legend(self):
         legend = getattr(self, "wave_legend", None)
