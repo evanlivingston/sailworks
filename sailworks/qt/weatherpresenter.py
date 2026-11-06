@@ -1,12 +1,19 @@
 """Qt Quick weather/chart child hosted by the desktop viewport map."""
 
+import os
+
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, QTimer, Qt, Signal
 from PySide6.QtGui import QGuiApplication, QPainter
 from PySide6.QtWidgets import QLabel, QWidget
 
 from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES, display_model_name
 
-from .gribviewport import GribViewportModel, ViewportCamera, _viewport_widget_class
+from .gribviewport import (
+    GribViewportModel,
+    ViewportCamera,
+    _viewport_widget_class,
+    _viewport_window_class,
+)
 
 
 class WeatherForeground(QWidget):
@@ -35,6 +42,9 @@ class WeatherPresenter(QObject):
         super().__init__(canvas)
         self.canvas = canvas
         self.widget = None
+        # The QWidget the map tab lays out: the viewport itself for the
+        # embedded host, or a window container for the native host.
+        self.host_widget = None
         self.foreground = None
         self.closed = False
         self.reason = ""
@@ -105,12 +115,17 @@ class WeatherPresenter(QObject):
         self._host_generation += 1
         self._source = None
         self._rendered = False
+        host = getattr(self, "host_widget", None)
+        self.host_widget = None
         if widget is not None:
             widget.dispose()
             widget.hide()
             # A hidden QQuickWidget need not render another synchronization.
             # Destruction delivers actual invalidation and native retirement.
             widget.deleteLater()
+        if host is not None and host is not widget:
+            host.hide()
+            host.deleteLater()
         if foreground is not None:
             foreground.hide()
             foreground.deleteLater()
@@ -162,7 +177,17 @@ class WeatherPresenter(QObject):
                 kwargs["native_weather_budget"] = (
                     self.canvas.controller.native_weather_budget
                 )
-            widget = _viewport_widget_class()(model, self.canvas, **kwargs)
+            native_host = os.environ.get("SAILWORKS_NATIVE_MAP") == "1"
+            if native_host:
+                # A native Quick window presents at the display rate; the
+                # window container is the QWidget the map tab lays out.
+                widget = _viewport_window_class()(model, None, **kwargs)
+                self.host_widget = QWidget.createWindowContainer(widget, self.canvas)
+                widget._measurement_canvas = self.canvas
+                widget._native_host_mode = True
+            else:
+                widget = _viewport_widget_class()(model, self.canvas, **kwargs)
+                self.host_widget = widget
             settings = self.canvas.controller.settings
             register = getattr(settings, "register_on_change", None)
             if register is not None:
@@ -188,17 +213,19 @@ class WeatherPresenter(QObject):
             )
             # The viewport owns pan/zoom input. The transparent foreground
             # sibling keeps the application's navigation/route drawing above it.
-            widget.setMouseTracking(True)
+            self.host_widget.setMouseTracking(True)
             if desktop_map:
-                widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+                self.host_widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
                 widget.cameraChanged.connect(self._camera_changed)
                 widget.chartStateChanged.connect(
                     lambda state: self._chart_state_changed(generation, state)
                 )
             else:
-                widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-                widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            widget.installEventFilter(self)
+                self.host_widget.setAttribute(
+                    Qt.WidgetAttribute.WA_TransparentForMouseEvents
+                )
+                self.host_widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            self.host_widget.installEventFilter(self)
             widget._status.hide()
             if self.native_fields:
                 widget.stateChanged.connect(
@@ -376,10 +403,18 @@ class WeatherPresenter(QObject):
         self.deadline.stop()
         self._rendered = False
         self._source = None
+        host = getattr(self, "host_widget", None)
+        self.host_widget = None
         if widget is not None:
             widget.hide()
             widget.dispose()
             widget.deleteLater()
+        if host is not None and host is not widget:
+            host.hide()
+            host.deleteLater()
+        if host is not None and host is not widget:
+            host.hide()
+            host.deleteLater()
         if foreground is not None:
             foreground.hide()
             foreground.deleteLater()
@@ -427,7 +462,7 @@ class WeatherPresenter(QObject):
             raise RuntimeError("ENC/weather viewport initialization failed")
         if widget._camera != camera or widget._state == "loading":
             widget.set_camera(camera)
-        widget.setGeometry(self.canvas.rect())
+        self.host_widget.setGeometry(self.canvas.rect())
         foreground.setGeometry(self.canvas.rect())
         widget._smooth_zoom = getattr(self.canvas, "_smooth_zoom", True)
         widget._pan_inertia_enabled = getattr(self.canvas, "_pan_inertia_enabled", True)
@@ -482,7 +517,7 @@ class WeatherPresenter(QObject):
         )
         observations = self.canvas.ship_observations
         widget.set_ship_observations(observations.reports, observations.visible)
-        widget.show()
+        self.host_widget.show()
         route_overlay = getattr(self.canvas, "viewport_route_overlay", None)
         if route_overlay is not None:
             publish = getattr(self.canvas, "publish_route_overlay", None)
