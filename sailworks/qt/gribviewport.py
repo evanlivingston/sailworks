@@ -4735,37 +4735,19 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 self._publish_streamlines(self._camera, force=True)
 
         def _update_streamline_camera(self, camera):
-            # Use shared pan reference so streamlines move with the map.
-            reference = getattr(self, "_map_pan_reference", None)
-            if reference is not None:
-                try:
-                    dx, dy = reference.translation_to(camera)
-                except ValueError:
-                    # Zoom/size/DPR changed - reference cannot be translated;
-                    # fall back to the current camera until it is rebased.
-                    view = camera.view()
-                    size = 256.0 * 2.0**camera.zoom
-                    center = QVector2D(
-                        view._lon_to_x(camera.center_lon) / size,
-                        view._lat_to_y(camera.center_lat) / size,
-                    )
-                    self._streamlines.setProperty("cameraCenter", center)
-                    self._streamlines.setProperty("cameraZoom", camera.zoom)
-                    return
-                size = 256.0 * 2.0**reference.zoom
-                center = QVector2D(0.5 - dx / size, 0.5 - dy / size)
-                self._streamlines.setProperty("cameraCenter", center)
-                self._streamlines.setProperty("cameraZoom", reference.zoom)
-            else:
-                # No shared pan reference yet, use current camera
-                view = camera.view()
-                size = 256.0 * 2.0**camera.zoom
-                center = QVector2D(
-                    view._lon_to_x(camera.center_lon) / size,
-                    view._lat_to_y(camera.center_lat) / size,
-                )
-                self._streamlines.setProperty("cameraCenter", center)
-                self._streamlines.setProperty("cameraZoom", camera.zoom)
+            # Segments are packed in absolute normalized Mercator coordinates,
+            # so the shader has to project them with the camera that is on
+            # screen. The shared pan reference only decides when the geometry
+            # is retraced; using its centre here would place every segment a
+            # whole world away from the viewport.
+            view = camera.view()
+            size = 256.0 * 2.0**camera.zoom
+            center = QVector2D(
+                view._lon_to_x(camera.center_lon) / size,
+                view._lat_to_y(camera.center_lat) / size,
+            )
+            self._streamlines.setProperty("cameraCenter", center)
+            self._streamlines.setProperty("cameraZoom", camera.zoom)
 
         def _retrace_streamlines(self):
             if (
@@ -4847,34 +4829,49 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     self._status.setText(pending_error)
                     self._status.adjustSize()
                     return
-                if self._streamlines.property("pendingReady"):
-                    old_front = self._streamlines.property("frontBuffer")
-                    new_front = self._pending_streamline_buffer
-                    if debug_streamlines:
-                        logger.warning(
-                            "streamlines swap: %s -> %s, groups=%d, camera=%r",
-                            old_front,
-                            new_front,
-                            len(self._pending_streamline_groups),
-                            self._pending_streamline_camera,
+                if self._streamlines.property("pendingReady") and not getattr(
+                    self, "_streamline_swapping", False
+                ):
+                    # Setting frontBuffer synchronously re-enters this handler
+                    # through readyChanged. Without the guard the nested call
+                    # sees the still-pending selection, swaps 0 -> 0 and clears
+                    # the buffer that was just promoted.
+                    self._streamline_swapping = True
+                    try:
+                        old_front = self._streamlines.property("frontBuffer")
+                        new_front = self._pending_streamline_buffer
+                        if debug_streamlines:
+                            logger.warning(
+                                "streamlines swap: %s -> %s, groups=%d, camera=%r",
+                                old_front,
+                                new_front,
+                                len(self._pending_streamline_groups),
+                                self._pending_streamline_camera,
+                            )
+                        self._streamlines.setProperty("frontBuffer", new_front)
+                        self._streamlines.setProperty("pendingBuffer", -1)
+                        if old_front != new_front:
+                            if old_front == 0:
+                                self._streamlines.setProperty("buffer0Groups", [])
+                            elif old_front == 1:
+                                self._streamlines.setProperty("buffer1Groups", [])
+                        self._streamline_urls = self._pending_streamline_urls
+                        self._streamlines.setOpacity(self._wind_opacity)
+                        self._streamlines.setVisible(True)
+                        self._streamline_provider.retain(self._streamline_urls)
+                        self._pending_streamline_groups = []
+                        self._pending_streamline_urls = ()
+                        self._streamline_display_camera = (
+                            self._pending_streamline_camera
                         )
-                    self._streamlines.setProperty("frontBuffer", new_front)
-                    self._streamlines.setProperty("pendingBuffer", -1)
-                    if old_front == 0:
-                        self._streamlines.setProperty("buffer0Groups", [])
-                    elif old_front == 1:
-                        self._streamlines.setProperty("buffer1Groups", [])
-                    self._streamline_urls = self._pending_streamline_urls
-                    self._streamlines.setOpacity(self._wind_opacity)
-                    self._streamlines.setVisible(True)
-                    self._streamline_provider.retain(self._streamline_urls)
-                    self._pending_streamline_groups = []
-                    self._pending_streamline_urls = ()
-                    self._streamline_display_camera = self._pending_streamline_camera
-                    self._streamline_publication = self._pending_streamline_publication
-                    self._pending_streamline_camera = None
-                    self._pending_streamline_publication = None
-                    self._pending_streamline_buffer = -1
+                        self._streamline_publication = (
+                            self._pending_streamline_publication
+                        )
+                        self._pending_streamline_camera = None
+                        self._pending_streamline_publication = None
+                        self._pending_streamline_buffer = -1
+                    finally:
+                        self._streamline_swapping = False
                 elif self._pending_streamline_publication is not None:
                     self._show_state("loading")
                     previous = self._streamline_display_camera
