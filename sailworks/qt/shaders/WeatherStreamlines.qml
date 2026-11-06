@@ -27,14 +27,20 @@ Item {
     readonly property int effectiveBatchSize: Math.max(1, Math.min(8192, batchSize))
     property real lineWidth: 1.2
     property int batchRevision: 0
-    // Qt delivers the Compiled status to only the ShaderEffect that triggered
-    // the compile of a given shader program. Every other effect sharing that
-    // program, and every effect created after it, stays at Uncompiled while
-    // still rendering correctly. Per-effect status therefore cannot decide
-    // readiness; a software backend that never compiles custom shaders is the
-    // only backend worth reporting, and it is identifiable up front.
-    readonly property bool shaderBackend: GraphicsInfo.api !== GraphicsInfo.Unknown
-                                          && GraphicsInfo.api !== GraphicsInfo.Software
+    // Delegates bump the revision from their own change handlers, which the
+    // aggregate bindings read. Bumping synchronously re-enters those bindings
+    // while they run (Qt reports a binding loop on `ready`), so coalesce the
+    // updates into one increment after the current evaluation finishes.
+    Timer {
+        id: batchRevisionTimer
+        interval: 0
+        repeat: false
+        onTriggered: root.batchRevision++
+    }
+    function bumpBatchRevision() {
+        if (!batchRevisionTimer.running)
+            batchRevisionTimer.start()
+    }
     readonly property bool pendingReady: {
         let revision = batchRevision
         let batches = pendingBuffer === 0 ? buffer0 : buffer1
@@ -124,8 +130,8 @@ Item {
                 id: buffer0
                 anchors.fill: parent
                 model: root.buffer0Groups
-                onItemAdded: root.batchRevision++
-                onItemRemoved: root.batchRevision++
+                onItemAdded: root.bumpBatchRevision()
+                onItemRemoved: root.bumpBatchRevision()
                 delegate: batchDelegate
             }
         }
@@ -138,8 +144,8 @@ Item {
                 id: buffer1
                 anchors.fill: parent
                 model: root.buffer1Groups
-                onItemAdded: root.batchRevision++
-                onItemRemoved: root.batchRevision++
+                onItemAdded: root.bumpBatchRevision()
+                onItemRemoved: root.bumpBatchRevision()
                 delegate: batchDelegate
             }
         }
@@ -166,13 +172,14 @@ Item {
                  property size meshResolution: Qt.size(1, Math.max(1, segmentCount * (arrow ? 4 : 2) - 1))
                  property color segmentColor: modelData.color
                  property bool arrow: !!modelData.arrow
-                 property bool ready: root.shaderBackend
-                                      && segments.status === Image.Ready
+                 // Qt delivers Compiled only to the ShaderEffect that triggered
+                 // the compile of a shader program; other effects sharing it,
+                 // and every delegate created later, stay Uncompiled while
+                 // rendering correctly. Readiness cannot depend on that
+                 // signal. A software backend, which cannot draw the effect at
+                 // all, is rejected by the presenter before this layer shows.
+                 property bool ready: segments.status === Image.Ready
                                       && effect.status !== ShaderEffect.Error
-                // Any status other than Compiled is normally an intermediate
-                // state, not a failure: see shaderBackend above. Only Error is
-                // a real compile failure, and a software backend is the one
-                // platform that can never draw the effect.
                 property string shaderError: segments.status === Image.Error
                                              ? "Streamline texture unavailable"
                                              : effect.status === ShaderEffect.Error
@@ -180,16 +187,14 @@ Item {
                                                   ? effect.log
                                                   : "Streamline shader failed to compile (status "
                                                     + effect.status + ")")
-                                               : !root.shaderBackend
-                                                 ? "Streamline shaders need a hardware rendering backend"
-                                                 : ""
-                onReadyChanged: root.batchRevision++
-                onShaderErrorChanged: root.batchRevision++
+                                               : ""
+                onReadyChanged: root.bumpBatchRevision()
+                onShaderErrorChanged: root.bumpBatchRevision()
                 // The aggregate ``ready`` reads delegate state inside a JS
                 // loop, so it must be told when a status transition happens;
                 // ready/shaderError alone do not cover the initial load.
-                onImageStatusChanged: root.batchRevision++
-                onEffectStatusChanged: root.batchRevision++
+                onImageStatusChanged: root.bumpBatchRevision()
+                onEffectStatusChanged: root.bumpBatchRevision()
                 anchors.fill: parent
                 Image { id: segments; source: batch.segmentSource; visible: false; smooth: false; cache: false }
                 ShaderEffect {
