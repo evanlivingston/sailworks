@@ -1,6 +1,7 @@
 """Qt Quick weather/chart child hosted by the desktop viewport map."""
 
 import os
+import time
 
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, QTimer, Qt, Signal
 from PySide6.QtGui import QGuiApplication, QPainter
@@ -226,6 +227,10 @@ class WeatherPresenter(QObject):
                 )
                 self.host_widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             self.host_widget.installEventFilter(self)
+            if widget is not self.host_widget:
+                # The native window receives the pointer events; keep the
+                # hover/measurement path attached to it.
+                widget.installEventFilter(self)
             widget._status.hide()
             if self.native_fields:
                 widget.stateChanged.connect(
@@ -538,8 +543,14 @@ class WeatherPresenter(QObject):
             widget.set_environment(cache[4], target, cache[1:4])
         if not self._rendered and not self.deadline.isActive():
             self.deadline.start()
-        foreground.show()
-        foreground.raise_()
+        if getattr(widget, "_native_host_mode", False):
+            # A native window cannot sit under a QWidget overlay, and the
+            # transparent sibling would otherwise take the pointer events.
+            foreground.hide()
+            self.host_widget.raise_()
+        else:
+            foreground.show()
+            foreground.raise_()
         timeline = getattr(self.canvas, "timeline", None)
         if timeline is not None:
             timeline.raise_()
@@ -627,7 +638,17 @@ class WeatherPresenter(QObject):
 
     def eventFilter(self, watched, event):  # noqa: N802
         if watched is self.widget and event.type() == QEvent.Type.MouseMove:
-            self.canvas._hover(event.position())
+            # Sampling the weather under the pointer is far too expensive to
+            # run on every move while the map is being dragged.  Coalesce to
+            # 20 Hz and skip it during camera motion.
+            now = time.monotonic()
+            last = getattr(self, "_last_hover_at", 0.0)
+            if (
+                now - last >= 0.05
+                and not getattr(self.widget, "is_moving", lambda: False)()
+            ):
+                self._last_hover_at = now
+                self.canvas._hover(event.position())
         if watched is self.widget and event.type() == QEvent.Type.Leave:
             self.canvas._cursor_screen_position = None
             cursor_timer = getattr(self.canvas, "_cursor_refresh_timer", None)

@@ -2318,10 +2318,14 @@ def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
                 # 16 ms on macOS), which dominated every pan frame.
                 return
             self._state = state
-            self._status.setText(text)
-            self._status.adjustSize()
-            self._status.setVisible(state != "ready")
-            self._status.raise_()
+            if self._status.parent() is not None:
+                # The native host has no QWidget parent for the status label,
+                # so every visibility call would be a window-server round trip
+                # for a label that can never be shown.
+                self._status.setText(text)
+                self._status.adjustSize()
+                self._status.setVisible(state != "ready")
+                self._status.raise_()
             if state == "ready" and self._weather_ready_at is None:
                 # The weather is presented: the chart layer may now be asked
                 # for its own generation.
