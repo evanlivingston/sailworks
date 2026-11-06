@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import threading
 import fcntl
@@ -812,11 +813,8 @@ class Era5DownloadService:
             for path, piece, provenance in staged_chunks:
                 # register_file is idempotent; only artifacts absent before this
                 # invocation belong to this transaction and may be rolled back.
-                digest = _sha256(path)
-                destination = root / "artifacts" / digest
-                existed = destination.exists()
-                artifact = self.store.register_file(path)
-                if not existed:
+                artifact, created = self.store.register_file_tracked(path)
+                if created:
                     registered.append(artifact)
                 record = {
                     "dataset": DATASET,
@@ -1018,18 +1016,8 @@ class _catalog_lock:
         self.lock.release()
 
 
-def _sha256(path):
-    import hashlib
-
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def publish_history_display(state, entries, *, model_id="ERA5"):
-    """Publish downloaded ERA5 chunks as one hourly display forecast."""
+def build_history_display(state, entries, *, model_id="ERA5"):
+    """Build, but do not publish, one hourly display forecast from ERA5 chunks."""
     usable = [
         entry
         for entry in entries
@@ -1046,7 +1034,8 @@ def publish_history_display(state, entries, *, model_id="ERA5"):
         ) as stream:
             temp_path = Path(stream.name)
             for entry in usable:
-                stream.write((root / str(entry["artifact"])).read_bytes())
+                with (root / str(entry["artifact"])).open("rb") as source:
+                    shutil.copyfileobj(source, stream, 1024 * 1024)
         artifact = state.store.register_file(temp_path)
     finally:
         if temp_path is not None:
@@ -1130,6 +1119,18 @@ def publish_history_display(state, entries, *, model_id="ERA5"):
     tranche = ForecastTranche(
         f"era5-{artifact.sha256[:16]}-v2", now, (config,), (entry,)
     )
+    return tranche
+
+
+def publish_history_tranche(state, tranche):
+    """Publish and activate a built history tranche on the calling thread."""
+    entry = tranche.entries[0]
     state.store.publish(tranche)
     state.store.activate(AnalysisSelection(tranche.tranche_id, entry.entry_id))
     return tranche
+
+
+def publish_history_display(state, entries, *, model_id="ERA5"):
+    """Publish downloaded ERA5 chunks as one hourly display forecast."""
+    tranche = build_history_display(state, entries, model_id=model_id)
+    return publish_history_tranche(state, tranche)

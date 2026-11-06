@@ -43,6 +43,8 @@ class _ECMWFSource(GribSource):
     def __init__(self, session=None):
         self._session = session
         self.bounds = None
+        self._index_cache = {}
+        self._listing_cache = {}
 
     @property
     def name(self):
@@ -184,14 +186,40 @@ class _ECMWFSource(GribSource):
             if close_session:
                 session.close()
 
-    @staticmethod
-    def _catalog_text(session, url, cancel):
+    def _catalog_text(self, session, url, cancel):
+        cached = self._listing_cache.get(url)
+        if cached is not None:
+            return cached
         try:
-            return fetch_text(session, url, cancel=cancel)
+            text = fetch_text(session, url, cancel=cancel)
         except HTTPStatusError as exc:
             if exc.status_code == 404:
                 return None
             raise
+        self._listing_cache[url] = text
+        return text
+
+    def _selected_index(
+        self, session, index_url, date_text, cycle, step, fields, cancel
+    ):
+        key = (index_url, tuple(fields))
+        cached = self._index_cache.get(key)
+        if cached is not None:
+            return cached
+        result = read_selected_index(
+            session,
+            index_url,
+            date_text,
+            cycle,
+            step,
+            fields,
+            _FIELDS,
+            self.model_path,
+            self.product_class,
+            cancel,
+        )
+        self._index_cache[key] = result
+        return result
 
     def get_download_list(self, options=None):
         selected = self._options(options)
@@ -232,16 +260,13 @@ class _ECMWFSource(GribSource):
                     BASE_URL,
                     f"{date_text}/{cycle}z/{self.model_path}/0p25/oper/{stem}.index",
                 )
-                ranges, _expver = read_selected_index(
+                ranges, _expver = self._selected_index(
                     session,
                     index_url,
                     date_text,
                     cycle,
                     step,
                     fields,
-                    _FIELDS,
-                    self.model_path,
-                    self.product_class,
                     cancel,
                 )
                 total += sum(length for _offset, length in ranges)
@@ -264,7 +289,9 @@ class _ECMWFSource(GribSource):
                 BASE_URL,
                 f"{date_text}/{cycle}z/{self.model_path}/0p25/oper/",
             )
-            listing = fetch_text(session, stream_url, cancel=cancel)
+            listing = self._catalog_text(session, stream_url, cancel)
+            if listing is None:
+                raise ValueError("Pinned ECMWF run is no longer available")
             listed = listed_names(stream_url, listing)
             messages = []
             selected_expver = None
@@ -276,16 +303,13 @@ class _ECMWFSource(GribSource):
                     )
                 index_url = urljoin(stream_url, stem + ".index")
                 grib_url = urljoin(stream_url, stem + ".grib2")
-                ranges, expver = read_selected_index(
+                ranges, expver = self._selected_index(
                     session,
                     index_url,
                     date_text,
                     cycle,
                     step,
                     fields,
-                    _FIELDS,
-                    self.model_path,
-                    self.product_class,
                     cancel,
                 )
                 if not ranges:

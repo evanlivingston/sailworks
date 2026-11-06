@@ -317,10 +317,26 @@ def stage_wind(  # noqa: C901 - staging, memo reuse and cancellation kept togeth
         times = sampler._times[identity, parameter]
         query = np.full(use.sum(), stamp)
         a, ta, sa = sampler._side(
-            group, reversed(times), parameter, lat[use], lon[use], query, True, cancel
+            identity,
+            group,
+            reversed(times),
+            parameter,
+            lat[use],
+            lon[use],
+            query,
+            True,
+            cancel,
         )
         b, tb, sb = sampler._side(
-            group, times, parameter, lat[use], lon[use], query, False, cancel
+            identity,
+            group,
+            times,
+            parameter,
+            lat[use],
+            lon[use],
+            query,
+            False,
+            cancel,
         )
         left, names = sampler._blend(a, ta, sa, b, tb, sb, np.full(use.sum(), before))
         right, _ = sampler._blend(a, ta, sa, b, tb, sb, np.full(use.sum(), after))
@@ -408,6 +424,7 @@ def stage_streamline_endpoints(sampler, stamp, lats, lons, cancel=lambda: False)
         group = sampler.groups[identity]
         times = sampler._times[identity, "wind"]
         ai, tai, sai = sampler._side(
+            identity,
             group,
             reversed(times),
             "wind",
@@ -420,6 +437,7 @@ def stage_streamline_endpoints(sampler, stamp, lats, lons, cancel=lambda: False)
         if cancel():
             return None
         bi, tbi, sbi = sampler._side(
+            identity,
             group,
             times,
             "wind",

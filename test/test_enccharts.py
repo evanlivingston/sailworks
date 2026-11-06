@@ -136,3 +136,15 @@ class TestENCDownloads(unittest.TestCase):
         self.catalog.load()
         self.assertIsNotNone(self.catalog.chart_at(1, 1))
         get.assert_not_called()
+
+    @patch("sailworks.core.enccharts.requests.get")
+    @patch("sailworks.core.enccharts.parse_catalog")
+    def test_populated_fresh_catalog_is_not_reparsed(self, parse, get):
+        cache = Path(self.temporary.name) / "catalog.xml"
+        cache.write_bytes(catalog_xml())
+        self.catalog.cells = parse_catalog(catalog_xml())
+
+        self.catalog.load()
+
+        parse.assert_not_called()
+        get.assert_not_called()

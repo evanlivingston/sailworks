@@ -370,14 +370,19 @@ class CurrentField:
             left, right = brackets[0][0][0], brackets[0][1][0]
             gaps = self.times[right] - self.times[left] > 3600
             masked = np.zeros(len(active), dtype=bool)
+            acc_east = np.zeros(len(active))
+            acc_north = np.zeros(len(active))
             for t, wt in brackets[0]:
                 for y, wy in brackets[1]:
                     for x, wx in brackets[2]:
                         ce, cn = self.east[t, y, x], self.north[t, y, x]
                         masked |= ~(np.isfinite(ce) & np.isfinite(cn))
                         # Match scalar multiplication order and corner order.
-                        values[active, 0] += ce * wt * wy * wx
-                        values[active, 1] += cn * wt * wy * wx
+                        weight = wt * wy * wx
+                        acc_east += ce * weight
+                        acc_north += cn * weight
+            values[active, 0] = acc_east
+            values[active, 1] = acc_north
             statuses[active[masked]] = "masked_or_missing"
             statuses[active[gaps]] = "time_gap"
         return statuses, values

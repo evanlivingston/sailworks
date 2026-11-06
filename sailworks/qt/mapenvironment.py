@@ -31,15 +31,22 @@ class MapEnvironmentMixin:
             ),
         )
 
-    def _base_key(self):
+    def _environment_key(self):
+        """Content key for the retained above-ENC environment layer.
+
+        The layer composes only MBTiles above ENC, so the key describes that
+        content: view geometry, palette, ENC state, the MBTiles chart set and
+        the renderer's published frame. Time, wind styling and camera movement
+        are deliberately absent; the padded cache handles camera reuse itself.
+        """
         width, height, ratio = self._view_pixel_size()
         return (
             width,
             height,
             ratio,
             self.controller.settings.chartPalette,
-            self._wind_style_key(),
             bool(self._weather_presenter and self._weather_presenter.enc_active),
+            self.charts.above_enc_key(self),
         )
 
     def _environment_image(self):

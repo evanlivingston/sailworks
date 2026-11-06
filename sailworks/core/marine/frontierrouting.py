@@ -222,7 +222,8 @@ def propagate(self, frontier, seconds, end, gaps, numeric):  # noqa: C901
         )
         ws_kn = data[:, 1] / KNOT
         policy = policy_of(self.polar)
-        nogo = np.asarray([policy.is_nogo(w) for w in ws_kn], dtype=bool)
+        limit = policy.tws_max_kn
+        nogo = ws_kn > limit if limit is not None else np.zeros(len(ws_kn), dtype=bool)
         if nogo.any():
             self.environment.policy_pruned += int(nogo.sum())
             keep = ~nogo
@@ -371,20 +372,27 @@ def route_frontier(self, lastlog, t, hours, start, end):  # noqa: C901
         bearings = GEOD.inv(
             np.full(len(p), start[1]), np.full(len(p), start[0]), p[:, 1], p[:, 0]
         )[0]
-        keys = np.array([round(float(b) / 2) for b in bearings])
-        for i in ids:
-            if distance[i] <= ARRIVAL_METRES and (
-                winner is None or data["times"][i] < data["times"][winner]
-            ):
-                winner = i
-            key = int(keys[i])
-            if key not in bins:
-                bins[key] = [i]
-            else:
-                bins[key].append(i)
-                bins[key].sort(key=lambda idx: distance[idx])
-                if len(bins[key]) > 2:
-                    bins[key] = bins[key][:2]
+        keys = np.rint(bearings / 2.0).astype(np.int64)
+        if len(ids):
+            arrivals = ids[distance[ids] <= ARRIVAL_METRES]
+            if len(arrivals):
+                winner = int(arrivals[np.argmin(data["times"][arrivals])])
+            order = np.lexsort((distance[ids], keys[ids]))
+            sorted_ids = ids[order]
+            sorted_keys = keys[sorted_ids]
+            starts = np.concatenate(([0], np.flatnonzero(np.diff(sorted_keys)) + 1))
+            grouped = {}
+            for position, start_index in enumerate(starts):
+                group_end = (
+                    starts[position + 1]
+                    if position + 1 < len(starts)
+                    else len(sorted_ids)
+                )
+                group = sorted_ids[start_index : min(group_end, start_index + 2)]
+                grouped[int(sorted_keys[start_index])] = [int(index) for index in group]
+            unique_keys, first_positions = np.unique(keys[ids], return_index=True)
+            for key in unique_keys[np.argsort(first_positions)]:
+                bins[int(key)] = grouped[int(key)]
         if len(ids):
             best_distance = min(best_distance, float(np.min(distance[ids])))
     if self.environment.progress:

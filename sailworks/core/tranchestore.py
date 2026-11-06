@@ -45,6 +45,7 @@ class TrancheStore:
         self.active_path = self.root / "active.json"
         self.downloads_path = self.root / "downloads.json"
         self.downloads_lock_path = self.root / "downloads.lock"
+        self._digests = {}
 
     @staticmethod
     def _fsync_dir(path):
@@ -257,6 +258,10 @@ class TrancheStore:
 
     def register_file(self, source):
         """Register a local input by copying it into canonical immutable storage."""
+        return self.register_file_tracked(source)[0]
+
+    def register_file_tracked(self, source):
+        """Register a file and report whether this call created the artifact."""
         fd, stage_name = tempfile.mkstemp(dir=self.artifacts, prefix=".stage-")
         digest, size = hashlib.sha256(), 0
         try:
@@ -271,15 +276,17 @@ class TrancheStore:
             hexdigest = digest.hexdigest()
             destination = self.artifacts / hexdigest
             os.chmod(stage_name, 0o444)
+            created = not destination.exists()
             try:
                 os.link(stage_name, destination)
                 self._fsync_dir(self.artifacts)
             except FileExistsError:
+                created = False
                 if destination.is_symlink():
                     raise ValueError("artifact destination is a symlink")
-                if self._hash(destination) != (hexdigest, size):
+                if self._verified_hash(destination) != (hexdigest, size):
                     raise ValueError("content-address collision or corrupted artifact")
-            return Artifact(f"artifacts/{hexdigest}", hexdigest, size)
+            return Artifact(f"artifacts/{hexdigest}", hexdigest, size), created
         finally:
             if os.path.exists(stage_name):
                 os.unlink(stage_name)
@@ -293,6 +300,20 @@ class TrancheStore:
                 size += len(chunk)
         return digest.hexdigest(), size
 
+    def _verified_hash(self, path):
+        """Hash a file once per (path, size, mtime) instead of per lookup."""
+        key = str(path)
+        cached = self._digests.get(key)
+        if cached is not None:
+            size, mtime_ns, digest = cached
+            stat = path.stat()
+            if stat.st_size == size and stat.st_mtime_ns == mtime_ns:
+                return digest, size
+        digest, size = self._hash(path)
+        stat = path.stat()
+        self._digests[key] = (stat.st_size, stat.st_mtime_ns, digest)
+        return digest, size
+
     def _artifact_path(self, artifact):
         if not isinstance(artifact, Artifact):
             raise ValueError("invalid artifact reference")
@@ -301,7 +322,7 @@ class TrancheStore:
             raise ValueError("artifact path is a symlink")
         if not path.is_file():
             raise FileNotFoundError(path)
-        if path.resolve().parent != self.artifacts or self._hash(path) != (
+        if path.resolve().parent != self.artifacts or self._verified_hash(path) != (
             artifact.sha256,
             artifact.size,
         ):

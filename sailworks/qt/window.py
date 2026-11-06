@@ -456,7 +456,7 @@ class PreviewWindow(QMainWindow):
     def _save_log_edits(self):
         try:
             if self.controller.save_log_edits():
-                self.statusBar().showMessage("Saved edited log", 3000)
+                self.statusBar().showMessage("Saving edited log…", 3000)
         except Exception as exc:
             QMessageBox.warning(self, "Unable to save log", str(exc))
 

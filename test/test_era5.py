@@ -1335,3 +1335,31 @@ def test_canceled_era5_download_leaves_no_catalog_or_artifacts(tmp_path):
     assert "cancel" in str(errors[0]).lower()
     assert not (root / "era5-history.json").exists()
     assert list((root / "artifacts").iterdir()) == []
+
+
+def test_build_history_display_defers_publish_and_activate(tmp_path):
+    from sailworks.core.era5 import (
+        FIELD_VARIABLES,
+        build_history_display,
+        publish_history_tranche,
+    )
+    from sailworks.core.tranchestore import TrancheStore
+
+    (tmp_path / "x.grib").write_bytes(b"x")
+    entry = {
+        "artifact": "x.grib",
+        "start": "2025-01-01T00:00:00+00:00",
+        "end": "2025-01-01T01:00:00+00:00",
+        "area": (50, -10, 40, 5),
+        "variables": list(FIELD_VARIABLES["pressure"]),
+    }
+    store = TrancheStore(tmp_path)
+    state = SimpleNamespace(store=store)
+
+    tranche = build_history_display(state, [entry])
+    assert not list(store.manifests.glob("*.json"))
+    assert not store.active_path.exists()
+
+    publish_history_tranche(state, tranche)
+    assert list(store.manifests.glob("*.json"))
+    assert store.active_path.exists()

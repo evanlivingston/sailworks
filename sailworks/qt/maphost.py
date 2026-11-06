@@ -202,8 +202,9 @@ class MapHostMixin:
         return self.height() + 2 * self._render_padding
 
     def _invalidate_base(self):
+        # The environment layer is content-keyed (_environment_key); only the
+        # per-frame base and background cache are invalidated here.
         self._base_cache = None
-        self._environment_cache = None
         self.background = None
 
     def invalidate_navigation(self):

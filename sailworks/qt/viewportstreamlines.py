@@ -43,6 +43,9 @@ class StreamlineImageProvider(QQuickImageProvider):
 
     def publish(self, key, segments):
         image, count = encode_segments(segments)
+        return self.publish_image(key, image, count)
+
+    def publish_image(self, key, image, count):
         token = f"{self._active_generation}_{self._generation}_{key}"
         self._generation += 1
         self._images[token] = image
@@ -163,6 +166,7 @@ class ViewportStreamlineModel:
         self._key = None
         self._state = "hidden"
         self._paths = None
+        self._packed = None
         self._endpoint_cache = None
         self._endpoint_key = None
         self._endpoint_lock = Lock()
@@ -178,6 +182,7 @@ class ViewportStreamlineModel:
                 )
                 if self.gpu_trace and same_layout and self._active is not None:
                     self._key, self._paths, self.error = key, None, ""
+                    self._packed = None
                     self._state = "loading"
                     self._pending = (key, self._cancel)
                     self._condition.notify_all()
@@ -185,6 +190,7 @@ class ViewportStreamlineModel:
                 self._cancel.set()
                 self._cancel = Event()
                 self._key, self._paths, self.error = key, None, ""
+                self._packed = None
                 self._snapshot = None
                 if key is None:
                     with self._endpoint_lock:
@@ -218,6 +224,30 @@ class ViewportStreamlineModel:
             if self._snapshot is None or camera != self._key:
                 return None
             return self._snapshot
+
+    @staticmethod
+    def _pack_paths(camera, paths):
+        """Pack and encode trace paths in the worker, never on the GUI thread."""
+        from sailworks.rendering.streamlinepaths import paths_to_render_buffers
+
+        buffers = paths_to_render_buffers(paths, camera.over_land)
+        packed = []
+        for bucket, (lines, arrows) in buffers.items():
+            for arrow, segments in ((False, lines), (True, arrows)):
+                for offset in range(0, len(segments), MAX_BATCH_SIZE):
+                    batch = segments[offset : offset + MAX_BATCH_SIZE]
+                    if not len(batch):
+                        continue
+                    image, count = encode_segments(batch)
+                    packed.append((bucket, arrow, image, count))
+        return tuple(packed)
+
+    def packed(self, camera):
+        """The encoded payload for *camera*, or None when it is not ready."""
+        with self._condition:
+            if self._packed is None or camera != self._packed[0]:
+                return None
+            return self._packed[1]
 
     def _take_pending_in_window(self, camera, cancel, window, window_for_stamp):
         """Use the latest time after staging, without redoing the same endpoints."""
@@ -253,8 +283,15 @@ class ViewportStreamlineModel:
                         self.on_change()
                 return
             self._paths, self.error = paths, error
+            self._packed = None
             if not error and not paths:
                 self.error = "No traceable wind cells in selected forecast"
+            elif not error and isinstance(paths, (list, tuple)):
+                try:
+                    self._packed = (camera, self._pack_paths(camera, paths))
+                except (ValueError, MemoryError) as exc:
+                    self.error = f"Streamline encoding failed: {exc}"
+                    self._paths = None
             self._state = "unavailable" if self.error else "ready"
             if self.on_change is not None:
                 self.on_change()

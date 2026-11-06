@@ -120,6 +120,7 @@ class SourceTimePlot(QWidget):
         self._known_model_types = set()
         self.tree_rows = ()
         self.label_width = 240
+        self._grid_cache = None
         self.setAccessibleName("Forecast and marine source valid times (UTC)")
 
     def set_rows(self, rows, bounds=None):
@@ -229,25 +230,41 @@ class SourceTimePlot(QWidget):
         cell_width = width / len(days)
         return tuple(left + int(index * cell_width) for index in range(1, len(days)))
 
-    def _paint_time_grid(self, painter):
+    def _time_grid(self):
+        """Cached hour/day tick x-positions for the current bounds and width."""
         if not self.bounds:
-            return
+            return (), ()
+        key = (tuple(self.bounds), self.width(), self._plot_left())
+        cached = self._grid_cache
+        if cached is not None and cached[0] == key:
+            return cached[1], cached[2]
         start, end = self.bounds
-        bottom = len(self.tree_rows) * self.ROW_HEIGHT
         if end <= start:
-            return
-
+            self._grid_cache = (key, (), ())
+            return (), ()
         day_ticks = self._day_tick_positions()
         day_tick_set = set(day_ticks)
-
-        first_hour = math.ceil(start / 3600) * 3600
-        hour = first_hour
+        hours = []
+        hour = math.ceil(start / 3600) * 3600
         while hour < end:
             x = self._time_to_x(hour)
             if x not in day_tick_set:
-                painter.setPen(QPen(QColor("#414141"), 1))
-                painter.drawLine(x, 0, x, bottom)
+                hours.append(x)
             hour += 3600
+        hours = tuple(hours)
+        self._grid_cache = (key, day_ticks, hours)
+        return day_ticks, hours
+
+    def _paint_time_grid(self, painter):
+        if not self.bounds:
+            return
+        bottom = len(self.tree_rows) * self.ROW_HEIGHT
+        day_ticks, hours = self._time_grid()
+        if not day_ticks and not hours:
+            return
+        painter.setPen(QPen(QColor("#414141"), 1))
+        for x in hours:
+            painter.drawLine(x, 0, x, bottom)
         painter.setPen(QPen(QColor("#666666"), 2))
         for x in day_ticks:
             painter.drawLine(x, 0, x, bottom)

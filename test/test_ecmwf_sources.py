@@ -437,3 +437,25 @@ def test_ecmwf_size_estimate_sums_selected_indexed_ranges(monkeypatch):
     )
 
     assert source.estimate_download_size(identifier) == (400, False)
+
+
+def test_estimate_then_download_reuses_selected_indexes(tmp_path):
+    session = DownloadSession()
+    source = ECMWFIFSSource(session=session)
+    identifier = json.dumps(
+        {
+            "source": source.name,
+            "date": "20250101",
+            "cycle": "00",
+            "hours": 0,
+            "steps": [0],
+            "fields": ["wind"],
+        }
+    )
+
+    source.estimate_download_size(identifier)
+    before = len(session.calls)
+    source.download(identifier, str(tmp_path), lambda _: None)
+
+    later = [url for url, _ in session.calls[before:]]
+    assert not [url for url in later if url.endswith(".index")]

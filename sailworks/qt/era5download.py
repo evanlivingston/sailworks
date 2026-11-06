@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import json
 import threading
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
@@ -22,8 +22,9 @@ from PySide6.QtWidgets import (
 from sailworks.core.era5 import (
     Era5DownloadService,
     Era5Error,
+    build_history_display,
     plan_request,
-    publish_history_display,
+    publish_history_tranche,
 )
 from sailworks.core.timecontrol import utc_to_wall
 from .forecastdownload import ModelListRow
@@ -35,11 +36,15 @@ CDS_LIVE_URL = "https://cds.climate.copernicus.eu/live"
 class Era5DownloadTab(QWidget):
     """Download historical data without changing forecast or routing state."""
 
+    displayReady = Signal(object, object)
+
     def __init__(self, controller, capture_region=None, parent=None):
         super().__init__(parent)
         self.controller = controller
         self.capture_region = capture_region
         self.service = Era5DownloadService(controller.analysis.state.store)
+        self.displayReady.connect(self._finish_history_display)
+
         self.plan = None
         self.job = None
         layout = QVBoxLayout(self)
@@ -148,7 +153,6 @@ class Era5DownloadTab(QWidget):
         self.timer = QTimer(self)
         self.timer.setInterval(500)
         self.timer.timeout.connect(self.poll)
-        self.timer.start()
         self._poll_count = 0
         self.nbs_job = None
         self.nbs_cancel = None
@@ -451,6 +455,14 @@ class Era5DownloadTab(QWidget):
         self.cancel_button.setEnabled(True)
         self.retry_button.setEnabled(False)
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.timer.start()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self.timer.stop()
+
     def poll(self):
         if getattr(self, "nbs_job", None) is not None:
             self._poll_nbs()
@@ -550,14 +562,35 @@ class Era5DownloadTab(QWidget):
                 "No downloaded ERA5 history to show yet; download it first."
             )
             return False
+        self.status.setText("Building ERA5 history display…")
+
+        def build():
+            try:
+                tranche = build_history_display(state, entries)
+                error = None
+            except Exception as exc:
+                tranche, error = None, exc
+            self.displayReady.emit(tranche, error)
+
+        threading.Thread(target=build, daemon=True, name="era5-display").start()
+        return True
+
+    def _finish_history_display(self, tranche, error):
+        if tranche is None:
+            self.status.setText(f"Could not display ERA5 history: {error}")
+            return
+        analysis = getattr(self.controller, "analysis", None)
+        state = getattr(analysis, "state", None)
+        if state is None:
+            self.status.setText("Historical data is not available in this workspace.")
+            return
         try:
-            tranche = publish_history_display(state, entries)
-            self._show_tranche(tranche)
-            self.status.setText("Published ERA5 history as a display forecast.")
-            return True
+            publish_history_tranche(state, tranche)
         except Exception as exc:
             self.status.setText(f"Could not display ERA5 history: {exc}")
-            return False
+            return
+        self._show_tranche(tranche)
+        self.status.setText("Published ERA5 history as a display forecast.")
 
     def _show_tranche(self, tranche):
         """Jump to a freshly published tranche and refresh the map."""

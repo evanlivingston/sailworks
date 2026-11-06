@@ -44,6 +44,7 @@ from sailworks.rendering.weatherbarbs import (
     node_anchor_atlas,
     _view_bounds,
     select_resident,
+    selection_geometry,
     stage_field,
     stage_wave_selection,
 )
@@ -498,6 +499,8 @@ class GribViewportModel:
         self._prepared_by = {}
         self._selection_cache = {}
         self._selection_cache_order = []
+        self._geometry_cache = {}
+        self._geometry_cache_order = []
         # The last selection served for this field/frame/size, with the view
         # it was sampled at, so an in-flight zoom gesture can reuse it even
         # though the exact-zoom cache key no longer matches.
@@ -762,6 +765,32 @@ class GribViewportModel:
                         self._anchor_atlas_cache[atlas_key] = atlas
                         self._anchor_atlas_cache_order.append(atlas_key)
             if selection is None:
+                geometry_key = (
+                    field.generation,
+                    view._center_lat,
+                    view._center_lon,
+                    view._zoom,
+                    view.width,
+                    view.height,
+                    view.density,
+                    view.over_land,
+                    view.geographic,
+                    SELECTION_REUSE_MARGIN,
+                )
+                geometry = self._geometry_cache.get(geometry_key)
+                if geometry is None:
+                    try:
+                        geometry = selection_geometry(
+                            field, None, view, lambda: False, SELECTION_REUSE_MARGIN
+                        )
+                    except Exception:  # coverage or projection escape
+                        geometry = None
+                    if geometry is not None:
+                        if len(self._geometry_cache) >= 8:
+                            oldest = self._geometry_cache_order.pop(0)
+                            self._geometry_cache.pop(oldest, None)
+                        self._geometry_cache[geometry_key] = geometry
+                        self._geometry_cache_order.append(geometry_key)
                 try:
                     selection = select_resident(
                         field,
@@ -770,6 +799,7 @@ class GribViewportModel:
                         anchor,
                         anchor_atlas=atlas,
                         margin=SELECTION_REUSE_MARGIN,
+                        geometry=geometry,
                     ).selection
                 except Exception as exc:  # coverage or time escape
                     logger.debug("Resident selection unavailable: %s", exc)
@@ -3997,6 +4027,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             """
             _prepare_wave_layer(self)
             visible = bool(visible)
+            if visible == self._wave_arrows_visible and (
+                not visible or self._wave_arrows_state == "ready"
+            ):
+                return
             self._wave_arrows_visible = visible
             if not visible:
                 self._wave_arrows_state = "hidden"
@@ -4027,7 +4061,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             layout; the wind barbs keep their camera density untouched.
             """
             _prepare_wave_layer(self)
-            self._wave_arrow_density = str(density)
+            density = str(density)
+            if density == self._wave_arrow_density:
+                return
+            self._wave_arrow_density = density
             if self._wave_arrows_visible:
                 self._update_wave_arrows(self._camera)
 
@@ -4407,6 +4444,20 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     if item is not None:
                         item.setVisible(False)
 
+        def _wave_barbs_key(self, fields, camera):
+            bands = "/".join(f"{band}:{fields[band].generation}" for band in WAVE_BANDS)
+            return f"{bands}/{self._wave_arrow_density}/{camera.stamp()}"
+
+        def _wave_barbs_published(self, key):
+            manager = self._publication_manager
+            layer = manager.layers[LayerRole.WAVE_BARBS]
+            return (
+                layer.visible is not None
+                and layer.visible.generation == manager.current_generation
+                and layer.visible_resources.get("key") == key
+                and layer.pending is None
+            )
+
         def _update_wave_arrows(self, camera):
             """Stage and publish WAVE_BARBS from the three wave bands.
 
@@ -4464,6 +4515,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     ),
                 )
                 return
+            key = self._wave_barbs_key(fields, camera)
+            if self._wave_barbs_published(key):
+                self._wave_barbs.setVisible(True)
+                self._show_wave_arrow_state("ready", "")
+                return
             sampler = getattr(models["wave_height"], "_sampler", None)
             land = getattr(models["wave_height"], "_land", None)
             try:
@@ -4503,19 +4559,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 return
             images = wave_barbs_images(fields)
             stamp = camera.stamp()
-            key = "/".join(f"{band}:{fields[band].generation}" for band in WAVE_BANDS)
-            key = f"{key}/{self._wave_arrow_density}/{stamp}"
-            manager = self._publication_manager
-            layer = manager.layers[LayerRole.WAVE_BARBS]
-            if (
-                layer.visible is not None
-                and layer.visible.generation == manager.current_generation
-                and layer.visible_resources.get("key") == key
-                and layer.pending is None
-            ):
+            key = self._wave_barbs_key(fields, camera)
+            if self._wave_barbs_published(key):
                 self._wave_barbs.setVisible(True)
                 self._show_wave_arrow_state("ready", "")
                 return
+            manager = self._publication_manager
+            layer = manager.layers[LayerRole.WAVE_BARBS]
             budget = sum(image.sizeInBytes() for image in images)
             delta = max(0, budget - layer.pending_budget_bytes)
             if not manager.budget.can_allocate(LayerRole.WAVE_BARBS, delta):
@@ -4984,12 +5034,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     self._streamlines.property("pendingBuffer"),
                     self._streamlines.isVisible(),
                 )
-            from sailworks.rendering.streamlinepaths import (
-                paths_to_render_buffers,
-            )
             from sailworks.rendering.windpainter import barb_bucket_colors
             from PySide6.QtGui import QColor
-            from .viewportstreamlines import MAX_BATCH_SIZE
 
             if state not in ("ready", "preview") or paths is None:
                 if gpu_item is not None and state in (
@@ -5092,34 +5138,28 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     self._show_state("ready")
                     return "ready"
             groups = []
-            buffers = paths_to_render_buffers(paths, camera.over_land)
-            for bucket, (lines, arrows) in buffers.items():
-                for arrow, segments in ((False, lines), (True, arrows)):
-                    if not len(segments):
-                        continue
-                    for offset in range(0, len(segments), MAX_BATCH_SIZE):
-                        batch = segments[offset : offset + MAX_BATCH_SIZE]
-                        try:
-                            url, count = self._streamline_provider.publish(
-                                bucket, batch
-                            )
-                        except (ValueError, MemoryError) as exc:
-                            self._streamline_model.error = (
-                                f"Streamline encoding failed: {exc}"
-                            )
-                            # Failed staging must not tear down the front buffer.
-                            self._show_state("unavailable")
-                            self._status.setText(self._streamline_model.error)
-                            self._status.adjustSize()
-                            return
-                        groups.append(
-                            {
-                                "source": url,
-                                "count": count,
-                                "color": QColor.fromRgbF(*barb_bucket_colors()[bucket]),
-                                "arrow": arrow,
-                            }
-                        )
+            for bucket, arrow, image, batch_count in (
+                self._streamline_model.packed(camera) or ()
+            ):
+                try:
+                    url, count = self._streamline_provider.publish_image(
+                        bucket, image, batch_count
+                    )
+                except (ValueError, MemoryError) as exc:
+                    self._streamline_model.error = f"Streamline encoding failed: {exc}"
+                    # Failed staging must not tear down the front buffer.
+                    self._show_state("unavailable")
+                    self._status.setText(self._streamline_model.error)
+                    self._status.adjustSize()
+                    return
+                groups.append(
+                    {
+                        "source": url,
+                        "count": count,
+                        "color": QColor.fromRgbF(*barb_bucket_colors()[bucket]),
+                        "arrow": arrow,
+                    }
+                )
             self._pending_streamline_groups = groups
             self._pending_streamline_urls = tuple(group["source"] for group in groups)
             self._pending_streamline_camera = camera

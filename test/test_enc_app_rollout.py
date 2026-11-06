@@ -1012,9 +1012,57 @@ def test_map_host_size_and_invalidation_helpers_preserve_dpr_contract():
     MapHostMixin._invalidate_base(host)
     MapHostMixin.invalidate_navigation(host)
     assert host._base_cache is None
-    assert host._environment_cache is None
+    assert host._environment_cache is not None
     assert host._nav_cache is None
     assert host.background is None
+
+
+def test_time_only_redraw_keeps_the_above_enc_environment_cache():
+    from datetime import datetime
+
+    from sailworks.qt.mapenvironment import MapEnvironmentMixin
+    from sailworks.qt.maphost import MapHostMixin
+
+    class Host(MapHostMixin, MapEnvironmentMixin):
+        pass
+
+    host = Host()
+    host._base_cache = object()
+    host._environment_cache = object()
+    host.background = object()
+    host._nav_cache = object()
+    host._view_pixel_size = lambda: (800, 600, 2)
+    host._weather_presenter = SimpleNamespace(enc_active=False)
+    host.controller = SimpleNamespace(
+        settings=SimpleNamespace(chartPalette="day"),
+    )
+    host.charts = SimpleNamespace(above_enc_key=lambda canvas: ("layers", 1))
+    host.time_control = SimpleNamespace(time=datetime(2026, 10, 22, 12))
+
+    before = host._environment_key()
+    host.time_control.time = datetime(2026, 10, 22, 18)
+    assert host._environment_key() == before
+
+    host.controller.settings.chartPalette = "night"
+    assert host._environment_key() != before
+
+    host.controller.settings.chartPalette = "day"
+    host.charts = SimpleNamespace(above_enc_key=lambda canvas: ("layers", 2))
+    assert host._environment_key() != before
+
+
+def test_time_change_redraw_uses_the_single_content_keyed_path():
+    from sailworks.qt.mapforecast import MapForecastMixin
+
+    host = SimpleNamespace(
+        _gpu=None,
+        _cancel_cursor=Mock(),
+        queue_draw=Mock(),
+    )
+
+    MapForecastMixin._time_changed(host, None)
+
+    host.queue_draw.assert_called_once_with()
 
 
 def test_environment_layer_excludes_marine_and_weather_raster():

@@ -425,6 +425,17 @@ class ChartCollection:
         )
         self._mbtiles_renderer.draw(gpsmap, cr, charts, self._palette)
 
+    def above_enc_key(self, gpsmap):
+        """Content identity of the above-ENC layer, including published tiles."""
+        layers = tuple(
+            id(chart)
+            for chart in self.charts
+            if isinstance(chart, MBTilesChart)
+            and chart.enabled
+            and chart_class_enabled(self.settings_manager, chart)
+        )
+        return layers, self._mbtiles_renderer.publication_token(gpsmap)
+
     def _draw_base(self, gpsmap, cr, charts):
         # Chart pixels are static while instruments, weather and routes repaint.
         # A margin also lets small pans reuse the same image at a shifted origin.

@@ -994,3 +994,64 @@ def test_missing_wave_data_is_an_explicit_unavailable_state():
         item.setVisible.assert_called_once_with(False)
         item.setProperty.assert_any_call("statusText", "No wave forecast")
         item.setProperty.assert_any_call("waveLoading", False)
+
+
+def test_stage_selection_reuses_supplied_geometry_without_node_lookup():
+    from types import SimpleNamespace
+
+    from sailworks.rendering.weatherbarbs import (
+        selection_geometry,
+        stage_selection,
+    )
+
+    lats = np.linspace(-0.2, 0.2, 5)
+    lons = np.linspace(-0.2, 0.2, 5)
+    points = np.array([(lat, lon) for lat in lats for lon in lons])
+    points = points[np.lexsort((points[:, 0], points[:, 1]))]
+
+    class ExplodingIndex(dict):
+        def __init__(self):
+            super().__init__()
+            self.armed = False
+            self.calls = 0
+
+        def get(self, key, default=None):
+            self.calls += 1
+            if self.armed:
+                raise AssertionError("selection geometry was recomputed")
+            return super().get(key, default)
+
+    index = ExplodingIndex()
+    index.update(
+        {
+            (round(float(lat), 9), round(float(lon), 9)): position
+            for position, (lat, lon) in enumerate(points)
+        }
+    )
+    field = SimpleNamespace(
+        generation="g",
+        points=points,
+        grids=(SimpleNamespace(nodes=lambda _bounds: points),),
+        index=index,
+        land_flags=None,
+    )
+    view = BarbView(640, 480, 0.0, 0.0, 4, "standard", True)
+    geometry = selection_geometry(field, None, view, margin=32.0)
+    calls = index.calls
+    index.armed = True
+    field.grids = ()
+
+    selection = stage_selection(
+        None,
+        field,
+        0.0,
+        view,
+        None,
+        margin=32.0,
+        values_for=lambda ids: np.zeros((len(ids), 2)),
+        geometry=geometry,
+    )
+
+    assert selection is not None
+    assert selection.count > 0
+    assert index.calls == calls
