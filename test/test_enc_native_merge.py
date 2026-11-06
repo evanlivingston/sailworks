@@ -14,7 +14,6 @@ def test_factory_gets_both_enc_and_native_options(presenter, monkeypatch):
     presenter.canvas.controller.native_weather_budget = object()
     factory = Mock()
     monkeypatch.setattr(weatherpresenter, "_viewport_widget_class", lambda: factory)
-    monkeypatch.setattr(weatherpresenter, "WeatherForeground", Mock())
     monkeypatch.setattr(presenter, "_model", lambda source, *, grid: Mock())
     presenter._create(None)
     kwargs = factory.call_args.kwargs
@@ -59,7 +58,6 @@ def test_native_host_retirement_rejects_queued_old_signals(presenter):
     presenter.canvas.controller.native_weather_fields = True
     widget = Mock()
     presenter.widget = widget
-    presenter.foreground = Mock()
     old_generation = presenter._host_generation
     presenter._drop_widget()
     widget.dispose.assert_called_once()
@@ -72,11 +70,14 @@ def test_native_host_retirement_rejects_queued_old_signals(presenter):
     presenter.canvas._invalidate_base.assert_called_once()
 
 
-def test_non_native_source_change_replaces_weather_only_once(presenter):
+def test_source_change_retires_the_native_child_once(presenter):
     presenter.canvas.disposed = False
     widget = Mock()
     presenter.widget = widget
     presenter._model = Mock(return_value=object())
     presenter.source_changed()
-    widget.replace_model.assert_called_once()
+    widget.dispose.assert_called_once()
+    widget.deleteLater.assert_called_once()
+    widget.replace_model.assert_not_called()
+    assert presenter.widget is None
     presenter.canvas._invalidate_base.assert_called_once()

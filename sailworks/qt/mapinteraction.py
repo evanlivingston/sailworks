@@ -12,6 +12,9 @@ class MapInteractionMixin:
             overlay = getattr(presenter, name, None)
             if overlay is not None:
                 overlay.update()
+        publish = getattr(self, "publish_route_overlay", None)
+        if publish is not None:
+            publish()
 
     def _clear_measurement(self):
         self._measure_points = ()

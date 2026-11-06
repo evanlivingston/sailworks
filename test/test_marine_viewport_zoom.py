@@ -53,24 +53,24 @@ def test_wheel_reprojects_marine_and_renders_before_settling(gribs, monkeypatch)
     )
     monkeypatch.setattr(marinequick, "sample_currents", lambda *args: snapshot)
     lock = Lock()
-    publications, nodes, frames = [], [], []
+    publications, frames = [], []
     present = marinequick.MarineCurrentItem.present
-    paint_node = marinequick.MarineCurrentItem.updatePaintNode
+    publish_image = marinequick.MarineImageProvider.publish
 
-    def observed_present(item, sampled, current):
-        present(item, sampled, current)
+    def observed_present(item, sampled, current, *args):
+        present(item, sampled, current, *args)
         with lock:
             publications.append((current.zoom, item.vertices.tobytes()))
 
-    def observed_node(item, old, data):
-        node = paint_node(item, old, data)
+    def observed_publish(provider, image):
+        url = publish_image(provider, image)
         with lock:
-            if node is not None and publications:
-                nodes.append(publications[-1])
-        return node
+            if publications:
+                frames.append(publications[-1])
+        return url
 
     monkeypatch.setattr(marinequick.MarineCurrentItem, "present", observed_present)
-    monkeypatch.setattr(marinequick.MarineCurrentItem, "updatePaintNode", observed_node)
+    monkeypatch.setattr(marinequick.MarineImageProvider, "publish", observed_publish)
     widget = gribviewport._viewport_widget_class()(
         model,
         gpu_weather_fill=True,
@@ -86,8 +86,8 @@ def test_wheel_reprojects_marine_and_renders_before_settling(gribs, monkeypatch)
     def rendered():
         # This may run on the scene-graph thread: no QWidget/camera access.
         with lock:
-            if nodes:
-                frames.append(nodes[-1])
+            if publications:
+                frames.append(publications[-1])
 
     window = widget.quickWindow()
     window.afterRendering.connect(rendered, Qt.ConnectionType.DirectConnection)
@@ -104,9 +104,9 @@ def test_wheel_reprojects_marine_and_renders_before_settling(gribs, monkeypatch)
                 return
             time.sleep(0.002)
         with lock:
-            counts = (len(publications), len(nodes), len(frames))
+            counts = (len(publications), len(frames))
         pytest.fail(
-            f"{message}; publications/nodes/frames={counts}; "
+            f"{message}; publications/frames={counts}; "
             f"marine={widget._marine_layer.state}"
         )
 
@@ -118,7 +118,7 @@ def test_wheel_reprojects_marine_and_renders_before_settling(gribs, monkeypatch)
             lambda: bool(frame_records()) and widget._marine_layer.snapshot is not None,
             "Initial marine geometry never reached a Quick frame",
         )
-        baseline = widget.grabFramebuffer()
+        baseline = widget.grabWindow()
         assert not baseline.isNull(), "Initial Quick framebuffer readback stalled"
         initial_vertices = widget._marine_layer.item.vertices.tobytes()
         assert initial_vertices, "Initial grid/station geometry is empty"
@@ -130,7 +130,6 @@ def test_wheel_reprojects_marine_and_renders_before_settling(gribs, monkeypatch)
         ), "Initial station-ring geometry is missing"
         with lock:
             publications.clear()
-            nodes.clear()
             frames.clear()
 
         position = QPointF(camera.width / 2, camera.height / 2)
@@ -165,17 +164,13 @@ def test_wheel_reprojects_marine_and_renders_before_settling(gribs, monkeypatch)
             "Camera moved but marine projected geometry stalled",
         )
         wait_for(
-            lambda: intermediate(nodes),
-            "Marine geometry changed but updatePaintNode stalled",
-        )
-        wait_for(
             lambda: intermediate(frames),
-            "Marine node changed but Quick rendering stalled",
+            "Marine image changed but Quick rendering stalled",
         )
         assert (
             widget._wheel_zoom_tick.isActive()
         ), "No marine frame observed until wheel animation had already settled"
-        moving = widget.grabFramebuffer()
+        moving = widget.grabWindow()
         assert not moving.isNull(), "Animated Quick framebuffer readback stalled"
         assert moving != baseline, "Quick framebuffer did not change during zoom"
         assert (

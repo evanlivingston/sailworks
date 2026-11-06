@@ -147,6 +147,50 @@ class TestStreamlineModel(unittest.TestCase):
         )
         self.assertEqual(self.model._pending[0], beyond)
 
+    def test_cpu_fallback_traces_paths_without_the_gpu_input(self):
+        from threading import Event
+
+        model = ViewportStreamlineModel(
+            ("selected.grb",), "generation", gpu_trace=False
+        )
+        self.addCleanup(model.close)
+        camera = self.camera
+        calls = []
+        paths = (object(),)
+
+        def wind_columns(sampler, requested, cancelled):
+            calls.append(("columns", requested))
+            return ("columns",)
+
+        def gpu_input(*args, **kwargs):
+            calls.append(("gpu",))
+            return None
+
+        def cpu_trace(view, columns, on_ground, cancelled, density):
+            calls.append(("cpu", columns, density))
+            return paths
+
+        result = model._process_request(
+            None,
+            camera,
+            Event(),
+            wind_columns,
+            gpu_input,
+            cpu_trace,
+            None,
+            None,
+            None,
+        )
+
+        self.assertEqual(result, (camera, paths, ""))
+        self.assertEqual(
+            calls,
+            [
+                ("columns", camera),
+                ("cpu", ("columns",), camera.density),
+            ],
+        )
+
     def test_shared_trace_and_geometry_with_authoritative_time_and_nan_holes(self):
         camera = replace(
             self.camera,

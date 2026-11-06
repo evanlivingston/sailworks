@@ -1,6 +1,5 @@
 """Marine Quick snapshots, latest requests and camera-driven vector geometry."""
 
-import ctypes
 import os
 import tempfile
 import time
@@ -366,48 +365,44 @@ class TestMarineQuick(unittest.TestCase):
         result = self.sample(replace(self.sources, currents=currents))
         self.assertEqual(sum(a.station for a in result.arrows), 1)
 
-    def test_qsg_colored_point_contract(self):
-        from PySide6.QtQuick import QSGGeometry
-        from sailworks.qt.marinequick import _ATTRIBS, _VERTEX
+    def test_current_surface_paints_an_image_without_a_quick_item(self):
+        from PySide6.QtQuick import QQuickItem
+        from sailworks.qt.marinequick import MarineCurrentItem, MarineImageProvider
 
-        geometry = QSGGeometry(_ATTRIBS, 3)
-        self.assertEqual(geometry.sizeOfVertex(), _VERTEX.itemsize)
-        vertices = np.zeros(3, dtype=_VERTEX)
-        vertices["position"] = ((1, 2), (3, 4), (5, 6))
-        vertices["color"] = (12, 34, 56, 255)
-        ctypes.memmove(
-            int(geometry.vertexData()), vertices.ctypes.data, vertices.nbytes
-        )
-        self.assertEqual(
-            ctypes.string_at(int(geometry.vertexData()), vertices.nbytes),
-            vertices.tobytes(),
-        )
-
-    def test_empty_content_deletes_and_detaches_previous_scenegraph_node(self):
-        from PySide6.QtQuick import QQuickItem, QSGNode
-        from shiboken6 import isValid
-        from sailworks.qt.marinequick import MarineCurrentItem
-
-        root = QQuickItem()
-        item = MarineCurrentItem(root)
-        parent = QSGNode()
+        item = MarineCurrentItem(QQuickItem())
         snapshot = MarineSnapshot(
             self.sources,
             START,
             (CurrentArrow(49.5, -125.5, 1, 0),),
             "available",
         )
-        for _ in range(4):
+        item.present(snapshot, self.camera)
+        self.assertNotIsInstance(item, QQuickItem)
+        self.assertFalse(item.image.isNull())
+        provider = MarineImageProvider()
+        token = provider.publish(item.image)
+        image = provider.requestImage(token.rsplit("/", 1)[-1], None, None)
+        self.assertEqual(image.size(), item.image.size())
+
+    def test_empty_content_hides_and_clears_the_painted_surface(self):
+        from PySide6.QtQuick import QQuickItem
+        from sailworks.qt.marinequick import MarineCurrentItem
+
+        item = MarineCurrentItem(QQuickItem())
+        snapshot = MarineSnapshot(
+            self.sources,
+            START,
+            (CurrentArrow(49.5, -125.5, 1, 0),),
+            "available",
+        )
+        for _ in range(3):
             item.present(snapshot, self.camera)
-            node = item.updatePaintNode(None, None)
-            self.assertIsNotNone(node)
-            parent.appendChildNode(node)
-            self.assertEqual(parent.childCount(), 1)
+            self.assertTrue(item.isVisible())
+            self.assertGreater(len(item.vertices), 0)
+            self.assertFalse(item.image.isNull())
             item.present(None, self.camera)
-            self.assertIsNone(item.updatePaintNode(node, None))
-            self.assertFalse(isValid(node), "Loading must destroy old geometry")
-            self.assertEqual(parent.childCount(), 0, "Old layer stayed attached")
-            self.assertIsNone(item.resources)
+            self.assertFalse(item.isVisible())
+            self.assertEqual(len(item.vertices), 0)
 
     @unittest.skipUnless(
         os.environ.get("GWR_MARINE_QUICK_SNAPSHOT") == "1",

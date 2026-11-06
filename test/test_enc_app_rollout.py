@@ -39,7 +39,6 @@ def presenter(monkeypatch):
 def test_app_constructs_enc_only_viewport_by_default(presenter, monkeypatch):
     factory = Mock()
     monkeypatch.setattr(weatherpresenter, "_viewport_widget_class", lambda: factory)
-    monkeypatch.setattr(weatherpresenter, "WeatherForeground", Mock())
     model = Mock()
     model_factory = Mock(return_value=model)
     monkeypatch.setattr(presenter, "_model", model_factory)
@@ -57,7 +56,6 @@ def test_desktop_map_uses_world_chart_layer_with_enc(presenter, monkeypatch):
     widget = Mock()
     widget.quickWindow.return_value.afterRendering = Mock()
     monkeypatch.setattr(weatherpresenter, "_viewport_widget_class", lambda: factory)
-    monkeypatch.setattr(weatherpresenter, "WeatherForeground", Mock())
     model_factory = Mock(return_value=Mock())
     monkeypatch.setattr(presenter, "_model", model_factory)
 
@@ -73,13 +71,13 @@ def test_desktop_map_uses_world_chart_layer_with_enc(presenter, monkeypatch):
 
 
 def test_chart_child_is_disposed_not_weather_only_replaced(presenter):
-    widget, foreground = Mock(), Mock()
-    presenter.widget, presenter.foreground = widget, foreground
+    widget = Mock()
+    presenter.widget = widget
     presenter._source = object()
     presenter._drop_widget()
     widget.dispose.assert_called_once()
+    widget.deleteLater.assert_called_once()
     widget.replace_model.assert_not_called()
-    foreground.deleteLater.assert_called_once()
     assert presenter.widget is None and presenter._source is None
     presenter.canvas._invalidate_base.assert_called_once()
 
@@ -804,7 +802,6 @@ def test_viewport_camera_handoff_is_encapsulated_by_the_map_host():
     )
 
     changed = Mock()
-    foreground = SimpleNamespace(update=Mock(), repaint=Mock())
     camera_state = ViewportCameraState(48.0, -123.0, 8.0)
     host = SimpleNamespace(
         camera_state=camera_state,
@@ -812,7 +809,7 @@ def test_viewport_camera_handoff_is_encapsulated_by_the_map_host():
         _cancel_cursor=Mock(),
         invalidate_navigation=Mock(),
         view_changed=SimpleNamespace(emit=changed),
-        _weather_presenter=SimpleNamespace(foreground=foreground),
+        _weather_presenter=SimpleNamespace(),
     )
     camera = SimpleNamespace(center_lat=48.45, center_lon=-124.29, zoom=9.38)
 
@@ -829,8 +826,6 @@ def test_viewport_camera_handoff_is_encapsulated_by_the_map_host():
     host._cancel_cursor.assert_called_once_with()
     host.invalidate_navigation.assert_called_once_with()
     changed.assert_called_once_with()
-    foreground.repaint.assert_called_once_with()
-    foreground.update.assert_not_called()
 
     assert not ViewportMap.adopt_viewport_camera(host, camera)
     assert changed.call_count == 1
@@ -866,26 +861,24 @@ def test_zoom_repaints_navigation_after_host_adopts_viewport_camera():
     )
 
     camera_state = ViewportCameraState(48.0, -123.0, 8.0)
-    observed = []
-    foreground = SimpleNamespace(
-        update=Mock(),
-        repaint=lambda: observed.append((camera_state.zoom, host._nav_cache)),
-    )
+    widget = SimpleNamespace()
+    publish = Mock()
     host = SimpleNamespace(
         camera_state=camera_state,
         _view_state=ViewportMapState(camera_state),
         _nav_cache=object(),
         _cancel_cursor=Mock(),
         view_changed=SimpleNamespace(emit=Mock()),
-        _weather_presenter=SimpleNamespace(foreground=foreground, widget=None),
+        _weather_presenter=SimpleNamespace(widget=widget),
         viewport_route_overlay=Mock(),
+        publish_route_overlay=publish,
     )
     host.invalidate_navigation = lambda: setattr(host, "_nav_cache", None)
     camera = SimpleNamespace(center_lat=48.2, center_lon=-123.1, zoom=8.35)
 
     assert ViewportMap.adopt_viewport_camera(host, camera)
-    assert observed == [(camera.zoom, None)]
-    foreground.update.assert_not_called()
+    assert host._nav_cache is None
+    publish.assert_called_once_with()
 
 
 def test_map_host_translates_app_state_to_the_viewport_camera_contract():

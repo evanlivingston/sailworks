@@ -1,18 +1,63 @@
-"""Quick scene-graph layer for cached ICOADS ship observations."""
+"""Image-backed Quick layer for cached ICOADS ship observations.
 
-from PySide6.QtCore import QObject, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
-from PySide6.QtQuick import QQuickItem, QQuickPaintedItem
+Reports are painted on the GUI thread into a QImage and published through a
+QQuickImageProvider.  Keeping the layer free of Python QQuickItem subclasses
+avoids the render-thread GIL lookup that deadlocks the native viewport.
+"""
+
 from datetime import datetime, timezone
+
+from PySide6.QtCore import QObject, QPointF, QRectF, Qt
+from PySide6.QtGui import (
+    QColor,
+    QCursor,
+    QFont,
+    QImage,
+    QPainter,
+    QPen,
+)
+from PySide6.QtQuick import QQuickImageProvider
 
 DISPLAY_LOD_THRESHOLD = 2000
 
 
-class IcoadsQuickItem(QQuickPaintedItem):
+class IcoadsImageProvider(QQuickImageProvider):
+    """Retain the latest painted marker surfaces for the QML Image item."""
+
+    def __init__(self, retained=4):
+        super().__init__(QQuickImageProvider.ImageType.Image)
+        self._images = {}
+        self._order = []
+        self._retained = max(1, int(retained))
+        self._generation = 0
+
+    def publish(self, image):
+        token = str(self._generation)
+        self._generation += 1
+        self._images[token] = image
+        self._order.append(token)
+        while len(self._order) > self._retained:
+            self._images.pop(self._order.pop(0), None)
+        return f"image://icoads/{token}"
+
+    def requestImage(self, image_id, size, requested_size):  # noqa: N802
+        image = QImage(self._images.get(image_id, QImage()))
+        if size is not None:
+            size.setWidth(image.width())
+            size.setHeight(image.height())
+        return image
+
+    def clear(self):
+        self._images.clear()
+        self._order.clear()
+
+
+class IcoadsQuickItem(QObject):
     """Paint neutral report markers; reports are observations, not live AIS."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._root = parent
         self._reports = ()
         self._positions_key = None
         self._positions_cache = ()
@@ -24,10 +69,78 @@ class IcoadsQuickItem(QQuickPaintedItem):
         self._padding = 0.0
         self._on_select = None
         self._selected_report = None
-        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
-        self.setAcceptHoverEvents(True)
-        self.setAntialiasing(True)
+        self._visible = False
+        self._x = 0.0
+        self._y = 0.0
+        self._width = 0.0
+        self._height = 0.0
+        self._cursor = QCursor()
+        self.image = QImage()
+        self._dirty = True
 
+    # -------------------------------------------------- Quick-like geometry
+    def parentItem(self):  # noqa: N802 - mirrors the Quick API
+        return self._root
+
+    def x(self):
+        return self._x
+
+    def y(self):
+        return self._y
+
+    def setX(self, value):  # noqa: N802
+        self._x = float(value)
+
+    def setY(self, value):  # noqa: N802
+        self._y = float(value)
+
+    def width(self):
+        return self._width
+
+    def height(self):
+        return self._height
+
+    def setWidth(self, value):  # noqa: N802
+        self._width = float(value)
+
+    def setHeight(self, value):  # noqa: N802
+        self._height = float(value)
+
+    def setSize(self, size):  # noqa: N802
+        self.setWidth(size.width())
+        self.setHeight(size.height())
+
+    def setVisible(self, visible):  # noqa: N802
+        self._visible = bool(visible)
+
+    def isVisible(self):  # noqa: N802
+        return self._visible
+
+    def update(self):
+        """Geometry changed; the owning layer repaints after set_camera."""
+        self._dirty = True
+
+    def cursor(self):
+        return self._cursor
+
+    def setCursor(self, cursor):  # noqa: N802
+        self._cursor = QCursor(cursor)
+
+    def unsetCursor(self):  # noqa: N802
+        self._cursor = QCursor()
+
+    def mapToItem(self, target, point):  # noqa: N802 - mirrors the Quick API
+        mapped = QPointF(point.x() + self._x, point.y() + self._y)
+        node = self._root
+        while node is not None and node is not target:
+            try:
+                mapped += QPointF(node.x(), node.y())
+                node = node.parentItem()
+            except (AttributeError, TypeError):
+                break
+        return mapped
+
+    # ----------------------------------------------------------- portrayal
     def set_reports(self, reports, camera=None, on_select=None):
         self._reports = tuple(reports or ())
         self._positions_key = None
@@ -181,6 +294,22 @@ class IcoadsQuickItem(QQuickPaintedItem):
                 self._padding - self._offset_y,
             )
 
+    def render(self):
+        image = QImage(
+            max(1, int(round(self.width()))),
+            max(1, int(round(self.height()))),
+            QImage.Format.Format_ARGB32_Premultiplied,
+        )
+        image.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(image)
+        try:
+            self.paint(painter)
+        finally:
+            painter.end()
+        self.image = image
+        self._dirty = False
+        return image
+
     @staticmethod
     def _detail_lines(report):
         age = datetime.now(timezone.utc) - report.observed_at
@@ -225,6 +354,16 @@ class IcoadsQuickItem(QQuickPaintedItem):
             return nearest[2]
         return None
 
+    def select_at(self, x, y):
+        """Select the report under a scene point; return it when it changed."""
+        report = self._report_at(x, y)
+        if report is None or report is self._selected_report:
+            return None
+        self._selected_report = report
+        if self._on_select is not None:
+            self._on_select(report)
+        return report
+
     def hoverMoveEvent(self, event):  # noqa: N802
         try:
             point = event.position()
@@ -262,16 +401,39 @@ class IcoadsQuickItem(QQuickPaintedItem):
 class IcoadsQuickLayer(QObject):
     """Present cached observations independently from forecast weather."""
 
-    def __init__(self, root, parent):
+    def __init__(self, root, parent, provider=None):
         super().__init__(parent)
         self.root = root
+        self.provider = provider or IcoadsImageProvider()
         self.item = IcoadsQuickItem(root)
-        self.item.setSize(root.size())
-        self.item.setVisible(False)
-        barbs = root.findChild(QQuickItem, "weatherBarbs")
-        if barbs is not None:
-            self.item.stackBefore(barbs)
+        self._view = self._find("icoadsMarkers")
+        self._published = None
         self._closed = False
+
+    def _find(self, name):
+        finder = getattr(self.root, "findChild", None)
+        if finder is None:
+            return None
+        try:
+            return finder(QObject, name)
+        except TypeError:
+            return None
+
+    def _publish(self):
+        view = self._view
+        if view is None:
+            return
+        item = self.item
+        visible = item.isVisible() and not item.image.isNull()
+        if visible:
+            view.setProperty("x", item.x())
+            view.setProperty("y", item.y())
+            view.setProperty("width", item.width())
+            view.setProperty("height", item.height())
+            if self._published is not item.image:
+                view.setProperty("source", self.provider.publish(item.image))
+                self._published = item.image
+        view.setProperty("visible", visible)
 
     def present(self, reports, visible, camera):
         if self._closed:
@@ -280,6 +442,8 @@ class IcoadsQuickLayer(QObject):
             self.item.setSize(self.root.size())
         self.item.set_reports(reports, camera)
         self.item.setVisible(bool(visible and reports))
+        self.item.render()
+        self._publish()
 
     def set_camera(self, camera):
         if self._closed:
@@ -293,6 +457,18 @@ class IcoadsQuickLayer(QObject):
             else camera
         )
         self.item.set_camera(camera, reference)
+        if self.item._dirty and self.item.isVisible():
+            self.item.render()
+            self._publish()
+
+    def select_at(self, x, y):
+        if self._closed:
+            return None
+        report = self.item.select_at(x, y)
+        if report is not None:
+            self.item.render()
+            self._publish()
+        return report
 
     def close(self):
         if self._closed:
@@ -300,3 +476,5 @@ class IcoadsQuickLayer(QObject):
         self._closed = True
         self.item.setVisible(False)
         self.item.set_reports(())
+        self.item.image = QImage()
+        self._publish()

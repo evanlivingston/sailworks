@@ -208,7 +208,7 @@ def _application(report, data, output, deadline):  # noqa: C901 - one native app
             widget is not None
             and widget._environment is not None
             and widget._environment.property("ready")
-            and canvas._weather_presenter.foreground.isVisible()
+            and canvas._weather_presenter.host_widget.isVisible()
         )
 
         canvas._center_lon += 0.002

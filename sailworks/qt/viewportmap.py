@@ -208,6 +208,10 @@ class ViewportMap(
             0, max(0, self.height() - height), self.width(), height
         )
         self.timeline.raise_()
+        presenter = getattr(self, "_weather_presenter", None)
+        layout_host = getattr(presenter, "_layout_host", None)
+        if layout_host is not None:
+            layout_host()
 
     def _layout_wave_legend(self):
         legend = getattr(self, "wave_legend", None)
@@ -562,16 +566,6 @@ class ViewportMap(
             self.invalidate_navigation()
         self.view_changed.emit()
         presenter = self._weather_presenter
-        foreground = getattr(presenter, "foreground", None)
-        if foreground is not None:
-            if zoom_changed:
-                # The chart preview is placed in the viewport's camera pass.
-                # Repaint navigation at that same camera before the Quick
-                # scene renders; a queued QWidget update otherwise leaves the
-                # old-scale navigation raster over the newly scaled world map.
-                foreground.repaint()
-            else:
-                foreground.update()
         widget = getattr(presenter, "widget", None)
         if widget is not None:
             self.publish_route_overlay()
@@ -652,12 +646,35 @@ def _viewport_overlay_key(host):
         ),
         getattr(host, "move_callback", None) is not None,
         bool(getattr(host.controller, "chart_errors", None)),
+        tuple(tuple(point) for point in getattr(host, "_measure_points", ()) or ()),
+        (
+            tuple(host._measure_preview_point)
+            if getattr(host, "_measure_preview_point", None) is not None
+            else None
+        ),
     )
+
+
+def _viewport_measurement(host):
+    """Measurement points, preview and distance for the route canvas."""
+    points = [list(point) for point in getattr(host, "_measure_points", ()) or ()]
+    preview = getattr(host, "_measure_preview_point", None)
+    preview = list(preview) if preview is not None else []
+    distance = -1.0
+    try:
+        if len(points) == 2:
+            distance = float(host._measurement_distance_km())
+        elif len(points) == 1 and preview:
+            distance = float(host._distance_between_km(points[0], preview))
+    except (AttributeError, TypeError, ValueError):
+        distance = -1.0
+    return points, preview, distance
 
 
 def _build_viewport_route_overlay(host):
     """Route and log-track geometry for the viewport's top scene layer."""
     state = host._view_state
+    measure = _viewport_measurement(host)
     selected_point = []
     active_route = host.controller.core.routingManager.get_by_name(
         host.navigation.hl_routing
@@ -744,7 +761,7 @@ def _build_viewport_route_overlay(host):
         )
     else:
         route_cache = (None, host.navigation.route_overlay_data(timestamp), None)
-    return {
+    overlay = {
         "route_plan": [list(point) for point in state.route_plan],
         "route_preview": [list(point) for point in state.route_preview],
         "selected_point": selected_point,
@@ -789,6 +806,11 @@ def _build_viewport_route_overlay(host):
         "caption": _viewport_caption(host.move_callback, host.controller.chart_errors),
         "dashboard_visible": host.dashboard_visible,
     }
+    if measure[0] or measure[1]:
+        overlay["measure_points"] = measure[0]
+        overlay["measure_preview"] = measure[1]
+        overlay["measure_distance"] = measure[2]
+    return overlay
 
 
 def _overlay_size(value):

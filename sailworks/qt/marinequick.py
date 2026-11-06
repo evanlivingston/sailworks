@@ -1,21 +1,20 @@
-"""Marine-owned latest-request worker and batched Qt Quick current geometry."""
+"""Marine-owned latest-request worker and image-backed Qt Quick portrayal.
 
-import ctypes
+The native viewport renders every layer without a Python QQuickItem subclass:
+a Python item makes the scene-graph sync take the GIL on the render thread,
+which can deadlock the threaded render loop.  Current glyphs and labels are
+therefore painted into a QImage on the worker's publish tick and exposed to
+QML through a QQuickImageProvider, exactly like the weather and streamline
+images.
+"""
+
 from math import asinh, ceil, floor, pi, radians, tan
 from threading import Condition, Thread
 
 import numpy as np
-from shiboken6 import delete
 from PySide6.QtCore import QObject, QTimer, Signal, Qt
-from PySide6.QtGui import QFont, QPainterPath, QPen
-from PySide6.QtQuick import (
-    QQuickItem,
-    QQuickPaintedItem,
-    QSGGeometry,
-    QSGGeometryNode,
-    QSGNode,
-    QSGVertexColorMaterial,
-)
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen
+from PySide6.QtQuick import QQuickImageProvider
 
 from sailworks.rendering.marinesnapshot import (
     current_triangles,
@@ -23,7 +22,6 @@ from sailworks.rendering.marinesnapshot import (
     sample_currents,
 )
 
-_ATTRIBS = QSGGeometry.defaultAttributes_ColoredPoint2D()
 _VERTEX = np.dtype([("position", "<f4", 2), ("color", "u1", 4)])
 
 
@@ -95,16 +93,164 @@ def _projection_margin(reference, camera, minimum):
     return minimum + max(abs(dx), abs(dy))
 
 
-class MarineLabelItem(QQuickPaintedItem):
-    """Paint station labels in Qt Quick without routing them through Cairo."""
+class MarineImageProvider(QQuickImageProvider):
+    """Retain the current painted surfaces for the QML Image items.
 
-    def __init__(self, parent):
+    Publish happens on the GUI thread; requestImage may run on the scene-graph
+    thread.  A couple of superseded tokens stay servable while QML swaps the
+    source, then the oldest is discarded.
+    """
+
+    def __init__(self, retained=4):
+        super().__init__(QQuickImageProvider.ImageType.Image)
+        self._images = {}
+        self._order = []
+        self._retained = max(1, int(retained))
+        self._generation = 0
+
+    def publish(self, image):
+        token = str(self._generation)
+        self._generation += 1
+        self._images[token] = image
+        self._order.append(token)
+        while len(self._order) > self._retained:
+            self._images.pop(self._order.pop(0), None)
+        return f"image://marine/{token}"
+
+    def requestImage(self, image_id, size, requested_size):  # noqa: N802
+        image = QImage(self._images.get(image_id, QImage()))
+        if size is not None:
+            size.setWidth(image.width())
+            size.setHeight(image.height())
+        return image
+
+    def clear(self):
+        self._images.clear()
+        self._order.clear()
+
+
+class _Surface(QObject):
+    """Pure-Python painting surface; no QQuickItem override is involved."""
+
+    def __init__(self, root, parent=None):
         super().__init__(parent)
-        self.labels = ()
-        self.setAntialiasing(True)
+        self._root = root
+        self._visible = False
+        self._x = 0.0
+        self._y = 0.0
+        self._width = 0.0
+        self._height = 0.0
+        self.image = QImage()
+
+    def parentItem(self):  # noqa: N802 - mirrors the Quick API
+        return self._root
+
+    def x(self):
+        return self._x
+
+    def y(self):
+        return self._y
+
+    def setX(self, value):  # noqa: N802 - mirrors the Quick API
+        self._x = float(value)
+
+    def setY(self, value):  # noqa: N802 - mirrors the Quick API
+        self._y = float(value)
+
+    def width(self):
+        return self._width
+
+    def height(self):
+        return self._height
+
+    def setWidth(self, value):  # noqa: N802 - mirrors the Quick API
+        self._width = float(value)
+
+    def setHeight(self, value):  # noqa: N802 - mirrors the Quick API
+        self._height = float(value)
+
+    def setVisible(self, visible):  # noqa: N802 - mirrors the Quick API
+        self._visible = bool(visible)
+
+    def isVisible(self):  # noqa: N802 - mirrors the Quick API
+        return self._visible
+
+    def _resize(self, padding):
+        size = self._root.size() if self._root is not None else None
+        width = size.width() if size is not None else 0.0
+        height = size.height() if size is not None else 0.0
+        self.setX(-padding)
+        self.setY(-padding)
+        self.setWidth(width + 2 * padding)
+        self.setHeight(height + 2 * padding)
+
+
+def _surface_image(width, height):
+    image = QImage(
+        max(1, int(round(width))),
+        max(1, int(round(height))),
+        QImage.Format.Format_ARGB32_Premultiplied,
+    )
+    image.fill(Qt.GlobalColor.transparent)
+    return image
+
+
+def paint_currents(rows, width, height):
+    """Paint the colored current triangles into one ARGB surface."""
+    image = _surface_image(width, height)
+    if not len(rows):
+        return image
+    values = np.asarray(rows)
+    painter = QPainter(image)
+    try:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        # Group by uniform color: each triangle carries one RGBA per vertex.
+        paths = {}
+        for index in range(0, len(values) - 2, 3):
+            corners = values[index : index + 3]
+            rgba = tuple(int(channel) for channel in corners[0][2:6])
+            path = paths.get(rgba)
+            if path is None:
+                path = paths[rgba] = QPainterPath()
+            path.moveTo(float(corners[0][0]), float(corners[0][1]))
+            path.lineTo(float(corners[1][0]), float(corners[1][1]))
+            path.lineTo(float(corners[2][0]), float(corners[2][1]))
+            path.closeSubpath()
+        for (red, green, blue, alpha), path in paths.items():
+            painter.fillPath(path, QColor(red, green, blue, alpha))
+    finally:
+        painter.end()
+    return image
+
+
+def paint_labels(labels, width, height):
+    """Paint station labels with the same outline and white fill as before."""
+    image = _surface_image(width, height)
+    if not labels:
+        return image
+    painter = QPainter(image)
+    try:
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        font = QFont()
+        font.setPointSize(10)
+        font.setBold(True)
+        painter.setFont(font)
+        for x, y, text in labels:
+            path = QPainterPath()
+            path.addText(float(x), float(y), painter.font(), text)
+            painter.setPen(QPen(Qt.GlobalColor.black, 3))
+            painter.drawPath(path)
+            painter.fillPath(path, Qt.GlobalColor.white)
+    finally:
+        painter.end()
+    return image
+
+
+class MarineLabelItem(_Surface):
+    """Station labels as a painted image surface."""
 
     def present(self, snapshot, ref_camera, camera=None):
-        # Project labels against reference camera; parent mapContent pan handles translation
         if camera is None:
             camera = ref_camera
         padding = _projection_margin(ref_camera, camera, 64)
@@ -114,36 +260,19 @@ class MarineLabelItem(QQuickPaintedItem):
             else ()
         )
         self.labels = tuple((x + padding, y + padding, text) for x, y, text in labels)
-        self.setX(-padding)
-        self.setY(-padding)
-        size = self.parentItem().size()
-        self.setWidth(size.width() + 2 * padding)
-        self.setHeight(size.height() + 2 * padding)
-        self.update()
-
-    def paint(self, painter):
-        font = QFont()
-        font.setPointSize(10)
-        font.setBold(True)
-        painter.setFont(font)
-        for x, y, text in self.labels:
-            path = QPainterPath()
-            path.addText(x, y, painter.font(), text)
-            painter.setPen(QPen(Qt.GlobalColor.black, 3))
-            painter.drawPath(path)
-            painter.fillPath(path, Qt.GlobalColor.white)
+        self._resize(padding)
+        self.image = paint_labels(self.labels, self.width(), self.height())
+        self.setVisible(snapshot is not None and bool(self.labels))
 
 
-class MarineCurrentItem(QQuickItem):
-    """Only updatePaintNode allocates or mutates scene graph resources."""
+class MarineCurrentItem(_Surface):
+    """Current triangles as a painted image surface."""
 
     failed = Signal(str)
 
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.setFlag(QQuickItem.Flag.ItemHasContents, True)
+    def __init__(self, root, parent=None):
+        super().__init__(root, parent)
         self.vertices = np.empty(0, dtype=_VERTEX)
-        self.resources = None
 
     def present(self, snapshot, ref_camera, camera=None):
         # Project geometry against the reference camera and paint it into a
@@ -164,67 +293,37 @@ class MarineCurrentItem(QQuickItem):
             vertices["color"] = values[:, 2:]
         vertices.setflags(write=False)
         self.vertices = vertices
-        self.setX(-padding)
-        self.setY(-padding)
-        size = self.parentItem().size()
-        self.setWidth(size.width() + 2 * padding)
-        self.setHeight(size.height() + 2 * padding)
-        self.update()
-
-    def updatePaintNode(self, old, _):  # noqa: N802
-        if not len(self.vertices):
-            self.resources = None
-            # Qt hands ownership of old to updatePaintNode. Returning None
-            # alone leaves it attached to the scene graph, freezing every
-            # previous time layer when loading clears the current geometry.
-            if old is not None:
-                delete(old)
-            return None
+        self._resize(padding)
+        image_rows = np.empty((0, 6), dtype=float)
+        if rows:
+            image_rows = np.asarray(rows, dtype=float).copy()
+            image_rows[:, :2] += padding
         try:
-            node = old or QSGGeometryNode()
-            if old is None:
-                geometry = QSGGeometry(_ATTRIBS, len(self.vertices))
-                if geometry.sizeOfVertex() != _VERTEX.itemsize:
-                    raise RuntimeError("Unsupported QSG colored vertex layout")
-                geometry.setDrawingMode(QSGGeometry.DrawingMode.DrawTriangles)
-                geometry.setVertexDataPattern(QSGGeometry.DataPattern.DynamicPattern)
-                material = QSGVertexColorMaterial()
-                node.setGeometry(geometry)
-                node.setMaterial(material)
-                node.setFlag(QSGNode.Flag.OwnsGeometry)
-                node.setFlag(QSGNode.Flag.OwnsMaterial)
-                self.resources = (node, _ATTRIBS, geometry, material)
-            geometry = node.geometry()
-            geometry.allocate(len(self.vertices))
-            ctypes.memmove(
-                int(geometry.vertexData()),
-                self.vertices.ctypes.data,
-                self.vertices.nbytes,
-            )
-            node.markDirty(QSGNode.DirtyStateBit.DirtyGeometry)
-            return node
+            self.image = paint_currents(image_rows, self.width(), self.height())
         except Exception as exc:
             self.failed.emit(str(exc))
-            return None
+            self.image = QImage()
+        self.setVisible(snapshot is not None and len(vertices) > 0)
 
 
 class MarineQuickLayer(QObject):
     """One active request plus one replaceable latest request, no wind staging.
 
     Worker results are polled on the GUI thread. Workers receive immutable
-    marine selections/cameras only, and never call a QQuickItem method.
+    marine selections/cameras only, and never touch a QQuickItem.
     """
 
     stateChanged = Signal(str)  # noqa: N815
 
-    def __init__(self, root, parent):
+    def __init__(self, root, parent, provider=None):
         super().__init__(parent)
-        self.item = MarineCurrentItem(root)
-        self.labels = MarineLabelItem(root)
-        barbs = root.findChild(QQuickItem, "weatherBarbs")
-        if barbs is not None:
-            self.item.stackBefore(barbs)
-            self.labels.stackBefore(barbs)
+        self.root = root
+        self.provider = provider or MarineImageProvider()
+        self.item = MarineCurrentItem(root, self)
+        self.labels = MarineLabelItem(root, self)
+        self._current_view = self._find("marineCurrents")
+        self._label_view = self._find("marineLabels")
+        self._published = {}
         self.state = "unavailable"
         self.snapshot = None
         self.camera = None
@@ -246,6 +345,45 @@ class MarineQuickLayer(QObject):
         self._timer.setInterval(16)
         self._timer.timeout.connect(self._publish)
         self._timer.start()
+
+    def _find(self, name):
+        finder = getattr(self.root, "findChild", None)
+        if finder is None:
+            return None
+        try:
+            return finder(QObject, name)
+        except TypeError:
+            return None
+
+    def _present(self, snapshot, camera):
+        if self._closed or self.error:
+            return
+        try:
+            # Use reference camera for projection; parent mapContent handles pan
+            ref_camera = self._ref_camera if self._ref_camera else camera
+            self.item.present(snapshot, ref_camera, camera)
+            self.labels.present(snapshot, ref_camera, camera)
+            self._publish_views()
+        except Exception as exc:
+            self._fail(str(exc))
+
+    def _publish_views(self):
+        for surface, view in (
+            (self.item, self._current_view),
+            (self.labels, self._label_view),
+        ):
+            if view is None:
+                continue
+            visible = surface.isVisible() and not surface.image.isNull()
+            if visible:
+                view.setProperty("x", surface.x())
+                view.setProperty("y", surface.y())
+                view.setProperty("width", surface.width())
+                view.setProperty("height", surface.height())
+                if self._published.get(id(surface)) is not surface.image:
+                    view.setProperty("source", self.provider.publish(surface.image))
+                    self._published[id(surface)] = surface.image
+            view.setProperty("visible", visible)
 
     def set_camera(self, camera):
         self.camera = camera
@@ -317,17 +455,6 @@ class MarineQuickLayer(QObject):
             self._present(None, camera)
         return not self.error
 
-    def _present(self, snapshot, camera):
-        if self._closed or self.error:
-            return
-        try:
-            # Use reference camera for projection; parent mapContent handles pan
-            ref_camera = self._ref_camera if self._ref_camera else camera
-            self.item.present(snapshot, ref_camera, camera)
-            self.labels.present(snapshot, ref_camera, camera)
-        except Exception as exc:
-            self._fail(str(exc))
-
     def _fail(self, reason):
         if self._closed or self.error:
             return
@@ -339,6 +466,7 @@ class MarineQuickLayer(QObject):
         self.item.setVisible(False)
         self.labels.present(None, self.camera)
         self.labels.setVisible(False)
+        self._publish_views()
         self.state = "Marine rendering unavailable: " + self.error
         self.stateChanged.emit(self.state)
 
@@ -389,3 +517,5 @@ class MarineQuickLayer(QObject):
             self._condition.notify()
         self.snapshot = None
         self.item.setVisible(False)
+        self.labels.setVisible(False)
+        self._publish_views()

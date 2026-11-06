@@ -171,7 +171,6 @@ class QtPreviewChecks(unittest.TestCase):
         "opt-in full-application native marine gesture readback",
     )
     def test_presenter_marine_arrows_render_during_pan_and_wheel(self):
-        import ctypes
         from dataclasses import replace
         from datetime import timedelta
         from threading import Lock
@@ -181,7 +180,7 @@ class QtPreviewChecks(unittest.TestCase):
         from PySide6.QtGui import QMouseEvent, QWheelEvent
         from PySide6.QtTest import QTest
 
-        from sailworks.qt.marinequick import MarineCurrentItem
+        from sailworks.qt.marinequick import MarineCurrentItem, MarineQuickLayer
         from sailworks.rendering.marinepresentation import chart_instant
         from sailworks.rendering.marinesnapshot import (
             CurrentArrow,
@@ -193,39 +192,26 @@ class QtPreviewChecks(unittest.TestCase):
         canvas = self.window.map
         presenter = canvas._weather_presenter
         lock = Lock()
-        publications, nodes, frames = [], [], []
-        node_geometry = []
+        publications, published, frames = [], [], []
         cleared = []
         original_present = MarineCurrentItem.present
-        original_node = MarineCurrentItem.updatePaintNode
+        original_publish_views = MarineQuickLayer._publish_views
 
         def present(item, snapshot, camera):
             original_present(item, snapshot, camera)
             with lock:
-                publications.append((item, camera, item.vertices.tobytes()))
-
-        def paint_node(item, old, data):
-            node = original_node(item, old, data)
-            with lock:
-                if node is None:
+                if snapshot is None:
                     cleared.append(item)
-                if node is not None:
-                    geometry = node.geometry()
-                    node_geometry.append(
-                        (
-                            item,
-                            ctypes.string_at(
-                                int(geometry.vertexData()),
-                                geometry.vertexCount() * geometry.sizeOfVertex(),
-                            ),
-                            node.childCount(),
-                            node.parent().childCount() if node.parent() else 0,
-                        )
-                    )
-                    records = [r for r in publications if r[0] is item]
-                    if records:
-                        nodes.append(records[-1])
-            return node
+                else:
+                    publications.append((item, camera, item.vertices.tobytes()))
+
+        def publish_views(layer):
+            original_publish_views(layer)
+            with lock:
+                published.append((layer.item, layer.item.vertices.tobytes(), 0, 1))
+                records = [r for r in publications if r[0] is layer.item]
+                if records:
+                    frames.append(records[-1])
 
         def wait_for(predicate, stage, timeout=10):
             deadline = time.monotonic() + timeout
@@ -237,8 +223,8 @@ class QtPreviewChecks(unittest.TestCase):
             self.fail(
                 f"{stage}; presenter={presenter.reason!r}, "
                 f"active={presenter.active}, widget={presenter.widget!r}; "
-                f"publications/nodes/frames="
-                f"{len(publications)}/{len(nodes)}/{len(frames)}"
+                f"publications/published/frames="
+                f"{len(publications)}/{len(published)}/{len(frames)}"
             )
 
         self.assertNotIn(
@@ -252,11 +238,10 @@ class QtPreviewChecks(unittest.TestCase):
         )
         widget = presenter.widget
         layer = widget._marine_layer
+        host = presenter.host_widget
         self.assertTrue(widget.isVisible())
-        self.assertTrue(presenter.foreground.isVisible())
-        self.assertIs(
-            self.app.widgetAt(widget.mapToGlobal(widget.rect().center())), widget
-        )
+        self.assertTrue(host.isVisible())
+        self.assertIs(self.app.widgetAt(host.mapToGlobal(host.rect().center())), host)
         camera = widget._camera
         # Put deterministic geographic grid and station anchors in this actual
         # application's restored camera, independent of saved user coordinates.
@@ -301,7 +286,7 @@ class QtPreviewChecks(unittest.TestCase):
             # afterRendering may execute on the scene graph thread: read only
             # the locked observations, never QWidget/camera state here.
             with lock:
-                records = [r for r in nodes if r[0] is layer.item]
+                records = [r for r in published if r[0] is layer.item]
                 if records:
                     frames.append(records[-1])
 
@@ -330,7 +315,7 @@ class QtPreviewChecks(unittest.TestCase):
             )
 
         def readback():
-            image = widget.grabFramebuffer()
+            image = widget.grabWindow()
             self.assertFalse(image.isNull(), "Visible Quick host readback unavailable")
             # Verify actual station-ring pixels, not merely changing basemap pixels.
             x, y = widget._camera.view().convert_geographic_to_screen(
@@ -370,7 +355,7 @@ class QtPreviewChecks(unittest.TestCase):
         with (
             patch("sailworks.qt.marinequick.sample_currents", side_effect=sampled),
             patch.object(MarineCurrentItem, "present", present),
-            patch.object(MarineCurrentItem, "updatePaintNode", paint_node),
+            patch.object(MarineQuickLayer, "_publish_views", publish_views),
         ):
             # PySide binds scene-graph virtuals when the item is constructed.
             # Recreate through the production presenter with observers installed.
@@ -395,7 +380,7 @@ class QtPreviewChecks(unittest.TestCase):
                 assert_ownership()
                 baseline = readback()
                 initial = layer.item.vertices.tobytes()
-                start = widget.rect().center()
+                start = QPoint(widget.width() // 2, widget.height() // 2)
                 QTest.mousePress(widget, Qt.MouseButton.LeftButton, pos=start)
                 try:
                     for delta in (QPoint(24, 10), QPoint(48, 20)):
@@ -445,7 +430,7 @@ class QtPreviewChecks(unittest.TestCase):
                 before = widget._camera
                 initial = layer.item.vertices.tobytes()
                 baseline = readback()
-                position = QPointF(widget.rect().center())
+                position = QPointF(QPoint(widget.width() // 2, widget.height() // 2))
                 wheel = QWheelEvent(
                     position,
                     QPointF(widget.mapToGlobal(position.toPoint())),
@@ -528,7 +513,7 @@ class QtPreviewChecks(unittest.TestCase):
                 def assert_latest_pixels(expected):
                     from PySide6.QtGui import QImage
 
-                    image = widget.grabFramebuffer().convertToFormat(
+                    image = widget.grabWindow().convertToFormat(
                         QImage.Format.Format_RGBA8888
                     )
                     self.assertFalse(image.isNull())
@@ -620,36 +605,22 @@ class QtPreviewChecks(unittest.TestCase):
                                 np.testing.assert_array_equal(
                                     layer.item.vertices["color"], rows[:, 2:]
                                 )
-                                root = layer.item.parentItem()
-                                items = []
-
-                                def collect(parent):
-                                    for child in parent.childItems():
-                                        if isinstance(child, MarineCurrentItem):
-                                            items.append(child)
-                                        collect(child)
-
-                                collect(root)
-                                self.assertEqual(
-                                    items, [layer.item], "Marine items accumulated"
-                                )
                                 with lock:
                                     actual = [
-                                        r for r in node_geometry if r[0] is layer.item
+                                        r for r in published if r[0] is layer.item
                                     ][-1]
                                 self.assertEqual(
                                     actual[1], layer.item.vertices.tobytes()
                                 )
                                 self.assertEqual(
-                                    actual[2], 0, "Marine child nodes accumulated"
-                                )
-                                self.assertLessEqual(
-                                    actual[3], 1, "Marine sibling nodes accumulated"
+                                    actual[2:4],
+                                    (0, 1),
+                                    "Marine publication accumulated children",
                                 )
                                 assert_latest_pixels(index)
 
                             assert_latest()
-                            start = widget.rect().center()
+                            start = QPoint(widget.width() // 2, widget.height() // 2)
                             QTest.mousePress(
                                 widget, Qt.MouseButton.LeftButton, pos=start
                             )

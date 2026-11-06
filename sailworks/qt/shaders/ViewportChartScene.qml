@@ -195,6 +195,30 @@ Item {
                 Item {
                     objectName: "marineBand"
                     anchors.fill: parent
+                    Image {
+                        objectName: "marineCurrents"
+                        visible: false
+                        smooth: false
+                        cache: false
+                        asynchronous: false
+                        fillMode: Image.Stretch
+                    }
+                    Image {
+                        objectName: "marineLabels"
+                        visible: false
+                        smooth: false
+                        cache: false
+                        asynchronous: false
+                        fillMode: Image.Stretch
+                    }
+                    Image {
+                        objectName: "icoadsMarkers"
+                        visible: false
+                        smooth: false
+                        cache: false
+                        asynchronous: false
+                        fillMode: Image.Stretch
+                    }
                 }
                 WeatherBarbs {
                     id: barbs
@@ -260,6 +284,9 @@ Item {
                 property var dashboardGauges: []
                 property string captionText: ""
                 property bool dashboardVisible: true
+                property var measurePoints: []
+                property var measurePreview: []
+                property real measureDistance: -1
                 property real centerLatitude: 0
                 property real centerLongitude: 0
                 property real zoom: 1
@@ -383,6 +410,44 @@ Item {
                         context.restore()
                     }
                     context.restore()
+                }
+
+                function drawMeasurement(context) {
+                    if (!measurePoints || !measurePoints.length)
+                        return
+                    context.strokeStyle = "#ffcc33"
+                    context.fillStyle = "#ffcc33"
+                    context.lineWidth = 2
+                    context.setLineDash([])
+                    context.font = "12px sans-serif"
+                    const first = screenPoint(measurePoints[0])
+                    if (measurePoints.length === 2) {
+                        const second = screenPoint(measurePoints[1])
+                        context.beginPath()
+                        context.moveTo(first.x, first.y)
+                        context.lineTo(second.x, second.y)
+                        context.stroke()
+                        if (hasFiniteValue(measureDistance)) {
+                            context.fillText(`${Number(measureDistance).toFixed(1)} km`,
+                                             (first.x + second.x) / 2,
+                                             (first.y + second.y) / 2)
+                        }
+                    } else if (measurePreview && measurePreview.length === 2) {
+                        const second = screenPoint(measurePreview)
+                        context.beginPath()
+                        context.moveTo(first.x, first.y)
+                        context.lineTo(second.x, second.y)
+                        context.stroke()
+                        if (hasFiniteValue(measureDistance)) {
+                            context.fillText(`${Number(measureDistance).toFixed(1)} km`,
+                                             (first.x + second.x) / 2,
+                                             (first.y + second.y) / 2)
+                        }
+                    } else {
+                        context.beginPath()
+                        context.arc(first.x, first.y, 4, 0, Math.PI * 2)
+                        context.fill()
+                    }
                 }
 
                 onPaint: {
@@ -868,6 +933,7 @@ Item {
                         }
                         context.textAlign = "left"
                     }
+                    drawMeasurement(context)
                 }
                 onRoutePlanChanged: requestPaint()
                 onRoutePreviewChanged: requestPaint()
@@ -885,6 +951,9 @@ Item {
                 onTrackPositionChanged: requestPaint()
                 onTrackHeadingChanged: requestPaint()
                 onTrackAwaChanged: requestPaint()
+                onMeasurePointsChanged: requestPaint()
+                onMeasurePreviewChanged: requestPaint()
+                onMeasureDistanceChanged: requestPaint()
                 onCenterLatitudeChanged: requestPaint()
                 onCenterLongitudeChanged: requestPaint()
                 onZoomChanged: requestPaint()
