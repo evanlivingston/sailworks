@@ -23,6 +23,10 @@ class MeasureHost(MapInteractionMixin):
         self._measure_points = ()
         self.move_callback = None
         self.keys = []
+        self.published = 0
+
+    def publish_route_overlay(self):
+        self.published += 1
 
     def _cancel_cursor(self):
         pass
@@ -59,6 +63,7 @@ class TestQtMapMeasure(unittest.TestCase):
         self.assertEqual(host._measure_points, ((45, -123), (46, -122)))
         self.assertFalse(host._measure_mode)
         self.assertGreater(host._measurement_distance_km(), 0)
+        self.assertEqual(host.published, 2)
 
     def test_escape_clears_partial_or_completed_measurement(self):
         host = MeasureHost()
@@ -129,6 +134,32 @@ class TestQtMapMeasure(unittest.TestCase):
         ViewportMap._paint_foreground(host, painter)
         painter.drawLine.assert_called_once()
         self.assertEqual(painter.drawText.call_args.args[1], "135.8 km")
+
+    def test_overlay_publishes_measurement_to_the_qml_route_canvas(self):
+        from pathlib import Path
+
+        from sailworks.qt.viewportmap import _viewport_measurement
+
+        host = SimpleNamespace(
+            _measure_points=((45, -123), (46, -122)),
+            _measure_preview_point=None,
+            _measurement_distance_km=lambda: 135.8,
+        )
+        self.assertEqual(
+            _viewport_measurement(host),
+            ([[45, -123], [46, -122]], [], 135.8),
+        )
+        qml = (
+            Path(__file__).parents[1]
+            / "sailworks"
+            / "qt"
+            / "shaders"
+            / "ViewportChartScene.qml"
+        ).read_text()
+        self.assertIn("property var measurePoints", qml)
+        self.assertIn("property var measurePreview", qml)
+        self.assertIn("function drawMeasurement(context)", qml)
+        self.assertIn("drawMeasurement(context)", qml)
 
 
 if __name__ == "__main__":

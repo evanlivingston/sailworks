@@ -1609,58 +1609,29 @@ def _prepare_wave_layer(viewport):
 
 
 def _viewport_window_class():
-    """The same viewport hosted in a native QQuickView.
+    """Compatibility alias for the sole viewport host.
 
-    A QQuickWidget renders into an offscreen FBO that is then composited
-    through the widget stack; on macOS that path presents at 60 Hz even when
-    the scene costs a couple of milliseconds.  A native Quick window presents
-    at the display rate, so the desktop map can host the identical scene here
-    once its overlays no longer need QWidget stacking.
+    The native QQuickView is now the only host, so this name is retained for
+    callers that still refer to it; it returns the same class.
     """
-    return _viewport_widget_class("window")
+    return _viewport_widget_class()
 
 
-def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
-    """Build the render-context class on demand.
+def _viewport_widget_class():  # noqa: C901 - lazy factory
+    """Build the native render-context class on demand.
 
-    ``host`` selects the Qt Quick host: ``"widget"`` is the embedded
-    QQuickWidget, ``"window"`` is a native QQuickView.  Qt is imported lazily
-    so the model and the tests stay usable headless.
+    The map is always hosted in a native ``QQuickView``: the retired widget
+    host composited through the widget stack at 60 Hz and could not present at
+    the display rate.  Qt is imported lazily so the model and the tests stay
+    usable headless.
     """
     from PySide6.QtCore import QEvent, QObject, QRectF, QTimer, QUrl, Qt, Signal
     from PySide6.QtGui import QSurfaceFormat, QVector2D
     from PySide6.QtQuick import QQuickView
-    from PySide6.QtQuickWidgets import QQuickWidget
     from PySide6.QtWidgets import QLabel
     import shiboken6
 
-    host_base = QQuickWidget if host == "widget" else QQuickView
-
-    class _InertLayer(QObject):
-        """A layer that owns no QQuickItem.
-
-        Marine and ICOADS layers subclass QQuickItem/QQuickPaintedItem in
-        Python.  Under a native window's threaded render loop every sync would
-        look up those Python overrides on the render thread, so the native
-        host runs without them until they are not Python subclasses.
-        """
-
-        def __init__(self, parent=None):
-            super().__init__(parent)
-            self.state = "unavailable"
-            self.snapshot = None
-
-        def set_camera(self, camera):
-            pass
-
-        def request(self, *args, **kwargs):
-            pass
-
-        def present(self, *args, **kwargs):
-            pass
-
-        def close(self):
-            pass
+    host_base = QQuickView
 
     from sailworks.qt.gpuweather import WeatherImageProvider
     from sailworks.qt.gribviewportchart import (
@@ -1725,7 +1696,7 @@ def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
         ):
             super().__init__(parent)
             self._model = model
-            self._gpu_streamlines_enabled = bool(gpu_streamlines) and host == "widget"
+            self._gpu_streamlines_enabled = False
             self._gpu_streamlines_error = ""
             self._gpu_streamlines_item: Any = None
             self._source_generation = 0
@@ -1845,25 +1816,27 @@ def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
             self._satellite_visible_generation = None
             format_ = QSurfaceFormat()
             format_.setSamples(4)
-            if host == "widget":
-                format_.setAlphaBufferSize(8)
             self.setFormat(format_)
-            if host == "widget":
-                self.setClearColor(Qt.GlobalColor.transparent)
-                self.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-            else:
-                # A native window cannot be stacked under QWidget overlays, so
-                # it paints the theme background behind the scene instead of a
-                # transparent surface.  It also requests no alpha buffer: a
-                # transparent native surface is not what the scene needs.
-                self.setColor(Qt.GlobalColor.black)
-                self.setResizeMode(QQuickView.ResizeMode.SizeRootObjectToView)
+            # A native window cannot be stacked under QWidget overlays, so it
+            # paints the theme background behind the scene instead of a
+            # transparent surface.  It also requests no alpha buffer: a
+            # transparent native surface is not what the scene needs.
+            self.setColor(Qt.GlobalColor.black)
+            self.setResizeMode(QQuickView.ResizeMode.SizeRootObjectToView)
             self._provider = WeatherImageProvider()
             self.engine().addImageProvider("weather", self._provider)
             from .viewportstreamlines import StreamlineImageProvider
 
             self._streamline_provider = StreamlineImageProvider()
             self.engine().addImageProvider("streamlines", self._streamline_provider)
+            from .marinequick import MarineImageProvider
+
+            self._marine_provider = MarineImageProvider()
+            self.engine().addImageProvider("marine", self._marine_provider)
+            from .icoadsquick import IcoadsImageProvider
+
+            self._icoads_provider = IcoadsImageProvider()
+            self.engine().addImageProvider("icoads", self._icoads_provider)
             self._chart_provider = None
             self._navigation_provider = None
             self._dashboard_provider = None
@@ -1933,21 +1906,6 @@ def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
                 raise RuntimeError("The GRIB viewport could not load its shader")
             if self._chart_layer:
                 self._map_content = self._weather.findChild(QObject, "mapContent")
-            if self._gpu_streamlines_enabled:
-                try:
-                    from .gpustreamlines import GpuStreamlineItem
-
-                    self._gpu_streamlines_item = GpuStreamlineItem(self._weather)
-                    self._gpu_streamlines_item.setParentItem(self._weather)
-                    self._gpu_streamlines_item.attach_window(self.quickWindow())
-                    self._gpu_streamlines_item.setZ(1000)
-                    self._gpu_streamlines_item.gpuError.connect(
-                        self._gpu_streamlines_failed,
-                        Qt.ConnectionType.QueuedConnection,
-                    )
-                except Exception as exc:
-                    logger.warning("GPU streamline initialization failed: %s", exc)
-                    self._gpu_streamlines_error = f"GPU streamlines unavailable: {exc}"
             from .marinequick import MarineQuickLayer
             from .icoadsquick import IcoadsQuickLayer
 
@@ -1959,17 +1917,13 @@ def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
                     if marine_parent is None:
                         marine_parent = chart_weather_band
 
-            if host == "widget":
-                self._marine_layer = MarineQuickLayer(marine_parent, self)
-                self._marine_layer.stateChanged.connect(self.marineStateChanged.emit)
-                self._icoads_layer = IcoadsQuickLayer(marine_parent, self)
-            else:
-                # Python QQuickItem subclasses force a GIL lookup on the render
-                # thread during every scene-graph sync, which deadlocks the
-                # threaded loop.  Native currents/labels return once their
-                # items are not Python subclasses.
-                self._marine_layer = _InertLayer(self)
-                self._icoads_layer = _InertLayer(self)
+            self._marine_layer = MarineQuickLayer(
+                marine_parent, self, provider=self._marine_provider
+            )
+            self._marine_layer.stateChanged.connect(self.marineStateChanged.emit)
+            self._icoads_layer = IcoadsQuickLayer(
+                marine_parent, self, provider=self._icoads_provider
+            )
             self.installEventFilter(self)
 
             self._barbs = self._weather
@@ -2271,7 +2225,7 @@ def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
                 def release_native_owners(
                     _obj=None, owners=tuple(self._native_contexts.values())
                 ):
-                    # QQuickWidget's scene graph has invalidated before QObject
+                    # The native scene graph has invalidated before QObject
                     # destruction. Keep GUI receivers alive until that boundary.
                     for owner in owners:
                         if shiboken6.isValid(owner):
@@ -2279,9 +2233,9 @@ def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
                             owner.deleteLater()
 
                 self.destroyed.connect(release_native_owners)
-            # A native Quick window is not a QWidget and cannot parent a
-            # QLabel; the host assigns the status widget to its container.
-            status_parent = self if host == "widget" else None
+            # The native window cannot parent a QWidget; the status label stays
+            # parentless and is never shown in this host.
+            status_parent = None
             self._status = QLabel("Wind loading…", status_parent)
             self._status.setStyleSheet(
                 "background: rgba(0,0,0,190); color: white; padding: 6px"
@@ -3225,6 +3179,9 @@ def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
                 overlay.get("dashboard", []),
                 overlay["caption"],
                 overlay["dashboard_visible"],
+                overlay.get("measure_points", []),
+                overlay.get("measure_preview", []),
+                overlay.get("measure_distance", -1.0),
             )
             # Only trusted builder payloads carry an identity token; arbitrary
             # callers retain full value-based mutation detection.
@@ -3287,6 +3244,9 @@ def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
                         "dashboardGauges",
                         "captionText",
                         "dashboardVisible",
+                        "measurePoints",
+                        "measurePreview",
+                        "measureDistance",
                     ),
                     content,
                 ):
@@ -5219,8 +5179,8 @@ def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
         def measurement_canvas(self):
             """The viewport host that owns measurement mode, if any.
 
-            A QQuickWidget can walk up to its parent widget; a native
-            QQuickView cannot, so the host is assigned explicitly.
+            A native QQuickView is not a QWidget; the presenter assigns the
+            owning canvas explicitly.
             """
             parent_widget = getattr(self, "parentWidget", None)
             if parent_widget is not None:
@@ -5229,11 +5189,9 @@ def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
                     return canvas
             return getattr(self, "_measurement_canvas", None)
 
-        def quickWindow(self):  # noqa: N802 - matches the QQuickWidget API
-            """The scene window, whichever host is in use."""
-            if host == "window":
-                return self
-            return super().quickWindow()
+        def quickWindow(self):  # noqa: N802 - matches the historical accessor
+            """The scene window."""
+            return self
 
         def dispose(self):
             if self._disposed:
@@ -5277,6 +5235,8 @@ def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
                 self._chart_model.close()
             self._provider.clear()
             self._streamline_provider.clear()
+            self._marine_provider.clear()
+            self._icoads_provider.clear()
             if self._chart_provider is not None:
                 self._chart_provider.clear()
             if self._navigation_provider is not None:
@@ -7074,19 +7034,18 @@ def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
             self._restart_chart_settle()
 
         def eventFilter(self, _obj, event):  # noqa: N802 - Qt virtual name
-            if host == "window":
-                if event.type() == QEvent.Type.NativeGesture:
-                    return self._native_gesture_event(event)
-                if event.type() == QEvent.Type.DevicePixelRatioChange:
-                    self._adopt_device_pixel_ratio()
-                if event.type() == QEvent.Type.Resize and self._camera is not None:
-                    self.set_camera(
-                        replace(
-                            self._camera,
-                            width=self.width(),
-                            height=self.height(),
-                        )
+            if event.type() == QEvent.Type.NativeGesture:
+                return self._native_gesture_event(event)
+            if event.type() == QEvent.Type.DevicePixelRatioChange:
+                self._adopt_device_pixel_ratio()
+            if event.type() == QEvent.Type.Resize and self._camera is not None:
+                self.set_camera(
+                    replace(
+                        self._camera,
+                        width=self.width(),
+                        height=self.height(),
                     )
+                )
             return super().eventFilter(_obj, event)
 
         def event(self, event):
@@ -7206,15 +7165,14 @@ def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
             self.dispose()
             super().closeEvent(event)
 
-    if host == "window":
-        # A Python virtual invoked from C++ holds the GIL across the base call.
-        # Qt Quick's expose handshake waits for the render thread, which needs
-        # the GIL, so the native host keeps the C++ implementations and uses
-        # an event filter for the few events it must observe.
-        GribViewport.event = QQuickView.event
-        GribViewport.showEvent = QQuickView.showEvent
-        GribViewport.resizeEvent = QQuickView.resizeEvent
-        GribViewport.closeEvent = QQuickView.closeEvent
+    # A Python virtual invoked from C++ holds the GIL across the base call.
+    # Qt Quick's expose handshake waits for the render thread, which needs
+    # the GIL, so the native host keeps the C++ implementations and uses
+    # an event filter for the few events it must observe.
+    GribViewport.event = QQuickView.event
+    GribViewport.showEvent = QQuickView.showEvent
+    GribViewport.resizeEvent = QQuickView.resizeEvent
+    GribViewport.closeEvent = QQuickView.closeEvent
 
     return GribViewport
 
@@ -7386,6 +7344,7 @@ def main(argv=None):
     window = QWidget()
     window.setWindowTitle(f"GRIB viewport — {len(paths)} forecasts")
     layout = QVBoxLayout(window)
+    host = QWidget.createWindowContainer(viewport, window)
     controls = QHBoxLayout()
     controls.addWidget(QLabel("Forecast UTC"))
     initial = QDateTime(instant)
@@ -7405,7 +7364,7 @@ def main(argv=None):
     controls.addStretch()
     controls.addWidget(QLabel("Drag: pan · Wheel: zoom · Trackpad: pan"))
     layout.addLayout(controls)
-    layout.addWidget(viewport, 1)
+    layout.addWidget(host, 1)
     window.resize(1000, 780)
     window.show()
     camera = ViewportCamera(

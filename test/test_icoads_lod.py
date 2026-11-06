@@ -15,6 +15,8 @@ def test_display_lod_and_cache():
     reports = [SimpleNamespace(latitude=0, longitude=0) for _ in range(4001)]
     item.set_reports(reports[:10], camera)
     assert [entry[2] for entry in item._positions()] == reports[:10]
+    image = item.render()
+    assert not image.isNull()
     item.set_reports(reports, camera)
     positions = item._positions()
     assert item._positions() is positions

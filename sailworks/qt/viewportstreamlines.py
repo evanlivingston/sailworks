@@ -150,7 +150,7 @@ class ViewportStreamlineModel:
     def __init__(self, paths, display_identity=None, gpu_trace=True):
         self.paths = tuple(paths)
         self.display_identity = display_identity
-        self.gpu_trace = True
+        self.gpu_trace = bool(gpu_trace)
         self.on_change = None
         self.error = ""
         self._condition = Condition()
@@ -318,6 +318,7 @@ class ViewportStreamlineModel:
         )
 
         from .gpustreamlines import make_gpu_trace_input
+        from sailworks.rendering.streamlinepaths import trace_streamline_paths
         from sailworks.rendering.weatherstaging import (
             blend_streamline_endpoints,
             stage_streamline_endpoints,
@@ -351,7 +352,7 @@ class ViewportStreamlineModel:
                         cancel,
                         wind_columns,
                         make_gpu_trace_input,
-                        None,
+                        trace_streamline_paths,
                         time_window,
                         stage_streamline_endpoints,
                         blend_streamline_endpoints,
@@ -403,24 +404,37 @@ class ViewportStreamlineModel:
         cancel,
         wind_columns,
         make_gpu_trace_input,
-        _unused_cpu_tracer,
+        trace_streamline_paths,
         time_window,
         stage_streamline_endpoints,
         blend_streamline_endpoints,
     ):
         try:
-            lattice, camera, uv = self._gpu_endpoint_input(
-                sampler,
-                camera,
-                cancel,
-                time_window,
-                stage_streamline_endpoints,
-                blend_streamline_endpoints,
-            )
-            columns = wind_columns(
-                sampler, camera, cancel.is_set, uv=uv, lattice=lattice
-            )
-            paths = make_gpu_trace_input(camera.view(), columns, camera.density)
+            if self.gpu_trace:
+                lattice, camera, uv = self._gpu_endpoint_input(
+                    sampler,
+                    camera,
+                    cancel,
+                    time_window,
+                    stage_streamline_endpoints,
+                    blend_streamline_endpoints,
+                )
+                columns = wind_columns(
+                    sampler, camera, cancel.is_set, uv=uv, lattice=lattice
+                )
+                paths = make_gpu_trace_input(camera.view(), columns, camera.density)
+            else:
+                # The native viewport has no Python scene-graph item for the
+                # compute tracer, so it keeps the CPU streamlines and publishes
+                # them as images.
+                columns = wind_columns(sampler, camera, cancel.is_set)
+                paths = trace_streamline_paths(
+                    camera.view(),
+                    columns,
+                    lambda *_: False,
+                    cancel.is_set,
+                    camera.density,
+                )
             error = ""
             if paths is None and not cancel.is_set():
                 error = "No traceable wind cells in selected forecast"
