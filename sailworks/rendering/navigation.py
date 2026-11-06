@@ -16,6 +16,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 
 """Shared track and POI portrayal for the Qt CPU fallback, in logical map pixels."""
 
+import bisect
 import math
 import random
 from functools import lru_cache
@@ -116,6 +117,7 @@ class NavigationRenderer:
         self.hl_poi = None
         self.hl_track_item = None
         self.edit_track = None
+        self._route_geometry = {}
 
     def draw_routes(self, gpsmap, cr, display_time, draw_routes=True):  # noqa: C901
         # Legacy route times and the map clock are local and naive; newer
@@ -215,35 +217,48 @@ class NavigationRenderer:
                     prevy = y
                     prevp = p
 
+    def _route_overlay_geometry(self, route):
+        """Static route geometry, cached until ``route.revision`` changes."""
+        key = (id(route), route.revision)
+        cached = self._route_geometry.get(key)
+        if cached is not None and cached[0] is route:
+            return cached[1]
+        points = []
+        rows = []
+        for p in route:
+            lat, lon = float(p[0]), float(p[1])
+            speed = float(p[5] if p[5] is not None else 0)
+            stamp = _route_datetime(p[2]).timestamp()
+            rows.append((lat, lon, speed, stamp, math.radians(p[6])))
+            points.append([lat, lon, speed])
+        geometry = (points, tuple(rows), tuple(row[3] for row in rows))
+        self._route_geometry[key] = (route, geometry)
+        return geometry
+
     def route_overlay_data(self, display_time):
         """Route geometry for a QML overlay, including the interpolated boat."""
         routes = []
+        live = set()
         for tr in self.core.routingManager:
             if not tr.visible:
                 continue
-            points = [
-                [float(p[0]), float(p[1]), float(p[5] if p[5] is not None else 0)]
-                for p in tr
-            ]
+            key = (id(tr), tr.revision)
+            live.add(key)
+            points, rows, stamps = self._route_overlay_geometry(tr)
             boat = None
-            prevp = None
-            for p in tr:
-                if prevp is not None:
-                    tprev = _route_datetime(prevp[2]).timestamp()
-                    tcurr = _route_datetime(p[2]).timestamp()
-                    if tprev < display_time <= tcurr:
-                        dt = tcurr - tprev
-                        dl = (
-                            utils.point_distance(prevp[0], prevp[1], p[0], p[1])
-                            / dt
-                            * (display_time - tprev)
-                        )
-                        rp = utils.routage_point_distance(
-                            prevp[0], prevp[1], dl, math.radians(p[6])
-                        )
-                        boat = [float(rp[0]), float(rp[1])]
-                        break
-                prevp = p
+            index = bisect.bisect_left(stamps, display_time)
+            if 0 < index < len(rows):
+                prev = rows[index - 1]
+                curr = rows[index]
+                dt = curr[3] - prev[3]
+                if dt > 0:
+                    dl = (
+                        utils.point_distance(prev[0], prev[1], curr[0], curr[1])
+                        / dt
+                        * (display_time - prev[3])
+                    )
+                    rp = utils.routage_point_distance(prev[0], prev[1], dl, curr[4])
+                    boat = [float(rp[0]), float(rp[1])]
             routes.append(
                 {
                     "name": str(tr.name),
@@ -252,6 +267,9 @@ class NavigationRenderer:
                     "boat": boat,
                 }
             )
+        for stale in tuple(self._route_geometry):
+            if stale not in live:
+                del self._route_geometry[stale]
         return routes
 
     def draw_navigation(self, gpsmap, cr, draw_tracks=True):  # noqa: C901

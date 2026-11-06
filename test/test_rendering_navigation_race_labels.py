@@ -43,6 +43,7 @@ class _Poi:
 class _Route:
     name = "Route A"
     visible = True
+    revision = 0
     provenance = {}
     _points = [
         (48.0, -123.0, "2026-01-01T00:00:00", 0.0, 5.0, 0.0, 0.0),
@@ -136,3 +137,26 @@ def test_draw_race_tracks_omits_per_fix_point_numbers():
     # Track name may be drawn, but no per-fix numeric labels.
     assert "1" not in cr.texts
     assert "2" not in cr.texts
+
+
+def test_route_overlay_data_reuses_geometry_until_revision_changes():
+    from datetime import datetime
+
+    route = _Route()
+    core = SimpleNamespace(
+        trackManager=_TrackManager([]),
+        poiManager=[],
+        routingManager=[route],
+    )
+    nav = NavigationRenderer(core)
+    half_hour = datetime(2026, 1, 1, 0, 30).timestamp()
+    quarter_hour = datetime(2026, 1, 1, 0, 15).timestamp()
+
+    first = nav.route_overlay_data(half_hour)
+    assert first[0]["boat"] is not None
+    reused = nav.route_overlay_data(quarter_hour)
+    assert reused[0]["points"] is first[0]["points"]
+
+    route.revision = 1
+    rebuilt = nav.route_overlay_data(quarter_hour)
+    assert rebuilt[0]["points"] is not first[0]["points"]
