@@ -1,8 +1,13 @@
 """Focused viewport streamline ownership, invalidation and display checks."""
 
 import os
+import sys
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# The streamline pixel tests need a backend that can compile custom shaders.
+# Qt's offscreen plugin uses the software renderer on macOS, which cannot, so
+# let macOS use its native backend; CI sets QT_QPA_PLATFORM explicitly.
+if sys.platform != "darwin":
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from dataclasses import replace
 from datetime import timedelta
@@ -652,7 +657,12 @@ class TestStreamlineShaderStructure(unittest.TestCase):
         self.assertIn("abs(marker - round(marker)) > 0.00001", fragment)
         self.assertIn("Math.max(1, segmentCount * (arrow ? 4 : 2) - 1)", qml)
         self.assertIn("required property var modelData", qml)
-        self.assertIn("effect.status === ShaderEffect.Compiled", qml)
+        # Qt reports Compiled only on the effect that triggered the compile of a
+        # shader program, so readiness must not gate on it: later effects (and
+        # every delegate created after) render while staying Uncompiled.
+        self.assertNotIn("effect.status === ShaderEffect.Compiled", qml)
+        self.assertIn("effect.status !== ShaderEffect.Error", qml)
+        self.assertIn("GraphicsInfo.api !== GraphicsInfo.Software", qml)
         self.assertIn("property vector2d cameraCenter", qml)
         self.assertNotIn("previewScale", qml)
         self.assertIn("Math.min(8192, batchSize)", qml)

@@ -27,6 +27,14 @@ Item {
     readonly property int effectiveBatchSize: Math.max(1, Math.min(8192, batchSize))
     property real lineWidth: 1.2
     property int batchRevision: 0
+    // Qt delivers the Compiled status to only the ShaderEffect that triggered
+    // the compile of a given shader program. Every other effect sharing that
+    // program, and every effect created after it, stays at Uncompiled while
+    // still rendering correctly. Per-effect status therefore cannot decide
+    // readiness; a software backend that never compiles custom shaders is the
+    // only backend worth reporting, and it is identifiable up front.
+    readonly property bool shaderBackend: GraphicsInfo.api !== GraphicsInfo.Unknown
+                                          && GraphicsInfo.api !== GraphicsInfo.Software
     readonly property bool pendingReady: {
         let revision = batchRevision
         let batches = pendingBuffer === 0 ? buffer0 : buffer1
@@ -158,15 +166,23 @@ Item {
                  property size meshResolution: Qt.size(1, Math.max(1, segmentCount * (arrow ? 4 : 2) - 1))
                  property color segmentColor: modelData.color
                  property bool arrow: !!modelData.arrow
-                property bool ready: segments.status === Image.Ready && effect.status === ShaderEffect.Compiled
-                // Any status other than Compiled is a failure worth
-                // reporting: on some RHI backends the effect stays at an
-                // intermediate status instead of Error, and an empty message
-                // hid a shader that never compiled.
-                property string shaderError: segments.status === Image.Error ? "Streamline texture unavailable"
-                                             : effect.status === ShaderEffect.Compiled ? ""
-                                             : (effect.log.length ? effect.log
-                                                : "Streamline shader did not compile (status " + effect.status + ")")
+                 property bool ready: root.shaderBackend
+                                      && segments.status === Image.Ready
+                                      && effect.status !== ShaderEffect.Error
+                // Any status other than Compiled is normally an intermediate
+                // state, not a failure: see shaderBackend above. Only Error is
+                // a real compile failure, and a software backend is the one
+                // platform that can never draw the effect.
+                property string shaderError: segments.status === Image.Error
+                                             ? "Streamline texture unavailable"
+                                             : effect.status === ShaderEffect.Error
+                                               ? (effect.log.length
+                                                  ? effect.log
+                                                  : "Streamline shader failed to compile (status "
+                                                    + effect.status + ")")
+                                               : !root.shaderBackend
+                                                 ? "Streamline shaders need a hardware rendering backend"
+                                                 : ""
                 onReadyChanged: root.batchRevision++
                 onShaderErrorChanged: root.batchRevision++
                 // The aggregate ``ready`` reads delegate state inside a JS
