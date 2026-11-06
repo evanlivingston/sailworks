@@ -497,7 +497,7 @@ class WeatherPresenter(QObject):
         if widget._environment is not None:
             cache, target = self.canvas._resolve_reusable_layer(
                 self.canvas._environment_cache,
-                self.canvas._base_key(),
+                self.canvas._environment_key(),
                 self.canvas._environment_image,
             )
             self.canvas._environment_cache = cache

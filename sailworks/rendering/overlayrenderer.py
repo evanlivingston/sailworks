@@ -119,6 +119,12 @@ class OverlayRenderer:
             requests=0, hits=0, adopts=0, cancels=0, evictions=0, wasted_bytes=0
         )
 
+    def publication_token(self, canvas):
+        """Monotonic identity of the frame currently published for *canvas*."""
+        state = self._states.get(canvas)
+        frame = getattr(state, "frame", None)
+        return None if frame is None else frame[0].request_id
+
     def forget(self, canvas):
         state = self._states.pop(canvas, None)
         self._pending.pop(canvas, None)
