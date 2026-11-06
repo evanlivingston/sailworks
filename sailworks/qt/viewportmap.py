@@ -550,6 +550,7 @@ class ViewportMap(
         current = self.camera_state
         if state == (current.center_lat, current.center_lon, current.zoom):
             return False
+        self.cancel_fly()
         zoom_changed = current.zoom != camera.zoom
         current.center_lat, current.center_lon, current.zoom = state
         self._cancel_cursor()

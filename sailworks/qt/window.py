@@ -734,7 +734,7 @@ class PreviewWindow(QMainWindow):
 
     def _go_to_place(self, place):
         self.views.setCurrentWidget(self.map)
-        self.map.center_on(place.latitude, place.longitude, place.default_zoom)
+        self.map.fly_to(place.latitude, place.longitude, place.default_zoom)
         self.statusBar().showMessage(f"{place.name} — {place.kind_label}", 4000)
 
     def _focus_place_search(self):
