@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import threading
 import fcntl
@@ -812,11 +813,8 @@ class Era5DownloadService:
             for path, piece, provenance in staged_chunks:
                 # register_file is idempotent; only artifacts absent before this
                 # invocation belong to this transaction and may be rolled back.
-                digest = _sha256(path)
-                destination = root / "artifacts" / digest
-                existed = destination.exists()
-                artifact = self.store.register_file(path)
-                if not existed:
+                artifact, created = self.store.register_file_tracked(path)
+                if created:
                     registered.append(artifact)
                 record = {
                     "dataset": DATASET,
@@ -1018,16 +1016,6 @@ class _catalog_lock:
         self.lock.release()
 
 
-def _sha256(path):
-    import hashlib
-
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def publish_history_display(state, entries, *, model_id="ERA5"):
     """Publish downloaded ERA5 chunks as one hourly display forecast."""
     usable = [
@@ -1046,7 +1034,8 @@ def publish_history_display(state, entries, *, model_id="ERA5"):
         ) as stream:
             temp_path = Path(stream.name)
             for entry in usable:
-                stream.write((root / str(entry["artifact"])).read_bytes())
+                with (root / str(entry["artifact"])).open("rb") as source:
+                    shutil.copyfileobj(source, stream, 1024 * 1024)
         artifact = state.store.register_file(temp_path)
     finally:
         if temp_path is not None:

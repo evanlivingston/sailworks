@@ -40,6 +40,7 @@ class Era5DownloadTab(QWidget):
         self.controller = controller
         self.capture_region = capture_region
         self.service = Era5DownloadService(controller.analysis.state.store)
+
         self.plan = None
         self.job = None
         layout = QVBoxLayout(self)
@@ -148,7 +149,6 @@ class Era5DownloadTab(QWidget):
         self.timer = QTimer(self)
         self.timer.setInterval(500)
         self.timer.timeout.connect(self.poll)
-        self.timer.start()
         self._poll_count = 0
         self.nbs_job = None
         self.nbs_cancel = None
@@ -450,6 +450,14 @@ class Era5DownloadTab(QWidget):
         self.request_button.setEnabled(False)
         self.cancel_button.setEnabled(True)
         self.retry_button.setEnabled(False)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.timer.start()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self.timer.stop()
 
     def poll(self):
         if getattr(self, "nbs_job", None) is not None:

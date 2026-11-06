@@ -258,6 +258,10 @@ class TrancheStore:
 
     def register_file(self, source):
         """Register a local input by copying it into canonical immutable storage."""
+        return self.register_file_tracked(source)[0]
+
+    def register_file_tracked(self, source):
+        """Register a file and report whether this call created the artifact."""
         fd, stage_name = tempfile.mkstemp(dir=self.artifacts, prefix=".stage-")
         digest, size = hashlib.sha256(), 0
         try:
@@ -272,15 +276,17 @@ class TrancheStore:
             hexdigest = digest.hexdigest()
             destination = self.artifacts / hexdigest
             os.chmod(stage_name, 0o444)
+            created = not destination.exists()
             try:
                 os.link(stage_name, destination)
                 self._fsync_dir(self.artifacts)
             except FileExistsError:
+                created = False
                 if destination.is_symlink():
                     raise ValueError("artifact destination is a symlink")
                 if self._verified_hash(destination) != (hexdigest, size):
                     raise ValueError("content-address collision or corrupted artifact")
-            return Artifact(f"artifacts/{hexdigest}", hexdigest, size)
+            return Artifact(f"artifacts/{hexdigest}", hexdigest, size), created
         finally:
             if os.path.exists(stage_name):
                 os.unlink(stage_name)
