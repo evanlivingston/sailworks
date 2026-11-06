@@ -156,8 +156,11 @@ class ENCCatalog:
         cache = self.directory / "catalog.xml"
         if cache.exists():
             try:
+                fresh = time.time() - cache.stat().st_mtime < CACHE_SECONDS
+                if self.cells and fresh:
+                    return
                 self.cells = parse_catalog(cache.read_bytes())
-                if time.time() - cache.stat().st_mtime < CACHE_SECONDS:
+                if fresh:
                     return
             except (ValueError, ElementTree.ParseError):
                 pass
