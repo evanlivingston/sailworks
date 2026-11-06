@@ -1575,6 +1575,32 @@ def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
 
     host_base = QQuickWidget if host == "widget" else QQuickView
 
+    class _InertLayer(QObject):
+        """A layer that owns no QQuickItem.
+
+        Marine and ICOADS layers subclass QQuickItem/QQuickPaintedItem in
+        Python.  Under a native window's threaded render loop every sync would
+        look up those Python overrides on the render thread, so the native
+        host runs without them until they are not Python subclasses.
+        """
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.state = "unavailable"
+            self.snapshot = None
+
+        def set_camera(self, camera):
+            pass
+
+        def request(self, *args, **kwargs):
+            pass
+
+        def present(self, *args, **kwargs):
+            pass
+
+        def close(self):
+            pass
+
     from sailworks.qt.gpuweather import WeatherImageProvider
     from sailworks.qt.gribviewportchart import (
         CHART_PALETTE,
@@ -1638,7 +1664,7 @@ def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
         ):
             super().__init__(parent)
             self._model = model
-            self._gpu_streamlines_enabled = True
+            self._gpu_streamlines_enabled = bool(gpu_streamlines) and host == "widget"
             self._gpu_streamlines_error = ""
             self._gpu_streamlines_item: Any = None
             self._source_generation = 0
@@ -1872,9 +1898,18 @@ def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
                     if marine_parent is None:
                         marine_parent = chart_weather_band
 
-            self._marine_layer = MarineQuickLayer(marine_parent, self)
-            self._marine_layer.stateChanged.connect(self.marineStateChanged.emit)
-            self._icoads_layer = IcoadsQuickLayer(marine_parent, self)
+            if host == "widget":
+                self._marine_layer = MarineQuickLayer(marine_parent, self)
+                self._marine_layer.stateChanged.connect(self.marineStateChanged.emit)
+                self._icoads_layer = IcoadsQuickLayer(marine_parent, self)
+            else:
+                # Python QQuickItem subclasses force a GIL lookup on the render
+                # thread during every scene-graph sync, which deadlocks the
+                # threaded loop.  Native currents/labels return once their
+                # items are not Python subclasses.
+                self._marine_layer = _InertLayer(self)
+                self._icoads_layer = _InertLayer(self)
+            self.installEventFilter(self)
 
             self._barbs = self._weather
             self._fill = cast(
@@ -6894,6 +6929,22 @@ def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
             self._adopt_device_pixel_ratio()
             self._restart_chart_settle()
 
+        def eventFilter(self, _obj, event):  # noqa: N802 - Qt virtual name
+            if host == "window":
+                if event.type() == QEvent.Type.NativeGesture:
+                    return self._native_gesture_event(event)
+                if event.type() == QEvent.Type.DevicePixelRatioChange:
+                    self._adopt_device_pixel_ratio()
+                if event.type() == QEvent.Type.Resize and self._camera is not None:
+                    self.set_camera(
+                        replace(
+                            self._camera,
+                            width=self.width(),
+                            height=self.height(),
+                        )
+                    )
+            return super().eventFilter(_obj, event)
+
         def event(self, event):
             if (
                 getattr(self, "_chart_without_weather", False)
@@ -7009,6 +7060,16 @@ def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
         def closeEvent(self, event):  # noqa: N802 - Qt virtual method name
             self.dispose()
             super().closeEvent(event)
+
+    if host == "window":
+        # A Python virtual invoked from C++ holds the GIL across the base call.
+        # Qt Quick's expose handshake waits for the render thread, which needs
+        # the GIL, so the native host keeps the C++ implementations and uses
+        # an event filter for the few events it must observe.
+        GribViewport.event = QQuickView.event
+        GribViewport.showEvent = QQuickView.showEvent
+        GribViewport.resizeEvent = QQuickView.resizeEvent
+        GribViewport.closeEvent = QQuickView.closeEvent
 
     return GribViewport
 
