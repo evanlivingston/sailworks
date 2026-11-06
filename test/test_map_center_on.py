@@ -50,6 +50,14 @@ def test_fly_to_dips_then_reaches_the_target(app):
     assert host.view_changed.emit.called
 
 
+def test_retained_viewport_cameras_do_not_cancel_a_fly_to():
+    from sailworks.qt.viewportmap import ViewportMap
+
+    host = SimpleNamespace(_fly_tick=SimpleNamespace(isActive=lambda: True))
+    camera = SimpleNamespace(center_lat=1.0, center_lon=2.0, zoom=3.0)
+    assert ViewportMap.adopt_viewport_camera(host, camera) is False
+
+
 def test_center_on_sets_the_camera_and_zoom():
     changed = Mock()
     host = SimpleNamespace(

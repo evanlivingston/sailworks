@@ -585,6 +585,16 @@ class WeatherPresenter(QObject):
         self._label()
 
     def eventFilter(self, watched, event):  # noqa: N802
+        if watched is self.widget and event.type() in (
+            QEvent.Type.MouseButtonPress,
+            QEvent.Type.Wheel,
+            QEvent.Type.NativeGesture,
+            QEvent.Type.KeyPress,
+            QEvent.Type.ContextMenu,
+        ):
+            cancel_fly = getattr(self.canvas, "cancel_fly", None)
+            if cancel_fly is not None:
+                cancel_fly()
         if watched is self.widget and event.type() == QEvent.Type.MouseMove:
             # Sampling the weather under the pointer is far too expensive to
             # run on every move while the map is being dragged.  Coalesce to

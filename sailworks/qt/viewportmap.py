@@ -546,11 +546,19 @@ class ViewportMap(
 
     def adopt_viewport_camera(self, camera):
         """Mirror viewport-owned camera state for existing map APIs/overlays."""
+        fly = getattr(self, "_fly_tick", None)
+        if fly is not None and fly.isActive():
+            # Retained weather/chart refreshes re-emit the viewport's previous
+            # camera while the fly animation is already ahead of it. User
+            # input cancels the animation before it reaches this path.
+            return False
         state = (camera.center_lat, camera.center_lon, camera.zoom)
         current = self.camera_state
         if state == (current.center_lat, current.center_lon, current.zoom):
             return False
-        self.cancel_fly()
+        cancel_fly = getattr(self, "cancel_fly", None)
+        if cancel_fly is not None:
+            cancel_fly()
         zoom_changed = current.zoom != camera.zoom
         current.center_lat, current.center_lon, current.zoom = state
         self._cancel_cursor()
