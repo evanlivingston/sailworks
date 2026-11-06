@@ -170,7 +170,8 @@ class SessionController(QObject):
         self.last_tick = time.monotonic()
         self.timer.start()
         self.seek_timer = QTimer(self)
-        self.seek_timer.setInterval(1)
+        self.seek_timer.setInterval(0)
+        self.seek_timer.setSingleShot(True)
         self.seek_timer.timeout.connect(self._seek_tick)
         self.chart_startup = None
         if load_charts and early_weather:
@@ -449,9 +450,16 @@ class SessionController(QObject):
         return True
 
     def _seek_tick(self):
-        if self.closed or self.session.seek_batch(limit=1000):
+        if self.closed:
+            self.seek_timer.stop()
+            return
+        if self.session.seek_batch(limit=1000):
             self.seek_timer.stop()
             self.last_tick = time.monotonic()
+            return
+        # One batch per event-loop turn: the queued timeout yields to paints
+        # and input between batches instead of occupying a repeating 1 ms slot.
+        self.seek_timer.start()
 
     def load_path(self, path):
         return self.load_paths([path])

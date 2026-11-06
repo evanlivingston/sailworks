@@ -356,3 +356,11 @@ class TestForecastSourceOverview(unittest.TestCase):
         self.assertEqual(self.timeline.day_strip.valid_times, self.active.valid_times)
         self.timeline.dispose()
         self.assertEqual(animation.state(), QAbstractAnimation.State.Stopped)
+
+    def test_poll_timer_follows_timeline_visibility(self):
+        self.timeline.hide()
+        self.app.processEvents()
+        self.assertFalse(self.timeline.poll_timer.isActive())
+        self.timeline.show()
+        self.app.processEvents()
+        self.assertTrue(self.timeline.poll_timer.isActive())
