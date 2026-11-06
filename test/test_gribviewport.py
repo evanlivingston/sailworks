@@ -1176,6 +1176,51 @@ def test_zoom_change_restages_the_padded_selection(gribs):
         model.close()
 
 
+def test_zoom_gesture_reuses_the_padded_selection_within_tolerance(gribs):
+    paths, _source = _paths(gribs)
+    model = GribViewportModel(paths, land_mask=Land())
+    camera = _camera()
+    tolerance = gribviewport.SELECTION_ZOOM_REUSE_STEPS
+    try:
+        _field, first = _wait_ready(model, camera=camera)
+        reference = camera.view()
+        close = replace(camera, zoom=camera.zoom + tolerance / 2)
+        state, _same, reused = model.update(
+            close, reference=reference, zoom_tolerance=tolerance
+        )
+        assert state == "ready"
+        assert reused is first
+        far = replace(camera, zoom=camera.zoom + 2 * tolerance)
+        state, _same, restaged = model.update(
+            far, reference=reference, zoom_tolerance=tolerance
+        )
+        assert state == "ready"
+        assert restaged is not first
+    finally:
+        model.close()
+
+
+def test_zoom_reuse_does_not_rebuild_the_anchor_atlas(gribs):
+    paths, _source = _paths(gribs)
+    model = GribViewportModel(paths, land_mask=Land())
+    camera = _camera()
+    tolerance = gribviewport.SELECTION_ZOOM_REUSE_STEPS
+    close = replace(camera, zoom=camera.zoom + tolerance / 2)
+    try:
+        _field, _first = _wait_ready(model, camera=camera)
+        model._anchor_atlas_cache.clear()
+        model._anchor_atlas_cache_order.clear()
+        # The viewport rebases its shared pan reference to the new camera
+        # before every zoom tick, so the offered reference is that camera.
+        state, _same, _selection = model.update(
+            close, reference=close.view(), zoom_tolerance=tolerance
+        )
+        assert state == "ready"
+        assert model._anchor_atlas_cache == {}
+    finally:
+        model.close()
+
+
 def test_an_incompatible_reference_does_not_reuse_a_previous_atlas_frame(gribs):
     import numpy as np
 
