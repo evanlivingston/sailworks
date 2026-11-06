@@ -507,17 +507,27 @@ class ViewportMap(
     def drawer_state(self):
         return self._drawer_state
 
-    def set_drawer_state(self, left_closed, right_closed):
+    def set_drawer_state(self, left_closed, right_closed, force=False):
         """Mirror the window's sidebar drawers in the scene's edge tabs."""
         closed = (bool(left_closed), bool(right_closed))
-        if closed == self._drawer_state:
+        if not force and closed == self._drawer_state:
             return
         self._drawer_state = closed
         presenter = getattr(self, "_weather_presenter", None)
         widget = getattr(presenter, "widget", None) if presenter is not None else None
         set_drawer_state = getattr(widget, "set_drawer_state", None)
         if set_drawer_state is not None:
+            if force:
+                widget._drawer_closed_state = None
             set_drawer_state(*closed)
+
+    def set_drawer_tabs_visible(self, visible):
+        """Show or hide the scene's built-in sidebar drawer tabs."""
+        presenter = getattr(self, "_weather_presenter", None)
+        widget = getattr(presenter, "widget", None) if presenter is not None else None
+        set_visible = getattr(widget, "set_drawer_tabs_visible", None)
+        if set_visible is not None:
+            set_visible(visible)
 
     def _drawer_toggle_requested(self, side):
         self.drawer_toggle_requested.emit(side)

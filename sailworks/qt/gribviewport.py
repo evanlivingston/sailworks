@@ -2865,6 +2865,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 if self._satellite_retry_timer is not None:
                     self._satellite_retry_timer.stop()
 
+        def set_drawer_tabs_visible(self, visible):
+            """Show or hide the scene's built-in drawer tabs."""
+            if self._weather is not None:
+                self._weather.setProperty("drawerTabsVisible", bool(visible))
+
         def set_drawer_state(self, left_closed, right_closed):
             """Reflect the window's sidebar drawer state in the scene tabs."""
             closed = (bool(left_closed), bool(right_closed))
