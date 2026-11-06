@@ -342,3 +342,29 @@ def test_three_wave_bands_stage_as_independent_scalar_workers():
         assert model._components == 1
         # A scalar band has no barb selection to sample.
         assert model._selection_enabled is False
+
+
+def test_wave_arrow_setters_no_op_when_input_is_unchanged():
+    from types import MethodType, SimpleNamespace
+
+    from sailworks.qt.gribviewport import _viewport_widget_class
+
+    widget = _viewport_widget_class()
+    camera = object()
+    calls = []
+    host = SimpleNamespace(
+        _wave_arrows_visible=True,
+        _wave_arrows_state="ready",
+        _wave_arrow_density="standard",
+        _camera=camera,
+    )
+    host._update_wave_arrows = MethodType(lambda self, cam: calls.append(cam), host)
+    host.set_wave_arrows_visible = MethodType(widget.set_wave_arrows_visible, host)
+    host.set_wave_arrow_density = MethodType(widget.set_wave_arrow_density, host)
+
+    host.set_wave_arrows_visible(True)
+    host.set_wave_arrow_density("standard")
+    assert calls == []
+
+    host.set_wave_arrow_density("dense")
+    assert calls == [camera]

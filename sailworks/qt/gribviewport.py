@@ -3997,6 +3997,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             """
             _prepare_wave_layer(self)
             visible = bool(visible)
+            if visible == self._wave_arrows_visible and (
+                not visible or self._wave_arrows_state == "ready"
+            ):
+                return
             self._wave_arrows_visible = visible
             if not visible:
                 self._wave_arrows_state = "hidden"
@@ -4027,7 +4031,10 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             layout; the wind barbs keep their camera density untouched.
             """
             _prepare_wave_layer(self)
-            self._wave_arrow_density = str(density)
+            density = str(density)
+            if density == self._wave_arrow_density:
+                return
+            self._wave_arrow_density = density
             if self._wave_arrows_visible:
                 self._update_wave_arrows(self._camera)
 
@@ -4407,6 +4414,20 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     if item is not None:
                         item.setVisible(False)
 
+        def _wave_barbs_key(self, fields, camera):
+            bands = "/".join(f"{band}:{fields[band].generation}" for band in WAVE_BANDS)
+            return f"{bands}/{self._wave_arrow_density}/{camera.stamp()}"
+
+        def _wave_barbs_published(self, key):
+            manager = self._publication_manager
+            layer = manager.layers[LayerRole.WAVE_BARBS]
+            return (
+                layer.visible is not None
+                and layer.visible.generation == manager.current_generation
+                and layer.visible_resources.get("key") == key
+                and layer.pending is None
+            )
+
         def _update_wave_arrows(self, camera):
             """Stage and publish WAVE_BARBS from the three wave bands.
 
@@ -4464,6 +4485,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     ),
                 )
                 return
+            key = self._wave_barbs_key(fields, camera)
+            if self._wave_barbs_published(key):
+                self._wave_barbs.setVisible(True)
+                self._show_wave_arrow_state("ready", "")
+                return
             sampler = getattr(models["wave_height"], "_sampler", None)
             land = getattr(models["wave_height"], "_land", None)
             try:
@@ -4503,19 +4529,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 return
             images = wave_barbs_images(fields)
             stamp = camera.stamp()
-            key = "/".join(f"{band}:{fields[band].generation}" for band in WAVE_BANDS)
-            key = f"{key}/{self._wave_arrow_density}/{stamp}"
-            manager = self._publication_manager
-            layer = manager.layers[LayerRole.WAVE_BARBS]
-            if (
-                layer.visible is not None
-                and layer.visible.generation == manager.current_generation
-                and layer.visible_resources.get("key") == key
-                and layer.pending is None
-            ):
+            key = self._wave_barbs_key(fields, camera)
+            if self._wave_barbs_published(key):
                 self._wave_barbs.setVisible(True)
                 self._show_wave_arrow_state("ready", "")
                 return
+            manager = self._publication_manager
+            layer = manager.layers[LayerRole.WAVE_BARBS]
             budget = sum(image.sizeInBytes() for image in images)
             delta = max(0, budget - layer.pending_budget_bytes)
             if not manager.budget.can_allocate(LayerRole.WAVE_BARBS, delta):
