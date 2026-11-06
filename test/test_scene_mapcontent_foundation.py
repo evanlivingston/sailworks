@@ -63,6 +63,17 @@ class TestSceneMapContentFoundation(unittest.TestCase):
                 self.assertIn("width: mapClip.width", content_block)
                 self.assertIn("height: mapClip.height", content_block)
 
+    def test_drawer_tabs_live_outside_the_clipped_map(self):
+        scene = (_shaders() / "ViewportChartScene.qml").read_text()
+        self.assertIn("signal drawerToggled(string side)", scene)
+        self.assertIn("property bool leftDrawerClosed: false", scene)
+        self.assertIn("property bool rightDrawerClosed: false", scene)
+        clip_block = _block_for(scene, "mapClip")
+        for name, side in (("leftDrawerTab", "left"), ("rightDrawerTab", "right")):
+            self.assertIn('objectName: "%s"' % name, scene)
+            self.assertNotIn(name, clip_block)
+            self.assertIn('root.drawerToggled("%s")' % side, scene)
+
     def test_existing_layers_keep_their_parents(self):
         """Existing geographic layers are not reparented into mapClip/mapContent."""
         shaders = _shaders()
