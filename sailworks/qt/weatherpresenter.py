@@ -305,7 +305,9 @@ class WeatherPresenter(QObject):
 
     def _state_changed(self, state):
         self._state = state
-        if self.widget is not None:
+        if self.widget is not None and self.widget._status.isVisible():
+            # Hiding an already hidden QWidget is a window-server round trip
+            # (about 16 ms on macOS), and a camera tick may re-report a state.
             self.widget._status.hide()
         self._label()
 
@@ -327,7 +329,8 @@ class WeatherPresenter(QObject):
         if self.closed:
             return
         if not self.canvas.controller.settings.get("developerMode", False):
-            self.status.hide()
+            if self.status.isVisible():
+                self.status.hide()
             return
         selection = self.canvas.controller.display_forecast
         if self.reason:

@@ -2307,15 +2307,18 @@ def _viewport_widget_class(host="widget"):  # noqa: C901 - lazy factory
             getattr(self._barbs, "readyChanged").connect(self._readiness_changed)
 
         def _show_state(self, state, message=None):
-            self._state = state
-            self._status.setText(
-                message
-                or (
-                    "Wind loading…"
-                    if state == "loading"
-                    else (self._model.error or self._native_error or "Wind unavailable")
-                )
+            text = message or (
+                "Wind loading…"
+                if state == "loading"
+                else (self._model.error or self._native_error or "Wind unavailable")
             )
+            if state == self._state and text == self._status.text():
+                # A camera tick often re-reports the state it already shows.
+                # Touching a QWidget costs a window-server round trip (about
+                # 16 ms on macOS), which dominated every pan frame.
+                return
+            self._state = state
+            self._status.setText(text)
             self._status.adjustSize()
             self._status.setVisible(state != "ready")
             self._status.raise_()
