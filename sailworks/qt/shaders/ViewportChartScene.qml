@@ -35,6 +35,7 @@ Item {
     // native Quick host always draws above the window's QWidget children.
     property bool leftDrawerClosed: false
     property bool rightDrawerClosed: false
+    property bool drawerTabsVisible: true
     signal layerToggled(string layer, bool visible)
     signal drawerToggled(string side)
     // Embedded use supplies the world/raster base here. It must not depend
@@ -1064,6 +1065,7 @@ Item {
         objectName: "leftDrawerTab"
         width: 18
         height: 64
+        visible: root.drawerTabsVisible
         anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
         z: 1000
@@ -1091,6 +1093,7 @@ Item {
         objectName: "rightDrawerTab"
         width: 18
         height: 64
+        visible: root.drawerTabsVisible
         anchors.right: parent.right
         anchors.verticalCenter: parent.verticalCenter
         z: 1000

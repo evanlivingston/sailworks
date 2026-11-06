@@ -34,6 +34,8 @@ from PySide6.QtWidgets import (
 import logging
 from shiboken6 import getCppPointer, isValid
 
+from .collapsiblepanel import CollapsiblePanel
+
 logger = logging.getLogger("sailworks")
 
 # Single minimum width shared by every component, docked or floating.
@@ -505,6 +507,7 @@ class DockTitleBar(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 2, 6, 2)
         layout.setSpacing(6)
+        self._layout = layout
         self.close_button = QToolButton(self)
         self.close_button.setObjectName("dock-close")
         self.close_button.setText("✕")
@@ -526,6 +529,11 @@ class DockTitleBar(QWidget):
         self.close_button.setAccessibleName(f"Close {title} panel")
         self.close_button.setToolTip(tip)
         self.setToolTip("Drag to move · double-click to dock")
+
+    def add_collapse_button(self, button: QToolButton):
+        """Place the panel collapse arrow between close and the title."""
+        self._layout.insertWidget(1, button)
+        button.show()
 
     def mousePressEvent(self, event):  # noqa: N802 - Qt virtual method name
         if event.button() == Qt.MouseButton.LeftButton:
@@ -666,6 +674,324 @@ class DockTitleBar(QWidget):
         manager = self._manager()
         if manager:
             manager.apply_target(self._dock, target)
+
+
+# Qt's QWIDGETSIZE_MAX; restored when a collapsed panel expands.
+_UNCONSTRAINED = (1 << 24) - 1
+
+
+class DockCollapse(QObject):
+    """Collapse a whole dock body from a Blender-style panel header arrow.
+
+    Tabbed docks show the ``CollapsiblePanel`` header row inside the tab and
+    use its arrow. Lone and floating docks hide that row and use the arrow in
+    ``DockTitleBar`` instead, so the title is never shown twice. Collapsing a
+    lone dock shrinks it to its title bar; a tabbed dock keeps the tab strip
+    and header row and hides only the body.
+    """
+
+    def __init__(self, dock: QDockWidget):
+        super().__init__(dock)
+        self._dock = dock
+        self._collapsed = False
+        self._tabbed = False
+        self._floating = dock.isFloating()
+        self._floating_height: int | None = None
+        self._docked_layout: list[tuple[QDockWidget, int]] | None = None
+        self._panel: CollapsiblePanel | None = None
+        self._tabs: QTabBar | None = None
+        self.title_button = self._new_button()
+        dock.windowTitleChanged.connect(self._sync_labels)
+        self._sync_labels()
+
+    @property
+    def collapsed(self) -> bool:
+        return self._collapsed
+
+    def _new_button(self) -> QToolButton:
+        button = QToolButton()
+        button.setObjectName("dock-collapse")
+        button.setAutoRaise(True)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.clicked.connect(self.toggle)
+        return button
+
+    def _collapsible(self) -> CollapsiblePanel | None:
+        content = self._dock.widget()
+        if not isinstance(content, CollapsiblePanel):
+            return None
+        if self._panel is not content:
+            self._panel = content
+            content.collapse_button.clicked.connect(self.toggle)
+            content.set_header_visible(self._tabbed and not self._floating)
+            content.set_collapsed(self._collapsed, animate=False)
+        return content
+
+    def _sync_labels(self, *_):
+        title = self._dock.windowTitle()
+        action = "Expand" if self._collapsed else "Collapse"
+        self.title_button.setArrowType(
+            Qt.ArrowType.RightArrow if self._collapsed else Qt.ArrowType.DownArrow
+        )
+        self.title_button.setToolTip(f"{action} {title} panel")
+        self.title_button.setAccessibleName(f"{action} {title} panel")
+        panel = self._collapsible()
+        if panel is not None:
+            panel.title.setText(title)
+
+    def toggle(self):
+        self.set_collapsed(not self._collapsed)
+
+    def set_collapsed(self, collapsed: bool):
+        if collapsed == self._collapsed:
+            return
+        self._collapsed = collapsed
+        panel = self._collapsible()
+        if panel is not None:
+            panel.set_collapsed(collapsed, animate=False)
+        else:
+            content = self._dock.widget()
+            if content is not None:
+                content.setVisible(not collapsed)
+        if self._tabbed and not self._floating:
+            if self._active_tabbed():
+                if collapsed:
+                    self._shrink_tabbed_group()
+                else:
+                    self._expand_tabbed_group()
+        else:
+            self._apply_size()
+        self._sync_labels()
+
+    def set_tabbed(self, tabbed: bool):
+        previous = self._tabs
+        self._tabbed = tabbed
+        if tabbed:
+            tabs = self._tab_bar()
+            if tabs is not previous:
+                self._disconnect_tabs()
+                self._tabs = tabs
+                if tabs is not None:
+                    tabs.currentChanged.connect(self._tab_changed)
+        else:
+            self._disconnect_tabs()
+            self._dock.setMaximumHeight(_UNCONSTRAINED)
+            if self._collapsed and previous is not None:
+                state = self._tab_state(previous)
+                height = state.get("expanded_height")
+                if isinstance(height, int) and height > 0:
+                    self._docked_layout = [
+                        (self._dock, height),
+                        *state.get("peers", []),
+                    ]
+        panel = self._collapsible()
+        if panel is not None:
+            panel.set_header_visible(tabbed and not self._floating)
+        self._apply_size()
+        if tabbed and self._collapsed and self._active_tabbed():
+            self._shrink_tabbed_group()
+
+    def set_floating(self, floating: bool):
+        if floating == self._floating:
+            return
+        self._floating = floating
+        if floating:
+            self._disconnect_tabs()
+            self._dock.setMaximumHeight(_UNCONSTRAINED)
+        else:
+            self._floating_height = None
+        panel = self._collapsible()
+        if panel is not None:
+            panel.set_header_visible(self._tabbed and not floating)
+        self._apply_size()
+
+    def _disconnect_tabs(self):
+        tabs = self._tabs
+        self._tabs = None
+        if tabs is None or not isValid(tabs):
+            return
+        try:
+            tabs.currentChanged.disconnect(self._tab_changed)
+        except (RuntimeError, TypeError):
+            pass
+
+    def _tab_bar(self) -> QTabBar | None:
+        parent = self._dock.parentWidget()
+        if parent is None:
+            return None
+        address = getCppPointer(self._dock)[0]
+        for tabs in parent.findChildren(QTabBar):
+            for index in range(tabs.count()):
+                if tabs.tabData(index) == address:
+                    return tabs
+        return None
+
+    def _active_tabbed(self) -> bool:
+        return (
+            self._tabbed
+            and not self._floating
+            and not self._dock.visibleRegion().isEmpty()
+        )
+
+    def _tab_group(self, window: QMainWindow) -> list[QDockWidget]:
+        return [self._dock, *window.tabifiedDockWidgets(self._dock)]
+
+    def _tab_state(self, tabs: QTabBar) -> dict:
+        state = tabs.property("_dockCollapseState")
+        if not isinstance(state, dict):
+            state = {}
+            tabs.setProperty("_dockCollapseState", state)
+        return state
+
+    def _tabbed_header_height(self) -> int:
+        panel = self._collapsible()
+        if panel is None:
+            return 1
+        return max(panel.header.sizeHint().height(), 1) + 2
+
+    def _tabbed_peers(self, window: QMainWindow) -> list[tuple[QDockWidget, int]]:
+        group = set(self._tab_group(window))
+        area = window.dockWidgetArea(self._dock)
+        return [
+            (dock, dock.height())
+            for dock in window.findChildren(
+                QDockWidget, options=Qt.FindChildOption.FindDirectChildrenOnly
+            )
+            if dock not in group
+            and not dock.isFloating()
+            and not dock.visibleRegion().isEmpty()
+            and window.dockWidgetArea(dock) == area
+        ]
+
+    def _shrink_tabbed_group(self):
+        """Shrink a tab group to its tab strip and header, lifting peers up."""
+        tabs = self._tab_bar()
+        window = self._dock.parentWidget()
+        if tabs is None or not isinstance(window, QMainWindow):
+            return
+        header = self._tabbed_header_height()
+        state = self._tab_state(tabs)
+        if not state.get("collapsed"):
+            if self._dock.height() > header:
+                state["expanded_height"] = self._dock.height()
+                state["peers"] = self._tabbed_peers(window)
+            state["collapsed"] = True
+            tabs.setProperty("_dockCollapseState", state)
+        self._dock.setMaximumHeight(header)
+
+    def _expand_tabbed_group(self):
+        tabs = self._tab_bar()
+        window = self._dock.parentWidget()
+        if tabs is None or not isinstance(window, QMainWindow):
+            return
+        for dock in self._tab_group(window):
+            dock.setMaximumHeight(_UNCONSTRAINED)
+        state = self._tab_state(tabs)
+        state["collapsed"] = False
+        tabs.setProperty("_dockCollapseState", state)
+        height = state.get("expanded_height")
+        if not isinstance(height, int) or height <= 0:
+            return
+        peers = [
+            (dock, value) for dock, value in state.get("peers", []) if isValid(dock)
+        ]
+        window.resizeDocks(
+            [self._dock, *[dock for dock, _ in peers]],
+            [height, *[value for _, value in peers]],
+            Qt.Orientation.Vertical,
+        )
+        # resizeDocks distributes by a few pixels; pin the group height so a
+        # collapse immediately after a tab switch captures the full height.
+        self._dock.resize(self._dock.width(), height)
+
+    def _tab_changed(self, _index):
+        # currentChanged fires before the new tab's visible region updates.
+        QTimer.singleShot(
+            0, lambda: self._sync_tabbed_state() if isValid(self) else None
+        )
+
+    def _sync_tabbed_state(self):
+        if not isValid(self._dock) or self._tabs is None:
+            return
+        if not self._tabbed or self._floating:
+            return
+        if not self._active_tabbed():
+            self._dock.setMaximumHeight(_UNCONSTRAINED)
+            return
+        if self._collapsed:
+            self._shrink_tabbed_group()
+        else:
+            self._expand_tabbed_group()
+
+    def _header_height(self) -> int:
+        bar = self._dock.titleBarWidget()
+        height = bar.sizeHint().height() if bar is not None else 0
+        return max(height, 1) + 2
+
+    def _apply_size(self):
+        dock = self._dock
+        if self._tabbed and not self._floating:
+            # Tab groups size themselves from their active tab; see
+            # _shrink_tabbed_group/_expand_tabbed_group.
+            return
+        if not self._collapsed:
+            dock.setMaximumHeight(_UNCONSTRAINED)
+            if self._floating and self._floating_height is not None:
+                dock.resize(dock.width(), self._floating_height)
+                self._floating_height = None
+            elif not self._floating and self._docked_layout is not None:
+                self._restore_docked_layout(self._docked_layout)
+                self._docked_layout = None
+            return
+        if self._floating:
+            if self._floating_height is None:
+                self._floating_height = max(dock.height(), self._header_height())
+            dock.setMaximumHeight(self._header_height())
+            dock.resize(dock.width(), self._header_height())
+            return
+        if self._docked_layout is None:
+            self._docked_layout = self._capture_docked_layout()
+        dock.setMaximumHeight(self._header_height())
+
+    def _capture_docked_layout(self) -> list[tuple[QDockWidget, int]]:
+        """Remember sibling heights so expanding restores the sidebar split."""
+        window = self._dock.parentWidget()
+        if not isinstance(window, QMainWindow):
+            return [(self._dock, self._dock.height())]
+        area = window.dockWidgetArea(self._dock)
+        return [
+            (peer, peer.height())
+            for peer in window.findChildren(
+                QDockWidget, options=Qt.FindChildOption.FindDirectChildrenOnly
+            )
+            if not peer.isFloating()
+            and peer.isVisible()
+            and window.dockWidgetArea(peer) == area
+        ]
+
+    def _restore_docked_layout(self, layout: list[tuple[QDockWidget, int]]):
+        peers = [(dock, height) for dock, height in layout if isValid(dock)]
+        heights = dict(peers)
+        height = heights.get(self._dock)
+        window = self._dock.parentWidget()
+        if height is None or not isinstance(window, QMainWindow):
+            return
+
+        def restore():
+            if not isValid(self._dock) or not isValid(window):
+                return
+            # resizeDocks restores stacked siblings; resize() covers a lone
+            # panel, which resizeDocks leaves at its size hint.
+            window.resizeDocks(
+                [dock for dock, _ in peers],
+                [value for _, value in peers],
+                Qt.Orientation.Vertical,
+            )
+            self._dock.resize(self._dock.width(), height)
+
+        # Let the unconstrained maximum settle before restoring the split.
+        QTimer.singleShot(0, restore)
 
 
 class _ScrollActivity(QObject):
@@ -838,6 +1164,8 @@ class _FloatingFrame(QObject):
         self._empty = _EmptyTitleBar(dock)
         self._empty.setFixedHeight(0)
         dock.setTitleBarWidget(self._bar)
+        self._collapse = DockCollapse(dock)
+        self._bar.add_collapse_button(self._collapse.title_button)
         self._resize: tuple[tuple, QRect, QPoint] | None = None
         dock.topLevelChanged.connect(self._sync)
         self._sync(dock.isFloating())
@@ -853,6 +1181,7 @@ class _FloatingFrame(QObject):
     # -- chrome swap -----------------------------------------------------
     def _sync(self, floating: bool):
         dock = self._dock
+        self._collapse.set_floating(floating)
         if floating:
             if dock.titleBarWidget() is not self._bar:
                 dock.setTitleBarWidget(self._bar)
@@ -874,6 +1203,7 @@ class _FloatingFrame(QObject):
         bar = self._empty if tabbed else self._bar
         if self._dock.titleBarWidget() is not bar:
             self._dock.setTitleBarWidget(bar)
+        self._collapse.set_tabbed(tabbed)
 
     # -- edge resize ------------------------------------------------------
     def _edges(self, dock: QDockWidget, pos) -> tuple:

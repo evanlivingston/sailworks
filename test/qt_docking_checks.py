@@ -1,13 +1,29 @@
 """Focused panel interaction checks; run in an isolated Qt process."""
 
+import importlib.util
 import unittest
+from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPoint, Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDockWidget, QLabel, QMainWindow, QTabBar
+from PySide6.QtWidgets import (
+    QApplication,
+    QDockWidget,
+    QLabel,
+    QMainWindow,
+    QTabBar,
+    QToolButton,
+)
 
-from sailworks.qt.dockchrome import DockDragController, DockTitleBar, style_dock
+from sailworks.qt.collapsiblepanel import PANEL_ANIMATION_MS, CollapsiblePanel
+from sailworks.qt.dockchrome import (
+    DockCollapse,
+    DockDragController,
+    DockTitleBar,
+    style_dock,
+)
+from sailworks.qt.panelstack import GAP_ANIMATION_MS, PanelStack
 
 
 class DockingChecks(unittest.TestCase):
@@ -43,7 +59,7 @@ class DockingChecks(unittest.TestCase):
         dock = QDockWidget(title, self.window)
         dock.setObjectName(title)
         style_dock(dock)
-        dock.setWidget(QLabel(title + " content"))
+        dock.setWidget(CollapsiblePanel(title, QLabel(title + " content")))
         self.window.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
         return dock
 
@@ -63,6 +79,192 @@ class DockingChecks(unittest.TestCase):
         self.b.show()
         self.drain()
         self.assertEqual(self.a.titleBarWidget().height(), 0)
+
+    def test_collapse_arrow_in_lone_panel_header(self):
+        self.b.hide()
+        self.drain()
+        collapse = self.a.findChild(DockCollapse)
+        button = self.a.titleBarWidget().findChild(QToolButton, "dock-collapse")
+        self.assertIs(button, collapse.title_button)
+        panel = self.a.widget()
+        self.assertIsInstance(panel, CollapsiblePanel)
+        self.assertFalse(panel.header.isVisible())
+        expanded_height = self.a.height()
+
+        QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+        self.drain()
+        self.assertTrue(collapse.collapsed)
+        self.assertFalse(panel.body.isVisible())
+        self.assertLess(self.a.height(), expanded_height)
+        self.assertEqual(button.arrowType(), Qt.ArrowType.RightArrow)
+
+        QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+        self.drain()
+        self.assertFalse(collapse.collapsed)
+        self.assertTrue(panel.body.isVisible())
+        self.assertGreaterEqual(self.a.height(), expanded_height - 2)
+        self.assertEqual(button.arrowType(), Qt.ArrowType.DownArrow)
+
+    def test_collapse_arrow_in_tabbed_panel_header(self):
+        collapse = self.b.findChild(DockCollapse)
+        panel = self.b.widget()
+        self.assertIsInstance(panel, CollapsiblePanel)
+        self.assertTrue(panel.header.isVisible())
+        self.assertIs(panel.collapse_button.parentWidget(), panel.header)
+
+        QTest.mouseClick(panel.collapse_button, Qt.MouseButton.LeftButton)
+        self.drain()
+        self.assertTrue(collapse.collapsed)
+        self.assertFalse(panel.body.isVisible())
+        self.assertTrue(panel.header.isVisible())
+        self.assertEqual(self.b.titleBarWidget().height(), 0)
+
+        QTest.mouseClick(panel.collapse_button, Qt.MouseButton.LeftButton)
+        self.drain()
+        self.assertFalse(collapse.collapsed)
+        self.assertTrue(panel.body.isVisible())
+
+    def test_collapsing_a_tab_group_lifts_the_panel_below(self):
+        window = QMainWindow()
+        window.setDockNestingEnabled(True)
+        window.setCentralWidget(QLabel("Map"))
+        window.resize(1000, 800)
+
+        def make(title):
+            dock = QDockWidget(title, window)
+            dock.setWidget(CollapsiblePanel(title, QLabel(title + " body")))
+            style_dock(dock)
+            return dock
+
+        weather, nmea, routing = make("Weather"), make("NMEA"), make("Routing")
+        window.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea,
+            weather,
+            Qt.Orientation.Vertical,
+        )
+        window.splitDockWidget(weather, routing, Qt.Orientation.Vertical)
+        window.tabifyDockWidget(weather, nmea)
+        weather.raise_()
+        window.show()
+        self.drain()
+        window.resizeDocks([weather, routing], [500, 250], Qt.Orientation.Vertical)
+        self.drain()
+
+        weather_collapse = weather.findChild(DockCollapse)
+        nmea_collapse = nmea.findChild(DockCollapse)
+        routing_height = routing.height()
+
+        weather_collapse.set_collapsed(True)
+        self.drain()
+        self.assertLess(weather.height(), 100)
+        self.assertGreater(routing.height(), routing_height + 100)
+
+        nmea.raise_()
+        self.drain()
+        self.assertFalse(nmea_collapse.collapsed)
+        self.assertGreater(nmea.height(), 400)
+        self.assertLess(abs(routing.height() - routing_height), 40)
+
+        weather.raise_()
+        self.drain()
+        self.assertLess(weather.height(), 100)
+        self.assertGreater(routing.height(), routing_height + 100)
+
+        weather_collapse.set_collapsed(False)
+        self.drain()
+        self.assertGreater(weather.height(), 400)
+        self.assertLess(abs(routing.height() - routing_height), 40)
+
+        window.close()
+        window.deleteLater()
+        self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_sidebar_preview_builds_with_collapse_arrows(self):
+        path = Path(__file__).parents[1] / "tools" / "preview_sidebar.py"
+        spec = importlib.util.spec_from_file_location("preview_sidebar", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        gallery = module.build_gallery()
+        gallery.show()
+        self.drain()
+        docks = gallery.findChildren(QDockWidget)
+        self.assertTrue(docks)
+        for dock in docks:
+            collapse = dock.findChild(DockCollapse)
+            self.assertIsNotNone(collapse, dock.windowTitle())
+            panel = dock.widget()
+            self.assertIsInstance(panel, CollapsiblePanel)
+            self.assertIsNotNone(collapse.title_button.parentWidget())
+        gallery.close()
+        gallery.deleteLater()
+        self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_panel_stack_preview_auto_height_and_reorder(self):
+        path = Path(__file__).parents[1] / "tools" / "preview_sidebar.py"
+        spec = importlib.util.spec_from_file_location("preview_sidebar", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        gallery = module.build_stack_gallery()
+        gallery.show()
+        self.drain()
+        stack = gallery.findChild(PanelStack)
+        self.assertIsNotNone(stack)
+        self.assertEqual(len(stack._panels), 5)
+        first, second = stack._panels[0], stack._panels[1]
+        self.assertTrue(first.header.isVisible())
+        expanded_height = first.height()
+        second_y = second.y()
+
+        first.set_collapsed(True)
+        self.assertTrue(first.body.isVisible())
+        QTest.qWait(PANEL_ANIMATION_MS + 100)
+        self.assertTrue(first.collapsed)
+        self.assertFalse(first.body.isVisible())
+        self.assertLess(first.height(), expanded_height)
+        self.assertLess(second.y(), second_y)
+
+        first.set_collapsed(False)
+        QTest.qWait(PANEL_ANIMATION_MS + 100)
+        self.assertFalse(first.collapsed)
+        self.assertGreater(first.height(), expanded_height - 5)
+
+        press = first.header.mapToGlobal(first.header.rect().center())
+        target = stack.container.mapToGlobal(QPoint(10, stack.container.height() - 20))
+        self.send_mouse(
+            first.header,
+            QEvent.Type.MouseButtonPress,
+            press,
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.LeftButton,
+        )
+        self.send_mouse(
+            first.header,
+            QEvent.Type.MouseMove,
+            target,
+            Qt.MouseButton.NoButton,
+            Qt.MouseButton.LeftButton,
+        )
+        QTest.qWait(GAP_ANIMATION_MS + 50)
+        self.assertTrue(stack._dragging)
+        self.assertIsNotNone(stack._placeholder)
+        self.assertTrue(first.header.property("dragging"))
+        self.assertGreater(first.geometry().y(), 0)
+
+        self.send_mouse(
+            first.header,
+            QEvent.Type.MouseButtonRelease,
+            target,
+            Qt.MouseButton.LeftButton,
+            Qt.MouseButton.NoButton,
+        )
+        QTest.qWait(PANEL_ANIMATION_MS + 100)
+        self.assertFalse(stack._dragging)
+        self.assertIsNone(stack._placeholder)
+        self.assertIs(stack._panels[-1], first)
+
+        gallery.close()
+        gallery.deleteLater()
+        self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def test_floating_is_opaque_frameless_tool_with_contained_content(self):
         content = self.b.widget()

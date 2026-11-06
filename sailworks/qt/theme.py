@@ -171,6 +171,25 @@ def apply_theme(app: QApplication):
                                  border-radius: 8px; padding: 2px 6px;
                                  color: #b0b0ad; font-weight: 700; }
         QToolButton#dock-close:hover { background: #454545; color: #ffffff; }
+        QToolButton#dock-collapse { background: transparent; border: none;
+                                    border-radius: 8px; padding: 2px 5px;
+                                    color: #b0b0ad; font-size: 13px; }
+        QToolButton#dock-collapse:hover { background: #454545; color: #ffffff; }
+        QWidget#collapsible-panel, QWidget#panel-stack,
+        QWidget#panel-stack-container { background: #242424; border: none; }
+        QWidget#panel-header { background: #2b2b2b; border: none; }
+        QLabel#panel-title { color: #eeeeec; font-weight: 600;
+                             background: transparent; }
+        QToolButton#panel-collapse { background: transparent; border: none;
+                                     border-radius: 6px; padding: 1px 3px; }
+        QToolButton#panel-collapse:hover { background: #454545; }
+        QToolButton#panel-close { background: transparent; border: none;
+                                  border-radius: 6px; padding: 1px 4px;
+                                  color: #b0b0ad; font-weight: 700; }
+        QToolButton#panel-close:hover { background: #454545; color: #ffffff; }
+        QWidget#panel-header[dragging="true"] { background: #344966; }
+        QFrame#panel-drop-gap { background: rgba(53, 132, 228, 24);
+                                border: 1px dashed #3584e4; }
         QWidget#snap-preview { background: rgba(53, 132, 228, 40);
                                border: 1px solid rgba(53, 132, 228, 160);
                                border-radius: 12px; }
@@ -221,6 +240,8 @@ def apply_theme(app: QApplication):
         QTableWidget { border: none; gridline-color: #303030; }
         QTableWidget::item { padding: 0px; }
         QSplitter::handle { background: #454545; height: 5px; width: 5px; }
+        QSplitter#panel-stack-splitter::handle { background: #242424;
+                                                 width: 3px; }
         QMainWindow::separator { background: #454545; width: 4px; height: 4px;
                                  border: none; }
         QTabWidget::pane { border: none; background: #242424;

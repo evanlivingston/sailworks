@@ -476,6 +476,8 @@ class WorkspacePreferences(QObject):
             panel.coastlines.setChecked(saved["coastlines"])
 
     def reset_layout(self):
+        if getattr(self.window, "panel_stack_mode", False):
+            return
         self.restoring = True
         try:
             self.window.restoreState(self.default_layout, LAYOUT_VERSION)
