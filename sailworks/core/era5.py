@@ -1016,8 +1016,8 @@ class _catalog_lock:
         self.lock.release()
 
 
-def publish_history_display(state, entries, *, model_id="ERA5"):
-    """Publish downloaded ERA5 chunks as one hourly display forecast."""
+def build_history_display(state, entries, *, model_id="ERA5"):
+    """Build, but do not publish, one hourly display forecast from ERA5 chunks."""
     usable = [
         entry
         for entry in entries
@@ -1119,6 +1119,18 @@ def publish_history_display(state, entries, *, model_id="ERA5"):
     tranche = ForecastTranche(
         f"era5-{artifact.sha256[:16]}-v2", now, (config,), (entry,)
     )
+    return tranche
+
+
+def publish_history_tranche(state, tranche):
+    """Publish and activate a built history tranche on the calling thread."""
+    entry = tranche.entries[0]
     state.store.publish(tranche)
     state.store.activate(AnalysisSelection(tranche.tranche_id, entry.entry_id))
     return tranche
+
+
+def publish_history_display(state, entries, *, model_id="ERA5"):
+    """Publish downloaded ERA5 chunks as one hourly display forecast."""
+    tranche = build_history_display(state, entries, model_id=model_id)
+    return publish_history_tranche(state, tranche)
