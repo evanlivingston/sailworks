@@ -518,6 +518,35 @@ def node_anchor_atlas(field, view):
     return (encode_component(ax), encode_component(ay))
 
 
+def selection_geometry(field, sampler, view, cancel=lambda: False, margin=32.0):
+    """Node points and field indices for one view, independent of time."""
+    step, cap = barb_density_parameters(view.density)
+    unthinned = view.density == "all"
+    if step <= 0 and not unthinned:
+        raise ValueError("Unsupported wind density")
+    cols = 1 if unthinned else math.ceil((view.width + 2 * margin) / step) + 1
+    rows = 1 if unthinned else math.ceil((view.height + 2 * margin) / step) + 1
+    if not unthinned and cols * rows > 8192:
+        raise ValueError("Wind symbol mesh exceeds vertex budget")
+    if field.grids:
+        bounds = _view_bounds(view, margin)
+        nodes = [grid.nodes(bounds) for grid in field.grids]
+        points = np.unique(np.concatenate(nodes), axis=0)
+        points = points[np.lexsort((points[:, 0], points[:, 1]))]
+    elif sampler is None:
+        raise FieldCoverageError("Resident field lacks native grid metadata")
+    else:
+        points = _native_points(sampler, _view_bounds(view, margin), cancel)
+    if points is None:
+        return None
+    node_ids = np.array(
+        [field.index.get(_node_key(point), -1) for point in points], dtype=np.int64
+    )
+    if np.any(node_ids < 0):
+        raise FieldCoverageError("The resident field does not cover this view")
+    return points, node_ids
+
+
 def stage_selection(
     sampler,
     field,
@@ -529,6 +558,7 @@ def stage_selection(
     anchor_atlas=None,
     margin=32.0,
     values_for=None,
+    geometry=None,
 ):
     """The exact current-view selection of a resident field.
 
@@ -557,22 +587,11 @@ def stage_selection(
     rows = 1 if unthinned else math.ceil((view.height + 2 * margin) / step) + 1
     if not unthinned and cols * rows > 8192:
         raise ValueError("Wind symbol mesh exceeds vertex budget")
-    if field.grids:
-        bounds = _view_bounds(view, margin)
-        nodes = [grid.nodes(bounds) for grid in field.grids]
-        points = np.unique(np.concatenate(nodes), axis=0)
-        points = points[np.lexsort((points[:, 0], points[:, 1]))]
-    elif sampler is None:
-        raise FieldCoverageError("Resident field lacks native grid metadata")
-    else:
-        points = _native_points(sampler, _view_bounds(view, margin), cancel)
-    if points is None:
+    if geometry is None:
+        geometry = selection_geometry(field, sampler, view, cancel, margin)
+    if geometry is None:
         return None
-    node_ids = np.array(
-        [field.index.get(_node_key(point), -1) for point in points], dtype=np.int64
-    )
-    if np.any(node_ids < 0):
-        raise FieldCoverageError("The resident field does not cover this view")
+    points, node_ids = geometry
     values = (
         _blended_values(field, stamp, node_ids)
         if values_for is None
@@ -956,12 +975,21 @@ def selection_atlas(selection):
     )
 
 
-def select_resident(field, stamp, view, reference=None, anchor_atlas=None, margin=32.0):
+def select_resident(
+    field,
+    stamp,
+    view,
+    reference=None,
+    anchor_atlas=None,
+    margin=32.0,
+    geometry=None,
+):
     """GUI-safe covered selection: immutable metadata only, no sampler or I/O.
 
     ``reference`` is the pan reference the selection anchors are placed
     against, so a covered pan republishes no anchor texture.  ``anchor_atlas``
     may carry a cached atlas for the same field generation and anchor camera.
+    ``geometry`` may carry the cached time-independent node set for this view.
     """
     if not field.identity.contains(stamp):
         raise FieldCoverageError("Forecast time is outside the resident field")
@@ -975,5 +1003,6 @@ def select_resident(field, stamp, view, reference=None, anchor_atlas=None, margi
             reference=reference,
             anchor_atlas=anchor_atlas,
             margin=margin,
+            geometry=geometry,
         )
     )

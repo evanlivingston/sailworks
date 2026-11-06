@@ -44,6 +44,7 @@ from sailworks.rendering.weatherbarbs import (
     node_anchor_atlas,
     _view_bounds,
     select_resident,
+    selection_geometry,
     stage_field,
     stage_wave_selection,
 )
@@ -498,6 +499,8 @@ class GribViewportModel:
         self._prepared_by = {}
         self._selection_cache = {}
         self._selection_cache_order = []
+        self._geometry_cache = {}
+        self._geometry_cache_order = []
         # The last selection served for this field/frame/size, with the view
         # it was sampled at, so an in-flight zoom gesture can reuse it even
         # though the exact-zoom cache key no longer matches.
@@ -762,6 +765,32 @@ class GribViewportModel:
                         self._anchor_atlas_cache[atlas_key] = atlas
                         self._anchor_atlas_cache_order.append(atlas_key)
             if selection is None:
+                geometry_key = (
+                    field.generation,
+                    view._center_lat,
+                    view._center_lon,
+                    view._zoom,
+                    view.width,
+                    view.height,
+                    view.density,
+                    view.over_land,
+                    view.geographic,
+                    SELECTION_REUSE_MARGIN,
+                )
+                geometry = self._geometry_cache.get(geometry_key)
+                if geometry is None:
+                    try:
+                        geometry = selection_geometry(
+                            field, None, view, lambda: False, SELECTION_REUSE_MARGIN
+                        )
+                    except Exception:  # coverage or projection escape
+                        geometry = None
+                    if geometry is not None:
+                        if len(self._geometry_cache) >= 8:
+                            oldest = self._geometry_cache_order.pop(0)
+                            self._geometry_cache.pop(oldest, None)
+                        self._geometry_cache[geometry_key] = geometry
+                        self._geometry_cache_order.append(geometry_key)
                 try:
                     selection = select_resident(
                         field,
@@ -770,6 +799,7 @@ class GribViewportModel:
                         anchor,
                         anchor_atlas=atlas,
                         margin=SELECTION_REUSE_MARGIN,
+                        geometry=geometry,
                     ).selection
                 except Exception as exc:  # coverage or time escape
                     logger.debug("Resident selection unavailable: %s", exc)
