@@ -5004,12 +5004,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     self._streamlines.property("pendingBuffer"),
                     self._streamlines.isVisible(),
                 )
-            from sailworks.rendering.streamlinepaths import (
-                paths_to_render_buffers,
-            )
             from sailworks.rendering.windpainter import barb_bucket_colors
             from PySide6.QtGui import QColor
-            from .viewportstreamlines import MAX_BATCH_SIZE
 
             if state not in ("ready", "preview") or paths is None:
                 if gpu_item is not None and state in (
@@ -5112,34 +5108,28 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     self._show_state("ready")
                     return "ready"
             groups = []
-            buffers = paths_to_render_buffers(paths, camera.over_land)
-            for bucket, (lines, arrows) in buffers.items():
-                for arrow, segments in ((False, lines), (True, arrows)):
-                    if not len(segments):
-                        continue
-                    for offset in range(0, len(segments), MAX_BATCH_SIZE):
-                        batch = segments[offset : offset + MAX_BATCH_SIZE]
-                        try:
-                            url, count = self._streamline_provider.publish(
-                                bucket, batch
-                            )
-                        except (ValueError, MemoryError) as exc:
-                            self._streamline_model.error = (
-                                f"Streamline encoding failed: {exc}"
-                            )
-                            # Failed staging must not tear down the front buffer.
-                            self._show_state("unavailable")
-                            self._status.setText(self._streamline_model.error)
-                            self._status.adjustSize()
-                            return
-                        groups.append(
-                            {
-                                "source": url,
-                                "count": count,
-                                "color": QColor.fromRgbF(*barb_bucket_colors()[bucket]),
-                                "arrow": arrow,
-                            }
-                        )
+            for bucket, arrow, image, batch_count in (
+                self._streamline_model.packed(camera) or ()
+            ):
+                try:
+                    url, count = self._streamline_provider.publish_image(
+                        bucket, image, batch_count
+                    )
+                except (ValueError, MemoryError) as exc:
+                    self._streamline_model.error = f"Streamline encoding failed: {exc}"
+                    # Failed staging must not tear down the front buffer.
+                    self._show_state("unavailable")
+                    self._status.setText(self._streamline_model.error)
+                    self._status.adjustSize()
+                    return
+                groups.append(
+                    {
+                        "source": url,
+                        "count": count,
+                        "color": QColor.fromRgbF(*barb_bucket_colors()[bucket]),
+                        "arrow": arrow,
+                    }
+                )
             self._pending_streamline_groups = groups
             self._pending_streamline_urls = tuple(group["source"] for group in groups)
             self._pending_streamline_camera = camera

@@ -311,6 +311,7 @@ class TestStreamlinePublicationScheduling(unittest.TestCase):
             _streamline_readiness_changed=Mock(),
             _gpu_streamlines_error=False,
         )
+        host._streamline_model.packed.return_value = ()
         host._update_streamline_camera = (
             lambda camera: self.widget_class._update_streamline_camera(host, camera)
         )
