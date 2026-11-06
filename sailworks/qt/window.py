@@ -42,10 +42,13 @@ from sailworks.core.timecontrol import (
     wall_to_utc,
 )
 from sailworks.core.n2kdevices import source_label
+from sailworks.core.places import PlaceIndex, index_chart_files
 from sailworks.common import resource_path
 from .theme import section_label, symbol_icon
 from .dockchrome import style_dock, style_scrollarea
 from .viewportmap import ViewportMap
+from .backgroundtask import BackgroundTask
+from .placesearch import PlaceSearch
 from .routingpanel import RoutingPanel
 from .settingsdialog import SettingsDialog
 from .datalibrary import DataLibrary
@@ -123,6 +126,15 @@ class PreviewWindow(QMainWindow):
         for name in ("Charts", "Logs", "Polars"):
             self.workspace_tabs.addTab(qt_text(name))
         header.addWidget(self.workspace_tabs)
+        self.place_index = PlaceIndex.from_default()
+        self.place_search = PlaceSearch(
+            self.place_index, near=self._place_near, parent=self
+        )
+        self.place_search.place_selected.connect(self._go_to_place)
+        header.addSeparator()
+        header.addWidget(self.place_search)
+        self.place_index_task = BackgroundTask(self)
+        self.place_index_task.finished.connect(self._chart_places_ready)
         self.plots = self._build_plots(controller)
         self.log_time = TimeControl()
         self.log_map = ViewportMap(controller, self, time_control=self.log_time)
@@ -353,6 +365,9 @@ class PreviewWindow(QMainWindow):
         fit_menu = self.menuBar().addMenu("Navigate")
         fit_menu.addAction("Fit NMEA track", self._fit_track)
         fit_menu.addAction("Fit route", self._fit_route)
+        fit_menu.addSeparator()
+        find_place = fit_menu.addAction("Search places…", self._focus_place_search)
+        find_place.setShortcut(QKeySequence.StandardKey.Find)
         self.views.currentChanged.connect(self._view_changed)
         self.workspace_toolbar.visibilityChanged.connect(self._sync_timeline)
         self._view_changed()
@@ -393,6 +408,7 @@ class PreviewWindow(QMainWindow):
         view_menu.addAction("Reset layout", self.workspace.reset_layout)
         log_menu = self.menuBar().addMenu("Logs")
         log_menu.addAction("Log library…", self.show_log_library)
+        self._index_chart_places()
 
     def _show_startup_status(self, controller):
         """Report staged chart initialization while it is pending."""
@@ -705,6 +721,38 @@ class PreviewWindow(QMainWindow):
         return (
             self.log_map if self.views.currentWidget() is self.logs_view else self.map
         )
+
+    def _place_near(self):
+        return (self.map._center_lat, self.map._center_lon)
+
+    def _go_to_place(self, place):
+        self.views.setCurrentWidget(self.map)
+        self.map.center_on(place.latitude, place.longitude, place.default_zoom)
+        self.statusBar().showMessage(f"{place.name} — {place.kind_label}", 4000)
+
+    def _focus_place_search(self):
+        self.views.setCurrentWidget(self.map)
+        self.place_search.edit.setFocus()
+        self.place_search.edit.selectAll()
+
+    def _index_chart_places(self):
+        paths = tuple(
+            chart.path
+            for chart in getattr(self.controller.charts, "charts", ())
+            if str(chart.path).lower().endswith(".000")
+        )
+        if not paths or self.place_index_task.busy:
+            return
+        self.place_index_task.start(
+            "Indexing chart place names",
+            lambda progress: index_chart_files(paths, progress=progress),
+        )
+
+    def _chart_places_ready(self, places, error):
+        if error is not None or not places:
+            return
+        self.place_index.add_places(places, merge_radius_km=5.0)
+        self.place_search.refresh()
 
     def _capture_analysis_region(self):
         return region_from_visible_workspace(
@@ -1543,5 +1591,6 @@ class PreviewWindow(QMainWindow):
         self.navigation_panel.dispose()
         self.polar_workspace.dispose()
         self.live_timer.stop()
+        self.place_index_task.close()
         self.controller.close()
         event.accept()

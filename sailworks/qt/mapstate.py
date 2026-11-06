@@ -71,6 +71,21 @@ class MapStateMixin:
         self.update()
         self.view_changed.emit()
 
+    def center_on(self, latitude, longitude, zoom=None):
+        """Center the map on one place, optionally at a specific zoom."""
+        self._cancel_cursor()
+        self._cancel_inertia(settle=False)
+        self._center_lat = float(latitude)
+        self._center_lon = float(longitude)
+        if zoom is not None:
+            self._zoom = max(1.0, min(14.0, float(zoom)))
+        self.background = None
+        self._finish_zoom_silent()
+        self._invalidate_base()
+        self.invalidate_navigation()
+        self.update()
+        self.view_changed.emit()
+
     def set_points(self, points, offsets, fit=False):
         self.points = tuple(points)
         self.offsets = tuple(offsets)
