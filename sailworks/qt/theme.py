@@ -195,6 +195,16 @@ def apply_theme(app: QApplication):
         QComboBox, QDateTimeEdit, QDoubleSpinBox { min-height: 24px; padding: 3px;
             border: 1px solid #454545; border-radius: 6px; background: #1e1e1e; }
         QComboBox:focus, QDateTimeEdit:focus, QDoubleSpinBox:focus { border-color: #3584e4; }
+        QLineEdit#placeSearchEdit { min-height: 24px; padding: 3px 8px;
+            border: 1px solid #454545; border-radius: 6px;
+            background: #1e1e1e; color: #eeeeec; }
+        QLineEdit#placeSearchEdit:focus { border-color: #3584e4; }
+        QListView#placeSearchResults { background: #242424; color: #eeeeec;
+            border: 1px solid #454545; border-radius: 6px;
+            outline: 0; padding: 2px; }
+        QListView#placeSearchResults::item { padding: 4px 6px; }
+        QListView#placeSearchResults::item:selected {
+            background: #3584e4; color: #ffffff; }
         QLabel[section="true"] { color: #eeeeec; font-weight: 600; padding-top: 6px; }
         QLabel[secondary="true"] { color: #b0b0ad; }
         QProgressBar { border: 1px solid #454545; border-radius: 4px;

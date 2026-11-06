@@ -1,8 +1,10 @@
 """Shared route and track state API for Qt map implementations."""
 
 import math
+import time
 
 import numpy as np
+from PySide6.QtCore import QTimer
 
 from sailworks.rendering.isochrones import IsochroneFrame
 
@@ -70,6 +72,102 @@ class MapStateMixin:
         self.invalidate_navigation()
         self.update()
         self.view_changed.emit()
+
+    def center_on(self, latitude, longitude, zoom=None):
+        """Center the map on one place, optionally at a specific zoom."""
+        self.cancel_fly()
+        self._cancel_cursor()
+        self._cancel_inertia(settle=False)
+        self._center_lat = float(latitude)
+        self._center_lon = float(longitude)
+        if zoom is not None:
+            self._zoom = max(1.0, min(14.0, float(zoom)))
+        self.background = None
+        self._finish_zoom_silent()
+        self._invalidate_base()
+        self.invalidate_navigation()
+        self.update()
+        self.view_changed.emit()
+
+    def cancel_fly(self):
+        timer = getattr(self, "_fly_tick", None)
+        if timer is not None:
+            timer.stop()
+
+    def fly_to(self, latitude, longitude, zoom=None, duration_ms=900):
+        """Animate a Google-Earth-style zoom-out, pan and zoom-in.
+
+        The camera dips toward a transit zoom for distant targets so the
+        intermediate frames still show context instead of a blind slide.
+        User input cancels the animation through adopt_viewport_camera().
+        """
+        self.cancel_fly()
+        self._cancel_cursor()
+        self._cancel_inertia(settle=False)
+        self._finish_zoom_silent()
+        start_lat, start_lon, start_zoom = (
+            float(self._center_lat),
+            float(self._center_lon),
+            float(self._zoom),
+        )
+        target_lat = max(-85.0, min(85.0, float(latitude)))
+        target_lon = ((float(longitude) + 180.0) % 360.0) - 180.0
+        target_zoom = start_zoom if zoom is None else max(1.0, min(14.0, float(zoom)))
+        lon_delta = ((target_lon - start_lon + 180.0) % 360.0) - 180.0
+        separation = math.hypot(
+            target_lat - start_lat,
+            lon_delta * math.cos(math.radians((start_lat + target_lat) / 2.0)),
+        )
+        if separation < 0.02:
+            dip = 0.0
+        elif separation < 1.0:
+            dip = 0.75
+        else:
+            dip = min(2.5, 0.75 + separation * 0.04)
+        transit_zoom = max(1.0, min(start_zoom, target_zoom) - dip)
+        duration = max(250, int(duration_ms)) / 1000.0
+        started = time.monotonic()
+
+        def ease(value):
+            value = max(0.0, min(1.0, value))
+            return value * value * (3.0 - 2.0 * value)
+
+        def advance():
+            elapsed = time.monotonic() - started
+            fraction = min(1.0, elapsed / duration)
+            if fraction < 0.35:
+                zoom_value = start_zoom + (transit_zoom - start_zoom) * ease(
+                    fraction / 0.35
+                )
+            elif fraction < 0.6:
+                zoom_value = transit_zoom
+            else:
+                zoom_value = transit_zoom + (target_zoom - transit_zoom) * ease(
+                    (fraction - 0.6) / 0.4
+                )
+            centre = ease(fraction)
+            self._center_lat = start_lat + (target_lat - start_lat) * centre
+            self._center_lon = (
+                start_lon + lon_delta * centre if fraction < 1.0 else target_lon
+            )
+            self._zoom = target_zoom if fraction >= 1.0 else zoom_value
+            self._invalidate_base()
+            self.invalidate_navigation()
+            self.update()
+            if fraction >= 1.0:
+                timer.stop()
+                self._finish_zoom_silent()
+                self.view_changed.emit()
+
+        timer = QTimer(self)
+        timer.setInterval(16)
+        timer.timeout.connect(advance)
+        old = getattr(self, "_fly_tick", None)
+        if old is not None:
+            old.stop()
+            old.deleteLater()
+        self._fly_tick = timer
+        timer.start()
 
     def set_points(self, points, offsets, fit=False):
         self.points = tuple(points)
