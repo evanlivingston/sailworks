@@ -222,7 +222,8 @@ def propagate(self, frontier, seconds, end, gaps, numeric):  # noqa: C901
         )
         ws_kn = data[:, 1] / KNOT
         policy = policy_of(self.polar)
-        nogo = np.asarray([policy.is_nogo(w) for w in ws_kn], dtype=bool)
+        limit = policy.tws_max_kn
+        nogo = ws_kn > limit if limit is not None else np.zeros(len(ws_kn), dtype=bool)
         if nogo.any():
             self.environment.policy_pruned += int(nogo.sum())
             keep = ~nogo

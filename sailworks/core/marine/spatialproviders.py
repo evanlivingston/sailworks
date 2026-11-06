@@ -256,7 +256,7 @@ def read_component(path, name, area, geographic_axes=False):  # noqa: C901
     values[invalid] = np.nan
     yi, xi = np.argsort(latitudes), np.argsort(longitudes)
     latitudes, longitudes = latitudes[yi], longitudes[xi]
-    values = values[:, yi][:, :, xi]
+    values = values[:, yi[:, None], xi[None, :]]
     if latitudes.ndim != 1 or longitudes.ndim != 1:
         raise ValueError("Curvilinear coordinates require a separate adapter")
     # Keep one surrounding cell on each side so interpolation covers the request.
