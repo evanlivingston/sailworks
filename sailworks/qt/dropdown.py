@@ -2,9 +2,27 @@
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPalette, QPen
-from PySide6.QtWidgets import QComboBox, QFrame, QSizePolicy
+from PySide6.QtWidgets import (
+    QComboBox,
+    QFrame,
+    QSizePolicy,
+    QStyle,
+    QStyledItemDelegate,
+)
 
 FIELD_FRACTION = 0.55
+
+
+class _HoverItemDelegate(QStyledItemDelegate):
+    """Paint a visible hover row without changing the combo's current index."""
+
+    def paint(self, painter, option, index):  # noqa: N802 - Qt virtual method name
+        if (
+            option.state & QStyle.StateFlag.State_MouseOver
+            and not option.state & QStyle.StateFlag.State_Selected
+        ):
+            painter.fillRect(option.rect, QColor("#3c3c3c"))
+        super().paint(painter, option, index)
 
 
 class Dropdown(QComboBox):
@@ -26,6 +44,8 @@ class Dropdown(QComboBox):
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self.setAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect, False)
         self.view().setFrameShape(QFrame.Shape.NoFrame)
+        self.view().setMouseTracking(True)
+        self.view().setItemDelegate(_HoverItemDelegate(self.view()))
         if label:
             self.setAccessibleName(label)
 
