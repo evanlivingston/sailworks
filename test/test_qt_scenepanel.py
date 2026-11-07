@@ -1,0 +1,285 @@
+import os
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication
+
+from sailworks.core.scene import KIND_LOG, KIND_TRACK
+from sailworks.qt.scenepanel import ScenePanel
+
+
+class FakeTrack:
+    def __init__(self, uid, name):
+        self.uid = uid
+        self.name = name
+        self.visible = True
+        self.points = [(51.1234567, -1.2345678), (52.0, -2.0)]
+
+    def __len__(self):
+        return 2
+
+
+class FakeRoute:
+    def __init__(self, uid, name):
+        self.uid = uid
+        self.name = name
+        self.visible = True
+        self.points = [(), ()]
+
+
+class FakeCollection(list):
+    def save(self):
+        pass
+
+    def get_unique_name(self, name):
+        existing = {item.name for item in self}
+        if name not in existing:
+            return name
+        index = 1
+        while f"{name}.{index:03d}" in existing:
+            index += 1
+        return f"{name}.{index:03d}"
+
+
+class FakeLibrary:
+    def __init__(self, entries=()):
+        self._entries = list(entries)
+
+    def entries(self):
+        return tuple(self._entries)
+
+    def update(self, identifier, **values):
+        item = next(entry for entry in self._entries if entry["id"] == identifier)
+        item.update(values)
+
+
+class FakeCore:
+    def __init__(self):
+        self.trackManager = FakeCollection()
+        self.routingManager = FakeCollection()
+
+
+class FakeController:
+    def __init__(self, core, library):
+        self.core = core
+        self.log_library = library
+
+    @property
+    def log_library_changed(self):
+        return self
+
+    def emit(self):
+        pass
+
+
+def application():
+    return QApplication.instance() or QApplication([])
+
+
+def panel_for(tmp_path, tracks=(), routes=(), logs=()):
+    core = FakeCore()
+    core.trackManager.extend(tracks)
+    core.routingManager.extend(routes)
+    return ScenePanel(
+        FakeController(core, FakeLibrary(logs)),
+        scene_path=tmp_path / "scene.json",
+    )
+
+
+def test_panel_builds_default_tree_and_items(tmp_path):
+    application()
+    panel = panel_for(
+        tmp_path,
+        tracks=[FakeTrack("t1", "Morning")],
+        routes=[FakeRoute("r1", "Route")],
+        logs=[{"id": "log-1", "name": "Saturday.log", "status": "Replayable"}],
+    )
+
+    root = panel.tree.topLevelItem(0)
+    assert root.text(0) == "Scene Collection"
+    names = [root.child(index).text(0) for index in range(root.childCount())]
+    assert names == ["Tracks", "Routings", "Logs"]
+    assert panel.item_row(KIND_TRACK, "t1") is not None
+    assert panel.item_row(KIND_LOG, "log-1") is not None
+
+
+def test_toggling_item_updates_element_visibility(tmp_path):
+    application()
+    track = FakeTrack("t1", "Morning")
+    panel = panel_for(tmp_path, tracks=[track])
+    row = panel.item_row(KIND_TRACK, "t1")
+
+    row.setCheckState(0, Qt.CheckState.Unchecked)
+
+    assert track.visible is False
+    assert panel.scene.item(KIND_TRACK, "t1").visible is False
+
+
+def test_group_selection_creates_collection_under_common_parent(tmp_path):
+    application()
+    track = FakeTrack("t1", "Morning")
+    panel = panel_for(tmp_path, tracks=[track])
+    row = panel.item_row(KIND_TRACK, "t1")
+    row.setSelected(True)
+    panel.tree.setCurrentItem(row)
+
+    panel._group_selection()
+
+    item = panel.scene.item(KIND_TRACK, "t1")
+    assert item.group is not None
+    assert panel.scene.group(item.group).name == "Collection"
+    assert panel.scene.group(item.group).parent == "default-tracks"
+
+
+def test_log_rows_are_not_checkable(tmp_path):
+    application()
+    panel = panel_for(
+        tmp_path,
+        logs=[{"id": "log-1", "name": "Saturday.log", "status": "Replayable"}],
+    )
+    row = panel.item_row(KIND_LOG, "log-1")
+
+    assert not row.flags() & Qt.ItemFlag.ItemIsUserCheckable
+
+
+def test_expanding_track_shows_every_point(tmp_path):
+    application()
+    panel = panel_for(tmp_path, tracks=[FakeTrack("t1", "Morning")])
+    row = panel.item_row(KIND_TRACK, "t1")
+
+    row.setExpanded(True)
+
+    assert row.childCount() == 2
+    assert row.child(0).text(0) == "Point 1"
+    assert row.child(0).text(1) == "51.123457, -1.234568"
+    assert row.child(1).text(0) == "Point 2"
+
+
+def test_double_click_item_name_renames_track(tmp_path):
+    application()
+    track = FakeTrack("t1", "Morning")
+    panel = panel_for(tmp_path, tracks=[track])
+    row = panel.item_row(KIND_TRACK, "t1")
+
+    panel._double_clicked(row, 0)
+
+    assert row.flags() & Qt.ItemFlag.ItemIsEditable
+    row.setText(0, "Evening")
+
+    assert track.name == "Evening"
+    assert panel.item_row(KIND_TRACK, "t1").text(0) == "Evening"
+
+
+def test_double_click_log_name_renames_library_entry(tmp_path):
+    application()
+    log = {"id": "log-1", "name": "Saturday.log", "status": "Replayable"}
+    panel = panel_for(tmp_path, logs=[log])
+    row = panel.item_row(KIND_LOG, "log-1")
+
+    panel._double_clicked(row, 0)
+    row.setText(0, "Sunday.log")
+
+    assert log["name"] == "Sunday.log"
+    assert panel.item_row(KIND_LOG, "log-1").text(0) == "Sunday.log"
+
+
+def test_loaded_race_tracks_appear_as_scene_track_items(tmp_path):
+    application()
+
+    class RaceTrack:
+        boat_id = "boat-9"
+        name = "Blue Boat"
+        visible = True
+        points = [(51.0, -1.0), (52.0, -2.0)]
+
+    class Race:
+        race_id = "race-1"
+        name = "Spring Race"
+
+    panel = panel_for(tmp_path)
+    track = RaceTrack()
+    panel.race_panel = type(
+        "Races",
+        (),
+        {"_races": [Race()], "loaded_race_tracks": lambda self: {"race-1": [track]}},
+    )()
+
+    panel.refresh()
+
+    row = panel.item_row(KIND_TRACK, "race:race-1:boat-9")
+    assert row is not None
+    assert row.text(0) == "Blue Boat"
+    race_group = panel.scene.item(KIND_TRACK, "race:race-1:boat-9").group
+    assert panel.scene.group(race_group).name == "Spring Race"
+    assert panel.scene.group(race_group).parent == "default-tracks"
+    row.setCheckState(0, Qt.CheckState.Unchecked)
+    assert track.visible is False
+
+
+def test_grouping_race_tracks_keeps_them_visible_when_type_group_collapsed(tmp_path):
+    application()
+
+    class RaceTrack:
+        boat_id = "boat-9"
+        name = "Blue Boat"
+        visible = True
+        points = [(51.0, -1.0), (52.0, -2.0)]
+
+    class Race:
+        race_id = "race-1"
+        name = "Spring Race"
+
+    panel = panel_for(tmp_path)
+    panel.race_panel = type(
+        "Races",
+        (),
+        {
+            "_races": [Race()],
+            "loaded_race_tracks": lambda self: {"race-1": [RaceTrack()]},
+        },
+    )()
+    panel.refresh()
+    row = panel.item_row(KIND_TRACK, "race:race-1:boat-9")
+    row.setSelected(True)
+    panel.tree.setCurrentItem(row)
+    panel.group_row("default-tracks").setExpanded(False)
+
+    panel._group_selection()
+
+    grouped = panel.scene.item(KIND_TRACK, "race:race-1:boat-9")
+    assert grouped.group != "default-tracks"
+    assert panel.scene.group(grouped.group).parent == "race-group:race-1"
+    assert panel.group_row("default-tracks").isExpanded()
+    assert panel.item_row(KIND_TRACK, "race:race-1:boat-9") is not None
+
+    panel._move_to([], [grouped.group], "default-tracks")
+    assert panel.scene.group(grouped.group).parent == "default-tracks"
+    assert panel.group_row(grouped.group) is not None, (
+        grouped.group,
+        [(group.id, group.parent) for group in panel.scene.groups.values()],
+    )
+    assert panel.group_row(grouped.group).isExpanded()
+    assert panel.item_row(KIND_TRACK, "race:race-1:boat-9") is not None
+
+
+def test_grouping_multiple_types_moves_all_selected_rows(tmp_path):
+    application()
+    track = FakeTrack("t1", "Morning")
+    route = FakeRoute("r1", "Route")
+    panel = panel_for(tmp_path, tracks=[track], routes=[route])
+    track_row = panel.item_row("track", "t1")
+    route_row = panel.item_row("routing", "r1")
+    panel.tree.setCurrentItem(route_row)
+    track_row.setSelected(True)
+    route_row.setSelected(True)
+
+    assert len(panel.tree.selectedItems()) == 2
+    panel._group_selection()
+
+    track_group = panel.scene.item("track", "t1").group
+    route_group = panel.scene.item("routing", "r1").group
+    assert track_group == route_group
+    assert panel.scene.group(track_group).parent is None
+    assert panel.item_row("track", "t1") is not None
+    assert panel.item_row("routing", "r1") is not None
