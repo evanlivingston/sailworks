@@ -1962,6 +1962,7 @@ class QtPreviewChecks(unittest.TestCase):
         navigation_action.trigger()
         self.assertTrue(self.window._panel_visible("navigation"))
         self.assertTrue(self.window._panel_visible("routing"))
+        self.assertTrue(self.window.panels["routing"].isVisible())
         self.assertEqual(self.window.routing_panel.pages.currentIndex(), 1)
         self.assertEqual(self.window.navigation_panel.route.name, "second")
         self.assertFalse(self.window.routing_panel.coastlines.isChecked())

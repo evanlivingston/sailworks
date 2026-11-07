@@ -114,3 +114,9 @@ class DockingChecks(unittest.TestCase):
         self.assertFalse(stack._dragging)
         self.assertIsNone(stack._placeholder)
         self.assertIs(stack.panels()[-1], first)
+
+        stack.remove_panel(first)
+        self.assertFalse(first.isVisible())
+        stack.add_panel(first)
+        self.drain()
+        self.assertTrue(first.isVisible())

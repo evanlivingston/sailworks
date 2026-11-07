@@ -112,6 +112,7 @@ class PanelStack(QWidget):
             panel._stack_wired = True
         self.stack.insertWidget(len(self._panels), panel)
         self._panels.append(panel)
+        panel.show()
         QTimer.singleShot(0, self._sync_container_width)
         self.changed.emit()
         return panel
