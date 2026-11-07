@@ -1252,7 +1252,7 @@ def _weather_content(selection):
 
 def replay_viewport(controller, app, window, canvas, config, began):
     """Measure the current ViewportMap/GPU path without the retired CPU wind API."""
-    from PySide6.QtCore import QEventLoop, QTimer
+    from PySide6.QtCore import QEventLoop, QTimer, Qt
 
     scenario = config["scenario"]
     if scenario not in (
@@ -1262,6 +1262,7 @@ def replay_viewport(controller, app, window, canvas, config, began):
         "trackpad_pan",
         "wheel_zoom",
         "zoom_out",
+        "scrub_return",
     ):
         raise ValueError(f"Unsupported viewport scenario: {scenario}")
 
@@ -1315,6 +1316,18 @@ def replay_viewport(controller, app, window, canvas, config, began):
     widget.quickWindow().afterRendering.connect(
         lambda: observed.__setitem__("count", observed["count"] + 1)
     )
+    native_probe = None
+    if config.get("measurement_mode") == "native-render":
+        native_probe = native_protocol.RenderRecorder()
+        quick = widget.quickWindow()
+
+        def probe_rendered():
+            native_probe.rendered(time.perf_counter())
+
+        quick.beforeSynchronizing.connect(
+            native_probe.synchronize, Qt.ConnectionType.DirectConnection
+        )
+        quick.afterRendering.connect(probe_rendered, Qt.ConnectionType.DirectConnection)
 
     stages = {
         name: []
@@ -1350,10 +1363,24 @@ def replay_viewport(controller, app, window, canvas, config, began):
 
     def grab():
         started = time.perf_counter()
-        image = widget.grabFramebuffer()
-        if image.isNull():
-            app.processEvents()
+        if hasattr(widget, "grabFramebuffer"):
             image = widget.grabFramebuffer()
+            if image.isNull():
+                app.processEvents()
+                image = widget.grabFramebuffer()
+        else:
+            # The native Quick view has no widget framebuffer; render its
+            # content item asynchronously and wait for the result.
+            grab_result = widget.contentItem().grabToImage()
+            loop = QEventLoop()
+            timer = QTimer()
+            timer.setSingleShot(True)
+            timer.timeout.connect(loop.quit)
+            grab_result.ready.connect(loop.quit)
+            timer.start(5000)
+            loop.exec()
+            timer.stop()
+            image = grab_result.image()
         if image.isNull():
             raise RuntimeError("Embedded GPU frame readback failed")
         return (time.perf_counter() - started) * 1000
@@ -1384,10 +1411,12 @@ def replay_viewport(controller, app, window, canvas, config, began):
         for values in stages.values():
             values.clear()
         camera = widget._camera
+        initial_time = camera.time
         center_x, center_y = camera.width / 2, camera.height / 2
         previous_publication = widget.publication_counters()
         last_start = None
         for index in range(config["frames"]):
+            intended = time.perf_counter()
             started = time.perf_counter()
             if last_start is not None:
                 samples["start_interval_ms"].append((started - last_start) * 1000)
@@ -1407,6 +1436,20 @@ def replay_viewport(controller, app, window, canvas, config, began):
                 )
             elif scenario == "zoom_out":
                 widget.zoom_at(-0.02, center_x, center_y)
+            elif scenario == "scrub_return":
+                if index < 3:
+                    minutes = 30 if index == 1 else 15
+                    widget.set_time(initial_time + timedelta(minutes=minutes))
+            dispatched = time.perf_counter()
+            if native_probe is not None:
+                state = {
+                    "center_lat": widget._camera.center_lat,
+                    "center_lon": widget._camera.center_lon,
+                    "zoom": widget._camera.zoom,
+                    "forecast_time": widget._camera.time.isoformat(),
+                }
+                revision = native_probe.dispatch(intended, dispatched, state)
+                native_probe.submit(index, revision, dispatched, state)
             QTimer.singleShot(
                 0,
                 lambda posted=time.perf_counter(): samples["queued_callback_ms"].append(
@@ -1478,7 +1521,7 @@ def replay_viewport(controller, app, window, canvas, config, began):
                 "gdal": gdal.VersionInfo("RELEASE_NAME"),
                 "qt_platform": app.platformName(),
                 "qt_style": app.style().objectName(),
-                "dpr": widget.devicePixelRatioF(),
+                "dpr": widget.devicePixelRatio(),
                 "available_screen": [
                     app.primaryScreen().size().width(),
                     app.primaryScreen().size().height(),
@@ -1522,6 +1565,9 @@ def replay_viewport(controller, app, window, canvas, config, began):
             "publication_counters": widget.publication_counters(),
             "field_statistics": model.field_statistics(),
             "overlay_jobs": overlay_jobs,
+            "native_render_probe": (
+                None if native_probe is None else native_probe.result()
+            ),
         }
     finally:
         try:
