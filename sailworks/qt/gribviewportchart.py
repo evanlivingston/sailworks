@@ -61,7 +61,7 @@ CHART_INTERACTIVE_MS = 150
 #: given a head start, never an unlimited veto: after this window the chart
 #: proceeds even if weather is still preparing.  The readiness window covers a
 #: normal cold start; the busy window bounds contention during steady state.
-CHART_WEATHER_READY_WAIT_MS = 600
+CHART_WEATHER_READY_WAIT_MS = 2000
 CHART_WEATHER_BUSY_WAIT_MS = 150
 
 #: The coastline qualities' initial draw times, as the application's own
