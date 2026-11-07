@@ -96,6 +96,21 @@ def test_available_reports_a_boolean():
     assert isinstance(available(), bool)
 
 
+def test_available_requires_the_platform_runtime(monkeypatch):
+    backend = (
+        "maplibre_native_ffi_runtime_metal"
+        if satellite_module.sys.platform == "darwin"
+        else "maplibre_native_ffi_runtime_opengl"
+    )
+
+    def find_spec(name, *_args, **_kwargs):
+        return None if name == backend else object()
+
+    monkeypatch.setattr(satellite_module.importlib.util, "find_spec", find_spec)
+
+    assert available() is False
+
+
 def test_pack_source_reads_pmtiles_bounds(tmp_path):
     header = bytearray(127)
     header[:7] = b"PMTiles"

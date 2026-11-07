@@ -222,6 +222,16 @@ def available() -> bool:
         return False
     if importlib.util.find_spec("maplibre_native_ffi") is None:
         return False
+    # The FFI loader is pure Python; a platform runtime wheel supplies the
+    # backend that actually renders. Without it the map opens and then fails,
+    # so treat a missing backend as unavailable up front.
+    backend = (
+        "maplibre_native_ffi_runtime_metal"
+        if sys.platform == "darwin"
+        else "maplibre_native_ffi_runtime_opengl"
+    )
+    if importlib.util.find_spec(backend) is None:
+        return False
     try:
         import maplibre_native_ffi  # noqa: F401
     except Exception:  # noqa: BLE001 - a broken install disables the layer

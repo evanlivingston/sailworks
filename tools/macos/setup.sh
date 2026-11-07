@@ -31,7 +31,13 @@ python -m pip install --no-build-isolation "GDAL[numpy]==${GDAL_VERSION}"
 # --no-build-isolation cannot install on its own. Install the backend and
 # its build tool first so the editable install below can resolve it.
 python -m pip install meson-python ninja
-python -m pip install --no-build-isolation --editable .
+# The satellite basemap's MapLibre Metal runtime is Apple Silicon only, so
+# install the extra where it can actually render.
+TARGET="."
+if [[ "$(uname -m)" == "arm64" ]]; then
+    TARGET=".[satellite]"
+fi
+python -m pip install --no-build-isolation --editable "$TARGET"
 
 echo "Setup complete. Activate the environment with: source .venv/bin/activate"
 echo "Then start the app with: sailworks"
