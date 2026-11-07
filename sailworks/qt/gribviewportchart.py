@@ -57,6 +57,13 @@ CHART_PALETTE = "cm93"
 CHART_IDLE_MS = 100
 CHART_INTERACTIVE_MS = 150
 
+#: Bounded weather priority before a settled chart is requested.  Weather is
+#: given a head start, never an unlimited veto: after this window the chart
+#: proceeds even if weather is still preparing.  The readiness window covers a
+#: normal cold start; the busy window bounds contention during steady state.
+CHART_WEATHER_READY_WAIT_MS = 600
+CHART_WEATHER_BUSY_WAIT_MS = 150
+
 #: The coastline qualities' initial draw times, as the application's own
 #: ``GSHHSVectorChart`` records them.
 _INITIAL_TIMES = (("c", 0), ("f", 0), ("h", 0), ("i", 0), ("l", 0))
