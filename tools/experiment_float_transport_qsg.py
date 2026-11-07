@@ -198,9 +198,13 @@ def shader_variant(source, float_transport):
     # The cell uniforms are probe-only additions to the application's block.
     old_block = """    float blend;
     float outputMode;
+    int gradientLevels;
+    int gradientSmooth;
 };"""
     new_block = """    float blend;
     float outputMode;
+    int gradientLevels;
+    int gradientSmooth;
     float uCellX;
     float uCellY;
     float uCode;

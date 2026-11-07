@@ -25,6 +25,39 @@ def arrays_hash(arrays):
 def sample_weather(window):
     """Describe the prepared weather frame of a window, or None."""
     canvas = window.map
+    presenter = getattr(canvas, "_weather_presenter", None)
+    if presenter is not None:
+        # The current viewport owns weather presentation.  The retired legacy
+        # canvas exposed it as ``canvas.wind``; the viewport exposes its own
+        # model and ready state.  Until the presenter has a widget, no
+        # weather frame exists yet.
+        widget = presenter.widget
+        camera = None if widget is None else getattr(widget, "_camera", None)
+        model = None if widget is None else getattr(widget, "_model", None)
+        if camera is None or model is None or widget._state != "ready":
+            return None
+        observations = model.observations()
+        return dict(
+            view=[
+                camera.width,
+                camera.height,
+                camera.center_lat,
+                camera.center_lon,
+                camera.zoom,
+            ],
+            clock=camera.time.isoformat(),
+            weather_generations=observations["published_generations"],
+            weather_state=widget._state,
+            sources=[Path(path).name for path in getattr(model, "paths", ())],
+            identity_keys=[
+                "view",
+                "clock",
+                "weather_generations",
+                "weather_state",
+                "sources",
+            ],
+            kind="viewport",
+        )
     state = canvas.wind._states.get(canvas)
     if (
         not state
@@ -55,6 +88,15 @@ def sample_weather(window):
         job_id=id(job),
         sample_count=len(flat[0]),
         sources=[g.name for g in window.controller.core.grib_manager.gribs],
+        identity_keys=[
+            "view",
+            "clock",
+            "flat_hash",
+            "land_hash",
+            "weather_surface_hash",
+            "sources",
+        ],
+        kind="legacy",
     )
 
 
@@ -83,20 +125,14 @@ def record_chart_ready(controller, startup, report, now, began):
 
 def check_weather_preserved(initial, frame, startup):
     """Fail if chart publication replaced the weather or the camera."""
-    for key in (
-        "view",
-        "clock",
-        "flat_hash",
-        "land_hash",
-        "weather_surface_hash",
-        "sources",
-    ):
-        if frame[key] != initial[key]:
+    for key in initial["identity_keys"]:
+        if frame.get(key) != initial.get(key):
             raise ValueError(
                 f"Chart publication changed weather/camera identity: {key}"
             )
-    if startup and frame["job_id"] != initial["job_id"]:
-        raise ValueError("Chart publication replaced the prepared weather job")
+    if startup and initial.get("job_id") is not None:
+        if frame.get("job_id") != initial["job_id"]:
+            raise ValueError("Chart publication replaced the prepared weather job")
 
 
 def open_logs(window, app, report, began):
@@ -304,7 +340,7 @@ def main():
     timer.setInterval(25)
     timer.timeout.connect(watch.tick)
     timer.start()
-    argv = ([] if args.baseline else ["--early-weather"])
+    argv = [] if args.baseline else ["--early-weather"]
     watch.report["entry_exit"] = entry.main(argv)
     watch.report["controller_closed"] = bool(windows and windows[0].controller.closed)
     watch.heartbeat()

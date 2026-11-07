@@ -1776,6 +1776,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._camera = None
             self._weather_display_camera = None
             self._weather_display_dpr = None
+            self._weather_preview = False
             self._drag = None
             self._drag_velocity = DragVelocity()
             self._pan_inertia = None
@@ -5446,6 +5447,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
 
         def _set_weather_visible(self, visible):
             """Chart scenes remain visible even when weather has no data."""
+            if not visible:
+                self._weather_preview = False
             if not self._native_weather_fields:
                 self._image_weather_visible = visible
                 if not visible:
@@ -5645,6 +5648,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                         # The retained front is the previous frame, placed by
                         # the preview transform.  It is explicitly a loading
                         # preview: never report it as the current selection.
+                        self._weather_preview = True
                         self._set_weather_visible(True)
                         self._show_state(
                             state,
@@ -5654,11 +5658,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                         # Keep the last complete portrayal during time-only
                         # staging. Label it explicitly so previous-time data
                         # cannot be mistaken for the requested forecast.
+                        self._weather_preview = True
                         self._set_weather_visible(True)
                         self._show_state(
                             state, "Updating wind — showing previous forecast time"
                         )
                     else:
+                        self._weather_preview = False
                         self._clear_barb_zoom_preview()
                         self._set_weather_visible(False)
                         self._show_state(state)
@@ -5670,6 +5676,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 # (_commit_native_weather).
                 if self._publish(field, selection, camera) is False:
                     return "unavailable"
+                self._weather_preview = False
                 if not self._native_weather_fields:
                     self._weather_display_camera = camera
                     self._weather_display_dpr = current_dpr
@@ -5780,6 +5787,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 "presentation_spans": tuple(self._presentation_spans),
                 "published_generations": tuple(sorted(self._published_generations)),
                 "weather_ready_at": self._weather_ready_at,
+                "weather_preview": self._weather_preview,
                 "chart_ready_at": self._chart_ready_at,
                 "chart_state": self._chart_state,
                 "chart_requested_after_weather": self._chart_requested_after_weather,

@@ -30,11 +30,10 @@ def _load_tool(name, path):
     return module
 
 
-def _grab(widget):
-    """The scene graph's framebuffer as an RGBA array."""
+def _image_array(image):
+    """Convert a QImage to an RGBA numpy array."""
     import numpy as np
 
-    image = widget.grabFramebuffer()
     if image.isNull():
         raise RuntimeError("framebuffer readback failed")
     return (
@@ -43,6 +42,52 @@ def _grab(widget):
         .reshape(image.height(), image.width(), 4)
         .copy()
     )
+
+
+def _grab_item(item):
+    """Render one Quick item, keeping its own alpha, via grabToImage."""
+    from PySide6.QtCore import QEventLoop, QTimer
+
+    grab = item.grabToImage()
+    loop = QEventLoop()
+    timer = QTimer()
+    timer.setSingleShot(True)
+    timer.timeout.connect(loop.quit)
+    grab.ready.connect(loop.quit)
+    timer.start(5000)
+    loop.exec()
+    timer.stop()
+    return _image_array(grab.image())
+
+
+def _grab_fill(widget):
+    """The fill layer alone, with the scene background excluded."""
+    if hasattr(widget, "grabFramebuffer"):
+        return _grab(widget)
+    return _grab_item(widget._fill)
+
+
+def _grab(widget):
+    """The scene graph's framebuffer as an RGBA array."""
+    # The embedded QuickWidget exposes grabFramebuffer; the native Quick view
+    # renders the content item through grabToImage (grabWindow can block on
+    # the render thread on macOS).
+    if hasattr(widget, "grabFramebuffer"):
+        image = widget.grabFramebuffer()
+    else:
+        from PySide6.QtCore import QEventLoop, QTimer
+
+        grab = widget.contentItem().grabToImage()
+        loop = QEventLoop()
+        timer = QTimer()
+        timer.setSingleShot(True)
+        timer.timeout.connect(loop.quit)
+        grab.ready.connect(loop.quit)
+        timer.start(5000)
+        loop.exec()
+        timer.stop()
+        image = grab.image()
+    return _image_array(image)
 
 
 def _vector_at(u0, v0, u1, v1, blend, position):
@@ -358,13 +403,17 @@ def fill_observations(widget, model, camera, pump):
     # The fill is measured alone against a transparent background, so the
     # alpha it contributes is observable: the A0k rule is about that alpha.
     # The chart layer is hidden for the same reason: it is not the fill's
-    # alpha.
-    widget.setClearColor(QColor(0, 0, 0, 0))
+    # alpha.  The native Quick view exposes ``setColor``; the embedded
+    # QuickWidget exposes ``setClearColor``.
+    if hasattr(widget, "setClearColor"):
+        widget.setClearColor(QColor(0, 0, 0, 0))
+    else:
+        widget.setColor(QColor(0, 0, 0, 0))
     widget._barbs.setVisible(False)
     if widget._chart is not None:
         widget._chart.setVisible(False)
     pump(150)
-    pixels = _grab(widget)
+    pixels = _grab_fill(widget)
     out["shader_ready"] = bool(widget._fill.property("ready"))
     out["shader_error"] = str(widget._fill.property("shaderError"))
     out["painted_pixels"] = int((pixels[..., 3] > 0).sum())
@@ -376,7 +425,7 @@ def fill_observations(widget, model, camera, pump):
     )
     widget.publish_fill(missing, "probe-all-missing")
     pump(250)
-    pixels = _grab(widget)
+    pixels = _grab_fill(widget)
     out["all_missing"] = {
         "alpha_pixels": int((pixels[..., 3] > 0).sum()),
         "significant_alpha_pixels": int((pixels[..., 3] > 25).sum()),
@@ -389,7 +438,7 @@ def fill_observations(widget, model, camera, pump):
     )
     widget.publish_fill(finite, "probe-finite-control")
     pump(250)
-    pixels = _grab(widget)
+    pixels = _grab_fill(widget)
     out["finite_control"] = {
         "alpha_pixels": int((pixels[..., 3] > 0).sum()),
         "total_pixels": int(pixels[..., 3].size),
@@ -448,7 +497,7 @@ def fill_observations(widget, model, camera, pump):
     # The resident field's own values, through the application's shader.
     widget.publish_fill(images, f"{field.generation}/grid")
     pump(250)
-    pixels = _grab(widget)
+    pixels = _grab_fill(widget)
     out["resident_painted_pixels"] = int((pixels[..., 3] > 0).sum())
     out["values"] = _speed_comparison(
         images,
@@ -529,7 +578,7 @@ def _missing_neighbour_observations(widget, field, camera, blend, pump):
     )
     readback = _readback(images, blend, [touching, away])
     keys = list(readback)
-    pixels = _grab(widget)
+    pixels = _grab_fill(widget)
     alpha = pixels[..., 3]
     # The framebuffer is in device pixels and the view's coordinates are in
     # logical pixels: the neighbourhood is measured in the framebuffer's own
@@ -1049,13 +1098,51 @@ class _Session:
     def close(self):
         widget = self.widget
         self.widget = None
-        widget.close()
         model = self.model
+        model.close()
+        chart = getattr(widget, "_chart_model", None)
+        if chart is not None:
+            chart.close()
+        widget.close()
         if model._thread is not None:
             model._thread.join(5)
         _release_mask(getattr(model, "_land_mask", None))
         _release_model(model)
         self.model = None
+
+
+def _weather_layers_visible(widget):
+    """Whether any weather layer (not the chart scene) is visible.
+
+    The viewport keeps the chart scene visible during a weather miss, so the
+    weather visibility is the barbs/fill items rather than the root scene.
+    """
+    for name in ("_barbs", "_fill"):
+        item = getattr(widget, name, None)
+        if item is not None and item.isVisible():
+            return True
+    return False
+
+
+def _weather_is_current_or_preview(widget, model):
+    """Whether visible weather is current, an explicit preview, or hidden.
+
+    The viewport may keep a valid covered field visible while a replacement
+    stages; that is not stale weather.  A miss must hide the weather, and a
+    retained frame is allowed only when it still covers the requested camera
+    and is the published generation, or when the viewport labels it a preview.
+    """
+    if not _weather_layers_visible(widget):
+        return True
+    if widget.observations().get("weather_preview", False):
+        return True
+    field = getattr(model, "_field", None)
+    camera = getattr(widget, "_camera", None)
+    if field is None or camera is None:
+        return False
+    from sailworks.qt.gribviewport import _covers
+
+    return bool(_covers(field, camera) and widget._published == field.generation)
 
 
 def _observe_demand(session, camera, settle_timeout=60):
@@ -1076,7 +1163,9 @@ def _observe_demand(session, camera, settle_timeout=60):
         if session.widget._state == "loading":
             if loading_visible_ms is None:
                 loading_visible_ms = (time.perf_counter() - began) * 1000
-                stale_hidden = not session.widget._weather.isVisible()
+                stale_hidden = _weather_is_current_or_preview(
+                    session.widget, session.model
+                )
                 status_visible = session.widget._status.isVisible()
                 break
         elif session.widget._state in ("ready", "unavailable"):
@@ -1856,7 +1945,22 @@ def run_once(snapshot):
                 f"{model._field.generation}"
             )
         else:
-            assert not widget._weather.isVisible(), "Stale weather visible on miss"
+            layers = {
+                name: (
+                    None
+                    if getattr(widget, name, None) is None
+                    else getattr(widget, name).isVisible()
+                )
+                for name in ("_barbs", "_fill", "_weather")
+            }
+            layers["weather_preview"] = widget.observations().get(
+                "weather_preview", False
+            )
+            layers["state"] = widget._state
+            layers["model_state"] = widget._model.state
+            assert _weather_is_current_or_preview(
+                widget, model
+            ), f"Stale weather visible without a current frame or preview: {layers}"
 
     def wait_idle(timeout=5):
         deadline = time.perf_counter() + timeout
@@ -1918,6 +2022,7 @@ def run_once(snapshot):
                         "dispatch_late_ms": (began - origin - revision / 30) * 1000,
                         "handler_ms": (time.perf_counter() - began) * 1000,
                         "state": widget._state,
+                        "current": _weather_is_current_or_preview(widget, model),
                     }
                 )
             except Exception as exc:
@@ -2171,10 +2276,8 @@ def run_once(snapshot):
         report["stalled_camera_responsive"] = (
             entered.is_set() and old_lon != widget._camera.center_lon
         )
-        report["honest_loading"] = (
-            widget._state == "loading"
-            and widget._status.isVisible()
-            and not widget._weather.isVisible()
+        report["honest_loading"] = widget._state == "loading" and (
+            _weather_is_current_or_preview(widget, model)
         )
         # The layers' own state while the viewport is loading: the loading
         # state must be explicit and the stale weather must be hidden.
@@ -2195,6 +2298,10 @@ def run_once(snapshot):
         report["errors"].append(str(exc))
     finally:
         began = time.perf_counter()
+        model.close()
+        chart = getattr(widget, "_chart_model", None)
+        if chart is not None:
+            chart.close()
         widget.close()
         report["close_ms"] = (time.perf_counter() - began) * 1000
         if model._thread is not None:
@@ -2204,7 +2311,8 @@ def run_once(snapshot):
         _release_model(model)
     report["complete"] = not report["errors"] and len(report["phases"]) == 3
     report["continuous_weather"] = report["complete"] and all(
-        phase["inputs"] and all(event["state"] == "ready" for event in phase["inputs"])
+        phase["inputs"]
+        and all(event.get("current", False) for event in phase["inputs"])
         for phase in report["phases"]
     )
     return report

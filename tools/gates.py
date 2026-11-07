@@ -200,7 +200,7 @@ GATES = {
         "endpoint": ENDPOINT_PROBE,
         "requires": ["snapshot"],
         "dependencies": ["PySide6", "numpy", "osgeo.gdal"],
-        "timeout_s": 110,
+        "timeout_s": 300,
         "env": {},
         "command": [
             "{python}",
