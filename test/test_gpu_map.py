@@ -26,6 +26,7 @@ class TestWindMeshes(unittest.TestCase):
         np.testing.assert_array_equal(actual, expected)
         self.assertFalse(actual.flags.writeable)
 
+
 @unittest.skipUnless(importlib.util.find_spec("PySide6"), "Qt dependencies")
 class TestGpuMap(unittest.TestCase):
     def run_checks(self, name, native=False):
