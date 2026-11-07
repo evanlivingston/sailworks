@@ -1,22 +1,18 @@
-"""Blender-style dropdown rows: label on the left, current value on the right."""
+"""Blender-style dropdown rows: label left, compact field on the right."""
 
-from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QFontMetrics, QPalette
-from PySide6.QtWidgets import (
-    QComboBox,
-    QSizePolicy,
-    QStyle,
-    QStyleOptionComboBox,
-    QStylePainter,
-)
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPalette, QPen
+from PySide6.QtWidgets import QComboBox, QSizePolicy
+
+FIELD_FRACTION = 0.55
 
 
 class Dropdown(QComboBox):
-    """A combo box drawn as a Blender panel row.
+    """A combo box drawn as a Blender property row.
 
-    The label occupies the left side of the control and the current value is
-    right-aligned before the drop arrow, so a labelled dropdown needs one row
-    instead of a separate form label and field.
+    The left side is the panel background with a right-aligned label. The
+    right side is a compact field with the current value at its left edge and
+    a chevron at its right edge.
     """
 
     def __init__(self, label="", parent=None):
@@ -27,6 +23,7 @@ class Dropdown(QComboBox):
         )
         self.setMinimumContentsLength(0)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         if label:
             self.setAccessibleName(label)
 
@@ -37,81 +34,94 @@ class Dropdown(QComboBox):
         self._label = text
         if text and not self.accessibleName():
             self.setAccessibleName(text)
-        self._sync_editable()
         self.update()
 
-    def _content_rect(self, option):
-        field = self.style().subControlRect(
-            QStyle.ComplexControl.CC_ComboBox,
-            option,
-            QStyle.SubControl.SC_ComboBoxEditField,
-            self,
-        )
-        return QRectF(field).adjusted(8, 0, -8, 0)
-
-    def _label_width(self):
-        if not self._label:
-            return 0
-        return QFontMetrics(self.font()).horizontalAdvance(self._label) + 4
+    def _field_rect(self) -> QRectF:
+        width = self.width()
+        height = self.height()
+        left = round(width * (1.0 - FIELD_FRACTION))
+        return QRectF(left, 2, max(0, width - left - 2), max(0, height - 4))
 
     def _sync_editable(self):
-        if self.isEditable() and self.lineEdit() is not None:
-            self.lineEdit().setStyleSheet("background: transparent;")
-            self.lineEdit().setTextMargins(self._label_width() + 8, 0, 0, 0)
+        if not self.isEditable() or self.lineEdit() is None:
+            return
+        field = self._field_rect()
+        self.lineEdit().setStyleSheet(
+            "background: transparent; border: none; padding: 0px;"
+        )
+        self.lineEdit().setTextMargins(0, 0, 0, 0)
+        self.lineEdit().setGeometry(
+            int(field.left()) + 8,
+            int(field.top()) + 1,
+            max(0, int(field.width()) - 32),
+            max(0, int(field.height()) - 2),
+        )
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event):  # noqa: N802 - Qt virtual method name
         super().resizeEvent(event)
         self._sync_editable()
 
-    def _muted_color(self):
+    def enterEvent(self, event):  # noqa: N802 - Qt virtual method name
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):  # noqa: N802 - Qt virtual method name
+        self.update()
+        super().leaveEvent(event)
+
+    def _colors(self):
+        palette = self.palette()
         if not self.isEnabled():
-            return self.palette().color(
-                QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text
-            )
-        return self.palette().color(QPalette.ColorRole.PlaceholderText)
+            return QColor("#242424"), QColor("#3a3a3a"), QColor("#777774")
+        if self.hasFocus():
+            border = QColor("#3584e4")
+        elif self.underMouse():
+            border = QColor("#5a5a5a")
+        else:
+            border = QColor("#454545")
+        return QColor("#1e1e1e"), border, palette.color(QPalette.ColorRole.Text)
 
-    def _value_color(self):
-        group = (
-            QPalette.ColorGroup.Active
-            if self.isEnabled()
-            else QPalette.ColorGroup.Disabled
-        )
-        return self.palette().color(group, QPalette.ColorRole.Text)
+    def paintEvent(self, event):  # noqa: N802 - Qt virtual method name
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        field = self._field_rect()
+        fill, border, text = self._colors()
 
-    def _draw_label(self, painter, rect, width):
+        painter.setPen(QPen(border, 1))
+        painter.setBrush(fill)
+        painter.drawRoundedRect(field, 6, 6)
+
         metrics = QFontMetrics(self.font())
-        painter.setPen(self._muted_color())
-        painter.drawText(
-            QRectF(rect.left(), rect.top(), width, rect.height()),
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            metrics.elidedText(self._label, Qt.TextElideMode.ElideRight, int(width)),
-        )
-
-    def paintEvent(self, event):
-        option = QStyleOptionComboBox()
-        self.initStyleOption(option)
-        value = option.currentText
-        if self.isEditable():
-            super().paintEvent(event)
-            if self._label:
-                painter = QStylePainter(self)
-                rect = self._content_rect(option)
-                width = min(self._label_width(), rect.width() * 0.55)
-                self._draw_label(painter, rect, width)
-            return
-
-        painter = QStylePainter(self)
-        option.currentText = ""
-        painter.drawComplexControl(QStyle.ComplexControl.CC_ComboBox, option)
-        rect = self._content_rect(option)
+        label_rect = QRectF(6, 0, max(0, field.left() - 18), self.height())
         if self._label:
-            label_width = min(self._label_width(), rect.width() * 0.55)
-            self._draw_label(painter, rect, label_width)
-            rect.setLeft(rect.left() + label_width + 8)
-        metrics = QFontMetrics(self.font())
-        painter.setPen(self._value_color())
-        painter.drawText(
-            rect,
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-            metrics.elidedText(value, Qt.TextElideMode.ElideRight, int(rect.width())),
-        )
+            painter.setPen(text)
+            painter.drawText(
+                label_rect,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                metrics.elidedText(
+                    self._label,
+                    Qt.TextElideMode.ElideRight,
+                    int(label_rect.width()),
+                ),
+            )
+
+        value_rect = field.adjusted(8, 0, -26, 0)
+        if not self.isEditable():
+            painter.setPen(text)
+            painter.drawText(
+                value_rect,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                metrics.elidedText(
+                    self.currentText(),
+                    Qt.TextElideMode.ElideRight,
+                    int(value_rect.width()),
+                ),
+            )
+
+        arrow = QPen(text, 1.5)
+        arrow.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(arrow)
+        cx = field.right() - 11
+        cy = field.center().y()
+        painter.drawLine(QPointF(cx - 4, cy - 2), QPointF(cx, cy + 2))
+        painter.drawLine(QPointF(cx, cy + 2), QPointF(cx + 4, cy - 2))
