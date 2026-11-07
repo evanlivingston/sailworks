@@ -36,14 +36,6 @@ def main(argv=None):
             "--no-native-weather-fields restores Image sources"
         ),
     )
-    parser.add_argument(
-        "--panel-stack",
-        action="store_true",
-        help=(
-            "Prototype: show the right sidebar as a Blender-style "
-            "auto-height panel stack"
-        ),
-    )
     args = parser.parse_args(argv)
     try:
         from PySide6.QtWidgets import QApplication
@@ -64,7 +56,7 @@ def main(argv=None):
         gpu_streamlines=True,
         native_weather_fields=args.native_weather_fields,
     )
-    window = PreviewWindow(controller, panel_stack=args.panel_stack)
+    window = PreviewWindow(controller)
     app.aboutToQuit.connect(window.workspace.close)
     if window.timeline is not None:
         app.aboutToQuit.connect(window.timeline.dispose)

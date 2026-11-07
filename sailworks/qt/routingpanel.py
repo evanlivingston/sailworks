@@ -36,7 +36,7 @@ from sailworks.core.routingoptions import (
     scenario_request,
     parameter_values,
 )
-from .dockchrome import style_scrollarea
+from .scrollchrome import style_scrollarea
 from .dropdown import Dropdown
 from .theme import section_label
 from .text import qt_text

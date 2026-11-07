@@ -1,4 +1,4 @@
-"""Small Qt frontend for evaluating NMEA, plotting, docking, and map integration."""
+"""Small Qt frontend for evaluating NMEA, plotting, panels, and map integration."""
 
 import sys
 from bisect import bisect_right
@@ -7,7 +7,6 @@ from pathlib import Path
 from html import escape
 
 from PySide6.QtCore import (
-    QEvent,
     Qt,
     QTimer,
     QSize,
@@ -24,7 +23,6 @@ from PySide6.QtGui import (
     QUndoStack,
 )
 from PySide6.QtWidgets import (
-    QDockWidget,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -52,7 +50,7 @@ from sailworks.core.places import PlaceIndex, index_chart_files
 from sailworks.common import resource_path
 from .theme import section_label, symbol_icon
 from .dropdown import Dropdown
-from .dockchrome import style_dock, style_scrollarea
+from .scrollchrome import style_scrollarea
 from .collapsiblepanel import (
     PANEL_ANIMATION_MS,
     CollapsiblePanel,
@@ -91,19 +89,12 @@ class NavigationScroll(QScrollArea):
 
 
 class PreviewWindow(QMainWindow):
-    def __init__(self, controller, workspace_path=None, panel_stack=False):
+    def __init__(self, controller, workspace_path=None):
         super().__init__()
-        self.panel_stack_mode = panel_stack
         self.setAutoFillBackground(True)
-        self.setDockOptions(
-            self.dockOptions() | QMainWindow.DockOption.AllowNestedDocks
-        )
         self.controller = controller
         self.session = controller.session
         self.syncing = False
-        self._drawer_collapsed = {"left": False, "right": False}
-        self._drawer_saved = {"left": [], "right": []}
-        self._drawer_syncing = False
         self._instruments_syncing = False
         self.drawer_flags = {}
         self.data_key = None
@@ -121,8 +112,6 @@ class PreviewWindow(QMainWindow):
             pass
         self.setAcceptDrops(True)
         self.marine_settings = None
-        self.marine_open = {"currents": False, "tides": False}
-        self.marine_syncing = False
         self.setWindowTitle("Sailworks")
         self.setWindowIcon(QIcon(resource_path("sailworks", "data/icon.png")))
         self.resize(1200, 800)
@@ -200,29 +189,15 @@ class PreviewWindow(QMainWindow):
         self.views.currentChanged.connect(self.workspace_tabs.setCurrentIndex)
         self.views.currentChanged.connect(lambda _: self._position_drawer_flags())
         self.setCentralWidget(self.views)
-        self.nmea_dock = QDockWidget("NMEA", self)
-        self.nmea_dock.setObjectName("nmea")
-        style_dock(self.nmea_dock)
-        self.nmea_dock.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
-        )
-        nmea_scroll = QScrollArea()
-        style_scrollarea(nmea_scroll)
-        nmea_scroll.setWidgetResizable(True)
-        nmea_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.nmea_scroll = QScrollArea()
+        style_scrollarea(self.nmea_scroll)
+        self.nmea_scroll.setWidgetResizable(True)
+        self.nmea_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.nmea_panel = self._nmea_panel()
-        nmea_scroll.setWidget(self.nmea_panel)
-        self.nmea_dock.setWidget(CollapsiblePanel("NMEA", nmea_scroll))
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.nmea_dock)
+        self.nmea_scroll.setWidget(self.nmea_panel)
         self.routing_panel = RoutingPanel(controller)
         controller.polars.changed.connect(self.routing_panel.refresh_polars)
         controller.polars.use_requested.connect(self._use_polar)
-        self.routing_dock = QDockWidget("Routing", self)
-        self.routing_dock.setObjectName("routing")
-        style_dock(self.routing_dock)
-        self.routing_dock.setWidget(CollapsiblePanel("Routing", self.routing_panel))
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.routing_dock)
-        self.tabifyDockWidget(self.nmea_dock, self.routing_dock)
         self.undo_stack = QUndoStack(self)
         self.navigation_panel = NavigationPanel(
             controller, self.map, self, undo_stack=self.undo_stack
@@ -232,17 +207,7 @@ class PreviewWindow(QMainWindow):
         navigation_scroll.setWidgetResizable(True)
         navigation_scroll.setFrameShape(QFrame.Shape.NoFrame)
         navigation_scroll.setWidget(self.navigation_panel)
-        self.navigation_dock = self._dock(
-            "Navigation", "chart-navigation", navigation_scroll
-        )
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.navigation_dock)
-        self.resizeDocks([self.navigation_dock], [373], Qt.Orientation.Horizontal)
-        self.navigation_open = True
-        self.navigation_syncing = False
-        self.navigation_dock.visibilityChanged.connect(self._navigation_visibility)
-        self.navigation_dock.toggleViewAction().triggered.connect(
-            self._toggle_navigation
-        )
+        self.navigation_scroll = navigation_scroll
         self.navigation_panel.changed.connect(self._navigation_changed)
         self.navigation_panel.route_selected.connect(self._navigation_route_selected)
         self.navigation_panel.move_requested.connect(self._move_navigation_point)
@@ -266,35 +231,10 @@ class PreviewWindow(QMainWindow):
         race_scroll.setWidgetResizable(True)
         race_scroll.setFrameShape(QFrame.Shape.NoFrame)
         race_scroll.setWidget(self.race_panel)
-        self.race_dock = self._dock("Races", "races", race_scroll)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.race_dock)
-        self.race_dock.hide()
+        self.race_scroll = race_scroll
         self.map.navigation_request.connect(self._navigation_request)
         self.log_map.navigation_request.connect(self._navigation_request)
-        self.setTabPosition(
-            Qt.DockWidgetArea.AllDockWidgetAreas, QTabWidget.TabPosition.North
-        )
-        self.polar_selector_dock = self._dock(
-            "Polar selector", "polar-selector", self.polar_workspace.selector
-        )
-        self.performance_dock = self._dock(
-            "Performance", "nmea-performance", self.polar_workspace.performance
-        )
-        self.tabifyDockWidget(self.nmea_dock, self.polar_selector_dock)
-        self.tabifyDockWidget(self.nmea_dock, self.performance_dock)
         self.polar_manager_panel = PolarLibrary(controller, self)
-        self.polar_manager_dock = self._dock(
-            "Polar Manager", "polar-manager", self.polar_manager_panel
-        )
-        self.tabifyDockWidget(self.nmea_dock, self.polar_manager_dock)
-        self.polar_manager_dock.hide()
-        self.polar_selector_dock.hide()
-        self.performance_dock.hide()
-        self.polars_visited = False
-        self.nmea_dock.raise_()
-        self.resizeDocks(
-            [self.nmea_dock, self.routing_dock], [350, 350], Qt.Orientation.Horizontal
-        )
         file_menu = self.menuBar().addMenu("File")
         edit_menu = self.menuBar().addMenu("Edit")
         self.undo_action = self.undo_stack.createUndoAction(self, "Undo")
@@ -326,41 +266,17 @@ class PreviewWindow(QMainWindow):
         self.settings_action.setMenuRole(QAction.MenuRole.PreferencesRole)
         self.settings_action.setShortcut(QKeySequence.StandardKey.Preferences)
         self._create_marine_panels(controller)
-        self.weather_open = False
-        self.weather_syncing = False
         self.weather_panel = WeatherPanel(
             controller, self._active_map, self.show_library
-        )
-        self.weather_dock = self._dock("Weather", "weather", self.weather_panel)
-        self.tabifyDockWidget(self.nmea_dock, self.weather_dock)
-        self.weather_dock.hide()
-        self.weather_dock.visibilityChanged.connect(self._weather_visibility)
-        self.weather_dock.toggleViewAction().triggered.connect(
-            lambda checked: self._show_panel(self.weather_dock) if checked else None
         )
         self.chart_debug_panel = ChartDebugPanel(
             controller, self._active_map, (self.map, self.log_map)
         )
-        self.chart_debug_dock = self._dock(
-            "Chart Debug", "chart-debug", self.chart_debug_panel
-        )
-        self.chart_debug_dock.hide()
+        self._build_panel_stacks()
         self._create_drawer_flags()
-        for dock in self._drawer_dock_pool():
-            dock.installEventFilter(self)
-            dock.toggleViewAction().triggered.connect(
-                lambda checked, dock=dock: self._menu_dock_toggled(dock, checked)
-            )
         view_menu = self.menuBar().addMenu("View")
-        view_menu.addAction(self.nmea_dock.toggleViewAction())
-        view_menu.addAction(self.routing_dock.toggleViewAction())
-        view_menu.addAction(self.polar_selector_dock.toggleViewAction())
-        view_menu.addAction(self.performance_dock.toggleViewAction())
-        view_menu.addAction(self.polar_manager_dock.toggleViewAction())
-        view_menu.addAction(self.navigation_dock.toggleViewAction())
-        view_menu.addAction(self.race_dock.toggleViewAction())
-        view_menu.addAction(self.weather_dock.toggleViewAction())
-        view_menu.addAction(self.chart_debug_dock.toggleViewAction())
+        for action in self.panel_actions.values():
+            view_menu.addAction(action)
         view_menu.addAction(header.toggleViewAction())
         self.ais_action = view_menu.addAction("AIS targets")
         self.ais_action.setCheckable(True)
@@ -372,17 +288,8 @@ class PreviewWindow(QMainWindow):
         self.map_display_actions = (self.ais_action, self.dashboard_action)
         window_menu = self.menuBar().addMenu("Window")
         window_menu.addSection("Panels")
-        window_menu.addAction(self.navigation_dock.toggleViewAction())
-        window_menu.addAction(self.race_dock.toggleViewAction())
-        window_menu.addAction(self.weather_dock.toggleViewAction())
-        window_menu.addAction(self.nmea_dock.toggleViewAction())
-        window_menu.addAction(self.routing_dock.toggleViewAction())
-        window_menu.addAction(self.polar_selector_dock.toggleViewAction())
-        window_menu.addAction(self.performance_dock.toggleViewAction())
-        window_menu.addAction(self.polar_manager_dock.toggleViewAction())
-        for dock in self.marine_docks.values():
-            window_menu.addAction(dock.toggleViewAction())
-            view_menu.addAction(dock.toggleViewAction())
+        for action in self.panel_actions.values():
+            window_menu.addAction(action)
         window_menu.addSeparator()
         window_menu.addAction("Reset Panels", self.reset_panels)
         file_menu.addAction("Import GPX…", self.navigation_panel.import_gpx)
@@ -434,11 +341,9 @@ class PreviewWindow(QMainWindow):
         log_menu = self.menuBar().addMenu("Logs")
         log_menu.addAction("Log library…", self.show_log_library)
         self._index_chart_places()
-        if panel_stack:
-            self._build_panel_stack()
 
-    def _build_panel_stack(self):
-        """Prototype: replace the dock sidebars with two Blender-style stacks."""
+    def _build_panel_stacks(self):
+        """Build the left and right Blender-style panel stacks."""
         left_stack = PanelStack()
         right_stack = PanelStack()
         for stack in (left_stack, right_stack):
@@ -446,36 +351,46 @@ class PreviewWindow(QMainWindow):
             stack.setMaximumWidth(560)
         left_stack.set_peer(right_stack)
         right_stack.set_peer(left_stack)
+        left_stack.changed.connect(self._panel_layout_changed)
+        right_stack.changed.connect(self._panel_layout_changed)
 
-        left_panels = (
-            ("Navigation", self.navigation_panel),
-            ("Races", self.race_panel),
+        definitions = (
+            ("left", "navigation", "Navigation", self.navigation_scroll),
+            ("left", "races", "Races", self.race_scroll),
+            ("right", "nmea", "NMEA", self.nmea_scroll),
+            ("right", "routing", "Routing", self.routing_panel),
+            ("right", "weather", "Weather", self.weather_panel),
+            (
+                "right",
+                "polar-selector",
+                "Polar selector",
+                self.polar_workspace.selector,
+            ),
+            ("right", "performance", "Performance", self.polar_workspace.performance),
+            ("right", "polar-manager", "Polar Manager", self.polar_manager_panel),
+            ("right", "chart-debug", "Chart Debug", self.chart_debug_panel),
         )
-        right_panels = (
-            ("NMEA", self.nmea_panel),
-            ("Routing", self.routing_panel),
-            ("Weather", self.weather_panel),
-            ("Polar selector", self.polar_workspace.selector),
-            ("Performance", self.polar_workspace.performance),
-            ("Polar Manager", self.polar_manager_panel),
-            ("Chart Debug", self.chart_debug_panel),
+        definitions += tuple(
+            ("right", kind, kind.title(), panel)
+            for kind, panel in self.marine_panels.items()
         )
-        for title, panel in left_panels:
-            left_stack.add_panel(CollapsiblePanel(title, panel))
-        for title, panel in right_panels:
-            right_stack.add_panel(CollapsiblePanel(title, panel))
-        for kind, panel in self.marine_panels.items():
-            right_stack.add_panel(CollapsiblePanel(kind.title(), panel))
-
-        # The panels now live in the stacks; hide their docks and make the
-        # dock widgets inert so their old collapse controls cannot touch the
-        # reparented panels.
-        for dock in self._drawer_dock_pool():
-            dock.hide()
-            dock.setWidget(QWidget())
-            action = dock.toggleViewAction()
-            action.setVisible(False)
-            action.setEnabled(False)
+        self.panels = {}
+        self.panel_actions = {}
+        self._panel_home = {}
+        self._panel_titles = {}
+        for side, name, title, content in definitions:
+            wrapper = CollapsiblePanel(title, content)
+            (left_stack if side == "left" else right_stack).add_panel(wrapper)
+            self.panels[name] = wrapper
+            self._panel_home[name] = side
+            self._panel_titles[name] = title
+            action = QAction(title, self)
+            action.setCheckable(True)
+            action.setChecked(True)
+            action.toggled.connect(
+                lambda checked, name=name: self._set_panel_visible(name, checked)
+            )
+            self.panel_actions[name] = action
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setObjectName("panel-stack-splitter")
@@ -495,9 +410,155 @@ class PreviewWindow(QMainWindow):
         self._panel_stack_open = {"left": True, "right": True}
         self._panel_stack_animation = None
         self.panel_stack = right_stack
+        self._default_panel_state = self.panel_state()
         self._position_drawer_flags()
         QTimer.singleShot(500, self._position_drawer_flags)
         QTimer.singleShot(2000, self._position_drawer_flags)
+
+    def _panel_side(self, name):
+        wrapper = self.panels.get(name)
+        if wrapper is None:
+            return None
+        for side, stack in getattr(self, "_panel_stacks", {}).items():
+            if wrapper in stack.panels():
+                return side
+        return None
+
+    def _panel_visible(self, name):
+        return self._panel_side(name) is not None
+
+    def _set_panel_visible(self, name, visible):
+        wrapper = self.panels.get(name)
+        if wrapper is None:
+            return
+        side = self._panel_side(name)
+        if visible and side is None:
+            side = self._panel_home.get(name, "right")
+            self._panel_stacks[side].add_panel(wrapper)
+            self._open_panel_stack(side)
+        elif not visible and side is not None:
+            self._panel_stacks[side].remove_panel(wrapper)
+        action = self.panel_actions.get(name)
+        if action is not None:
+            with QSignalBlocker(action):
+                action.setChecked(visible)
+        if visible:
+            wrapper.set_collapsed(False)
+            QTimer.singleShot(
+                0,
+                lambda stack=self._panel_stacks.get(side), panel=wrapper: (
+                    stack.scroll.ensureWidgetVisible(panel)
+                    if stack is not None
+                    else None
+                ),
+            )
+        self._position_drawer_flags()
+
+    def _open_panel_stack(self, side):
+        if side in self._panel_stacks and not self._panel_stack_open[side]:
+            self._toggle_panel_stack(side)
+
+    def _panel_layout_changed(self):
+        for name, action in getattr(self, "panel_actions", {}).items():
+            with QSignalBlocker(action):
+                action.setChecked(self._panel_visible(name))
+        self._position_drawer_flags()
+        if hasattr(self, "workspace"):
+            self.workspace.changed()
+
+    def panel_state(self):
+        panels = []
+        for side, stack in self._panel_stacks.items():
+            for wrapper in stack.panels():
+                name = next(
+                    name
+                    for name, candidate in self.panels.items()
+                    if candidate is wrapper
+                )
+                panels.append(
+                    {
+                        "name": name,
+                        "side": side,
+                        "visible": True,
+                        "collapsed": wrapper.collapsed,
+                    }
+                )
+        for name, wrapper in self.panels.items():
+            if not self._panel_visible(name):
+                panels.append(
+                    {
+                        "name": name,
+                        "side": self._panel_home.get(name, "right"),
+                        "visible": False,
+                        "collapsed": wrapper.collapsed,
+                    }
+                )
+        return {
+            "splitter": self._panel_splitter.sizes(),
+            "open": dict(self._panel_stack_open),
+            "width": dict(self._panel_stack_width),
+            "panels": panels,
+        }
+
+    def restore_panel_state(self, state):
+        if not isinstance(state, dict):
+            return
+        for stack in self._panel_stacks.values():
+            for wrapper in list(stack.panels()):
+                stack.remove_panel(wrapper)
+        placed = set()
+        saved = state.get("panels")
+        if isinstance(saved, list):
+            for entry in saved:
+                if not isinstance(entry, dict):
+                    continue
+                name = entry.get("name")
+                if name not in self.panels or name in placed:
+                    continue
+                side = entry.get("side")
+                if side not in ("left", "right"):
+                    side = self._panel_home.get(name, "right")
+                wrapper = self.panels[name]
+                if entry.get("visible") is not False:
+                    self._panel_stacks[side].add_panel(wrapper)
+                wrapper.set_collapsed(
+                    bool(entry.get("collapsed", False)), animate=False
+                )
+                placed.add(name)
+        for name, wrapper in self.panels.items():
+            if name in placed:
+                continue
+            side = self._panel_home.get(name, "right")
+            self._panel_stacks[side].add_panel(wrapper)
+        for name in self.panels:
+            action = self.panel_actions.get(name)
+            if action is not None:
+                with QSignalBlocker(action):
+                    action.setChecked(self._panel_visible(name))
+
+        sizes = state.get("splitter")
+        if (
+            isinstance(sizes, list)
+            and len(sizes) == 3
+            and all(isinstance(value, int) and value >= 0 for value in sizes)
+        ):
+            self._panel_splitter.setSizes(sizes)
+        open_states = state.get("open")
+        if isinstance(open_states, dict):
+            self._panel_stack_open.update(
+                {side: bool(open_states.get(side, True)) for side in ("left", "right")}
+            )
+        widths = state.get("width")
+        if isinstance(widths, dict):
+            for side in ("left", "right"):
+                value = widths.get(side)
+                if isinstance(value, int) and value > 0:
+                    self._panel_stack_width[side] = value
+        for side, stack in self._panel_stacks.items():
+            opened = self._panel_stack_open[side]
+            stack.setMinimumWidth(300 if opened else 0)
+            stack.setVisible(opened)
+        self._position_drawer_flags()
 
     def _show_startup_status(self, controller):
         """Report staged chart initialization while it is pending."""
@@ -544,26 +605,14 @@ class PreviewWindow(QMainWindow):
 
     def _create_marine_panels(self, controller):
         self.marine_panels = {}
-        self.marine_docks = {}
-        for kind, title in (("currents", "Currents"), ("tides", "Tides")):
-            panel = MarinePanel(
+        for kind in ("currents", "tides"):
+            self.marine_panels[kind] = MarinePanel(
                 controller,
                 self.map,
                 kind,
                 self.show_marine_settings,
                 self.show_marine_library,
             )
-            dock = self._dock(title, kind, panel)
-            self.marine_panels[kind], self.marine_docks[kind] = panel, dock
-            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
-            self.tabifyDockWidget(self.nmea_dock, dock)
-            dock.hide()
-            dock.visibilityChanged.connect(self._marine_visibility)
-            dock.toggleViewAction().triggered.connect(
-                lambda checked, dock=dock: self._show_panel(dock) if checked else None
-            )
-
-        self.nmea_dock.raise_()
 
     @staticmethod
     def _set_chart_toolbar_icons(toolbar):
@@ -584,55 +633,6 @@ class PreviewWindow(QMainWindow):
                 if not action.toolTip():
                     action.setToolTip(action.text())
 
-    def _dock(self, title, name, content):
-        dock = QDockWidget(title, self)
-        dock.setObjectName(name)
-        style_dock(dock)
-        if isinstance(content, QScrollArea):
-            style_scrollarea(content)
-        dock.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
-        )
-        dock.setWidget(CollapsiblePanel(title, content))
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
-        return dock
-
-    def _drawer_dock_pool(self):
-        return (
-            self.navigation_dock,
-            self.race_dock,
-            self.nmea_dock,
-            self.routing_dock,
-            self.polar_selector_dock,
-            self.performance_dock,
-            self.polar_manager_dock,
-            self.weather_dock,
-            self.chart_debug_dock,
-            *self.marine_docks.values(),
-        )
-
-    def _drawer_side(self, dock):
-        if dock.isFloating():
-            return None
-        area = self.dockWidgetArea(dock)
-        if area == Qt.DockWidgetArea.LeftDockWidgetArea:
-            return "left"
-        if area == Qt.DockWidgetArea.RightDockWidgetArea:
-            return "right"
-        return None
-
-    def _drawer_docks(self, side):
-        area = (
-            Qt.DockWidgetArea.LeftDockWidgetArea
-            if side == "left"
-            else Qt.DockWidgetArea.RightDockWidgetArea
-        )
-        return [
-            dock
-            for dock in self._drawer_dock_pool()
-            if not dock.isFloating() and self.dockWidgetArea(dock) == area
-        ]
-
     def _create_drawer_flags(self):
         for side in ("left", "right"):
             flag = QToolButton(self)
@@ -648,108 +648,53 @@ class PreviewWindow(QMainWindow):
         self._position_drawer_flags()
         QTimer.singleShot(0, self._position_drawer_flags)
 
-    def _visible_drawer_docks(self, side):
-        return [dock for dock in self._drawer_docks(side) if not dock.isHidden()]
-
-    def _drawer_closed(self, side):
-        return self._drawer_collapsed[side] or not self._visible_drawer_docks(side)
-
-    def _update_drawer_flags(self):
-        for side, flag in self.drawer_flags.items():
-            closed = self._drawer_closed(side)
-            if side == "left":
-                flag.setText("›" if closed else "‹")
-                flag.setToolTip(
-                    "Expand left panels" if closed else "Collapse left panels"
-                )
-            else:
-                flag.setText("‹" if closed else "›")
-                flag.setToolTip(
-                    "Expand right panels" if closed else "Collapse right panels"
-                )
-
     def _position_drawer_flags(self):
         if not self.drawer_flags:
             return
-        if self.panel_stack_mode:
-            stacks = getattr(self, "_panel_stacks", {})
-            states = getattr(self, "_panel_stack_open", {})
-            left_stack = stacks.get("left")
-            right_stack = stacks.get("right")
-            left_open = states.get("left", True)
-            right_open = states.get("right", True)
-            origin = self.views.mapTo(self, self.views.rect().topLeft())
-            top = origin.y() + max(0, (self.views.height() - 64) // 2)
-            left = self.drawer_flags.get("left")
-            if left is not None:
-                left.setText("‹" if left_open else "›")
-                left.setToolTip(
-                    "Collapse left panels" if left_open else "Expand left panels"
+        stacks = getattr(self, "_panel_stacks", {})
+        states = getattr(self, "_panel_stack_open", {})
+        left_stack = stacks.get("left")
+        right_stack = stacks.get("right")
+        left_open = states.get("left", True)
+        right_open = states.get("right", True)
+        origin = self.views.mapTo(self, self.views.rect().topLeft())
+        top = origin.y() + max(0, (self.views.height() - 64) // 2)
+        left = self.drawer_flags.get("left")
+        if left is not None:
+            left.setText("‹" if left_open else "›")
+            left.setToolTip(
+                "Collapse left panels" if left_open else "Expand left panels"
+            )
+            if left_stack is not None and left_stack.isVisible():
+                x = (
+                    left_stack.mapTo(self, left_stack.rect().topLeft()).x()
+                    + left_stack.width()
                 )
-                if left_stack is not None and left_stack.isVisible():
-                    x = (
-                        left_stack.mapTo(self, left_stack.rect().topLeft()).x()
-                        + left_stack.width()
-                    )
-                else:
-                    x = origin.x()
-                left.setGeometry(max(0, min(self.width() - 18, x)), top, 18, 64)
-                left.show()
-                left.raise_()
-            right = self.drawer_flags.get("right")
-            if right is not None:
-                right.setText("‹" if right_open else "›")
-                right.setToolTip(
-                    "Collapse right panels" if right_open else "Expand right panels"
-                )
-                if right_stack is not None and right_stack.isVisible():
-                    x = right_stack.mapTo(self, right_stack.rect().topLeft()).x() - 18
-                else:
-                    x = origin.x() + self.views.width() - 18
-                right.setGeometry(max(0, min(self.width() - 18, x)), top, 18, 64)
-                right.show()
-                right.raise_()
-            for canvas in (getattr(self, "map", None), getattr(self, "log_map", None)):
-                if canvas is not None:
-                    canvas.set_drawer_state(False, False, force=True)
-                    canvas.set_drawer_tabs_visible(False)
-            return
-        self._update_drawer_flags()
-        central = self.views.geometry()
-        top = central.top() + max(0, (central.height() - 64) // 2)
-        map_active = self.views.currentWidget() in (
-            getattr(self, "map", None),
-            getattr(self, "logs_view", None),
-        )
-        for side, flag in self.drawer_flags.items():
-            if side == "right" and self.panel_stack_mode:
-                flag.hide()
-                continue
-            if side == "left":
-                x = central.left()
             else:
-                x = central.right() + 1 - 18
-            x = max(0, min(self.width() - 18, x))
-            flag.setGeometry(x, top, 18, 64)
-            # A map tab draws its own scene tabs; the other workspaces keep
-            # the QWidget flags.
-            flag.setVisible(not map_active)
-            if not map_active:
-                flag.raise_()
-        right_closed = False if self.panel_stack_mode else self._drawer_closed("right")
+                x = origin.x()
+            left.setGeometry(max(0, min(self.width() - 18, x)), top, 18, 64)
+            left.show()
+            left.raise_()
+        right = self.drawer_flags.get("right")
+        if right is not None:
+            right.setText("‹" if right_open else "›")
+            right.setToolTip(
+                "Collapse right panels" if right_open else "Expand right panels"
+            )
+            if right_stack is not None and right_stack.isVisible():
+                x = right_stack.mapTo(self, right_stack.rect().topLeft()).x() - 18
+            else:
+                x = origin.x() + self.views.width() - 18
+            right.setGeometry(max(0, min(self.width() - 18, x)), top, 18, 64)
+            right.show()
+            right.raise_()
         for canvas in (getattr(self, "map", None), getattr(self, "log_map", None)):
             if canvas is not None:
-                canvas.set_drawer_tabs_visible(True)
-                canvas.set_drawer_state(self._drawer_closed("left"), right_closed)
+                canvas.set_drawer_state(False, False, force=True)
+                canvas.set_drawer_tabs_visible(False)
 
     def _toggle_drawer(self, side):
-        if self.panel_stack_mode:
-            self._toggle_panel_stack(side)
-            return
-        if self._drawer_closed(side):
-            self._expand_drawer(side)
-        else:
-            self._collapse_drawer(side)
+        self._toggle_panel_stack(side)
 
     def _toggle_panel_stack(self, side):
         stack = self._panel_stacks.get(side)
@@ -818,72 +763,9 @@ class PreviewWindow(QMainWindow):
         self._position_drawer_flags()
         QTimer.singleShot(0, self._position_drawer_flags)
 
-    def _collapse_drawer(self, side):
-        if self.panel_stack_mode:
-            return
-        if self._drawer_collapsed[side]:
-            return
-        docks = self._drawer_docks(side)
-        visible = self._visible_drawer_docks(side)
-        if not visible:
-            return
-        self._drawer_saved[side] = visible
-        self._drawer_collapsed[side] = True
-        self._drawer_syncing = True
-        try:
-            for dock in docks:
-                dock.hide()
-        finally:
-            self._drawer_syncing = False
-        self._position_drawer_flags()
-        QTimer.singleShot(0, self._position_drawer_flags)
-
-    def _expand_drawer(self, side):
-        if self.panel_stack_mode:
-            return
-        if not self._drawer_closed(side):
-            return
-        saved = self._drawer_saved[side]
-        if not saved:
-            saved = [self.navigation_dock] if side == "left" else [self.nmea_dock]
-        self._drawer_collapsed[side] = False
-        self._drawer_saved[side] = []
-        self._drawer_syncing = True
-        try:
-            if side == "left":
-                self.navigation_open = True
-                self.views.setCurrentWidget(self.map)
-            for dock in saved:
-                dock.show()
-            saved[-1].raise_()
-        finally:
-            self._drawer_syncing = False
-        self._position_drawer_flags()
-        QTimer.singleShot(0, self._position_drawer_flags)
-
-    def _menu_dock_toggled(self, dock, checked):
-        if self.panel_stack_mode:
-            return
-        if checked:
-            side = self._drawer_side(dock)
-            if side is not None:
-                self._expand_drawer(side)
-            dock.show()
-            dock.raise_()
-
     def resizeEvent(self, event):  # noqa: N802 - Qt virtual method name
         super().resizeEvent(event)
         self._position_drawer_flags()
-
-    def eventFilter(self, watched, event):  # noqa: N802 - Qt virtual method name
-        if isinstance(watched, QDockWidget) and event.type() in (
-            QEvent.Type.Move,
-            QEvent.Type.Resize,
-            QEvent.Type.Show,
-            QEvent.Type.Hide,
-        ):
-            QTimer.singleShot(0, self._position_drawer_flags)
-        return super().eventFilter(watched, event)
 
     def _sync_timeline(self, *_):
         if self.map.timeline is not None:
@@ -897,38 +779,7 @@ class PreviewWindow(QMainWindow):
         self._sync_timeline()
 
     def _view_changed(self, *_):
-        current = self.views.currentWidget()
         self._sync_timeline()
-        if self.panel_stack_mode:
-            self._sync_map_actions()
-            if hasattr(self, "cursor_status"):
-                self.cursor_status.clear()
-            return
-        self.weather_syncing = True
-        self.weather_dock.setVisible(
-            current in (self.map, self.logs_view)
-            and self.weather_open
-            and not self._drawer_collapsed["right"]
-        )
-        self.weather_syncing = False
-        self.navigation_syncing = True
-        self.navigation_dock.setVisible(
-            current is self.map
-            and self.navigation_open
-            and not self._drawer_collapsed["left"]
-        )
-        self.navigation_syncing = False
-        self.race_dock.setVisible(
-            current in (self.map, self.logs_view) and not self._drawer_collapsed["left"]
-        )
-        self.marine_syncing = True
-        for kind, dock in self.marine_docks.items():
-            dock.setVisible(
-                current is self.map
-                and self.marine_open[kind]
-                and not self._drawer_collapsed["right"]
-            )
-        self.marine_syncing = False
         self._sync_map_actions()
         if hasattr(self, "cursor_status"):
             self.cursor_status.clear()
@@ -936,11 +787,6 @@ class PreviewWindow(QMainWindow):
             if bar.parent() is self:
                 bar.setElideMode(Qt.TextElideMode.ElideNone)
                 bar.setUsesScrollButtons(True)
-        if current is self.polar_workspace and not self.polars_visited:
-            self.polars_visited = True
-            self.polar_selector_dock.show()
-            self.performance_dock.show()
-            self.polar_selector_dock.raise_()
 
     def _toggle_log(self, key, checked):
         self.plots.set_series(key, checked)
@@ -1008,23 +854,6 @@ class PreviewWindow(QMainWindow):
 
         self.weather_panel.refresh()
 
-    def _weather_visibility(self, *_):
-        if (
-            not self.weather_syncing
-            and not self._drawer_syncing
-            and self.views.currentWidget() in (self.map, self.logs_view)
-        ):
-            self.weather_open = not self.weather_dock.isHidden()
-
-    def _toggle_weather(self, enabled):
-        if self.panel_stack_mode:
-            return
-        self.weather_open = enabled
-        if enabled:
-            self._show_panel(self.weather_dock)
-        else:
-            self.weather_dock.hide()
-
     def _toggle_instruments(self, enabled):
         if self._instruments_syncing:
             return
@@ -1080,7 +909,7 @@ class PreviewWindow(QMainWindow):
 
     def show_polar_workspace(self):
         self.views.setCurrentWidget(self.polar_workspace)
-        self._show_panel(self.polar_selector_dock)
+        self._show_panel("polar-selector")
 
     def _select_saved_route(self, route):
         self.navigation_panel.select_route(route)
@@ -1098,23 +927,6 @@ class PreviewWindow(QMainWindow):
         self.map.set_route(coordinates, speeds)
         self.map.navigation.hl_routing = route.name if route is not None else None
         self._sync_route_isochrones()
-
-    def _navigation_visibility(self, _):
-        if (
-            not self.navigation_syncing
-            and not self._drawer_syncing
-            and self.views.currentWidget() is self.map
-        ):
-            self.navigation_open = not self.navigation_dock.isHidden()
-
-    def _toggle_navigation(self, checked):
-        if self.panel_stack_mode:
-            return
-        self.navigation_open = checked
-        if checked:
-            self._expand_drawer("left")
-            self.views.setCurrentWidget(self.map)
-        self.navigation_dock.setVisible(checked)
 
     def _race_selected(self, race):
         self._race_timeline_bounds = None
@@ -1318,14 +1130,14 @@ class PreviewWindow(QMainWindow):
         self.log_map.update()
 
     def _navigation_request(self, kind, coordinates):
-        self._show_panel(self.navigation_dock)
+        self._show_panel("navigation")
         if kind == "poi":
             self.navigation_panel.add_poi(coordinates)
         else:
             self.navigation_panel.add_point(coordinates)
 
     def _new_track(self):
-        self._show_panel(self.navigation_dock)
+        self._show_panel("navigation")
         self.navigation_panel.new_track()
 
     def _move_navigation_point(self, callback):
@@ -1348,58 +1160,35 @@ class PreviewWindow(QMainWindow):
         menu.addAction("Export GPX…", self.navigation_panel.export_all)
         menu.addAction("Export POIs as NMEA PFEC…", self.navigation_panel.export_pfec)
         menu.exec(
-            self.navigation_dock.mapToGlobal(self.navigation_dock.rect().bottomLeft())
+            self.navigation_panel.mapToGlobal(self.navigation_panel.rect().bottomLeft())
         )
 
-    def _show_panel(self, dock):
-        if self.panel_stack_mode:
+    def _show_panel(self, panel):
+        name = panel if isinstance(panel, str) else None
+        if name is None:
+            name = next(
+                (
+                    candidate
+                    for candidate, wrapper in self.panels.items()
+                    if wrapper is panel
+                ),
+                None,
+            )
+        if name is None:
             return
-        side = self._drawer_side(dock)
-        if side is not None:
-            self._expand_drawer(side)
-        if dock is self.weather_dock:
-            self.weather_open = True
-            if self.views.currentWidget() not in (self.map, self.logs_view):
-                self.views.setCurrentWidget(self.map)
-        if dock is self.navigation_dock:
-            self.navigation_open = True
+        side = self._panel_side(name) or self._panel_home.get(name, "right")
+        if not self._panel_visible(name):
+            self._panel_stacks[side].add_panel(self.panels[name])
+        self._open_panel_stack(side)
+        action = self.panel_actions.get(name)
+        if action is not None:
+            with QSignalBlocker(action):
+                action.setChecked(True)
+        wrapper = self.panels[name]
+        wrapper.set_collapsed(False, animate=False)
+        self._panel_stacks[side].scroll.ensureWidgetVisible(wrapper)
+        if name in ("weather", "navigation", "routing", "currents", "tides"):
             self.views.setCurrentWidget(self.map)
-        for kind, marine_dock in self.marine_docks.items():
-            if dock is marine_dock:
-                self.marine_open[kind] = True
-                self.views.setCurrentWidget(self.map)
-        dock.show()
-        if (
-            dock in self.marine_docks.values() or dock is self.weather_dock
-        ) and not dock.isFloating():
-            # A pre-show raise can leave this dock last in sibling order while
-            # another tab is active. Force a Z-order change so Qt selects it.
-            dock.lower()
-        dock.raise_()
-        if hasattr(self, "workspace"):
-            self.workspace._dock_activated(dock)
-        if dock in (
-            self.routing_dock,
-            self.navigation_dock,
-            *self.marine_docks.values(),
-        ):
-            self.views.setCurrentWidget(self.map)
-
-    def _marine_visibility(self, *_):
-        if (
-            not self.marine_syncing
-            and not self._drawer_syncing
-            and self.views.currentWidget() is self.map
-        ):
-            self.marine_open = {
-                kind: not dock.isHidden() for kind, dock in self.marine_docks.items()
-            }
-
-    def _toggle_marine(self, enabled):
-        self.marine_open = {kind: enabled for kind in self.marine_docks}
-        self._view_changed()
-        if enabled:
-            self._show_panel(self.marine_docks["currents"])
 
     def show_marine_settings(self, tab):
         if self.marine_settings is None:
@@ -1412,7 +1201,6 @@ class PreviewWindow(QMainWindow):
         self.library_dialog.show_marine(kind)
 
     def dispose_marine(self):
-        self.marine_syncing = True
         if self.settings_dialog is not None:
             self.settings_dialog.currents.dispose()
         for panel in self.marine_panels.values():
@@ -1423,21 +1211,8 @@ class PreviewWindow(QMainWindow):
             self.marine_settings.dispose()
 
     def reset_panels(self):
-        """Redock every floating panel and restore default sizes/visibility."""
-        if self.panel_stack_mode:
-            return
-        for dock in (
-            self.nmea_dock,
-            self.routing_dock,
-            self.polar_selector_dock,
-            self.performance_dock,
-            self.polar_manager_dock,
-            self.navigation_dock,
-            self.weather_dock,
-            *self.marine_docks.values(),
-        ):
-            dock.setFloating(False)
-        self.workspace.reset_layout()
+        """Restore the default panel order, visibility and stack widths."""
+        self.restore_panel_state(self._default_panel_state)
 
     def _routing_changed(self):
         if self.controller.routing.busy:
@@ -1454,7 +1229,7 @@ class PreviewWindow(QMainWindow):
 
     def _fit_view(self):
         self.views.setCurrentWidget(self.map)
-        if self.routing_dock.isVisible() and self.routing_panel.isVisible():
+        if self._panel_visible("routing") and self.routing_panel.isVisible():
             self.map.fit_route()
         else:
             self.map.fit_track()
@@ -1753,7 +1528,7 @@ class PreviewWindow(QMainWindow):
         if paths and self.controller.load_paths(paths):
             event.acceptProposedAction()
             self.views.setCurrentWidget(self.logs_view)
-            self._show_panel(self.nmea_dock)
+            self._show_panel("nmea")
         else:
             event.ignore()
 
@@ -1812,20 +1587,18 @@ class PreviewWindow(QMainWindow):
 
     def show_polars(self):
         self.show_polar_workspace()
-        self._show_panel(self.polar_manager_dock)
+        self._show_panel("polar-manager")
 
     def _use_polar(self, name):
         index = self.routing_panel.polar.findText(name)
         if index >= 0:
             self.routing_panel.polar.setCurrentIndex(index)
             self.routing_panel.pages.setCurrentIndex(0)
-            self._show_panel(self.routing_dock)
+            self._show_panel("routing")
             if self.library_dialog is not None:
                 self.library_dialog.hide()
 
     def closeEvent(self, event):  # noqa: N802 - Qt virtual method name
-        for side in ("left", "right"):
-            self._expand_drawer(side)
         self.workspace.close()
         if self.map.timeline is not None:
             self.map.timeline.dispose()

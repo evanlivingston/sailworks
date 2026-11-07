@@ -1,7 +1,7 @@
 """Display-only Currents and Tides tools over the shared marine models.
 
 Downloads and saved-source management live in the Data Library
-(see marinelibrary); these docks show visibility toggles and coverage.
+(see marinelibrary); these panels show visibility toggles and coverage.
 """
 
 import json
@@ -37,7 +37,7 @@ from sailworks.rendering.marinepresentation import (
     CURRENT_DENSITIES,
     chart_instant,
 )
-from .dockchrome import style_scrollarea
+from .scrollchrome import style_scrollarea
 from .dropdown import Dropdown
 from .theme import symbol_icon
 

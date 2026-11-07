@@ -714,54 +714,6 @@ class QtPreviewChecks(unittest.TestCase):
             (46.2, -121.3, 9.5),
         )
 
-    def test_floating_panels_redock_and_reset_without_losing_content(self):
-        from sailworks.qt.dockchrome import DockTitleBar, DOCK_MIN_WIDTH
-
-        dock = self.window.nmea_dock
-        content = dock.widget()
-        for _ in range(2):
-            dock.setFloating(True)
-            self.drain()
-            self.assertIsInstance(dock.titleBarWidget(), DockTitleBar)
-            self.assertTrue(dock.windowFlags() & Qt.WindowType.FramelessWindowHint)
-            dock.resize(100, 400)
-            self.assertGreaterEqual(dock.width(), DOCK_MIN_WIDTH)
-            dock.setFloating(False)
-            self.drain()
-            self.assertEqual(dock.titleBarWidget().height(), 0)
-            self.assertIs(dock.widget(), content)
-        dock.setFloating(True)
-        self.window.reset_panels()
-        self.drain()
-        self.assertFalse(dock.isFloating())
-        self.assertIs(dock.widget(), content)
-        self.assertFalse(dock.isHidden())
-
-    def test_floating_panel_child_coordinates_do_not_trigger_edge_resize(self):
-        from PySide6.QtTest import QTest
-        from PySide6.QtCore import QPoint
-        from sailworks.qt.dockchrome import _FloatingFrame
-
-        dock = self.window.nmea_dock
-        self.window._show_panel(dock)
-        dock.setFloating(True)
-        dock.resize(430, 600)
-        self.drain()
-        frame = dock.findChild(_FloatingFrame)
-        child = self.window.record
-        # The button's local left edge is in the middle of the panel.
-        QTest.mousePress(child, Qt.MouseButton.LeftButton, pos=QPoint(2, 10))
-        self.assertIsNone(frame._resize)
-        QTest.mouseRelease(child, Qt.MouseButton.LeftButton, pos=QPoint(2, 10))
-        self.assertTrue(dock.isFloating())
-        QTest.mousePress(dock, Qt.MouseButton.LeftButton, pos=QPoint(1, 100))
-        self.assertIsNotNone(
-            frame._resize,
-            f"floating={dock.isFloating()} size={dock.size()} grabber={dock.mouseGrabber()}",
-        )
-        QTest.mouseRelease(dock, Qt.MouseButton.LeftButton, pos=QPoint(1, 100))
-        self.assertIsNone(frame._resize)
-
     def test_full_plot_core_replay_and_source_visibility_without_transport(self):
         for name in ("play", "stop", "restart", "speed", "speed_group"):
             self.assertFalse(hasattr(self.window, name))
@@ -791,9 +743,9 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(self.controller.points, [])
         self.window.source.setCurrentIndex(1)
         self.assertEqual(tuple(self.controller.points), log.points)
-        self.window.nmea_dock.setFloating(True)
+        self.window._show_panel("nmea")
         self.drain()
-        self.assertTrue(self.window.nmea_dock.isFloating())
+        self.assertTrue(self.window._panel_visible("nmea"))
         self.assertEqual(tuple(self.controller.points), log.points)
 
     def test_recording_persists_for_record_toggle_and_shutdown(self):
@@ -1367,7 +1319,8 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertEqual(Path(path).stat().st_mtime_ns, original_mtime)
 
     def test_chart_controls_are_consolidated_in_data_library(self):
-        from PySide6.QtWidgets import QCheckBox, QDockWidget
+        from PySide6.QtWidgets import QCheckBox
+        from sailworks.rendering.chartclasses import CHART_CLASSES
 
         self.window.show_library()
         library = self.window.library_dialog
@@ -1380,8 +1333,10 @@ class QtPreviewChecks(unittest.TestCase):
             ],
             ["Sources && appearance", "Local files", "Downloads && base maps"],
         )
-        self.assertEqual(len(library.chart_layers_panel.checkboxes), 8)
-        self.assertIsNone(self.window.findChild(QDockWidget, "chart-layers"))
+        self.assertEqual(
+            len(library.chart_layers_panel.checkboxes), len(CHART_CLASSES) + 2
+        )
+        self.assertNotIn("chart-layers", self.window.panels)
         self.assertFalse(self.window.chart_debug_panel.findChildren(QCheckBox))
         self.window.show_settings()
         settings = self.window.settings_dialog
@@ -1837,14 +1792,12 @@ class QtPreviewChecks(unittest.TestCase):
             self.window.map._center_lon,
             self.window.map._zoom,
         )
-        self.window._show_panel(self.window.routing_dock)
+        self.window._show_panel("routing")
         self.drain()
         self.assertIs(self.window.views.currentWidget(), self.window.map)
-        self.assertEqual(
-            set(self.window.tabifiedDockWidgets(self.window.nmea_dock)),
-            {self.window.routing_dock},
-        )
-        self.window._show_panel(self.window.nmea_dock)
+        self.assertTrue(self.window._panel_visible("routing"))
+        self.assertTrue(self.window._panel_visible("nmea"))
+        self.window._show_panel("nmea")
         self.window.views.setCurrentWidget(self.window.logs_view)
         self.drain()
         self.assertEqual(self.controller.session.position, 5)
@@ -1863,14 +1816,21 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertLess(self.window.plots.figure.get_facecolor()[0], 0.2)
         self.assertEqual(self.controller.settings.chartPalette, "cm93")
         self.window.resize(1000, 650)
-        self.window._show_panel(self.window.routing_dock)
+        self.window._show_panel("routing")
         self.window.routing_panel.pages.setCurrentIndex(0)
         self.drain()
         setup_scroll = self.window.routing_panel.pages.widget(0)
         self.assertEqual(setup_scroll.horizontalScrollBar().maximum(), 0)
-        self.assertFalse(self.window.routing_panel.calculate.visibleRegion().isEmpty())
-        self.assertFalse(
-            self.window.routing_panel.cancel_button.visibleRegion().isEmpty()
+        stack = self.window._panel_stacks["right"]
+        stack.scroll.ensureWidgetVisible(self.window.routing_panel.calculate)
+        self.drain()
+        self.assertTrue(
+            self.window.routing_panel.calculate.isVisibleTo(self.window.routing_panel)
+        )
+        self.assertTrue(
+            self.window.routing_panel.cancel_button.isVisibleTo(
+                self.window.routing_panel
+            )
         )
 
     def restart_workspace(self, before_open=None, routes=()):
@@ -1939,7 +1899,6 @@ class QtPreviewChecks(unittest.TestCase):
         self,
     ):
         from sailworks.core.geo.routing import Routing
-        from PySide6.QtCore import Qt
 
         old_routes = [
             Routing("first", [(48, -123, "10/01/2026, 12:00:00", 270, 14, 6, 90)]),
@@ -1952,14 +1911,9 @@ class QtPreviewChecks(unittest.TestCase):
         panel.coastlines.setChecked(False)
         panel.pages.setCurrentIndex(1)
         self.window.resize(1000, 650)
-        self.window.addDockWidget(
-            Qt.DockWidgetArea.LeftDockWidgetArea, self.window.routing_dock
-        )
-        self.window.navigation_dock.hide()
-        self.window._show_panel(self.window.routing_dock)
-        # Expanding the right drawer falls back to the NMEA dock when no other
-        # dock is visible there, so close it after opening the routing panel.
-        self.window.nmea_dock.hide()
+        self.window._set_panel_visible("navigation", False)
+        self.window._show_panel("routing")
+        self.window._set_panel_visible("nmea", False)
         self.load()
         self.controller.session.speed = 5
         self.controller.session.set_streaming(False)
@@ -1973,11 +1927,13 @@ class QtPreviewChecks(unittest.TestCase):
         ) = (44.2, -127.1, 7.5)
         self.window.map.view_changed.emit()
         workspace = self.window.workspace
-        self.assertTrue(self.window.nmea_dock.isHidden())
+        self.assertFalse(self.window._panel_visible("nmea"))
         workspace.save()
         payload = workspace.store.load()
         self.assertEqual(payload["routing"]["selected_route"], "second")
-        self.assertFalse(payload["docks"]["nmea"]["visible"])
+        saved_panels = {entry["name"]: entry for entry in payload["panels"]["panels"]}
+        self.assertFalse(saved_panels["nmea"]["visible"])
+        self.assertTrue(saved_panels["routing"]["visible"])
         self.assertNotIn("race.log", json.dumps(payload))
         for key in (
             "source",
@@ -1997,22 +1953,15 @@ class QtPreviewChecks(unittest.TestCase):
             self.restart_workspace(routes=old_routes)
         self.assertEqual(self.window.size().width(), 1000)
         self.assertEqual(self.window.size().height(), 650)
-        # Closing the window expands collapsed drawers before saving, and an
-        # emptied right drawer falls back to its default NMEA panel, so the
-        # dock is visible again on restart. Its hidden state is asserted on the
-        # payload above, and no instrument history may come back.
+        # No instrument history may come back with the workspace.
         self.assertEqual(self.window.instruments.text(), "")
-        # The restored view is checked before the navigation dock is shown:
-        # navigation only exists on the map, so toggling it switches views.
         self.assertIs(self.window.views.currentWidget(), self.window.logs_view)
-        navigation = self.window.navigation_dock
-        self.assertTrue(navigation.isHidden())
-        navigation.toggleViewAction().trigger()
-        self.assertFalse(navigation.isHidden())
-        self.assertEqual(
-            self.window.dockWidgetArea(self.window.routing_dock),
-            Qt.DockWidgetArea.LeftDockWidgetArea,
-        )
+        navigation_action = self.window.panel_actions["navigation"]
+        self.assertFalse(navigation_action.isChecked())
+        self.assertFalse(self.window._panel_visible("navigation"))
+        navigation_action.trigger()
+        self.assertTrue(self.window._panel_visible("navigation"))
+        self.assertTrue(self.window._panel_visible("routing"))
         self.assertEqual(self.window.routing_panel.pages.currentIndex(), 1)
         self.assertEqual(self.window.navigation_panel.route.name, "second")
         self.assertFalse(self.window.routing_panel.coastlines.isChecked())
@@ -2063,18 +2012,20 @@ class QtPreviewChecks(unittest.TestCase):
 
         state = {
             "window": {"x": 9000, "y": -9000, "width": 5000, "height": 4000},
-            "layout": "invalid base64!",
+            "panels": {
+                "splitter": "bad",
+                "panels": [
+                    {
+                        "name": "routing",
+                        "side": "left",
+                        "visible": True,
+                        "collapsed": True,
+                    }
+                ],
+            },
             "view": "unknown",
-            "active_dock": "unknown",
             "map": {"latitude": True, "longitude": 900, "zoom": -20},
             "routing": {"polar": "missing", "algorithm": "missing", "page": 999},
-            "docks": {
-                "routing": {
-                    "floating": True,
-                    "visible": True,
-                    "geometry": {"x": 6000, "y": 6000, "width": 450, "height": 500},
-                }
-            },
         }
 
         def write(path):
@@ -2086,12 +2037,6 @@ class QtPreviewChecks(unittest.TestCase):
             self.restart_workspace(write)
         self.assertEqual(self.window.width(), 1280)
         self.assertEqual(self.window.height(), 800)
-        self.assertTrue(self.window.routing_dock.isFloating())
-        geometry = self.window.routing_dock.geometry()
-        self.assertGreaterEqual(geometry.x(), 0)
-        self.assertGreaterEqual(geometry.y(), 0)
-        self.assertLessEqual(geometry.right(), 1280)
-        self.assertLessEqual(geometry.bottom(), 800)
         self.assertAlmostEqual(self.window.map._center_lat, 48.4)
         self.assertEqual(self.window.map._center_lon, 180)
         self.assertEqual(self.window.map._zoom, 1)
@@ -2099,21 +2044,17 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertTrue(self.controller.session.streaming)
         self.assertEqual(self.window.routing_panel.pages.currentIndex(), 0)
         self.assertIs(self.window.views.currentWidget(), self.window.map)
+        self.assertTrue(self.window._panel_visible("routing"))
+        self.assertTrue(self.window.panels["routing"].collapsed)
         self.window.workspace.reset_layout()
         self.drain()
-        self.assertFalse(self.window.routing_dock.isFloating())
-        self.assertFalse(self.window.nmea_dock.isHidden())
-        self.assertFalse(self.window.routing_dock.isHidden())
-        self.assertIn(
-            self.window.routing_dock,
-            self.window.tabifiedDockWidgets(self.window.nmea_dock),
-        )
+        self.assertFalse(self.window.panels["routing"].collapsed)
+        for name in ("nmea", "routing", "navigation", "weather"):
+            self.assertTrue(self.window._panel_visible(name))
 
-    def test_workspace_floating_dock_and_maximized_window_preserve_normal_size(self):
+    def test_workspace_maximized_window_preserves_normal_size(self):
         self.window.resize(1000, 650)
         self.drain()
-        self.window.routing_dock.setFloating(True)
-        self.window.routing_dock.setGeometry(100, 100, 430, 500)
         self.window.showMaximized()
         self.drain()
         payload = self.window.workspace.save_state()
@@ -2125,9 +2066,6 @@ class QtPreviewChecks(unittest.TestCase):
             self.restart_workspace()
         self.assertTrue(self.window.isMaximized())
         self.assertEqual(self.window.normalGeometry().width(), 1000)
-        self.assertTrue(self.window.routing_dock.isFloating())
-        self.assertEqual(self.window.routing_dock.width(), 430)
-        self.assertEqual(self.window.routing_dock.height(), 500)
         self.window.showNormal()
         self.drain()
         self.assertEqual(self.window.width(), 1000)
@@ -2195,7 +2133,7 @@ class QtPreviewChecks(unittest.TestCase):
         from sailworks.qt.polarlibrary import PolarLibrary
 
         self.window.polar_manager_panel = PolarLibrary(self.controller, self.window)
-        self.window.polar_manager_dock.setWidget(self.window.polar_manager_panel)
+        self.window.panels["polar-manager"].set_content(self.window.polar_manager_panel)
         self.window.show_polars()
         panel = self.window.polar_manager_panel
         return root, panel
@@ -2701,27 +2639,28 @@ class QtPreviewChecks(unittest.TestCase):
         from threading import Event
 
         panel = self.window.navigation_panel
-        self.window._show_panel(self.window.navigation_dock)
+        self.window._show_panel("navigation")
         panel.tabs.setCurrentIndex(2)
         self.window.ais_action.setChecked(False)
         self.window.workspace.save()
         state = self.window.workspace.store.load()
         self.assertEqual(state["navigation"]["tab"], "POIs")
-        self.assertTrue(state["docks"]["chart-navigation"]["visible"])
+        saved_panels = {entry["name"]: entry for entry in state["panels"]["panels"]}
+        self.assertTrue(saved_panels["navigation"]["visible"])
         panel.tabs.setCurrentIndex(0)
         self.window.ais_action.setChecked(True)
-        self.window.navigation_dock.hide()
+        self.window._set_panel_visible("navigation", False)
         self.window.workspace.restoring = True
         self.window.workspace.restore(state)
         self.window.workspace.restoring = False
         self.assertEqual(panel.tabs.currentIndex(), 2)
         self.assertFalse(self.window.ais_action.isChecked())
-        self.assertFalse(self.window.navigation_dock.isHidden())
+        self.assertTrue(self.window._panel_visible("navigation"))
         self.restart_workspace()
         panel = self.window.navigation_panel
         self.assertEqual(panel.tabs.currentIndex(), 2)
         self.assertFalse(self.window.ais_action.isChecked())
-        self.assertFalse(self.window.navigation_dock.isHidden())
+        self.assertTrue(self.window._panel_visible("navigation"))
         event = Event()
         panel.task.start("Pending import", lambda _: event.wait(3))
         self.window.close()

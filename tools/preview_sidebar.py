@@ -1,6 +1,6 @@
-"""Preview the sidebar panel chrome and collapse arrows in isolation.
+"""Preview the sidebar panel stacks and collapse arrows in isolation.
 
-This builds only the dock chrome and representative panel content, so the
+This builds only the panel stacks and representative panel content, so the
 sidebar can be inspected and clicked without starting the full application,
 map, weather or forecast stack.
 
@@ -8,7 +8,6 @@ Run it with the project virtual environment:
 
     .venv/bin/python tools/preview_sidebar.py
 
-The left side shows stacked lone panels; the right side shows tabbed panels.
 Every panel header has a triangle arrow that collapses that panel's body.
 """
 
@@ -23,7 +22,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
-    QDockWidget,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -39,7 +37,7 @@ from PySide6.QtWidgets import (
 )
 
 from sailworks.qt.collapsiblepanel import CollapsiblePanel
-from sailworks.qt.dockchrome import style_dock, style_scrollarea
+from sailworks.qt.scrollchrome import style_scrollarea
 from sailworks.qt.dropdown import Dropdown
 from sailworks.qt.panelstack import PanelStack
 from sailworks.qt.theme import apply_theme, section_label
@@ -153,80 +151,7 @@ def _weather_panel():
     return page
 
 
-def _dock(window, title, name, content, area):
-    dock = QDockWidget(title, window)
-    dock.setObjectName(name)
-    style_dock(dock)
-    dock.setWidget(CollapsiblePanel(title, _scroll(content)))
-    window.addDockWidget(area, dock)
-    return dock
-
-
 def build_gallery():
-    """Build and return the preview window; the caller shows and runs it."""
-    window = QMainWindow()
-    window.setWindowTitle("Sailworks sidebar preview")
-    window.resize(1080, 760)
-    window.setDockNestingEnabled(True)
-    window.setTabPosition(
-        Qt.DockWidgetArea.AllDockWidgetAreas, QTabWidget.TabPosition.North
-    )
-    placeholder = QLabel("Map viewport")
-    placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    placeholder.setProperty("secondary", True)
-    window.setCentralWidget(placeholder)
-
-    navigation = _dock(
-        window,
-        "Navigation",
-        "preview-navigation",
-        _navigation_panel(),
-        Qt.DockWidgetArea.LeftDockWidgetArea,
-    )
-    races = _dock(
-        window,
-        "Races",
-        "preview-races",
-        _races_panel(),
-        Qt.DockWidgetArea.LeftDockWidgetArea,
-    )
-    window.splitDockWidget(navigation, races, Qt.Orientation.Vertical)
-    window.resizeDocks([navigation, races], [420, 280], Qt.Orientation.Vertical)
-
-    nmea = _dock(
-        window,
-        "NMEA",
-        "preview-nmea",
-        _nmea_panel(),
-        Qt.DockWidgetArea.RightDockWidgetArea,
-    )
-    routing = _dock(
-        window,
-        "Routing",
-        "preview-routing",
-        _routing_panel(),
-        Qt.DockWidgetArea.RightDockWidgetArea,
-    )
-    weather = _dock(
-        window,
-        "Weather",
-        "preview-weather",
-        _weather_panel(),
-        Qt.DockWidgetArea.RightDockWidgetArea,
-    )
-    window.tabifyDockWidget(nmea, routing)
-    window.tabifyDockWidget(nmea, weather)
-    window.resizeDocks([nmea], [380], Qt.Orientation.Horizontal)
-    nmea.raise_()
-
-    window.statusBar().showMessage(
-        "Click the triangle arrow in a panel header to collapse that panel"
-    )
-    return window
-
-
-def build_stack_gallery():
-    """Prototype the Blender-style auto-height panel stack."""
     window = QMainWindow()
     window.setWindowTitle("Sailworks panel stack preview")
     window.resize(1080, 760)
@@ -260,15 +185,10 @@ def build_stack_gallery():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--stack",
-        action="store_true",
-        help="Preview the auto-height panel stack instead of dock panels",
-    )
     args = parser.parse_args(argv)
     app = QApplication.instance() or QApplication([sys.argv[0]])
     apply_theme(app)
-    window = build_stack_gallery() if args.stack else build_gallery()
+    window = build_gallery()
     window.show()
     return app.exec()
 

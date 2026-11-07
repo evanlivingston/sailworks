@@ -177,7 +177,6 @@ def test_window_drop_imports_multiple_originals_with_honest_ebl_status(
     window = SimpleNamespace(
         controller=controller,
         logs_view="logs",
-        nmea_dock="nmea",
         views=SimpleNamespace(setCurrentWidget=opened.append),
         _show_panel=opened.append,
     )
@@ -257,7 +256,6 @@ def test_window_drop_stitches_stack_once_and_library_opens_whole_timeline_paused
     window = SimpleNamespace(
         controller=controller,
         logs_view="logs",
-        nmea_dock="nmea",
         views=SimpleNamespace(setCurrentWidget=opened.append),
         _show_panel=opened.append,
     )

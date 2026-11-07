@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt, QPointF, QRectF
 from PySide6.QtGui import QColor, QPalette, QIcon, QPainter, QPixmap, QPolygonF
 from PySide6.QtWidgets import QApplication, QLabel
 from sailworks.common import resource_path
-from .dockchrome import install_wheel_guard
+from .scrollchrome import install_wheel_guard
 
 BACKGROUND = "#242424"
 PANEL = "#303030"
@@ -145,36 +145,6 @@ def apply_theme(app: QApplication):
             border-bottom-left-radius: 6px; }
         QToolButton#drawer-flag-left:hover, QToolButton#drawer-flag-right:hover {
             background: #3c3c3c; color: #ffffff; }
-        QDockWidget { border: 1px solid #454545; background: #242424; }
-        QDockWidget::title { background: #303030; padding: 7px 10px 7px 30px;
-                             text-align: left; }
-        QDockWidget::close-button, QDockWidget::float-button {
-            border: none; padding: 0px; margin: 0px; }
-        QDockWidget::close-button {
-            subcontrol-origin: margin; subcontrol-position: top left;
-            position: absolute; top: 0px; left: 4px; bottom: 0px;
-            width: 22px; image: none; icon-size: 12px;
-            color: #b0b0ad; font-weight: 700; }
-        QDockWidget::close-button:hover { background: #454545; color: #ffffff; }
-        QDockWidget::float-button {
-            subcontrol-origin: margin; subcontrol-position: top right;
-            position: absolute; top: 0px; right: 0px; bottom: 0px;
-            width: 0px; height: 0px; image: none; icon-size: 0px;
-            border: none; padding: 0px; margin: 0px; }
-        QWidget#dock-titlebar { background: #2b2b2b;
-                                border-top-left-radius: 12px;
-                                border-top-right-radius: 12px;
-                                border-bottom: 1px solid #454545; }
-        QLabel#dock-title { color: #eeeeec; font-weight: 600;
-                            background: transparent; }
-        QToolButton#dock-close { background: transparent; border: none;
-                                 border-radius: 8px; padding: 2px 6px;
-                                 color: #b0b0ad; font-weight: 700; }
-        QToolButton#dock-close:hover { background: #454545; color: #ffffff; }
-        QToolButton#dock-collapse { background: transparent; border: none;
-                                    border-radius: 8px; padding: 2px 5px;
-                                    color: #b0b0ad; font-size: 13px; }
-        QToolButton#dock-collapse:hover { background: #454545; color: #ffffff; }
         QWidget#collapsible-panel, QWidget#panel-stack,
         QWidget#panel-stack-container { background: #242424; border: none; }
         QWidget#panel-header { background: #2b2b2b; border: none; }
@@ -247,8 +217,6 @@ def apply_theme(app: QApplication):
         QSplitter::handle { background: #454545; height: 5px; width: 5px; }
         QSplitter#panel-stack-splitter::handle { background: #242424;
                                                  width: 3px; }
-        QMainWindow::separator { background: #454545; width: 4px; height: 4px;
-                                 border: none; }
         QTabWidget::pane { border: none; background: #242424;
                            margin: 0px; padding: 0px; }
         QTabBar { background: #242424; border: none; }

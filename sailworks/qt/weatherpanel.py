@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .dockchrome import style_scrollarea
+from .scrollchrome import style_scrollarea
 from .dropdown import Dropdown
 from .marinepanel import BusyButton
 from .theme import section_label
