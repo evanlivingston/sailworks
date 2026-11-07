@@ -467,8 +467,14 @@ class GribViewportModel:
         parameter="wind",
         components=2,
         selection=True,
+        session=None,
     ):
         self.paths = tuple(str(path) for path in paths)
+        # Immutable forecast metadata and decoded bands are session-level.
+        # A model created alone owns a private session; the viewport passes
+        # the same session to the wind, wave and chart workers.
+        self._session = session
+        self._owns_session = session is None
         if display_identity is not None and len(self.paths) != 1:
             raise ValueError("A display identity must belong to exactly one file")
         self.display_identity = display_identity
@@ -550,6 +556,15 @@ class GribViewportModel:
             time_window_cancelled=0,
             time_window_blocked=0,
         )
+
+    @property
+    def session(self):
+        """The shared forecast session this model decodes through."""
+        if self._session is None:
+            from sailworks.rendering.weathercache import ForecastSession
+
+            self._session = ForecastSession()
+        return self._session
 
     # ------------------------------------------------------------- state
     @property
@@ -1241,36 +1256,24 @@ class GribViewportModel:
                 "slots_filled": sum(resource is not None for resource in self._slots),
                 "front_slot": self._front_index,
                 "sampling_memo": memo,
+                "forecast_session": (
+                    None if self._session is None else self._session.statistics()
+                ),
             }
 
     def _run(self):  # noqa: C901 - keep worker cleanup and request state together
         sources: list[Any] = []
         try:
-            from sailworks.core.grib import Grib
             from sailworks.core.gribsampling import WeatherSampler
             from sailworks.rendering.windrenderer import WindLandMask
-            from sailworks.rendering.weathercache import (
-                DecodedBandCache,
-                DisplayWeatherSource,
-            )
 
-            bands = DecodedBandCache(128 * 1024 * 1024)
+            session = self.session
+            bands = session.band_cache
             with self._condition:
                 self._bands = bands
             for path in self.paths:
-                metadata = Grib.parse_metadata(path)
                 sources.append(
-                    DisplayWeatherSource(
-                        metadata.path,
-                        metadata.name,
-                        metadata.centre,
-                        metadata.bounds,
-                        metadata.start_time,
-                        metadata.last_forecast,
-                        metadata.model_name,
-                        band_cache=bands,
-                        display_identity=self.display_identity,
-                    )
+                    session.source(path, display_identity=self.display_identity)
                 )
             # Opening/indexing must never happen while holding the caller's lock.
             sampler = WeatherSampler(sources)
@@ -1524,6 +1527,8 @@ class GribViewportModel:
             self._condition.notify_all()
         # Never join GDAL or close its handles from the GUI thread. The worker
         # releases them in finally, even when it completes after this method.
+        if self._owns_session and self._session is not None:
+            self._session.close()
 
 
 def _source_key(source):
@@ -2078,6 +2083,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     enc_enabled=False,
                     dpr=self.devicePixelRatio(),
                     enc_only=enc_only,
+                    session=getattr(model, "session", None),
                 )
                 self._route_overlay = self._weather.findChild(QObject, "routeOverlay")
                 self._navigation_overlay = self._weather.findChild(
@@ -2317,6 +2323,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 model.paths,
                 model.display_identity,
                 gpu_trace=self._gpu_streamlines_enabled,
+                session=getattr(model, "session", None),
             )
             self._streamline_model.on_change = self.streamlinesPrepared.emit
             self._streamline_publication = None
@@ -3942,6 +3949,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 model.paths,
                 model.display_identity,
                 gpu_trace=self._gpu_streamlines_enabled,
+                session=getattr(model, "session", None),
             )
             self._streamline_model.on_change = self.streamlinesPrepared.emit
             self._streamline_publication = None
@@ -4157,6 +4165,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 parameter=parameter,
                 components=1,
                 selection=False,
+                session=model.session,
             )
             worker.on_change = self.wavePrepared.emit
             return worker

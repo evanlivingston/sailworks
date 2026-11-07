@@ -302,8 +302,13 @@ class ViewportChartLayer:
         enc_enabled=False,
         dpr=1,
         enc_only=False,
+        session=None,
     ):
         self._paths = tuple(str(path) for path in paths)
+        # The chart shares the session's immutable metadata and decoded bands
+        # but keeps its own GDAL handles and composition pipeline.
+        self._session = session
+        self._owns_session = session is None
         self._data_dir = Path(data_dir)
         self._palette = palette
         self._settle_ms = settle_ms
@@ -448,6 +453,9 @@ class ViewportChartLayer:
                 },
                 "payload_bytes": self._payload_bytes,
                 "factor": self._dpr,
+                "forecast_session": (
+                    None if self._session is None else self._session.statistics()
+                ),
                 "basemap": {
                     "has_gshhs": self._has_gshhs,
                     "has_fallback": self._has_fallback,
@@ -673,6 +681,8 @@ class ViewportChartLayer:
                     self.counters["cancelled"] += 1
             self._pending = None
             self._condition.notify_all()
+        if self._owns_session and self._session is not None:
+            self._session.close()
 
     # ------------------------------------------------------------ worker
     def _notify_state(self, state):
@@ -984,35 +994,20 @@ class ViewportChartLayer:
     def _ensure_sampler(self):
         """The chart layer's own sampler over the selected forecasts.
 
-        The chart layer owns its own handles: it never borrows the field
+        The chart layer owns its own GDAL handles: it never borrows the field
         worker's, so the two pipelines are independent and either can be
-        replaced or cancelled without the other.
+        replaced or cancelled without the other.  Their immutable metadata and
+        decoded bands come from the shared session.
         """
         if self._sampler is not None:
             return self._sampler
-        from sailworks.core.grib import Grib
         from sailworks.core.gribsampling import WeatherSampler
-        from sailworks.rendering.weathercache import (
-            DecodedBandCache,
-            DisplayWeatherSource,
-        )
+        from sailworks.rendering.weathercache import ForecastSession
 
-        bands = DecodedBandCache(32 * 1024 * 1024)
-        sources = []
-        for path in self._paths:
-            metadata = Grib.parse_metadata(path)
-            sources.append(
-                DisplayWeatherSource(
-                    metadata.path,
-                    metadata.name,
-                    metadata.centre,
-                    metadata.bounds,
-                    metadata.start_time,
-                    metadata.last_forecast,
-                    metadata.model_name,
-                    band_cache=bands,
-                )
-            )
+        if self._session is None:
+            self._session = ForecastSession()
+            self._owns_session = True
+        sources = [self._session.source(path) for path in self._paths]
         if not sources:
             return None
         self._sampler_sources = tuple(sources)
