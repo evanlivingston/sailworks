@@ -354,9 +354,9 @@ def test_wave_selector_sits_in_the_waves_section_with_a_short_label(
 
     assert panel.waves_section.isAncestorOf(panel.wave_forecast)
     assert not panel.waves_section.isAncestorOf(panel.forecast_model)
-    assert panel.wave_forecast_row.parent() is panel.waves_section
+    assert panel.wave_forecast.parent() is panel.waves_section
     layout = panel.waves_section.layout()
-    assert layout.indexOf(panel.wave) < layout.indexOf(panel.wave_forecast_row)
+    assert layout.indexOf(panel.wave) < layout.indexOf(panel.wave_forecast)
 
     expected = f"{display_model_name('GFSWAVE')} · 1 Jan 00:00 UTC"
     assert panel.wave_forecast.itemText(1) == expected

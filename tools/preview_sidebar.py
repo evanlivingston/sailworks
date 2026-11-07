@@ -23,7 +23,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
-    QComboBox,
     QDockWidget,
     QFormLayout,
     QFrame,
@@ -41,6 +40,7 @@ from PySide6.QtWidgets import (
 
 from sailworks.qt.collapsiblepanel import CollapsiblePanel
 from sailworks.qt.dockchrome import style_dock, style_scrollarea
+from sailworks.qt.dropdown import Dropdown
 from sailworks.qt.panelstack import PanelStack
 from sailworks.qt.theme import apply_theme, section_label
 
@@ -102,13 +102,12 @@ def _nmea_panel():
     page, layout = _page()
     layout.addWidget(section_label("Instruments"))
     layout.addWidget(QPushButton("Instruments"))
-    source = QComboBox()
+    source = Dropdown("Source")
     source.addItems(["Loaded log", "Live data source"])
     layout.addWidget(section_label("Data source"))
     layout.addWidget(source)
-    track = QComboBox()
+    track = Dropdown("GPS track source")
     track.addItems(["Auto (most fixes)", "GPS", "Manual"])
-    layout.addWidget(section_label("GPS track source"))
     layout.addWidget(track)
     layout.addStretch()
     return page
@@ -119,17 +118,17 @@ def _routing_panel():
     layout.addWidget(section_label("Route setup"))
     form = QFormLayout()
     form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
-    polar = QComboBox()
+    polar = Dropdown("Polar")
     polar.addItems(["first317.pol", "j120.pol"])
-    algorithm = QComboBox()
+    algorithm = Dropdown("Algorithm")
     algorithm.addItems(["Isochrone", "Greedy"])
-    form.addRow("Polar", polar)
-    form.addRow("Algorithm", algorithm)
-    form.addRow("Departure (local)", QComboBox())
+    form.addRow(polar)
+    form.addRow(algorithm)
+    form.addRow(Dropdown("Departure (local)"))
     layout.addLayout(form)
     layout.addWidget(section_label("Routing limits"))
     form = QFormLayout()
-    form.addRow("Max wind", QComboBox())
+    form.addRow(Dropdown("Max wind"))
     form.addRow("Check coastlines", QCheckBox())
     layout.addLayout(form)
     layout.addStretch()
@@ -140,9 +139,9 @@ def _weather_panel():
     page, layout = _page()
     layout.addWidget(section_label("Wind"))
     layout.addWidget(QCheckBox("Show wind"))
-    style = QComboBox()
+    style = Dropdown("Style")
     style.addItems(["Barbs", "Streamlines"])
-    layout.addLayout(_row("Style", style))
+    layout.addWidget(style)
     opacity = QSlider(Qt.Orientation.Horizontal)
     opacity.setValue(70)
     layout.addLayout(_row("Wind opacity", opacity))

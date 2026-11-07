@@ -9,7 +9,6 @@ import weatherrouting
 from PySide6.QtCore import QDateTime, QPoint, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDateTimeEdit,
     QDoubleSpinBox,
     QSpinBox,
@@ -38,6 +37,7 @@ from sailworks.core.routingoptions import (
     parameter_values,
 )
 from .dockchrome import style_scrollarea
+from .dropdown import Dropdown
 from .theme import section_label
 from .text import qt_text
 
@@ -200,16 +200,16 @@ class RoutingPanel(QWidget):
         setup_layout.addWidget(section_label("Route setup"))
         form = QFormLayout()
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
-        self.polar = QComboBox()
+        self.polar = Dropdown("Polar")
         self.polar.addItems(controller.core.polar_manager.polars)
-        form.addRow("Polar", self.polar)
-        self.algorithm = QComboBox()
+        form.addRow(self.polar)
+        self.algorithm = Dropdown("Algorithm")
         for entry in weatherrouting.list_routing_algorithms():
             label = (
                 "Isochrone" if entry["name"] == "LinearBestIsoRouter" else entry["name"]
             )
             self.algorithm.addItem(label, entry["class"])
-        form.addRow("Algorithm", self.algorithm)
+        form.addRow(self.algorithm)
         self._build_parameter_controls(form)
         self.departure = QDateTimeEdit(QDateTime(controller.time_control.time))
         self.departure.setCalendarPopup(True)
@@ -220,14 +220,14 @@ class RoutingPanel(QWidget):
         self.map_destination = None
         # The start mode depends on the chosen track/POI, so pick the
         # destination first.
-        self.destination = QComboBox()
-        self.start_mode = QComboBox()
+        self.destination = Dropdown("Waypoints / destination")
+        self.start_mode = Dropdown("Start")
         self.start_mode.addItem("First waypoint", "first-track-point")
         self.start_mode.addItem("Boat position", "boat-position")
         self.destination.currentIndexChanged.connect(self._plan_changed)
         self.start_mode.currentIndexChanged.connect(self._plan_changed)
-        form.addRow("Waypoints / destination", self.destination)
-        form.addRow("Start", self.start_mode)
+        form.addRow(self.destination)
+        form.addRow(self.start_mode)
         self.coastlines = QCheckBox("Check coastlines")
         self.coastlines.setChecked(True)
         form.addRow(self.coastlines)
@@ -270,11 +270,6 @@ class RoutingPanel(QWidget):
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
         layout.addLayout(actions)
-        for combo in (self.polar, self.algorithm, self.destination):
-            combo.setSizeAdjustPolicy(
-                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
-            )
-            combo.setMinimumContentsLength(14)
         self._build_advanced_pages()
         self._build_safety_controls()
         form.addRow(self.parameters_section)
@@ -515,8 +510,7 @@ class RoutingPanel(QWidget):
         advanced = QVBoxLayout(advanced_page)
         advanced.addWidget(section_label("Currents"))
         priority_row = QHBoxLayout()
-        priority_row.addWidget(QLabel("Overlapping models"))
-        self.current_priority = QComboBox()
+        self.current_priority = Dropdown("Overlapping models")
         self.current_priority.addItem("Finest detail", "finest")
         self.current_priority.addItem("Newest run", "newest")
         self.current_priority.setToolTip(

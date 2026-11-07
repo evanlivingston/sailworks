@@ -3,7 +3,6 @@
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
@@ -18,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from .dockchrome import style_scrollarea
+from .dropdown import Dropdown
 from .marinepanel import BusyButton
 from .theme import section_label
 from sailworks.rendering.windpainter import BARB_DENSITIES
@@ -25,11 +25,11 @@ from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES, display_mode
 from .text import qt_text
 
 
-class ForecastModelSelector(QComboBox):
+class ForecastModelSelector(Dropdown):
     """Choose which published, routing-eligible model the session uses."""
 
     def __init__(self, controller, parent=None):
-        super().__init__(parent)
+        super().__init__("Model", parent)
         self.controller = controller
         self.setAccessibleName("Routing forecast model")
         self.setToolTip("Choose which downloaded weather model routing uses.")
@@ -163,7 +163,7 @@ class WeatherPanel(QWidget):
         model_form = QFormLayout()
         model_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.forecast_model = ForecastModelSelector(controller)
-        model_form.addRow("Model", self.forecast_model)
+        model_form.addRow(self.forecast_model)
         controls.addLayout(model_form)
         controls.addWidget(section_label("Wind"))
         self.wind = QCheckBox("Show wind")
@@ -172,7 +172,7 @@ class WeatherPanel(QWidget):
             lambda enabled: active_map().set_wind_visible(enabled)
         )
         controls.addWidget(self.wind)
-        self.wind_style = QComboBox()
+        self.wind_style = Dropdown("Style")
         self.wind_style.addItem("Barbs", "barbs")
         self.wind_style.addItem("Streamlines", "streamlines")
         self.wind_style.setToolTip(
@@ -189,12 +189,12 @@ class WeatherPanel(QWidget):
         )
         form = QFormLayout()
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        form.addRow("Style", self.wind_style)
+        form.addRow(self.wind_style)
         self.wind_gradient = self.checkbox("Gradient", "gribWindGradient")
         form.addRow(self.wind_gradient)
         self.wind_gradient_opacity = self.percent("gribWindGradientOpacity")
         form.addRow("Gradient opacity", self.wind_gradient_opacity)
-        self.wind_gradient_style = QComboBox()
+        self.wind_gradient_style = Dropdown("Gradient style")
         self.wind_gradient_style.addItem("Smooth", True)
         self.wind_gradient_style.addItem("Hard transitions", False)
         self.wind_gradient_style.currentIndexChanged.connect(
@@ -202,12 +202,12 @@ class WeatherPanel(QWidget):
                 "gribWindGradientSmooth", self.wind_gradient_style.currentData()
             )
         )
-        form.addRow("Gradient style", self.wind_gradient_style)
+        form.addRow(self.wind_gradient_style)
         self.wind_gradient_levels = self.integer_slider("gribWindGradientLevels", 2, 15)
         form.addRow("Gradient levels", self.wind_gradient_levels)
         self.wind_opacity = self.percent("gribArrowOpacity")
         form.addRow("Wind opacity", self.wind_opacity)
-        self.barb_density = QComboBox()
+        self.barb_density = Dropdown("Line density")
         for key, label, _spacing in BARB_DENSITIES:
             self.barb_density.addItem(label, key)
         self.barb_density.setCurrentIndex(self.density_index())
@@ -217,7 +217,7 @@ class WeatherPanel(QWidget):
                 "gribBarbDensity", self.barb_density.currentData()
             )
         )
-        form.addRow("Line density", self.barb_density)
+        form.addRow(self.barb_density)
         controls.addLayout(form)
         controls.addWidget(self._section_divider())
         self.waves_section = QWidget()
@@ -230,19 +230,13 @@ class WeatherPanel(QWidget):
         waves.addWidget(self.wave)
         # The wave display source belongs with the wave layers it switches,
         # not with the routing model selector: it never affects routing.
-        self.wave_forecast_row = QWidget()
-        wave_forecast_row = QHBoxLayout(self.wave_forecast_row)
-        wave_forecast_row.setContentsMargins(0, 0, 0, 0)
-        self.wave_label = QLabel("Wave forecast")
-        self.wave_forecast = QComboBox()
+        self.wave_forecast = Dropdown("Wave forecast")
         self.wave_forecast.setAccessibleName("Wave forecast display")
         self.wave_forecast.setToolTip(
             "Show a wave-only published forecast. Routing keeps its own model."
         )
         self.wave_forecast.currentIndexChanged.connect(self._select_wave)
-        wave_forecast_row.addWidget(self.wave_label)
-        wave_forecast_row.addWidget(self.wave_forecast, 1)
-        waves.addWidget(self.wave_forecast_row)
+        waves.addWidget(self.wave_forecast)
         display = getattr(self.controller, "display_forecast", None)
         wave = getattr(display, "wave", None)
         if wave is not None:
@@ -253,7 +247,7 @@ class WeatherPanel(QWidget):
         # Wave direction arrows reuse the wind barbs' thinning modes through
         # their own setting, so the two glyph layers thin independently and
         # toggling waves never restages the wind barbs.
-        self.wave_density = QComboBox()
+        self.wave_density = Dropdown("Arrow density")
         for key, label, _spacing in BARB_DENSITIES:
             self.wave_density.addItem(label, key)
         initial_density = getattr(
@@ -265,10 +259,10 @@ class WeatherPanel(QWidget):
             max(0, self.wave_density.findData(initial_density))
         )
         self.wave_density.currentIndexChanged.connect(self._select_wave_density)
-        wave_form.addRow("Arrow density", self.wave_density)
+        wave_form.addRow(self.wave_density)
         self.wave_opacity = self.percent("gribWaveOpacity")
         wave_form.addRow("Wave opacity", self.wave_opacity)
-        self.wave_style = QComboBox()
+        self.wave_style = Dropdown("Gradient style")
         self.wave_style.addItem("Smooth", True)
         self.wave_style.addItem("Hard transitions", False)
         self.wave_style.currentIndexChanged.connect(
@@ -276,7 +270,7 @@ class WeatherPanel(QWidget):
                 "gribWaveSmooth", self.wave_style.currentData()
             )
         )
-        wave_form.addRow("Gradient style", self.wave_style)
+        wave_form.addRow(self.wave_style)
         self.wave_levels = self.integer_slider("gribWaveLevels", 2, 9)
         wave_form.addRow("Gradient levels", self.wave_levels)
         waves.addLayout(wave_form)
@@ -402,8 +396,6 @@ class WeatherPanel(QWidget):
         finally:
             self.wave_forecast.blockSignals(False)
         visible = bool(choices)
-        self.wave_forecast_row.setVisible(visible)
-        self.wave_label.setVisible(visible)
         self.wave_forecast.setVisible(visible)
 
     def _select_wave_density(self, _index):

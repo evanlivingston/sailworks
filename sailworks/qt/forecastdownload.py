@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QLabel,
     QCheckBox,
-    QComboBox,
     QTableWidget,
     QTableWidgetItem,
     QAbstractItemView,
@@ -23,6 +22,7 @@ from sailworks.core.gribsources.options import DownloadOptions
 from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES
 from sailworks.core.forecasttranche import ModelConfiguration
 from sailworks.core.weathernextcredentials import describe_access_error
+from .dropdown import Dropdown
 from .text import qt_text
 
 MODELS = (
@@ -242,9 +242,7 @@ class ForecastDownloadOptions(QWidget):
         layout.addWidget(parameter_box, 2)
         time_box = QGroupBox("Forecast hours")
         times = QVBoxLayout(time_box)
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Every"))
-        self.interval = QComboBox()
+        self.interval = Dropdown("Interval")
         for label, value in (
             ("Model default", 0),
             ("1 hour", 1),
@@ -254,9 +252,8 @@ class ForecastDownloadOptions(QWidget):
         ):
             self.interval.addItem(label, value)
         self.interval.setCurrentIndex(2)
-        row.addWidget(self.interval)
-        row.addWidget(QLabel("for"))
-        self.duration = QComboBox()
+        times.addWidget(self.interval)
+        self.duration = Dropdown("Duration")
         for label, value in (
             ("12 hours", 12),
             ("1 day", 24),
@@ -270,8 +267,7 @@ class ForecastDownloadOptions(QWidget):
         ):
             self.duration.addItem(label, value)
         self.duration.setCurrentIndex(4)
-        row.addWidget(self.duration)
-        times.addLayout(row)
+        times.addWidget(self.duration)
         self.hours = QTableWidget(0, 3)
         self.hours.horizontalHeader().hide()
         self.hours.verticalHeader().hide()

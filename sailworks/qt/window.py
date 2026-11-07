@@ -24,7 +24,6 @@ from PySide6.QtGui import (
     QUndoStack,
 )
 from PySide6.QtWidgets import (
-    QComboBox,
     QDockWidget,
     QLabel,
     QMainWindow,
@@ -52,6 +51,7 @@ from sailworks.core.n2kdevices import source_label
 from sailworks.core.places import PlaceIndex, index_chart_files
 from sailworks.common import resource_path
 from .theme import section_label, symbol_icon
+from .dropdown import Dropdown
 from .dockchrome import style_dock, style_scrollarea
 from .collapsiblepanel import (
     PANEL_ANIMATION_MS,
@@ -1467,7 +1467,7 @@ class PreviewWindow(QMainWindow):
         layout.setContentsMargins(12, 8, 12, 12)
         layout.setSpacing(8)
         layout.addWidget(section_label("Data source"))
-        self.source = QComboBox()
+        self.source = Dropdown("Source")
         self.source.addItems(["Live data source", "Loaded log", "None"])
         self.source.currentIndexChanged.connect(self._source_changed)
         layout.addWidget(self.source)
@@ -1492,8 +1492,7 @@ class PreviewWindow(QMainWindow):
         self.track_source_group = QWidget()
         track_layout = QVBoxLayout(self.track_source_group)
         track_layout.setContentsMargins(0, 0, 0, 0)
-        track_layout.addWidget(QLabel("GPS track source"))
-        self.track_source = QComboBox()
+        self.track_source = Dropdown("GPS track source")
         self.track_source.setAccessibleName("GPS track source")
         self.track_source.currentIndexChanged.connect(self._track_source_changed)
         self._track_source_log = None

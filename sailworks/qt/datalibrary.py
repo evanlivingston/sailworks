@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -24,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from .theme import section_label
+from .dropdown import Dropdown
 from .chartlayerspanel import ChartLayersPanel
 from .mapdatasetup import MapDataSetup
 from sailworks.rendering.style import Style
@@ -166,9 +166,7 @@ class DataLibrary(QDialog):
         source_layout = QVBoxLayout(sources)
         self.chart_layers_panel = ChartLayersPanel(self.controller)
         source_layout.addWidget(self.chart_layers_panel)
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Chart colors"))
-        self.palette_combo = QComboBox()
+        self.palette_combo = Dropdown("Chart colors")
         self.palette_combo.setAccessibleName("Chart palette")
         self.palette_combo.addItems(list(Style.chart_palettes))
         self.palette_combo.setCurrentText(self.controller.settings.chartPalette)
@@ -177,8 +175,7 @@ class DataLibrary(QDialog):
         )
         self.palette_combo.currentTextChanged.connect(self._set_palette)
         self.controller.settings.register_on_change("chartPalette", self._sync_palette)
-        row.addWidget(self.palette_combo, 1)
-        source_layout.addLayout(row)
+        source_layout.addWidget(self.palette_combo)
         self.chart_sections.addTab(sources, "Sources && appearance")
 
         local = QWidget()

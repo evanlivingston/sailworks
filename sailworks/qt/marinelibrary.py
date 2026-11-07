@@ -176,7 +176,7 @@ class MarineLibraryTab(QWidget):
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         target = CoverageTarget(self.controller.core, self.canvas)
         self.targets[kind] = target
-        form.addRow("Coverage for", target)
+        form.addRow(target)
         start = DownloadStart(self.clock)
         self.starts[kind] = start
         form.addRow("Start (UTC)", start)

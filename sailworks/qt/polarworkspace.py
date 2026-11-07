@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QLabel,
-    QComboBox,
     QCheckBox,
     QPushButton,
     QSplitter,
@@ -23,6 +22,7 @@ from PySide6.QtWidgets import (
 from sailworks.core.polarfiles import read_polar
 from sailworks.core.polarperformance import wind_band
 from sailworks.rendering.polar import PolarRenderer, POLAR_COLORS
+from .dropdown import Dropdown
 
 
 class PolarCanvas(QWidget, PolarRenderer):
@@ -84,13 +84,11 @@ class PerformanceControls(QWidget):
         self.show_points = QCheckBox("Show actual performance")
         self.show_points.setChecked(True)
         layout.addWidget(self.show_points)
-        layout.addWidget(QLabel("Boat speed"))
-        self.basis = QComboBox()
+        self.basis = Dropdown("Boat speed")
         self.basis.addItems(["Speed through water", "Speed over ground"])
         self.basis.setToolTip("GPS speed over ground includes the effect of current.")
         layout.addWidget(self.basis)
-        layout.addWidget(QLabel("Wind speed"))
-        self.wind = QComboBox()
+        self.wind = Dropdown("Wind speed")
         self.wind.addItem("All wind speeds")
         self.wind.setToolTip(
             "Nearest polar wind speed with midpoint boundaries; out-of-range samples are excluded."
