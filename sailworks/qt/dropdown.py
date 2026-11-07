@@ -1,6 +1,6 @@
 """Blender-style dropdown rows: label left, compact field on the right."""
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPalette, QPen
 from PySide6.QtWidgets import QComboBox, QFrame, QSizePolicy
 
@@ -91,9 +91,29 @@ class Dropdown(QComboBox):
 
     def showPopup(self):  # noqa: N802 - Qt virtual method name
         popup = self.view().window()
-        popup.setStyleSheet("QFrame { border: none; }")
+        popup.setFrameShape(QFrame.Shape.NoFrame)
+        popup.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        popup.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
+        popup.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        popup.setStyleSheet(
+            "QFrame { border: none; background: #1e1e1e; }"
+            " QAbstractItemView { border: none; background: #1e1e1e; }"
+        )
         super().showPopup()
+        self._place_popup(popup)
         self.update()
+
+    def _place_popup(self, popup):
+        """Keep the field visible: place the menu below it, or above if needed."""
+        screen = self.screen().availableGeometry()
+        top = self.mapToGlobal(QPoint(0, 0))
+        width = max(self.width(), popup.width())
+        height = min(popup.height(), screen.height())
+        x = max(screen.left(), min(top.x(), screen.right() - width + 1))
+        y = top.y() + self.height()
+        if y + height > screen.bottom() and top.y() - height >= screen.top():
+            y = top.y() - height
+        popup.setGeometry(x, y, width, height)
 
     def hidePopup(self):  # noqa: N802 - Qt virtual method name
         super().hidePopup()
