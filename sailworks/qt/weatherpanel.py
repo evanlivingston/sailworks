@@ -11,7 +11,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
-    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -19,6 +18,7 @@ from PySide6.QtWidgets import (
 from .scrollchrome import style_scrollarea
 from .dropdown import Dropdown
 from .marinepanel import BusyButton
+from .slider import Slider
 from .theme import section_label
 from sailworks.rendering.windpainter import BARB_DENSITIES
 from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES, display_model_name
@@ -447,8 +447,7 @@ class WeatherPanel(QWidget):
         control = QWidget()
         layout = QHBoxLayout(control)
         layout.setContentsMargins(0, 0, 0, 0)
-        slider = QSlider()
-        slider.setOrientation(Qt.Orientation.Horizontal)
+        slider = Slider()
         slider.setRange(0, 100)
         accessible_name = {
             "gribArrowOpacity": "Wind opacity",
@@ -457,18 +456,11 @@ class WeatherPanel(QWidget):
         }.get(key, key)
         slider.setAccessibleName(accessible_name)
         slider.setToolTip("Set opacity from 0% to 100%")
-        value_label = QLabel()
-        value_label.setAccessibleName(f"{accessible_name} value")
-        value_label.setMinimumWidth(42)
-        value_label.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
         slider.setValue(round(self.controller.settings[key] * 100))
-        value_label.setText(f"{slider.value()} %")
-        slider.valueChanged.connect(lambda value: value_label.setText(f"{value} %"))
+        slider.setText(f"{slider.value()} %")
+        slider.valueChanged.connect(lambda value: slider.setText(f"{value} %"))
         slider.valueChanged.connect(lambda value: self.set_preference(key, value / 100))
         layout.addWidget(slider, 1)
-        layout.addWidget(value_label)
         control.slider = slider
         return control
 
@@ -476,22 +468,15 @@ class WeatherPanel(QWidget):
         control = QWidget()
         layout = QHBoxLayout(control)
         layout.setContentsMargins(0, 0, 0, 0)
-        slider = QSlider(Qt.Orientation.Horizontal)
+        slider = Slider()
         slider.setRange(minimum, maximum)
         slider.setAccessibleName("Gradient levels")
         slider.setToolTip(f"Choose {minimum} to {maximum} gradient color levels")
-        value_label = QLabel()
-        value_label.setAccessibleName("Gradient levels value")
-        value_label.setMinimumWidth(24)
-        value_label.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-        )
         slider.setValue(self.controller.settings[key])
-        value_label.setText(str(slider.value()))
-        slider.valueChanged.connect(lambda value: value_label.setText(str(value)))
+        slider.setText(str(slider.value()))
+        slider.valueChanged.connect(lambda value: slider.setText(str(value)))
         slider.valueChanged.connect(lambda value: self.set_preference(key, value))
         layout.addWidget(slider, 1)
-        layout.addWidget(value_label)
         control.slider = slider
         return control
 
