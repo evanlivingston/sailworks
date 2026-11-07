@@ -47,6 +47,7 @@ from sailworks.core.timecontrol import (
 )
 from sailworks.core.n2kdevices import source_label
 from sailworks.core.places import PlaceIndex, index_chart_files
+from sailworks.core.scene import KIND_LOG, KIND_ROUTING, KIND_TRACK
 from sailworks.common import resource_path
 from .theme import section_label, symbol_icon
 from .dropdown import Dropdown
@@ -68,6 +69,7 @@ from .workspace import WorkspacePreferences
 from .polarworkspace import PolarWorkspace
 from .polarlibrary import PolarLibrary
 from .navigationpanel import NavigationPanel
+from .scenepanel import ScenePanel
 from .racepanel import RacesPanel
 from .marinepanel import MarinePanel
 from .weatherpanel import WeatherPanel
@@ -199,6 +201,11 @@ class PreviewWindow(QMainWindow):
         controller.polars.changed.connect(self.routing_panel.refresh_polars)
         controller.polars.use_requested.connect(self._use_polar)
         self.undo_stack = QUndoStack(self)
+        self.scene_panel = ScenePanel(controller, self)
+        self.scene_panel.changed.connect(self._scene_changed)
+        self.scene_panel.selected.connect(self._scene_selected)
+        self.scene_panel.open_requested.connect(self._scene_open)
+        controller.log_library_changed.connect(self.scene_panel.refresh)
         self.navigation_panel = NavigationPanel(
             controller, self.map, self, undo_stack=self.undo_stack
         )
@@ -209,6 +216,7 @@ class PreviewWindow(QMainWindow):
         navigation_scroll.setWidget(self.navigation_panel)
         self.navigation_scroll = navigation_scroll
         self.navigation_panel.changed.connect(self._navigation_changed)
+        self.navigation_panel.changed.connect(self.scene_panel.refresh)
         self.navigation_panel.route_selected.connect(self._navigation_route_selected)
         self.navigation_panel.move_requested.connect(self._move_navigation_point)
         self.navigation_panel.ais_updated.connect(self._ais_updated)
@@ -218,6 +226,7 @@ class PreviewWindow(QMainWindow):
         self._race_region_installed = False
         self.race_panel = RacesPanel(controller)
         self.race_panel.tracks_changed.connect(self._race_tracks_changed)
+        self.race_panel.tracks_changed.connect(self.scene_panel.refresh)
         self.race_panel.race_selected.connect(self._race_selected)
         controller.display_forecast.changed.connect(self._apply_race_timeline_bounds)
         controller.time_control.connect("time_change", self._race_time_changed)
@@ -355,6 +364,7 @@ class PreviewWindow(QMainWindow):
         right_stack.changed.connect(self._panel_layout_changed)
 
         definitions = (
+            ("left", "scene", "Scene", self.scene_panel),
             ("left", "navigation", "Navigation", self.navigation_scroll),
             ("left", "races", "Races", self.race_scroll),
             ("right", "nmea", "NMEA", self.nmea_scroll),
@@ -916,6 +926,7 @@ class PreviewWindow(QMainWindow):
         self._navigation_route_selected(route)
 
     def _routing_completed(self, route):
+        self.scene_panel.refresh()
         self._select_saved_route(route)
         self.map.fit_route()
 
@@ -1136,6 +1147,64 @@ class PreviewWindow(QMainWindow):
         else:
             self.navigation_panel.add_point(coordinates)
 
+    def _scene_changed(self):
+        self.navigation_panel.refresh()
+        self._publish_race_track_overlay()
+        for canvas in (self.map, self.log_map):
+            invalidate = getattr(canvas, "invalidate_navigation", None)
+            if callable(invalidate):
+                invalidate()
+            invalidate_race = getattr(canvas, "invalidate_race_geometry", None)
+            if callable(invalidate_race):
+                invalidate_race()
+            canvas.update()
+        self._race_time_changed(self.controller.time_control.time)
+        if hasattr(self, "workspace"):
+            self.workspace.changed()
+
+    def _scene_selected(self, kind, key):
+        if kind == KIND_TRACK:
+            if key.startswith("race:"):
+                _prefix, race_id, boat_id = key.split(":", 2)
+                race_tracks = self.race_panel.loaded_race_tracks().get(race_id, ())
+                self.race_panel.active_race_track = next(
+                    (track for track in race_tracks if str(track.boat_id) == boat_id),
+                    None,
+                )
+                self._race_time_changed(self.controller.time_control.time)
+                return
+            track = next(
+                (item for item in self.controller.core.trackManager if item.uid == key),
+                None,
+            )
+            if track is not None:
+                self.controller.core.trackManager.set_active(track)
+                self.navigation_panel.refresh()
+                self.map.invalidate_navigation()
+                self.log_map.invalidate_navigation()
+                self.map.update()
+        elif kind == KIND_ROUTING:
+            route = next(
+                (
+                    item
+                    for item in self.controller.core.routingManager
+                    if item.uid == key
+                ),
+                None,
+            )
+            if route is not None:
+                self.controller.core.routingManager.set_active(route)
+                self._select_saved_route(route)
+
+    def _scene_open(self, kind, key):
+        if kind != KIND_LOG:
+            return
+        try:
+            path = self.controller.log_library.path(key)
+        except (KeyError, ValueError):
+            return
+        self.controller.load_paths([path])
+
     def _new_track(self):
         self._show_panel("navigation")
         self.navigation_panel.new_track()
@@ -1334,6 +1403,7 @@ class PreviewWindow(QMainWindow):
         refresh_log_editor = getattr(self, "_refresh_log_editor_controls", None)
         if callable(refresh_log_editor):
             refresh_log_editor()
+        self.scene_panel.refresh()
         self._refresh_data()
         self._refresh_log_position()
 

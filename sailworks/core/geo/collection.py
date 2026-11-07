@@ -100,6 +100,10 @@ class Collection(Generic[T]):
         elements = []
         for x in j.get("elements", []):
             e = self.of.from_json(x)
+            # Subclasses rebuild their element in from_json, which drops the
+            # base uid; restore the persisted identity here so scene references
+            # survive a save/load cycle.
+            e.uid = x.get("uid") or getattr(e, "uid", None)
             e.collection = self
             elements.append(e)
         self.elements = elements

@@ -10,7 +10,6 @@ from uuid import uuid4
 
 from .storage import DATA_DIR
 
-
 LOG_SUFFIXES = {".log", ".nmea", ".txt", ".ebl"}
 _EBL_SEGMENT = re.compile(r"^(\d+)_(\d+)\.ebl$", re.IGNORECASE)
 
@@ -359,7 +358,9 @@ class LogLibrary:
                     entries[session_identifier] = item
                 self._save(entries)
             result = dict(session_items[0][1])
-            result["_decoded_log"] = replace(session_logs[0][0], path=str(session_logs[0][1]))
+            result["_decoded_log"] = replace(
+                session_logs[0][0], path=str(session_logs[0][1])
+            )
             # Expose all decoded sessions for callers that can handle them.
             result["_decoded_logs"] = [
                 replace(log, path=str(path)) for log, path in session_logs
@@ -412,6 +413,7 @@ class LogLibrary:
 
     def update(self, identifier, **values):
         if values.keys() - {
+            "name",
             "vessel",
             "notes",
             "status",

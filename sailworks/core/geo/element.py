@@ -14,6 +14,8 @@ GNU General Public License for more details.
 For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
+from uuid import uuid4
+
 import gpxpy
 import logging
 
@@ -21,8 +23,9 @@ logger = logging.getLogger("sailworks")
 
 
 class Element:
-    def __init__(self, name="any", visible=True, collection=None):
+    def __init__(self, name="any", visible=True, collection=None, uid=None):
         self.name = name
+        self.uid = uid or uuid4().hex
         self._revision = 0
         self.visible = visible
         self.collection = collection
@@ -52,11 +55,15 @@ class Element:
         raise Exception("Not implemented")
 
     def to_json(self):
-        return {"name": self.name, "visible": self.visible}
+        return {"uid": self.uid, "name": self.name, "visible": self.visible}
 
     @staticmethod
     def from_json(j):
-        return Element(name=j["name"], visible=j["visible"])
+        return Element(
+            name=j["name"],
+            visible=j["visible"],
+            uid=j.get("uid"),
+        )
 
     def export(self, dest, format="gpx"):
         if format == "gpx":
