@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sailworks.qt.dockchrome import _WheelGuard
+from sailworks.qt.scrollchrome import _WheelGuard
 
 
 def _wheel_event():

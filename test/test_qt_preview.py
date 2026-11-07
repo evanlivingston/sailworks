@@ -14,7 +14,7 @@ from pathlib import Path
 # timeout message reports the last check reached.
 QT_PREVIEW_TIMEOUT = 1800
 
-# The harness asserts window geometry, dock layout, font metrics, sockets and
+# The harness asserts window geometry, panel layout, font metrics, sockets and
 # timing. Those are not stable on headless runners, so the harness is opt-in
 # locally (GWR_RUN_DESKTOP_UI=1) and is not a required CI gate.
 DESKTOP_UI_ENABLED = os.environ.get("GWR_RUN_DESKTOP_UI") == "1"

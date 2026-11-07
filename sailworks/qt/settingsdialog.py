@@ -6,7 +6,6 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -28,13 +27,14 @@ from sailworks.core.nmea2000datasource import N2K_FORMATS
 from sailworks.core.serialdatasource import SerialDataSource
 from sailworks.core.weathernextcredentials import describe_access_error
 from .marinesettings import CurrentsAccount
+from .dropdown import Dropdown
 from .text import qt_text
 
 
-def combo(entries):
-    widget = QComboBox()
-    for label, value in entries:
-        widget.addItem(label, value)
+def combo(entries, label):
+    widget = Dropdown(label)
+    for text, value in entries:
+        widget.addItem(text, value)
     return widget
 
 
@@ -49,40 +49,41 @@ class ConnectionDialog(QDialog):
         form = QFormLayout()
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
         layout.addLayout(form)
-        self.kind = combo([("Network", "network"), ("Serial", "serial")])
-        self.protocol = combo([("NMEA 0183", "nmea0183"), ("NMEA 2000", "nmea2000")])
-        self.wire_format = combo([(str(v["label"]), k) for k, v in N2K_FORMATS.items()])
-        self.direction = combo([("Input", "in"), ("Output", "out"), ("Both", "both")])
-        for label, widget in (
-            ("Connection", self.kind),
-            ("Protocol", self.protocol),
-            ("Gateway format", self.wire_format),
-            ("Direction", self.direction),
-        ):
-            form.addRow(label, widget)
+        self.kind = combo([("Network", "network"), ("Serial", "serial")], "Connection")
+        self.protocol = combo(
+            [("NMEA 0183", "nmea0183"), ("NMEA 2000", "nmea2000")], "Protocol"
+        )
+        self.wire_format = combo(
+            [(str(v["label"]), k) for k, v in N2K_FORMATS.items()], "Gateway format"
+        )
+        self.direction = combo(
+            [("Input", "in"), ("Output", "out"), ("Both", "both")], "Direction"
+        )
+        for widget in (self.kind, self.protocol, self.wire_format, self.direction):
+            form.addRow(widget)
         self.form = form
         self.network_panel = QWidget()
         network = QFormLayout(self.network_panel)
         network.setContentsMargins(0, 0, 0, 0)
-        self.network = combo([("TCP", "tcp"), ("UDP", "udp")])
+        self.network = combo([("TCP", "tcp"), ("UDP", "udp")], "Transport")
         self.host = QLineEdit("localhost")
         self.port = QSpinBox()
         self.port.setRange(1, 65535)
         self.port.setValue(10110)
-        network.addRow("Transport", self.network)
+        network.addRow(self.network)
         network.addRow("Host", self.host)
         network.addRow("Port", self.port)
         layout.addWidget(self.network_panel)
         self.serial_panel = QWidget()
         serial = QFormLayout(self.serial_panel)
         serial.setContentsMargins(0, 0, 0, 0)
-        self.serial_port = QComboBox()
+        self.serial_port = Dropdown("Serial port")
         self.serial_port.setEditable(True)
         self.serial_port.addItems(SerialDataSource.detect())
         self.baud = QSpinBox()
         self.baud.setRange(1, 4000000)
         self.baud.setValue(9600)
-        serial.addRow("Serial port", self.serial_port)
+        serial.addRow(self.serial_port)
         serial.addRow("Baud rate", self.baud)
         layout.addWidget(self.serial_panel)
         layout.addStretch()

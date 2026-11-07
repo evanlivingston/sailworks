@@ -1,13 +1,11 @@
-"""Debounced Qt view preferences, separate from the legacy layout and NMEA history."""
+"""Debounced Qt view and panel preferences, separate from NMEA history."""
 
-import base64
-import binascii
 from datetime import datetime
 import logging
 import math
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QEvent, QObject, QTimer
+from PySide6.QtCore import QEvent, QObject, QTimer
 from PySide6.QtGui import QGuiApplication
 
 from sailworks.core.storage import DATA_DIR
@@ -19,7 +17,6 @@ from sailworks.core.workspacestate import (
 )
 
 logger = logging.getLogger("sailworks")
-LAYOUT_VERSION = 1
 
 
 def workareas():
@@ -50,9 +47,7 @@ class WorkspacePreferences(QObject):
         self.restoring = True
         self.maximize_on_show = False
         self.error = ""
-        self.active_dock = "nmea"
         self.last_saved = None
-        self.default_layout = window.saveState(LAYOUT_VERSION)
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.setInterval(750)
@@ -61,28 +56,10 @@ class WorkspacePreferences(QObject):
         self.restoring = False
         self._watch()
 
-    @property
-    def docks(self):
-        return (
-            self.window.nmea_dock,
-            self.window.routing_dock,
-            self.window.polar_selector_dock,
-            self.window.performance_dock,
-            self.window.polar_manager_dock,
-            self.window.navigation_dock,
-            self.window.weather_dock,
-            *self.window.marine_docks.values(),
-        )
-
     def _watch(self):
         window = self.window
-        for widget in (window, *self.docks):
-            widget.installEventFilter(self)
-        for dock in self.docks:
-            dock.dockLocationChanged.connect(self.changed)
-            dock.topLevelChanged.connect(self.changed)
-            dock.visibilityChanged.connect(self.changed)
-        window.tabifiedDockWidgetActivated.connect(self._dock_activated)
+        widget = window
+        widget.installEventFilter(self)
         window.views.currentChanged.connect(self.changed)
         window.source.currentIndexChanged.connect(self.changed)
         window.map.view_changed.connect(self.changed)
@@ -130,15 +107,7 @@ class WorkspacePreferences(QObject):
             self.changed()
         return False
 
-    def _dock_activated(self, dock):
-        if not self.restoring:
-            self.active_dock = dock.objectName()
-            self.changed()
-
     def changed(self, *_):
-        collapsed = getattr(self.window, "_drawer_collapsed", {})
-        if collapsed.get("left") or collapsed.get("right"):
-            return
         if not self.closed and not self.restoring:
             self.timer.start()
 
@@ -157,20 +126,8 @@ class WorkspacePreferences(QObject):
         route = window.navigation_panel.route
         return {
             "window": {**geometry(normal), "maximized": window.isMaximized()},
-            "layout": bytes(window.saveState(LAYOUT_VERSION).toBase64()).decode(
-                "ascii"
-            ),
-            "docks": {
-                dock.objectName(): {
-                    "visible": not dock.isHidden(),
-                    "floating": dock.isFloating(),
-                    "geometry": geometry(dock.geometry()),
-                }
-                for dock in self.docks
-            },
-            "active_dock": self.active_dock,
+            "panels": window.panel_state(),
             "view": window.views.tabText(window.views.currentIndex()),
-            "polars_visited": window.polars_visited,
             "nmea_source": window.session.source,
             "forecast": {
                 "step": window.timeline.step_combo.currentText(),
@@ -181,9 +138,7 @@ class WorkspacePreferences(QObject):
                 ),
                 "time": window.controller.time_control.time.isoformat(),
             },
-            "weather": {"open": window.weather_open},
             "marine": {
-                "open": dict(window.marine_open),
                 "ship_observations": window.map.ship_observations.visible,
                 **{
                     kind: panel.toggle.isChecked()
@@ -191,7 +146,6 @@ class WorkspacePreferences(QObject):
                 },
             },
             "navigation": {
-                "visible": window.navigation_open,
                 "tab": window.navigation_panel.tabs.tabText(
                     window.navigation_panel.tabs.currentIndex()
                 ),
@@ -255,10 +209,9 @@ class WorkspacePreferences(QObject):
         source = state.get("nmea_source")
         if source in ("live", "log", "none"):
             self.window.source.setCurrentIndex({"live": 0, "log": 1, "none": 2}[source])
-        self._restore_docks(state)
+        self.window.restore_panel_state(mapping(state.get("panels")))
         self.window._order_toolbars()
         self._restore_window(mapping(state.get("window")))
-        self.window.polars_visited = state.get("polars_visited") is True
         self._restore_views(state)
         view = state.get("view")
         for index in range(self.window.views.count()):
@@ -286,15 +239,6 @@ class WorkspacePreferences(QObject):
         for kind, panel in self.window.marine_panels.items():
             if isinstance(marine.get(kind), bool):
                 panel.toggle.setChecked(marine[kind])
-            opened = mapping(marine.get("open")).get(kind)
-            if isinstance(opened, bool):
-                self.window.marine_open[kind] = opened
-        opened = mapping(state.get("weather")).get("open")
-        self.window.weather_open = (
-            opened
-            if isinstance(opened, bool)
-            else not self.window.weather_dock.isHidden()
-        )
         self.window._view_changed()
         self.window.refresh()
         step = mapping(state.get("forecast")).get("step")
@@ -338,52 +282,8 @@ class WorkspacePreferences(QObject):
             fit_window(self.window, saved)
             self.maximize_on_show = saved.get("maximized") is True
 
-    def _restore_docks(self, state):
-        layout = state.get("layout")
-        if isinstance(layout, str) and len(layout) <= 65536:
-            try:
-                decoded = base64.b64decode(layout, validate=True)
-                if not self.window.restoreState(QByteArray(decoded), LAYOUT_VERSION):
-                    self.window.restoreState(self.default_layout, LAYOUT_VERSION)
-            except (ValueError, binascii.Error):
-                pass
-        saved_docks = mapping(state.get("docks"))
-        for dock in self.docks:
-            self._restore_dock(dock, mapping(saved_docks.get(dock.objectName())))
-        active = state.get("active_dock")
-        if active in (
-            "nmea",
-            "routing",
-            "polar-selector",
-            "nmea-performance",
-            "polar-manager",
-            "chart-navigation",
-            "currents",
-            "tides",
-            "weather",
-        ):
-            self.active_dock = active
-            for dock in self.docks:
-                if dock.objectName() == active and not dock.isHidden():
-                    dock.raise_()
-
-    @staticmethod
-    def _restore_dock(dock, saved):
-        if isinstance(saved.get("floating"), bool):
-            dock.setFloating(saved["floating"])
-        if dock.isFloating():
-            fit_window(
-                dock, mapping(saved.get("geometry")) or geometry(dock.geometry())
-            )
-        if isinstance(saved.get("visible"), bool):
-            dock.setVisible(saved["visible"])
-
     def _restore_navigation(self, state):
         navigation = mapping(state.get("navigation"))
-        if isinstance(navigation.get("visible"), bool):
-            self.window.navigation_open = navigation["visible"]
-        else:
-            self.window.navigation_open = True
         self.window._view_changed()
         panel = self.window.navigation_panel
         for index in range(panel.tabs.count()):
@@ -476,19 +376,11 @@ class WorkspacePreferences(QObject):
             panel.coastlines.setChecked(saved["coastlines"])
 
     def reset_layout(self):
-        if getattr(self.window, "panel_stack_mode", False):
-            return
         self.restoring = True
         try:
-            self.window.restoreState(self.default_layout, LAYOUT_VERSION)
-            self.window.polars_visited = False
-            self.window.weather_open = False
-            self.window.navigation_open = True
-            self.window.marine_open = {"currents": False, "tides": False}
+            self.window.restore_panel_state(self.window._default_panel_state)
             self.window.views.setCurrentWidget(self.window.map)
             self.window._view_changed()
-            self.active_dock = "nmea"
-            self.window.nmea_dock.raise_()
         finally:
             self.restoring = False
         self.changed()

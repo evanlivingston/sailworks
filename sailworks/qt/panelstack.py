@@ -1,15 +1,15 @@
 """A Blender-style vertical stack of auto-height collapsible panels.
 
-This is a prototype container for the isolated sidebar preview. It is not
-wired into the application yet. Panels follow their content height instead
-of sharing a splitter, so collapsing one pulls the next one up.
+Panels follow their content height instead of sharing a splitter, so collapsing
+one pulls the next one up. The left and right stacks hand panels to each other
+when dragged across the viewport.
 
 Dragging follows Blender's panel interaction: the grabbed panel floats under
 the cursor, the other panels open a gap where it will land, and releasing
 animates the panel back into that gap.
 """
 
-from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QTimer, QVariantAnimation
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QTimer, QVariantAnimation, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication,
@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from .collapsiblepanel import PANEL_ANIMATION_MS, CollapsiblePanel, blender_panel_ease
-from .dockchrome import style_scrollarea
+from .scrollchrome import style_scrollarea
 
 GAP_ANIMATION_MS = 120
 
@@ -38,6 +38,8 @@ def _lerp_rect(start: QRect, end: QRect, progress: float) -> QRect:
 
 class PanelStack(QWidget):
     """Scrollable column of collapsible panels with Blender-style dragging."""
+
+    changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -90,22 +92,33 @@ class PanelStack(QWidget):
             self.container.setFixedWidth(width)
 
     def add_panel(self, panel: CollapsiblePanel) -> CollapsiblePanel:
+        if panel in self._panels:
+            return panel
         panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         panel.set_header_visible(True)
         panel.set_closable(True)
         panel.header.setCursor(Qt.CursorShape.OpenHandCursor)
         panel.header.installEventFilter(self)
         panel.title.installEventFilter(self)
-        panel.collapse_button.clicked.connect(
-            lambda _checked=False, panel=panel: panel.set_collapsed(not panel.collapsed)
-        )
-        panel.close_button.clicked.connect(
-            lambda _checked=False, panel=panel: self.remove_panel(panel)
-        )
+        if not getattr(panel, "_stack_wired", False):
+            panel.collapse_button.clicked.connect(
+                lambda _checked=False, panel=panel: panel.set_collapsed(
+                    not panel.collapsed
+                )
+            )
+            panel.close_button.clicked.connect(
+                lambda _checked=False, panel=panel: self.remove_panel(panel)
+            )
+            panel._stack_wired = True
         self.stack.insertWidget(len(self._panels), panel)
         self._panels.append(panel)
+        panel.show()
         QTimer.singleShot(0, self._sync_container_width)
+        self.changed.emit()
         return panel
+
+    def panels(self):
+        return tuple(self._panels)
 
     def remove_panel(self, panel: CollapsiblePanel):
         if panel not in self._panels or self._drag_panel is panel:
@@ -118,6 +131,7 @@ class PanelStack(QWidget):
         panel.setParent(self)
         panel.hide()
         QTimer.singleShot(0, self._sync_container_width)
+        self.changed.emit()
 
     def eventFilter(self, watched, event):  # noqa: N802 - Qt virtual method name
         dragging = self._drag_panel
@@ -266,6 +280,7 @@ class PanelStack(QWidget):
         panel.setGraphicsEffect(None)
         self._shadow = None
         peer._begin_external_drag(panel, cursor, index)
+        self.changed.emit()
 
     def _begin_external_drag(self, panel: CollapsiblePanel, cursor: QPoint, index: int):
         self._drag_panel = panel
@@ -390,6 +405,7 @@ class PanelStack(QWidget):
         self._drag_panel = None
         self._dragging = False
         self._drop_index = -1
+        self.changed.emit()
 
     def _release_mouse(self, panel: CollapsiblePanel):
         panel.header.releaseMouse()

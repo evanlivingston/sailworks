@@ -1,7 +1,7 @@
 """Display-only Currents and Tides tools over the shared marine models.
 
 Downloads and saved-source management live in the Data Library
-(see marinelibrary); these docks show visibility toggles and coverage.
+(see marinelibrary); these panels show visibility toggles and coverage.
 """
 
 import json
@@ -11,7 +11,6 @@ from PySide6.QtCore import QDateTime, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPalette
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDateTimeEdit,
     QFrame,
     QHBoxLayout,
@@ -38,7 +37,8 @@ from sailworks.rendering.marinepresentation import (
     CURRENT_DENSITIES,
     chart_instant,
 )
-from .dockchrome import style_scrollarea
+from .scrollchrome import style_scrollarea
+from .dropdown import Dropdown
 from .theme import symbol_icon
 
 
@@ -101,15 +101,12 @@ def interval(manifest):
     )
 
 
-class CoverageTarget(QComboBox):
+class CoverageTarget(Dropdown):
     def __init__(self, core, canvas):
-        super().__init__()
+        super().__init__("Coverage for")
         self.core, self.canvas = core, canvas
         self.routes = []
         self.signature = None
-        self.setSizeAdjustPolicy(
-            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
-        )
         self.setMinimumContentsLength(12)
         self.refresh()
 
@@ -386,9 +383,7 @@ class MarinePanel(QWidget):
         row.addWidget(self.settings)
         controls.addLayout(row)
         if kind == "currents":
-            density_row = QHBoxLayout()
-            density_row.addWidget(text_label("Field arrow density"))
-            self.current_density = QComboBox()
+            self.current_density = Dropdown("Field arrow density")
             self.current_density.setAccessibleName("Current field arrow density")
             for key, label, _spacing in CURRENT_DENSITIES:
                 self.current_density.addItem(label, key)
@@ -398,8 +393,7 @@ class MarinePanel(QWidget):
             )
             self.refresh_density()
             self.current_density.currentIndexChanged.connect(self.set_density)
-            density_row.addWidget(self.current_density)
-            controls.addLayout(density_row)
+            controls.addWidget(self.current_density)
         self.coverage = text_label()
         controls.addWidget(self.coverage)
         self.coverage_detail = text_label()

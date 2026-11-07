@@ -57,11 +57,12 @@ def test_gradient_has_separate_opacity_and_refreshes_the_active_presenter():
     presenter = (SHADERS.parent / "weatherpresenter.py").read_text()
     viewport = (SHADERS.parent / "gribviewport.py").read_text()
 
-    assert 'percent("gribWindGradientOpacity")' in panel
-    assert 'form.addRow("Gradient opacity", self.wind_gradient_opacity)' in panel
+    assert '"gribWindGradientOpacity", "Gradient opacity"' in panel
+    assert "form.addRow(self.wind_gradient_opacity)" in panel
     assert 'self.wind_gradient_style.addItem("Smooth", True)' in panel
     assert 'self.wind_gradient_style.addItem("Hard transitions", False)' in panel
-    assert 'form.addRow("Gradient levels", self.wind_gradient_levels)' in panel
+    assert '"gribWindGradientLevels", "Gradient levels", 2, 15' in panel
+    assert "form.addRow(self.wind_gradient_levels)" in panel
     assert "presenter.request()" in panel
     assert "set_wind_gradient_opacity(" in presenter
     assert "def set_wind_gradient_opacity(self, opacity):" in viewport

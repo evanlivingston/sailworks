@@ -1,4 +1,4 @@
-"""A dock body with a Blender-style collapsible header row."""
+"""A panel body with a Blender-style collapsible header row."""
 
 import math
 
@@ -25,11 +25,9 @@ def blender_panel_ease(progress: float) -> float:
 
 
 class CollapsiblePanel(QWidget):
-    """Wrap panel content with an optional header and a collapsible body.
+    """Wrap panel content with a header and a collapsible body.
 
-    Tabbed docks show the header row, giving each tab a visible triangle
-    arrow. A lone or floating dock hides the row and uses the arrow in its
-    title bar instead, so the panel title is never shown twice.
+    The header row gives each panel its title and triangle arrow.
     """
 
     def __init__(self, title, content, parent=None):
@@ -90,6 +88,24 @@ class CollapsiblePanel(QWidget):
         self.header.hide()
         self._collapsed = False
         self._animation: QVariantAnimation | None = None
+
+    def set_content(self, content):
+        """Swap the panel body while keeping the header and collapse state."""
+        if content is self.body:
+            return
+        previous = content.parentWidget()
+        scroll = previous.parentWidget() if previous is not None else None
+        if isinstance(scroll, QScrollArea) and scroll.widget() is content:
+            scroll.takeWidget()
+        old = self.body
+        self.layout().removeWidget(old)
+        old.hide()
+        old.setParent(self)
+        content.setParent(self)
+        self.layout().addWidget(content, 1)
+        self.body = content
+        content.show()
+        self.updateGeometry()
 
     @property
     def collapsed(self) -> bool:
