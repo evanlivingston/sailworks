@@ -96,7 +96,6 @@ def _readback(images, blend, positions):
     byte-exact readback, so the float32 the shader wrote can be read back.
     The readback is a fidelity measurement; it is not a timing measurement.
     """
-    import numpy as np
     from PySide6.QtCore import QUrl
     from PySide6.QtGui import QImage
     from PySide6.QtQuick import QQuickImageProvider
@@ -593,18 +592,6 @@ def _missing_neighbour_observations(widget, field, camera, blend, pump):
     return outcome
 
 
-def _camera_state(widget):
-    """The viewport's camera, forecast time and published weather."""
-    camera = widget._camera
-    return {
-        "center_lon": None if camera is None else camera.center_lon,
-        "center_lat": None if camera is None else camera.center_lat,
-        "zoom": None if camera is None else camera.zoom,
-        "time": None if camera is None else camera.time.isoformat(),
-        "weather": widget._published,
-    }
-
-
 def chart_observations(widget, model, camera, pump, layer):
     """The chart layer's ordering and preservation evidence.
 
@@ -968,7 +955,6 @@ class _Session:
     ):
         from sailworks.qt.gribviewport import (
             GribViewportModel,
-            ViewportCamera,
             _viewport_widget_class,
             saved_selection,
         )
@@ -1817,7 +1803,7 @@ def run_once(snapshot):
         "phases": [],
         "errors": [],
     }
-    app = QApplication.instance() or QApplication([sys.argv[0]])
+    QApplication.instance() or QApplication([sys.argv[0]])
     model = GribViewportModel(
         paths,
         land_mask=WindLandMask(snapshot / "data"),

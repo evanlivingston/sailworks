@@ -20,14 +20,6 @@ class MapPoint:
     def get_degrees(self):
         return (self._lat, self._lon)
 
-    @property
-    def rlat(self):
-        return math.radians(self._lat)
-
-    @property
-    def rlon(self):
-        return math.radians(self._lon)
-
 
 class MercatorProjection:
     TILE_SIZE = 256

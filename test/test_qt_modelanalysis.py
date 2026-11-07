@@ -13,7 +13,7 @@ from test.test_forecaststate import ACQUIRED, publish_tranche
 
 
 def test_session_starts_in_published_model_mode_without_legacy_fallback(tmp_path):
-    app = QApplication.instance() or QApplication([])
+    QApplication.instance() or QApplication([])
     session = SessionController(load_charts=False, analysis_root=tmp_path)
     analysis = session.analysis
     assert analysis is session.models_analysis

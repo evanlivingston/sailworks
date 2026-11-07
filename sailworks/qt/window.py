@@ -624,25 +624,6 @@ class PreviewWindow(QMainWindow):
                 self.show_marine_library,
             )
 
-    @staticmethod
-    def _set_chart_toolbar_icons(toolbar):
-        icons = {
-            "Import…": "document-open-symbolic",
-            "Export…": "document-save-symbolic",
-            "Tabs": "compass",
-            "AIS": "ais-ship-symbolic",
-            "Weather": "weather-windy-symbolic",
-            "Dashboard": "eye-open-negative-filled-symbolic",
-            "NMEA": "gnome-dev-wavelan",
-            "Routing": "routing-symbolic",
-            "Fit view": "view-fullscreen-symbolic",
-        }
-        for action in toolbar.actions():
-            if action.text() in icons:
-                action.setIcon(symbol_icon(icons[action.text()]))
-                if not action.toolTip():
-                    action.setToolTip(action.text())
-
     def _create_drawer_flags(self):
         for side in ("left", "right"):
             flag = QToolButton(self)
@@ -798,9 +779,6 @@ class PreviewWindow(QMainWindow):
                 bar.setElideMode(Qt.TextElideMode.ElideNone)
                 bar.setUsesScrollButtons(True)
 
-    def _toggle_log(self, key, checked):
-        self.plots.set_series(key, checked)
-
     def _active_map(self):
         return (
             self.log_map if self.views.currentWidget() is self.logs_view else self.map
@@ -874,13 +852,6 @@ class PreviewWindow(QMainWindow):
             self._active_map().set_dashboard_visible(enabled)
         finally:
             self._instruments_syncing = False
-
-    def _toggle_map_display(self, layer, enabled):
-        canvas = self._active_map()
-        if layer == "wind":
-            canvas.set_wind_visible(enabled)
-        else:
-            canvas.set_dashboard_visible(enabled)
 
     def _cursor_readout(self, canvas, text):
         if (
@@ -1205,10 +1176,6 @@ class PreviewWindow(QMainWindow):
             return
         self.controller.load_paths([path])
 
-    def _new_track(self):
-        self._show_panel("navigation")
-        self.navigation_panel.new_track()
-
     def _move_navigation_point(self, callback):
         self.views.setCurrentWidget(self.map)
         self.map.begin_move(callback)
@@ -1295,13 +1262,6 @@ class PreviewWindow(QMainWindow):
             self.map.set_isochrones(
                 route.isochrones if route is not None and route.visible else ()
             )
-
-    def _fit_view(self):
-        self.views.setCurrentWidget(self.map)
-        if self._panel_visible("routing") and self.routing_panel.isVisible():
-            self.map.fit_route()
-        else:
-            self.map.fit_track()
 
     def _nmea_panel(self):
         panel = QWidget()
@@ -1654,10 +1614,6 @@ class PreviewWindow(QMainWindow):
 
     def show_library(self):
         self._ensure_library()
-
-    def show_polars(self):
-        self.show_polar_workspace()
-        self._show_panel("polar-manager")
 
     def _use_polar(self, name):
         index = self.routing_panel.polar.findText(name)

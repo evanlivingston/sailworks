@@ -198,7 +198,6 @@ def test_download_concatenates_only_requested_bands_byte_for_byte(
                 length = int.from_bytes(data[offset + 8 : offset + 16], "big")
                 expected.extend(data[offset : offset + length])
 
-    run_url = source._run_url("20261025", "12")
     monkeypatch.setattr(
         "sailworks.core.gribsources.noaaaigfs.fetch_text",
         index_fetch(indexes),

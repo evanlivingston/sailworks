@@ -2,7 +2,6 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from datetime import timezone
 from types import SimpleNamespace
 
 from PySide6.QtWidgets import QApplication
@@ -86,7 +85,7 @@ class _TrackManager(list):
 def test_show_race_tracks_builds_transient_race_tracks(qtbot):
     from unittest.mock import patch
 
-    app = QApplication.instance() or QApplication([])
+    QApplication.instance() or QApplication([])
     manager = _TrackManager()
 
     # Create a fully mocked core with only our mock trackManager

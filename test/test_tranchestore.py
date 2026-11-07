@@ -7,7 +7,6 @@ import pytest
 
 from sailworks.core.forecasttranche import (
     AnalysisSelection,
-    Artifact,
     ForecastTranche,
     ModelConfiguration,
     ModelEntry,

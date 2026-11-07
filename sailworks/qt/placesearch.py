@@ -64,11 +64,6 @@ class PlaceSearch(QWidget):
         self.timer.timeout.connect(self._refresh)
         self.edit.textChanged.connect(self._text_changed)
 
-    def set_index(self, index):
-        self.index = index
-        if self.edit.text():
-            self._refresh()
-
     def refresh(self):
         if self.edit.text():
             self._refresh()

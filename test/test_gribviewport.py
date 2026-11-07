@@ -787,7 +787,6 @@ def test_a_prepared_back_slot_is_handed_forward_while_the_front_is_presented(
     gribs, monkeypatch
 ):
     from threading import Event
-    import time
 
     paths, _source = _paths(gribs)
     model = GribViewportModel(paths, land_mask=Land())
@@ -1457,44 +1456,6 @@ def test_zoom_mask_reuse_keeps_the_existing_scale_boundaries(scale, quality):
 
 
 # ------------------------------------------------------------ the fill layer
-def _fill_scene():
-    """A stand-in for the render context's scene, without a window."""
-    from types import SimpleNamespace
-    from sailworks.qt.viewportpublication import PublicationManager
-
-    class Layer:
-        def __init__(self):
-            self.properties = {}
-            self.visible = True
-
-        def setProperty(self, name, value):
-            self.properties[name] = value
-            return True
-
-    return SimpleNamespace(
-        _native_weather_fields=False,
-        _fill=Layer(),
-        _barbs=Layer(),
-        _provider=SimpleNamespace(
-            publish_field=lambda images, key: tuple(f"u{index}" for index in range(4)),
-            field_publications=0,
-            selection_publications=0,
-        ),
-        _published=None,
-        _published_fill=None,
-        _publication_manager=PublicationManager(),
-        counters=dict(
-            fill_publications=0,
-            fill_uploads=0,
-            fill_selection_publications=0,
-            barbs_field_publications=0,
-            barbs_field_uploads=0,
-            barbs_selection_publications=0,
-            barbs_selection_uploads=0,
-        ),
-    )
-
-
 def _field():
     from types import SimpleNamespace
 

@@ -10,7 +10,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QObject, QTimer, Signal, Qt
-from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -30,7 +29,6 @@ from sailworks.core.nmeasession import (
 )
 from sailworks.core.utils import EventDispatcher
 from sailworks.qt.controller import SessionController
-from sailworks.qt.logscrubber import LogScrubber
 from sailworks.qt.plots import LogPlots
 from sailworks.qt.window import PreviewWindow
 from test.test_polarperformance import water, wind
@@ -63,12 +61,10 @@ class ScrubController(QObject):
 def transport(tmp_path):
     app = QApplication.instance() or QApplication([])
     controller = ScrubController(tmp_path)
-    widget = LogScrubber(controller)
-    yield app, controller, widget
+    yield app, controller
     controller.closed = True
     controller.seek_timer.stop()
     controller.session.close()
-    widget.close()
 
 
 def drain(app, controller):
@@ -79,64 +75,12 @@ def drain(app, controller):
     assert not controller.seek_timer.isActive()
 
 
-def test_drag_previews_without_advancing_and_release_commits_in_batches(transport):
-    app, controller, widget = transport
-    session = controller.session
-    session.set_playing(True)
-    controller._tick()
-    cursor = session.cursor
-    widget.slider.setSliderDown(True)
-    widget.slider.setValue(widget.slider.maximum() // 2)
-    target = session.display_position
-    assert target > 100
-    controller._tick()
-    assert session.cursor == cursor
-    assert session.playing
-    widget.refresh()
-    assert widget.slider.value() == widget.slider.maximum() // 2
-    widget.slider.setSliderDown(False)
-    assert session.seeking
-    assert session.cursor == 0  # release never synchronously replays the log
-    controller._seek_tick()
-    assert session.cursor == 1000
-    assert session.seeking
-    drain(app, controller)
-    assert session.position == target
-    assert session.playing
-    assert session.cursor == sum(offset <= target for offset, _ in session.log.entries)
-    widget.slider.setValue(widget.slider.maximum() // 4)
-    assert session.cursor == 0  # backwards also resets the consumers
-    drain(app, controller)
-    assert session.position < target
-    assert session.playing
-
-
-def test_keyboard_seek_and_programmatic_sync_do_not_feed_back(transport):
-    app, controller, widget = transport
-    session = controller.session
-    seek = Mock(wraps=controller.seek_log_position)
-    controller.seek_log_position = seek
-    widget.refresh()
-    seek.assert_not_called()
-    QTest.keyClick(widget.slider, Qt.Key.Key_End)
-    seek.assert_called_once()
-    assert session.seeking
-    drain(app, controller)
-    assert session.cursor == len(session.log.entries)
-    assert not session.playing
-    QTest.keyClick(widget.slider, Qt.Key.Key_Left)
-    drain(app, controller)
-    assert session.position < session.log.duration
-    assert not session.playing
-
-
 @pytest.mark.parametrize("cancel", ["source", "load", "close"])
-def test_lifecycle_changes_cancel_timer_and_drag(transport, cancel):
-    app, controller, widget = transport
+def test_lifecycle_changes_cancel_timer_and_preview(transport, cancel):
+    app, controller = transport
     controller.seek_log_position(200)
     controller._seek_tick()
-    widget.slider.setSliderDown(True)
-    widget.slider.setValue(widget.slider.maximum())
+    controller.preview_log_position(controller.session.log.duration)
     if cancel == "source":
         controller.session.select_source("live")
     elif cancel == "load":
@@ -147,7 +91,6 @@ def test_lifecycle_changes_cancel_timer_and_drag(transport, cancel):
         controller.seek_timer.stop()
         controller.changed.emit()
     cursor = controller.session.cursor
-    widget.slider.setSliderDown(False)
     app.processEvents()
     assert not controller.seek_timer.isActive()
     assert not controller.session.seeking
@@ -156,14 +99,13 @@ def test_lifecycle_changes_cancel_timer_and_drag(transport, cancel):
 
 
 def test_preview_is_forwarded_to_existing_maps_and_plot_cursor(transport):
-    _, controller, widget = transport
+    _, controller = transport
     session = controller.session
     window = SimpleNamespace(
         session=session, plots=Mock(), map=Mock(), log_map=Mock(), log_time=Mock()
     )
     controller.changed.connect(lambda: PreviewWindow._refresh_log_position(window))
-    widget.slider.setSliderDown(True)
-    widget.slider.setValue(widget.slider.maximum() // 2)
+    controller.preview_log_position(session.log.duration / 2)
     target = session.display_position
     assert session.position == 0
     window.plots.set_position.assert_called_with(target)
@@ -179,7 +121,7 @@ def plot_points():
 
 
 def test_plain_drag_scrubs_and_shift_drag_selects_a_range(transport):
-    _, controller, slider = transport
+    _, controller = transport
     # Deliberately parent to a container without a controller attribute.
     container = QWidget()
     preview = Mock(wraps=controller.preview_log_position)
@@ -194,8 +136,6 @@ def test_plain_drag_scrubs_and_shift_drag_selects_a_range(transport):
         plot._scrub_press(event(12.5))
         assert controller.session.display_position == 12.5
         assert controller.session.cursor == 0
-        slider.refresh()
-        assert slider.slider.value() == round(slider.slider.maximum() * 12.5 / 309.9)
         plot._scrub_motion(event(26.25))
         preview.assert_called_with(26.25)
         seek.assert_not_called()
@@ -273,7 +213,7 @@ def test_shift_drag_selects_range_and_delete_uses_range_callback(transport):
 
 
 def test_delete_selected_range_ripple_updates_loaded_session(transport, monkeypatch):
-    _, controller, _ = transport
+    _, controller = transport
     session = controller.session
     before = session.log
 
@@ -347,7 +287,7 @@ def test_delete_selected_range_ripple_updates_loaded_session(transport, monkeypa
 def test_controller_builds_large_log_trim_in_worker_then_commits_on_gui(transport):
     from sailworks.qt.controller import SessionController
 
-    app, scrub_controller, _ = transport
+    app, scrub_controller = transport
 
     class WorkerController(QObject):
         changed = Signal()
@@ -462,7 +402,7 @@ def test_chart_menu_discovers_numeric_fields_from_loaded_log():
 def test_plot_release_without_x_commits_last_preview_and_resumes_playback(
     transport, release_outside
 ):
-    app, controller, _ = transport
+    app, controller = transport
     session = controller.session
     session.set_playing(True)
     preview = Mock(wraps=controller.preview_log_position)
@@ -533,7 +473,7 @@ def test_lazy_plot_factory_injects_callbacks_into_nested_canvas(
 ):
     from sailworks.qt.lazyplots import LazyLogPlots
 
-    app, controller, _ = transport
+    app, controller = transport
     window = QWidget()
     window._interactive_plots = PreviewWindow._interactive_plots
     controller.early_weather = early_weather
@@ -560,7 +500,7 @@ def test_lazy_plot_factory_injects_callbacks_into_nested_canvas(
 def test_default_lazy_plot_materializes_latest_data_on_show(transport):
     from sailworks.qt.lazyplots import LazyLogPlots
 
-    app, controller, _ = transport
+    app, controller = transport
     controller.early_weather = False
     window = QWidget()
     plot = QWidget(window)
@@ -594,13 +534,14 @@ def test_default_lazy_plot_materializes_latest_data_on_show(transport):
 def test_clean_nmea_panel_is_scrub_only_and_keeps_production_chart_scrubbing(
     transport, early_weather
 ):
-    app, controller, _ = transport
+    app, controller = transport
     controller.early_weather = early_weather
     controller.connection_task = SimpleNamespace(busy=False)
     window = QWidget()
     window.controller = controller
     window.session = controller.session
     window.syncing = False
+    window.scene_panel = SimpleNamespace(refresh=lambda: None)
     for name in (
         "_source_changed",
         "show_log_library",
@@ -626,7 +567,6 @@ def test_clean_nmea_panel_is_scrub_only_and_keeps_production_chart_scrubbing(
         plot = canvas.plot
         PreviewWindow.refresh(window)
         assert not panel.findChildren(QSlider)
-        assert not panel.findChildren(LogScrubber)
         assert not any(
             hasattr(window, name)
             for name in (
@@ -684,7 +624,7 @@ def test_source_dropdown_is_the_live_reading_control(transport):
         def __getattr__(self, _name):
             return lambda *args, **kwargs: None
 
-    _, controller, _ = transport
+    _, controller = transport
     controller.connection_task = SimpleNamespace(busy=False)
     controller.set_live_reading = lambda active: controller.session.set_streaming(
         active
@@ -715,7 +655,7 @@ def test_gps_picker_updates_plot_both_maps_and_marker_without_replay(transport):
     from sailworks.core.n2kdevices import DeviceCollector
     from test.test_n2kdevices import claim, fragments
 
-    _, controller, _ = transport
+    _, controller = transport
     session = controller.session
     points = plot_points()
     tracks = {
@@ -819,7 +759,7 @@ def test_gps_picker_updates_plot_both_maps_and_marker_without_replay(transport):
 
 
 def test_plot_data_refresh_reuses_axes_and_lines():
-    app = QApplication.instance() or QApplication([])
+    QApplication.instance() or QApplication([])
     plots = LogPlots()
     points = [SimpleNamespace(speed=1.0, tws=8.0, hdg=90.0)]
     plots.set_points(points, [0.0], False)

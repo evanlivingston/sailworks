@@ -1,9 +1,6 @@
 import pytest
 
-from sailworks.core.forecastrefresh import (
-    RefreshCoordinator,
-    RefreshExecutionError,
-)
+from sailworks.core.forecastrefresh import RefreshExecutionError
 from sailworks.core.tranchestore import TrancheStore
 from test.test_forecastrefresh import FakeSource, config, coordinator
 

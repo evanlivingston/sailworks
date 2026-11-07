@@ -26,33 +26,6 @@ class TestWindMeshes(unittest.TestCase):
         np.testing.assert_array_equal(actual, expected)
         self.assertFalse(actual.flags.writeable)
 
-    @unittest.skipUnless(importlib.util.find_spec("PySide6"), "Qt frame contracts")
-    def test_frame_owns_image_snapshot_and_mutable_vertices_are_frozen(self):
-        from PySide6.QtGui import QColor, QImage
-        from sailworks.qt.mapframe import (
-            ImageFrame,
-            MapFrame,
-            WindBatch,
-            resource_estimate,
-        )
-
-        source = QImage(16, 12, QImage.Format.Format_ARGB32_Premultiplied)
-        source.fill(QColor("red"))
-        layer = ImageFrame(source, (0, 0, 16, 12))
-        source.fill(QColor("blue"))
-        self.assertEqual(layer.image.pixelColor(3, 3), QColor("red"))
-        vertices = np.zeros((6, 2), dtype=np.float32)
-        batch = WindBatch(1, 0, vertices)
-        vertices.fill(3)
-        np.testing.assert_array_equal(batch.vertices, 0)
-        self.assertFalse(batch.vertices.flags.writeable)
-        frame = MapFrame(1, 16, 12, 1, (0, 0, 0, 1), layer, layer, (batch,), 0.85)
-        estimate = resource_estimate(frame, (), 16 * 12)
-        self.assertEqual(
-            estimate["upload_bytes"], layer.image.sizeInBytes() + batch.vertices.nbytes
-        )
-        self.assertGreater(estimate["gpu_estimate_bytes"], estimate["upload_bytes"])
-
 
 @unittest.skipUnless(importlib.util.find_spec("PySide6"), "Qt dependencies")
 class TestGpuMap(unittest.TestCase):

@@ -111,13 +111,6 @@ class NOAAAIGFSSource(GribSource):
     def bounds(self, value):
         self._bounds = value
 
-    @staticmethod
-    def _cycle_from_url(url):
-        cycle = _child_name(url)
-        if not re.fullmatch(r"(?:00|06|12|18)", cycle):
-            raise ValueError("Unsupported AI-GFS cycle")
-        return cycle
-
     def _run_url(self, date, cycle):
         return urljoin(AIGFS_ROOT, f"aigfs.{date}/{cycle}/model/atmos/grib2/")
 

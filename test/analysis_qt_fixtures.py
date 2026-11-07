@@ -6,7 +6,6 @@ from types import SimpleNamespace
 from sailworks.core.forecaststate import NoActiveForecastError
 from sailworks.core.forecasttranche import (
     AnalysisSelection,
-    Artifact,
     ForecastTranche,
     ModelConfiguration,
     ModelEntry,

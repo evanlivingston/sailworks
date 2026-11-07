@@ -4,8 +4,8 @@ import logging
 import sys
 from functools import lru_cache
 
-from PySide6.QtCore import Qt, QPointF, QRectF
-from PySide6.QtGui import QColor, QPalette, QIcon, QPainter, QPixmap, QPolygonF
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QPalette, QIcon, QPainter
 from PySide6.QtWidgets import QApplication, QLabel
 from sailworks.common import resource_path
 from .scrollchrome import install_wheel_guard
@@ -275,28 +275,3 @@ def symbol_icon(name):
     disabled = tinted(QColor("#777774"))
     icon.addPixmap(disabled, QIcon.Mode.Disabled)
     return icon
-
-
-@lru_cache(maxsize=4)
-def transport_icon(action):
-    pixmap = QPixmap(48, 48)
-    pixmap.setDevicePixelRatio(2)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor(TEXT))
-    if action == "stop":
-        painter.drawRect(QRectF(6, 6, 12, 12))
-    elif action == "play":
-        painter.drawPolygon(QPolygonF([QPointF(7, 5), QPointF(19, 12), QPointF(7, 19)]))
-    elif action == "pause":
-        painter.drawRect(QRectF(6, 5, 4, 14))
-        painter.drawRect(QRectF(14, 5, 4, 14))
-    elif action == "restart":
-        painter.drawRect(QRectF(4, 5, 3, 14))
-        painter.drawPolygon(
-            QPolygonF([QPointF(18, 5), QPointF(9, 12), QPointF(18, 19)])
-        )
-    painter.end()
-    return QIcon(pixmap)

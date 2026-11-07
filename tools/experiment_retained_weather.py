@@ -160,7 +160,6 @@ def probe(config):
 
     socket.socket.connect = blocked
     socket.socket.connect_ex = blocked
-    import numpy as np
     from sailworks.core.gribsampling import WeatherSampler
     from sailworks.rendering.windrenderer import WindLandMask
 

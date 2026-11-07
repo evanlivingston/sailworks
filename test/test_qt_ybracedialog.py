@@ -111,8 +111,6 @@ def test_local_json_selection_and_invalid_file_warning(qtbot, monkeypatch, tmp_p
 
 
 def test_review_from_start_sets_race_time_and_selects_race_track(qtbot):
-    from datetime import datetime
-
     from sailworks.core.timecontrol import TimeControl, utc_to_wall
 
     controller = SimpleNamespace(

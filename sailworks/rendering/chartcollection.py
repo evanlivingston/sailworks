@@ -347,23 +347,6 @@ class ChartCollection:
             return cell, imported
         return None, None
 
-    def enable_downloaded_chart(self, path):
-        chart = next((c for c in self.charts if c.path == path), None)
-        if chart is None:
-            chart = self.load_vector_layer(path)
-        chart.enabled = True
-        entries = list(self.settings_manager[chart.ctype + "Charts"] or [])
-        entry = next((e for e in entries if e["path"] == path), None)
-        if entry:
-            entry["enabled"] = True
-        else:
-            entries.append({"path": path, "metadata": chart.metadata, "enabled": True})
-        self.settings_manager[chart.ctype + "Charts"] = entries
-        self.settings_manager.save()
-        for m in self.maps:
-            m.map_redraw_idle()
-        return chart
-
     def load_raster_layer(self, path, metadata=None, enabled=True):
         logger.info("Loading raster chart %s", path)
         chart = GDALRasterChart(

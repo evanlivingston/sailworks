@@ -108,12 +108,3 @@ def parse_pinned_identifier(identifier, source_name, allowed_fields, steps_for_c
         return date_text, cycle, fields, steps
     except (TypeError, KeyError, json.JSONDecodeError) as exc:
         raise ValueError("Malformed ECMWF download identifier") from exc
-
-
-def optional_catalog_text(session, url, cancel, fetch_text, status_error):
-    try:
-        return fetch_text(session, url, cancel=cancel)
-    except status_error as exc:
-        if exc.status_code == 404:
-            return None
-        raise

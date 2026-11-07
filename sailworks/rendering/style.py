@@ -22,10 +22,6 @@ class CairoStyle:
         self.font_size = font_size
         self.dash = dash
 
-    def with_line_width(self, line_width):
-        self.line_width = line_width
-        return self
-
     def apply(self, cr):
         if self.line_width:
             cr.set_line_width(self.line_width)
@@ -85,10 +81,6 @@ class Style:
 
     class Measure:
         Line = CairoStyle(color=(0, 0, 0, 1), line_width=0.6)
-        Font = CairoStyle(color=(0, 0, 0, 1), font_size=10)
-
-    class Compass:
-        Line = CairoStyle(color=(0, 0, 0, 0.3), line_width=0.6)
         Font = CairoStyle(color=(0, 0, 0, 1), font_size=10)
 
     class Track:

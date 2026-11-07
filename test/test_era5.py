@@ -624,7 +624,6 @@ def test_gdal_validator_rejects_unsupported_band_with_element_and_level(tmp_path
 def test_failed_multichunk_import_preserves_preexisting_content_addressed_artifact(
     tmp_path,
 ):
-    from sailworks.core.era5 import split_request
     from sailworks.core.tranchestore import Artifact
 
     root = tmp_path

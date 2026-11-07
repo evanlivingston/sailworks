@@ -1,7 +1,6 @@
 """Pure reference-coordinate contracts for the shared pan foundation."""
 
 from dataclasses import dataclass
-import math
 import unittest
 
 from sailworks.qt.viewporttransform import (
@@ -24,18 +23,6 @@ class Camera:
     zoom: float = 9.0
     width: int = 900
     height: int = 700
-
-
-def production_view(camera):
-    return BarbView(
-        int(camera.width),
-        int(camera.height),
-        float(camera.center_lat),
-        float(camera.center_lon),
-        float(camera.zoom),
-        "standard",
-        True,
-    )
 
 
 def expected_translation(reference, camera):

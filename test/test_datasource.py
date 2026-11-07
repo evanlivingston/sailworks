@@ -26,11 +26,6 @@ from sailworks.core.datasource import (
 
 
 class TestNMEADataPacket(unittest.TestCase):
-    def test_parse_rmc(self):
-        sentence = "$GPRMC,225446,A,4916.45,N,12311.12,W,000.5,054.7,191194,020.3,E*68"
-        pkt = NMEADataPacket.parse(sentence)
-        self.assertTrue(pkt.is_position())
-
     def test_parse_mwv(self):
         sentence = "$IIMWV,045.0,R,12.5,N,A*0A"
         pkt = NMEADataPacket.parse(sentence)

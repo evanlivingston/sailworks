@@ -5,7 +5,6 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
-    QLabel,
     QMessageBox,
     QPushButton,
     QScrollArea,

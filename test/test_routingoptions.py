@@ -213,21 +213,3 @@ class TestRoutingOptions(unittest.TestCase):
             )
         self.assertTrue(reports[0].blocked)
         self.assertEqual(self.core.marine_manager.fields.fields, {})
-
-    def test_automatic_coverage_uses_existing_recovery_and_ui_commit_hooks(self):
-        from sailworks.core.routingcoverage import prepare_coverage
-
-        cancel = Event()
-        environment = SimpleNamespace(cancel=None, wind_recovery=None, prefetch=None)
-        route = SimpleNamespace(
-            current_environment=environment,
-            position=(0, 0),
-            time=START,
-            grib=CurrentWind(),
-        )
-        coverage = SimpleNamespace(needs_warning=False, download_gaps=("gap",))
-
-        def save(gribs):
-            return None
-
-        

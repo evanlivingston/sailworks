@@ -8,12 +8,11 @@ import argparse
 import hashlib
 import json
 import math
-import statistics
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sailworks.core.mapviewport import MapPoint, MapViewport
+from sailworks.core.mapviewport import MapViewport
 from sailworks.core.marine.fields import FieldSelection, FieldStore
 from sailworks.qt.gribviewport import ViewportCamera
 from sailworks.rendering.marinepresentation import (

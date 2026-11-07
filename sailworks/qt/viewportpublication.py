@@ -99,10 +99,6 @@ class LayerState:
     def has_pending(self) -> bool:
         return self.pending is not None
 
-    def clear_pending(self) -> None:
-        self.pending = None
-        self.pending_placement = None
-
     def commit_pending(self) -> None:
         if self.pending is not None:
             self.visible = self.pending
@@ -166,9 +162,6 @@ class PublicationBudget:
 
     def total_used(self) -> int:
         return sum(self.current_usage.values())
-
-    def utilization(self) -> float:
-        return self.total_used() / self.global_cap if self.global_cap > 0 else 0.0
 
 
 class PublicationManager:
@@ -341,26 +334,3 @@ class PublicationManager:
                 report["rejected"].append(f"{role}(pending)")
 
         return report
-
-    def get_visible_state(self) -> dict:
-        return {
-            role: {
-                "visible": str(layer.visible) if layer.visible else None,
-                "pending": str(layer.pending) if layer.pending else None,
-                "placement": layer.placement.__dict__,
-                "native_ready": layer.native_ready,
-                "budget_bytes": layer.budget_bytes,
-            }
-            for role, layer in self.layers.items()
-        }
-
-    def await_completion(self, role: str, timeout: float = 5.0) -> bool:
-        import time
-
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            layer = self.layers[role]
-            if layer.pending is None:
-                return layer.visible is not None
-            time.sleep(0.01)
-        return False

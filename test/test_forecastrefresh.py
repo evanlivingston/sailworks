@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from threading import Event
 import json
 
@@ -17,7 +18,7 @@ from sailworks.core.forecastrefreshcontracts import (
     ForecastRefreshPlan,
     PlannedModel,
 )
-from sailworks.core.forecasttranche import AnalysisSelection, ModelConfiguration
+from sailworks.core.forecasttranche import ModelConfiguration
 from sailworks.core.forecastvalidation import ValidatedModel, inspect_download
 from sailworks.core.tranchestore import TrancheStore
 

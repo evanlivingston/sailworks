@@ -108,7 +108,7 @@ class TestMain(unittest.TestCase):
         # Regression: relative_to(ROOT) raised ValueError for relative inputs,
         # turning a reported failure into a traceback.
         with tempfile.TemporaryDirectory() as temporary:
-            source = write(temporary, "a.md", "[x](b.md#missing)\n")
+            write(temporary, "a.md", "[x](b.md#missing)\n")
             write(temporary, "b.md", "# Present\n")
             previous = Path.cwd()
             import os

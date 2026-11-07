@@ -494,14 +494,6 @@ def _read_int(data, offset):
     return val, offset + 4
 
 
-def _read_uint(data, offset):
-    """Read a little-endian unsigned int from decrypted data."""
-    if offset + 4 > len(data):
-        return 0, offset + 4
-    val = struct.unpack_from("<I", data, offset)[0]
-    return val, offset + 4
-
-
 def _read_double(data, offset):
     """Read a little-endian double from decrypted data."""
     if offset + 8 > len(data):

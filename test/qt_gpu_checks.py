@@ -109,11 +109,7 @@ class PreferenceChecks(Fixture):
 
         self.controller.map_renderer = "gpu"
         self.controller.settings.mapRenderer = "gpu"
-        with patch(
-            "sailworks.qt.gpupresenter.QGuiApplication.platformName",
-            return_value="offscreen",
-        ):
-            canvas = ViewportMap(self.controller)
+        canvas = ViewportMap(self.controller)
         self.addCleanup(canvas.dispose)
         self.assertIsNone(canvas._gpu)
         self.assertNotIn("CPU fallback", self.controller.renderer_status())
