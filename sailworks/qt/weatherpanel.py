@@ -1,12 +1,10 @@
 """Weather overlay controls for the active chart or log map."""
 
-from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
-    QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -192,8 +190,10 @@ class WeatherPanel(QWidget):
         form.addRow(self.wind_style)
         self.wind_gradient = self.checkbox("Gradient", "gribWindGradient")
         form.addRow(self.wind_gradient)
-        self.wind_gradient_opacity = self.percent("gribWindGradientOpacity")
-        form.addRow("Gradient opacity", self.wind_gradient_opacity)
+        self.wind_gradient_opacity = self.percent(
+            "gribWindGradientOpacity", "Gradient opacity"
+        )
+        form.addRow(self.wind_gradient_opacity)
         self.wind_gradient_style = Dropdown("Gradient style")
         self.wind_gradient_style.addItem("Smooth", True)
         self.wind_gradient_style.addItem("Hard transitions", False)
@@ -203,10 +203,12 @@ class WeatherPanel(QWidget):
             )
         )
         form.addRow(self.wind_gradient_style)
-        self.wind_gradient_levels = self.integer_slider("gribWindGradientLevels", 2, 15)
-        form.addRow("Gradient levels", self.wind_gradient_levels)
-        self.wind_opacity = self.percent("gribArrowOpacity")
-        form.addRow("Wind opacity", self.wind_opacity)
+        self.wind_gradient_levels = self.integer_slider(
+            "gribWindGradientLevels", "Gradient levels", 2, 15
+        )
+        form.addRow(self.wind_gradient_levels)
+        self.wind_opacity = self.percent("gribArrowOpacity", "Wind opacity")
+        form.addRow(self.wind_opacity)
         self.barb_density = Dropdown("Line density")
         for key, label, _spacing in BARB_DENSITIES:
             self.barb_density.addItem(label, key)
@@ -260,8 +262,8 @@ class WeatherPanel(QWidget):
         )
         self.wave_density.currentIndexChanged.connect(self._select_wave_density)
         wave_form.addRow(self.wave_density)
-        self.wave_opacity = self.percent("gribWaveOpacity")
-        wave_form.addRow("Wave opacity", self.wave_opacity)
+        self.wave_opacity = self.percent("gribWaveOpacity", "Wave opacity")
+        wave_form.addRow(self.wave_opacity)
         self.wave_style = Dropdown("Gradient style")
         self.wave_style.addItem("Smooth", True)
         self.wave_style.addItem("Hard transitions", False)
@@ -271,8 +273,10 @@ class WeatherPanel(QWidget):
             )
         )
         wave_form.addRow(self.wave_style)
-        self.wave_levels = self.integer_slider("gribWaveLevels", 2, 9)
-        wave_form.addRow("Gradient levels", self.wave_levels)
+        self.wave_levels = self.integer_slider(
+            "gribWaveLevels", "Gradient levels", 2, 9
+        )
+        wave_form.addRow(self.wave_levels)
         waves.addLayout(wave_form)
         controls.addWidget(self.waves_section)
         controls.addWidget(self._section_divider())
@@ -306,8 +310,8 @@ class WeatherPanel(QWidget):
             lambda value: self.set_preference("gribIsobarInterval", value)
         )
         form.addRow("Spacing", self.interval)
-        self.isobar_opacity = self.percent("gribIsobarOpacity")
-        form.addRow("Opacity", self.isobar_opacity)
+        self.isobar_opacity = self.percent("gribIsobarOpacity", "Opacity")
+        form.addRow(self.isobar_opacity)
         self.labels = self.checkbox("Pressure labels", "gribIsobarLabels")
         form.addRow(self.labels)
         controls.addWidget(self.isobar_options)
@@ -443,11 +447,8 @@ class WeatherPanel(QWidget):
         widget.toggled.connect(lambda value: self.set_preference(key, value))
         return widget
 
-    def percent(self, key):
-        control = QWidget()
-        layout = QHBoxLayout(control)
-        layout.setContentsMargins(0, 0, 0, 0)
-        slider = Slider()
+    def percent(self, key, label):
+        slider = Slider(label)
         slider.setRange(0, 100)
         accessible_name = {
             "gribArrowOpacity": "Wind opacity",
@@ -456,29 +457,19 @@ class WeatherPanel(QWidget):
         }.get(key, key)
         slider.setAccessibleName(accessible_name)
         slider.setToolTip("Set opacity from 0% to 100%")
+        slider.setSuffix(" %")
         slider.setValue(round(self.controller.settings[key] * 100))
-        slider.setText(f"{slider.value()} %")
-        slider.valueChanged.connect(lambda value: slider.setText(f"{value} %"))
         slider.valueChanged.connect(lambda value: self.set_preference(key, value / 100))
-        layout.addWidget(slider, 1)
-        control.slider = slider
-        return control
+        return slider
 
-    def integer_slider(self, key, minimum, maximum):
-        control = QWidget()
-        layout = QHBoxLayout(control)
-        layout.setContentsMargins(0, 0, 0, 0)
-        slider = Slider()
+    def integer_slider(self, key, label, minimum, maximum):
+        slider = Slider(label)
         slider.setRange(minimum, maximum)
-        slider.setAccessibleName("Gradient levels")
+        slider.setAccessibleName(label)
         slider.setToolTip(f"Choose {minimum} to {maximum} gradient color levels")
         slider.setValue(self.controller.settings[key])
-        slider.setText(str(slider.value()))
-        slider.valueChanged.connect(lambda value: slider.setText(str(value)))
         slider.valueChanged.connect(lambda value: self.set_preference(key, value))
-        layout.addWidget(slider, 1)
-        control.slider = slider
-        return control
+        return slider
 
     def _toggle_wave(self, enabled):
         """Switch the wave layer and remember it across restarts."""
