@@ -1631,7 +1631,7 @@ def test_chart_worker_finishes_active_and_coalesces_latest_camera(tmp_path):
         layer.close()
 
 
-def test_chart_weather_busy_rearms_real_timer(presenter):
+def test_chart_weather_busy_rearms_for_a_bounded_head_start(presenter):
     import time
     from types import MethodType
 
@@ -1639,7 +1639,10 @@ def test_chart_weather_busy_rearms_real_timer(presenter):
     from PySide6.QtTest import QTest
 
     from sailworks.qt.gribviewport import _viewport_widget_class
-    from sailworks.qt.gribviewportchart import CHART_IDLE_MS
+    from sailworks.qt.gribviewportchart import (
+        CHART_IDLE_MS,
+        CHART_WEATHER_BUSY_WAIT_MS,
+    )
 
     requests = []
     model = SimpleNamespace(busy=Mock(return_value=True))
@@ -1651,7 +1654,7 @@ def test_chart_weather_busy_rearms_real_timer(presenter):
         _weather_ready_at=1,
         _enc_chart_layer=False,
         _model=model,
-        _chart_camera_changed=time.perf_counter() - 1,
+        _chart_camera_changed=time.perf_counter() - (CHART_IDLE_MS + 20) / 1000.0,
         _chart_state_now=lambda: {},
         counters={"chart_requests": 0},
     )
@@ -1661,11 +1664,13 @@ def test_chart_weather_busy_rearms_real_timer(presenter):
     widget._chart_timer.setSingleShot(True)
     widget._chart_timer.setInterval(CHART_IDLE_MS)
     widget._chart_timer.timeout.connect(widget._request_chart)
+    widget._chart_camera_changed = time.perf_counter() - (CHART_IDLE_MS + 10) / 1000.0
     widget._request_chart()
     assert widget._chart_timer.isActive()
     assert not requests
-    model.busy.return_value = False
-    QTest.qWait(CHART_IDLE_MS * 2)
+    # The busy head start expires even while weather remains busy: the chart
+    # request is bounded, not indefinitely vetoed.
+    QTest.qWait(CHART_WEATHER_BUSY_WAIT_MS + CHART_IDLE_MS)
     assert requests == ["camera"]
     assert not widget._chart_timer.isActive()
 
