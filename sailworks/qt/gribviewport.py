@@ -1677,6 +1677,8 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
         CHART_PALETTE,
         CHART_IDLE_MS,
         CHART_INTERACTIVE_MS,
+        CHART_WEATHER_BUSY_WAIT_MS,
+        CHART_WEATHER_READY_WAIT_MS,
         ViewportChartLayer,
         chart_image_provider,
         chart_placement,
@@ -3449,7 +3451,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 self._chart_timer.start(CHART_IDLE_MS)
 
         def _request_interactive_chart(self):
-            """Offer one low-resolution chart on camera events, never by timer."""
+            """Offer one low-resolution chart on camera events, never by timer.
+
+            A preview is opportunistic: it waits for the weather to be
+            presented and idle before it asks, and the chart layer yields to
+            the weather worker again before composing.  Settled chart coverage
+            is independent of the weather; only this coarse preview gives the
+            weather pipeline unconditional priority.
+            """
             if self._chart_model is None or self._camera is None:
                 return
             if (
@@ -3468,7 +3477,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             if generation is not None:
                 self._chart_interactive_at = now
                 self.counters["chart_requests"] += 1
-                self._chart_requested_after_weather = True
+                self._chart_requested_after_weather = self._weather_ready_at is not None
                 self._chart_request_state = self._chart_state_now()
 
         def _watch_chart_budget(self):
@@ -3498,20 +3507,16 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             """Ask the chart layer for its own generation.
 
             The chart is composed for a settled view: the view must not have
-            moved for the settle window, the weather must already be
-            presented and the weather pipeline must be idle.  While any of
-            those is untrue the chart asks again, so the chart never delays
-            the weather.
+            moved for the settle window.  Chart content is independent of the
+            weather, so weather readiness and worker activity are a **bounded**
+            priority, never an unlimited veto.  Weather is given a head start;
+            after that window the chart request proceeds even if the weather
+            is still preparing, so a stalled weather worker cannot hide chart
+            coverage indefinitely.  The chart layer keeps one composition in
+            flight and coalesces the latest demand, so this remains bounded
+            and cannot delay the weather.
             """
             if self._chart_model is None or self._camera is None:
-                self._restart_chart_settle()
-                return
-            if (
-                self._weather_ready_at is None
-                and not getattr(self, "_chart_without_weather", False)
-                and not (self._enc_chart_layer and self._model.state == "unavailable")
-            ):
-                # The chart is added after the weather is presented.
                 self._restart_chart_settle()
                 return
             elapsed = (time.perf_counter() - self._chart_camera_changed) * 1000.0
@@ -3519,12 +3524,22 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 # The view is still moving: the chart waits for it to settle.
                 self._chart_timer.start(max(1, math.ceil(CHART_IDLE_MS - elapsed)))
                 return
-            if self._model.busy():
-                # The weather pipeline is working: the chart waits.
-                self._restart_chart_settle()
+            head_start = None
+            if (
+                self._weather_ready_at is None
+                and not getattr(self, "_chart_without_weather", False)
+                and not (self._enc_chart_layer and self._model.state == "unavailable")
+            ):
+                head_start = CHART_WEATHER_READY_WAIT_MS
+            elif self._model.busy():
+                head_start = CHART_WEATHER_BUSY_WAIT_MS
+            if head_start is not None and elapsed < head_start:
+                # Weather keeps its bounded priority window; the timer asks
+                # again after it expires, and the chart proceeds regardless.
+                self._chart_timer.start(max(1, math.ceil(head_start - elapsed)))
                 return
             self.counters["chart_requests"] += 1
-            self._chart_requested_after_weather = True
+            self._chart_requested_after_weather = self._weather_ready_at is not None
             self._chart_request_state = self._chart_state_now()
             if getattr(self, "_chart_force_replace", False):
                 self._chart_force_replace = False

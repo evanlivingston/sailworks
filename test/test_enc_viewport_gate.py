@@ -542,6 +542,55 @@ def test_initial_weather_miss_does_not_block_enc_request():
     assert requests == ["camera"]
     widget._model.busy = lambda: True
     method(widget)
+    assert requests == ["camera", "camera"]
+
+
+def test_independent_chart_request_does_not_wait_for_weather():
+    requests = []
+    widget = SimpleNamespace(
+        _chart_model=SimpleNamespace(request=requests.append),
+        _camera="camera",
+        _weather_ready_at=None,
+        _chart_without_weather=False,
+        _enc_chart_layer=False,
+        _model=SimpleNamespace(state="loading", busy=lambda: True),
+        _chart_camera_changed=0,
+        counters={"chart_requests": 0},
+        _chart_state_now=lambda: {},
+    )
+
+    _viewport_widget_class()._request_chart(widget)
+
+    assert requests == ["camera"]
+    assert widget.counters["chart_requests"] == 1
+    assert widget._chart_requested_after_weather is False
+
+
+def test_settled_chart_gives_busy_weather_a_bounded_head_start(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr("sailworks.qt.gribviewport.time.perf_counter", lambda: now[0])
+    requests = []
+    timer = Mock()
+    widget = SimpleNamespace(
+        _chart_model=SimpleNamespace(request=requests.append),
+        _camera="camera",
+        _weather_ready_at=1,
+        _model=SimpleNamespace(state="ready", busy=lambda: True),
+        _chart_camera_changed=100.0,
+        _chart_timer=timer,
+        counters={"chart_requests": 0},
+        _chart_state_now=lambda: {},
+    )
+    method = _viewport_widget_class()._request_chart
+
+    method(widget)
+    assert requests == []
+    now[0] = 100.101
+    method(widget)
+    assert requests == []
+    assert timer.start.called
+    now[0] = 100.151
+    method(widget)
     assert requests == ["camera"]
 
 

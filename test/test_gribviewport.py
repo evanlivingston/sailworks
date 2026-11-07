@@ -1897,6 +1897,37 @@ def test_the_chart_layer_never_claims_the_weather_worker(tmp_path):
     assert layer._await_idle(None) is True
 
 
+def test_settled_chart_composes_while_weather_is_busy(tmp_path):
+    """Settled chart composition is independent; previews still yield."""
+    import time as clock
+
+    published = []
+    layer = _chart_layer(
+        tmp_path, worker_idle=lambda: False, on_publish=published.append
+    )
+
+    def compose(camera, cancel):
+        return ("image", _chart_metadata(camera))
+
+    layer._compose = compose
+    camera = _camera()
+    layer.request(camera)
+    deadline = clock.monotonic() + 5
+    while not published and clock.monotonic() < deadline:
+        clock.sleep(0.01)
+    assert published
+    assert layer.observations()["outcomes"][published[0][0]] == "published"
+
+    preview_camera = _camera(center_lon=camera.center_lon + 1.0)
+    preview = layer.request(preview_camera, preview=True)
+    deadline = clock.monotonic() + 5
+    while layer.observations()["state"] != "idle" and clock.monotonic() < deadline:
+        clock.sleep(0.01)
+    assert layer.observations()["state"] == "idle"
+    assert preview not in layer.observations()["published_generations"]
+    layer.close()
+
+
 def test_interactive_chart_is_event_throttled_and_yields_to_weather(monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import Mock
