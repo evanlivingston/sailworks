@@ -182,12 +182,15 @@ def apply_theme(app: QApplication):
         QPushButton[primary="true"]:pressed { background: #2d6fc0; }
         QPushButton[primary="true"]:disabled { background: #3a4656; color: #9b9b98; }
         QComboBox, QDateTimeEdit, QDoubleSpinBox { min-height: 24px; padding: 3px;
-            border: 1px solid #454545; border-radius: 6px; background: #1e1e1e; }
+            border: 1px solid #454545; border-radius: 6px; background: #1e1e1e;
+            outline: none; }
         QComboBox:hover { background: #262626; }
-        QComboBox:focus, QDateTimeEdit:focus, QDoubleSpinBox:focus { border-color: #3584e4; }
+        QDateTimeEdit:focus, QDoubleSpinBox:focus {
+            border-color: #3584e4; outline: none; }
         QComboBox QAbstractItemView { background: #1e1e1e; color: #eeeeec;
             border: none; outline: 0; padding: 0;
             selection-background-color: #3584e4; selection-color: #ffffff; }
+        QComboBoxPrivateContainer { border: none; background: #1e1e1e; }
         QComboBox QAbstractItemView::item { padding: 3px 6px; }
         QLineEdit#placeSearchEdit { min-height: 24px; padding: 3px 8px;
             border: 1px solid #454545; border-radius: 6px;

@@ -2,7 +2,7 @@
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPalette, QPen
-from PySide6.QtWidgets import QComboBox, QSizePolicy
+from PySide6.QtWidgets import QComboBox, QFrame, QSizePolicy
 
 FIELD_FRACTION = 0.55
 
@@ -24,6 +24,8 @@ class Dropdown(QComboBox):
         self.setMinimumContentsLength(0)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect, False)
+        self.view().setFrameShape(QFrame.Shape.NoFrame)
         if label:
             self.setAccessibleName(label)
 
@@ -88,6 +90,8 @@ class Dropdown(QComboBox):
         )
 
     def showPopup(self):  # noqa: N802 - Qt virtual method name
+        popup = self.view().window()
+        popup.setStyleSheet("QFrame { border: none; }")
         super().showPopup()
         self.update()
 
