@@ -201,10 +201,6 @@ class BoundDisplayForecastSelection(QObject):
     def sources(self):
         return self._sources
 
-    def display_sources(self):
-        """Sources the weather presenter shows: a chosen wave source, else routing."""
-        return self.wave.sources()
-
     @property
     def scan_complete(self):
         """True when the active tranche was inspected and no scan is pending.

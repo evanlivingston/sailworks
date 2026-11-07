@@ -166,9 +166,6 @@ class MapHostMixin:
     def _boat_changed(self, _):
         self.update()
 
-    def _invalidate_dashboard(self):
-        self._dash_cache = None
-
     @staticmethod
     def _collection_snapshot(manager):
         # O(elements), never O(points): point and visibility edits are captured

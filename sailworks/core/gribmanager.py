@@ -14,7 +14,7 @@ GNU General Public License for more details.
 For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
-from typing import Dict, List
+from typing import List
 
 import weatherrouting
 from weatherrouting import Grib
@@ -73,10 +73,3 @@ class GribManager(weatherrouting.Grib):
             except Exception:
                 continue
         return values
-
-    def get_wind_2d(self, tt, bounds):
-        values = sorted(self.get_wind(tt, bounds), key=lambda x: x[2][1])
-        grouped: Dict[float, list] = {}
-        for value in values:
-            grouped.setdefault(value[2][1], []).append(value)
-        return [sorted(row, key=lambda x: x[2][0]) for row in grouped.values()]

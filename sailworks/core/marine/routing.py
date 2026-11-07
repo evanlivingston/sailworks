@@ -331,24 +331,6 @@ class FrozenRoutingWind:
                 return result
         return None
 
-    def add_gribs(self, gribs):
-        """Add coverage and prefer newer runs while retaining scenario overrides."""
-        known = {g.path for g in self.gribs}
-        added = [
-            FractionalRoutingGrib(g) if isinstance(g, Grib) else g
-            for g in gribs
-            if g.path not in known
-        ]
-        self.gribs = tuple(
-            sorted((*self.gribs, *added), key=wind_run_timestamp, reverse=True)
-        )
-        self.sampler = (
-            WeatherSampler(self.gribs)
-            if self.gribs and all(isinstance(g, Grib) for g in self.gribs)
-            else None
-        )
-        return bool(added)
-
     def provenance(self):
         return dict(
             selected=[

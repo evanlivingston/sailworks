@@ -279,22 +279,6 @@ class Grib(weatherrouting.Grib):
                 hours.add(number(metadata["GRIB_FORECAST_SECONDS"]) / 3600)
         return sorted(hours)
 
-    def _find_bracketing_hours(self, t, available_hours):
-        if not available_hours:
-            return None, None
-        before = [hour for hour in available_hours if hour <= t]
-        after = [hour for hour in available_hours if hour >= t]
-        return (
-            max(before) if before else min(after),
-            min(after) if after else max(before),
-        )
-
-    def _transform_time(self, t) -> Optional[float]:
-        elapsed = (t.timestamp() - self.start_time.timestamp()) / 3600
-        if elapsed < 0 or t.timestamp() > self.end_time.timestamp():
-            return None
-        return elapsed
-
     def get_wind_at(self, t, lat: float, lon: float) -> Optional[Tuple[float, float]]:
         return self.sampler().wind_at(t, lat, lon)
 

@@ -469,10 +469,3 @@ class NOAAGFSWaveSource(GribSource):
     def download(self, identifier, dest_dir, percentage_callback, cancel=None):
         with self._session_scope():
             return self._download(identifier, dest_dir, percentage_callback, cancel)
-
-    @staticmethod
-    def estimate_size(steps, fields):
-        text = NOAAGFSWaveSource._estimate_custom_size(steps, fields)
-        value, unit = text.replace("~", "").split()
-        multiplier = {"KB": 1024, "MB": 1024**2}.get(unit.upper())
-        return max(1, round(float(value) * multiplier)), True

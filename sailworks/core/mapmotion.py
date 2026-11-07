@@ -2,22 +2,6 @@
 
 import math
 from collections import deque
-from dataclasses import dataclass
-
-
-@dataclass
-class ZoomAnimation:
-    start: float
-    target: float
-    started_at: float
-    anchor: tuple
-    pointer: tuple
-    duration: float = 0.20
-
-    def value_at(self, now):
-        progress = max(0.0, min(1.0, (now - self.started_at) / self.duration))
-        eased = 1 - (1 - progress) ** 3
-        return self.start + (self.target - self.start) * eased, progress >= 1
 
 
 class DragVelocity:

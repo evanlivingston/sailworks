@@ -225,9 +225,6 @@ class RetainedOverlayMixin:
         self._race_geometry_cache = (key, image)
         return image
 
-    def _race_tracks_image(self):
-        return self._race_geometry_image()
-
     def invalidate_race_geometry(self):
         self._race_cache_store = None
 

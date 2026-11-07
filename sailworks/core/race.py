@@ -918,15 +918,9 @@ def parse_race(
     return race
 
 
-def load_race(path: Any, **kwargs) -> Race:
-    return parse_race(path, **kwargs)
-
-
 # Backwards/alternate spellings for callers and tests.
-RaceCollection = list
 parse_yb_race = parse_race
 parse_yb_tracking = parse_race
-RaceBounds = tuple
 
 
 def weather_download_request(race: Race, *args, **kwargs) -> dict:
@@ -1069,16 +1063,6 @@ def save_race(race: Race, directory: Any = None) -> Path:
     return destination
 
 
-def save_races(races: Iterable[Race], directory: Any = None) -> list[Path]:
-    """Persist multiple races. Saves are batched at the helper level so callers
-    can avoid repeated per-race filesystem churn where safe."""
-    return [save_race(race, directory) for race in races]
-
-
-def load_race_file(path: Any) -> Race:
-    return parse_race(path)
-
-
 def load_saved_races(directory: Any = None) -> list[Race]:
     storage_dir = _resolve_storage_dir(directory)
     if not storage_dir.exists():
@@ -1099,39 +1083,6 @@ def race_file_path(race_or_id: Any, directory: Any = None) -> Path:
     else:
         value = race_or_id
     return storage_dir / _safe_filename(value)
-
-
-class RaceStore:
-    def __init__(self, root: Any = None):
-        self.root = _resolve_storage_dir(root)
-
-    @property
-    def directory(self) -> Path:
-        return self.root
-
-    def path_for(self, race_or_id: Any) -> Path:
-        return race_file_path(race_or_id, self.root)
-
-    def save(self, race: Race) -> Path:
-        return save_race(race, self.root)
-
-    def load_all(self) -> list[Race]:
-        return load_saved_races(self.root)
-
-    def load(self, race_id: Any) -> Race:
-        return parse_race(self.path_for(race_id))
-
-    def save_many(self, races: Iterable[Race]) -> list[Path]:
-        """Persist several races, returning their paths."""
-        return [save_race(race, self.root) for race in races]
-
-    def save_all(self, races: Iterable[Race]) -> list[Path]:
-        return self.save_many(races)
-
-
-RaceStorage = RaceStore
-RaceRepository = RaceStore
-YBRaceStore = RaceStore
 
 
 def _fetch_yb_json(

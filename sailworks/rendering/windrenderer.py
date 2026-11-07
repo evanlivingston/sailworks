@@ -337,42 +337,6 @@ class WindOverlayRenderer(OverlayRenderer):
             return covers(job.viewport, canvas)
         return super()._fits_job(job, canvas)
 
-    def prefetch_at(self, canvas, latitude, longitude, predictive=False, zoom=None):
-        """Queue one speculative frame at an explicit center.
-
-        The caller owns pixel geometry: pass the same center a pan would
-        produce so arrival matches exactly regardless of padding conventions.
-        """
-        content = self._last_content.get(canvas)
-        if content is None:
-            return False
-        charts, palette, factor = content
-        from sailworks.core.mapviewport import MapViewport
-        from sailworks.rendering.overlayrenderer import MARGIN
-
-        # Capture through the same padded-build path as visible draws: the
-        # transient render padding changes viewport dimensions, and promotion
-        # requires an exact size match on arrival.
-        holder = {}
-
-        def capture():
-            viewport = MapViewport(canvas, MARGIN, lambda: None)
-            holder["viewport"] = viewport
-            return None
-
-        canvas._build_padded_layer(capture)
-        viewport = holder["viewport"]
-        viewport._center_lat = max(-85, min(85, latitude))
-        viewport._center_lon = longitude
-        # The prediction markers live on the viewport at runtime; the type
-        # checker cannot see the dynamic attributes set by the map canvas.
-        setattr(viewport, "pan_prediction", predictive)
-        if zoom is not None:
-            viewport._zoom = zoom
-            setattr(viewport, "zoom_prediction", True)
-        key = (palette, factor, tuple(c[0] for c in charts))
-        return self.prefetch(canvas, key, viewport, charts, factor, palette)
-
     def prepared_view_status(self, canvas):
         """Geometric preparation status, NOT proof of available forecast data."""
         state = self._states.get(canvas)

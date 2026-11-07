@@ -87,13 +87,6 @@ class MapLifecycleMixin:
             self.remove_tick_callback(token)
         self.time_control.disconnect("time_change", self._time_changed)
 
-    def _disconnect_optional(self, signal, slot):
-        """Disconnect a signal, tolerating a slot that was never connected."""
-        try:
-            signal.disconnect(slot)
-        except (RuntimeError, TypeError):
-            pass
-
     def hideEvent(self, event):  # noqa: N802 - Qt virtual method name
         if self._weather_presenter is not None:
             self._weather_presenter.suspend()
