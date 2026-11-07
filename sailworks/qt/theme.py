@@ -185,10 +185,10 @@ def apply_theme(app: QApplication):
             border: 1px solid #454545; border-radius: 6px; background: #1e1e1e; }
         QComboBox:hover { background: #262626; }
         QComboBox:focus, QDateTimeEdit:focus, QDoubleSpinBox:focus { border-color: #3584e4; }
-        QComboBox QAbstractItemView { background: #242424; color: #eeeeec;
-            border: 1px solid #454545; outline: 0; padding: 2px;
+        QComboBox QAbstractItemView { background: #1e1e1e; color: #eeeeec;
+            border: none; outline: 0; padding: 0;
             selection-background-color: #3584e4; selection-color: #ffffff; }
-        QComboBox QAbstractItemView::item { padding: 4px 6px; }
+        QComboBox QAbstractItemView::item { padding: 3px 6px; }
         QLineEdit#placeSearchEdit { min-height: 24px; padding: 3px 8px;
             border: 1px solid #454545; border-radius: 6px;
             background: #1e1e1e; color: #eeeeec; }

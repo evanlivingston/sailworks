@@ -72,14 +72,28 @@ class Dropdown(QComboBox):
     def _colors(self):
         palette = self.palette()
         if not self.isEnabled():
-            return QColor("#242424"), QColor("#3a3a3a"), QColor("#777774")
-        if self.hasFocus():
-            border = QColor("#3584e4")
-        elif self.underMouse():
-            border = QColor("#5a5a5a")
-        else:
-            border = QColor("#454545")
-        return QColor("#1e1e1e"), border, palette.color(QPalette.ColorRole.Text)
+            return QColor("#242424"), QColor("#242424"), QColor("#777774")
+        if self.view().isVisible():
+            return QColor("#3584e4"), QColor("#3584e4"), QColor("#ffffff")
+        if self.underMouse():
+            return (
+                QColor("#303030"),
+                QColor("#303030"),
+                palette.color(QPalette.ColorRole.Text),
+            )
+        return (
+            QColor("#2b2b2b"),
+            QColor("#2b2b2b"),
+            palette.color(QPalette.ColorRole.Text),
+        )
+
+    def showPopup(self):  # noqa: N802 - Qt virtual method name
+        super().showPopup()
+        self.update()
+
+    def hidePopup(self):  # noqa: N802 - Qt virtual method name
+        super().hidePopup()
+        self.update()
 
     def paintEvent(self, event):  # noqa: N802 - Qt virtual method name
         painter = QPainter(self)
@@ -89,7 +103,7 @@ class Dropdown(QComboBox):
 
         painter.setPen(QPen(border, 1))
         painter.setBrush(fill)
-        painter.drawRoundedRect(field, 6, 6)
+        painter.drawRoundedRect(field, 3, 3)
 
         metrics = QFontMetrics(self.font())
         label_rect = QRectF(6, 0, max(0, field.left() - 18), self.height())
