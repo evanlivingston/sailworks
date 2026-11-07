@@ -541,6 +541,7 @@ def test_clean_nmea_panel_is_scrub_only_and_keeps_production_chart_scrubbing(
     window.controller = controller
     window.session = controller.session
     window.syncing = False
+    window.scene_panel = SimpleNamespace(refresh=lambda: None)
     for name in (
         "_source_changed",
         "show_log_library",
@@ -758,7 +759,7 @@ def test_gps_picker_updates_plot_both_maps_and_marker_without_replay(transport):
 
 
 def test_plot_data_refresh_reuses_axes_and_lines():
-    app = QApplication.instance() or QApplication([])
+    QApplication.instance() or QApplication([])
     plots = LogPlots()
     points = [SimpleNamespace(speed=1.0, tws=8.0, hdg=90.0)]
     plots.set_points(points, [0.0], False)

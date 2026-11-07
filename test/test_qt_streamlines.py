@@ -15,7 +15,7 @@ import types
 from types import SimpleNamespace
 import unittest
 import time
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 from pathlib import Path
 
 import numpy as np

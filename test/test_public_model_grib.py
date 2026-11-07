@@ -4,9 +4,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
-import re
 
-import numpy as np
 import pytest
 from osgeo import osr
 
@@ -27,7 +25,6 @@ from sailworks.core.forecasttranche import (
     ModelEntry,
 )
 from sailworks.core.forecastvalidation import inspect_download
-from sailworks.core.forecastboundrouting import BoundWorkerGrib
 from sailworks.core.grib import Grib, PRESSURE_ELEMENTS, forecast_model_name
 from sailworks.core.gribfields import is_mean_sea_level_pressure
 from sailworks.core.gribsampling import FIELDS, GridIndex, wind_value

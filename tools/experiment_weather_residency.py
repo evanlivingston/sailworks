@@ -171,7 +171,6 @@ def probe(config):
 
     socket.socket.connect = blocked
     socket.socket.connect_ex = blocked
-    import numpy as np
     from osgeo import gdal
     from sailworks.core.grib import Grib
     from sailworks.core.gribsampling import WeatherSampler

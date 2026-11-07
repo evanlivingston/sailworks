@@ -206,7 +206,6 @@ from sailworks.core.race import (
     merge_race_setup,
     normalize_yb_race_slug,
     load_saved_races,
-    parse_race,
 )
 
 

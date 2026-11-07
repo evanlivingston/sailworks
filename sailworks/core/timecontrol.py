@@ -60,6 +60,9 @@ class TimeControl(EventDispatcher):
     def time(self):
         return naive_wall_time(self._time)
 
+    def get_timestamp(self) -> int:
+        return int(self.time.timestamp())
+
     def set_time(self, v):
         self._time = v
         self.dispatch("time_change", self.time)

@@ -5,8 +5,6 @@ selection is the exact current-view artefact and is published per view.
 """
 
 from datetime import timedelta
-import re
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -333,7 +331,7 @@ def test_the_oldest_field_is_evicted_before_the_newest(gribs):
     size = first.nbytes
     store = FieldStore(size * 2 + 1)
     store.store(first)
-    second = _stage(sampler, there, stamp, store, signature).field
+    _stage(sampler, there, stamp, store, signature)
     assert store.current_bytes <= size * 2 + 1
     assert store.statistics()["retained_entries"] == 2
 

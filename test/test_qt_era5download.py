@@ -1,8 +1,6 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-import numpy as np
-from PySide6.QtCore import QDate, QDateTime, QTime, Qt
 from PySide6.QtWidgets import QTableWidget, QTableWidgetItem, QWidget
 
 from sailworks.qt.era5download import Era5DownloadTab

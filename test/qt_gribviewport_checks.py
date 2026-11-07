@@ -96,7 +96,6 @@ def _readback(images, blend, positions):
     byte-exact readback, so the float32 the shader wrote can be read back.
     The readback is a fidelity measurement; it is not a timing measurement.
     """
-    import numpy as np
     from PySide6.QtCore import QUrl
     from PySide6.QtGui import QImage
     from PySide6.QtQuick import QQuickImageProvider
@@ -956,7 +955,6 @@ class _Session:
     ):
         from sailworks.qt.gribviewport import (
             GribViewportModel,
-            ViewportCamera,
             _viewport_widget_class,
             saved_selection,
         )
@@ -1805,7 +1803,7 @@ def run_once(snapshot):
         "phases": [],
         "errors": [],
     }
-    app = QApplication.instance() or QApplication([sys.argv[0]])
+    QApplication.instance() or QApplication([sys.argv[0]])
     model = GribViewportModel(
         paths,
         land_mask=WindLandMask(snapshot / "data"),

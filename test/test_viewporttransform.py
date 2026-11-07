@@ -1,7 +1,6 @@
 """Pure reference-coordinate contracts for the shared pan foundation."""
 
 from dataclasses import dataclass
-import math
 import unittest
 
 from sailworks.qt.viewporttransform import (

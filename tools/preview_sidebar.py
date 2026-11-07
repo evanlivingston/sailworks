@@ -185,7 +185,7 @@ def build_gallery():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    args = parser.parse_args(argv)
+    parser.parse_args(argv)
     app = QApplication.instance() or QApplication([sys.argv[0]])
     apply_theme(app)
     window = build_gallery()

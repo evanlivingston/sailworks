@@ -18,7 +18,6 @@ from sailworks.core.routingjob import (
     RouteRequest,
     RoutingCancelledError,
     RoutingWind,
-    _integrate_wind_terminal_leg,
     _linear_route_with_missing_destination_wind,
     calculate_route,
     freeze_wind_sources,

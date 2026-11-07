@@ -334,8 +334,6 @@ def worker(config):
     configure_wind_workload(controller.settings, config)
     controller.time_control.set_time(datetime.fromisoformat(config["forecast_time"]))
     if config.get("standalone_viewport"):
-        from types import SimpleNamespace
-
         canvas = SimpleNamespace(
             _weather_presenter=SimpleNamespace(widget=None),
             wind_visible=True,
@@ -1377,7 +1375,7 @@ def replay_viewport(controller, app, window, canvas, config, began):
         "chart_publications",
     )
     try:
-        first_grab = grab()
+        grab()
         startup_to_first_frame_ms = (time.perf_counter() - began) * 1000
         startup_to_worker_idle_ms = startup_to_first_frame_ms
         for _ in range(config["warmup_frames"]):

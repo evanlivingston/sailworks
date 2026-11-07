@@ -7,7 +7,6 @@ strictly a loading state: it never becomes the current selection, and a real
 new selection commits exactly as before.
 """
 
-import math
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MethodType, SimpleNamespace

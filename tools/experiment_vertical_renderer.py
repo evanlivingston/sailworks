@@ -802,15 +802,14 @@ def run_candidate(
     preparation=None,
 ):
     """Independent QQuickWidget: no legacy TrackMap (mapcanvas), MapFrame, or old MapScene instance."""
-    from PySide6.QtCore import QEventLoop, QPointF, QTimer, Qt, QUrl
-    from PySide6.QtGui import QColor, QImage, QSurfaceFormat, QWheelEvent
+    from PySide6.QtCore import QEventLoop, QTimer, Qt, QUrl
+    from PySide6.QtGui import QColor, QImage, QSurfaceFormat
     from PySide6.QtQml import QQmlComponent
     from PySide6.QtQuickWidgets import QQuickWidget
     from PySide6.QtWidgets import QApplication, QWidget, QLabel
     from sailworks.qt.gpuweather import WeatherImageProvider, encode_component
     from sailworks.qt.gpuscene import ImageItem
     from sailworks.rendering.weatherbarbs import BarbView
-    from sailworks.rendering.weatherstaging import StagedWind
 
     metadata, initial_arrays, _ = read_bundle(directory)
     initial = BarbView(**metadata["view"])

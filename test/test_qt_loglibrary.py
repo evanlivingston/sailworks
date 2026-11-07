@@ -218,7 +218,6 @@ def test_failed_text_import_is_retained_with_error_and_previous_replay_survives(
 def test_window_drop_stitches_stack_once_and_library_opens_whole_timeline_paused(
     app, controller, tmp_path, monkeypatch
 ):
-    from sailworks.qt import controller as controller_module
     from sailworks.qt.window import PreviewWindow
     from test.test_ebllog import VERSION, frame, timestamp
 

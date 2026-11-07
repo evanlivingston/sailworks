@@ -1,12 +1,9 @@
 """Tests for coherent layer publication and atomic rebasing (#119)."""
 
-import threading
 from sailworks.qt.viewportpublication import (
     LayerRole,
-    ResourceKind,
     LayerIdentity,
     LayerPlacement,
-    LayerState,
     PublicationBudget,
     PublicationManager,
 )
@@ -90,13 +87,10 @@ def test_manager_stage_and_adopt():
         PublicationManager,
         LayerIdentity,
         LayerPlacement,
-        ResourceKind,
     )
 
     mgr = PublicationManager()
     ident = LayerIdentity(LayerRole.BARBS, 1, ("f1", "s1", "c1"), "abc123")
-    placement = LayerPlacement(x=10, y=10, width=100, height=100)
-    resources = {ResourceKind.IMAGE: "test_data"}
 
     assert mgr.stage_resources(
         LayerRole.BARBS,

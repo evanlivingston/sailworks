@@ -6,7 +6,6 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from sailworks.core.mapviewport import MapPoint
 from sailworks.core.marine.manager import MarineManager
 from sailworks.core.marine.models import Capability
 from sailworks.core.timecontrol import TimeControl
@@ -17,8 +16,6 @@ from sailworks.rendering.marinepresentation import (
     flow,
 )
 from sailworks.rendering.marinesnapshot import (
-    CurrentArrow,
-    MarineSnapshot,
     current_labels,
     current_triangles,
     sample_currents,

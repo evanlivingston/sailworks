@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QSlider, QWidget
+from PySide6.QtWidgets import QSlider
 
 from sailworks.core.race import RaceTrack, parse_race
 from sailworks.core.timecontrol import TimeControl, utc_to_wall
