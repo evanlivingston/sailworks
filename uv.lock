@@ -3461,7 +3461,7 @@ marine-global = [
 ]
 satellite = [
     { name = "maplibre-native-ffi" },
-    { name = "maplibre-native-ffi-runtime-metal", marker = "sys_platform == 'darwin'" },
+    { name = "maplibre-native-ffi-runtime-metal", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
     { name = "maplibre-native-ffi-runtime-opengl", marker = "sys_platform != 'darwin'" },
 ]
 weathernext = [
@@ -3479,6 +3479,9 @@ dev = [
     { name = "eccodeslib" },
     { name = "gcsfs" },
     { name = "google-auth" },
+    { name = "maplibre-native-ffi" },
+    { name = "maplibre-native-ffi-runtime-metal", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
+    { name = "maplibre-native-ffi-runtime-opengl", marker = "sys_platform != 'darwin'" },
     { name = "pyais" },
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -3513,7 +3516,7 @@ requires-dist = [
     { name = "gpxpy" },
     { name = "keyring", specifier = ">=25,<26" },
     { name = "maplibre-native-ffi", marker = "extra == 'satellite'" },
-    { name = "maplibre-native-ffi-runtime-metal", marker = "sys_platform == 'darwin' and extra == 'satellite'" },
+    { name = "maplibre-native-ffi-runtime-metal", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'satellite'" },
     { name = "maplibre-native-ffi-runtime-opengl", marker = "sys_platform != 'darwin' and extra == 'satellite'" },
     { name = "matplotlib" },
     { name = "netcdf4", specifier = ">=1.6" },
@@ -3539,6 +3542,9 @@ dev = [
     { name = "eccodeslib" },
     { name = "gcsfs" },
     { name = "google-auth" },
+    { name = "maplibre-native-ffi" },
+    { name = "maplibre-native-ffi-runtime-metal", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
+    { name = "maplibre-native-ffi-runtime-opengl", marker = "sys_platform != 'darwin'" },
     { name = "pyais" },
     { name = "pytest" },
     { name = "pytest-cov" },

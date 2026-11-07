@@ -51,9 +51,11 @@ marine-global = ["copernicusmarine>=2.2,<3"]
 weathernext = ["xarray", "zarr>=3", "gcsfs", "dask[array]", "eccodes"]
 # Optional satellite basemap rendering. MapLibre Native FFI ships per-backend
 # runtimes; the app detects the package and disables the layer when absent.
+# The Metal runtime is Apple Silicon only; Intel Macs install the FFI loader
+# without a usable backend and the layer reports itself unavailable.
 satellite = [
     "maplibre-native-ffi",
-    "maplibre-native-ffi-runtime-metal; sys_platform == 'darwin'",
+    "maplibre-native-ffi-runtime-metal; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "maplibre-native-ffi-runtime-opengl; sys_platform != 'darwin'",
 ]
 
@@ -73,6 +75,12 @@ test = [
 ]
 dev = [
     "black",
+    # Development relies on the satellite basemap, so a local sync installs
+    # the same optional runtime that `pip install '.[satellite]'` provides.
+    # CI installs the test group only and is unaffected.
+    "maplibre-native-ffi",
+    "maplibre-native-ffi-runtime-metal; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "maplibre-native-ffi-runtime-opengl; sys_platform != 'darwin'",
     {include-group = "test"},
 ]
 

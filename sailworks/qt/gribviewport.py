@@ -242,6 +242,15 @@ SELECTION_ZOOM_REUSE_STEPS = 0.15
 SATELLITE_MARGIN = 256
 
 
+def satellite_status_text(reason):
+    """One-line, bounded satellite failure text for the map status label."""
+    lines = (reason or "").strip().splitlines()
+    detail = lines[0] if lines else ""
+    if len(detail) > 72:
+        detail = detail[:69] + "…"
+    return f"Satellite unavailable — {detail}" if detail else "Satellite unavailable"
+
+
 def _selection_translation(first, second):
     """Logical-pixel translation from ``first`` to ``second`` at one zoom."""
     dx = first._lon_to_x(first._center_lon) - first._lon_to_x(
@@ -2752,6 +2761,13 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     self._world, "_world_placement", QRectF(*world_placement(camera))
                 )
 
+        def _satellite_unavailable(self, reason):
+            """Record a terminal satellite failure and show it in the scene."""
+            self._satellite_error = reason
+            self._satellite_fatal = True
+            logger.warning("Satellite basemap unavailable: %s", reason)
+            self._set_satellite_status(satellite_status_text(reason))
+
         def _start_satellite(self):
             """Create the satellite worker on first use; report why it cannot."""
             if self._satellite_worker is not None:
@@ -2759,15 +2775,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             if self._satellite_fatal:
                 return False
             if self._satellite is None:
-                self._satellite_error = "satellite layer is not in the scene"
-                self._satellite_fatal = True
+                self._satellite_unavailable("satellite layer is not in the scene")
                 return False
             from .satellite import SatelliteWorker, available, configured_source
 
             if not available():
-                self._satellite_error = "MapLibre satellite support is not installed"
-                self._satellite_fatal = True
-                logger.info("Satellite basemap unavailable: %s", self._satellite_error)
+                self._satellite_unavailable(
+                    "MapLibre is not installed (pip install '.[satellite]')"
+                )
                 return False
             try:
                 source = configured_source(
@@ -2778,9 +2793,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                     cache_dir = str(Path(self._chart_data_dir) / "satellite" / "cache")
                 worker = SatelliteWorker(source, cache_dir)
             except Exception as exc:  # noqa: BLE001 - display state, not a crash
-                self._satellite_error = str(exc)
-                self._satellite_fatal = True
-                logger.warning("Satellite basemap unavailable: %s", exc)
+                self._satellite_unavailable(str(exc))
                 return False
             worker.rendered.connect(
                 self._satellite_rendered, Qt.ConnectionType.QueuedConnection
@@ -3031,7 +3044,7 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 logger.warning("Satellite basemap frame unavailable: %s", reason)
             self._satellite_error = reason
             self._satellite_retry_at = time.monotonic() + 15.0
-            self._set_satellite_status("Satellite unavailable")
+            self._set_satellite_status(satellite_status_text(reason))
             retry = getattr(self, "_satellite_retry_timer", None)
             if retry is not None:
                 retry.start(15000)

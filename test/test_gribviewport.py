@@ -2079,3 +2079,14 @@ def test_wiring_a_plain_qquickitem_does_not_raise():
     assert _connect_signal(item, "sourceErrorChanged", lambda *args: None) is False
     if hasattr(item, "shaderErrorChanged"):
         assert _connect_signal(item, "shaderErrorChanged", lambda *args: None) is True
+
+
+def test_satellite_status_text_is_bounded_and_informative():
+    assert gribviewport.satellite_status_text("") == "Satellite unavailable"
+    assert gribviewport.satellite_status_text("MapLibre is not installed") == (
+        "Satellite unavailable — MapLibre is not installed"
+    )
+    text = gribviewport.satellite_status_text(f"  {'x' * 200}\nsecond line")
+    assert text.startswith("Satellite unavailable — ")
+    assert "\n" not in text
+    assert len(text) <= len("Satellite unavailable — ") + 72

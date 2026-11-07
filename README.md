@@ -97,7 +97,14 @@ The optional satellite basemap uses MapLibre Native and needs Python 3.12:
 
 ```bash
 pip install ".[satellite]"
+# or, with uv in a development checkout:
+uv sync --extra satellite
 ```
+
+A local `uv sync` already installs it through the `dev` dependency group, and
+`make setup-macos` installs it on Apple Silicon. The MapLibre Metal runtime is
+Apple Silicon only; elsewhere the layer reports itself unavailable instead of
+rendering a blank map.
 
 It renders online imagery by default. Drop a `.pmtiles` or `.mbtiles` pack in the
 `satellite` folder of the application data directory to use it offline; the layer is
