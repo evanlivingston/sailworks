@@ -105,7 +105,7 @@ The seven gaps, as named in [`grib-architecture-analysis.md`](grib-architecture-
 | G3 | Spatial interpolation: CPU Python loops | **Closed** | D2 | [#65](https://github.com/evanlivingston/sailworks/issues/65) |
 | G4 | Pipeline model: strictly serial stages | **Closed** | D3 | [#66](https://github.com/evanlivingston/sailworks/issues/66) |
 | G5 | Time scrubbing: two-timestep, view-specific restage | **Closed** | D4 | [#67](https://github.com/evanlivingston/sailworks/issues/67) |
-| G6 | Memory management: per-worker CPU byte limits, no GPU budget | **Closed** | D1 | [#64](https://github.com/evanlivingston/sailworks/issues/64) |
+| G6 | Memory management: per-worker CPU byte limits, no GPU budget | **Closed** | D1 | [#64](https://github.com/evanlivingston/sailworks/issues/64) **Amended by [#109](https://github.com/evanlivingston/sailworks/issues/109):** decoded CPU bands are exact-identity keyed and one session-scoped byte-accounted cache is shared by wind, wave and chart consumers; each consumer keeps its own GDAL handle. |
 | G7 | Threading model: serialized daemon threads, no overlap | **Closed** | D3 | [#66](https://github.com/evanlivingston/sailworks/issues/66) |
 
 The analysis's comparison table additionally lists *resource granularity* (full-frame textures). That is a consequence of G2 and is addressed by D1, not tracked separately.

@@ -1,7 +1,12 @@
-"""Worker-private cache limits must not change sampling or source selection."""
+"""Shared decoded bands: deduplication, exact identity and lifecycle.
+
+A session's cache is byte-accounted once, shared by every consumer and keyed
+by exact source identity.  These checks are headless.
+"""
 
 from collections import OrderedDict
 from datetime import timedelta
+from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -32,71 +37,153 @@ def private_source(source, cache):
     )
 
 
-def read(cache, owner, band):
-    values = owner.arrays
-    cache.reserve(owner, band, 32)
-    value = values.get(band)
-    if value is None:
-        value = np.full((2, 2), band, dtype=np.float64)
-        values[band] = value
-    values.move_to_end(band)
-    return value
-
-
-def cache_owner(cache):
+def cache_owner(cache, identity="same-source"):
     class Owner:
         pass
 
     owner = Owner()
+    owner.cache_identity = identity
     owner.arrays = SourceBandCache(cache, owner)
     return owner
 
 
-def test_shared_lru_evicts_across_sources_and_protects_recent_hits():
-    cache = DecodedBandCache(64)
-    first, second = cache_owner(cache), cache_owner(cache)
-    read(cache, first, 1)
-    read(cache, second, 1)
-    read(cache, first, 1)
-    read(cache, second, 2)
-    assert 1 in first.arrays
-    assert 1 not in second.arrays
-    assert 2 in second.arrays
-    assert cache.statistics() == dict(
-        limit_bytes=64,
-        current_bytes=64,
-        peak_bytes=64,
-        retained_bands=2,
-        hits=1,
-        misses=3,
-        evictions=1,
-    )
+def read(cache, owner, band, value=None):
+    key = cache.key(owner, band)
+    value = np.full((2, 2), band if value is None else value, dtype=np.float64)
+    return cache.read(owner, key, 32, lambda: value)
 
 
-def test_source_clear_releases_only_its_own_retention():
+def test_shared_cache_decodes_one_band_once_for_two_owners():
     cache = DecodedBandCache(64)
     first, second = cache_owner(cache), cache_owner(cache)
-    read(cache, first, 1)
+    value = read(cache, first, 1)
+    assert read(cache, second, 1) is value
+    assert not value.flags.writeable
+    assert cache.statistics()["decodes"] == 1
+    assert cache.statistics()["hits"] == 1
+    assert cache.statistics()["current_bytes"] == 32
+    assert 1 in first.arrays and 1 in second.arrays
+
+
+def test_concurrent_consumers_wait_for_the_single_decode():
+    cache = DecodedBandCache(64)
+    first, second = cache_owner(cache), cache_owner(cache)
+    started = Event()
+    release = Event()
+    results = []
+    calls = []
+
+    def loader():
+        calls.append(1)
+        started.set()
+        assert release.wait(5)
+        return np.full((2, 2), 7.0)
+
+    def consume(owner):
+        results.append(cache.read(owner, cache.key(owner, 1), 32, loader))
+
+    one = Thread(target=consume, args=(first,))
+    two = Thread(target=consume, args=(second,))
+    one.start()
+    assert started.wait(5)
+    two.start()
+    # The second caller is waiting on the in-flight exact key, not decoding.
+    release.set()
+    one.join(5)
+    two.join(5)
+    assert not one.is_alive() and not two.is_alive()
+    assert calls == [1]
+    assert results[0] is results[1]
+    assert cache.statistics()["decodes"] == 1
+    assert cache.statistics()["deduplicated"] == 1
+
+
+def test_distinct_source_identities_do_not_share_a_band():
+    cache = DecodedBandCache(64)
+    first, second = cache_owner(cache, "file-a"), cache_owner(cache, "file-b")
+    one = read(cache, first, 1, value=1)
+    two = read(cache, second, 1, value=2)
+    assert one is not two
+    assert one[0, 0] == 1 and two[0, 0] == 2
+    assert cache.statistics()["decodes"] == 2
+
+
+def test_owner_release_keeps_the_entry_until_the_last_consumer_leaves():
+    cache = DecodedBandCache(64)
+    first, second = cache_owner(cache), cache_owner(cache)
+    value = read(cache, first, 1)
     read(cache, second, 1)
     first.arrays.clear()
-    assert cache.current_bytes == 32
+    assert 1 not in first.arrays
     assert 1 in second.arrays
+    assert cache.current_bytes == 32
+    assert read(cache, second, 1) is value
     second.arrays.clear()
+    # The last consumer release frees the retained plane.
     assert cache.current_bytes == 0
     assert cache.statistics()["retained_bands"] == 0
 
 
-def test_oversized_band_fails_before_gdal_read():
+def test_eviction_removes_the_band_from_every_local_view():
+    cache = DecodedBandCache(64)
+    first, second = cache_owner(cache), cache_owner(cache)
+    read(cache, first, 1)
+    read(cache, second, 1)
+    read(cache, first, 2)
+    read(cache, first, 3)  # evicts band 1 from both consumers
+    assert 1 not in first.arrays
+    assert 1 not in second.arrays
+    assert cache.current_bytes == 64
+    assert cache.statistics()["evictions"] == 1
+
+
+def test_cancelled_owner_does_not_retain_an_in_flight_decode():
+    cache = DecodedBandCache(64)
+
+    class Owner:
+        cache_identity = "cancelled"
+        dataset = object()
+
+    owner = Owner()
+    owner.arrays = SourceBandCache(cache, owner)
+    started = Event()
+    release = Event()
+    result = []
+
+    def loader():
+        started.set()
+        assert release.wait(5)
+        return np.ones((2, 2))
+
+    def consume():
+        result.append(cache.read(owner, cache.key(owner, 1), 32, loader))
+
+    worker = Thread(target=consume)
+    worker.start()
+    assert started.wait(5)
+    owner.dataset = None  # the consumer closes while the decode is in flight
+    owner.arrays.clear()
+    release.set()
+    worker.join(5)
+    assert not worker.is_alive()
+    assert np.array_equal(result[0], np.ones((2, 2)))
+    assert cache.current_bytes == 0
+    assert 1 not in owner.arrays
+
+
+def test_oversized_band_fails_before_any_decode():
     cache = DecodedBandCache(31)
     index = object.__new__(DisplayGridIndex)
     index.dataset = SimpleNamespace(GetRasterBand=Mock())
     index.width = index.height = 2
     index.band_cache = cache
+    index.cache_identity = ("source", None)
     index.arrays = SourceBandCache(cache, index)
-    with pytest.raises(WeatherBandLimitError, match="worker limit"):
+    with pytest.raises(WeatherBandLimitError, match="limit"):
         index.array(SimpleNamespace(band=1))
     index.dataset.GetRasterBand.assert_not_called()
     assert cache.current_bytes == 0
+    assert cache.statistics()["decodes"] == 0
 
 
 def test_budget_exception_cannot_be_swallowed_as_missing_weather():
@@ -108,11 +195,13 @@ def test_budget_exception_cannot_be_swallowed_as_missing_weather():
 def test_unexpected_decoded_size_does_not_corrupt_existing_accounting():
     cache = DecodedBandCache(32)
     owner = cache_owner(cache)
-    original = read(cache, owner, 1)
+    key = cache.key(owner, 1)
     with pytest.raises(WeatherBandLimitError):
-        owner.arrays[1] = np.ones((3, 3), dtype=np.float64)
-    assert cache.current_bytes == 32
-    assert owner.arrays[1] is original
+        cache.read(owner, key, 32, lambda: np.ones((3, 3), dtype=np.float64))
+    assert cache.current_bytes == 0
+    assert cache.statistics()["retained_bands"] == 0
+    # A failed resize must not leave the key claimed as in flight.
+    assert cache.read(owner, key, 32, lambda: np.ones((2, 2))) is not None
 
 
 @pytest.mark.parametrize("limit", [0, -1])
@@ -121,7 +210,7 @@ def test_budget_requires_positive_limit(limit):
         DecodedBandCache(limit)
 
 
-def test_per_source_six_band_cap_remains_and_close_releases_it(gribs):
+def test_local_six_band_cap_remains_and_session_outlives_the_index(gribs):
     source = gribs.file(sum((gribs.field(hour) for hour in range(4)), []))
     cache = DecodedBandCache(4096)
     private = private_source(source, cache)
@@ -135,8 +224,10 @@ def test_per_source_six_band_cap_remains_and_close_releases_it(gribs):
         assert "_sampling" not in source.__dict__
     finally:
         private.close()
+    assert len(index.arrays) == 0
     assert cache.current_bytes == 0
-    assert index.dataset is None
+    cache.clear()
+    assert cache.current_bytes == 0
 
 
 def test_eviction_reload_preserves_exact_values_masks_and_point_sources(gribs):
@@ -172,6 +263,8 @@ def test_eviction_reload_preserves_exact_values_masks_and_point_sources(gribs):
     finally:
         for source in private:
             source.close()
+    assert cache.current_bytes == 0
+    cache.clear()
     assert cache.current_bytes == 0
 
 

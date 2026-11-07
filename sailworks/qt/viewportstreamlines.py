@@ -150,10 +150,12 @@ def wind_columns(sampler, camera, cancelled, uv=None, lattice=None):
 class ViewportStreamlineModel:
     """Latest-camera-only worker; forecast handles never leave its thread."""
 
-    def __init__(self, paths, display_identity=None, gpu_trace=True):
+    def __init__(self, paths, display_identity=None, gpu_trace=True, session=None):
         self.paths = tuple(paths)
         self.display_identity = display_identity
         self.gpu_trace = bool(gpu_trace)
+        self.session = session
+        self._owns_session = session is None
         self.on_change = None
         self.error = ""
         self._condition = Condition()
@@ -411,21 +413,15 @@ class ViewportStreamlineModel:
         sources,
     ):
         try:
-            bands = decoded_band_cache_type()
+            session = self.session
+            if session is None:
+                from sailworks.rendering.weathercache import ForecastSession
+
+                session = ForecastSession()
+                self.session = session
             for path in self.paths:
-                meta = grib_type.parse_metadata(path)
                 sources.append(
-                    display_weather_source_type(
-                        meta.path,
-                        meta.name,
-                        meta.centre,
-                        meta.bounds,
-                        meta.start_time,
-                        meta.last_forecast,
-                        meta.model_name,
-                        band_cache=bands,
-                        display_identity=self.display_identity,
-                    )
+                    session.source(path, display_identity=self.display_identity)
                 )
             sampler = weather_sampler_type(sources)
             if not sources or len(sampler.indices) != len(sources):
@@ -491,3 +487,5 @@ class ViewportStreamlineModel:
             self._state = "hidden"
             self.on_change = None
             self._condition.notify_all()
+        if self._owns_session and self.session is not None:
+            self.session.close()
