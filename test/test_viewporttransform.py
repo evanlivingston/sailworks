@@ -26,18 +26,6 @@ class Camera:
     height: int = 700
 
 
-def production_view(camera):
-    return BarbView(
-        int(camera.width),
-        int(camera.height),
-        float(camera.center_lat),
-        float(camera.center_lon),
-        float(camera.zoom),
-        "standard",
-        True,
-    )
-
-
 def expected_translation(reference, camera):
     view = BarbView(
         int(reference.width),

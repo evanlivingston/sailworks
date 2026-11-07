@@ -761,21 +761,6 @@ class TestStreamlineShaderPixels(unittest.TestCase):
 
         cls.app = QApplication.instance() or QApplication([])
 
-    @staticmethod
-    def _batch_delegates(layer):
-        """Yield the streamline batch delegates.
-
-        Repeater delegates are visual children, not QObject children, so
-        findChildren() never reaches them.
-        """
-        pending = [layer]
-        while pending:
-            item = pending.pop()
-            for child in item.childItems():
-                if child.objectName() == "streamlineBatch":
-                    yield child
-                pending.append(child)
-
     def _wait_until_ready(self, layer, window):
         """Render frames until the layer is ready.
 

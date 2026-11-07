@@ -1,7 +1,6 @@
 """Run Qt integration checks in a separate process."""
 
 import json
-import math
 import os
 import sys
 import tempfile
@@ -14,7 +13,7 @@ from unittest.mock import patch
 
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QApplication, QToolBar, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from sailworks.core.datasource import NMEADataPacket
 from sailworks.core.storage import Storage
@@ -2869,8 +2868,6 @@ class QtPreviewChecks(unittest.TestCase):
             lookup.assert_not_called()
 
     def test_cursor_depth_lookup_skips_stale_view_and_leave(self):
-        from PySide6.QtCore import QEvent
-
         canvas = self.window.map
         canvas.set_wind_visible(False)
         with patch.object(canvas.charts, "depth_at", return_value=None) as lookup:
@@ -3449,7 +3446,6 @@ class QtPreviewChecks(unittest.TestCase):
 
     def test_marine_cancel_and_close_discard_late_downloads_and_progress(self):
         current, _ = self.marine_fixture()
-        panel = self.window.marine_panels["currents"]
         manager = self.controller.core.marine_manager
         self.window._ensure_library()
         self.drain()
@@ -4047,75 +4043,6 @@ class QtPreviewChecks(unittest.TestCase):
                 self.assertEqual(
                     target.pixelColor(100 * factor, 100 * factor), QColor("#39954c")
                 )
-
-    @staticmethod
-    def _native_pinch(kind, value=0.0, pointer=QPointF(83, 71)):
-        from PySide6.QtGui import QNativeGestureEvent, QPointingDevice
-
-        return QNativeGestureEvent(
-            kind,
-            QPointingDevice.primaryPointingDevice(),
-            2,
-            pointer,
-            pointer,
-            pointer,
-            value,
-            QPointF(),
-        )
-
-    @staticmethod
-    def _precise_scroll(
-        dx=0,
-        dy=0,
-        phase=Qt.ScrollPhase.ScrollUpdate,
-        modifiers=Qt.KeyboardModifier.NoModifier,
-        inverted=False,
-    ):
-        from PySide6.QtCore import QPoint
-        from PySide6.QtGui import QWheelEvent
-
-        return QWheelEvent(
-            QPointF(83, 71),
-            QPointF(83, 71),
-            QPoint(dx, dy),
-            QPoint(0, dy * 8),
-            Qt.MouseButton.NoButton,
-            modifiers,
-            phase,
-            inverted,
-        )
-
-    def _enable_motion_settings(self):
-        # The common fixture skips disk loading; initialize notifications using
-        # a private settings path before exercising real preference callbacks.
-        with patch("sailworks.core.storage.DATA_DIR", str(self.path)):
-            ORIGINAL_STORAGE_LOAD(self.controller.settings)
-
-    @staticmethod
-    def _motion_wheel(pointer=QPointF(83, 71)):
-        from PySide6.QtCore import QPoint
-
-        return SimpleNamespace(
-            position=lambda: pointer,
-            angleDelta=lambda: QPoint(0, 120),
-            pixelDelta=lambda: QPoint(0, 0),
-            accept=lambda: None,
-        )
-
-    @staticmethod
-    def _fling_canvas(canvas, clock):
-        def event(x, y):
-            return SimpleNamespace(
-                button=lambda: Qt.MouseButton.LeftButton, position=lambda: QPointF(x, y)
-            )
-
-        canvas.mousePressEvent(event(100, 100))
-        clock[0] += 0.04
-        canvas.mouseMoveEvent(event(125, 110))
-        clock[0] += 0.02
-        canvas.mouseMoveEvent(event(145, 120))
-        clock[0] += 0.005
-        canvas.mouseReleaseEvent(event(145, 120))
 
 
 if __name__ == "__main__":
