@@ -6,6 +6,9 @@ from typing import cast
 
 
 def main(argv=None):
+    import multiprocessing
+
+    multiprocessing.freeze_support()
     parser = argparse.ArgumentParser(description="Sailworks")
     parser.add_argument("--log", help="Load an interpreted NMEA log")
     parser.add_argument(

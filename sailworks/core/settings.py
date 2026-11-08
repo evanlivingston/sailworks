@@ -52,6 +52,9 @@ class SettingsManager(Storage):
         self.mbtilesCharts = []
         self.chartPalette = "cm93"
         self.developerMode = False
+        # Retain each successfully decoded EBL segment in the library by
+        # default; future imports only, never retroactive deletion.
+        self.keepEblOriginals = True
         self.smoothZoom = True
         self.panInertia = True
         self.mapRenderer = "cpu"

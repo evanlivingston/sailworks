@@ -1,8 +1,11 @@
 """Managed, byte-for-byte log originals with independently editable metadata."""
 
 import json
+import multiprocessing
 import os
 import re
+import shutil
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,6 +43,46 @@ def _ebl_series(paths):
     return result
 
 
+class LogImportCancelled(Exception):
+    """Raised when a caller's stop predicate aborts an import."""
+
+
+def _decode_group_to_temp(
+    originals, group, identifier, progress_queue=None, include_log=False
+):
+    """Decode one EBL group into temporary decoded logs.
+
+    This runs in a spawned worker process during parallel imports, so it must
+    not touch the library index or hold any lock.
+    """
+    from .ebllog import iter_ebl_sessions, write_decoded_log
+
+    group = tuple(Path(path) for path in group)
+    originals = Path(originals)
+    originals.mkdir(parents=True, exist_ok=True)
+    staged = []
+    first_log = None
+
+    def report(done, total):
+        if progress_queue is not None:
+            progress_queue.put((identifier, done, total))
+
+    for session_log in iter_ebl_sessions(group, progress=report):
+        if not session_log.entries:
+            continue
+        temporary = originals / f".{identifier}_{len(staged)}.log.tmp"
+        write_decoded_log(session_log, temporary)
+        metadata = LogLibrary._ebl_metadata(session_log)
+        metadata["file_info"]["ebl_session_key"] = LogLibrary._ebl_session_key(
+            group, session_log
+        )
+        metadata["file_info"]["ebl_source"] = str(group[0].parent.resolve())
+        staged.append((temporary, metadata))
+        if first_log is None:
+            first_log = session_log
+    return staged, (first_log if include_log else None)
+
+
 class LogLibrary:
     def __init__(self, directory=None):
         self.directory = Path(directory or Path(DATA_DIR) / "log-library")
@@ -47,6 +90,7 @@ class LogLibrary:
         self.index = self.directory / "index.json"
         self.lock = RLock()
         self.import_lock = RLock()
+        self.keep_ebl_originals = True
         self._entries = {}
         if self.index.exists():
             data = json.loads(self.index.read_text(encoding="utf-8"))
@@ -180,93 +224,105 @@ class LogLibrary:
             raise
         return dict(item)
 
-    def _import_ebl(self, group, progress=None, decode_progress=None):
-        """Decode an EBL (single or stitched) and store one log per session."""
-        from .ebllog import iter_ebl_sessions, write_decoded_log
-
-        group = tuple(group)
-        if not group:
-            raise ValueError("EBL import requires at least one file")
-        if any(path.suffix.lower() != ".ebl" or not path.is_file() for path in group):
-            raise ValueError("EBL segments must be local files")
-        # First check if any path in the group is already a managed file.
+    def _existing_ebl_item(self, group):
         with self.lock:
             for source in group:
-                source_resolved = Path(source).resolve()
+                resolved = Path(source).resolve()
                 for item in self._entries.values():
-                    if self.path(item["id"]).resolve() == source_resolved:
-                        if progress is not None:
-                            total = sum(p.stat().st_size for p in group)
-                            progress(0, total)
-                            progress(total, total)
+                    if self.path(item["id"]).resolve() == resolved:
                         return dict(item)
-        source_signature = self._source_signature(group)
-        with self.lock:
-            existing = next(
+            signature = self._source_signature(group)
+            return next(
                 (
-                    item
+                    dict(item)
                     for item in self._entries.values()
-                    if item.get("source_signature") == source_signature
+                    if item.get("source_signature") == signature
                 ),
                 None,
             )
-        if existing is not None:
-            if progress is not None:
-                total = sum(path.stat().st_size for path in group)
-                progress(0, total)
-                progress(total, total)
-            return dict(existing)
-        identifier = uuid4().hex
+
+    def _retain_group_originals(self, group, identifier):
+        """Hard-link (or copy) each source segment into the library."""
+        if not self.keep_ebl_originals:
+            return []
         self.originals.mkdir(parents=True, exist_ok=True)
-        callback_errors = []
+        existing = {}
+        for item in self._entries.values():
+            for record in (item.get("file_info") or {}).get("ebl_originals", ()):
+                existing.setdefault(record.get("source"), record.get("file"))
+        retained = []
+        for index, source in enumerate(group):
+            source = Path(source).resolve()
+            name = existing.get(str(source))
+            if not name:
+                name = f"{identifier}_{index}_{source.name}"
+            target = self.originals / name
+            if not target.exists():
+                try:
+                    os.link(source, target)
+                except OSError:
+                    shutil.copy2(source, target)
+            retained.append(
+                {
+                    "file": target.name,
+                    "source": str(source),
+                    "size": source.stat().st_size,
+                }
+            )
+        return retained
 
-        def report_decode(done, total):
-            if decode_progress is None:
-                return
-            try:
+    def decode_group_to_temp(
+        self, group, identifier, decode_progress=None, stop=None, include_log=False
+    ):
+        """Decode one EBL group into temporary logs, without installing them."""
+
+        def report(done, total):
+            if stop is not None and stop():
+                raise LogImportCancelled()
+            if decode_progress is not None:
                 decode_progress(done, total)
-            except Exception as exc:
-                callback_errors.append(exc)
-                raise
 
+        from .ebllog import iter_ebl_sessions, write_decoded_log
+
+        group = tuple(Path(path) for path in group)
+        self.originals.mkdir(parents=True, exist_ok=True)
         staged = []
         first_log = None
-        try:
-            for session_log in iter_ebl_sessions(group, progress=report_decode):
-                if not session_log.entries:
-                    continue
-                temporary = self.originals / f".{identifier}_{len(staged)}.log.tmp"
-                staged.append((temporary, None))
-                write_decoded_log(session_log, temporary)
-                metadata = self._ebl_metadata(session_log)
-                metadata["file_info"]["ebl_session_key"] = self._ebl_session_key(
-                    group, session_log
-                )
-                metadata["file_info"]["ebl_source"] = str(group[0].parent.resolve())
-                staged[-1] = (temporary, metadata)
-                if first_log is None:
-                    first_log = session_log
-        except Exception:
-            for temporary, _ in staged:
-                temporary.unlink(missing_ok=True)
-            if callback_errors:
-                raise callback_errors[0]
-            if staged:
-                raise
-            if len(group) == 1:
-                return self._import_original(group[0], progress=progress)
-            return self._import_ebl_archive(
-                group, identifier, source_signature, progress
+        for session_log in iter_ebl_sessions(group, progress=report):
+            if not session_log.entries:
+                continue
+            temporary = self.originals / f".{identifier}_{len(staged)}.log.tmp"
+            write_decoded_log(session_log, temporary)
+            metadata = self._ebl_metadata(session_log)
+            metadata["file_info"]["ebl_session_key"] = self._ebl_session_key(
+                group, session_log
             )
+            metadata["file_info"]["ebl_source"] = str(group[0].parent.resolve())
+            staged.append((temporary, metadata))
+            if first_log is None:
+                first_log = session_log
+        return staged, first_log
 
+    def install_group(
+        self,
+        group,
+        identifier,
+        source_signature,
+        staged,
+        first_log=None,
+        progress=None,
+    ):
+        """Install decoded session logs sequentially under the library lock."""
         if not staged:
-            # Preserve unsupported/malformed EBL for later inspection.
             if len(group) == 1:
                 return self._import_original(group[0], progress=progress)
             return self._import_ebl_archive(
                 group, identifier, source_signature, progress
             )
-
+        retained = self._retain_group_originals(group, identifier)
+        if retained:
+            for _, metadata in staged:
+                metadata["file_info"]["ebl_originals"] = retained
         multiple = len(staged) > 1
         with self.lock:
             known = {
@@ -357,6 +413,41 @@ class LogLibrary:
             result["_decoded_log"] = replace(first_log, path=str(first_path))
         return result
 
+    def _import_ebl(self, group, progress=None, decode_progress=None, stop=None):
+        """Decode an EBL (single or stitched) and store one log per session."""
+        group = tuple(Path(path) for path in group)
+        if not group:
+            raise ValueError("EBL import requires at least one file")
+        if any(path.suffix.lower() != ".ebl" or not path.is_file() for path in group):
+            raise ValueError("EBL segments must be local files")
+        existing = self._existing_ebl_item(group)
+        if existing is not None:
+            if progress is not None:
+                total = sum(path.stat().st_size for path in group)
+                progress(0, total)
+                progress(total, total)
+            return existing
+        identifier = uuid4().hex
+        source_signature = self._source_signature(group)
+        try:
+            staged, first_log = self.decode_group_to_temp(
+                group, identifier, decode_progress, stop, include_log=True
+            )
+        except LogImportCancelled:
+            raise
+        except Exception:
+            # Preserve a failed or unsupported archive for later inspection.
+            for temporary in self.originals.glob(f".{identifier}_*.log.tmp"):
+                temporary.unlink(missing_ok=True)
+            if len(group) == 1:
+                return self._import_original(group[0], progress=progress)
+            return self._import_ebl_archive(
+                group, identifier, source_signature, progress
+            )
+        return self.install_group(
+            group, identifier, source_signature, staged, first_log, progress
+        )
+
     def _import_ebl_archive(self, group, identifier, source_signature, progress):
         """Copy an unsupported EBL series unchanged into the library."""
         target = self.originals / f"{identifier}.ebl"
@@ -428,6 +519,7 @@ class LogLibrary:
                     if getattr(session_log, "timestamp_origin", None) is not None
                     else None
                 ),
+                "description": getattr(session_log, "ebl_description", None),
                 "timestamped": session_log.timestamped,
                 "skipped": session_log.skipped,
                 "frame_count": session_log.frame_count,
@@ -470,28 +562,110 @@ class LogLibrary:
         """Group selected split EBL siblings in first-occurrence import order."""
         return _ebl_series(paths)
 
-    def import_paths(self, paths, progress=None, decode_progress=None):
+    def import_paths(self, paths, progress=None, decode_progress=None, stop=None):
         """Import paths, concatenating selected sibling vendor segments losslessly."""
         with self.import_lock:
-            return self._import_paths(paths, progress, decode_progress)
+            return self._import_paths(paths, progress, decode_progress, stop)
 
-    def _import_paths(self, paths, progress=None, decode_progress=None):
+    def _import_paths(self, paths, progress=None, decode_progress=None, stop=None):
         groups = self.group_paths(paths)
-        imported = []
-        for group in groups:
-            if len(group) == 1 and group[0].suffix.lower() != ".ebl":
-                imported.append(self.import_path(group[0], progress=progress))
-                continue
+        results = {}
+        ebl_groups = []
+        other_groups = []
+        for index, group in enumerate(groups):
             if all(path.suffix.lower() == ".ebl" for path in group):
-                imported.append(
-                    self._import_ebl(
-                        group, progress=progress, decode_progress=decode_progress
+                ebl_groups.append((index, group))
+            else:
+                other_groups.append((index, group))
+        prepared = []
+        for index, group in ebl_groups:
+            existing = self._existing_ebl_item(group)
+            if existing is not None:
+                results[index] = existing
+            else:
+                prepared.append((index, group))
+        if len(prepared) > 1:
+            installed = set()
+            try:
+                decoded = self._decode_groups_parallel(prepared, decode_progress, stop)
+                for index, group, identifier, signature, staged in decoded:
+                    results[index] = self.install_group(
+                        group, identifier, signature, staged, None, progress
                     )
+                    installed.add(index)
+            except LogImportCancelled:
+                raise
+            except Exception:
+                for index, group in prepared:
+                    if index not in installed:
+                        results[index] = self._import_ebl(
+                            group, progress, decode_progress, stop
+                        )
+        else:
+            for index, group in prepared:
+                results[index] = self._import_ebl(
+                    group, progress, decode_progress, stop
                 )
-                continue
-            for path in group:
-                imported.append(self.import_path(path, progress=progress))
-        return imported
+        for index, group in other_groups:
+            if len(group) == 1:
+                results[index] = self.import_path(group[0], progress=progress)
+            else:
+                for path in group:
+                    results[index] = self.import_path(path, progress=progress)
+        return [results[index] for index in sorted(results)]
+
+    def _decode_groups_parallel(self, prepared, decode_progress=None, stop=None):
+        """Decode independent EBL groups in spawned processes."""
+        from concurrent.futures import FIRST_COMPLETED, wait
+
+        context = multiprocessing.get_context("spawn")
+        total = sum(sum(path.stat().st_size for path in group) for _, group in prepared)
+        results = []
+        completed = 0
+        executor = ProcessPoolExecutor(
+            max_workers=min(len(prepared), os.cpu_count() or 1),
+            mp_context=context,
+        )
+        identifiers = {}
+        try:
+            futures = {}
+            for index, group in prepared:
+                identifier = uuid4().hex
+                identifiers[index] = identifier
+                signature = self._source_signature(group)
+                future = executor.submit(
+                    _decode_group_to_temp,
+                    str(self.originals),
+                    tuple(str(path) for path in group),
+                    identifier,
+                    None,
+                    False,
+                )
+                futures[future] = (index, group, identifier, signature)
+            pending = set(futures)
+            while pending:
+                if stop is not None and stop():
+                    for future in pending:
+                        future.cancel()
+                    raise LogImportCancelled()
+                done, pending = wait(pending, timeout=0.2, return_when=FIRST_COMPLETED)
+                for future in done:
+                    index, group, identifier, signature = futures[future]
+                    staged, _ = future.result()
+                    results.append((index, group, identifier, signature, staged))
+                    completed += sum(path.stat().st_size for path in group)
+                    if decode_progress is not None and total:
+                        decode_progress(min(completed, total), total)
+            return results
+        except BaseException:
+            for index in identifiers:
+                for temporary in self.originals.glob(
+                    f".{identifiers[index]}_*.log.tmp"
+                ):
+                    temporary.unlink(missing_ok=True)
+            raise
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
 
     @staticmethod
     def _source_signature(paths):

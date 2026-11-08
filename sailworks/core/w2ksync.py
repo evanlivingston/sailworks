@@ -75,6 +75,7 @@ class W2KSync:
         self.manifest_path = Path(manifest or base / "w2k-sync.json")
         self.staging = Path(staging or base / "w2k")
         self._manifest = self._load_manifest()
+        self._retained_sources = None
 
     # -- manifest ---------------------------------------------------------
 
@@ -107,11 +108,33 @@ class W2KSync:
         devices = self._manifest.setdefault("devices", {})
         return devices.setdefault(serial, {"files": {}, "imported": []})
 
+    def _library_has_original(self, path):
+        """True when the library retained this staged segment as an original."""
+        if self._retained_sources is None:
+            self._retained_sources = {
+                record.get("source")
+                for item in self.library.entries()
+                for record in (item.get("file_info") or {}).get("ebl_originals", ())
+            }
+        return str(Path(path).resolve()) in self._retained_sources
+
+    def _folder_has_replay(self, serial, folder):
+        source = str((self.staging / serial / folder).resolve())
+        for item in self.library.entries():
+            info = item.get("file_info") or {}
+            if info.get("ebl_source") == source and info.get("entries", 0) > 0:
+                return True
+        return False
+
     def present(self, serial, file):
         files = self._state(serial).get("files", {})
         if files.get(file.key) != file.size:
             return False
-        return (self.staging / serial / file.folder / file.name).is_file()
+        staged = self.staging / serial / file.folder / file.name
+        if staged.is_file() or self._library_has_original(staged):
+            return True
+        retained = self._state(serial).get("retained", {})
+        return retained.get(file.key) == file.size
 
     @staticmethod
     def _folder_signature(entries):
@@ -285,31 +308,68 @@ class W2KSync:
 
         summary.skipped = len(entries) - len(pending_files)
 
+        jobs = []
         for folder, signature in import_folders:
-            if stop is not None and stop():
-                raise W2KSyncCancelled()
             folder_entries = folders[folder]
             root = (self.staging / serial / folder).resolve()
             paths = [root / entry.file.name for entry in folder_entries]
             if not all(path.is_file() for path in paths):
                 continue
+            jobs.append((folder, signature, paths, folder_entries))
+        if jobs:
+            from .loglibrary import LogLibrary
+
             if message is not None:
-                message(f"Importing {folder}")
-            folder_bytes = sum(entry.file.size for entry in folder_entries)
+                message(f"Importing {len(jobs)} folder{'s' if len(jobs) != 1 else ''}")
+            keep = getattr(self.library, "keep_ebl_originals", True)
 
-            def on_decode(read, total, base=import_done):
-                if progress is None or not total_bytes:
-                    return
-                progress(round(100 * (download_done + base + read) / total_bytes))
+            def mark(folder, signature, paths, folder_entries):
+                nonlocal import_done
+                import_done += sum(entry.file.size for entry in folder_entries)
+                imported[folder] = signature
+                if not keep and self._folder_has_replay(serial, folder):
+                    # The decoded log is installed; the staged copy is no
+                    # longer needed and the manifest prevents re-download.
+                    retained = state.setdefault("retained", {})
+                    for path, entry in zip(paths, folder_entries):
+                        path.unlink(missing_ok=True)
+                        retained[entry.file.key] = entry.file.size
+                self._save_manifest()
+                summary.imported += 1
+                self._retained_sources = None
+                report()
 
-            self.library.import_paths(
-                [str(path) for path in paths], decode_progress=on_decode
-            )
-            import_done += folder_bytes
-            imported[folder] = signature
-            self._save_manifest()
-            summary.imported += 1
-            report()
+            if isinstance(self.library, LogLibrary) and len(jobs) > 1:
+                all_paths = [path for _, _, paths, _ in jobs for path in paths]
+
+                def on_decode(read, total, base=import_done):
+                    if progress is None or not total_bytes:
+                        return
+                    progress(round(100 * (download_done + base + read) / total_bytes))
+
+                self.library.import_paths(
+                    [str(path) for path in all_paths],
+                    decode_progress=on_decode,
+                    stop=stop,
+                )
+                for job in jobs:
+                    mark(*job)
+            else:
+                for folder, signature, paths, folder_entries in jobs:
+                    if stop is not None and stop():
+                        raise W2KSyncCancelled()
+
+                    def on_decode(read, total, base=import_done):
+                        if progress is None or not total_bytes:
+                            return
+                        progress(
+                            round(100 * (download_done + base + read) / total_bytes)
+                        )
+
+                    self.library.import_paths(
+                        [str(path) for path in paths], decode_progress=on_decode
+                    )
+                    mark(folder, signature, paths, folder_entries)
 
         if message is not None:
             message(summary.describe())
