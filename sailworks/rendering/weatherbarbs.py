@@ -153,14 +153,22 @@ def field_window(view, lattice=FIELD_LATTICE_PX):
 
 
 def _node_key(point):
-    """A rounding-tolerant key for a native node.
+    """A rounding-tolerant integer key for a native node.
 
     The same grid node is enumerated from two different windows, and the
     window's west edge enters the longitude arithmetic, so the two results
     can differ in the last bits.  The key is stable under that difference and
-    still separates two nodes that are a hundredth of a millimetre apart.
+    still separates two nodes a nanodegree apart.  One packed integer replaces
+    the previous ``(lat, lon)`` tuple: it is cheaper to build and hash, and it
+    removes two Python objects per node from the memo path.
+
+    ``lat`` and ``lon`` are quantised to nanodegrees; the longitude is added
+    into the low 64 bits, which is injective because its range is far below
+    ``2**64``.
     """
-    return (round(float(point[0]), 9), round(float(point[1]), 9))
+    latitude = int(round(float(point[0]) * 1_000_000_000))
+    longitude = int(round(float(point[1]) * 1_000_000_000))
+    return (latitude << 64) + longitude
 
 
 class FieldCoverageError(Exception):

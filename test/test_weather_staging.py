@@ -128,6 +128,66 @@ def test_projected_grid_relative_vectors_are_rotated_by_existing_sampler(gribs):
     assert_parity(sampler, staged, lats, lons, [0.0003, 0.25, 1.5, 2.999])
 
 
+def test_node_key_is_one_packed_stable_integer():
+    """The memo key is one integer, stable under last-bit window differences."""
+    from sailworks.rendering.weatherbarbs import _node_key
+
+    key = _node_key((48.0, -123.0))
+    assert isinstance(key, int)
+    assert _node_key((48.0 + 1e-12, -123.0 - 1e-12)) == key
+    assert _node_key((48.0, -123.000000002)) != key
+    keys = {
+        _node_key((latitude, longitude))
+        for latitude in (-48.0, 48.0)
+        for longitude in (-123.0, 123.0)
+    }
+    assert len(keys) == 4
+
+
+@pytest.mark.parametrize("offset_seconds", [1.0, 5400.0])
+def test_a_memo_hit_is_not_written_again(gribs, offset_seconds):
+    """Only the nodes sampled in a pass are added to the memo."""
+    from sailworks.rendering.weatherbarbs import _node_key
+
+    sampler = WeatherSampler([gribs.file(gribs.field(0) + gribs.field(3), end=3)])
+    stamp = START.timestamp() + offset_seconds
+    namespace = ("source-set", stamp - 1, stamp + 1)
+    lat, lon = np.mgrid[-0.4:0.4:5j, -0.4:0.0:5j]
+    memo = NodeSampleMemo()
+    put_calls = []
+    original_put = memo.put_sample
+
+    def counted(*args, **kwargs):
+        put_calls.append(args)
+        return original_put(*args, **kwargs)
+
+    memo.put_sample = counted
+    first = stage_wind(
+        sampler,
+        stamp,
+        lat,
+        lon,
+        memo=memo,
+        memo_namespace=namespace,
+        node_key=_node_key,
+    )
+    assert put_calls
+    put_calls.clear()
+    second = stage_wind(
+        sampler,
+        stamp,
+        lat,
+        lon,
+        memo=memo,
+        memo_namespace=namespace,
+        node_key=_node_key,
+    )
+    assert put_calls == []
+    np.testing.assert_array_equal(first.first, second.first)
+    np.testing.assert_array_equal(first.second, second.second)
+    assert first.sources == second.sources
+
+
 def test_node_memo_shifted_window_is_bit_identical_to_cold_staging(gribs):
     """A memoized shift is a pure function of the same inputs."""
     from sailworks.rendering.weatherbarbs import _node_key
