@@ -234,6 +234,66 @@ def test_ebl_groups_never_cross_directories_ids_or_text_and_keep_import_order(tm
     assert items[-2]["name"] == other.name
 
 
+def test_streaming_ebl_import_names_each_session(tmp_path):
+    from test.test_ebllog import VERSION, frame, timestamp
+
+    directory = tmp_path / "EBL000031"
+    directory.mkdir()
+    speed = b"\x00" + (400).to_bytes(2, "little") + b"\xff" * 5
+    raw = (
+        timestamp(1704153600)
+        + VERSION
+        + frame(128259, speed) * 3
+        + timestamp(1704157300)
+        + frame(128259, speed) * 2
+    )
+    path = directory / "000031_001.ebl"
+    path.write_bytes(raw)
+
+    library = LogLibrary(tmp_path / "library")
+    (item,) = library.import_paths([path])
+    assert item["_decoded_log"]
+
+    entries = sorted(library.entries(), key=lambda entry: entry["name"])
+    assert [entry["name"] for entry in entries] == [
+        "EBL000031/000031_session1.log",
+        "EBL000031/000031_session2.log",
+    ]
+    assert [entry["file_info"]["entries"] for entry in entries] == [3, 2]
+    assert all(entry["file_info"]["path"] for entry in entries)
+    assert len({entry["id"] for entry in entries}) == 2
+
+
+def test_reimport_updates_the_same_session_in_place(tmp_path):
+    from test.test_ebllog import VERSION, frame, timestamp
+
+    directory = tmp_path / "EBL000031"
+    directory.mkdir()
+    speed = b"\x00" + (400).to_bytes(2, "little") + b"\xff" * 5
+    path = directory / "000031_001.ebl"
+    path.write_bytes(timestamp(1704153600) + VERSION + frame(128259, speed) * 3)
+
+    library = LogLibrary(tmp_path / "library")
+    (first,) = library.import_paths([path])
+    assert first["file_info"]["entries"] == 3
+    identifier = first["id"]
+
+    path.write_bytes(
+        timestamp(1704153600)
+        + VERSION
+        + frame(128259, speed) * 3
+        + timestamp(1704153610)
+        + frame(128259, speed) * 2
+    )
+    (second,) = library.import_paths([path])
+
+    assert second["id"] == identifier
+    assert second["file_info"]["entries"] == 5
+    entries = library.entries()
+    assert len(entries) == 1
+    assert entries[0]["file_info"]["entries"] == 5
+
+
 def test_successful_ebl_stack_persists_decoded_log_not_transient_model(tmp_path):
     from sailworks.core.nmeasession import read_nmea_log
     from test.test_ebllog import VERSION, frame, timestamp

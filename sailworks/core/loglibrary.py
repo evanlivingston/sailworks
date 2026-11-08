@@ -3,6 +3,7 @@
 import json
 import os
 import re
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
@@ -175,14 +176,8 @@ class LogLibrary:
         return dict(item)
 
     def _import_ebl(self, group, progress=None, decode_progress=None):
-        """Decode an EBL (single or stitched) and store the decoded .log."""
-        from .ebllog import (
-            EBL_SESSION_GAP_SECONDS,
-            read_ebl_log,
-            split_ebl_log,
-            write_decoded_log,
-        )
-        from dataclasses import asdict, replace
+        """Decode an EBL (single or stitched) and store one log per session."""
+        from .ebllog import iter_ebl_sessions, write_decoded_log
 
         group = tuple(group)
         if not group:
@@ -229,147 +224,215 @@ class LogLibrary:
                 callback_errors.append(exc)
                 raise
 
+        staged = []
+        first_log = None
         try:
-            log = read_ebl_log(group, progress=report_decode)
+            for session_log in iter_ebl_sessions(group, progress=report_decode):
+                if not session_log.entries:
+                    continue
+                temporary = self.originals / f".{identifier}_{len(staged)}.log.tmp"
+                write_decoded_log(session_log, temporary)
+                metadata = self._ebl_metadata(session_log)
+                metadata["file_info"]["ebl_session_key"] = self._ebl_session_key(
+                    group, session_log
+                )
+                staged.append((temporary, metadata))
+                if first_log is None:
+                    first_log = session_log
         except Exception:
+            for temporary, _ in staged:
+                temporary.unlink(missing_ok=True)
             if callback_errors:
                 raise callback_errors[0]
-            log = None
+            if staged:
+                raise
+            if len(group) == 1:
+                return self._import_original(group[0], progress=progress)
+            return self._import_ebl_archive(
+                group, identifier, source_signature, progress
+            )
 
-        if log is None or not log.entries:
+        if not staged:
             # Preserve unsupported/malformed EBL for later inspection.
             if len(group) == 1:
                 return self._import_original(group[0], progress=progress)
-            target = self.originals / f"{identifier}.ebl"
-            temporary = self.originals / f".{identifier}.tmp"
-            total = sum(source.stat().st_size for source in group)
-            copied = 0
-            try:
-                if progress is not None:
-                    progress(0, total)
-                with temporary.open("xb") as outgoing:
-                    for source in group:
-                        with source.open("rb") as incoming:
-                            while chunk := incoming.read(64 * 1024):
-                                outgoing.write(chunk)
-                                copied += len(chunk)
-                                if progress is not None:
-                                    progress(copied, total)
-                    outgoing.flush()
-                    os.fsync(outgoing.fileno())
-                os.replace(temporary, target)
-            except Exception:
-                temporary.unlink(missing_ok=True)
-                target.unlink(missing_ok=True)
-                raise
-            item = dict(
-                id=identifier,
-                file=target.name,
-                name=f"{group[0].parent.name}/{group[0].stem.split('_')[0]}.ebl",
-                vessel="",
-                notes="",
-                imported=datetime.now(timezone.utc).isoformat(),
-                status="Imported; not yet interpreted",
-                diagnostics=[],
-                source_signature=source_signature,
+            return self._import_ebl_archive(
+                group, identifier, source_signature, progress
             )
-            try:
-                with self.lock:
-                    self._save({**self._entries, identifier: item})
-            except Exception:
-                target.unlink(missing_ok=True)
-                raise
-            return dict(item)
 
-        logs = split_ebl_log(log, EBL_SESSION_GAP_SECONDS)
-        session_items = []
-        session_logs = []
-        for session_index, session_log in enumerate(logs):
-            session_identifier = (
-                identifier if len(logs) == 1 else f"{identifier}_{session_index}"
-            )
-            target = self.originals / f"{session_identifier}.log"
-            temporary = self.originals / f".{session_identifier}.log.tmp"
-            try:
-                write_decoded_log(session_log, temporary)
-                os.replace(temporary, target)
-            except Exception:
-                temporary.unlink(missing_ok=True)
-                target.unlink(missing_ok=True)
-                raise
-            if len(logs) == 1:
-                name = (
-                    f"{group[0].parent.name}/{group[0].stem.split('_')[0]}.log"
-                    if len(group) > 1
-                    else group[0].stem + ".log"
-                )
-            else:
-                name = (
-                    f"{group[0].parent.name}/{group[0].stem.split('_')[0]}_"
-                    f"session{session_index + 1}.log"
-                )
-            item = dict(
-                id=session_identifier,
-                file=target.name,
-                name=name,
-                vessel="",
-                notes="",
-                imported=datetime.now(timezone.utc).isoformat(),
-                status=(
-                    (
-                        f"{session_log.format}: {session_log.frame_count:,} raw CAN frames; "
-                        f"{len(session_log.entries):,} replay entries"
-                    )
-                    if session_log.entries and session_log.frame_count is not None
-                    else (
-                        f"{session_log.format}: {len(session_log.entries):,} sentences"
-                        if session_log.entries
-                        else "Archive only — no supported replay data"
-                    )
-                ),
-                diagnostics=list(session_log.diagnostics),
-                source_signature=source_signature,
-                file_info={
-                    "path": str(target),
-                    "format": "NMEA 0183 (decoded from EBL)",
-                    "entries": len(session_log.entries),
-                    "duration": session_log.duration,
-                    "timestamp_origin": (
-                        session_log.timestamp_origin.isoformat()
-                        if getattr(session_log, "timestamp_origin", None) is not None
-                        else None
-                    ),
-                    "timestamped": session_log.timestamped,
-                    "skipped": session_log.skipped,
-                    "frame_count": session_log.frame_count,
-                    "source_tracks": list(session_log.source_tracks),
-                    "device_metadata_available": session_log.device_metadata_available,
-                    "devices": [asdict(d) for d in session_log.devices],
-                    "diagnostics": list(session_log.diagnostics),
-                },
-            )
-            session_items.append((session_identifier, item))
-            session_logs.append((session_log, target))
+        multiple = len(staged) > 1
+        with self.lock:
+            known = {
+                item.get("file_info", {}).get("ebl_session_key"): item
+                for item in self._entries.values()
+                if item.get("file_info", {}).get("ebl_session_key")
+            }
 
+        pending = []
+        first_item = None
+        first_path = None
         try:
+            for index, (temporary, metadata) in enumerate(staged):
+                key = metadata["file_info"]["ebl_session_key"]
+                existing = known.get(key) if key else None
+                if existing is not None:
+                    same = (
+                        existing.get("file_info", {}).get("entries")
+                        == metadata["file_info"]["entries"]
+                        and existing.get("file_info", {}).get("duration")
+                        == metadata["file_info"]["duration"]
+                    )
+                    if same:
+                        temporary.unlink(missing_ok=True)
+                        if first_item is None:
+                            first_item = dict(existing)
+                            first_path = self.path(existing["id"])
+                        continue
+                    target = self.path(existing["id"])
+                    os.replace(temporary, target)
+                    item = dict(existing)
+                    item.update(
+                        status=metadata["status"],
+                        diagnostics=metadata["diagnostics"],
+                        source_signature=source_signature,
+                        file_info={**metadata["file_info"], "path": str(target)},
+                    )
+                else:
+                    session_identifier = (
+                        identifier if not multiple else f"{identifier}_{index}"
+                    )
+                    target = self.originals / f"{session_identifier}.log"
+                    os.replace(temporary, target)
+                    item = dict(
+                        id=session_identifier,
+                        file=target.name,
+                        name=self._ebl_session_name(group, index, multiple),
+                        vessel="",
+                        notes="",
+                        imported=datetime.now(timezone.utc).isoformat(),
+                        status=metadata["status"],
+                        diagnostics=metadata["diagnostics"],
+                        source_signature=source_signature,
+                        file_info={**metadata["file_info"], "path": str(target)},
+                    )
+                pending.append(item)
+                if first_item is None:
+                    first_item = item
+                    first_path = target
+        except Exception:
+            for temporary, _ in staged:
+                temporary.unlink(missing_ok=True)
+            raise
+
+        if pending:
             with self.lock:
                 entries = dict(self._entries)
-                for session_identifier, item in session_items:
-                    entries[session_identifier] = item
+                entries.update({item["id"]: item for item in pending})
                 self._save(entries)
-            result = dict(session_items[0][1])
-            result["_decoded_log"] = replace(
-                session_logs[0][0], path=str(session_logs[0][1])
-            )
-            # Expose all decoded sessions for callers that can handle them.
-            result["_decoded_logs"] = [
-                replace(log, path=str(path)) for log, path in session_logs
-            ]
-            return result
+        result = dict(first_item)
+        if first_log is not None and first_path is not None:
+            result["_decoded_log"] = replace(first_log, path=str(first_path))
+        return result
+
+    def _import_ebl_archive(self, group, identifier, source_signature, progress):
+        """Copy an unsupported EBL series unchanged into the library."""
+        target = self.originals / f"{identifier}.ebl"
+        temporary = self.originals / f".{identifier}.tmp"
+        total = sum(source.stat().st_size for source in group)
+        copied = 0
+        try:
+            if progress is not None:
+                progress(0, total)
+            with temporary.open("xb") as outgoing:
+                for source in group:
+                    with source.open("rb") as incoming:
+                        while chunk := incoming.read(64 * 1024):
+                            outgoing.write(chunk)
+                            copied += len(chunk)
+                            if progress is not None:
+                                progress(copied, total)
+                outgoing.flush()
+                os.fsync(outgoing.fileno())
+            os.replace(temporary, target)
         except Exception:
-            for _, path in session_logs:
-                path.unlink(missing_ok=True)
+            temporary.unlink(missing_ok=True)
+            target.unlink(missing_ok=True)
             raise
+        item = dict(
+            id=identifier,
+            file=target.name,
+            name=f"{group[0].parent.name}/{group[0].stem.split('_')[0]}.ebl",
+            vessel="",
+            notes="",
+            imported=datetime.now(timezone.utc).isoformat(),
+            status="Imported; not yet interpreted",
+            diagnostics=[],
+            source_signature=source_signature,
+        )
+        try:
+            with self.lock:
+                self._save({**self._entries, identifier: item})
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+        return dict(item)
+
+    @staticmethod
+    def _ebl_metadata(session_log):
+        diagnostics = list(session_log.diagnostics)
+        status = (
+            (
+                f"{session_log.format}: {session_log.frame_count:,} raw CAN frames; "
+                f"{len(session_log.entries):,} replay entries"
+            )
+            if session_log.entries and session_log.frame_count is not None
+            else (
+                f"{session_log.format}: {len(session_log.entries):,} sentences"
+                if session_log.entries
+                else "Archive only — no supported replay data"
+            )
+        )
+        return {
+            "status": status,
+            "diagnostics": diagnostics,
+            "file_info": {
+                "path": "",
+                "format": "NMEA 0183 (decoded from EBL)",
+                "entries": len(session_log.entries),
+                "duration": session_log.duration,
+                "timestamp_origin": (
+                    session_log.timestamp_origin.isoformat()
+                    if getattr(session_log, "timestamp_origin", None) is not None
+                    else None
+                ),
+                "timestamped": session_log.timestamped,
+                "skipped": session_log.skipped,
+                "frame_count": session_log.frame_count,
+                "source_tracks": list(session_log.source_tracks),
+                "device_metadata_available": session_log.device_metadata_available,
+                "devices": [asdict(device) for device in session_log.devices],
+                "diagnostics": diagnostics,
+            },
+        }
+
+    @staticmethod
+    def _ebl_session_name(group, index, multiple):
+        first = group[0]
+        if not multiple:
+            return (
+                f"{first.parent.name}/{first.stem.split('_')[0]}.log"
+                if len(group) > 1
+                else first.stem + ".log"
+            )
+        return f"{first.parent.name}/{first.stem.split('_')[0]}_session{index + 1}.log"
+
+    @staticmethod
+    def _ebl_session_key(group, session_log):
+        """Stable identity for a recording burst, independent of file size."""
+        origin = getattr(session_log, "timestamp_origin", None)
+        if origin is None:
+            return None
+        return f"{group[0].parent.name}|{origin.isoformat()}"
 
     @staticmethod
     def group_paths(paths):

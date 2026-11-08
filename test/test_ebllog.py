@@ -52,6 +52,43 @@ def test_raw_frame_budget_accepts_stitched_log_size():
     assert 732_919 < ebllog.MAX_REPLAY_ENTRIES
 
 
+def test_iter_ebl_sessions_streams_one_log_per_real_gap(tmp_path):
+    speed = b"\x00" + (400).to_bytes(2, "little") + b"\xff" * 5
+    raw = (
+        timestamp(1704153600)
+        + VERSION
+        + frame(128259, speed) * 3
+        + timestamp(1704153610)
+        + frame(128259, speed) * 2
+        + timestamp(1704157300)
+        + frame(128259, speed) * 3
+        + timestamp(1704157310)
+        + frame(128259, speed)
+    )
+    path = tmp_path / "gapped.ebl"
+    path.write_bytes(raw)
+
+    sessions = list(ebllog.iter_ebl_sessions(path))
+    assert len(sessions) == 2
+    assert [len(session.entries) for session in sessions] == [5, 4]
+    assert sessions[0].duration == 10.0
+    assert sessions[1].duration == 10.0
+    assert [session.frame_count for session in sessions] == [5, 4]
+
+    expected = ebllog.split_ebl_log(read_nmea_log(path))
+    assert [len(session.entries) for session in expected] == [5, 4]
+
+
+def test_iter_ebl_sessions_splits_at_the_entry_budget(tmp_path):
+    speed = b"\x00" + (400).to_bytes(2, "little") + b"\xff" * 5
+    raw = timestamp(1704153600) + VERSION + frame(128259, speed) * 5
+    path = tmp_path / "budget.ebl"
+    path.write_bytes(raw)
+
+    sessions = list(ebllog.iter_ebl_sessions(path, max_entries=2))
+    assert [len(session.entries) for session in sessions] == [2, 2, 1]
+
+
 def test_unsupported_frames_do_not_consume_replay_entry_budget(tmp_path, monkeypatch):
     # Scale down both budgets rather than decoding a million frames in a unit
     # test: exceed the old shared ceiling, reaching the new raw ceiling exactly.

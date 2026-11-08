@@ -234,13 +234,13 @@ def test_window_drop_stitches_stack_once_and_library_opens_whole_timeline_paused
     decoded = []
     from sailworks.core import ebllog
 
-    read = ebllog.read_ebl_log
+    read = ebllog.iter_ebl_sessions
 
     def decode(paths, progress=None):
         decoded.append(tuple(paths))
         return read(paths, progress=progress)
 
-    monkeypatch.setattr(ebllog, "read_ebl_log", decode)
+    monkeypatch.setattr(ebllog, "iter_ebl_sessions", decode)
     # QDropEvent borrows the MIME data; retain its Python owner until the drop
     # has been handled instead of passing a temporary with a dangling pointer.
     mime = mime_paths(paths[2], paths[0], paths[1])

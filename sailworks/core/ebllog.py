@@ -11,9 +11,14 @@ import nmeatoolkit as nt
 from .ebl import EBLDecoder
 from .nmea2000 import instruments
 from .n2kdevices import DeviceCollector
-from .nmeasession import NMEALog, NMEATrack, NumericFieldCollector, _track_sentence, slice_log
+from .nmeasession import (
+    NMEALog,
+    NMEATrack,
+    NumericFieldCollector,
+    _track_sentence,
+    slice_log,
+)
 from .polarperformance import PerformanceHistory
-
 
 LIMITATION = (
     "Partial EBL support: raw BST-95 CAN frames, not NMEA 0183 sentences. "
@@ -28,6 +33,194 @@ LIMITATION = (
 # their work and memory limits separate (most captured PGNs may be unsupported).
 MAX_RAW_FRAMES = 10_000_000
 MAX_REPLAY_ENTRIES = 1_000_000
+
+# A continuous recording burst is bounded independently of the folder so the
+# library importer can stream a large set of segments as separate sessions.
+MAX_SESSION_FRAMES = 50_000_000
+MAX_SESSION_ENTRIES = 1_000_000
+
+EBL_SESSION_GAP_SECONDS = 3600.0
+
+SINGLE_FRAME_PGNS = frozenset(
+    {
+        127250,
+        128259,
+        129026,
+        129025,
+        130306,
+        128267,
+        130310,
+        130312,
+        130316,
+    }
+)
+
+
+class _SessionState:
+    """Replay state for one continuous recording burst."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.entries = []
+        self.source_points = {}
+        self.source_offsets = {}
+        self.seen_fixes = set()
+        self.history = PerformanceHistory(max_age=50, interval=0)
+        self.numeric_fields = NumericFieldCollector()
+        self.translator = nt.TrackPointTranslator()
+        self.wind = nt.TrueWindPipe()
+        self.origin = None
+        self.elapsed = 0.0
+        self.unsupported = 0
+        self.timed = False
+        self.frames = 0
+
+    def add(self, message, index, has_time):
+        self.frames += 1
+        self.timed |= has_time
+        if has_time:
+            if self.origin is None:
+                self.origin = message.timestamp
+            self.elapsed = max(
+                self.elapsed, (message.timestamp - self.origin).total_seconds()
+            )
+        else:
+            self.elapsed = max(self.elapsed, (self.frames - 1) / 10.0)
+        packets = instruments(message) if message.pgn in SINGLE_FRAME_PGNS else []
+        if not packets:
+            self.unsupported += 1
+        for packet in packets:
+            packet.log_index = index
+            packet.source = message.source
+            self.history.ingest(packet.data, now=index)
+            _track_sentence(self.translator, self.wind, packet)
+            self.numeric_fields.add(self.elapsed, packet)
+            for point in self.translator.track:
+                fix = (message.source, message.timestamp, message.data[:8])
+                if fix not in self.seen_fixes:
+                    self.seen_fixes.add(fix)
+                    self.source_points.setdefault(message.source, []).append(point)
+                    self.source_offsets.setdefault(message.source, []).append(
+                        self.elapsed
+                    )
+            self.translator.track.clear()
+            self.entries.append((self.elapsed, packet))
+
+    def finish(self, path, decoder, devices, final):
+        if not self.entries:
+            return None
+        warnings = [LIMITATION]
+        if decoder.version is None:
+            warnings.append("Missing or invalid EBL Version metatag.")
+        if not self.timed:
+            warnings.append("No usable EBL timestamps; replay uses ten frames/second.")
+        if self.unsupported:
+            warnings.append(
+                f"{self.unsupported:,} CAN frames had no supported instrument data."
+            )
+        if final and decoder.buffer:
+            warnings.append("Incomplete EBL record at end of file.")
+        warnings.extend(dict.fromkeys(decoder.diagnostics))
+        warnings.extend(devices.diagnostics())
+        tracks = {
+            source: NMEATrack(tuple(points), tuple(self.source_offsets[source]))
+            for source, points in sorted(self.source_points.items())
+        }
+        default_source = max(
+            tracks, key=lambda source: len(tracks[source].points), default=None
+        )
+        default_track = (
+            tracks[default_source] if default_source is not None else NMEATrack()
+        )
+        return NMEALog(
+            str(path),
+            tuple(self.entries),
+            self.unsupported,
+            self.timed,
+            self.history.snapshot()[1],
+            default_track.points,
+            default_track.point_offsets,
+            tuple(warnings),
+            "EBL (partial)",
+            MappingProxyType(tracks),
+            default_source,
+            devices.devices(),
+            True,
+            self.frames,
+            timestamp_origin=self.origin,
+            numeric_series=self.numeric_fields.snapshot(),
+        )
+
+
+def iter_ebl_sessions(
+    path,
+    progress=None,
+    gap_seconds=EBL_SESSION_GAP_SECONDS,
+    max_frames=MAX_SESSION_FRAMES,
+    max_entries=MAX_SESSION_ENTRIES,
+):
+    """Yield one :class:`NMEALog` per recording burst, streaming the input.
+
+    Unlike :func:`read_ebl_log`, replay state is released at every session
+    boundary, so memory follows the largest continuous burst rather than the
+    whole folder. A burst that reaches the frame or entry budget is finalized
+    and continued as the next session, keeping memory bounded.
+    """
+    paths = (
+        tuple(Path(part) for part in path)
+        if isinstance(path, Sequence) and not isinstance(path, (str, bytes, Path))
+        else (Path(path),)
+    )
+    total = sum(part.stat().st_size for part in paths)
+    consumed = 0
+    decoder = EBLDecoder()
+    devices = DeviceCollector()
+    state = _SessionState()
+    index = 0
+    last_stamp = None
+    if progress is not None:
+        progress(0, total)
+    for part in paths:
+        with open(part, "rb") as stream:
+            while chunk := stream.read(65536):
+                for message in decoder.feed(chunk):
+                    index += 1
+                    has_time = message.timestamp.year != 1970
+                    if (
+                        has_time
+                        and last_stamp is not None
+                        and (message.timestamp - last_stamp).total_seconds()
+                        > float(gap_seconds)
+                    ):
+                        log = state.finish(paths[0], decoder, devices, final=False)
+                        if log is not None:
+                            yield log
+                        state.reset()
+                        decoder.diagnostics.clear()
+                        last_stamp = None
+                    devices.observe(message)
+                    state.add(message, index, has_time)
+                    if has_time:
+                        last_stamp = message.timestamp
+                    if state.frames >= max_frames or len(state.entries) >= max_entries:
+                        log = state.finish(paths[0], decoder, devices, final=False)
+                        if log is not None:
+                            yield log
+                        state.reset()
+                        decoder.diagnostics.clear()
+                        last_stamp = None
+                if len(decoder.diagnostics) > 100:
+                    decoder.diagnostics[:] = decoder.diagnostics[:100]
+                consumed += len(chunk)
+                if progress is not None and consumed < total:
+                    progress(consumed, total)
+    log = state.finish(paths[0], decoder, devices, final=True)
+    if log is not None:
+        yield log
+    if progress is not None:
+        progress(total, total)
 
 
 def read_ebl_log(path, progress=None):
@@ -55,17 +248,7 @@ def read_ebl_log(path, progress=None):
     frames = 0
     # Explicit allowlist excludes fast-packet PGNs even if an accidental
     # fragment could otherwise resemble a supported instrument field.
-    single_frame = {
-        127250,
-        128259,
-        129026,
-        129025,
-        130306,
-        128267,
-        130310,
-        130312,
-        130316,
-    }
+    single_frame = SINGLE_FRAME_PGNS
     for part in paths:
         with open(part, "rb") as stream:
             while chunk := stream.read(65536):
@@ -190,9 +373,6 @@ def write_edited_log(log, path):
             stream.write(f"@+{elapsed:.9f}\t{source_text}\t{packet.serialize()}\n")
         stream.flush()
         os.fsync(stream.fileno())
-
-
-EBL_SESSION_GAP_SECONDS = 3600.0
 
 
 def split_ebl_log(log, gap_seconds=EBL_SESSION_GAP_SECONDS):
