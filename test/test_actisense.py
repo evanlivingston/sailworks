@@ -416,3 +416,58 @@ def test_simulator_to_serial_instruments_and_recording(tmp_path):
         ds.close()
         os.close(master)
         os.close(slave)
+
+
+def test_rudder_and_engine_rapid_are_replayable_single_frame_pgns():
+    from sailworks.core.datasource import AISDataPacket
+
+    rudder = bytes([0]) + (1000).to_bytes(2, "little", signed=True)
+    rudder += (2000).to_bytes(2, "little", signed=True)
+    packet = instruments(message(127245, rudder))[0]
+    assert packet.data.sentence_type == "RUD"
+
+    engine = bytes([0]) + (800).to_bytes(2, "little") + b"\xff" * 4
+    packet = instruments(message(127488, engine))[0]
+    assert packet.data.sentence_type == "ENG"
+    assert packet.data.rpm == "100"
+
+    assert not isinstance(packet, AISDataPacket)
+
+
+def test_battery_and_navigation_conversions_are_replayable():
+    battery = bytes([0]) + (1200).to_bytes(2, "little", signed=True)
+    battery += (100).to_bytes(2, "little", signed=True)
+    battery += (29815).to_bytes(2, "little") + bytes([0])
+    packet = instruments(message(127508, battery))[0]
+    assert packet.data.sentence_type == "BAT"
+    assert packet.data.voltage_v == "12.00"
+
+    dc = bytes([0, 0, 0, 80]) + b"\x00" * 6
+    packet = instruments(message(127506, dc))[0]
+    assert packet.data.sentence_type == "DCS"
+    assert packet.data.state_of_charge_pct == "80.00"
+
+    nav = bytearray(34)
+    nav[1:5] = (185200).to_bytes(4, "little")
+    nav[12:14] = (10000).to_bytes(2, "little")
+    packet = instruments(message(129284, bytes(nav)))[0]
+    assert packet.data.sentence_type == "NAV"
+    assert float(packet.data.distance_nm) == pytest.approx(1.0, rel=1e-3)
+
+
+def test_ais_position_report_synthesises_aivdm():
+    from sailworks.core.datasource import AISDataPacket
+
+    data = bytearray(28)
+    data[0] = 1  # AIS message type 1, repeat 0
+    data[1:5] = (123456789).to_bytes(4, "little")
+    data[5:9] = (115000000).to_bytes(4, "little", signed=True)
+    data[9:13] = (481000000).to_bytes(4, "little", signed=True)
+    data[13] = 0
+    data[14:16] = (10000).to_bytes(2, "little")  # 1 rad COG
+    data[16:18] = (500).to_bytes(2, "little")  # 5 m/s SOG
+    data[21:23] = (10000).to_bytes(2, "little")  # 1 rad heading
+    packet = instruments(message(129038, bytes(data)))[0]
+    assert isinstance(packet, AISDataPacket)
+    assert packet.raw_sentence.startswith("!AIVDM,1,1,,A,")
+    assert "*" in packet.raw_sentence

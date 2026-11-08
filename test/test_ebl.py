@@ -142,3 +142,194 @@ def test_serial_checksum_variant_is_checked_when_present():
     raw += tag(7, frame + bytes([(checksum + 1) & 0xFF]))
     assert len(decoder.feed(raw)) == 1
     assert decoder.diagnostics == ["invalid BST-95 checksum"]
+
+
+# -- full BST coverage ----------------------------------------------------
+
+
+def _checksum(body):
+    return bytes(body) + bytes([(-sum(body)) & 0xFF])
+
+
+def bst93(pgn, payload, source=42, destination=255, priority=2, millis=1234):
+    body = bytes(
+        [
+            0x93,
+            len(payload) + 11,
+            priority,
+            pgn & 0xFF,
+            (pgn >> 8) & 0xFF,
+            (pgn >> 16) & 3,
+            destination,
+            source,
+        ]
+    )
+    body += millis.to_bytes(4, "little") + bytes([len(payload)]) + payload
+    return _checksum(body)
+
+
+def bst94(pgn, payload, destination=42, priority=2):
+    body = bytes(
+        [
+            0x94,
+            len(payload) + 6,
+            priority,
+            pgn & 0xFF,
+            (pgn >> 8) & 0xFF,
+            (pgn >> 16) & 3,
+            destination,
+            len(payload),
+        ]
+    )
+    return _checksum(body + payload)
+
+
+def bst95(pgn, payload, source=42, direction=0):
+    dppc = (direction << 7) | (2 << 2) | ((pgn >> 16) & 3)
+    body = bytes(
+        [0x95, 6 + len(payload), 0, 0, source, pgn & 0xFF, (pgn >> 8) & 0xFF, dppc]
+    )
+    return _checksum(body + payload)
+
+
+def bst9d(sentence):
+    text = sentence.encode("ascii")
+    return _checksum(bytes([0x9D, len(text)]) + text)
+
+
+def bst_d0(pgn, payload, source=42, destination=255, direction=0, priority=2):
+    dpp = (priority << 2) | ((pgn >> 16) & 3)
+    control = (direction << 3) | 0  # single packet, external source
+    body = bytearray(
+        [
+            0xD0,
+            0,
+            0,
+            destination,
+            source,
+            pgn & 0xFF,
+            (pgn >> 8) & 0xFF,
+            dpp,
+            control,
+            0,
+            0,
+            0,
+            0,
+        ]
+    )
+    body += payload
+    total = len(body)
+    body[1] = total & 0xFF
+    body[2] = (total >> 8) & 0xFF
+    return _checksum(bytes(body))
+
+
+def bdtp(message):
+    block = _checksum(message)
+    escaped = block.replace(b"\x10", b"\x10\x10")
+    return b"\x10\x02" + escaped + b"\x10\x03"
+
+
+def raw_stream(data):
+    return data.replace(b"\x1b", b"\x1b\x1b")
+
+
+def decode_all(raw):
+    decoder = EBLDecoder()
+    return decoder.feed(raw), decoder
+
+
+def test_bst93_reassembled_gateway_message_and_checksum():
+    stamp = datetime(2026, 2, 3, 4, 5, 6, tzinfo=timezone.utc)
+    message = bst93(129025, b"\x01\x02\x03\x04\x05\x06\x07\x08")
+    messages, decoder = decode_all(header(stamp) + tag(7, message))
+    assert decoder.diagnostics == []
+    assert len(messages) == 1
+    assert (messages[0].pgn, messages[0].source, messages[0].destination) == (
+        129025,
+        42,
+        255,
+    )
+    assert messages[0].timestamp == stamp
+    assert messages[0].data == b"\x01\x02\x03\x04\x05\x06\x07\x08"
+
+
+def test_bst94_is_host_direction_and_bst9d_yields_nmea():
+    stamp = datetime(2026, 2, 3, tzinfo=timezone.utc)
+    raw = header(stamp) + tag(7, bst94(128259, b"\x00\x01\x02\x03"))
+    messages, decoder = decode_all(raw)
+    assert decoder.diagnostics == []
+    assert messages[0].direction == "tx"
+    sentence = "$GPRMC,120000,A,4807.038,N,01131.000,E,7,0,010126,,"
+    raw = header(stamp) + tag(7, bst9d(sentence))
+    messages, decoder = decode_all(raw)
+    assert decoder.diagnostics == []
+    assert messages[0].serialize().startswith("$GPRMC")
+
+
+def test_bst_d0_single_and_fast_packet_flags():
+    stamp = datetime(2026, 2, 3, tzinfo=timezone.utc)
+    message = bst_d0(130312, b"\x00\x01\x02\x03\x04\x05\x06\x07", direction=1)
+    messages, decoder = decode_all(header(stamp) + tag(7, message))
+    assert decoder.diagnostics == []
+    assert (messages[0].pgn, messages[0].source, messages[0].destination) == (
+        130312,
+        42,
+        255,
+    )
+    assert messages[0].direction == "tx"
+    assert messages[0].data == b"\x00\x01\x02\x03\x04\x05\x06\x07"
+
+
+def test_classic_bdtp_capture_decodes_instead_of_archiving():
+    stamp = datetime(2026, 2, 3, tzinfo=timezone.utc)
+    wire = bdtp(bst93(128259, b"\x00" + (400).to_bytes(2, "little") + b"\xff" * 5))
+    messages, decoder = decode_all(header(stamp) + raw_stream(wire))
+    assert decoder.diagnostics == []
+    assert [message.pgn for message in messages] == [128259]
+
+
+def test_wire_trace_honours_direction_markers_and_raw_frames():
+    stamp = datetime(2026, 2, 3, tzinfo=timezone.utc)
+    raw = header(stamp)
+    raw += tag(5, b"\x01") + raw_stream(bdtp(bst94(128259, b"\x00\x01")))
+    raw += tag(5, b"\x00") + tag(7, bst93(129025, b"\x00" * 8))
+    messages, decoder = decode_all(raw)
+    assert decoder.diagnostics == []
+    assert [message.direction for message in messages] == ["tx", "rx"]
+
+
+def test_bst95_direction_bit_and_checksum_are_reported():
+    stamp = datetime(2026, 2, 3, tzinfo=timezone.utc)
+    message = bst95(128259, b"\x00" * 6, direction=1)
+    messages, decoder = decode_all(header(stamp) + tag(7, message))
+    assert decoder.diagnostics == []
+    assert messages[0].direction == "tx"
+
+
+def test_description_and_direction_metatags_are_captured():
+    stamp = datetime(2026, 2, 3, tzinfo=timezone.utc)
+    raw = header(stamp) + tag(2, "W2K-1 segment".encode("utf-8"))
+    raw += tag(5, b"\x02")
+    decoder = EBLDecoder()
+    assert decoder.feed(raw) == []
+    assert decoder.description == "W2K-1 segment"
+    assert decoder.direction == "unknown"
+    assert any("invalid EBL DirectionMarker" in d for d in decoder.diagnostics)
+
+
+def test_vendored_canboat_fast_packet_table_matches_published_version():
+    import json
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parent.parent
+        / "sailworks"
+        / "data"
+        / "canboat-fast-packet-pgns.json"
+    )
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["version"] == "9.1.0"
+    assert data["records"] == 418
+    assert len(data["pgns"]) == len(set(data["pgns"])) == 181
+    assert 127489 in data["pgns"] and 129029 in data["pgns"]
