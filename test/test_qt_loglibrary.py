@@ -101,6 +101,47 @@ def test_drop_validation_accepts_text_and_ebl_but_not_mixed_remote_or_directorie
     assert not dropped_log_paths(mime)
 
 
+def test_dialog_always_offers_folder_import_and_w2k_sync(app, controller):
+    dialog = LogLibraryDialog(controller)
+    try:
+        assert dialog.actions["Import folder…"].isEnabled()
+        assert dialog.actions["Sync W2K-1…"].isEnabled()
+    finally:
+        dialog.close()
+
+
+def test_controller_reimport_updates_same_session(app, controller, tmp_path):
+    from test.test_ebllog import VERSION, frame, timestamp
+
+    directory = tmp_path / "EBL000041"
+    directory.mkdir()
+    speed = b"\x00" + (400).to_bytes(2, "little") + b"\xff" * 5
+    path = directory / "000041_000.ebl"
+    path.write_bytes(timestamp(1704153600) + VERSION + frame(128259, speed) * 3)
+
+    controller.load_paths([path])
+    wait_for_import(app, controller)
+    entries = controller.log_library.entries()
+    assert len(entries) == 1
+    identifier = entries[0]["id"]
+    assert entries[0]["file_info"]["ebl_session_key"]
+
+    path.write_bytes(
+        timestamp(1704153600)
+        + VERSION
+        + frame(128259, speed) * 3
+        + timestamp(1704153610)
+        + frame(128259, speed) * 2
+    )
+    controller.load_paths([path])
+    wait_for_import(app, controller)
+
+    entries = controller.log_library.entries()
+    assert len(entries) == 1
+    assert entries[0]["id"] == identifier
+    assert entries[0]["file_info"]["entries"] == 5
+
+
 def test_dialog_import_edit_reload_open_paused_and_remove(
     app, controller, tmp_path, monkeypatch
 ):
@@ -109,6 +150,8 @@ def test_dialog_import_edit_reload_open_paused_and_remove(
     try:
         assert set(dialog.actions) == {
             "Import…",
+            "Import folder…",
+            "Sync W2K-1…",
             "Save details",
             "Open",
             "File Info…",
@@ -234,13 +277,13 @@ def test_window_drop_stitches_stack_once_and_library_opens_whole_timeline_paused
     decoded = []
     from sailworks.core import ebllog
 
-    read = ebllog.read_ebl_log
+    read = ebllog.iter_ebl_sessions
 
     def decode(paths, progress=None):
         decoded.append(tuple(paths))
         return read(paths, progress=progress)
 
-    monkeypatch.setattr(ebllog, "read_ebl_log", decode)
+    monkeypatch.setattr(ebllog, "iter_ebl_sessions", decode)
     # QDropEvent borrows the MIME data; retain its Python owner until the drop
     # has been handled instead of passing a temporary with a dangling pointer.
     mime = mime_paths(paths[2], paths[0], paths[1])

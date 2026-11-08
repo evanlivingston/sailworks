@@ -113,6 +113,8 @@ class LogLibraryDialog(QDialog):
         self.actions = {}
         for label, callback in (
             ("Import…", self.import_logs),
+            ("Import folder…", self.import_folder),
+            ("Sync W2K-1…", self.sync_w2k),
             ("Save details", self.save),
             ("Open", self.open_log),
             ("File Info…", self.show_file_info),
@@ -207,7 +209,11 @@ class LogLibraryDialog(QDialog):
         except ValueError:
             return "—", LogLibraryDialog._format_duration(duration)
         try:
-            end = start + timedelta(seconds=float(duration)) if duration is not None else start
+            end = (
+                start + timedelta(seconds=float(duration))
+                if duration is not None
+                else start
+            )
         except (TypeError, ValueError):
             end = start
         span = f"{start:%Y-%m-%d %H:%M} – {end:%Y-%m-%d %H:%M}"
@@ -219,8 +225,9 @@ class LogLibraryDialog(QDialog):
     def sync_busy(self):
         busy = self.controller.session.loading
         selected = bool(self.selected_identifiers())
+        always = {"Import…", "Import folder…", "Sync W2K-1…"}
         for label, button in self.actions.items():
-            button.setEnabled(not busy and (label == "Import…" or selected))
+            button.setEnabled(not busy and (label in always or selected))
 
     def save(self):
         identifier = self.identifier()
@@ -245,6 +252,30 @@ class LogLibraryDialog(QDialog):
         )
         if paths:
             self.controller.load_paths(paths)
+
+    def import_folder(self):
+        folder = QFileDialog.getExistingDirectory(
+            self, "Import a folder of instrument logs"
+        )
+        if not folder:
+            return
+        root = Path(folder)
+        paths = sorted(
+            str(path)
+            for path in root.rglob("*")
+            if path.suffix.lower() in LOG_SUFFIXES and path.is_file()
+        )
+        if not paths:
+            QMessageBox.information(
+                self, "Import folder", "No instrument logs were found in that folder."
+            )
+            return
+        self.controller.load_paths(paths)
+
+    def sync_w2k(self):
+        from .w2kimport import W2KImportDialog
+
+        W2KImportDialog(self.controller, self).exec()
 
     def open_log(self):
         if self.identifier() is not None and self.save():
@@ -282,7 +313,9 @@ class LogLibraryDialog(QDialog):
         if len(identifiers) == 1:
             question = "Delete this managed copy and its annotations?"
         else:
-            question = f"Delete {len(identifiers)} managed copies and their annotations?"
+            question = (
+                f"Delete {len(identifiers)} managed copies and their annotations?"
+            )
         if (
             QMessageBox.question(
                 self,
@@ -301,9 +334,7 @@ class LogLibraryDialog(QDialog):
             except (OSError, ValueError) as exc:
                 errors.append(str(exc))
         if errors:
-            QMessageBox.critical(
-                self, "Cannot delete log", "\n".join(errors)
-            )
+            QMessageBox.critical(self, "Cannot delete log", "\n".join(errors))
 
     def _context_menu(self, position):
         from PySide6.QtWidgets import QMenu
