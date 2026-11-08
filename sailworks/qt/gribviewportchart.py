@@ -493,6 +493,9 @@ class ViewportChartLayer:
         self._static_frames = OrderedDict()
         self._static_bytes = 0
         self._static_count = 0
+        # The request instant of each in-flight generation, for the
+        # queue/preparation split in the published timings.  Bounded.
+        self._requested_at = {}
         self._outcome = None
         self._spans = []
         self._published_generations = set()
@@ -677,6 +680,9 @@ class ViewportChartLayer:
                 self._pending[2].set()
                 self.counters["cancelled"] += 1
             self._pending = (generation, camera, Event(), preview)
+            self._requested_at[generation] = time.perf_counter()
+            while len(self._requested_at) > 64:
+                self._requested_at.pop(next(iter(self._requested_at)))
             self._state = "loading"
             self._error = ""
             self.counters["requests"] += 1
@@ -899,6 +905,11 @@ class ViewportChartLayer:
                 except Exception as exc:  # a chart failure is never fatal
                     error = str(exc)
                 ended = time.perf_counter()
+                requested_at = self._requested_at.pop(generation, None)
+                if metadata is not None and requested_at is not None:
+                    metadata.setdefault("timings", {})["queue_ms"] = round(
+                        (began - requested_at) * 1000.0, 3
+                    )
                 publish = None
                 notify_state = None
                 with self._condition:
@@ -1079,7 +1090,9 @@ class ViewportChartLayer:
                 self.counters["stale"] += 1
             self._outcome = "stale"
             return None, None
+        composed_at = time.perf_counter()
         static = self._static_content(job, viewport, factor, cancel)
+        static_ms = (time.perf_counter() - composed_at) * 1000.0
         if static is None:
             return None, None
         surface, enc, reuse = static
@@ -1091,6 +1104,8 @@ class ViewportChartLayer:
         columns = None if self._enc_only else self._isobar_columns(job, camera, cancel)
         if cancel.is_set():
             return None, None
+        isobar_ms = 0.0
+        copy_ms = 0.0
         isobar_only = bool(columns) and reuse["mode"] == "reused"
         if isobar_only:
             with self._condition:
@@ -1098,10 +1113,14 @@ class ViewportChartLayer:
         if columns:
             with self._condition:
                 self.counters["isobars"] += 1
+            started = time.perf_counter()
             surface = _copy_surface(surface, factor)
+            copy_ms = (time.perf_counter() - started) * 1000.0
+            started = time.perf_counter()
             cr = cairo.Context(surface)
             self._composer().painter().draw_isobars(viewport, cr, columns)
             surface.flush()
+            isobar_ms = (time.perf_counter() - started) * 1000.0
         if self._view_moved(camera):
             with self._condition:
                 self.counters["stale"] += 1
@@ -1109,6 +1128,12 @@ class ViewportChartLayer:
             return None, None
         image = _surface_image(surface, factor)
         reuse["isobar_only"] = isobar_only
+        timings = {
+            "static_ms": round(static_ms, 3),
+            "copy_ms": round(copy_ms, 3),
+            "isobars_ms": round(isobar_ms, 3),
+            "composition_ms": round(static_ms + copy_ms + isobar_ms, 3),
+        }
         metadata = {
             "viewport": viewport,
             "camera": camera,
@@ -1117,6 +1142,7 @@ class ViewportChartLayer:
             "preview": preview,
             "enc": enc if enc is not None else disabled_enc_metadata(),
             "static": reuse,
+            "timings": timings,
         }
         return image, metadata
 

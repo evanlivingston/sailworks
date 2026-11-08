@@ -1943,6 +1943,125 @@ class _RecordingComposer:
         return surface, metadata
 
 
+class _GeometryComposer:
+    """A composition whose ink is placed by the viewport's own projection.
+
+    A full composition and a band composition of the same camera must place
+    the same ink at the same screen pixels.  The dense label row straddles
+    region boundaries, so a clipped or duplicated label is visible as a
+    pixel difference.
+    """
+
+    def __init__(self, anchors):
+        import cairo
+
+        self.calls = []
+        self.painter_instance = _RecordingPainter()
+        self._cairo = cairo
+        self._anchors = tuple(anchors)
+
+    def painter(self):
+        return self.painter_instance
+
+    def render(self, job, isobars=None, enc=None):
+        cairo = self._cairo
+        viewport = job.viewport
+        width = max(1, int(round(viewport.width * job.factor)))
+        height = max(1, int(round(viewport.height * job.factor)))
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+        surface.set_device_scale(job.factor, job.factor)
+        cr = cairo.Context(surface)
+        cr.set_source_rgb(0.10, 0.20, 0.50)
+        cr.paint()
+        cr.set_source_rgb(1, 1, 1)
+        cr.set_font_size(12)
+        for lat, lon, text in self._anchors:
+            x, y = viewport.convert_geographic_to_screen(_point(lat, lon))
+            # A solid box is the label's anchor mark: it straddles region
+            # boundaries and is unmistakable in a pixel comparison.
+            cr.rectangle(x - 4, y - 8, 8, 8)
+            cr.fill()
+            cr.move_to(x, y)
+            cr.show_text(text)
+        self.calls.append((viewport.width, viewport.height, viewport._center_lon))
+        return surface, None
+
+
+def _point(lat, lon):
+    from sailworks.core.mapviewport import MapPoint
+
+    return MapPoint.new_degrees(lat, lon)
+
+
+def _image_array(image):
+    import numpy as np
+    from PySide6.QtGui import QImage
+
+    image = image.convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
+    height, width = image.height(), image.width()
+    stride = image.bytesPerLine()
+    raw = np.frombuffer(image.constBits(), dtype=np.uint8).reshape(height, stride)
+    return raw[:, : width * 4].reshape(height, width, 4).copy()
+
+
+def test_band_composition_draws_labels_whole_and_matches_the_full_view(tmp_path):
+    """Band reuse matches a full composition, including labels at the seam."""
+    import numpy as np
+
+    from threading import Event
+
+    from sailworks.core.mapviewport import MapViewport
+    from sailworks.qt.gribviewportchart import MARGIN, ChartCamera
+
+    camera = _camera(width=320, height=240)
+    panned = _panned(camera, 300)
+    viewport = MapViewport(ChartCamera(panned, 1), MARGIN, lambda: None)
+    # A dense row of labels in world coordinates: several anchors straddle the
+    # exposed region's boundaries and would be clipped without padding.
+    anchors = []
+    for offset in range(-160, 220, 40):
+        lon = viewport._x_to_lon(viewport._lon_to_x(viewport._center_lon) + offset)
+        anchors.append((panned.center_lat, lon, "A"))
+    composers = [_GeometryComposer(anchors), _GeometryComposer(anchors)]
+    layers = []
+    for composer in composers:
+        layer = _chart_layer(tmp_path)
+        layer._dpr = 1
+        layer._composer = lambda composer=composer: composer
+        layer._enc_composer = lambda: None
+        layer._base_sources = lambda: ()
+        layer._isobar_columns = lambda job, camera, cancel: None
+        layers.append(layer)
+    band_layer, full_layer = layers
+    try:
+        band_layer._compose(camera, Event())
+        band, _meta = band_layer._compose(panned, Event())
+        full, _meta = full_layer._compose(panned, Event())
+        band_array = _image_array(band)
+        full_array = _image_array(full)
+        assert band_array.shape == full_array.shape
+        delta = np.abs(band_array.astype(np.int16) - full_array.astype(np.int16))
+        assert int(delta.max()) <= 1
+        # The label ink is present on both sides of the reused/fresh seam.
+        white = (
+            (band_array[..., 0] == 255)
+            & (band_array[..., 1] == 255)
+            & (band_array[..., 2] == 255)
+        )
+        assert white.any()
+        assert np.array_equal(
+            white,
+            (
+                (full_array[..., 0] == 255)
+                & (full_array[..., 1] == 255)
+                & (full_array[..., 2] == 255)
+            ),
+        )
+    finally:
+        for layer in layers:
+            layer.close()
+
+
 class _RecordingEnc:
     """Stand-in for the ENC source: pixels for compose, identity for describe."""
 
@@ -2039,11 +2158,31 @@ def test_a_covered_pan_composes_only_the_exposed_region(tmp_path):
         assert third["static"]["isobar_only"] is True
         assert len(composer.calls) == calls_before
         assert enc.described[-1] == full[:2]
+        assert third["timings"]["static_ms"] >= 0
+        assert third["timings"]["copy_ms"] >= 0
+        assert third["timings"]["isobars_ms"] >= 0
         assert composer.painter().draws == 1
         assert layer.observations()["counters"]["static_reuses"] == 1
         assert layer.observations()["counters"]["isobar_only"] == 1
     finally:
         layer.close()
+
+
+def test_chart_latency_separates_scheduling_from_composition():
+    """Composition and scheduling are reported as separate endpoints."""
+    record = gribviewport.chart_latency(
+        100.0,
+        100.070,
+        {"timings": {"composition_ms": 40.0, "queue_ms": 10.0}},
+    )
+    assert record["request_to_publish_ms"] == 70.0
+    assert record["composition_ms"] == 40.0
+    assert record["queue_ms"] == 10.0
+    assert record["scheduling_ms"] == 20.0
+    # An unknown composition time is never reported as a scheduling win.
+    unknown = gribviewport.chart_latency(100.0, 100.070, {})
+    assert unknown["composition_ms"] is None
+    assert unknown["scheduling_ms"] is None
 
 
 def test_a_quality_or_source_change_composes_the_whole_view_again(tmp_path):
