@@ -123,6 +123,39 @@ def test_changing_forecast_hours_emits_changed(tmp_path):
     library.close()
 
 
+def test_duration_follows_the_selected_models_horizon(tmp_path):
+    app()
+    library, _, _ = forecast_page(tmp_path, capture_region=lambda: (-2, -2, 2, 2))
+    options = library.forecast_options
+    options.region = (-2, -2, 2, 2)
+
+    # GFS covers ten days.
+    options.duration.setCurrentIndex(options.duration.findData(240))
+    configurations = {item.model_id: item for item in options._configurations()}
+    assert options.duration.currentData() == 240
+    assert configurations["GFS"].forecast_hours == 240
+    assert max(configurations["GFS"].steps) == 240
+
+    # HRRR cannot cover ten days; the dropdown must show its real limit and
+    # the saved request must be clamped instead of silently downloading 48 h.
+    options.models["NOAA GFS"].setChecked(False)
+    options.models["NOAA HRRR"].setChecked(True)
+    assert options.duration.currentData() == 48
+    assert "48 h" in options.duration.toolTip()
+    model = options.duration.model()
+    assert model.item(options.duration.findData(48)).isEnabled()
+    assert not model.item(options.duration.findData(72)).isEnabled()
+    assert not model.item(options.duration.findData(240)).isEnabled()
+    configurations = {item.model_id: item for item in options._configurations()}
+    assert configurations["HRRR"].forecast_hours == 48
+    assert max(configurations["HRRR"].steps) == 48
+
+    # Adding a long-range model re-enables the longer durations.
+    options.models["NOAA GFS"].setChecked(True)
+    assert model.item(options.duration.findData(240)).isEnabled()
+    library.close()
+
+
 def test_gust_selection_is_limited_to_models_with_supported_products(tmp_path):
     app()
     library, _, _ = forecast_page(tmp_path, capture_region=lambda: (-2, -2, 2, 2))

@@ -15,6 +15,8 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
 # isort:skip_file
+from . import geometry as _geometry  # noqa: F401  Install before routing is imported.
+
 from . import core  # noqa: F401
 
 __version__ = "0.3.6"

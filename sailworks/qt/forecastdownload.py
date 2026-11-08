@@ -344,7 +344,57 @@ class ForecastDownloadOptions(QWidget):
                     )
         return sorted(hours)
 
+    def _duration_limit(self):
+        """The longest horizon supported by any selected model."""
+        limits = [
+            MODEL_CAPABILITIES[model_id].max_horizon()
+            for name in self.names()
+            if (model_id := self._model_id_by_name.get(name)) is not None
+        ]
+        return max(limits, default=None)
+
+    def _set_duration_enabled(self, index, enabled):
+        model = self.duration.model()
+        item = model.item(index) if hasattr(model, "item") else None
+        if item is None:
+            return
+        flags = item.flags()
+        if enabled:
+            flags |= Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        else:
+            flags &= ~(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        item.setFlags(flags)
+
+    def _sync_duration(self):
+        """Disable durations the selected models cannot provide and clamp the value."""
+        limit = self._duration_limit()
+        for index in range(self.duration.count()):
+            self._set_duration_enabled(
+                index, limit is None or self.duration.itemData(index) <= limit
+            )
+        if limit is None:
+            self.duration.setToolTip("")
+            return False
+        self.duration.setToolTip(
+            f"Selected models provide up to {limit} h ({limit / 24:g} days)."
+        )
+        current = self.duration.currentData()
+        if current is None or current <= limit:
+            return False
+        supported = [
+            self.duration.itemData(index)
+            for index in range(self.duration.count())
+            if self.duration.itemData(index) <= limit
+        ]
+        if not supported:
+            return False
+        self.duration.blockSignals(True)
+        self.duration.setCurrentIndex(self.duration.findData(max(supported)))
+        self.duration.blockSignals(False)
+        return True
+
     def rebuild_hours(self, *_):
+        self._sync_duration()
         options = DownloadOptions(
             self.duration.currentData(), self.interval.currentData()
         )

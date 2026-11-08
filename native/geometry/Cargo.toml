@@ -1,0 +1,21 @@
+[package]
+name = "sailworks-geometry"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[lib]
+name = "_geometry_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+geographiclib-rs = "0.2.7"
+pyo3 = { version = "0.30.1", features = ["extension-module", "abi3-py312"] }
+
+[build-dependencies]
+pyo3-build-config = "0.30.1"
+
+[profile.release]
+lto = true
+codegen-units = 1

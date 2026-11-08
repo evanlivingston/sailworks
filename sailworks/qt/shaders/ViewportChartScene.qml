@@ -261,7 +261,7 @@ Item {
                 anchors.fill: parent
             }
             Canvas {
-                id: routes
+                id: routeOverlayCanvas
                 objectName: "routeOverlay"
                 property real panX: 0
                 property real panY: 0
@@ -972,9 +972,9 @@ Item {
     }
     Rectangle {
         objectName: "mapCaption"
-        visible: routes.captionText !== ""
+        visible: routeOverlayCanvas.captionText !== ""
         x: 8
-        y: routes.dashboardVisible ? 8 : parent.height - 34
+        y: routeOverlayCanvas.dashboardVisible ? 8 : parent.height - 34
         width: Math.min(captionText.implicitWidth + 16, parent.width - 16)
         height: 26
         radius: 4
@@ -987,7 +987,7 @@ Item {
             color: "#eeeeec"
             font.pixelSize: 12
             elide: Text.ElideRight
-            text: routes.captionText
+            text: routeOverlayCanvas.captionText
         }
     }
     // The ENC source's own status.  It is drawn last, so it stays readable

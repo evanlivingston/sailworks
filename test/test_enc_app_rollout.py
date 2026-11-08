@@ -1105,11 +1105,15 @@ def test_environment_layer_excludes_marine_and_weather_raster():
 def test_map_state_isochrone_updates_keep_empty_and_nonempty_semantics():
     from sailworks.qt.mapstate import MapStateMixin
 
+    from types import MethodType
+
     host = SimpleNamespace(
         isochrones=SimpleNamespace(forget=Mock()),
         invalidate_navigation=Mock(),
+        publish_route_overlay=Mock(),
         update=Mock(),
     )
+    host._publish_route_overlay = MethodType(MapStateMixin._publish_route_overlay, host)
 
     MapStateMixin.set_isochrones(host, ())
 
@@ -1118,6 +1122,7 @@ def test_map_state_isochrone_updates_keep_empty_and_nonempty_semantics():
     assert host.isochrone_frame.exclusions == ()
     host.isochrones.forget.assert_called_once_with(host)
     host.invalidate_navigation.assert_called_once_with()
+    host.publish_route_overlay.assert_called_once_with()
     host.update.assert_called_once_with()
 
     MapStateMixin.set_isochrones(host, ((48.4, -123.4),))
@@ -1127,6 +1132,7 @@ def test_map_state_isochrone_updates_keep_empty_and_nonempty_semantics():
     assert host.isochrone_frame.exclusions == ()
     host.isochrones.forget.assert_called_once_with(host)
     assert host.invalidate_navigation.call_count == 2
+    assert host.publish_route_overlay.call_count == 2
     assert host.update.call_count == 2
 
 

@@ -568,6 +568,7 @@ class ViewportMap(
 
     def refresh_route_overlay(self):
         """Publish current overlay data after an explicit content edit."""
+        self._viewport_overlay_cache = None
         self.publish_route_overlay(force=True)
 
     def publish_route_overlay(self, force=False):
