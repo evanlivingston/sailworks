@@ -431,7 +431,10 @@ class TestCurrentRouting(unittest.TestCase):
             wind = SimpleNamespace(gribs=[])
             core = SimpleNamespace(grib_manager=wind, marine_manager=manager)
             track = Track("test", [(0, 0), (0, 0.02)])
-            with patch("sailworks.core.core.weatherrouting.Polar", return_value=Mock()):
+            with patch(
+                "sailworks.core.routingfactory.weatherrouting.Polar",
+                return_value=Mock(),
+            ):
                 route = Core.create_routing(
                     core,
                     CurrentIsoRouter,

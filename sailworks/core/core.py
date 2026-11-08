@@ -16,11 +16,10 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 
 import logging
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import List, Optional
 
 
 import gpxpy
-import weatherrouting
 
 from sailworks.core import GribManager, PolarManager, utils
 from sailworks.core.aismanager import AISManager
@@ -34,7 +33,6 @@ from sailworks.core.geo import (
     Track,
     TrackCollection,
 )
-from sailworks.core.polarwrapper import PolarWrapper
 from sailworks.core.marine import MarineManager
 from sailworks.core.marine.credentials import SystemCredentialStore
 from sailworks.core.storage import DATA_DIR
@@ -332,85 +330,28 @@ class Core(EventDispatcher):
         current_priority="finest",
         safety_policy=None,
     ):
-        polar = weatherrouting.Polar(polar_file)
-
-        if polar_efficiency is not None and polar_efficiency != 1.0:
-            polar = PolarWrapper(polar, polar_efficiency)
-
-        if safety_policy is not None and safety_policy.active:
-            from sailworks.core.safetypolicy import SafetyPolar, wind_limit_router
-
-            polar = SafetyPolar(polar, safety_policy)
-            if not use_currents and safety_policy.tws_max_kn is not None:
-                algorithm = wind_limit_router(algorithm)
-
-        pval: Optional[Callable] = utils.points_validity
-        lval: Optional[Callable] = None
-
-        if len(validity_providers) > 0:
-            # pval is a function that checks all points_validity of validity_providers
-            pval = validity_providers[0].points_validity
-            # lval is a function that checks all lines_validity of validity_providers
-            lval = validity_providers[0].lines_validity
-
-        if disable_coastline_checks and not validity_providers:
-            lval = None
-            pval = None
+        from sailworks.core.routingfactory import build_routing
 
         grib = grib_override if grib_override is not None else self.grib_manager
-
-        environment = None
-        if use_currents:
-            from functools import partial
-            from sailworks.core.marine.routing import (
-                CurrentIsoRouter,
-                CurrentRoutingEnvironment,
-                FrozenRoutingWind,
-                routing_utc,
-            )
-
-            grib = FrozenRoutingWind(
-                wind_sources if wind_sources is not None else self.grib_manager,
-                grib_override,
-            )
-            start_datetime = routing_utc(start_datetime)
-            environment = CurrentRoutingEnvironment(
-                grib,
-                (
-                    current_selection
-                    if current_selection is not None
-                    else self.marine_manager.fields.snapshot(current_priority)
-                ),
-            )
-            algorithm = partial(CurrentIsoRouter, environment=environment)
-
-        routing = weatherrouting.Routing(
+        selection = current_selection
+        if use_currents and selection is None:
+            selection = self.marine_manager.fields.snapshot(current_priority)
+        return build_routing(
             algorithm,
-            polar,
-            (
-                track_or_poi.to_list()
-                if isinstance(track_or_poi, Track)
-                else [track_or_poi.position]
-            ),
+            polar_file,
+            track_or_poi,
+            start_datetime,
+            start_position,
+            validity_providers,
             grib,
-            start_datetime=start_datetime,
-            start_position=start_position,
-            points_validity=pval,
-            lines_validity=lval,
+            wind_override=grib_override,
+            disable_coastline_checks=disable_coastline_checks,
+            polar_efficiency=polar_efficiency,
+            use_currents=use_currents,
+            wind_sources=wind_sources,
+            current_selection=selection,
+            safety_policy=safety_policy,
         )
-        routing.current_environment = environment
-        if environment is not None:
-            environment.factors = {
-                "currents": True,
-                "land_avoidance": not disable_coastline_checks
-                or bool(validity_providers),
-                "wave_correction": (
-                    getattr(safety_policy, "wave_correct", False)
-                    if safety_policy is not None
-                    else False
-                ),
-            }
-        return routing
 
     # Import a GPX file (tracks, pois and routings)
     def import_gpx(self, path):
