@@ -401,7 +401,7 @@ def fast_frames(pgn, payload, source=42, sequence=3):
     frames = []
     total = len(payload)
     frames.append(
-        frame(pgn, bytes([(0 << 5) | sequence, total]) + payload[:6], source=source)
+        frame(pgn, bytes([(sequence << 5), total]) + payload[:6], source=source)
     )
     index, position = 1, 6
     while position < total:
@@ -409,7 +409,7 @@ def fast_frames(pgn, payload, source=42, sequence=3):
         frames.append(
             frame(
                 pgn,
-                bytes([(index << 5) | sequence]) + chunk,
+                bytes([(sequence << 5) | index]) + chunk,
                 source=source,
             )
         )

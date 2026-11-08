@@ -86,8 +86,8 @@ class FastPacketAssembler:
         now = self._seconds(timestamp)
         if self.fragments % 64 == 0:
             self._expire(timestamp)
-        sequence = data[0] & 0x07
-        index = data[0] >> 5
+        sequence = data[0] >> 5
+        index = data[0] & 0x1F
         key = (source, pgn, sequence)
         if index == 0:
             if key in self.pending:
@@ -106,7 +106,7 @@ class FastPacketAssembler:
                 1,
                 length,
                 now,
-                bytearray(data[2 : 1 + length]),
+                bytearray(data[2 : 2 + length]),
                 priority,
                 pgn,
                 source,
@@ -121,13 +121,17 @@ class FastPacketAssembler:
             return None
         pending = self.pending.get(key)
         if pending is None:
-            self._issue("orphaned fast-packet fragment")
+            self._issue(
+                f"orphaned fast-packet fragment pgn={pgn} source={source} index={index}"
+            )
             self.dropped_frames += 1
             return None
         if now - pending.started > self.timeout or now < pending.started:
             self.dropped_frames += pending.frames + 1
             del self.pending[key]
-            self._issue("timed out incomplete fast packet")
+            self._issue(
+                f"timed out incomplete fast packet pgn={pending.pgn} source={pending.source} sequence={pending.sequence}"
+            )
             return None
         if index != pending.expected:
             self.dropped_frames += pending.frames + 1
@@ -176,8 +180,12 @@ class FastPacketAssembler:
             if now - pending.started > self.timeout or now < pending.started
         ]
         for key in expired:
-            self.dropped_frames += self.pending.pop(key).frames
-            self._issue("timed out incomplete fast packet")
+            pending = self.pending.pop(key)
+            self.dropped_frames += pending.frames
+            self._issue(
+                f"timed out incomplete fast packet pgn={pending.pgn} "
+                f"source={pending.source} sequence={pending.sequence}"
+            )
 
     def drain_unsupported(self):
         """Return rejected/incomplete frame count for the finished session."""

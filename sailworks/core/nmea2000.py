@@ -224,6 +224,7 @@ class _AisBits:
     def add(self, value, length, signed=False):
         if value is None:
             value = 0
+        value = int(value)
         if signed and value < 0:
             value += 1 << length
         value &= (1 << length) - 1
@@ -369,7 +370,7 @@ def _ais_extended_position(message):
         .split(b"\xff", 1)[0]
         .decode("ascii", errors="replace")
     )
-    ship_type = number(d, 20, 1) or 0
+    ship_type = int(number(d, 20, 1) or 0)
     to_bow = number(d, 24, 2, 0.1) or 0
     to_stern = number(d, 26, 2, 0.1) or 0
     to_port = number(d, 28, 2, 0.1) or 0
@@ -405,13 +406,13 @@ def _ais_static(message):
     bits = _AisBits()
     _ais_common(bits, 5, (d[0] >> 6) & 3, int(mmsi))
     bits.add(0, 2)  # AIS version
-    bits.add(number(d, 5, 4) or 0, 30)  # IMO
+    bits.add(int(number(d, 5, 4) or 0), 30)  # IMO
     callsign = d[9:16].split(b"\x00", 1)[0].split(b"\xff", 1)[0]
     name = d[16:36].split(b"\x00", 1)[0].split(b"\xff", 1)[0]
     destination = d[53:73].split(b"\x00", 1)[0].split(b"\xff", 1)[0]
     bits.text(callsign.decode("ascii", errors="replace").strip(), 7)
     bits.text(name.decode("ascii", errors="replace").strip(), 20)
-    bits.add(number(d, 36, 1) or 0, 8)
+    bits.add(int(number(d, 36, 1) or 0), 8)
     bits.add(min(511, round(number(d, 37, 2, 0.1) or 0)), 9)
     bits.add(min(511, round(number(d, 39, 2, 0.1) or 0)), 9)
     bits.add(min(63, round(number(d, 41, 2, 0.1) or 0)), 6)
@@ -450,7 +451,7 @@ def _ais_static_part_b(message):
     bits = _AisBits()
     _ais_common(bits, 24, (d[0] >> 6) & 3, int(mmsi))
     bits.add(1, 2)
-    bits.add(number(d, 5, 1) or 0, 8)
+    bits.add(int(number(d, 5, 1) or 0), 8)
     bits.add(0, 42)  # vendor id
     bits.text(callsign.decode("ascii", errors="replace").strip(), 7)
     bits.add(min(511, round(number(d, 20, 2, 0.1) or 0)), 9)
@@ -530,7 +531,7 @@ def _ais_aton(message):
     lon, lat = _ais_position(d)
     bits = _AisBits()
     _ais_common(bits, 21, (d[0] >> 6) & 3, int(mmsi))
-    bits.add((number(d, 22, 1) or 0) & 0x1F, 5)
+    bits.add(int(number(d, 22, 1) or 0) & 0x1F, 5)
     bits.text("", 20)
     bits.add((d[13] >> 0) & 1 if len(d) > 13 else 0, 1)
     bits.add(0 if lon is None else lon, 28, True)
