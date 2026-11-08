@@ -10,6 +10,16 @@ from sailworks.core.forecasttranche import ModelConfiguration
 from sailworks.core.weathernextcredentials import describe_access_error
 
 
+def _format_bytes(count):
+    if count >= 1024 * 1024 * 1024:
+        return f"{count / (1024 ** 3):.1f} GB"
+    if count >= 1024 * 1024:
+        return f"{count / (1024 ** 2):.1f} MB"
+    if count >= 1024:
+        return f"{count / 1024:.0f} KB"
+    return f"{count} B"
+
+
 class AnalysisController(QObject):
     changed = Signal()
     _finished = Signal(int, str, object, object)
@@ -171,6 +181,22 @@ class AnalysisController(QObject):
             return
         if isinstance(value, tuple) and len(value) == 2:
             model_id, detail = value
+            if (
+                isinstance(detail, tuple)
+                and len(detail) == 2
+                and all(isinstance(item, int) for item in detail)
+            ):
+                percentage, downloaded = detail
+                self.progress = min(100, max(0, percentage))
+                if model_id:
+                    from sailworks.core.forecastcapabilities import display_model_name
+
+                    status = f"Downloading {display_model_name(model_id)}…"
+                    if downloaded > 0:
+                        status += f" {_format_bytes(downloaded)}"
+                    self.status = status
+                self.changed.emit()
+                return
             if isinstance(detail, int):
                 self.progress = min(100, max(0, detail))
                 if model_id:

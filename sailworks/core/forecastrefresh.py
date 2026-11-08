@@ -2,10 +2,11 @@
 
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+import logging
+import os
 import tempfile
 from pathlib import Path
-import logging
-from threading import RLock
+from threading import Event, Lock, RLock, Thread
 from uuid import uuid4
 
 from .forecastrefreshcontracts import failure_reason
@@ -51,6 +52,19 @@ def _utc(value, label):
     ):
         raise ValueError(f"{label} must be timezone-aware")
     return value.astimezone(timezone.utc)
+
+
+def _stage_bytes(directory):
+    """Count bytes already written into a provider's owned download stage."""
+    total = 0
+    for root, _directories, files in os.walk(directory):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                # A provider may replace or remove a partial file mid-walk.
+                continue
+    return total
 
 
 class _CombinedCancel:
@@ -282,12 +296,39 @@ class RefreshCoordinator:
         model_stage = stage / planned.model_id
         model_stage.mkdir()
         source = create_source(planned, self.factories)
-        result = source.download(
-            planned.identifier,
-            str(model_stage),
-            lambda value: self._progress(progress, planned.model_id, value),
-            cancel=cancel,
-        )
+        # Sources report percentages at step boundaries. Watch the stage as
+        # well so the UI can show how many bytes have actually landed.
+        state = {"percent": 0, "bytes": 0}
+        state_lock = Lock()
+
+        def report(percent=None):
+            with state_lock:
+                if percent is not None:
+                    state["percent"] = min(99, max(0, int(percent)))
+                state["bytes"] = _stage_bytes(model_stage)
+                detail = (state["percent"], state["bytes"])
+            if progress is not None:
+                progress(planned.model_id, detail)
+
+        stop = Event()
+
+        def watch():
+            while not stop.wait(0.25):
+                report()
+
+        watcher = Thread(target=watch, name="forecast-download-bytes", daemon=True)
+        watcher.start()
+        try:
+            result = source.download(
+                planned.identifier,
+                str(model_stage),
+                report,
+                cancel=cancel,
+            )
+        finally:
+            stop.set()
+            watcher.join(timeout=2)
+            report()
         path = Path(result)
         if path.is_symlink():
             raise ValueError("provider returned a symlinked path")

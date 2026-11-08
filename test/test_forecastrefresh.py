@@ -93,6 +93,8 @@ class FakeSource:
         path = f"{directory}/{self.name.replace(' ', '_')}.grib"
         with open(path, "wb") as stream:
             stream.write(self.behavior.get("bytes", self.name.encode()))
+        if self.behavior.get("report_progress") is not None:
+            progress(self.behavior["report_progress"])
         return path
 
 
@@ -198,6 +200,24 @@ def test_success_publishes_every_model_and_returns_selected_entry(
     assert [json.loads(s.identifiers[0])["cycle"] for s in created] == ["00", "00"]
     assert len(resolve_calls) == 1
     assert all(entry.acquired_at == ACQUIRED for entry in result.tranche.entries)
+
+
+def test_download_progress_reports_bytes_landed_in_the_stage(tmp_path):
+    store = TrancheStore(tmp_path)
+    cfg = config("GFS")
+    events = []
+    service, _ = coordinator(store, (cfg,), behaviors={"GFS": {"report_progress": 50}})
+    service.configure((cfg,), "GFS")
+    service.refresh(progress=lambda model_id, detail: events.append(detail))
+
+    byte_reports = [
+        detail
+        for detail in events
+        if isinstance(detail, tuple)
+        and len(detail) == 2
+        and all(isinstance(item, int) for item in detail)
+    ]
+    assert (50, len("NOAA GFS".encode())) in byte_reports
 
 
 def test_refresh_reuses_same_run_local_model_and_downloads_only_missing_model(
