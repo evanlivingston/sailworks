@@ -92,6 +92,29 @@ def test_local_points_match_reference_including_azimuth():
             assert actual[1] == pytest.approx(expected[1], abs=1e-9)
 
 
+def test_pole_dateline_and_coincident_points_match_reference():
+    pairs = (
+        ((0.0, 0.0), (0.0, 0.0)),
+        ((90.0, 0.0), (0.0, 0.0)),
+        ((0.0, 180.0), (0.0, -180.0)),
+        ((0.0, 179.999), (0.0, -179.999)),
+        ((45.0, 0.0), (-45.0, 180.0)),
+    )
+    for a, b in pairs:
+        for unit in ("nm", "km"):
+            assert geometry._geometry_native.point_distance(
+                *a, *b, unit=unit
+            ) == pytest.approx(reference("point_distance", *a, *b, unit=unit), abs=1e-9)
+        for name in ("ortodromic", "lossodromic"):
+            actual = getattr(geometry._geometry_native, name)(*a, *b)
+            expected = reference(name, *a, *b)
+            assert actual[0] == pytest.approx(expected[0], abs=1e-9)
+            # Azimuth is undefined/ill-conditioned for coincident or antipodal
+            # points; compare it only for the well-conditioned edge cases.
+            if actual[0] > 1e-9 and actual[0] < 20_000:
+                assert actual[1] == pytest.approx(expected[1], abs=1e-9)
+
+
 @requires_native
 def test_direct_points_match_reference_and_normalize_longitude():
     rng = random.Random(317)

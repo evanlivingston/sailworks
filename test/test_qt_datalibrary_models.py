@@ -142,9 +142,17 @@ def test_duration_follows_the_selected_models_horizon(tmp_path):
     options.models["NOAA HRRR"].setChecked(True)
     assert options.duration.currentData() == 48
     assert "48 h" in options.duration.toolTip()
+    model = options.duration.model()
+    assert model.item(options.duration.findData(48)).isEnabled()
+    assert not model.item(options.duration.findData(72)).isEnabled()
+    assert not model.item(options.duration.findData(240)).isEnabled()
     configurations = {item.model_id: item for item in options._configurations()}
     assert configurations["HRRR"].forecast_hours == 48
     assert max(configurations["HRRR"].steps) == 48
+
+    # Adding a long-range model re-enables the longer durations.
+    options.models["NOAA GFS"].setChecked(True)
+    assert model.item(options.duration.findData(240)).isEnabled()
     library.close()
 
 

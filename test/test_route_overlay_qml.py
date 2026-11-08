@@ -2,11 +2,16 @@
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from PySide6.QtCore import QObject, QUrl
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQuick import QQuickView
+
+from sailworks.qt.mapstate import MapStateMixin
+from sailworks.qt.viewportmap import ViewportMap
 
 SCENE = (
     Path(__file__).resolve().parents[1] / "sailworks/qt/shaders/ViewportChartScene.qml"
@@ -52,3 +57,23 @@ def test_route_canvas_does_not_shadow_its_routes_property(app):
     finally:
         view.close()
         view.releaseResources()
+
+
+def test_state_change_prefers_a_forced_overlay_refresh():
+    host = SimpleNamespace(refresh_route_overlay=Mock(), publish_route_overlay=Mock())
+
+    MapStateMixin._publish_route_overlay(host)
+
+    host.refresh_route_overlay.assert_called_once_with()
+    host.publish_route_overlay.assert_not_called()
+
+
+def test_refresh_route_overlay_clears_the_identity_cache():
+    host = SimpleNamespace(
+        _viewport_overlay_cache=object(), publish_route_overlay=Mock()
+    )
+
+    ViewportMap.refresh_route_overlay(host)
+
+    assert host._viewport_overlay_cache is None
+    host.publish_route_overlay.assert_called_once_with(force=True)

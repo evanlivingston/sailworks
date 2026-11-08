@@ -353,9 +353,25 @@ class ForecastDownloadOptions(QWidget):
         ]
         return max(limits, default=None)
 
+    def _set_duration_enabled(self, index, enabled):
+        model = self.duration.model()
+        item = model.item(index) if hasattr(model, "item") else None
+        if item is None:
+            return
+        flags = item.flags()
+        if enabled:
+            flags |= Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        else:
+            flags &= ~(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        item.setFlags(flags)
+
     def _sync_duration(self):
-        """Clamp the dropdown so it never promises more than the models provide."""
+        """Disable durations the selected models cannot provide and clamp the value."""
         limit = self._duration_limit()
+        for index in range(self.duration.count()):
+            self._set_duration_enabled(
+                index, limit is None or self.duration.itemData(index) <= limit
+            )
         if limit is None:
             self.duration.setToolTip("")
             return False

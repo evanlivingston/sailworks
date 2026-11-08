@@ -52,6 +52,11 @@ jobs:
     - name: Set up Rust
       uses: dtolnay/rust-toolchain@stable
 
+    - name: Build native extension in place
+      run: |
+        python -m pip install setuptools setuptools-rust setuptools_scm
+        python setup.py build_ext --inplace
+
     - name: Run tests
       env:
         SAILWORKS_EXPECT_NATIVE_GEOMETRY: "1"
