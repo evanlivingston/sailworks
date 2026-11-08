@@ -30,6 +30,17 @@ def fit_zoom(spread_x, spread_y, width, height):
 class MapStateMixin:
     """Mutators for track, route and position state used by map widgets."""
 
+    def _publish_route_overlay(self):
+        """Refresh the retained QML overlay after overlay content changes.
+
+        The QML overlay is normally moved by the camera; mutators that change
+        its content must republish it or the change stays invisible until the
+        next pan or zoom.
+        """
+        publish = getattr(self, "publish_route_overlay", None)
+        if callable(publish):
+            publish()
+
     @property
     def ais_targets(self):
         return self._ais_targets_state
@@ -53,6 +64,7 @@ class MapStateMixin:
         if not frontiers:
             self.isochrones.forget(self)
         self.invalidate_navigation()
+        self._publish_route_overlay()
         self.update()
 
     def fit_coordinates(self, coordinates):
@@ -175,6 +187,7 @@ class MapStateMixin:
         if fit and points:
             self.fit_track()
         self.invalidate_navigation()
+        self._publish_route_overlay()
         self.update()
 
     def fit_track(self):
@@ -185,6 +198,7 @@ class MapStateMixin:
     def set_route_plan(self, coordinates):
         self.route_plan = tuple(coordinates)
         self.invalidate_navigation()
+        self._publish_route_overlay()
         self.update()
 
     def set_route(self, coordinates, speeds=()):
@@ -192,16 +206,19 @@ class MapStateMixin:
         self.route_speeds = tuple(speeds)
         self.selected_route_point = -1
         self.invalidate_navigation()
+        self._publish_route_overlay()
         self.update()
 
     def select_route_point(self, row):
         self.selected_route_point = row
         self.invalidate_navigation()
+        self._publish_route_overlay()
         self.update()
 
     def set_route_preview(self, coordinates):
         self.route_preview = tuple(coordinates)
         self.invalidate_navigation()
+        self._publish_route_overlay()
         self.update()
 
     def fit_route(self):

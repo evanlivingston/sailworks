@@ -1106,10 +1106,12 @@ class PreviewWindow(QMainWindow):
     def _navigation_changed(self):
         self.routing_panel.refresh_destinations()
         self._navigation_route_selected(self.navigation_panel.route)
-        self.map.invalidate_navigation()
-        self.log_map.invalidate_navigation()
-        self.map.update()
-        self.log_map.update()
+        for canvas in (self.map, self.log_map):
+            canvas.invalidate_navigation()
+            refresh = getattr(canvas, "refresh_route_overlay", None)
+            if callable(refresh):
+                refresh()
+            canvas.update()
 
     def _navigation_request(self, kind, coordinates):
         self._show_panel("navigation")
@@ -1125,6 +1127,9 @@ class PreviewWindow(QMainWindow):
             invalidate = getattr(canvas, "invalidate_navigation", None)
             if callable(invalidate):
                 invalidate()
+            refresh = getattr(canvas, "refresh_route_overlay", None)
+            if callable(refresh):
+                refresh()
             invalidate_race = getattr(canvas, "invalidate_race_geometry", None)
             if callable(invalidate_race):
                 invalidate_race()
