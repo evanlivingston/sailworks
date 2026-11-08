@@ -130,6 +130,26 @@ def test_progress_report_exposes_current_model_and_percentage(tmp_path):
     controller.close()
 
 
+def test_progress_report_includes_bytes_downloaded(tmp_path):
+    application = app()
+    controller = AnalysisController(
+        state=FakeAnalysisState(tmp_path, make_snapshot(tmp_path))
+    )
+    wait_for(lambda: not controller.loading, application)
+
+    controller._generation += 1
+    controller._progress_token = "progress-token"
+    controller._progress(
+        controller._generation,
+        "progress-token",
+        ("HRRR", (42, 3 * 1024 * 1024)),
+    )
+
+    assert controller.status == (f"Downloading {display_model_name('HRRR')}… 3.0 MB")
+    assert controller.progress == 42
+    controller.close()
+
+
 def test_select_retires_old_snapshot_and_restores_it_on_failure(tmp_path):
     application = app()
     state = FakeAnalysisState(tmp_path, make_snapshot(tmp_path))

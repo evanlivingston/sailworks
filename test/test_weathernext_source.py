@@ -56,6 +56,39 @@ def test_catalogue_returns_pinned_weathernext_rows():
     assert payload["run_tag"] == "01_preds"
 
 
+def test_catalogue_skips_runs_with_unpublished_lead_chunks(monkeypatch):
+    from sailworks.core.weathernextcredentials import WeatherNextCredentials
+
+    runs = [
+        ("20261107", "18", "01_preds", datetime(2026, 11, 7, 18, tzinfo=timezone.utc)),
+        ("20261108", "00", "01_preds", datetime(2026, 11, 8, 0, tzinfo=timezone.utc)),
+        ("20261108", "01", "01_preds", datetime(2026, 11, 8, 1, tzinfo=timezone.utc)),
+    ]
+
+    class FakeFilesystem:
+        def cat(self, path):
+            return json.dumps(
+                {"chunk_grid": {"configuration": {"chunk_shape": [1, 1801, 3600]}}}
+            ).encode()
+
+        def ls(self, path, detail=False):
+            # The 01z run only published the lead-6 chunk.
+            keys = [5] if "20261108_01hr" in path else list(range(1, 13))
+            return [f"{path}/{key}" for key in keys]
+
+    source = WeatherNextSource()
+    monkeypatch.setattr(source, "_catalogue_runs", lambda: runs)
+    monkeypatch.setattr(
+        WeatherNextCredentials, "gcs_filesystem", lambda self: FakeFilesystem()
+    )
+
+    rows = source.get_download_list(DownloadOptions(12, 3, ("wind",), ()))
+
+    assert len(rows) == 1
+    payload = json.loads(rows[0][4])
+    assert (payload["date"], payload["cycle"]) == ("20261108", "00")
+
+
 def test_download_writes_validated_ugrd_vgrd_and_prmsl(tmp_path, monkeypatch):
     gdal = pytest.importorskip("osgeo.gdal")
     pytest.importorskip("eccodes")

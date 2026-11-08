@@ -55,6 +55,9 @@ class WeatherNextSource(GribSource):
     def __init__(self, runs=None):
         self._bounds = None
         self._runs = runs
+        # Injected runs come from callers/tests that have already decided the
+        # run is usable. Live catalogue runs must be probed for published data.
+        self._injected_runs = runs is not None
 
     @property
     def name(self) -> str:
@@ -121,6 +124,52 @@ class WeatherNextSource(GribSource):
         self._runs = _CATALOGUE
         return list(runs)
 
+    def _published_steps(self, filesystem, store, variable, steps):
+        """Return True when every requested lead chunk exists for a variable.
+
+        A run can publish its Zarr metadata before the per-lead chunks finish
+        uploading. Those leads decode as all-NaN, and downloading such a run
+        would produce an artifact that does not match the pinned schedule.
+        List the lead chunks instead of reading the data: a missing chunk costs
+        one listing, not a 26 MB global field.
+        """
+        array = f"{store}/{variable}"
+        try:
+            metadata = json.loads(filesystem.cat(f"{array}/zarr.json"))
+            chunk_shape = metadata["chunk_grid"]["configuration"]["chunk_shape"]
+            lead_chunk = int(chunk_shape[0])
+        except (FileNotFoundError, KeyError, TypeError, ValueError):
+            # Older Zarr v2 stores have no zarr.json. Do not exclude them on a
+            # layout we cannot inspect; the download path still reports blanks.
+            return True
+        if lead_chunk < 1:
+            return False
+        # lead_time values start at 1 h, so hour h is index h - 1.
+        needed = {(hour - 1) // lead_chunk for hour in steps if hour >= 1}
+        if not needed:
+            return False
+        try:
+            entries = filesystem.ls(f"{array}/c", detail=False)
+        except FileNotFoundError:
+            return False
+        present = set()
+        for entry in entries:
+            key = entry.rstrip("/").rsplit("/", 1)[-1]
+            if key.isdigit():
+                present.add(int(key))
+        return needed <= present
+
+    def _run_is_published(self, filesystem, store, steps, fields):
+        variables = []
+        if "wind" in fields:
+            variables.extend((U_WIND, V_WIND))
+        if "pressure" in fields:
+            variables.append(PRESSURE)
+        return bool(variables) and all(
+            self._published_steps(filesystem, store, variable, steps)
+            for variable in variables
+        )
+
     def estimate_download_size(self, identifier, *, cancel=None):
         """Estimate the GRIB2 payload from the region grid and requested steps."""
         payload = json.loads(identifier)
@@ -155,13 +204,26 @@ class WeatherNextSource(GribSource):
         if not fields:
             return []
         rows = []
-        for date, cycle, tag, run_time in self._catalogue_runs()[-24:]:
-            available = MODEL_CAPABILITIES["WEATHERNEXT"].available_steps(
-                run_time.hour, "wind"
-            )
+        filesystem = None
+        runs = self._catalogue_runs()[-24:]
+        if not self._injected_runs:
+            # Newest first: the planner only needs the most recent run that can
+            # satisfy the whole requested schedule.
+            runs = reversed(runs)
+        capability = MODEL_CAPABILITIES["WEATHERNEXT"]
+        for date, cycle, tag, run_time in runs:
+            if options.hours > capability.max_horizon(run_time.hour):
+                continue
+            available = capability.available_steps(run_time.hour, "wind")
             steps = options.select(available)
             if not steps:
                 continue
+            if not self._injected_runs:
+                if filesystem is None:
+                    filesystem = WeatherNextCredentials().gcs_filesystem()
+                store = statistics_store_url(run_time, tag)
+                if not self._run_is_published(filesystem, store, steps, fields):
+                    continue
             count = len(steps) * (2 if "wind" in fields else 0)
             count += len(steps) if "pressure" in fields else 0
             coverage = f"{min(steps)}–{max(steps)} h · {len(steps)} times"
@@ -183,6 +245,8 @@ class WeatherNextSource(GribSource):
                     json.dumps(payload),
                 ]
             )
+            if not self._injected_runs:
+                break
         return rows
 
     def _select(self, dataset, variable, run_time, step, latitude, longitude):
