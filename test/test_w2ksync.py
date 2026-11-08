@@ -4,16 +4,23 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sailworks.core.w2kapi import W2KDevice, W2KFile, W2KFolder
-from sailworks.core.w2ksync import ACTIVE, NEW, PRESENT, W2KSync
+from sailworks.core.w2kapi import W2KDevice, W2KError, W2KFile, W2KFolder
+from sailworks.core.w2ksync import (
+    ACTIVE,
+    NEW,
+    PRESENT,
+    W2KSync,
+    W2KSyncCancelled,
+)
 
 
 class FakeClient:
-    def __init__(self, folders, files, serial="W2K-12345", content=None):
+    def __init__(self, folders, files, serial="W2K-12345", content=None, short_by=0):
         self.folder_list = list(folders)
         self.file_map = dict(files)
         self.serial = serial
         self.content = content
+        self.short_by = short_by
         self.downloaded = []
 
     def info(self):
@@ -29,24 +36,35 @@ class FakeClient:
         target = Path(destination)
         target.parent.mkdir(parents=True, exist_ok=True)
         data = self.content if self.content is not None else b"x" * file.size
-        target.write_bytes(data)
+        written = max(0, len(data) - self.short_by)
+        target.write_bytes(data[:written])
         if progress is not None:
-            progress(len(data), len(data))
+            progress(written, written)
         self.downloaded.append(file.key)
-        return len(data)
+        return written
 
 
 class FakeLibrary:
     def __init__(self, directory):
         self.directory = Path(directory)
         self.imports = []
+        self._entries = []
+
+    def entries(self):
+        return tuple(self._entries)
 
     def import_paths(self, paths, decode_progress=None):
         if decode_progress is not None:
             total = sum(Path(path).stat().st_size for path in paths)
             decode_progress(total, total)
         self.imports.append(tuple(paths))
-        return [{"id": f"log-{len(self.imports)}"}]
+        source = str(Path(paths[0]).parent.resolve())
+        entry = {
+            "id": f"log-{len(self.imports)}",
+            "file_info": {"ebl_source": source},
+        }
+        self._entries.append(entry)
+        return [entry]
 
 
 def folder(name, in_progress=False, size=0):
@@ -229,6 +247,87 @@ class W2KSyncTest(unittest.TestCase):
         sync = W2KSync(FakeClient([], {}), self.library)
         with self.assertRaises(ValueError):
             sync.seed(root)
+
+    def test_cancel_stops_between_files(self):
+        closed = folder("EBL000000")
+        files = {
+            "EBL000000": [
+                ebl("EBL000000", "000000_080.ebl", 100),
+                ebl("EBL000000", "000000_160.ebl", 100),
+            ]
+        }
+        client, sync = self._sync([closed], files)
+        calls = {"count": 0}
+
+        def stop():
+            calls["count"] += 1
+            return calls["count"] > 1
+
+        with self.assertRaises(W2KSyncCancelled):
+            sync.run(stop=stop)
+        self.assertEqual(client.downloaded, ["EBL000000/000000_080.ebl"])
+
+    def test_short_closed_download_is_rejected(self):
+        closed = folder("EBL000000")
+        files = {"EBL000000": [ebl("EBL000000", "000000_080.ebl", 100)]}
+        client = FakeClient([closed], files, short_by=10)
+        with self.assertRaises(W2KError):
+            W2KSync(client, self.library).run()
+        self.assertEqual(self.library.imports, [])
+
+    def test_folder_signature_change_forces_reimport(self):
+        closed = folder("EBL000000")
+        files = {"EBL000000": [ebl("EBL000000", "000000_080.ebl", 100)]}
+        _, sync = self._sync([closed], files)
+        sync.run()
+
+        files["EBL000000"] = [ebl("EBL000000", "000000_081.ebl", 100)]
+        client = FakeClient([closed], files)
+        summary = W2KSync(client, self.library).run()
+
+        self.assertEqual(client.downloaded, ["EBL000000/000000_081.ebl"])
+        self.assertEqual(summary.imported, 1)
+
+    def test_deleted_library_entry_is_reimported(self):
+        closed = folder("EBL000000")
+        files = {"EBL000000": [ebl("EBL000000", "000000_080.ebl", 100)]}
+        _, sync = self._sync([closed], files)
+        sync.run()
+
+        self.library._entries.clear()
+        client = FakeClient([closed], files)
+        summary = W2KSync(client, self.library).run()
+
+        self.assertEqual(client.downloaded, [])
+        self.assertEqual(summary.imported, 1)
+
+    def test_missing_staging_file_is_redownloaded(self):
+        closed = folder("EBL000000")
+        files = {"EBL000000": [ebl("EBL000000", "000000_080.ebl", 100)]}
+        _, sync = self._sync([closed], files)
+        sync.run()
+
+        (sync.staging / "W2K-12345/EBL000000/000000_080.ebl").unlink()
+        client = FakeClient([closed], files)
+        summary = W2KSync(client, self.library).run()
+
+        self.assertEqual(client.downloaded, ["EBL000000/000000_080.ebl"])
+        self.assertEqual(summary.downloaded, 1)
+
+    def test_progress_is_monotonic_across_folders(self):
+        first = folder("EBL000001")
+        second = folder("EBL000002")
+        files = {
+            "EBL000001": [ebl("EBL000001", "000001_080.ebl", 100)],
+            "EBL000002": [ebl("EBL000002", "000002_080.ebl", 100)],
+        }
+        _, sync = self._sync([first, second], files)
+
+        values = []
+        sync.run(progress=values.append)
+
+        self.assertEqual(values, sorted(values))
+        self.assertEqual(values[-1], 100)
 
     def test_sync_imports_a_real_ebl_into_the_library(self):
         from datetime import datetime, timezone

@@ -110,6 +110,38 @@ def test_dialog_always_offers_folder_import_and_w2k_sync(app, controller):
         dialog.close()
 
 
+def test_controller_reimport_updates_same_session(app, controller, tmp_path):
+    from test.test_ebllog import VERSION, frame, timestamp
+
+    directory = tmp_path / "EBL000041"
+    directory.mkdir()
+    speed = b"\x00" + (400).to_bytes(2, "little") + b"\xff" * 5
+    path = directory / "000041_000.ebl"
+    path.write_bytes(timestamp(1704153600) + VERSION + frame(128259, speed) * 3)
+
+    controller.load_paths([path])
+    wait_for_import(app, controller)
+    entries = controller.log_library.entries()
+    assert len(entries) == 1
+    identifier = entries[0]["id"]
+    assert entries[0]["file_info"]["ebl_session_key"]
+
+    path.write_bytes(
+        timestamp(1704153600)
+        + VERSION
+        + frame(128259, speed) * 3
+        + timestamp(1704153610)
+        + frame(128259, speed) * 2
+    )
+    controller.load_paths([path])
+    wait_for_import(app, controller)
+
+    entries = controller.log_library.entries()
+    assert len(entries) == 1
+    assert entries[0]["id"] == identifier
+    assert entries[0]["file_info"]["entries"] == 5
+
+
 def test_dialog_import_edit_reload_open_paused_and_remove(
     app, controller, tmp_path, monkeypatch
 ):

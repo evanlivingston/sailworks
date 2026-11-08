@@ -607,6 +607,8 @@ class SessionController(QObject):
                     {
                         "path": str(self.log_library.path(item["id"])),
                         "format": candidate.format,
+                        "ebl_session_key": existing_info.get("ebl_session_key"),
+                        "ebl_source": existing_info.get("ebl_source"),
                         "entries": len(candidate.entries),
                         "duration": candidate.duration,
                         "timestamp_origin": (

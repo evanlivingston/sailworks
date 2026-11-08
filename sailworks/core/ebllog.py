@@ -157,9 +157,9 @@ class _SessionState:
 def iter_ebl_sessions(
     path,
     progress=None,
-    gap_seconds=EBL_SESSION_GAP_SECONDS,
-    max_frames=MAX_SESSION_FRAMES,
-    max_entries=MAX_SESSION_ENTRIES,
+    gap_seconds=None,
+    max_frames=None,
+    max_entries=None,
 ):
     """Yield one :class:`NMEALog` per recording burst, streaming the input.
 
@@ -168,6 +168,12 @@ def iter_ebl_sessions(
     whole folder. A burst that reaches the frame or entry budget is finalized
     and continued as the next session, keeping memory bounded.
     """
+    if gap_seconds is None:
+        gap_seconds = EBL_SESSION_GAP_SECONDS
+    if max_frames is None:
+        max_frames = MAX_SESSION_FRAMES
+    if max_entries is None:
+        max_entries = MAX_SESSION_ENTRIES
     paths = (
         tuple(Path(part) for part in path)
         if isinstance(path, Sequence) and not isinstance(path, (str, bytes, Path))

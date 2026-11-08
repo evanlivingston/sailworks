@@ -13,12 +13,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
-from .w2kapi import W2KFile
+from .w2kapi import W2KError, W2KFile, safe_component
 
 MANIFEST_VERSION = 1
 NEW = "new"
 PRESENT = "present"
 ACTIVE = "active"
+
+
+class W2KSyncCancelled(Exception):
+    """Raised when a sync is asked to stop between files or folders."""
 
 
 @dataclass(frozen=True)
@@ -105,7 +109,16 @@ class W2KSync:
 
     def present(self, serial, file):
         files = self._state(serial).get("files", {})
-        return files.get(file.key) == file.size
+        if files.get(file.key) != file.size:
+            return False
+        return (self.staging / serial / file.folder / file.name).is_file()
+
+    @staticmethod
+    def _folder_signature(entries):
+        return "|".join(
+            f"{entry.file.name}:{entry.file.size}"
+            for entry in sorted(entries, key=lambda item: item.file.name)
+        )
 
     def imported(self, serial, folder):
         return folder in self._state(serial).get("imported", [])
@@ -115,6 +128,8 @@ class W2KSync:
     def _scan(self):
         info = self.client.info()
         serial = info.serial_number or "unknown"
+        if serial != "unknown":
+            safe_component(serial, "serial number")
         entries = []
         for folder in self.client.folders():
             files = sorted(
@@ -189,7 +204,7 @@ class W2KSync:
 
     # -- sync -------------------------------------------------------------
 
-    def run(self, progress=None, message=None):
+    def run(self, progress=None, message=None, stop=None):
         _, serial, entries = self._scan()
         state = self._state(serial)
         summary = W2KSyncSummary(serial=serial)
@@ -202,75 +217,96 @@ class W2KSync:
             if entry.state in (NEW, ACTIVE) and not self.present(serial, entry.file)
         ]
         pending_bytes = sum(entry.file.size for entry in pending_files)
-        folder_totals = {}
+
+        folders = {}
         for entry in entries:
-            folder_totals[entry.folder] = (
-                folder_totals.get(entry.folder, 0) + entry.file.size
-            )
-        imported_sizes = state.setdefault("folders", {})
-        import_folders = [
-            folder
-            for folder, total in folder_totals.items()
-            if imported_sizes.get(folder) != total
-        ]
-        import_bytes = sum(folder_totals[folder] for folder in import_folders)
+            folders.setdefault(entry.folder, []).append(entry)
+        imported = state.setdefault("folders", {})
+        library_sources = {
+            (item.get("file_info") or {}).get("ebl_source")
+            for item in self.library.entries()
+            if (item.get("file_info") or {}).get("ebl_source")
+        }
+        import_folders = []
+        for folder, folder_entries in folders.items():
+            signature = self._folder_signature(folder_entries)
+            source = str((self.staging / serial / folder).resolve())
+            if imported.get(folder) == signature and source in library_sources:
+                continue
+            import_folders.append((folder, signature))
+        import_bytes = sum(
+            sum(entry.file.size for entry in folders[folder])
+            for folder, _ in import_folders
+        )
         total_bytes = pending_bytes + import_bytes
-        done = 0
+        download_done = 0
+        import_done = 0
 
         def report():
             if progress is None:
                 return
-            progress(100 if not total_bytes else round(100 * done / total_bytes))
+            if not total_bytes:
+                progress(100)
+            else:
+                progress(round(100 * (download_done + import_done) / total_bytes))
 
         if message is not None:
             message(f"Connected to {serial or 'W2K-1'}")
         report()
 
         for entry in pending_files:
+            if stop is not None and stop():
+                raise W2KSyncCancelled()
             item = entry.file
-            destination = self.staging / serial / item.folder / item.name
+            root = (self.staging / serial).resolve()
+            destination = root / item.folder / item.name
+            if not destination.resolve().is_relative_to(root):
+                raise ValueError(f"Unsafe download destination: {destination}")
             if message is not None:
                 message(f"Downloading {item.folder}/{item.name}")
 
-            def on_bytes(written, total, base=done):
+            def on_bytes(written, total, base=download_done):
                 if progress is None or not total_bytes:
                     return
                 progress(round(100 * (base + written) / total_bytes))
 
             written = self.client.download(item, destination, progress=on_bytes)
+            if written != item.size and entry.state != ACTIVE:
+                destination.unlink(missing_ok=True)
+                raise W2KError(
+                    f"Short download for {item.key}: {written} of {item.size} bytes"
+                )
             state.setdefault("files", {})[item.key] = written
             self._save_manifest()
-            done += written
+            download_done += written
             summary.downloaded += 1
             summary.size += written
             report()
 
         summary.skipped = len(entries) - len(pending_files)
 
-        imported_done = 0
-        for folder in import_folders:
-            folder_entries = [entry for entry in entries if entry.folder == folder]
-            paths = [
-                self.staging / serial / item.file.folder / item.file.name
-                for item in folder_entries
-            ]
+        for folder, signature in import_folders:
+            if stop is not None and stop():
+                raise W2KSyncCancelled()
+            folder_entries = folders[folder]
+            root = (self.staging / serial / folder).resolve()
+            paths = [root / entry.file.name for entry in folder_entries]
             if not all(path.is_file() for path in paths):
                 continue
             if message is not None:
                 message(f"Importing {folder}")
-            folder_bytes = folder_totals[folder]
+            folder_bytes = sum(entry.file.size for entry in folder_entries)
 
-            def on_decode(read, total, base=imported_done):
+            def on_decode(read, total, base=import_done):
                 if progress is None or not total_bytes:
                     return
-                progress(round(100 * (done + base + read) / total_bytes))
+                progress(round(100 * (download_done + base + read) / total_bytes))
 
             self.library.import_paths(
                 [str(path) for path in paths], decode_progress=on_decode
             )
-            imported_done += folder_bytes
-            done += folder_bytes
-            imported_sizes[folder] = folder_bytes
+            import_done += folder_bytes
+            imported[folder] = signature
             self._save_manifest()
             summary.imported += 1
             report()

@@ -294,6 +294,105 @@ def test_reimport_updates_the_same_session_in_place(tmp_path):
     assert entries[0]["file_info"]["entries"] == 5
 
 
+def test_budget_split_sessions_update_in_place(tmp_path, monkeypatch):
+    import sailworks.core.ebllog as ebllog
+    from test.test_ebllog import VERSION, frame, timestamp
+
+    monkeypatch.setattr(ebllog, "MAX_SESSION_ENTRIES", 2)
+    directory = tmp_path / "EBL000031"
+    directory.mkdir()
+    speed = b"\x00" + (400).to_bytes(2, "little") + b"\xff" * 5
+    path = directory / "000031_001.ebl"
+    path.write_bytes(timestamp(1704153600) + VERSION + frame(128259, speed) * 5)
+
+    library = LogLibrary(tmp_path / "library")
+    library.import_paths([path])
+    first = sorted(library.entries(), key=lambda entry: entry["name"])
+    identifiers = [entry["id"] for entry in first]
+    assert [entry["file_info"]["entries"] for entry in first] == [2, 2, 1]
+
+    path.write_bytes(timestamp(1704153600) + VERSION + frame(128259, speed) * 6)
+    library.import_paths([path])
+
+    second = sorted(library.entries(), key=lambda entry: entry["name"])
+    assert [entry["id"] for entry in second] == identifiers
+    assert [entry["file_info"]["entries"] for entry in second] == [2, 2, 2]
+
+
+def test_untimed_session_updates_in_place(tmp_path):
+    from test.test_ebllog import VERSION, frame
+
+    directory = tmp_path / "EBL000031"
+    directory.mkdir()
+    speed = b"\x00" + (400).to_bytes(2, "little") + b"\xff" * 5
+    path = directory / "000031_001.ebl"
+    path.write_bytes(VERSION + frame(128259, speed) * 3)
+
+    library = LogLibrary(tmp_path / "library")
+    library.import_paths([path])
+    first = library.entries()
+    assert len(first) == 1
+
+    path.write_bytes(VERSION + frame(128259, speed) * 5)
+    library.import_paths([path])
+
+    entries = library.entries()
+    assert len(entries) == 1
+    assert entries[0]["id"] == first[0]["id"]
+    assert entries[0]["file_info"]["entries"] == 5
+
+
+def test_same_folder_name_in_different_directories_does_not_collide(tmp_path):
+    from test.test_ebllog import VERSION, frame, timestamp
+
+    speed = b"\x00" + (400).to_bytes(2, "little") + b"\xff" * 5
+    raw = timestamp(1704153600) + VERSION + frame(128259, speed) * 2
+    first_dir = tmp_path / "a" / "EBL000031"
+    second_dir = tmp_path / "b" / "EBL000031"
+    first_dir.mkdir(parents=True)
+    second_dir.mkdir(parents=True)
+    first = first_dir / "000031_001.ebl"
+    second = second_dir / "000031_001.ebl"
+    first.write_bytes(raw)
+    second.write_bytes(raw)
+
+    library = LogLibrary(tmp_path / "library")
+    library.import_paths([first])
+    library.import_paths([second])
+
+    assert len(library.entries()) == 2
+
+
+def test_failed_index_save_restores_previous_session(tmp_path, monkeypatch):
+    from test.test_ebllog import VERSION, frame, timestamp
+
+    directory = tmp_path / "EBL000031"
+    directory.mkdir()
+    speed = b"\x00" + (400).to_bytes(2, "little") + b"\xff" * 5
+    path = directory / "000031_001.ebl"
+    path.write_bytes(timestamp(1704153600) + VERSION + frame(128259, speed) * 3)
+
+    library = LogLibrary(tmp_path / "library")
+    library.import_paths([path])
+    (entry,) = library.entries()
+    before = library.path(entry["id"]).read_bytes()
+
+    path.write_bytes(timestamp(1704153600) + VERSION + frame(128259, speed) * 5)
+    original_save = library._save
+
+    def failing_save(entries):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(library, "_save", failing_save)
+    with pytest.raises(OSError):
+        library.import_paths([path])
+
+    assert library.path(entry["id"]).read_bytes() == before
+    assert not list(library.originals.glob("*.bak"))
+    assert not list(library.originals.glob(".*.tmp"))
+    monkeypatch.setattr(library, "_save", original_save)
+
+
 def test_successful_ebl_stack_persists_decoded_log_not_transient_model(tmp_path):
     from sailworks.core.nmeasession import read_nmea_log
     from test.test_ebllog import VERSION, frame, timestamp

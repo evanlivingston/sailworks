@@ -46,6 +46,7 @@ class LogLibrary:
         self.originals = self.directory / "originals"
         self.index = self.directory / "index.json"
         self.lock = RLock()
+        self.import_lock = RLock()
         self._entries = {}
         if self.index.exists():
             data = json.loads(self.index.read_text(encoding="utf-8"))
@@ -81,6 +82,10 @@ class LogLibrary:
 
     def import_path(self, path, progress=None):
         """Import one log, decoding EBL into a reusable .log when possible."""
+        with self.import_lock:
+            return self._import_path(path, progress)
+
+    def _import_path(self, path, progress=None):
         source = Path(path).resolve()
         if source.suffix.lower() not in LOG_SUFFIXES or not source.is_file():
             raise ValueError("Choose a local .log, .nmea, .txt or .ebl file")
@@ -231,12 +236,14 @@ class LogLibrary:
                 if not session_log.entries:
                     continue
                 temporary = self.originals / f".{identifier}_{len(staged)}.log.tmp"
+                staged.append((temporary, None))
                 write_decoded_log(session_log, temporary)
                 metadata = self._ebl_metadata(session_log)
                 metadata["file_info"]["ebl_session_key"] = self._ebl_session_key(
                     group, session_log
                 )
-                staged.append((temporary, metadata))
+                metadata["file_info"]["ebl_source"] = str(group[0].parent.resolve())
+                staged[-1] = (temporary, metadata)
                 if first_log is None:
                     first_log = session_log
         except Exception:
@@ -269,6 +276,8 @@ class LogLibrary:
             }
 
         pending = []
+        backups = []
+        installed = []
         first_item = None
         first_path = None
         try:
@@ -277,7 +286,8 @@ class LogLibrary:
                 existing = known.get(key) if key else None
                 if existing is not None:
                     same = (
-                        existing.get("file_info", {}).get("entries")
+                        existing.get("source_signature") == source_signature
+                        and existing.get("file_info", {}).get("entries")
                         == metadata["file_info"]["entries"]
                         and existing.get("file_info", {}).get("duration")
                         == metadata["file_info"]["duration"]
@@ -289,7 +299,11 @@ class LogLibrary:
                             first_path = self.path(existing["id"])
                         continue
                     target = self.path(existing["id"])
+                    backup = target.with_name(f".{target.name}.{uuid4().hex}.bak")
+                    os.replace(target, backup)
+                    backups.append((target, backup))
                     os.replace(temporary, target)
+                    installed.append(target)
                     item = dict(existing)
                     item.update(
                         status=metadata["status"],
@@ -303,6 +317,7 @@ class LogLibrary:
                     )
                     target = self.originals / f"{session_identifier}.log"
                     os.replace(temporary, target)
+                    installed.append(target)
                     item = dict(
                         id=session_identifier,
                         file=target.name,
@@ -319,16 +334,24 @@ class LogLibrary:
                 if first_item is None:
                     first_item = item
                     first_path = target
+            if pending:
+                with self.lock:
+                    entries = dict(self._entries)
+                    entries.update({item["id"]: item for item in pending})
+                    self._save(entries)
         except Exception:
+            for target in installed:
+                target.unlink(missing_ok=True)
+            for target, backup in backups:
+                if backup.exists():
+                    os.replace(backup, target)
             for temporary, _ in staged:
                 temporary.unlink(missing_ok=True)
             raise
+        else:
+            for _, backup in backups:
+                backup.unlink(missing_ok=True)
 
-        if pending:
-            with self.lock:
-                entries = dict(self._entries)
-                entries.update({item["id"]: item for item in pending})
-                self._save(entries)
         result = dict(first_item)
         if first_log is not None and first_path is not None:
             result["_decoded_log"] = replace(first_log, path=str(first_path))
@@ -428,11 +451,19 @@ class LogLibrary:
 
     @staticmethod
     def _ebl_session_key(group, session_log):
-        """Stable identity for a recording burst, independent of file size."""
+        """Stable identity for a recording burst.
+
+        The resolved source directory namespaces simultaneous recorders, and
+        the first replay frame index separates memory-budget continuations
+        that share one TimeUTC value. Untimed bursts use ``untimed`` plus that
+        index, so growth still updates the same entry.
+        """
+        entries = getattr(session_log, "entries", ())
+        first_index = getattr(entries[0][1], "log_index", 0) if entries else 0
         origin = getattr(session_log, "timestamp_origin", None)
-        if origin is None:
-            return None
-        return f"{group[0].parent.name}|{origin.isoformat()}"
+        stamp = origin.isoformat() if origin is not None else "untimed"
+        source = str(group[0].parent.resolve())
+        return f"{source}|{stamp}|{first_index}"
 
     @staticmethod
     def group_paths(paths):
@@ -441,6 +472,10 @@ class LogLibrary:
 
     def import_paths(self, paths, progress=None, decode_progress=None):
         """Import paths, concatenating selected sibling vendor segments losslessly."""
+        with self.import_lock:
+            return self._import_paths(paths, progress, decode_progress)
+
+    def _import_paths(self, paths, progress=None, decode_progress=None):
         groups = self.group_paths(paths)
         imported = []
         for group in groups:

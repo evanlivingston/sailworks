@@ -72,6 +72,21 @@ def base_url(host):
     return f"{parts.scheme}://{parts.netloc}"
 
 
+def safe_component(value, kind="name"):
+    """Reject device-supplied names that could escape a staging directory."""
+    text = str(value or "")
+    if (
+        not text
+        or text in (".", "..")
+        or "/" in text
+        or "\\" in text
+        or "\x00" in text
+        or Path(text).is_absolute()
+    ):
+        raise W2KRequestError(f"Unsafe {kind} from device: {text!r}")
+    return text
+
+
 def _details(data):
     details = {}
     for column in data.get("statusColumns", []):
@@ -185,6 +200,8 @@ class W2KClient:
         data = self._get("/api/info").json() or {}
         details = _details(data)
         serial = str(details.get("Serial Number") or "").strip()
+        if serial:
+            safe_component(serial, "serial number")
         firmware = str(
             details.get("Firmware Version") or details.get("Software Version") or ""
         ).strip()
@@ -213,7 +230,7 @@ class W2KClient:
         for item in data.get("dataFolders", []):
             folders.append(
                 W2KFolder(
-                    name=str(item.get("name") or ""),
+                    name=safe_component(item.get("name"), "folder name"),
                     size=int(item.get("size") or 0),
                     in_progress=bool(
                         item.get("isInProgress", item.get("isExpanded", False))
@@ -235,7 +252,7 @@ class W2KClient:
         return [
             W2KFile(
                 folder=name,
-                name=str(item.get("file_name") or ""),
+                name=safe_component(item.get("file_name"), "file name"),
                 size=int(item.get("file_size") or 0),
                 time=int(item.get("file_time") or 0),
             )
@@ -254,7 +271,11 @@ class W2KClient:
         if isinstance(file, str):
             remote = file
         else:
+            safe_component(file.folder, "folder name")
+            safe_component(file.name, "file name")
             remote = f"{self.ebl_root()}/{file.key}"
+        if ".." in Path(remote).parts:
+            raise W2KRequestError(f"Unsafe download path: {remote!r}")
         response = self._get(
             "/api/download",
             params={"file_name": remote},

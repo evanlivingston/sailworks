@@ -1,5 +1,7 @@
 """Dialog that syncs W2K-1 EBL logs into the log library."""
 
+import threading
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -18,12 +20,13 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from sailworks.core.w2kapi import DEFAULT_HOST, W2KClient, base_url
-from sailworks.core.w2ksync import ACTIVE, NEW, PRESENT, W2KSync
+from sailworks.core.w2kapi import DEFAULT_HOST, W2KClient, W2KError, base_url
+from sailworks.core.w2ksync import ACTIVE, NEW, PRESENT, W2KSync, W2KSyncCancelled
 
 from .backgroundtask import BackgroundTask
 
 SERVICE = "org.sailworks.ActisenseW2K"
+_SYNC_LOCK = threading.Lock()
 STATE_LABEL = {NEW: "New", PRESENT: "Up to date", ACTIVE: "Recording"}
 
 
@@ -74,6 +77,7 @@ class W2KImportDialog(QDialog):
         self._mode = None
         self._client = None
         self._sync = None
+        self._cancelled = False
 
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -94,12 +98,16 @@ class W2KImportDialog(QDialog):
         self.sync_button.clicked.connect(self.sync)
         self.local_button = QPushButton("Use SD copy…")
         self.local_button.clicked.connect(self.use_local_copy)
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.clicked.connect(self.cancel)
+        self.cancel_button.setEnabled(False)
         self.close_button = QPushButton("Close")
         self.close_button.clicked.connect(self.reject)
         for button in (
             self.test_button,
             self.sync_button,
             self.local_button,
+            self.cancel_button,
             self.close_button,
         ):
             row.addWidget(button)
@@ -159,6 +167,18 @@ class W2KImportDialog(QDialog):
         self._sync = W2KSync(self._client, self.library)
         return self._client, self._sync
 
+    @staticmethod
+    def _locked(operation):
+        def run(progress):
+            if not _SYNC_LOCK.acquire(blocking=False):
+                raise W2KError("A W2K-1 sync is already running")
+            try:
+                return operation(progress)
+            finally:
+                _SYNC_LOCK.release()
+
+        return run
+
     def test(self):
         try:
             client, sync = self._build()
@@ -166,8 +186,9 @@ class W2KImportDialog(QDialog):
             self._error(str(exc))
             return
         self._mode = "test"
+        self._cancelled = False
         self.status.setText("Connecting…")
-        self.task.start("Connecting", lambda progress: sync.scan())
+        self.task.start("Connecting", self._locked(lambda progress: sync.scan()))
 
     def sync(self):
         try:
@@ -176,8 +197,13 @@ class W2KImportDialog(QDialog):
             self._error(str(exc))
             return
         self._mode = "sync"
+        self._cancelled = False
         self.status.setText("Syncing…")
-        self.task.start("Syncing", lambda progress: sync.run(progress))
+
+        def operation(progress):
+            return sync.run(progress, stop=lambda: self._cancelled or self.task.closed)
+
+        self.task.start("Syncing", self._locked(operation))
 
     def use_local_copy(self):
         folder = QFileDialog.getExistingDirectory(
@@ -191,18 +217,20 @@ class W2KImportDialog(QDialog):
             self._error(str(exc))
             return
         self._mode = "sync"
+        self._cancelled = False
         self.status.setText("Reading local copy…")
 
         def operation(progress):
             sync.seed(folder)
-            return sync.run(progress)
+            return sync.run(progress, stop=lambda: self._cancelled or self.task.closed)
 
-        self.task.start("Reading local copy", operation)
+        self.task.start("Reading local copy", self._locked(operation))
 
     def _busy_changed(self):
         busy = self.task.busy
         for button in (self.test_button, self.sync_button, self.local_button):
             button.setEnabled(not busy)
+        self.cancel_button.setEnabled(busy)
         self.host.setEnabled(not busy)
         self.password.setEnabled(not busy)
         self.remember.setEnabled(not busy)
@@ -216,7 +244,17 @@ class W2KImportDialog(QDialog):
             self.progress.hide()
             self.progress.setRange(0, 100)
 
+    def cancel(self):
+        if not self.task.busy:
+            return
+        self._cancelled = True
+        self.status.setText("Cancelling…")
+        self.cancel_button.setEnabled(False)
+
     def _finished(self, result, error):
+        if isinstance(error, W2KSyncCancelled):
+            self.status.setText("Cancelled")
+            return
         if error is not None:
             self._error(str(error))
             self.status.setText("Failed")
@@ -262,5 +300,6 @@ class W2KImportDialog(QDialog):
         box.exec()
 
     def reject(self):
+        self._cancelled = True
         self.task.close(wait=False)
         super().reject()

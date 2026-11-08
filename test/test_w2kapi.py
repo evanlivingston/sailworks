@@ -12,6 +12,7 @@ from sailworks.core.w2kapi import (
     W2KFile,
     W2KRequestError,
     base_url,
+    safe_component,
 )
 
 
@@ -145,6 +146,12 @@ class W2KClientTest(unittest.TestCase):
         }
         self.assertEqual(_find_ebl_root(payload), "/sdcard/W2K-1/ebl_data_logs")
         self.assertIsNone(_find_ebl_root({"paths": ["/tmp/other"]}))
+
+    def test_safe_component_rejects_names_that_escape_staging(self):
+        self.assertEqual(safe_component("EBL000000"), "EBL000000")
+        for value in ("", ".", "..", "../x", "/absolute", "a\\b", "a\x00b"):
+            with self.assertRaises(W2KRequestError):
+                safe_component(value)
 
     def test_info_and_login(self):
         device = self.client.info()
