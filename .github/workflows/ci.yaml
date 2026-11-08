@@ -49,7 +49,12 @@ jobs:
         bash .github/workflows/script/python_dep.sh
         pip install tox
 
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+
     - name: Run tests
+      env:
+        SAILWORKS_EXPECT_NATIVE_GEOMETRY: "1"
       run: |
         sudo apt-get install -y xvfb xauth
         xvfb-run -a tox -e unit-tests

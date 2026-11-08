@@ -24,3 +24,5 @@ flatpak/wheels
 .coverage
 coverage.xml
 .opencode/
+native/geometry/target/
+sailworks/_geometry_native*.so
