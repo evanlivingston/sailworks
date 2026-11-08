@@ -25,6 +25,7 @@ class _Pending:
     priority: int
     destination: int
     source_timestamp_ms: int
+    started_at: object
     frames: int = 1
 
 
@@ -82,6 +83,7 @@ class FastPacketAssembler:
                 message.priority,
                 message.destination,
                 message.source_timestamp_ms,
+                message.timestamp,
             )
             self.pending[key] = pending
             if len(pending.data) >= length:
@@ -120,7 +122,7 @@ class FastPacketAssembler:
             return None
         self.assembled += 1
         return N2KMessage(
-            message.timestamp,
+            pending.started_at,
             pending.priority,
             message.pgn,
             pending.destination,
