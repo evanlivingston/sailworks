@@ -24,9 +24,11 @@ event:
 * the chart layer never claims the field worker: it waits for the weather
   pipeline to be idle before it composes, so the chart can never delay the
   weather;
-* the chart layer's composition is retained while it still covers the
+* the chart layer's static content is retained while it still covers the
   camera, using the application's own ``fits`` rule, so a small pan does not
-  recompose the chart;
+  recompose the chart; a larger pan reuses the covered intersection and
+  composes only the newly exposed rectangles; a forecast-time change composes
+  no chart pixel at all and redraws only the contours;
 * the composition is composed at the GUI's own device pixel ratio, and a
   zoom or a ratio change is composed again rather than resampled.
 
@@ -37,6 +39,9 @@ with its own handles.  The ENC source reports its own states -- ``ready``,
 as an empty chart that reads as "there is no data here".
 """
 
+from collections import OrderedDict
+from dataclasses import dataclass
+import math
 from pathlib import Path
 from threading import Condition, Event, Lock, Thread
 import time
@@ -72,6 +77,155 @@ _INITIAL_TIMES = (("c", 0), ("f", 0), ("h", 0), ("i", 0), ("l", 0))
 #: The history is evidence, never a store: it is bounded so a long session
 #: cannot grow it without limit.
 HISTORY_LIMIT = 64
+
+#: Padding around an exposed region, in logical pixels.  A region is composed
+#: with this padding and cropped to the exposed rectangle, so a label, symbol
+#: or stroke that reaches across the boundary is drawn whole: the seam is
+#: always interior to a region that rendered the content, never a clipped
+#: glyph.  64 px exceeds the largest chart label's box.
+STATIC_REGION_PAD = 64
+
+#: Retained isobar-free surfaces.  Two full-quality frames keep a warm
+#: travel/reversal pair (A -> B -> A reuses A's frame), and one preview frame
+#: keeps a gesture from evicting the full composition.
+STATIC_FRAME_LIMIT = 3
+
+
+@dataclass
+class _RegionCamera:
+    """The camera of one rectangle of a composition, in world pixels."""
+
+    center_lat: float
+    center_lon: float
+    zoom: float
+    width: int
+    height: int
+
+    def get_allocated_width(self):
+        return self.width
+
+    def get_allocated_height(self):
+        return self.height
+
+
+@dataclass
+class _StaticFrame:
+    """A retained isobar-free chart surface and what it describes.
+
+    The surface holds the base chart and the ENC cells only.  The contours
+    belong to the forecast instant and are drawn on a copy, so a time change
+    never draws a chart pixel again.  Only the chart worker reads or writes a
+    frame.
+    """
+
+    surface: object
+    viewport: object
+    factor: float
+    palette: str
+    sources: tuple
+    enc_metadata: dict
+    bytes: int
+
+
+def _viewport_bounds(viewport):
+    """The viewport's world-pixel rectangle: left, top, right, bottom."""
+    center_x = viewport._lon_to_x(viewport._center_lon)
+    center_y = viewport._lat_to_y(viewport._center_lat)
+    return (
+        center_x - viewport.width / 2.0,
+        center_y - viewport.height / 2.0,
+        center_x + viewport.width / 2.0,
+        center_y + viewport.height / 2.0,
+    )
+
+
+def _intersection_rect(viewport, frame_viewport):
+    """The covered part of a composition, in integer surface coordinates.
+
+    Both viewports are at one zoom, so the intersection is an axis-aligned
+    rectangle.  The result is the frame's coverage clipped to the viewport,
+    rounded inward to whole surface pixels so a region never claims a pixel
+    the frame does not contain.
+    """
+    left, top, right, bottom = _viewport_bounds(viewport)
+    f_left, f_top, f_right, f_bottom = _viewport_bounds(frame_viewport)
+    x0 = max(0, min(int(viewport.width), int(math.ceil(max(left, f_left) - left))))
+    y0 = max(0, min(int(viewport.height), int(math.ceil(max(top, f_top) - top))))
+    x1 = max(0, min(int(viewport.width), int(math.floor(min(right, f_right) - left))))
+    y1 = max(0, min(int(viewport.height), int(math.floor(min(bottom, f_bottom) - top))))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return (x0, y0, x1, y1)
+
+
+def _exposed_regions(width, height, overlap):
+    """The rectangles of a composition the retained frame does not cover.
+
+    The rectangles are disjoint, integer-aligned and, together with
+    ``overlap``, partition the whole target surface.
+    """
+    if overlap is None:
+        return [(0, 0, width, height)]
+    x0, y0, x1, y1 = overlap
+    regions = []
+    if x0 > 0:
+        regions.append((0, 0, x0, height))
+    if x1 < width:
+        regions.append((x1, 0, width, height))
+    if y0 > 0:
+        regions.append((x0, 0, x1, y0))
+    if y1 < height:
+        regions.append((x0, y1, x1, height))
+    return regions
+
+
+def _empty_surface(viewport, factor):
+    """A transparent surface of the composition's own device size."""
+    import cairo
+
+    surface = cairo.ImageSurface(
+        cairo.FORMAT_ARGB32,
+        max(1, int(round(viewport.width * factor))),
+        max(1, int(round(viewport.height * factor))),
+    )
+    surface.set_device_scale(factor, factor)
+    return surface
+
+
+def _paint_static(surface, frame, viewport, factor):
+    """Paint a retained frame into a target surface at its own offset."""
+    import cairo
+
+    left, top, _right, _bottom = _viewport_bounds(viewport)
+    f_left, f_top, _f_right, _f_bottom = _viewport_bounds(frame.viewport)
+    cr = cairo.Context(surface)
+    cr.set_source_surface(frame.surface, f_left - left, f_top - top)
+    cr.paint()
+    surface.flush()
+
+
+def _copy_surface(surface, factor):
+    """A writable copy of a retained surface, for this instant's contours.
+
+    The retained frame stays isobar-free, so a later instant never inherits
+    the previous contours.  The copy is one fast paint of the surface.
+    """
+    import cairo
+
+    copy = cairo.ImageSurface(
+        cairo.FORMAT_ARGB32, surface.get_width(), surface.get_height()
+    )
+    copy.set_device_scale(factor, factor)
+    cr = cairo.Context(copy)
+    cr.set_source_surface(surface, 0, 0)
+    cr.paint()
+    copy.flush()
+    return copy
+
+
+def _surface_bytes(surface):
+    """The retained surface's device pixel payload, in bytes."""
+    return int(surface.get_width()) * int(surface.get_height()) * 4
 
 
 def disabled_enc_metadata():
@@ -334,6 +488,15 @@ class ViewportChartLayer:
         self._sampler = None
         self._sampler_sources: "tuple[DisplayWeatherSource, ...]" = ()
         self._composer_instance = None
+        # Retained isobar-free static content, owned by the worker thread.
+        # ``_static_bytes`` mirrors its payload for the GUI-visible report.
+        self._static_frames = OrderedDict()
+        self._static_serial = 0
+        self._static_bytes = 0
+        self._static_count = 0
+        # The request instant of each in-flight generation, for the
+        # queue/preparation split in the published timings.  Bounded.
+        self._requested_at = {}
         self._outcome = None
         self._spans = []
         self._published_generations = set()
@@ -367,6 +530,13 @@ class ViewportChartLayer:
             enc_compositions=0,
             enc_cells=0,
             enc_failures=0,
+            static_full_compositions=0,
+            static_region_compositions=0,
+            static_reuses=0,
+            static_regions=0,
+            static_pixels_composed=0,
+            static_pixels_reused=0,
+            isobar_only=0,
         )
         # Basemap tracking for independent usability
         self._has_gshhs = False
@@ -453,6 +623,12 @@ class ViewportChartLayer:
                 },
                 "payload_bytes": self._payload_bytes,
                 "factor": self._dpr,
+                "static": {
+                    "frames": self._static_count,
+                    "bytes": self._static_bytes,
+                    "limit": STATIC_FRAME_LIMIT,
+                    "region_pad": STATIC_REGION_PAD,
+                },
                 "forecast_session": (
                     None if self._session is None else self._session.statistics()
                 ),
@@ -505,6 +681,9 @@ class ViewportChartLayer:
                 self._pending[2].set()
                 self.counters["cancelled"] += 1
             self._pending = (generation, camera, Event(), preview)
+            self._requested_at[generation] = time.perf_counter()
+            while len(self._requested_at) > 64:
+                self._requested_at.pop(next(iter(self._requested_at)))
             self._state = "loading"
             self._error = ""
             self.counters["requests"] += 1
@@ -727,6 +906,11 @@ class ViewportChartLayer:
                 except Exception as exc:  # a chart failure is never fatal
                     error = str(exc)
                 ended = time.perf_counter()
+                requested_at = self._requested_at.pop(generation, None)
+                if metadata is not None and requested_at is not None:
+                    metadata.setdefault("timings", {})["queue_ms"] = round(
+                        (began - requested_at) * 1000.0, 3
+                    )
                 publish = None
                 notify_state = None
                 with self._condition:
@@ -847,6 +1031,10 @@ class ViewportChartLayer:
         return self._worker_idle()
 
     def _release(self):
+        self._static_frames.clear()
+        with self._condition:
+            self._static_bytes = 0
+            self._static_count = 0
         for source in self._sampler_sources:
             try:
                 source.close()
@@ -873,11 +1061,16 @@ class ViewportChartLayer:
 
         The base chart is the application's own composition; the ENC cells
         are the application's own ENC renderer on the same surface; the
-        isobars are the application's own contour drawing on that same
-        surface.  The composition runs on the chart worker, never on the GUI
-        thread and never on the field worker.
+        isobars are the application's own contour drawing.  The chart
+        content is retained without the isobars and reused for a camera that
+        it still covers; a pan composes only the newly exposed rectangles,
+        and a forecast-time change composes no chart pixel at all.  The
+        composition runs on the chart worker, never on the GUI thread and
+        never on the field worker.
         """
         from sailworks.core.mapviewport import MapViewport
+
+        import cairo
 
         factor = self._dpr * 0.5 if preview else self._dpr
         canvas = ChartCamera(camera, factor)
@@ -898,19 +1091,53 @@ class ViewportChartLayer:
                 self.counters["stale"] += 1
             self._outcome = "stale"
             return None, None
-        columns = None if self._enc_only else self._isobar_columns(job, camera, cancel)
-        if columns:
-            with self._condition:
-                self.counters["isobars"] += 1
+        composed_at = time.perf_counter()
+        static = self._static_content(job, viewport, factor, cancel)
+        static_ms = (time.perf_counter() - composed_at) * 1000.0
+        if static is None:
+            return None, None
+        surface, enc, reuse = static
         if self._view_moved(camera):
             with self._condition:
                 self.counters["stale"] += 1
             self._outcome = "stale"
             return None, None
-        surface, enc = self._composer().render(job, columns, self._enc_composer())
-        if surface is None:
+        columns_started = time.perf_counter()
+        columns = None if self._enc_only else self._isobar_columns(job, camera, cancel)
+        columns_ms = (time.perf_counter() - columns_started) * 1000.0
+        if cancel.is_set():
+            return None, None
+        isobar_ms = 0.0
+        copy_ms = 0.0
+        isobar_only = bool(columns) and reuse["mode"] == "reused"
+        if isobar_only:
+            with self._condition:
+                self.counters["isobar_only"] += 1
+        if columns:
+            with self._condition:
+                self.counters["isobars"] += 1
+            started = time.perf_counter()
+            surface = _copy_surface(surface, factor)
+            copy_ms = (time.perf_counter() - started) * 1000.0
+            started = time.perf_counter()
+            cr = cairo.Context(surface)
+            self._composer().painter().draw_isobars(viewport, cr, columns)
+            surface.flush()
+            isobar_ms = (time.perf_counter() - started) * 1000.0
+        if self._view_moved(camera):
+            with self._condition:
+                self.counters["stale"] += 1
+            self._outcome = "stale"
             return None, None
         image = _surface_image(surface, factor)
+        reuse["isobar_only"] = isobar_only
+        timings = {
+            "static_ms": round(static_ms, 3),
+            "columns_ms": round(columns_ms, 3),
+            "copy_ms": round(copy_ms, 3),
+            "isobars_ms": round(isobar_ms, 3),
+            "composition_ms": round(static_ms + columns_ms + copy_ms + isobar_ms, 3),
+        }
         metadata = {
             "viewport": viewport,
             "camera": camera,
@@ -918,8 +1145,215 @@ class ViewportChartLayer:
             "factor": factor,
             "preview": preview,
             "enc": enc if enc is not None else disabled_enc_metadata(),
+            "static": reuse,
+            "timings": timings,
         }
         return image, metadata
+
+    def _static_content(self, job, viewport, factor, cancel):
+        """The isobar-free chart content, reusing what still covers the view.
+
+        Returns ``(surface, enc_metadata, report)``.  The surface is the base
+        chart and the ENC cells only, at this composition's factor.  A
+        retained frame that encloses the view is painted as it is; one that
+        overlaps composes only the exposed rectangles; no frame at this
+        quality composes the whole view.  ``None`` means cancelled.
+        """
+        key = (self._palette, factor, self._base_sources())
+        import cairo
+
+        report = {
+            "mode": "full",
+            "regions": 0,
+            "composed_pixels": int(viewport.width) * int(viewport.height),
+            "reused_pixels": 0,
+            "retained_bytes": 0,
+        }
+        frame, overlap = self._best_static_frame(key, viewport)
+        if frame is not None and overlap is not None:
+            if overlap == (0, 0, int(viewport.width), int(viewport.height)):
+                # Every pixel was already composed for this view.
+                report["mode"] = "reused"
+                report["composed_pixels"] = 0
+                report["reused_pixels"] = int(viewport.width) * int(viewport.height)
+                self._count_static(report)
+                self._touch_static(frame)
+                report["retained_bytes"] = self._retained_static_bytes()
+                return frame.surface, frame.enc_metadata, report
+            surface = _empty_surface(viewport, factor)
+            _paint_static(surface, frame, viewport, factor)
+            regions = _exposed_regions(
+                int(viewport.width), int(viewport.height), overlap
+            )
+            report["composed_pixels"] = 0
+            enc = self._enc_composer()
+            for rect in regions:
+                if cancel.is_set():
+                    return None
+                region = self._compose_region(job, viewport, rect, factor, cancel)
+                if region is None:
+                    return None
+                region_surface, x, y = region
+                cr = cairo.Context(surface)
+                cr.set_source_surface(region_surface, x, y)
+                cr.paint()
+                report["regions"] += 1
+                report["composed_pixels"] += (rect[2] - rect[0]) * (rect[3] - rect[1])
+            report["reused_pixels"] = (overlap[2] - overlap[0]) * (
+                overlap[3] - overlap[1]
+            )
+            enc_metadata = self._enc_report(job, enc)
+            if enc_metadata is None:
+                return None
+            report["mode"] = "regions"
+            self._retain_static(key, surface, viewport, factor, enc_metadata)
+            self._count_static(report)
+            report["retained_bytes"] = self._retained_static_bytes()
+            return surface, enc_metadata, report
+        surface, enc_metadata = self._composer().render(job, None, self._enc_composer())
+        if surface is None:
+            return None
+        if enc_metadata is None:
+            enc_metadata = disabled_enc_metadata()
+        self._retain_static(key, surface, viewport, factor, enc_metadata)
+        self._count_static(report)
+        report["retained_bytes"] = self._retained_static_bytes()
+        return surface, enc_metadata, report
+
+    def _best_static_frame(self, key, viewport):
+        """The retained frame that covers this view, if one does.
+
+        A short history is kept so a warm reversal finds the frame it came
+        from.  The frame that covers the target is preferred; otherwise the
+        frame with the largest overlap is used and only the rest is composed.
+        """
+        full = (0, 0, int(viewport.width), int(viewport.height))
+        best = (None, None)
+        best_area = 0
+        for frame in self._static_frames.values():
+            if (frame.palette, frame.factor, frame.sources) != key:
+                continue
+            if frame.viewport._zoom != viewport._zoom:
+                continue
+            overlap = _intersection_rect(viewport, frame.viewport)
+            if overlap is None:
+                continue
+            if overlap == full:
+                return frame, overlap
+            area = (overlap[2] - overlap[0]) * (overlap[3] - overlap[1])
+            if area > best_area:
+                best = (frame, overlap)
+                best_area = area
+        return best
+
+    def _touch_static(self, frame):
+        """Make a reused frame the most recently used one."""
+        for key, candidate in self._static_frames.items():
+            if candidate is frame:
+                self._static_frames.move_to_end(key)
+                return
+
+    def _compose_region(self, job, viewport, rect, factor, cancel):
+        """Compose one exposed rectangle with its own padding.
+
+        The region is rendered on its own surface, centred on the rectangle,
+        with ``STATIC_REGION_PAD`` on every side.  The padding is composed so
+        a label or symbol that reaches across the boundary is drawn whole;
+        the caller paints the surface at the padded origin and the exposed
+        rectangle lands exactly on the target.
+        """
+        from sailworks.core.mapviewport import MapViewport
+
+        left, top, right, bottom = _viewport_bounds(viewport)
+        x0, y0, x1, y1 = rect
+        pad = STATIC_REGION_PAD
+        world_left = left + x0 - pad
+        world_top = top + y0 - pad
+        world_right = left + x1 + pad
+        world_bottom = top + y1 + pad
+        # The padded rectangle is an integer number of surface pixels, and its
+        # centre reproduces those exact bounds: no subpixel shift is introduced
+        # by the region itself.
+        width = max(1, x1 - x0 + 2 * pad)
+        height = max(1, y1 - y0 + 2 * pad)
+        center_x = (world_left + world_right) / 2.0
+        center_y = (world_top + world_bottom) / 2.0
+        camera = _RegionCamera(
+            viewport._y_to_lat(center_y),
+            viewport._x_to_lon(center_x),
+            viewport._zoom,
+            width,
+            height,
+        )
+        region_viewport = MapViewport(ChartCamera(camera, factor), 0, lambda: None)
+        region_viewport.render_cancelled = cancel.is_set
+        region_job = RenderJob(
+            key=job.key,
+            viewport=region_viewport,
+            charts=job.charts,
+            factor=factor,
+            palette=job.palette,
+            cancel=cancel,
+        )
+        region_surface, _enc = self._composer().render(
+            region_job, None, self._enc_composer()
+        )
+        if region_surface is None:
+            return None
+        return region_surface, x0 - pad, y0 - pad
+
+    def _enc_report(self, job, enc):
+        """The ENC identity of the whole viewport, without drawing it again.
+
+        The pixels may have been reused from another camera, but the report
+        describes this viewport: the same cells, in the same order, with the
+        same coverage a full composition would have drawn.
+        """
+        if enc is None:
+            return disabled_enc_metadata()
+        report = enc.describe(job)
+        if report is None:
+            return None
+        return report
+
+    def _retained_static_bytes(self):
+        """The retained static payload, as the last retention computed it."""
+        with self._condition:
+            return self._static_bytes
+
+    def _retain_static(self, key, surface, viewport, factor, enc_metadata):
+        """Keep the isobar-free surface, bounded by count and by quality."""
+        surface.flush()
+        frame = _StaticFrame(
+            surface=surface,
+            viewport=viewport,
+            factor=factor,
+            palette=self._palette,
+            sources=self._base_sources(),
+            enc_metadata=enc_metadata,
+            bytes=_surface_bytes(surface),
+        )
+        self._static_serial += 1
+        self._static_frames[(key, self._static_serial)] = frame
+        while len(self._static_frames) > STATIC_FRAME_LIMIT:
+            self._static_frames.popitem(last=False)
+        with self._condition:
+            self._static_bytes = sum(
+                frame.bytes for frame in self._static_frames.values()
+            )
+            self._static_count = len(self._static_frames)
+
+    def _count_static(self, report):
+        with self._condition:
+            if report["mode"] == "full":
+                self.counters["static_full_compositions"] += 1
+            elif report["mode"] == "regions":
+                self.counters["static_region_compositions"] += 1
+                self.counters["static_regions"] += report["regions"]
+            else:
+                self.counters["static_reuses"] += 1
+            self.counters["static_pixels_composed"] += report["composed_pixels"]
+            self.counters["static_pixels_reused"] += report["reused_pixels"]
 
     def _composer(self):
         if self._composer_instance is None:

@@ -230,6 +230,33 @@ the idle window—not physical input latency, FPS, GPU frame time, display prese
 Sample counts are small; no statistical comparison was made. Cold-start composition was not optimized. See the
 [measurement audit](rendering-m0-measurement-audit.md) for endpoint definitions.
 
+### Retained chart content (2026-11-07, issue #108)
+
+**Decision: retained isobar-free surfaces plus exposed-region composition, not a spatial tile grid.** ENC cost
+is per cell/feature, not per pixel: a 9-tile cold grid re-runs every cell per tile and costs more than one full
+frame, while a band that crosses all cells still costs about half a full composition. The chart layer keeps up
+to three surfaces (two full-quality frames and one preview), reuses a frame that covers the target, and composes
+only the exposed rectangles on a pan. Each rectangle is padded by 64 px and cropped so labels and symbols that
+cross a boundary stay whole. Contours are drawn on a copy of the frame for the requested instant, so a
+forecast-time change draws no base/ENC pixel. Zoom composes at native scale (ENC selection is scale-dependent).
+The whole-viewport ENC `selected`/`coverage` identity is assembled without drawing pixels, so reuse does not
+change the reported selection or coverage.
+
+On the 2026-11-02 app workload (`d2cca53…` snapshot, 1000×680, DPR 2, ENC enabled), a 200 px pan beyond the
+reuse margin composed 13% of the target in 645–660 ms, versus 1046–1084 ms warm for a full composition; a
+warm `A → B → A` reversal reused A's frame in ~1-10 ms. A forecast-time change composed no chart pixel: the
+static stage was 0.03 ms, with the contour path accounting for the rest (~94 ms total, 87.6 ms pressure sampling,
+1.3 ms surface copy, 1.9 ms contour drawing). A first large reversal to an unvisited view still composes a wide
+band (~1 s for 900 px). Fractional pans translate the reused area bilinearly: mean 0.35/255 and 2.6% of reused
+pixels above 8/255 versus a fresh full composition, with no coverage or geometry change. The retained payload
+plateau was 64.9 MB at DPR 2. The checked-in bounded check is
+`python tools/benchmark_chart_reuse.py --snapshot <verified snapshot> --output <dir>`; it reports the same
+scenarios and exits non-zero on a violated bound. On the same workload the real viewport widget reported
+camera→chart-publish 207 ms for the 200 px pan (composition 23 ms, scheduling 0.9 ms, image adoption 4.5 ms),
+283 ms for the 450 px pan (composition 74 ms), and 414 ms for a time-only change (composition 130 ms); those
+include the chart settle timer. These are CPU composition/scheduling wall times, not FPS, presentation latency
+or GPU time; the formal gate remains blocked on an accepted ENC fixture.
+
 ## Historical pan/zoom baseline (2026-11-02)
 
 These dated references are historical, not current priorities. Neither measures presentation FPS or

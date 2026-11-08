@@ -1605,6 +1605,30 @@ def chart_withdrawn_on_camera_change(previous, camera, published):
     return previous.zoom != camera.zoom or previous.stamp() != camera.stamp()
 
 
+def chart_latency(requested_at, published_at, metadata):
+    """Separate chart composition from the scheduling around it (CPU clock).
+
+    The endpoint is the layer's publish callback, not presentation.  ``queue``
+    is the wait between the request and the worker starting; ``composition``
+    is the worker's own compose time; ``scheduling`` is the remainder between
+    the request and the publish callback.  Labelled separately so a faster
+    composition is never reported as a faster input-to-present path.
+    """
+    timings = dict((metadata or {}).get("timings") or {})
+    total = (published_at - requested_at) * 1000.0
+    composition = timings.get("composition_ms")
+    queue = timings.get("queue_ms")
+    scheduling = None
+    if composition is not None:
+        scheduling = round(max(0.0, total - composition - (queue or 0.0)), 3)
+    return {
+        "request_to_publish_ms": round(total, 3),
+        "queue_ms": queue,
+        "composition_ms": composition,
+        "scheduling_ms": scheduling,
+    }
+
+
 # Wave height and wave arrows are optional layers.  Scenes, reduced viewports
 # and test harnesses that predate them carry none of the wave members, so each
 # wave entry point resolves the absent ones to the inert value the layer starts
@@ -2197,6 +2221,11 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 chart_requests=0,
                 native_field_requests=0,
             )
+            # Bounded chart latency evidence: request -> publish callback and
+            # publish -> image adoption, kept separate from composition.
+            self.chart_latencies = []
+            self._chart_request_times = {}
+            self._chart_stage_times = {}
             if not self._native_weather_fields:
                 for item in (self._fill, self._fill_back):
                     if item is not None:
@@ -2432,6 +2461,21 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             generation, image, metadata = payload
             if self._disposed:
                 return
+            requested_at = None
+            request_times = getattr(self, "_chart_request_times", None)
+            if request_times is not None:
+                requested_at = request_times.pop(generation, None)
+            if requested_at is not None:
+                record = chart_latency(requested_at, time.perf_counter(), metadata)
+                record["generation"] = generation
+                stage_times = getattr(self, "_chart_stage_times", None)
+                latencies = getattr(self, "chart_latencies", None)
+                if stage_times is not None and latencies is not None:
+                    stage_times[generation] = time.perf_counter()
+                    latencies.append(record)
+                    del latencies[:-64]
+                    while len(stage_times) > 64:
+                        stage_times.pop(next(iter(stage_times)))
             if not self._chart_payload_valid(generation, metadata):
                 self._chart_redelivery_generation = generation
                 return
@@ -2602,6 +2646,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             self._chart.setProperty("chartLoading", False)
             self._chart.setProperty("chartUnavailable", False)
             self.counters["chart_publications"] += 1
+            stage_times = getattr(self, "_chart_stage_times", None)
+            staged_at = stage_times.pop(generation, None) if stage_times else None
+            if staged_at is not None:
+                elapsed = (time.perf_counter() - staged_at) * 1000.0
+                for record in reversed(getattr(self, "chart_latencies", ())):
+                    if record.get("generation") == generation:
+                        record["publish_to_adopt_ms"] = round(elapsed, 3)
+                        break
             self._chart_publish_state = self._chart_state_now()
             self._update_enc_status()
             if self._chart_ready_at is None:
@@ -3554,6 +3606,12 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
                 generation = self._chart_model.request(self._camera, replace=True)
             else:
                 generation = self._chart_model.request(self._camera)
+            if generation is not None:
+                times = getattr(self, "_chart_request_times", None)
+                if times is not None:
+                    times[generation] = time.perf_counter()
+                    while len(times) > 64:
+                        times.pop(next(iter(times)))
             refusal = getattr(self, "_chart_budget_refusal", None)
             retry_refusal = False
             if refusal is not None and refusal[0] == generation:

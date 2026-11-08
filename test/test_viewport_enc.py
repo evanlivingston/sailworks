@@ -142,6 +142,11 @@ class _StubRenderer:
             raise self._error
         return self._surface
 
+    def inspect(self, job):
+        if self._error is not None:
+            raise self._error
+        return self._regions
+
     @property
     def regions(self):
         return self._regions
@@ -391,6 +396,26 @@ def test_the_viewport_pixels_are_the_reference_pixels(monkeypatch):
     assert bytes(surface.get_data()) == bytes(reference.get_data())
 
 
+def test_a_fractional_factor_renders_at_whole_device_pixels(monkeypatch):
+    """A preview factor is a float, but cairo needs whole device pixels."""
+    canvas = MapCanvas()
+    viewport = MapViewport(canvas)
+    native = int(canvas.get_scale() * 3779.527559)
+    full = _rectangle(viewport, -10, -10, 410, 310)
+
+    def factory():
+        return {"coast": _FakeChart([full], (1, 0, 0))}
+
+    job = _enc_job((("coast", native, ()),), canvas)
+    job.factor = 1.0
+    reference, surface = _render_pair(job, factory, monkeypatch)
+    assert reference is not None
+    assert surface is not None
+    assert surface.get_width() == viewport.width
+    assert surface.get_height() == viewport.height
+    assert bytes(surface.get_data()) == bytes(reference.get_data())
+
+
 def test_the_best_scale_wins_the_overlap_and_the_other_cell_fills_the_gap(
     monkeypatch,
 ):
@@ -623,6 +648,34 @@ def test_a_ready_composition_reports_its_cells_and_its_coverage():
     assert metadata["bytes"] > 0
     # The ENC is painted onto the chart surface, in the application's order.
     assert _pixel(result, 50, 50) == (0, 0, 255, 255)
+
+
+def test_a_reused_composition_still_reports_its_whole_viewport_identity():
+    """``describe`` is the whole viewport's identity, without drawing it."""
+    cell = viewportenc.EncSource("/charts/US5TEST.000", 45000, ())
+    region = ogr.CreateGeometryFromWkt("POLYGON((0 0,1 0,1 1,0 1,0 0))")
+    renderer = _StubRenderer(surface=None, regions=((cell.path, region),))
+    source = _enc_source(sources=(cell,), renderer=renderer)
+    metadata = source.describe(_enc_job())
+    assert metadata["state"] == viewportenc.STATE_READY
+    assert metadata["selected"] == ("US5TEST",)
+    assert metadata["coverage"][0]["name"] == "US5TEST"
+    # No chart surface was composed for this report.
+    assert renderer._surface is None
+
+
+def test_a_cancelled_description_is_not_a_published_identity():
+    """A cancelled inspect reports cancellation, never empty coverage."""
+    cell = viewportenc.EncSource("/charts/US5TEST.000", 45000, ())
+
+    class _CancelledRenderer(_StubRenderer):
+        def inspect(self, job):
+            return None
+
+    source = _enc_source(
+        sources=(cell,), renderer=_CancelledRenderer(surface=None, regions=())
+    )
+    assert source.describe(_enc_job()) is None
 
 
 def test_an_unreadable_installed_cell_is_reported_by_the_catalog(tmp_path):
