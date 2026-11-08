@@ -396,6 +396,26 @@ def test_the_viewport_pixels_are_the_reference_pixels(monkeypatch):
     assert bytes(surface.get_data()) == bytes(reference.get_data())
 
 
+def test_a_fractional_factor_renders_at_whole_device_pixels(monkeypatch):
+    """A preview factor is a float, but cairo needs whole device pixels."""
+    canvas = MapCanvas()
+    viewport = MapViewport(canvas)
+    native = int(canvas.get_scale() * 3779.527559)
+    full = _rectangle(viewport, -10, -10, 410, 310)
+
+    def factory():
+        return {"coast": _FakeChart([full], (1, 0, 0))}
+
+    job = _enc_job((("coast", native, ()),), canvas)
+    job.factor = 1.0
+    reference, surface = _render_pair(job, factory, monkeypatch)
+    assert reference is not None
+    assert surface is not None
+    assert surface.get_width() == viewport.width
+    assert surface.get_height() == viewport.height
+    assert bytes(surface.get_data()) == bytes(reference.get_data())
+
+
 def test_the_best_scale_wins_the_overlap_and_the_other_cell_fills_the_gap(
     monkeypatch,
 ):
