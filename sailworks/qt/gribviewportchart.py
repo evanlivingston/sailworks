@@ -1102,7 +1102,9 @@ class ViewportChartLayer:
                 self.counters["stale"] += 1
             self._outcome = "stale"
             return None, None
+        columns_started = time.perf_counter()
         columns = None if self._enc_only else self._isobar_columns(job, camera, cancel)
+        columns_ms = (time.perf_counter() - columns_started) * 1000.0
         if cancel.is_set():
             return None, None
         isobar_ms = 0.0
@@ -1131,9 +1133,10 @@ class ViewportChartLayer:
         reuse["isobar_only"] = isobar_only
         timings = {
             "static_ms": round(static_ms, 3),
+            "columns_ms": round(columns_ms, 3),
             "copy_ms": round(copy_ms, 3),
             "isobars_ms": round(isobar_ms, 3),
-            "composition_ms": round(static_ms + copy_ms + isobar_ms, 3),
+            "composition_ms": round(static_ms + columns_ms + copy_ms + isobar_ms, 3),
         }
         metadata = {
             "viewport": viewport,

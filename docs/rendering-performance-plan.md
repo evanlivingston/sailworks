@@ -243,12 +243,19 @@ The whole-viewport ENC `selected`/`coverage` identity is assembled without drawi
 change the reported selection or coverage.
 
 On the 2026-11-02 app workload (`d2cca53…` snapshot, 1000×680, DPR 2, ENC enabled), a 200 px pan beyond the
-reuse margin composed 13% of the target in 645 ms, versus 1046 ms warm for a full composition; a time-only
-change took ~1 ms and composed no chart pixels; a warm `A → B → A` reversal reused A's frame in ~1 ms. A first
-large reversal to an unvisited view still composes a wide band (~1 s for 900 px). Fractional pans translate the
-reused area bilinearly: mean 0.35/255 and 2.6% of reused pixels above 8/255 versus a fresh full composition, with
-no coverage or geometry change. The retained payload plateau was 64.9 MB at DPR 2. These are CPU composition wall
-times, not FPS, presentation latency or GPU time; the formal gate remains blocked on an accepted ENC fixture.
+reuse margin composed 13% of the target in 645–660 ms, versus 1046–1084 ms warm for a full composition; a
+warm `A → B → A` reversal reused A's frame in ~1-10 ms. A forecast-time change composed no chart pixel: the
+static stage was 0.03 ms, with the contour path accounting for the rest (~94 ms total, 87.6 ms pressure sampling,
+1.3 ms surface copy, 1.9 ms contour drawing). A first large reversal to an unvisited view still composes a wide
+band (~1 s for 900 px). Fractional pans translate the reused area bilinearly: mean 0.35/255 and 2.6% of reused
+pixels above 8/255 versus a fresh full composition, with no coverage or geometry change. The retained payload
+plateau was 64.9 MB at DPR 2. The checked-in bounded check is
+`python tools/benchmark_chart_reuse.py --snapshot <verified snapshot> --output <dir>`; it reports the same
+scenarios and exits non-zero on a violated bound. On the same workload the real viewport widget reported
+camera→chart-publish 207 ms for the 200 px pan (composition 23 ms, scheduling 0.9 ms, image adoption 4.5 ms),
+283 ms for the 450 px pan (composition 74 ms), and 414 ms for a time-only change (composition 130 ms); those
+include the chart settle timer. These are CPU composition/scheduling wall times, not FPS, presentation latency
+or GPU time; the formal gate remains blocked on an accepted ENC fixture.
 
 ## Historical pan/zoom baseline (2026-11-02)
 
