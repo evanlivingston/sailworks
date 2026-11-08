@@ -101,6 +101,15 @@ def test_drop_validation_accepts_text_and_ebl_but_not_mixed_remote_or_directorie
     assert not dropped_log_paths(mime)
 
 
+def test_dialog_always_offers_folder_import_and_w2k_sync(app, controller):
+    dialog = LogLibraryDialog(controller)
+    try:
+        assert dialog.actions["Import folder…"].isEnabled()
+        assert dialog.actions["Sync W2K-1…"].isEnabled()
+    finally:
+        dialog.close()
+
+
 def test_dialog_import_edit_reload_open_paused_and_remove(
     app, controller, tmp_path, monkeypatch
 ):
@@ -109,6 +118,8 @@ def test_dialog_import_edit_reload_open_paused_and_remove(
     try:
         assert set(dialog.actions) == {
             "Import…",
+            "Import folder…",
+            "Sync W2K-1…",
             "Save details",
             "Open",
             "File Info…",
