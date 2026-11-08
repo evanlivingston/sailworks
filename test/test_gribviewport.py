@@ -2185,6 +2185,27 @@ def test_chart_latency_separates_scheduling_from_composition():
     assert unknown["scheduling_ms"] is None
 
 
+def test_a_warm_reversal_reuses_the_frame_it_came_from(tmp_path):
+    """A -> B -> A reuses A's retained frame instead of composing again."""
+    layer, composer, _enc, _sources, Event = _static_layer(tmp_path)
+    camera = _camera(width=320, height=240)
+    panned = _panned(camera, 300)
+    try:
+        _image, first = layer._compose(camera, Event())
+        assert first["static"]["mode"] == "full"
+        _image, second = layer._compose(panned, Event())
+        assert second["static"]["mode"] == "regions"
+        calls = len(composer.calls)
+        _image, back = layer._compose(camera, Event())
+        assert back["static"]["mode"] == "reused"
+        assert back["static"]["composed_pixels"] == 0
+        assert len(composer.calls) == calls
+        assert layer.observations()["counters"]["static_reuses"] == 1
+        assert layer.observations()["static"]["frames"] <= 3
+    finally:
+        layer.close()
+
+
 def test_a_quality_or_source_change_composes_the_whole_view_again(tmp_path):
     """A DPR or source change never reuses content composed for another key."""
     layer, composer, _enc, sources, Event = _static_layer(tmp_path)
@@ -2200,7 +2221,9 @@ def test_a_quality_or_source_change_composes_the_whole_view_again(tmp_path):
         sources[0] = (object(),)
         _image, changed = layer._compose(camera, Event())
         assert changed["static"]["mode"] == "full"
-        assert layer.observations()["static"]["frames"] <= 2
+        from sailworks.qt.gribviewportchart import STATIC_FRAME_LIMIT
+
+        assert layer.observations()["static"]["frames"] <= STATIC_FRAME_LIMIT
     finally:
         layer.close()
 

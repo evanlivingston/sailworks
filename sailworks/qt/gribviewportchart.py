@@ -85,10 +85,10 @@ HISTORY_LIMIT = 64
 #: glyph.  64 px exceeds the largest chart label's box.
 STATIC_REGION_PAD = 64
 
-#: Retained isobar-free surfaces: one full-quality and one preview surface.
-#: The second entry is what keeps a preview from evicting the full composition
-#: on every gesture; it is a bound, not a cache that may grow.
-STATIC_FRAME_LIMIT = 2
+#: Retained isobar-free surfaces.  Two full-quality frames keep a warm
+#: travel/reversal pair (A -> B -> A reuses A's frame), and one preview frame
+#: keeps a gesture from evicting the full composition.
+STATIC_FRAME_LIMIT = 3
 
 
 @dataclass
@@ -491,6 +491,7 @@ class ViewportChartLayer:
         # Retained isobar-free static content, owned by the worker thread.
         # ``_static_bytes`` mirrors its payload for the GUI-visible report.
         self._static_frames = OrderedDict()
+        self._static_serial = 0
         self._static_bytes = 0
         self._static_count = 0
         # The request instant of each in-flight generation, for the
@@ -1158,7 +1159,6 @@ class ViewportChartLayer:
         key = (self._palette, factor, self._base_sources())
         import cairo
 
-        frame = self._static_frames.get(key)
         report = {
             "mode": "full",
             "regions": 0,
@@ -1166,50 +1166,47 @@ class ViewportChartLayer:
             "reused_pixels": 0,
             "retained_bytes": 0,
         }
-        if frame is not None and frame.viewport._zoom == viewport._zoom:
-            overlap = _intersection_rect(viewport, frame.viewport)
-            if overlap is not None:
-                if overlap == (0, 0, int(viewport.width), int(viewport.height)):
-                    # Every pixel was already composed for this view.
-                    report["mode"] = "reused"
-                    report["composed_pixels"] = 0
-                    report["reused_pixels"] = int(viewport.width) * int(viewport.height)
-                    self._count_static(report)
-                    self._static_frames.move_to_end(key)
-                    report["retained_bytes"] = self._retained_static_bytes()
-                    return frame.surface, frame.enc_metadata, report
-                surface = _empty_surface(viewport, factor)
-                _paint_static(surface, frame, viewport, factor)
-                regions = _exposed_regions(
-                    int(viewport.width), int(viewport.height), overlap
-                )
+        frame, overlap = self._best_static_frame(key, viewport)
+        if frame is not None and overlap is not None:
+            if overlap == (0, 0, int(viewport.width), int(viewport.height)):
+                # Every pixel was already composed for this view.
+                report["mode"] = "reused"
                 report["composed_pixels"] = 0
-                enc = self._enc_composer()
-                for rect in regions:
-                    if cancel.is_set():
-                        return None
-                    region = self._compose_region(job, viewport, rect, factor, cancel)
-                    if region is None:
-                        return None
-                    region_surface, x, y = region
-                    cr = cairo.Context(surface)
-                    cr.set_source_surface(region_surface, x, y)
-                    cr.paint()
-                    report["regions"] += 1
-                    report["composed_pixels"] += (rect[2] - rect[0]) * (
-                        rect[3] - rect[1]
-                    )
-                report["reused_pixels"] = (overlap[2] - overlap[0]) * (
-                    overlap[3] - overlap[1]
-                )
-                enc_metadata = self._enc_report(job, enc)
-                if enc_metadata is None:
-                    return None
-                report["mode"] = "regions"
-                self._retain_static(key, surface, viewport, factor, enc_metadata)
+                report["reused_pixels"] = int(viewport.width) * int(viewport.height)
                 self._count_static(report)
+                self._touch_static(frame)
                 report["retained_bytes"] = self._retained_static_bytes()
-                return surface, enc_metadata, report
+                return frame.surface, frame.enc_metadata, report
+            surface = _empty_surface(viewport, factor)
+            _paint_static(surface, frame, viewport, factor)
+            regions = _exposed_regions(
+                int(viewport.width), int(viewport.height), overlap
+            )
+            report["composed_pixels"] = 0
+            enc = self._enc_composer()
+            for rect in regions:
+                if cancel.is_set():
+                    return None
+                region = self._compose_region(job, viewport, rect, factor, cancel)
+                if region is None:
+                    return None
+                region_surface, x, y = region
+                cr = cairo.Context(surface)
+                cr.set_source_surface(region_surface, x, y)
+                cr.paint()
+                report["regions"] += 1
+                report["composed_pixels"] += (rect[2] - rect[0]) * (rect[3] - rect[1])
+            report["reused_pixels"] = (overlap[2] - overlap[0]) * (
+                overlap[3] - overlap[1]
+            )
+            enc_metadata = self._enc_report(job, enc)
+            if enc_metadata is None:
+                return None
+            report["mode"] = "regions"
+            self._retain_static(key, surface, viewport, factor, enc_metadata)
+            self._count_static(report)
+            report["retained_bytes"] = self._retained_static_bytes()
+            return surface, enc_metadata, report
         surface, enc_metadata = self._composer().render(job, None, self._enc_composer())
         if surface is None:
             return None
@@ -1219,6 +1216,39 @@ class ViewportChartLayer:
         self._count_static(report)
         report["retained_bytes"] = self._retained_static_bytes()
         return surface, enc_metadata, report
+
+    def _best_static_frame(self, key, viewport):
+        """The retained frame that covers this view, if one does.
+
+        A short history is kept so a warm reversal finds the frame it came
+        from.  The frame that covers the target is preferred; otherwise the
+        frame with the largest overlap is used and only the rest is composed.
+        """
+        full = (0, 0, int(viewport.width), int(viewport.height))
+        best = (None, None)
+        best_area = 0
+        for frame in self._static_frames.values():
+            if (frame.palette, frame.factor, frame.sources) != key:
+                continue
+            if frame.viewport._zoom != viewport._zoom:
+                continue
+            overlap = _intersection_rect(viewport, frame.viewport)
+            if overlap is None:
+                continue
+            if overlap == full:
+                return frame, overlap
+            area = (overlap[2] - overlap[0]) * (overlap[3] - overlap[1])
+            if area > best_area:
+                best = (frame, overlap)
+                best_area = area
+        return best
+
+    def _touch_static(self, frame):
+        """Make a reused frame the most recently used one."""
+        for key, candidate in self._static_frames.items():
+            if candidate is frame:
+                self._static_frames.move_to_end(key)
+                return
 
     def _compose_region(self, job, viewport, rect, factor, cancel):
         """Compose one exposed rectangle with its own padding.
@@ -1300,8 +1330,8 @@ class ViewportChartLayer:
             enc_metadata=enc_metadata,
             bytes=_surface_bytes(surface),
         )
-        self._static_frames.pop(key, None)
-        self._static_frames[key] = frame
+        self._static_serial += 1
+        self._static_frames[(key, self._static_serial)] = frame
         while len(self._static_frames) > STATIC_FRAME_LIMIT:
             self._static_frames.popitem(last=False)
         with self._condition:
