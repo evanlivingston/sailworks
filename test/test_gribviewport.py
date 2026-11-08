@@ -1886,6 +1886,201 @@ def test_a_retained_chart_composition_is_reused(tmp_path):
     layer.close()
 
 
+def test_exposed_regions_partition_the_surface_without_gaps():
+    """A covered intersection and its exposed rectangles tile the target."""
+    from sailworks.qt.gribviewportchart import _exposed_regions
+
+    width, height = 1000, 700
+    for overlap in ((0, 0, 1000, 700), (200, 0, 1000, 700), (0, 100, 1000, 450)):
+        regions = _exposed_regions(width, height, overlap)
+        area = (overlap[2] - overlap[0]) * (overlap[3] - overlap[1])
+        area += sum((r[2] - r[0]) * (r[3] - r[1]) for r in regions)
+        assert area == width * height
+        for region in regions:
+            assert 0 <= region[0] < region[2] <= width
+            assert 0 <= region[1] < region[3] <= height
+
+
+class _RecordingPainter:
+    def __init__(self):
+        self.draws = 0
+
+    def draw_isobars(self, viewport, cr, columns):
+        self.draws += 1
+
+
+class _RecordingComposer:
+    """Stand-in for the application's composition, with a colour per call."""
+
+    def __init__(self):
+        import cairo
+
+        self.calls = []
+        self.painter_instance = _RecordingPainter()
+        self._cairo = cairo
+
+    def painter(self):
+        return self.painter_instance
+
+    def render(self, job, isobars=None, enc=None):
+        cairo = self._cairo
+        width = max(1, int(round(job.viewport.width * job.factor)))
+        height = max(1, int(round(job.viewport.height * job.factor)))
+        surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
+        surface.set_device_scale(job.factor, job.factor)
+        cr = cairo.Context(surface)
+        # The first composition is red; every later composition is green, so
+        # a test can tell reused pixels from newly composed ones.
+        if self.calls:
+            cr.set_source_rgb(0, 1, 0)
+        else:
+            cr.set_source_rgb(1, 0, 0)
+        cr.paint()
+        self.calls.append((job.viewport.width, job.viewport.height, job.factor))
+        metadata = None
+        if enc is not None:
+            surface, metadata = enc.compose(job, surface)
+        return surface, metadata
+
+
+class _RecordingEnc:
+    """Stand-in for the ENC source: pixels for compose, identity for describe."""
+
+    def __init__(self):
+        self.composed = []
+        self.described = []
+
+    @staticmethod
+    def _metadata(job):
+        return {
+            "enabled": True,
+            "state": "ready",
+            "reason": "",
+            "error": "",
+            "source_ids": ("US5TEST",),
+            "disabled_ids": (),
+            "selected": ("US5TEST",),
+            "coverage": (),
+            "failed": (),
+            "factor": job.factor,
+            "generation": "g",
+            "bytes": 1,
+        }
+
+    def compose(self, job, surface):
+        self.composed.append((job.viewport.width, job.viewport.height))
+        return surface, self._metadata(job)
+
+    def describe(self, job):
+        self.described.append((job.viewport.width, job.viewport.height))
+        return self._metadata(job)
+
+
+def _static_layer(tmp_path):
+    """A chart layer whose pixels are composed by a recording stand-in."""
+    from threading import Event
+
+    layer = _chart_layer(tmp_path, enc_enabled=True)
+    layer._dpr = 1
+    composer = _RecordingComposer()
+    enc = _RecordingEnc()
+    sources = [()]
+    layer._composer = lambda: composer
+    layer._enc_composer = lambda: enc
+    layer._base_sources = lambda: sources[0]
+    layer._isobar_columns = lambda job, camera, cancel: None
+    return layer, composer, enc, sources, Event
+
+
+def _panned(camera, pixels):
+    """The camera after an eastward pan of *pixels* logical pixels."""
+    width = 256 * 2**camera.zoom
+    return replace(camera, center_lon=camera.center_lon + pixels * 360.0 / width)
+
+
+def test_a_covered_pan_composes_only_the_exposed_region(tmp_path):
+    """A pan beyond the reuse margin composes bands, never the whole view."""
+    layer, composer, enc, _sources, Event = _static_layer(tmp_path)
+    camera = _camera(width=320, height=240)
+    try:
+        _image, first = layer._compose(camera, Event())
+        assert first["static"]["mode"] == "full"
+        assert len(composer.calls) == 1
+        full = composer.calls[0]
+        panned = _panned(camera, 300)
+        image, second = layer._compose(panned, Event())
+        report = second["static"]
+        assert report["mode"] == "regions"
+        assert report["regions"] >= 1
+        assert report["composed_pixels"] < full[0] * full[1]
+        assert report["reused_pixels"] > 0
+        # The covered left side is the retained red composition; the newly
+        # exposed right side was composed now (green).
+        assert image.pixelColor(50, 50).getRgb()[:3] == (255, 0, 0)
+        assert image.pixelColor(image.width() - 5, 50).getRgb()[:3] == (0, 255, 0)
+        # The band is composed with padding: narrower than the whole view but
+        # taller than it, so a label that crosses the seam is drawn whole.
+        assert any(
+            call[0] < full[0] and call[1] > full[1] for call in composer.calls[1:]
+        )
+        # The identity is the whole viewport's, never a band's.
+        assert enc.described[-1] == full[:2]
+        assert layer.observations()["counters"]["static_region_compositions"] == 1
+        assert layer.observations()["counters"]["static_regions"] == report["regions"]
+
+        # A forecast-time change reuses every chart pixel; only the contours
+        # are drawn again.
+        later = replace(panned, time=panned.time + timedelta(hours=1))
+        layer._isobar_columns = lambda job, camera, cancel: [("isobar",)]
+        calls_before = len(composer.calls)
+        _image, third = layer._compose(later, Event())
+        assert third["static"]["mode"] == "reused"
+        assert third["static"]["composed_pixels"] == 0
+        assert third["static"]["isobar_only"] is True
+        assert len(composer.calls) == calls_before
+        assert enc.described[-1] == full[:2]
+        assert composer.painter().draws == 1
+        assert layer.observations()["counters"]["static_reuses"] == 1
+        assert layer.observations()["counters"]["isobar_only"] == 1
+    finally:
+        layer.close()
+
+
+def test_a_quality_or_source_change_composes_the_whole_view_again(tmp_path):
+    """A DPR or source change never reuses content composed for another key."""
+    layer, composer, _enc, sources, Event = _static_layer(tmp_path)
+    camera = _camera(width=320, height=240)
+    try:
+        _image, first = layer._compose(camera, Event())
+        assert first["static"]["mode"] == "full"
+        layer._dpr = 2
+        _image, scaled = layer._compose(camera, Event())
+        assert scaled["static"]["mode"] == "full"
+        # The whole view was composed again at the new factor.
+        assert composer.calls[-1][2] > composer.calls[0][2]
+        sources[0] = (object(),)
+        _image, changed = layer._compose(camera, Event())
+        assert changed["static"]["mode"] == "full"
+        assert layer.observations()["static"]["frames"] <= 2
+    finally:
+        layer.close()
+
+
+def test_releasing_the_layer_drops_the_retained_content(tmp_path):
+    """The retained surfaces are bounded and released with the worker."""
+    layer, _composer, _enc, _sources, Event = _static_layer(tmp_path)
+    camera = _camera(width=320, height=240)
+    try:
+        layer._compose(camera, Event())
+        assert layer.observations()["static"]["frames"] == 1
+        assert layer.observations()["static"]["bytes"] > 0
+        layer._release()
+        assert layer.observations()["static"]["frames"] == 0
+        assert layer.observations()["static"]["bytes"] == 0
+    finally:
+        layer.close()
+
+
 def test_the_chart_layer_never_claims_the_weather_worker(tmp_path):
     """The chart layer's composition yields to the weather pipeline."""
     layer = _chart_layer(tmp_path)

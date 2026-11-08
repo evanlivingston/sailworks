@@ -378,6 +378,31 @@ class ViewportEncRenderer(ENCOverlayRenderer):
         """The selected cells and the coverage region of each one."""
         return self._regions
 
+    def inspect(self, job):
+        """The identity of a whole composition, without composing pixels.
+
+        The cells are opened exactly as the reference opens them -- the same
+        ranking, the same visibility rule, the same envelope test and the
+        same coverage assembly -- so the reported regions are the regions a
+        full composition would have drawn.  Nothing is painted: the chart
+        layer reuses pixels composed for another camera and still reports
+        this viewport's own coverage.
+        """
+        self._coverages = {}
+        bounding = self._bounding(job)
+        min_lon, max_lon, min_lat, max_lat = bounding.GetEnvelope()
+        for path, native_scale, envelopes in self._ranked(job):
+            if job.cancel.is_set():
+                return None
+            if not chart_scale_visible(native_scale, job.viewport.get_scale()):
+                continue
+            if envelopes and not self._envelope_reaches(
+                envelopes, min_lon, max_lon, min_lat, max_lat
+            ):
+                continue
+            self._worker_chart(path, native_scale, job.palette)
+        return self._regions_of(job)
+
     def release(self):
         """Release the worker's own chart handles and the prepared geometry.
 
@@ -544,28 +569,62 @@ class ViewportEncSource:
         failure never raises: the surface is returned without the ENC and
         the state says why, so an ENC failure is never presented as a chart.
         """
+        metadata, renderer, enc_job = self._prepare(job)
+        if renderer is None:
+            return surface, metadata
+        return surface, self._compose_prepared(metadata, surface, renderer, enc_job)
+
+    def describe(self, job):
+        """The ENC identity of this whole viewport, without drawing pixels.
+
+        A composition that reuses pixels prepared for another camera still
+        reports the cells and coverage of *this* viewport, because the report
+        is assembled here from the same rules the reference composition uses.
+        ``None`` means the description was cancelled.
+        """
+        metadata, renderer, enc_job = self._prepare(job)
+        if renderer is None:
+            return metadata
+        try:
+            regions = renderer.inspect(enc_job)
+        except Exception as exc:  # an ENC failure is never a chart failure
+            return self._unavailable(metadata, exc)
+        if regions is None:
+            metadata["state"] = STATE_LOADING
+            metadata["reason"] = REASON_CANCELLED
+            self._state = STATE_LOADING
+            return None
+        return self._describe_regions(metadata, regions)
+
+    def _prepare(self, job):
+        """Read the manifest and open the cells, without composing pixels.
+
+        Returns ``(metadata, renderer, enc_job)``.  ``renderer`` is ``None``
+        when this composition has nothing to draw: the metadata is then
+        already finished and says why.
+        """
         metadata = self._empty_metadata(job)
         try:
             self._catalog.refresh()
         except Exception as exc:  # the manifest is never a silent failure
-            return surface, self._unavailable(metadata, exc)
+            return self._unavailable(metadata, exc), None, None
         manifest = self._catalog.manifest
         metadata["enabled"] = manifest.class_enabled
         if manifest.error and not manifest.missing:
             # The user's own manifest could not be read: the cells are
             # unknown, and an unknown cell is never presented as a chart.
             metadata["error"] = manifest.error
-            return surface, self._unavailable(metadata, RuntimeError(manifest.error))
+            return (
+                self._unavailable(metadata, RuntimeError(manifest.error)),
+                None,
+                None,
+            )
         self._adopt_generation()
         if not manifest.class_enabled:
             metadata["state"] = STATE_DISABLED
             metadata["reason"] = REASON_DISABLED
             self._state = STATE_DISABLED
-            return surface, self._finish(metadata)
-        return surface, self._compose_cells(job, surface, metadata)
-
-    def _compose_cells(self, job, surface, metadata):
-        """Compose the installed and enabled cells onto the surface."""
+            return self._finish(metadata), None, None
         sources = self._catalog.sources
         metadata["source_ids"] = tuple(source.name for source in sources)
         metadata["disabled_ids"] = tuple(self._catalog.disabled)
@@ -591,9 +650,13 @@ class ViewportEncSource:
                 metadata["reason"] = REASON_NO_CELLS
             self._state = metadata["state"]
             self._error = metadata["error"]
-            return self._finish(metadata)
+            return self._finish(metadata), None, None
         renderer = self._renderer_instance()
         enc_job = replace(job, charts=tuple(source.descriptor for source in usable))
+        return metadata, renderer, enc_job
+
+    def _compose_prepared(self, metadata, surface, renderer, enc_job):
+        """Compose the prepared cells onto the surface."""
         try:
             enc_surface = renderer._render(enc_job)
         except Exception as exc:
@@ -606,7 +669,20 @@ class ViewportEncSource:
             metadata["reason"] = REASON_CANCELLED
             self._state = STATE_LOADING
             return self._finish(metadata)
-        regions = renderer.regions
+        metadata = self._describe_regions(metadata, renderer.regions)
+        if metadata["state"] != STATE_READY:
+            return self._finish(metadata)
+        cr = cairo.Context(surface)
+        cr.set_source_surface(enc_surface, 0, 0)
+        cr.paint()
+        surface.flush()
+        metadata["state"] = STATE_READY
+        self._state = STATE_READY
+        self._error = ""
+        return self._finish(metadata)
+
+    def _describe_regions(self, metadata, regions):
+        """Record the cells and coverage of a composition in the metadata."""
         metadata["selected"] = tuple(enc_cell_name(path) for path, _r in regions)
         metadata["coverage"] = tuple(
             region_identity(path, region) for path, region in regions
@@ -617,15 +693,11 @@ class ViewportEncSource:
             metadata["state"] = STATE_COVERAGE_MISS
             metadata["reason"] = REASON_NO_COVERAGE
             self._state = STATE_COVERAGE_MISS
-            return self._finish(metadata)
-        cr = cairo.Context(surface)
-        cr.set_source_surface(enc_surface, 0, 0)
-        cr.paint()
-        surface.flush()
-        metadata["state"] = STATE_READY
-        self._state = STATE_READY
-        self._error = ""
-        return self._finish(metadata)
+        else:
+            metadata["state"] = STATE_READY
+            self._state = STATE_READY
+            self._error = ""
+        return metadata
 
     def _adopt_generation(self):
         """Release the worker's cached charts when the sources changed.
