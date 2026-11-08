@@ -130,7 +130,8 @@ class FastPacketAssembler:
             self.dropped_frames += pending.frames + 1
             del self.pending[key]
             self._issue(
-                f"timed out incomplete fast packet pgn={pending.pgn} source={pending.source} sequence={pending.sequence}"
+                f"timed out incomplete fast packet pgn={pending.pgn} "
+                f"source={pending.source} sequence={pending.sequence}"
             )
             return None
         if index != pending.expected:

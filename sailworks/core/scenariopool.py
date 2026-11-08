@@ -11,7 +11,6 @@ The existing serial path remains the fallback and the reference.
 
 from __future__ import annotations
 
-import multiprocessing
 import os
 import traceback
 from dataclasses import dataclass
