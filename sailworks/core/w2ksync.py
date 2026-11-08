@@ -317,7 +317,7 @@ class W2KSync:
                 continue
             jobs.append((folder, signature, paths, folder_entries))
         if jobs:
-            from .loglibrary import LogLibrary
+            from .loglibrary import LogImportCancelled, LogLibrary
 
             if message is not None:
                 message(f"Importing {len(jobs)} folder{'s' if len(jobs) != 1 else ''}")
@@ -347,11 +347,14 @@ class W2KSync:
                         return
                     progress(round(100 * (download_done + base + read) / total_bytes))
 
-                self.library.import_paths(
-                    [str(path) for path in all_paths],
-                    decode_progress=on_decode,
-                    stop=stop,
-                )
+                try:
+                    self.library.import_paths(
+                        [str(path) for path in all_paths],
+                        decode_progress=on_decode,
+                        stop=stop,
+                    )
+                except LogImportCancelled:
+                    raise W2KSyncCancelled() from None
                 for job in jobs:
                     mark(*job)
             else:
@@ -366,9 +369,12 @@ class W2KSync:
                             round(100 * (download_done + base + read) / total_bytes)
                         )
 
-                    self.library.import_paths(
-                        [str(path) for path in paths], decode_progress=on_decode
-                    )
+                    try:
+                        self.library.import_paths(
+                            [str(path) for path in paths], decode_progress=on_decode
+                        )
+                    except LogImportCancelled:
+                        raise W2KSyncCancelled() from None
                     mark(folder, signature, paths, folder_entries)
 
         if message is not None:
