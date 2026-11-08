@@ -19,8 +19,8 @@ import numpy as np
 # endpoint pair and provenance of native nodes already sampled for one
 # (source set, time window), so a re-centred field only samples the nodes the
 # previous window did not contain.  This is a declared budget, not a measured
-# optimum; the per-entry byte cost is an estimate that includes the two-key
-# tuple overhead.
+# optimum; the per-entry byte cost is an estimate that includes the packed
+# integer key and the provenance string.
 SAMPLING_MEMO_BYTES = 16 * 1024 * 1024
 SAMPLING_ENTRY_BYTES = 112
 LAND_ENTRY_BYTES = 72
@@ -223,7 +223,10 @@ def _exact_snapshot(
     first.setflags(write=False)
     if keys is not None:
         flat = first.reshape(-1, components)
-        for node_index in np.flatnonzero(np.isfinite(flat).all(axis=1)):
+        finite = np.isfinite(flat).all(axis=1)
+        # A memo hit is already stored; only the nodes sampled in this pass
+        # are new.  Re-putting hits only repeated the OrderedDict update.
+        for node_index in np.flatnonzero(missing & finite):
             memo.put_sample(
                 memo_namespace,
                 keys[node_index],
@@ -294,8 +297,10 @@ def stage_wind(  # noqa: C901 - staging, memo reuse and cancellation kept togeth
     second = np.full_like(first, np.nan)
     origins = np.full(len(lat), "", dtype=object)
     keys = None
+    restored = None
     if memo is not None and memo_namespace is not None and node_key is not None:
         keys = [node_key((float(a), float(b))) for a, b in zip(lat, lon)]
+        restored = np.zeros(len(lat), dtype=bool)
         for position, key in enumerate(keys):
             entry = memo.get_sample(memo_namespace, key)
             if entry is None:
@@ -303,6 +308,7 @@ def stage_wind(  # noqa: C901 - staging, memo reuse and cancellation kept togeth
             first[position] = entry[0:components]
             second[position] = entry[components : 2 * components]
             origins[position] = entry[4]
+            restored[position] = True
     for identity in sampler.order:
         if cancel():
             return None
@@ -354,7 +360,9 @@ def stage_wind(  # noqa: C901 - staging, memo reuse and cancellation kept togeth
         finite = np.isfinite(flat_first).all(axis=1) & np.isfinite(flat_second).all(
             axis=1
         )
-        for node_index in np.flatnonzero(finite):
+        # A memo hit is already stored; only the nodes sampled in this pass
+        # are new.  Re-putting hits only repeated the OrderedDict update.
+        for node_index in np.flatnonzero(~restored & finite):
             memo.put_sample(
                 memo_namespace,
                 keys[node_index],
