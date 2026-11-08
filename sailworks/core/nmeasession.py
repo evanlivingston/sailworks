@@ -2,6 +2,7 @@
 
 import logging
 from array import array
+from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from types import MappingProxyType
@@ -21,6 +22,19 @@ from .storage import DATA_DIR
 from .utils import EventDispatcher
 
 logger = logging.getLogger(__name__)
+
+# Decoded EBL logs are expensive to re-read. Keep a tiny in-memory LRU keyed
+# by managed path and file identity; the persistent sidecar cache is deferred
+# until measured open times justify it.
+_LOG_CACHE = OrderedDict()
+_LOG_CACHE_LOCK = RLock()
+_LOG_CACHE_MAX = 4
+
+
+def _log_cache_key(path):
+    resolved = Path(path).resolve()
+    stat = resolved.stat()
+    return (str(resolved), stat.st_mtime_ns, stat.st_size)
 
 
 @dataclass(frozen=True)
@@ -111,6 +125,7 @@ class NMEALog:
     frame_count: Optional[int] = None
     timestamp_origin: Optional[datetime] = None
     numeric_series: Tuple[LoggedFieldSeries, ...] = ()
+    ebl_description: Optional[str] = None
 
     @property
     def duration(self):
@@ -183,10 +198,29 @@ def read_nmea_log(
     callers that have access to the library's file_info (e.g., decoded .log
     files that originated from EBL).
     """
+    if not isinstance(path, (str, bytes, Path)):
+        parts = tuple(Path(part) for part in path)
+        if parts and all(part.suffix.lower() == ".ebl" for part in parts):
+            from .ebllog import read_ebl_log
+
+            return read_ebl_log(parts, progress=progress)
     if Path(path).suffix.lower() == ".ebl":
         from .ebllog import read_ebl_log
 
         return read_ebl_log(path, progress=progress)
+    cacheable = (
+        frame_count is None
+        and not devices
+        and not device_metadata_available
+        and timestamp_origin is None
+    )
+    cache_key = _log_cache_key(path) if cacheable else None
+    if cache_key is not None:
+        with _LOG_CACHE_LOCK:
+            cached = _LOG_CACHE.get(cache_key)
+            if cached is not None:
+                _LOG_CACHE.move_to_end(cache_key)
+                return replace(cached, path=str(path))
     total = Path(path).stat().st_size
     if progress is not None:
         progress(0, total)
@@ -204,6 +238,7 @@ def read_nmea_log(
     source_points = {}
     source_point_offsets = {}
     seen_source_fixes = set()
+    explicit_timing = False
     with open(path, encoding="utf-8", errors="replace") as stream:
         for line_index, line in enumerate(stream):
             line = line.strip()
@@ -219,6 +254,7 @@ def read_nmea_log(
                             raise ValueError(
                                 "Replay offsets must be finite and nonnegative"
                             )
+                        explicit_timing = True
                     else:
                         explicit_timestamp = datetime.fromisoformat(
                             prefix.replace("Z", "+00:00")
@@ -236,16 +272,20 @@ def read_nmea_log(
                 )
                 if explicit_source is not None:
                     packet.source = explicit_source
-                natural_elapsed = timing.offset(
-                    packet, len(entries), absolute=explicit_timestamp
-                )
-                elapsed = (
-                    explicit_offset if explicit_offset is not None else natural_elapsed
-                )
+                # Explicit replay offsets already carry the elapsed clock;
+                # skip the sentence-timestamp interpolation on this path.
+                if explicit_offset is not None:
+                    elapsed = explicit_offset
+                else:
+                    elapsed = timing.offset(
+                        packet, len(entries), absolute=explicit_timestamp
+                    )
                 numeric_fields.add(elapsed, packet)
                 setattr(packet, "log_index", line_index)
                 if explicit_timestamp is not None:
                     packet.recorded_at = explicit_timestamp
+                elif explicit_offset is not None and timestamp_origin is not None:
+                    packet.recorded_at = timestamp_origin + timedelta(seconds=elapsed)
                 history.ingest(packet.data, now=line_index)
                 source = getattr(packet, "source", None)
                 track_translator = translator
@@ -301,7 +341,9 @@ def read_nmea_log(
         str(path),
         tuple(entries),
         skipped,
-        timing.first_stamp is not None or timing.first_absolute is not None,
+        timing.first_stamp is not None
+        or timing.first_absolute is not None
+        or explicit_timing,
         history.snapshot()[1],
         (
             selected_track.points
@@ -323,6 +365,12 @@ def read_nmea_log(
     )
     if progress is not None:
         progress(total, total)
+    if cache_key is not None and explicit_timing:
+        with _LOG_CACHE_LOCK:
+            _LOG_CACHE[cache_key] = log
+            _LOG_CACHE.move_to_end(cache_key)
+            while len(_LOG_CACHE) > _LOG_CACHE_MAX:
+                _LOG_CACHE.popitem(last=False)
     return log
 
 

@@ -19,6 +19,9 @@ from sailworks import log  # noqa: F401
 
 def main(argv=None):
     """Launch the Qt application."""
+    import multiprocessing
+
+    multiprocessing.freeze_support()
     from sailworks.qt.__main__ import main as start_ui_qt
 
     return start_ui_qt(argv)

@@ -264,6 +264,31 @@ class DeviceCollector:
         epochs.append(current)
         return current
 
+    def observe_header(self, timestamp, pgn, source):
+        """Count a frame whose payload was not materialised.
+
+        NAME and product PGNs are always materialised, so this path never
+        needs the data-dependent identity branches.
+        """
+        self.frames += 1
+        for key, packet in list(self.pending.items()):
+            age = (timestamp - packet.timestamp).total_seconds()
+            if (
+                self.frames - packet.started > self.MAX_FRAME_AGE
+                or age > self.MAX_SECONDS
+                or age < 0
+            ):
+                del self.pending[key]
+                self._issue("expired incomplete product information")
+        epochs = self.epochs.get(source)
+        current = epochs[-1] if epochs else self._new_epoch(source)
+        current.frames += 1
+        current.last_frame = self.frames
+        if pgn in current.pgn_counts or len(current.pgn_counts) < self.MAX_PGNS:
+            current.pgn_counts[pgn] = current.pgn_counts.get(pgn, 0) + 1
+        else:
+            current.other_pgn_frames += 1
+
     def observe(self, message):
         self.frames += 1
         for key, packet in list(self.pending.items()):

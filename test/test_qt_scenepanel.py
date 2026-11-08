@@ -1,4 +1,5 @@
 import os
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -60,10 +61,16 @@ class FakeCore:
         self.routingManager = FakeCollection()
 
 
+class FakeSession:
+    def __init__(self, log=None):
+        self.log = log
+
+
 class FakeController:
-    def __init__(self, core, library):
+    def __init__(self, core, library, session=None):
         self.core = core
         self.log_library = library
+        self.session = session or FakeSession()
 
     @property
     def log_library_changed(self):
@@ -77,23 +84,34 @@ def application():
     return QApplication.instance() or QApplication([])
 
 
-def panel_for(tmp_path, tracks=(), routes=(), logs=()):
+def log_entry(tmp_path, identifier="log-1", name="Saturday.log"):
+    return {
+        "id": identifier,
+        "name": name,
+        "status": "Replayable",
+        "file_info": {"path": str(tmp_path / f"{identifier}.log")},
+    }
+
+
+def panel_for(tmp_path, tracks=(), routes=(), logs=(), loaded_log=None):
     core = FakeCore()
     core.trackManager.extend(tracks)
     core.routingManager.extend(routes)
     return ScenePanel(
-        FakeController(core, FakeLibrary(logs)),
+        FakeController(core, FakeLibrary(logs), FakeSession(loaded_log)),
         scene_path=tmp_path / "scene.json",
     )
 
 
 def test_panel_builds_default_tree_and_items(tmp_path):
     application()
+    log = log_entry(tmp_path)
     panel = panel_for(
         tmp_path,
         tracks=[FakeTrack("t1", "Morning")],
         routes=[FakeRoute("r1", "Route")],
-        logs=[{"id": "log-1", "name": "Saturday.log", "status": "Replayable"}],
+        logs=[log],
+        loaded_log=SimpleNamespace(path=log["file_info"]["path"]),
     )
 
     root = panel.tree.topLevelItem(0)
@@ -134,9 +152,11 @@ def test_group_selection_creates_collection_under_common_parent(tmp_path):
 
 def test_log_rows_are_not_checkable(tmp_path):
     application()
+    log = log_entry(tmp_path)
     panel = panel_for(
         tmp_path,
-        logs=[{"id": "log-1", "name": "Saturday.log", "status": "Replayable"}],
+        logs=[log],
+        loaded_log=SimpleNamespace(path=log["file_info"]["path"]),
     )
     row = panel.item_row(KIND_LOG, "log-1")
 
@@ -173,8 +193,12 @@ def test_double_click_item_name_renames_track(tmp_path):
 
 def test_double_click_log_name_renames_library_entry(tmp_path):
     application()
-    log = {"id": "log-1", "name": "Saturday.log", "status": "Replayable"}
-    panel = panel_for(tmp_path, logs=[log])
+    log = log_entry(tmp_path)
+    panel = panel_for(
+        tmp_path,
+        logs=[log],
+        loaded_log=SimpleNamespace(path=log["file_info"]["path"]),
+    )
     row = panel.item_row(KIND_LOG, "log-1")
 
     panel._double_clicked(row, 0)
@@ -283,3 +307,30 @@ def test_grouping_multiple_types_moves_all_selected_rows(tmp_path):
     assert panel.scene.group(track_group).parent is None
     assert panel.item_row("track", "t1") is not None
     assert panel.item_row("routing", "r1") is not None
+
+
+def test_scene_accumulates_opened_library_logs(tmp_path):
+    application()
+    first = log_entry(tmp_path, "log-1", "Saturday.log")
+    second = log_entry(tmp_path, "log-2", "Sunday.log")
+    panel = panel_for(
+        tmp_path,
+        logs=[first, second],
+        loaded_log=SimpleNamespace(path=first["file_info"]["path"]),
+    )
+
+    assert panel.item_row(KIND_LOG, "log-1") is not None
+    assert panel.item_row(KIND_LOG, "log-2") is None
+
+    panel.controller.session.log = SimpleNamespace(path=second["file_info"]["path"])
+    panel.refresh()
+
+    assert panel.item_row(KIND_LOG, "log-1") is not None
+    assert panel.item_row(KIND_LOG, "log-2") is not None
+
+
+def test_scene_hides_library_logs_when_none_is_loaded(tmp_path):
+    application()
+    panel = panel_for(tmp_path, logs=[log_entry(tmp_path)])
+
+    assert panel.item_row(KIND_LOG, "log-1") is None

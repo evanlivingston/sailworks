@@ -406,6 +406,7 @@ def test_successful_ebl_stack_persists_decoded_log_not_transient_model(tmp_path)
     paths[1].write_bytes(raw[len(raw) // 2 :])
     sources = [path.read_bytes() for path in paths]
     library = LogLibrary(tmp_path / "library")
+    library.keep_ebl_originals = False
     (item,) = library.import_paths(paths)
     assert item["_decoded_log"]
     managed = library.path(item["id"])

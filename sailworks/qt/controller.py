@@ -129,6 +129,9 @@ class SessionController(QObject):
         self.connections = self.core.connectionManager
         self.session = self.core.nmea_session
         self.log_library = LogLibrary(log_library_directory)
+        self.log_library.keep_ebl_originals = bool(
+            self.settings.get("keepEblOriginals", True)
+        )
         self._replay_load_tokens = set()
         self.log_edit_busy = False
         self.log_edit_error = None

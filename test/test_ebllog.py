@@ -392,3 +392,226 @@ def test_text_decode_progress_preserves_newlines_replacement_and_timing(tmp_path
     assert log.skipped == baseline.skipped == 1500
     assert log.point_offsets == baseline.point_offsets
     assert log.timestamped == baseline.timestamped
+
+
+# -- fast packets, direction, retention and read fidelity -----------------
+
+
+def fast_frames(pgn, payload, source=42, sequence=3):
+    frames = []
+    total = len(payload)
+    frames.append(
+        frame(pgn, bytes([(sequence << 5), total]) + payload[:6], source=source)
+    )
+    index, position = 1, 6
+    while position < total:
+        chunk = payload[position : position + 7]
+        frames.append(
+            frame(
+                pgn,
+                bytes([(sequence << 5) | index]) + chunk,
+                source=source,
+            )
+        )
+        index += 1
+        position += 7
+    return frames
+
+
+ENGINE = b"\x00" + (400).to_bytes(2, "little") + b"\x00" * 23
+
+
+def test_fast_packet_reassembles_every_published_fast_pgn(tmp_path):
+    path = tmp_path / "fast.ebl"
+    frames = fast_frames(127489, ENGINE)
+    path.write_bytes(timestamp(1704153600) + VERSION + b"".join(frames))
+    log = read_nmea_log(path)
+    assert [packet.data.sentence_type for _, packet in log.entries] == ["ENG"]
+    assert log.frame_count == len(frames)
+    assert log.skipped == 0
+    assert not any("incomplete fast packet" in d for d in log.diagnostics)
+
+
+def test_fast_packets_interleave_by_source_and_sequence(tmp_path):
+    path = tmp_path / "interleaved.ebl"
+    left = fast_frames(127489, ENGINE, source=6, sequence=1)
+    right = fast_frames(127489, ENGINE, source=43, sequence=2)
+    interleaved = [frame for pair in zip(left, right) for frame in pair]
+    path.write_bytes(timestamp(1704153600) + VERSION + b"".join(interleaved))
+    log = read_nmea_log(path)
+    assert len(log.entries) == 2
+    assert {packet.source for _, packet in log.entries} == {6, 43}
+
+
+def test_fast_packet_reorder_duplicate_and_timeout_are_diagnosed(tmp_path):
+    frames = fast_frames(127489, ENGINE)
+    reordered = tmp_path / "reordered.ebl"
+    reordered.write_bytes(
+        timestamp(1704153600) + VERSION + frames[0] + b"".join(frames[2:])
+    )
+    log = read_nmea_log(reordered)
+    assert not log.entries
+    assert any("out-of-order fast-packet" in d for d in log.diagnostics)
+
+    duplicate = tmp_path / "duplicate.ebl"
+    duplicate.write_bytes(
+        timestamp(1704153600) + VERSION + frames[0] + frames[1] + frames[1]
+    )
+    log = read_nmea_log(duplicate)
+    assert not log.entries
+    assert any("duplicate fast-packet" in d for d in log.diagnostics)
+
+    timeout = tmp_path / "timeout.ebl"
+    timeout.write_bytes(
+        timestamp(1704153600)
+        + VERSION
+        + frames[0]
+        + timestamp(1704153700)
+        + b"".join(frames[1:])
+    )
+    log = read_nmea_log(timeout)
+    assert not log.entries
+    assert any("timed out incomplete fast packet" in d for d in log.diagnostics)
+
+
+def test_fast_packet_crosses_stitched_segment_boundary(tmp_path):
+    from sailworks.core.ebllog import read_ebl_log
+
+    frames = fast_frames(127489, ENGINE)
+    raw = timestamp(1704153600) + VERSION + b"".join(frames)
+    first, second = tmp_path / "000031_001.ebl", tmp_path / "000031_002.ebl"
+    split = raw.index(frames[1]) + 4
+    first.write_bytes(raw[:split])
+    second.write_bytes(raw[split:])
+    log = read_ebl_log([first, second])
+    assert [packet.data.sentence_type for _, packet in log.entries] == ["ENG"]
+
+
+def test_transmitted_frames_are_counted_not_replayed(tmp_path):
+    path = tmp_path / "tx.ebl"
+    payload = b"\x00" + (400).to_bytes(2, "little") + b"\xff" * 5
+    tx = (
+        bytes(
+            [
+                0x95,
+                6 + len(payload),
+                0,
+                0,
+                42,
+                128259 & 0xFF,
+                (128259 >> 8) & 0xFF,
+                0x80 | (2 << 2) | ((128259 >> 16) & 3),
+            ]
+        )
+        + payload
+    )
+    raw = timestamp(1704153600) + VERSION
+    raw += metatag(5, b"\x01") + metatag(7, tx)
+    raw += metatag(5, b"\x00") + metatag(
+        7,
+        bytes(
+            [
+                0x95,
+                6 + len(payload),
+                0,
+                0,
+                42,
+                128259 & 0xFF,
+                (128259 >> 8) & 0xFF,
+                (2 << 2) | ((128259 >> 16) & 3),
+            ]
+        )
+        + payload,
+    )
+    path.write_bytes(raw)
+    log = read_nmea_log(path)
+    assert len(log.entries) == 1
+    assert log.frame_count == 2
+    assert any("1 transmitted frames excluded" in d for d in log.diagnostics)
+
+
+def test_keep_ebl_originals_retains_and_can_be_disabled(tmp_path):
+    from sailworks.core.loglibrary import LogLibrary
+
+    directory = tmp_path / "EBL000031"
+    directory.mkdir()
+    payload = b"\x00" + (400).to_bytes(2, "little") + b"\xff" * 5
+    path = directory / "000031_001.ebl"
+    raw = timestamp(1704153600) + VERSION + frame(128259, payload)
+    path.write_bytes(raw)
+
+    keep = LogLibrary(tmp_path / "keep")
+    (item,) = keep.import_paths([path])
+    retained = item["file_info"]["ebl_originals"]
+    assert len(retained) == 1
+    managed = keep.originals / retained[0]["file"]
+    assert managed.read_bytes() == raw
+    assert retained[0]["source"] == str(path.resolve())
+
+    drop = LogLibrary(tmp_path / "drop")
+    drop.keep_ebl_originals = False
+    (item,) = drop.import_paths([path])
+    assert "ebl_originals" not in item["file_info"]
+    assert not list(drop.originals.glob("*.ebl"))
+
+
+def test_reopened_decoded_log_preserves_sources_and_duration(tmp_path):
+    from sailworks.core.loglibrary import LogLibrary
+
+    directory = tmp_path / "EBL000031"
+    directory.mkdir()
+    fix = (481173000).to_bytes(4, "little", signed=True)
+    fix += (115166667).to_bytes(4, "little", signed=True)
+    path = directory / "000031_001.ebl"
+    raw = timestamp(1704153600) + VERSION + frame(129025, fix, source=6)
+    raw += timestamp(1704153700) + frame(129025, fix, source=43)
+    path.write_bytes(raw)
+    library = LogLibrary(tmp_path / "library")
+    library.keep_ebl_originals = False
+    (item,) = library.import_paths([path])
+    reopened = read_nmea_log(library.path(item["id"]))
+    assert reopened.duration == 100
+    assert set(reopened.source_tracks) == {6, 43}
+
+
+def test_w2k_present_accepts_a_library_retained_original(tmp_path):
+    from sailworks.core.loglibrary import LogLibrary
+    from sailworks.core.w2ksync import W2KSync
+    from sailworks.core.w2kapi import W2KFile
+
+    library = LogLibrary(tmp_path / "library")
+    source = tmp_path / "staging" / "SN1" / "EBL000031" / "000031_001.ebl"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"retained")
+    library.originals.mkdir(parents=True)
+    target = library.originals / "retained.ebl"
+    target.write_bytes(b"retained")
+    library._save(
+        {
+            "id1": {
+                "id": "id1",
+                "file": target.name,
+                "name": "retained.ebl",
+                "vessel": "",
+                "notes": "",
+                "imported": "2026-01-01T00:00:00+00:00",
+                "status": "ok",
+                "diagnostics": [],
+                "file_info": {
+                    "ebl_originals": [
+                        {
+                            "file": target.name,
+                            "source": str(source.resolve()),
+                            "size": 8,
+                        }
+                    ]
+                },
+            }
+        }
+    )
+    sync = W2KSync(None, library, staging=tmp_path / "staging")
+    file = W2KFile("EBL000031", "000031_001.ebl", 8, 0)
+    sync._manifest = {"version": 1, "devices": {"SN1": {"files": {file.key: 8}}}}
+    sync._save_manifest()
+    source.unlink()
+    assert sync.present("SN1", file)

@@ -1,19 +1,22 @@
-"""Streaming reader for EBL metatags containing raw BST-95 CAN frames.
+"""Streaming reader for the public Actisense EBL container format.
 
-Serial/BDTP streams and fast-packet reassembly are not supported. EBL TimeUTC
-is authoritative: BST-95's wrapping device clock has no defined UTC epoch.
+The container yields decoded BST payloads and plain NMEA 0183 data between
+metatags. EBL TimeUTC is authoritative: BST-95's wrapping device clock has no
+defined UTC epoch.
 """
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from .nmea2000 import N2KMessage
-
+from .bst import BdtpStreamDecoder, BstDecoder
+from .datasource import AISDataPacket, NMEADataPacket
 
 ESC = 0x1B
 FILETIME_EPOCH = datetime(1601, 1, 1, tzinfo=timezone.utc)
 MAX_TAG_SIZE = 1800  # On-disk payload size, including ESC stuffing.
+EBL_VERSION = 1002
+MAX_SENTENCE_LENGTH = 1024
 
 
 @dataclass(frozen=True)
@@ -24,96 +27,99 @@ class EBLDecodeResult:
 
 
 class EBLDecoder:
-    """Incrementally decode ESC-stuffed metatags, diagnosing bad records."""
+    """Incrementally decode ESC-stuffed metatags and raw stream data."""
 
-    def __init__(self):
+    def __init__(self, materialize=None, fast_pgns=(), inventory_pgns=()):
         self.buffer = bytearray()
         self.timestamp: Optional[datetime] = None
         self.version: Optional[int] = None
+        self.description: Optional[str] = None
+        self.direction = "unknown"
         self.diagnostics: List[str] = []
         self.records = 0
+        self.discarded = 0
+        self._bdtp = BdtpStreamDecoder()
+        self._bst = BstDecoder(
+            materialize=materialize,
+            fast_pgns=fast_pgns,
+            inventory_pgns=inventory_pgns,
+        )
+        self._sentence = bytearray()
+        self._bst_seen = 0
+        self._bdtp_seen = 0
 
-    def feed(self, chunk: bytes) -> List[N2KMessage]:
+    # -- input -----------------------------------------------------------
+
+    def feed(self, chunk: bytes) -> List[object]:
         self.buffer.extend(chunk)
-        messages = []
-        while self.buffer:
-            start, partial_escape = self._find_start()
-            if start != 0:
-                # Retain a split start delimiter, but discard unsupported raw
-                # stream data (including escaped ESCs) as a single region.
-                discard = start if start >= 0 else len(self.buffer)
-                if start < 0 and partial_escape:
-                    discard -= 1
-                if discard:
-                    del self.buffer[:discard]
-                    self.diagnostics.append("discarded bytes outside EBL records")
-                if start < 0:
-                    break
-
-            payload = bytearray()
-            index = 2
-            while index < len(self.buffer):
-                if index - 2 > MAX_TAG_SIZE:
-                    self.diagnostics.append("discarded oversized EBL metatag")
-                    del self.buffer[:index]
-                    break
-                escape_index = self.buffer.find(ESC, index)
-                if escape_index < 0:
-                    # Keep the original pre-consumption size check cadence:
-                    # reject at the first logical byte past the limit.
-                    limit = 2 + MAX_TAG_SIZE + 1
-                    end = min(len(self.buffer), limit)
-                    payload.extend(self.buffer[index:end])
-                    index = end
-                    continue
-                if escape_index > index:
-                    limit = 2 + MAX_TAG_SIZE + 1
-                    end = min(escape_index, limit)
-                    payload.extend(self.buffer[index:end])
-                    index = end
-                    continue
-                if index + 1 == len(self.buffer):
-                    return messages
-                following = self.buffer[index + 1]
-                if following == ESC:
-                    payload.append(ESC)
-                    index += 2
-                    continue
-                if following == 0x0A:
-                    del self.buffer[: index + 2]
-                    self.records += 1
-                    message = self._decode_tag(bytes(payload))
-                    if message is not None:
-                        messages.append(message)
-                    break
-                self.diagnostics.append("malformed escape in EBL metatag")
-                # Preserve a new ESC SOH so a truncated record cannot swallow
-                # the next valid record. Other malformed pairs are discarded.
-                del self.buffer[: index if following == 0x01 else index + 2]
+        messages: List[object] = []
+        position = 0
+        size = len(self.buffer)
+        while position < size:
+            escape = self.buffer.find(ESC, position)
+            if escape < 0:
+                self._stream(bytes(self.buffer[position:size]), messages)
+                position = size
                 break
+            if escape > position:
+                self._stream(bytes(self.buffer[position:escape]), messages)
+                position = escape
+                continue
+            if position + 1 >= size:
+                break
+            following = self.buffer[position + 1]
+            if following == 0x01:
+                consumed = self._tag(position, size, messages)
+                if consumed is None:
+                    break
+                position = consumed
+            elif following == ESC:
+                self._stream(b"\x1b", messages)
+                position += 2
             else:
-                return messages  # Incomplete tag: wait for its end delimiter.
+                self.diagnostics.append("malformed escape in EBL stream")
+                position += 2
+        if position:
+            del self.buffer[:position]
+        self._collect()
         return messages
 
-    def _find_start(self):
-        """Do not mistake ESC ESC SOH in unsupported raw data for a tag."""
-        index = 0
-        while index < len(self.buffer):
-            index = self.buffer.find(ESC, index)
-            if index < 0:
-                return -1, False
-            if index + 1 == len(self.buffer):
-                return -1, True
-            following = self.buffer[index + 1]
-            if following == 0x01:
-                return index, False
-            index += 2  # Includes escaped ESC and malformed escape pairs.
-        return -1, False
+    def _tag(self, position, size, messages):
+        """Consume one metatag. Return the next position, or None for more."""
+        index = position + 2
+        while True:
+            escape = self.buffer.find(ESC, index)
+            if escape < 0:
+                if size - position > MAX_TAG_SIZE + 3:
+                    self.diagnostics.append("discarded oversized EBL metatag")
+                    return position + MAX_TAG_SIZE + 3
+                return None
+            if escape + 1 >= size:
+                return None
+            following = self.buffer[escape + 1]
+            if following == ESC:
+                index = escape + 2
+                continue
+            if following == 0x0A:
+                payload_start = position + 2
+                if self.buffer.find(ESC, payload_start, escape) < 0:
+                    raw = memoryview(self.buffer)[payload_start:escape]
+                else:
+                    raw = bytes(self.buffer[payload_start:escape]).replace(
+                        b"\x1b\x1b", b"\x1b"
+                    )
+                self.records += 1
+                self._dispatch(raw, messages)
+                return escape + 2
+            self.diagnostics.append("malformed escape in EBL metatag")
+            # Preserve a new ESC SOH so a truncated record cannot swallow the
+            # next valid record. Other malformed pairs are discarded.
+            return escape if following == 0x01 else escape + 2
 
-    def _decode_tag(self, payload):
+    def _dispatch(self, payload, messages):
         if not payload:
             self.diagnostics.append("empty EBL metatag")
-            return None
+            return
         tag, data = payload[0], payload[1:]
         if tag == 0x01:
             self.version = None
@@ -121,8 +127,10 @@ class EBLDecoder:
                 self.diagnostics.append("invalid EBL Version length")
             else:
                 self.version = int.from_bytes(data, "little")
-                if self.version != 1002:
+                if self.version != EBL_VERSION:
                     self.diagnostics.append(f"unsupported EBL version {self.version}")
+        elif tag == 0x02:
+            self.description = bytes(data).decode("utf-8", errors="replace")
         elif tag == 0x03:
             self.timestamp = None
             if len(data) != 8:
@@ -136,56 +144,100 @@ class EBLDecoder:
                     )
                 except OverflowError:
                     self.diagnostics.append("invalid EBL timestamp")
+        elif tag == 0x04:
+            if len(data) != 1:
+                self.diagnostics.append("invalid EBL tag 0x04 length")
+        elif tag == 0x05:
+            if len(data) != 1:
+                self.diagnostics.append("invalid EBL tag 0x05 length")
+            elif data[0] == 0x00:
+                self.direction = "rx"
+            elif data[0] == 0x01:
+                self.direction = "tx"
+            else:
+                self.diagnostics.append("invalid EBL DirectionMarker")
         elif tag == 0x07:
-            if self.version != 1002:
+            if self.version != EBL_VERSION:
                 self.diagnostics.append("BSTRawFrame requires EBL Version 1002")
             else:
-                return self._decode_can(data)
-        elif tag in (0x02, 0x04, 0x05):
-            # Description and indexing/direction hints do not affect replay.
-            if tag != 0x02 and len(data) != 1:
-                self.diagnostics.append(f"invalid EBL tag 0x{tag:02x} length")
+                message = self._bst.decode(data, self.timestamp, self.direction)
+                if message is not None:
+                    messages.append(message)
         else:
+            # Unknown tag IDs are skip-and-continue per the format spec.
             self.diagnostics.append(f"unsupported EBL record tag 0x{tag:02x}")
-        return None
 
-    def _decode_can(self, frame):
-        if len(frame) < 2:
-            self.diagnostics.append("truncated BST header")
-            return None
-        if frame[0] != 0x95:
-            self.diagnostics.append(f"unsupported BST message ID 0x{frame[0]:02x}")
-            return None
-        length = frame[1]
-        if not 6 <= length <= 14:
-            self.diagnostics.append(f"unsupported BST-95 length {length}")
-            return None
-        expected = length + 2
-        # Direct-device W2K records have no serial checksum. Also accept a
-        # trailing BST checksum from writers retaining serial message bytes.
-        if len(frame) == expected + 1:
-            if sum(frame) & 0xFF:
-                self.diagnostics.append("invalid BST-95 checksum")
-                return None
-            frame = frame[:-1]
-        elif len(frame) != expected:
-            self.diagnostics.append("BST-95 length does not match record")
-            return None
-        source, pdus, pduf, dppc = frame[4:8]
-        priority = (dppc >> 2) & 7
-        pgn = ((dppc & 3) << 16) | (pduf << 8)
-        destination = pdus if pduf < 240 else 255
-        if pduf >= 240:
-            pgn |= pdus
-        # This is a wrapping device counter, NOT milliseconds since midnight
-        # and NOT an offset to add to TimeUTC. Preserve it at the container's
-        # millisecond precision, decoding DPPC's resolution control bits.
-        resolution_us = (1000, 100, 10, 1)[(dppc >> 5) & 3]
-        millis = int.from_bytes(frame[2:4], "little") * resolution_us // 1000
-        timestamp = self.timestamp or datetime(1970, 1, 1, tzinfo=timezone.utc)
-        return N2KMessage(
-            timestamp, priority, pgn, destination, source, millis, frame[8:]
-        )
+    # -- raw stream ------------------------------------------------------
+
+    def _collect(self):
+        while self._bst_seen < len(self._bst.diagnostics):
+            self.diagnostics.append(self._bst.diagnostics[self._bst_seen])
+            self._bst_seen += 1
+        while self._bdtp_seen < len(self._bdtp.diagnostics):
+            self.diagnostics.append(self._bdtp.diagnostics[self._bdtp_seen])
+            self._bdtp_seen += 1
+
+    def _stream(self, data, messages):
+        frames, stray = self._bdtp.feed(data)
+        for frame in frames:
+            if self.version != EBL_VERSION:
+                self.diagnostics.append("EBL stream payload requires EBL Version 1002")
+                break
+            message = self._bst.decode(frame, self.timestamp, self.direction)
+            if message is not None:
+                messages.append(message)
+        if stray:
+            self._sentences(stray, messages)
+
+    def _sentences(self, data, messages):
+        self._sentence.extend(data)
+        while True:
+            end = self._sentence.find(b"\n")
+            if end < 0:
+                break
+            line = bytes(self._sentence[:end]).strip(b"\r\x00 ")
+            del self._sentence[: end + 1]
+            self._sentence_line(line, messages)
+        if len(self._sentence) > MAX_SENTENCE_LENGTH:
+            self.discarded += len(self._sentence)
+            self._sentence.clear()
+            self.diagnostics.append("discarded oversized NMEA 0183 stream data")
+
+    def _sentence_line(self, line, messages):
+        if not line:
+            return
+        if not line.startswith((b"$", b"!")):
+            self.discarded += len(line)
+            return
+        try:
+            text = line.decode("ascii")
+            packet = (
+                AISDataPacket(text)
+                if text.startswith(("!AIVDM,", "!AIVDO,"))
+                else NMEADataPacket.parse(text)
+            )
+        except (ValueError, UnicodeDecodeError):
+            self.discarded += len(line)
+            return
+        packet.direction = self.direction
+        if self.timestamp is not None:
+            packet.recorded_at = self.timestamp
+        messages.append(packet)
+
+    # -- completion ------------------------------------------------------
+
+    def finish(self) -> List[object]:
+        messages: List[object] = []
+        if self._sentence:
+            line = bytes(self._sentence).strip(b"\r\x00 ")
+            self._sentence.clear()
+            self._sentence_line(line, messages)
+        self._collect()
+        if self.discarded:
+            self.diagnostics.append(
+                f"discarded {self.discarded:,} bytes outside EBL records"
+            )
+        return messages
 
     def result(self, messages=()):
         return EBLDecodeResult(tuple(messages), tuple(self.diagnostics), self.records)

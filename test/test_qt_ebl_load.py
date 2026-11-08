@@ -69,7 +69,7 @@ def test_worker_decodes_raw_heavy_ebl_and_updates_library(tmp_path, monkeypatch)
     assert len(log.entries) == 1
     assert "10 raw CAN frames; 1 replay entries" in item["status"]
     assert managed.suffix == ".log"
-    assert managed.read_bytes().startswith(b"$")
+    assert managed.read_bytes().startswith(b"@+")
     assert path.read_bytes() == raw
 
 

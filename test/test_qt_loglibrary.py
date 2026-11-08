@@ -313,9 +313,10 @@ def test_window_drop_stitches_stack_once_and_library_opens_whole_timeline_paused
     # The raw-bytes expectation was dropped: import now stores decoded output.
     managed_text = managed.read_text(encoding="utf-8")
     assert managed_text
-    assert managed_text == "".join(
-        packet.serialize() + "\n" for _, packet in controller.session.log.entries
-    )
+    assert all(line.startswith("@+") for line in managed_text.splitlines())
+    assert [line.split("\t", 2)[2] for line in managed_text.splitlines()] == [
+        packet.serialize() for _, packet in controller.session.log.entries
+    ]
     assert [path.read_bytes() for path in paths] == originals
     assert [offset for offset, _ in controller.session.log.entries] == [0, 9, 120]
     assert controller.session.log.duration == 120
@@ -711,3 +712,39 @@ def test_worker_start_failure_resets_progress(controller, tmp_path, monkeypatch)
     assert "cannot start worker" in controller.session.error
     assert controller.log_progress is None
     assert not controller._replay_load_tokens
+
+
+def test_scene_panel_follows_successive_loaded_logs(app, controller, tmp_path):
+    from types import SimpleNamespace
+
+    from sailworks.core.scene import KIND_LOG
+    from sailworks.qt.scenepanel import ScenePanel
+
+    controller.core = SimpleNamespace(trackManager=[], routingManager=[])
+    panel = ScenePanel(controller, scene_path=tmp_path / "scene.json")
+    controller.log_library_changed.connect(panel.refresh)
+
+    def write(name):
+        path = tmp_path / name
+        path.write_text("$GPRMC,120000,A,4807.038,N,01131.000,E,7,0,010126,,\n")
+        return path
+
+    first, second = write("first.log"), write("second.log")
+    assert controller.load_paths([first])
+    wait_for_import(app, controller)
+    first_id = next(
+        entry["id"]
+        for entry in controller.log_library.entries()
+        if entry["name"] == "first.log"
+    )
+    assert panel.item_row(KIND_LOG, first_id) is not None
+
+    assert controller.load_paths([second])
+    wait_for_import(app, controller)
+    second_id = next(
+        entry["id"]
+        for entry in controller.log_library.entries()
+        if entry["name"] == "second.log"
+    )
+    assert panel.item_row(KIND_LOG, second_id) is not None
+    assert panel.item_row(KIND_LOG, first_id) is not None

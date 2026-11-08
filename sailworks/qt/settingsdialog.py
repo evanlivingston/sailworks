@@ -240,6 +240,17 @@ class SettingsDialog(QDialog):
         self.gpu_rendering.setToolTip("Restart required.")
         self.gpu_rendering.toggled.connect(self.set_gpu_rendering)
         form.addRow(self.gpu_rendering)
+        self.keep_ebl_originals = QCheckBox("Keep original EBL files")
+        self.keep_ebl_originals.setChecked(
+            bool(controller.settings.get("keepEblOriginals", True))
+        )
+        self.keep_ebl_originals.setToolTip(
+            "Retain imported EBL segments in the log library. Applies to future imports."
+        )
+        self.keep_ebl_originals.toggled.connect(
+            lambda value: self.set_preference("keepEblOriginals", value)
+        )
+        form.addRow(self.keep_ebl_originals)
         self.renderer_status = QLabel()
         self.renderer_status.setWordWrap(True)
         form.addRow(self.renderer_status)
@@ -362,6 +373,8 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Unable to save setting", str(exc))
         if key != "mapRenderer":
             self.controller.data.redraw()
+        if key == "keepEblOriginals":
+            self.controller.log_library.keep_ebl_originals = bool(value)
         if key == "developerMode":
             for canvas in list(self.controller.charts.maps):
                 presenter = getattr(canvas, "_weather_presenter", None)
