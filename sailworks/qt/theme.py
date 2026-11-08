@@ -191,6 +191,11 @@ def apply_theme(app: QApplication):
             border: none; outline: 0; padding: 0;
             selection-background-color: #3584e4; selection-color: #ffffff; }
         QComboBoxPrivateContainer { border: none; background: #1e1e1e; }
+        QMenu { background: #303030; border: 1px solid #454545; padding: 4px; }
+        QMenu::item { padding: 4px 18px 4px 10px; border-radius: 4px; }
+        QMenu::item:selected { background: #3584e4; color: #ffffff; }
+        QMenu::item:disabled { color: #777774; }
+        QMenu::separator { height: 1px; background: #454545; margin: 4px 8px; }
         QComboBox QAbstractItemView::item { padding: 4px 6px; border: none;
             background: transparent; }
         QComboBox QAbstractItemView::item:hover { background: #3c3c3c;
