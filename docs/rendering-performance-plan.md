@@ -230,6 +230,26 @@ the idle window—not physical input latency, FPS, GPU frame time, display prese
 Sample counts are small; no statistical comparison was made. Cold-start composition was not optimized. See the
 [measurement audit](rendering-m0-measurement-audit.md) for endpoint definitions.
 
+### Retained chart content (2026-11-07, issue #108)
+
+**Decision: retained isobar-free surfaces plus exposed-region composition, not a spatial tile grid.** ENC cost
+is per cell/feature, not per pixel: a 9-tile cold grid re-runs every cell per tile and costs more than one full
+frame, while a band that crosses all cells still costs about half a full composition. The chart layer keeps up
+to three surfaces (two full-quality frames and one preview), reuses a frame that covers the target, and composes
+only the exposed rectangles on a pan. Each rectangle is padded by 64 px and cropped so labels and symbols that
+cross a boundary stay whole. Contours are drawn on a copy of the frame for the requested instant, so a
+forecast-time change draws no base/ENC pixel. Zoom composes at native scale (ENC selection is scale-dependent).
+The whole-viewport ENC `selected`/`coverage` identity is assembled without drawing pixels, so reuse does not
+change the reported selection or coverage.
+
+On the 2026-11-02 app workload (`d2cca53…` snapshot, 1000×680, DPR 2, ENC enabled), a 200 px pan beyond the
+reuse margin composed 13% of the target in 645 ms, versus 1046 ms warm for a full composition; a time-only
+change took ~1 ms and composed no chart pixels; a warm `A → B → A` reversal reused A's frame in ~1 ms. A first
+large reversal to an unvisited view still composes a wide band (~1 s for 900 px). Fractional pans translate the
+reused area bilinearly: mean 0.35/255 and 2.6% of reused pixels above 8/255 versus a fresh full composition, with
+no coverage or geometry change. The retained payload plateau was 64.9 MB at DPR 2. These are CPU composition wall
+times, not FPS, presentation latency or GPU time; the formal gate remains blocked on an accepted ENC fixture.
+
 ## Historical pan/zoom baseline (2026-11-02)
 
 These dated references are historical, not current priorities. Neither measures presentation FPS or
