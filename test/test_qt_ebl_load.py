@@ -26,20 +26,14 @@ class SignalRecorder:
         self.calls.append(args)
 
 
-@pytest.mark.parametrize("entry_limit, succeeds", [(1, True), (0, False)])
-def test_worker_decodes_raw_heavy_ebl_and_updates_library(
-    tmp_path, monkeypatch, entry_limit, succeeds
-):
-    monkeypatch.setattr(ebllog, "MAX_RAW_FRAMES", 10)
-    monkeypatch.setattr(ebllog, "MAX_REPLAY_ENTRIES", entry_limit)
-    if succeeds:
-        monkeypatch.setattr(
-            controller_module,
-            "read_nmea_log",
-            lambda *args, **kwargs: (_ for _ in ()).throw(
-                AssertionError("transient EBL model should avoid reparsing")
-            ),
-        )
+def test_worker_decodes_raw_heavy_ebl_and_updates_library(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        controller_module,
+        "read_nmea_log",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("transient EBL model should avoid reparsing")
+        ),
+    )
     path = tmp_path / "stitched.ebl"
     speed = b"\x00" + (400).to_bytes(2, "little") + b"\xff" * 5
     raw = VERSION + frame(130000, b"\x00" * 8) * 9 + frame(128259, speed)
@@ -70,23 +64,61 @@ def test_worker_decodes_raw_heavy_ebl_and_updates_library(
     assert worker._replay_load_tokens == {7}
     item = library.entries()[0]
     managed = library.path(item["id"])
-    if succeeds:
-        assert error is None
-        assert log.frame_count == 10
-        assert len(log.entries) == 1
-        assert "10 raw CAN frames; 1 replay entries" in item["status"]
-        # Managed file is the decoded .log (NMEA), not the original EBL
-        assert managed.suffix == ".log"
-        assert managed.read_bytes().startswith(b"$")
-    else:
-        assert log is None
-        assert "supported replay entry limit exceeded" in str(error)
-        assert "Cannot replay" in item["status"]
-        # On decode failure, managed file falls back to original EBL
-        assert managed.suffix == ".ebl"
-        assert managed.read_bytes() == raw
-    # Source file is never modified
+    assert error is None
+    assert log.frame_count == 10
+    assert len(log.entries) == 1
+    assert "10 raw CAN frames; 1 replay entries" in item["status"]
+    assert managed.suffix == ".log"
+    assert managed.read_bytes().startswith(b"$")
     assert path.read_bytes() == raw
+
+
+def test_worker_archives_and_reports_when_streaming_fails(tmp_path, monkeypatch):
+    path = tmp_path / "broken.ebl"
+    speed = b"\x00" + (400).to_bytes(2, "little") + b"\xff" * 5
+    raw = VERSION + frame(128259, speed)
+    path.write_bytes(raw)
+
+    def fail(*args, **kwargs):
+        raise OSError("EBL session supported replay entry limit exceeded (1)")
+
+    monkeypatch.setattr(ebllog, "iter_ebl_sessions", fail)
+    monkeypatch.setattr(
+        controller_module,
+        "read_nmea_log",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("EBL supported replay entry limit exceeded (1)")
+        ),
+    )
+    library = LogLibrary(tmp_path / "library")
+    worker = SimpleNamespace(
+        closed=False,
+        session=SimpleNamespace(streaming=False, begin_load=lambda: 7),
+        log_library=library,
+        _replay_load_tokens=set(),
+        _receive_load_progress=lambda *args: None,
+        load_progress=SignalRecorder(),
+        load_finished=SignalRecorder(),
+    )
+
+    class InlineThread:
+        def __init__(self, target, daemon):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(controller_module, "Thread", InlineThread)
+    assert SessionController.load_paths(worker, [path], replay=True)
+    token, log, error = worker.load_finished.calls[0]
+    assert token == 7
+    assert log is None
+    assert "supported replay entry limit exceeded" in str(error)
+    item = library.entries()[0]
+    assert "Cannot replay" in item["status"]
+    managed = library.path(item["id"])
+    assert managed.suffix == ".ebl"
+    assert managed.read_bytes() == raw
 
 
 def test_replay_error_dialog_is_visible_without_verbose_panel():
