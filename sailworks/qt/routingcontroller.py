@@ -1,11 +1,16 @@
 """Qt lifecycle around the shared engines, scenarios and current-coverage workflow."""
 
+import multiprocessing
+import os
 import time
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from queue import Empty
 from threading import Event, Thread
 
 from PySide6.QtCore import QObject, Signal, Slot
 from weatherrouting import RoutingNoWindError
 
+from sailworks.core import scenariopool
 from sailworks.core.geo.routing import Routing
 from sailworks.core.routingjob import (
     RoutingCancelledError,
@@ -38,6 +43,8 @@ class RoutingController(QObject):
         self.request = None
         self.worker_thread = None
         self.scenario_index, self.scenario_count, self.saved_count = 0, 1, 0
+        self._parallel_mode = False
+        self._parallel_progress = {}
         self._progress.connect(self._apply_progress)
         self._message.connect(self._apply_message)
         self._finished.connect(self._finish)
@@ -98,55 +105,257 @@ class RoutingController(QObject):
         self, token, request, scenarios, sources, providers, cancel, selection
     ):
         error = None
+        jobs, descriptors = self._scenario_jobs(
+            request, scenarios, sources, providers, selection
+        )
         try:
-            for index, item in enumerate(scenarios or (request,)):
-                if index:
-                    self._ui_call(token, self._begin_scenario, index)
-                last_update = 0.0
-
-                def progress(percent, points):
-                    nonlocal last_update
-                    now = time.monotonic()
-                    if not self.closed and (
-                        now - last_update >= 0.15 or percent >= 100
-                    ):
-                        last_update = now
-                        self._progress.emit(
-                            token,
-                            (index * 100 + percent) / self.scenario_count,
-                            points,
-                            (
-                                getattr(points, "isochrones", ())
-                                if points is not None
-                                else None
-                            ),
-                        )
-
-                options = {}
-                if item.use_currents:
-                    options = dict(
-                        report=lambda message: self._message.emit(token, message),
-                        confirm=lambda report: self._ui_call(
-                            token, self.confirm, report
-                        ),
-                        save_fields=lambda fields: self._ui_call(
-                            token, self._save_fields, fields
-                        ),
-                        current_selection=selection,
-                    )
-                if not isinstance(sources, ResolvedForecast):
-                    raise TypeError("routing requires a published model forecast")
-                from sailworks.core.forecastboundrouting import calculate_bound_route
-
-                calculate = calculate_bound_route
-                result = calculate(
-                    self.core, item, sources, providers, cancel, progress, **options
-                )
-                self._ui_call(token, self._save_result, item, result)
+            if self._parallel_eligible(jobs, descriptors):
+                self._run_parallel(token, jobs, sources, providers, cancel, selection)
+            else:
+                self._run_serial(token, jobs, sources, providers, cancel, selection)
         except Exception as exc:
             error = exc
         if not self.closed:
             self._finished.emit(token, None, error)
+
+    def _scenario_jobs(self, request, scenarios, sources, providers, selection):
+        """Freeze every serializable scenario input before any work starts."""
+        items = tuple(scenarios or (request,))
+        descriptors = scenariopool.provider_descriptors(providers)
+        marine_directory = (
+            str(self.core.marine_manager.directory)
+            if getattr(self.core, "marine_manager", None) is not None
+            else None
+        )
+        current_field_ids = (
+            tuple(field.id for field in selection.fields)
+            if selection is not None
+            else ()
+        )
+        priority = getattr(selection, "priority", None) or request.current_priority
+        jobs = tuple(
+            scenariopool.ScenarioJob(
+                job_id=index,
+                request=item,
+                binding=sources,
+                providers=descriptors or (),
+                current_field_ids=current_field_ids,
+                current_priority=priority,
+                marine_directory=marine_directory,
+            )
+            for index, item in enumerate(items)
+        )
+        return jobs, descriptors
+
+    def _parallel_eligible(self, jobs, descriptors):
+        if len(jobs) < 2 or descriptors is None:
+            return False
+        if os.environ.get("SAILWORKS_SCENARIO_POOL", "1").strip().lower() in {
+            "0",
+            "false",
+            "no",
+            "off",
+        }:
+            return False
+        if not isinstance(jobs[0].binding, ResolvedForecast):
+            return False
+        # A current scenario needs its local field store in the worker.  A
+        # missing directory is a configuration problem, so keep it serial.
+        for job in jobs:
+            if job.request.use_currents and not job.marine_directory:
+                return False
+        return True
+
+    def _run_serial(self, token, jobs, sources, providers, cancel, selection):
+        from sailworks.core.forecastboundrouting import calculate_bound_route
+
+        if not isinstance(sources, ResolvedForecast):
+            raise TypeError("routing requires a published model forecast")
+        self._parallel_mode = False
+        for index, job in enumerate(jobs):
+            if index:
+                self._ui_call(token, self._begin_scenario, job.job_id)
+            state = {"last": 0.0}
+
+            def progress(percent, points, index=index, state=state):
+                now = time.monotonic()
+                if not self.closed and (now - state["last"] >= 0.15 or percent >= 100):
+                    state["last"] = now
+                    self._progress.emit(
+                        token,
+                        (index * 100 + percent) / self.scenario_count,
+                        points,
+                        (
+                            getattr(points, "isochrones", ())
+                            if points is not None
+                            else None
+                        ),
+                    )
+
+            options = {}
+            if job.request.use_currents:
+                options = dict(
+                    report=lambda message: self._message.emit(token, message),
+                    confirm=lambda report: self._ui_call(token, self.confirm, report),
+                    save_fields=lambda fields: self._ui_call(
+                        token, self._save_fields, fields
+                    ),
+                    current_selection=selection,
+                )
+            result = calculate_bound_route(
+                self.core,
+                job.request,
+                sources,
+                providers,
+                cancel,
+                progress,
+                **options,
+            )
+            self._ui_call(token, self._save_result, job.request, result)
+
+    def _run_parallel(self, token, jobs, sources, providers, cancel, selection):
+        """Run independent scenarios in spawned processes, then save in order.
+
+        Any job that reaches a user confirmation, an unsupported provider or a
+        pool-level failure re-runs the whole group on the serial path.  No
+        result is saved before the group decision, so a fallback cannot leave
+        duplicate routes behind.
+        """
+        manager = None
+        progress_queue = None
+        worker_cancel = None
+        outcomes = {}
+        first_error = None
+        failed_index = None
+        fallback = False
+        infrastructure_error = None
+        self._parallel_mode = True
+        self._parallel_progress = {}
+        self._message.emit(token, f"Calculating {len(jobs)} scenarios…")
+        try:
+            ctx = multiprocessing.get_context("spawn")
+            manager = ctx.Manager()
+            progress_queue = manager.Queue()
+            worker_cancel = manager.Event()
+            with ProcessPoolExecutor(
+                max_workers=min(scenariopool.default_workers(), len(jobs)),
+                mp_context=ctx,
+            ) as pool:
+                futures = {
+                    pool.submit(
+                        scenariopool.run_scenario,
+                        job,
+                        progress_queue,
+                        worker_cancel,
+                    ): job
+                    for job in jobs
+                }
+                pending = set(futures)
+                while pending:
+                    self._drain_parallel_progress(progress_queue, token)
+                    if self.closed or cancel.is_set() or token != self.generation:
+                        worker_cancel.set()
+                        for future in pending:
+                            future.cancel()
+                        break
+                    done, pending = wait(
+                        pending, timeout=0.05, return_when=FIRST_COMPLETED
+                    )
+                    for future in done:
+                        job = futures[future]
+                        if future.cancelled():
+                            continue
+                        try:
+                            outcome = future.result()
+                        except Exception as exc:
+                            infrastructure_error = exc
+                            worker_cancel.set()
+                            break
+                        self._parallel_progress[job.job_id] = 100.0
+                        if outcome.needs_confirmation or outcome.fallback:
+                            fallback = True
+                            worker_cancel.set()
+                            break
+                        if outcome.failure is not None:
+                            if job.request.use_currents and job.request.auto_download:
+                                # A worker has no UI to confirm a current
+                                # download and no credential store; let the
+                                # serial path own the prompt and the download.
+                                fallback = True
+                                worker_cancel.set()
+                                break
+                            if failed_index is None or job.job_id < failed_index:
+                                first_error = scenariopool.error_from_failure(
+                                    outcome.failure
+                                )
+                                failed_index = job.job_id
+                                for other in pending:
+                                    if futures[other].job_id > failed_index:
+                                        other.cancel()
+                            continue
+                        if first_error is not None and job.job_id > failed_index:
+                            continue
+                        outcomes[job.job_id] = outcome
+                    if fallback or infrastructure_error:
+                        break
+                    if first_error is not None and not any(
+                        futures[future].job_id < failed_index for future in pending
+                    ):
+                        break
+        except Exception as exc:
+            infrastructure_error = exc
+        finally:
+            if worker_cancel is not None:
+                worker_cancel.set()
+            if manager is not None:
+                manager.shutdown()
+
+        if progress_queue is not None:
+            self._drain_parallel_progress(progress_queue, token)
+        if self.closed or cancel.is_set() or token != self.generation:
+            raise RoutingCancelledError()
+        if fallback or infrastructure_error is not None:
+            # The serial path prompts on the UI thread and owns the process
+            # handles.  Recompute every job so the result order matches serial.
+            self._parallel_progress = {}
+            self.scenario_index = 0
+            self._run_serial(token, jobs, sources, providers, cancel, selection)
+            return
+        if first_error is not None:
+            for job in jobs:
+                if job.job_id >= failed_index:
+                    break
+                outcome = outcomes.get(job.job_id)
+                if outcome is not None and outcome.result is not None:
+                    self._ui_call(token, self._save_result, job.request, outcome.result)
+            raise first_error
+        for job in jobs:
+            outcome = outcomes.get(job.job_id)
+            if outcome is None or outcome.result is None:
+                raise ValueError("A scenario worker returned no route")
+            if outcome.downloaded_fields:
+                self._ui_call(token, self._save_fields, outcome.downloaded_fields)
+            self._ui_call(token, self._save_result, job.request, outcome.result)
+
+    def _drain_parallel_progress(self, progress_queue, token):
+        while True:
+            try:
+                message = progress_queue.get_nowait()
+            except (Empty, EOFError, OSError):
+                return
+            if not message:
+                continue
+            kind, job_id, *values = message
+            if kind == "progress":
+                percent, points, isochrones = values
+                self._parallel_progress[job_id] = min(100.0, float(percent))
+                active = sum(self._parallel_progress.values()) / 100.0
+                overall = (
+                    (self.saved_count + active) / max(1, self.scenario_count) * 100
+                )
+                self._progress.emit(token, min(100.0, overall), points, isochrones)
+            elif kind == "message":
+                self._message.emit(token, values[0])
 
     def fail(self, message):
         self.error = self.message = message
@@ -243,7 +452,7 @@ class RoutingController(QObject):
         self.percent = percent
         prefix = (
             f"Scenario {self.scenario_index + 1}/{self.scenario_count} · "
-            if self.scenario_count > 1
+            if self.scenario_count > 1 and not self._parallel_mode
             else ""
         )
         self.message = prefix + f"Calculating: approximately {percent:.0f}%"
@@ -258,6 +467,8 @@ class RoutingController(QObject):
         if self.closed or token != self.generation:
             return
         self.busy = False
+        self._parallel_mode = False
+        self._parallel_progress = {}
         self.preview_changed.emit(())
         self.isochrones_changed.emit(())
         if self.cancel_event.is_set() or isinstance(
