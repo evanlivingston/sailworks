@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QListWidget,
     QMenu,
@@ -99,6 +100,7 @@ class RacesPanel(QWidget):
         self.tabs.setDocumentMode(True)
 
         self.race_list = QListWidget()
+        self.race_list.setFrameShape(QFrame.Shape.NoFrame)
         self.race_list.currentRowChanged.connect(self._select_race)
         self.race_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.race_list.customContextMenuRequested.connect(self._race_context_menu)

@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from sailworks.core.scene import KIND_LOG, KIND_TRACK
-from sailworks.qt.scenepanel import ScenePanel
+from sailworks.qt.scenepanel import NAME_COLUMN, VISIBLE_COLUMN, ScenePanel
 
 
 class FakeTrack:
@@ -115,8 +115,8 @@ def test_panel_builds_default_tree_and_items(tmp_path):
     )
 
     root = panel.tree.topLevelItem(0)
-    assert root.text(0) == "Scene Collection"
-    names = [root.child(index).text(0) for index in range(root.childCount())]
+    assert root.text(NAME_COLUMN) == "Scene Collection"
+    names = [root.child(index).text(NAME_COLUMN) for index in range(root.childCount())]
     assert names == ["Tracks", "Routings", "Logs"]
     assert panel.item_row(KIND_TRACK, "t1") is not None
     assert panel.item_row(KIND_LOG, "log-1") is not None
@@ -128,7 +128,7 @@ def test_toggling_item_updates_element_visibility(tmp_path):
     panel = panel_for(tmp_path, tracks=[track])
     row = panel.item_row(KIND_TRACK, "t1")
 
-    row.setCheckState(0, Qt.CheckState.Unchecked)
+    row.setCheckState(VISIBLE_COLUMN, Qt.CheckState.Unchecked)
 
     assert track.visible is False
     assert panel.scene.item(KIND_TRACK, "t1").visible is False
@@ -171,9 +171,8 @@ def test_expanding_track_shows_every_point(tmp_path):
     row.setExpanded(True)
 
     assert row.childCount() == 2
-    assert row.child(0).text(0) == "Point 1"
-    assert row.child(0).text(1) == "51.123457, -1.234568"
-    assert row.child(1).text(0) == "Point 2"
+    assert row.child(0).text(NAME_COLUMN) == "Point 1  51.123457, -1.234568"
+    assert row.child(1).text(NAME_COLUMN) == "Point 2  52.000000, -2.000000"
 
 
 def test_double_click_item_name_renames_track(tmp_path):
@@ -182,13 +181,13 @@ def test_double_click_item_name_renames_track(tmp_path):
     panel = panel_for(tmp_path, tracks=[track])
     row = panel.item_row(KIND_TRACK, "t1")
 
-    panel._double_clicked(row, 0)
+    panel._double_clicked(row, NAME_COLUMN)
 
     assert row.flags() & Qt.ItemFlag.ItemIsEditable
-    row.setText(0, "Evening")
+    row.setText(NAME_COLUMN, "Evening")
 
     assert track.name == "Evening"
-    assert panel.item_row(KIND_TRACK, "t1").text(0) == "Evening"
+    assert panel.item_row(KIND_TRACK, "t1").text(NAME_COLUMN) == "Evening"
 
 
 def test_double_click_log_name_renames_library_entry(tmp_path):
@@ -201,11 +200,11 @@ def test_double_click_log_name_renames_library_entry(tmp_path):
     )
     row = panel.item_row(KIND_LOG, "log-1")
 
-    panel._double_clicked(row, 0)
-    row.setText(0, "Sunday.log")
+    panel._double_clicked(row, NAME_COLUMN)
+    row.setText(NAME_COLUMN, "Sunday.log")
 
     assert log["name"] == "Sunday.log"
-    assert panel.item_row(KIND_LOG, "log-1").text(0) == "Sunday.log"
+    assert panel.item_row(KIND_LOG, "log-1").text(NAME_COLUMN) == "Sunday.log"
 
 
 def test_loaded_race_tracks_appear_as_scene_track_items(tmp_path):
@@ -233,11 +232,11 @@ def test_loaded_race_tracks_appear_as_scene_track_items(tmp_path):
 
     row = panel.item_row(KIND_TRACK, "race:race-1:boat-9")
     assert row is not None
-    assert row.text(0) == "Blue Boat"
+    assert row.text(NAME_COLUMN) == "Blue Boat"
     race_group = panel.scene.item(KIND_TRACK, "race:race-1:boat-9").group
     assert panel.scene.group(race_group).name == "Spring Race"
     assert panel.scene.group(race_group).parent == "default-tracks"
-    row.setCheckState(0, Qt.CheckState.Unchecked)
+    row.setCheckState(VISIBLE_COLUMN, Qt.CheckState.Unchecked)
     assert track.visible is False
 
 
