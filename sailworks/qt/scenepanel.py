@@ -1,5 +1,7 @@
 """Blender-style scene collection browser for Qt."""
 
+from pathlib import Path
+
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (
@@ -150,7 +152,8 @@ class ScenePanel(QWidget):
                             element=track,
                         )
                     )
-        for entry in self.controller.log_library.entries():
+        entry = self._loaded_log_entry()
+        if entry is not None:
             details = entry.get("status") or ""
             vessel = entry.get("vessel")
             if vessel:
@@ -166,6 +169,28 @@ class ScenePanel(QWidget):
                 )
             )
         return entries
+
+    def _loaded_log_entry(self):
+        """Return the library entry for the log currently loaded in the session."""
+        session = getattr(self.controller, "session", None)
+        log = getattr(session, "log", None) if session is not None else None
+        path = getattr(log, "path", None)
+        if not path:
+            return None
+        target = Path(path).resolve()
+        library = self.controller.log_library
+        for entry in library.entries():
+            candidate = (entry.get("file_info") or {}).get("path")
+            if not candidate:
+                resolver = getattr(library, "path", None)
+                if resolver is not None:
+                    try:
+                        candidate = str(resolver(entry["id"]))
+                    except (KeyError, ValueError):
+                        candidate = None
+            if candidate and Path(candidate).resolve() == target:
+                return entry
+        return None
 
     def refresh(self):
         if self.syncing:
