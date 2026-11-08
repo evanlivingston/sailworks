@@ -35,8 +35,13 @@ class MapStateMixin:
 
         The QML overlay is normally moved by the camera; mutators that change
         its content must republish it or the change stays invisible until the
-        next pan or zoom.
+        next pan or zoom. Force a rebuild so identity-cached frames cannot keep
+        stale isochrones.
         """
+        refresh = getattr(self, "refresh_route_overlay", None)
+        if callable(refresh):
+            refresh()
+            return
         publish = getattr(self, "publish_route_overlay", None)
         if callable(publish):
             publish()
