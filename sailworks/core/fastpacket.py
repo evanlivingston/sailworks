@@ -23,9 +23,12 @@ class _Pending:
     started: float
     data: bytearray
     priority: int
+    pgn: int
+    source: int
     destination: int
     source_timestamp_ms: int
     started_at: object
+    direction: str
     frames: int = 1
 
 
@@ -47,21 +50,45 @@ class FastPacketAssembler:
             self.diagnostics.append(text)
 
     def add(self, message):
-        """Return a completed :class:`N2KMessage`, or ``None``."""
-        if message.pgn not in self.fast_pgns:
+        """Return a completed :class:`N2KMessage`, or ``None``.
+
+        ``message`` is either an :class:`N2KMessage` or the lightweight
+        ``(timestamp, pgn, source, priority, destination, source_ms, data,
+        direction)`` tuple emitted for fast-packet fragments.
+        """
+        if isinstance(message, tuple):
+            (
+                timestamp,
+                pgn,
+                source,
+                priority,
+                destination,
+                source_ms,
+                data,
+                direction,
+            ) = message
+        else:
+            timestamp = message.timestamp
+            pgn = message.pgn
+            source = message.source
+            priority = message.priority
+            destination = message.destination
+            source_ms = message.source_timestamp_ms
+            data = message.data
+            direction = message.direction
+        if pgn not in self.fast_pgns:
             return message
-        data = message.data
         if len(data) < 2:
             self._issue("truncated fast-packet frame")
             self.dropped_frames += 1
             return None
         self.fragments += 1
-        now = self._seconds(message.timestamp)
+        now = self._seconds(timestamp)
         if self.fragments % 64 == 0:
-            self._expire(message.timestamp)
+            self._expire(timestamp)
         sequence = data[0] & 0x07
         index = data[0] >> 5
-        key = (message.source, message.pgn, sequence)
+        key = (source, pgn, sequence)
         if index == 0:
             if key in self.pending:
                 self.dropped_frames += self.pending.pop(key).frames
@@ -80,14 +107,17 @@ class FastPacketAssembler:
                 length,
                 now,
                 bytearray(data[2 : 1 + length]),
-                message.priority,
-                message.destination,
-                message.source_timestamp_ms,
-                message.timestamp,
+                priority,
+                pgn,
+                source,
+                destination,
+                source_ms,
+                timestamp,
+                direction,
             )
             self.pending[key] = pending
             if len(pending.data) >= length:
-                return self._complete(key, message)
+                return self._complete(key)
             return None
         pending = self.pending.get(key)
         if pending is None:
@@ -113,10 +143,10 @@ class FastPacketAssembler:
         remaining = pending.length - len(pending.data)
         pending.data.extend(data[1 : 1 + remaining])
         if len(pending.data) >= pending.length:
-            return self._complete(key, message)
+            return self._complete(key)
         return None
 
-    def _complete(self, key, message):
+    def _complete(self, key):
         pending = self.pending.pop(key, None)
         if pending is None:
             return None
@@ -124,12 +154,12 @@ class FastPacketAssembler:
         return N2KMessage(
             pending.started_at,
             pending.priority,
-            message.pgn,
+            pending.pgn,
             pending.destination,
-            message.source,
+            pending.source,
             pending.source_timestamp_ms,
             bytes(pending.data[: pending.length]),
-            message.direction,
+            pending.direction,
         )
 
     def _seconds(self, timestamp):

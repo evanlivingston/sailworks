@@ -138,7 +138,11 @@ class _DecodeStream:
         self.progress = progress
         self.total = sum(part.stat().st_size for part in paths)
         self.consumed = 0
-        self.decoder = EBLDecoder(materialize=_materialize)
+        self.decoder = EBLDecoder(
+            materialize=_materialize,
+            fast_pgns=FAST_PACKET_PGNS,
+            inventory_pgns=INVENTORY_PGNS,
+        )
         self.devices = DeviceCollector()
         self.assembler = FastPacketAssembler(FAST_PACKET_PGNS)
 
@@ -173,7 +177,7 @@ def _timestamp(item):
 
 def _direction(item):
     if isinstance(item, tuple):
-        return item[3]
+        return item[3] if len(item) == 5 else item[7]
     return getattr(item, "direction", "rx")
 
 
@@ -215,29 +219,35 @@ class _SessionState:
     def add(self, item, index, assembler, devices, overflow=False):
         self.frames += 1
         stamp = _timestamp(item)
-        has_time = self._timing(stamp)
+        self._timing(stamp)
         if _direction(item) == "tx":
             self.tx_frames += 1
             return
         if isinstance(item, tuple):
+            if len(item) == 5:
+                devices.observe_header(item[0], item[1], item[2])
+                self.unsupported += 1
+                return
             devices.observe_header(item[0], item[1], item[2])
-            self.unsupported += 1
-            return
-        if isinstance(item, N2KMessage):
+            message = assembler.add(item)
+            if message is None:
+                return
+        elif isinstance(item, N2KMessage):
             devices.observe(item)
             message = (
                 assembler.add(item) if getattr(item, "fragmented", False) else item
             )
             if message is None:
                 return
-            packets = instruments(message) if message.pgn in REPLAY_PGNS else []
-            if not packets:
-                self.unsupported += 1
-                return
-            for packet in packets:
-                self._append(packet, index, message.source, message, overflow)
         else:
             self._append(item, index, getattr(item, "source", None), item, overflow)
+            return
+        packets = instruments(message) if message.pgn in REPLAY_PGNS else []
+        if not packets:
+            self.unsupported += 1
+            return
+        for packet in packets:
+            self._append(packet, index, message.source, message, overflow)
 
     def _append(self, packet, index, source, item, overflow=False):
         if not overflow and len(self.entries) >= self.max_entries:

@@ -74,8 +74,10 @@ def _checksummed(frame, expected):
 class BstDecoder:
     """Decode one unframed BST message at a time."""
 
-    def __init__(self, materialize=None):
+    def __init__(self, materialize=None, fast_pgns=(), inventory_pgns=()):
         self.materialize = materialize
+        self.fast_pgns = fast_pgns
+        self.inventory_pgns = inventory_pgns
         self.diagnostics: List[str] = []
         self.direction_counts = {"rx": 0, "tx": 0}
         self.invalid = 0
@@ -146,6 +148,19 @@ class BstDecoder:
         # the container's millisecond precision via DPPC's resolution bits.
         resolution_us = (1000, 100, 10, 1)[(dppc >> 5) & 3]
         millis = (body[2] | (body[3] << 8)) * resolution_us // 1000
+        if pgn in self.fast_pgns and pgn not in self.inventory_pgns:
+            # Hand raw fast-packet fragments to the assembler without creating
+            # one full N2KMessage per fragment.
+            return (
+                stamp,
+                pgn,
+                source,
+                priority,
+                destination,
+                millis,
+                bytes(body[8:]),
+                marker,
+            )
         return N2KMessage(
             stamp,
             priority,

@@ -29,7 +29,7 @@ class EBLDecodeResult:
 class EBLDecoder:
     """Incrementally decode ESC-stuffed metatags and raw stream data."""
 
-    def __init__(self, materialize=None):
+    def __init__(self, materialize=None, fast_pgns=(), inventory_pgns=()):
         self.buffer = bytearray()
         self.timestamp: Optional[datetime] = None
         self.version: Optional[int] = None
@@ -39,7 +39,11 @@ class EBLDecoder:
         self.records = 0
         self.discarded = 0
         self._bdtp = BdtpStreamDecoder()
-        self._bst = BstDecoder(materialize=materialize)
+        self._bst = BstDecoder(
+            materialize=materialize,
+            fast_pgns=fast_pgns,
+            inventory_pgns=inventory_pgns,
+        )
         self._sentence = bytearray()
         self._bst_seen = 0
         self._bdtp_seen = 0
