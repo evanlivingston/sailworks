@@ -309,7 +309,7 @@ def test_grouping_multiple_types_moves_all_selected_rows(tmp_path):
     assert panel.item_row("routing", "r1") is not None
 
 
-def test_scene_shows_only_the_loaded_library_log(tmp_path):
+def test_scene_accumulates_opened_library_logs(tmp_path):
     application()
     first = log_entry(tmp_path, "log-1", "Saturday.log")
     second = log_entry(tmp_path, "log-2", "Sunday.log")
@@ -325,7 +325,7 @@ def test_scene_shows_only_the_loaded_library_log(tmp_path):
     panel.controller.session.log = SimpleNamespace(path=second["file_info"]["path"])
     panel.refresh()
 
-    assert panel.item_row(KIND_LOG, "log-1") is None
+    assert panel.item_row(KIND_LOG, "log-1") is not None
     assert panel.item_row(KIND_LOG, "log-2") is not None
 
 

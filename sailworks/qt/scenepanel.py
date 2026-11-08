@@ -55,6 +55,7 @@ class ScenePanel(QWidget):
         self.syncing = False
         self._rows = {}
         self._expanded_items = set()
+        self._opened_logs = set()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 12)
@@ -100,7 +101,7 @@ class ScenePanel(QWidget):
     # ------------------------------------------------------------------
     # Live data
 
-    def _entries(self):
+    def _entries(self, library_entries):
         entries = []
         for track in self.core.trackManager:
             details = (
@@ -152,8 +153,9 @@ class ScenePanel(QWidget):
                             element=track,
                         )
                     )
-        entry = self._loaded_log_entry()
-        if entry is not None:
+        for entry in library_entries.values():
+            if entry["id"] not in self._opened_logs:
+                continue
             details = entry.get("status") or ""
             vessel = entry.get("vessel")
             if vessel:
@@ -170,7 +172,7 @@ class ScenePanel(QWidget):
             )
         return entries
 
-    def _loaded_log_entry(self):
+    def _loaded_log_entry(self, library_entries):
         """Return the library entry for the log currently loaded in the session."""
         session = getattr(self.controller, "session", None)
         log = getattr(session, "log", None) if session is not None else None
@@ -179,7 +181,7 @@ class ScenePanel(QWidget):
             return None
         target = Path(path).resolve()
         library = self.controller.log_library
-        for entry in library.entries():
+        for entry in library_entries.values():
             candidate = (entry.get("file_info") or {}).get("path")
             if not candidate:
                 resolver = getattr(library, "path", None)
@@ -197,7 +199,14 @@ class ScenePanel(QWidget):
             return
         self.syncing = True
         try:
-            self.scene.reconcile(self._entries())
+            library_entries = {
+                entry["id"]: entry for entry in self.controller.log_library.entries()
+            }
+            active = self._loaded_log_entry(library_entries)
+            if active is not None:
+                self._opened_logs.add(active["id"])
+            self._opened_logs.intersection_update(library_entries)
+            self.scene.reconcile(self._entries(library_entries))
             changed = self.scene.apply_visibility()
             if changed:
                 self._save_visible_elements(changed)
