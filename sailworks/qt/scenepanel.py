@@ -22,11 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from sailworks.common import resource_path
-from sailworks.core.geo.rounding import (
-    DEFAULT_ROUNDING,
-    ROUNDING_SHORT,
-    normalize_rounding,
-)
+from sailworks.core.geo.rounding import ROUNDING_SHORT, normalize_rounding
 from sailworks.core.scene import (
     KIND_LOG,
     KIND_POI,
@@ -262,7 +258,7 @@ class ScenePanel(QWidget):
                     element=route,
                 )
             )
-        for poi in self.core.poiManager:
+        for poi in getattr(self.core, "poiManager", ()):
             position = getattr(poi, "position", None)
             entries.append(
                 SceneEntry(
@@ -370,7 +366,9 @@ class ScenePanel(QWidget):
         if KIND_ROUTING in kinds:
             self.core.routingManager.save()
         if KIND_POI in kinds:
-            self.core.poiManager.save()
+            manager = getattr(self.core, "poiManager", None)
+            if manager is not None:
+                manager.save()
 
     # ------------------------------------------------------------------
     # Tree construction
