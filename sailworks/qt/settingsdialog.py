@@ -1,8 +1,9 @@
 """Instrument connection editing and shared display preferences."""
 
+from html import escape
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -23,9 +24,11 @@ from PySide6.QtWidgets import (
 )
 
 from sailworks.core.connectionconfig import connection_config, connection_key
+from sailworks.core.connectionmanager import probe_connection
 from sailworks.core.nmea2000datasource import N2K_FORMATS
 from sailworks.core.serialdatasource import SerialDataSource
 from sailworks.core.weathernextcredentials import describe_access_error
+from .backgroundtask import BackgroundTask
 from .marinesettings import CurrentsAccount
 from .dropdown import Dropdown
 from .text import qt_text
@@ -39,11 +42,12 @@ def combo(entries, label):
 
 
 class ConnectionDialog(QDialog):
-    def __init__(self, parent, config=None):
+    def __init__(self, parent, config=None, connections=None):
         super().__init__(parent)
         self.setWindowTitle("Edit connection" if config else "Add connection")
         self.resize(440, 480)
         self.config = dict(config or {})
+        self.connections = connections
         self.result_config = None
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -90,10 +94,22 @@ class ConnectionDialog(QDialog):
         self.error = QLabel()
         self.error.setWordWrap(True)
         layout.addWidget(self.error)
+        self.test_status = QLabel()
+        self.test_status.setWordWrap(True)
+        self.test_status.setTextFormat(Qt.TextFormat.RichText)
+        self.test_status.setVisible(False)
+        layout.addWidget(self.test_status)
+        self.test_task = BackgroundTask(self)
+        self.test_task.finished.connect(self._test_finished)
+        self.test_task.changed.connect(self._test_changed)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Cancel
         )
+        self.test_button = buttons.addButton(
+            "Test connection", QDialogButtonBox.ButtonRole.ActionRole
+        )
+        self.test_button.clicked.connect(self.test)
         buttons.accepted.connect(self.save)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -121,6 +137,18 @@ class ConnectionDialog(QDialog):
         self.kind.currentIndexChanged.connect(self.refresh)
         self.protocol.currentIndexChanged.connect(self.protocol_changed)
         self.wire_format.currentIndexChanged.connect(self.format_changed)
+        for widget in (
+            self.kind,
+            self.protocol,
+            self.wire_format,
+            self.direction,
+            self.network,
+        ):
+            widget.currentIndexChanged.connect(self._clear_test)
+        self.host.textChanged.connect(self._clear_test)
+        self.port.valueChanged.connect(self._clear_test)
+        self.serial_port.currentTextChanged.connect(self._clear_test)
+        self.baud.valueChanged.connect(self._clear_test)
         self.refresh()
 
     def refresh(self):
@@ -144,6 +172,14 @@ class ConnectionDialog(QDialog):
             )
 
     def save(self):
+        try:
+            self.result_config = self._config()
+        except (ValueError, TypeError) as exc:
+            self.error.setText(str(exc))
+            return
+        self.accept()
+
+    def _config(self):
         data = dict(self.config)
         data.update(
             type=self.kind.currentData(),
@@ -165,12 +201,68 @@ class ConnectionDialog(QDialog):
                 host=self.host.text(),
                 port=self.port.value(),
             )
+        return connection_config(data)
+
+    def test(self):
         try:
-            self.result_config = connection_config(data)
+            config = self._config()
         except (ValueError, TypeError) as exc:
             self.error.setText(str(exc))
             return
-        self.accept()
+        self.error.setText("")
+        if self.connections is not None:
+            key = connection_key(config)
+            live = next(
+                (
+                    status
+                    for status in self.connections.get_status()
+                    if status["name"] == key and status["connected"]
+                ),
+                None,
+            )
+            if live is not None:
+                packets = live["packets"]
+                if packets:
+                    self._show_test(f"Already connected · {packets:,} packets", True)
+                else:
+                    self._show_test("Already connected · no data yet", None)
+                return
+        self._show_test("Testing connection…", None)
+        self.test_task.start("Testing connection…", lambda _: probe_connection(config))
+
+    def _test_changed(self):
+        self.test_button.setEnabled(not self.test_task.busy)
+
+    def _clear_test(self, *_):
+        if not self.test_task.busy:
+            self.test_status.setVisible(False)
+
+    def _test_finished(self, result, error):
+        if error is not None:
+            self._show_test(f"Test failed: {error}", False)
+            return
+        connected, packets, error = result
+        if not connected:
+            self._show_test(f"Test failed: {error}", False)
+        elif packets:
+            self._show_test(f"Connected · received {packets:,} messages", True)
+        else:
+            self._show_test("Connected · no data received in 3 s", None)
+
+    def _show_test(self, message, ok):
+        color = "#8a8a8a" if ok is None else ("#33e566" if ok else "#ff5544")
+        self.test_status.setText(
+            f'<span style="color:{color};">{escape(message)}</span>'
+        )
+        self.test_status.setVisible(True)
+
+    def accept(self):
+        self.test_task.close()
+        super().accept()
+
+    def reject(self):
+        self.test_task.close()
+        super().reject()
 
 
 class SettingsDialog(QDialog):
@@ -341,7 +433,11 @@ class SettingsDialog(QDialog):
 
     def edit_connection(self, edit):
         index = self.connections.currentRow()
-        dialog = ConnectionDialog(self, self.draft[index] if edit else None)
+        dialog = ConnectionDialog(
+            self,
+            self.draft[index] if edit else None,
+            connections=self.controller.connections,
+        )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             assert dialog.result_config is not None
             if edit:
