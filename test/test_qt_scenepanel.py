@@ -1,13 +1,22 @@
 import os
 from types import SimpleNamespace
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog
 
-from sailworks.core.scene import KIND_LOG, KIND_TRACK
-from sailworks.qt.scenepanel import NAME_COLUMN, VISIBLE_COLUMN, ScenePanel
+from sailworks.core.geo.elementmultipoint import NamedPoint
+from sailworks.core.geo.rounding import ROUNDING_GATE, ROUNDING_PORT, ROUNDING_STARBOARD
+from sailworks.core.scene import KIND_LOG, KIND_POI, KIND_ROUTING, KIND_TRACK
+from sailworks.qt.scenepanel import (
+    COORDINATE_ROLE,
+    NAME_COLUMN,
+    ROUNDING_ROLE,
+    VISIBLE_COLUMN,
+    ScenePanel,
+)
 
 
 class FakeTrack:
@@ -16,9 +25,27 @@ class FakeTrack:
         self.name = name
         self.visible = True
         self.points = [(51.1234567, -1.2345678), (52.0, -2.0)]
+        self._names = {}
+        self._roundings = {}
 
     def __len__(self):
         return 2
+
+    def point_name(self, index):
+        return self._names.get(index, "") or getattr(self.points[index], "name", "")
+
+    def rename_point(self, index, name):
+        name = str(name).strip()
+        self._names[index] = name
+        self.points[index] = NamedPoint(tuple(self.points[index]), name)
+        return True
+
+    def point_rounding(self, index):
+        return self._roundings.get(index)
+
+    def set_point_rounding(self, index, value):
+        self._roundings[index] = int(value)
+        return True
 
 
 class FakeRoute:
@@ -26,7 +53,31 @@ class FakeRoute:
         self.uid = uid
         self.name = name
         self.visible = True
-        self.points = [(), ()]
+        self.points = [(48.1, -123.1), (48.2, -123.2)]
+        self._names = {}
+        self._roundings = {}
+
+    def point_name(self, index):
+        return self._names.get(index, "")
+
+    def rename_point(self, index, name):
+        self._names[index] = str(name).strip()
+        return True
+
+    def point_rounding(self, index):
+        return self._roundings.get(index)
+
+    def set_point_rounding(self, index, value):
+        self._roundings[index] = int(value)
+        return True
+
+
+class FakePOI:
+    def __init__(self, uid, name):
+        self.uid = uid
+        self.name = name
+        self.visible = True
+        self.position = (48.5, -123.5)
 
 
 class FakeCollection(list):
@@ -59,6 +110,7 @@ class FakeCore:
     def __init__(self):
         self.trackManager = FakeCollection()
         self.routingManager = FakeCollection()
+        self.poiManager = FakeCollection()
 
 
 class FakeSession:
@@ -93,10 +145,11 @@ def log_entry(tmp_path, identifier="log-1", name="Saturday.log"):
     }
 
 
-def panel_for(tmp_path, tracks=(), routes=(), logs=(), loaded_log=None):
+def panel_for(tmp_path, tracks=(), routes=(), pois=(), logs=(), loaded_log=None):
     core = FakeCore()
     core.trackManager.extend(tracks)
     core.routingManager.extend(routes)
+    core.poiManager.extend(pois)
     return ScenePanel(
         FakeController(core, FakeLibrary(logs), FakeSession(loaded_log)),
         scene_path=tmp_path / "scene.json",
@@ -110,6 +163,7 @@ def test_panel_builds_default_tree_and_items(tmp_path):
         tmp_path,
         tracks=[FakeTrack("t1", "Morning")],
         routes=[FakeRoute("r1", "Route")],
+        pois=[FakePOI("p1", "Harbor")],
         logs=[log],
         loaded_log=SimpleNamespace(path=log["file_info"]["path"]),
     )
@@ -117,8 +171,9 @@ def test_panel_builds_default_tree_and_items(tmp_path):
     root = panel.tree.topLevelItem(0)
     assert root.text(NAME_COLUMN) == "Scene Collection"
     names = [root.child(index).text(NAME_COLUMN) for index in range(root.childCount())]
-    assert names == ["Tracks", "Routings", "Logs"]
+    assert names == ["Tracks", "Routings", "POIs", "Logs"]
     assert panel.item_row(KIND_TRACK, "t1") is not None
+    assert panel.item_row(KIND_POI, "p1") is not None
     assert panel.item_row(KIND_LOG, "log-1") is not None
 
 
@@ -132,6 +187,33 @@ def test_toggling_item_updates_element_visibility(tmp_path):
 
     assert track.visible is False
     assert panel.scene.item(KIND_TRACK, "t1").visible is False
+
+
+def test_poi_appears_in_default_group_and_toggles_visibility(tmp_path):
+    application()
+    poi = FakePOI("p1", "Harbor")
+    panel = panel_for(tmp_path, pois=[poi])
+    row = panel.item_row(KIND_POI, "p1")
+
+    assert row is not None
+    assert row.parent().text(NAME_COLUMN) == "POIs"
+    row.setCheckState(VISIBLE_COLUMN, Qt.CheckState.Unchecked)
+
+    assert poi.visible is False
+    assert panel.scene.item(KIND_POI, "p1").visible is False
+
+
+def test_double_click_poi_name_renames_poi(tmp_path):
+    application()
+    poi = FakePOI("p1", "Harbor")
+    panel = panel_for(tmp_path, pois=[poi])
+    row = panel.item_row(KIND_POI, "p1")
+
+    panel._double_clicked(row, NAME_COLUMN)
+    row.setText(NAME_COLUMN, "Marina")
+
+    assert poi.name == "Marina"
+    assert panel.item_row(KIND_POI, "p1").text(NAME_COLUMN) == "Marina"
 
 
 def test_group_selection_creates_collection_under_common_parent(tmp_path):
@@ -171,8 +253,127 @@ def test_expanding_track_shows_every_point(tmp_path):
     row.setExpanded(True)
 
     assert row.childCount() == 2
-    assert row.child(0).text(NAME_COLUMN) == "Point 1  51.123457, -1.234568"
-    assert row.child(1).text(NAME_COLUMN) == "Point 2  52.000000, -2.000000"
+    assert row.child(0).text(NAME_COLUMN) == "Point 1"
+    assert row.child(0).data(NAME_COLUMN, COORDINATE_ROLE) == "51.123457, -1.234568"
+    assert row.child(0).data(NAME_COLUMN, ROUNDING_ROLE) == "Sail"
+    assert row.child(1).text(NAME_COLUMN) == "Point 2"
+    assert row.child(1).data(NAME_COLUMN, COORDINATE_ROLE) == "52.000000, -2.000000"
+
+
+def test_rename_track_point_updates_element_and_tree(tmp_path):
+    application()
+    track = FakeTrack("t1", "Morning")
+    panel = panel_for(tmp_path, tracks=[track])
+    row = panel.item_row(KIND_TRACK, "t1")
+    row.setExpanded(True)
+    point_row = row.child(0)
+
+    assert point_row.flags() & Qt.ItemFlag.ItemIsEditable
+    panel._double_clicked(point_row, NAME_COLUMN)
+    point_row.setText(NAME_COLUMN, "Start line")
+
+    assert track.point_name(0) == "Start line"
+    row = panel.item_row(KIND_TRACK, "t1")
+    assert row.child(0).text(NAME_COLUMN) == "Start line"
+    assert row.child(0).data(NAME_COLUMN, COORDINATE_ROLE) == ("51.123457, -1.234568")
+    assert row.child(1).text(NAME_COLUMN) == "Point 2"
+
+
+def test_move_track_point_requests_relocation(tmp_path):
+    application()
+    track = FakeTrack("t1", "Morning")
+    panel = panel_for(tmp_path, tracks=[track])
+    received = []
+    panel.move_point_requested.connect(
+        lambda element, index: received.append((element, index))
+    )
+
+    panel._move_point(("point", KIND_TRACK, "t1", 0))
+
+    assert received == [(track, 0)]
+
+
+def test_expanding_route_shows_marks_and_rounding(tmp_path):
+    application()
+    route = FakeRoute("r1", "Route")
+    panel = panel_for(tmp_path, routes=[route])
+    row = panel.item_row(KIND_ROUTING, "r1")
+
+    row.setExpanded(True)
+
+    assert row.child(0).text(NAME_COLUMN) == "Mark 1"
+    assert row.child(0).data(NAME_COLUMN, ROUNDING_ROLE) == "Sail"
+    assert row.child(0).data(NAME_COLUMN, COORDINATE_ROLE) == ("48.100000, -123.100000")
+
+
+def test_cycle_rounding_updates_route_mark(tmp_path):
+    application()
+    route = FakeRoute("r1", "Route")
+    panel = panel_for(tmp_path, routes=[route])
+    node = ("point", KIND_ROUTING, "r1", 0)
+
+    panel._cycle_rounding(node)
+    assert route.point_rounding(0) == ROUNDING_GATE
+    panel._cycle_rounding(node)
+    assert route.point_rounding(0) == ROUNDING_PORT
+    panel._cycle_rounding(node)
+    assert route.point_rounding(0) == ROUNDING_STARBOARD
+
+    row = panel.item_row(KIND_ROUTING, "r1")
+    row.setExpanded(True)
+    assert row.child(0).data(NAME_COLUMN, ROUNDING_ROLE) == "Stbd"
+
+
+def test_edit_point_dialog_updates_name_and_rounding(tmp_path):
+    application()
+    route = FakeRoute("r1", "Route")
+    panel = panel_for(tmp_path, routes=[route])
+
+    class Dialog:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def point_name(self):
+            return "Windward mark"
+
+        def point_rounding(self):
+            return ROUNDING_PORT
+
+    with patch("sailworks.qt.scenepanel.PointEditDialog", Dialog):
+        panel._edit_point(("point", KIND_ROUTING, "r1", 0))
+
+    assert route.point_name(0) == "Windward mark"
+    assert route.point_rounding(0) == ROUNDING_PORT
+
+
+def test_edit_track_point_dialog_sets_rounding(tmp_path):
+    application()
+    track = FakeTrack("t1", "Morning")
+    panel = panel_for(tmp_path, tracks=[track])
+
+    class Dialog:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def point_name(self):
+            return ""
+
+        def point_rounding(self):
+            return ROUNDING_STARBOARD
+
+    with patch("sailworks.qt.scenepanel.PointEditDialog", Dialog):
+        panel._edit_point(("point", KIND_TRACK, "t1", 0))
+
+    assert track.point_rounding(0) == ROUNDING_STARBOARD
+    row = panel.item_row(KIND_TRACK, "t1")
+    row.setExpanded(True)
+    assert row.child(0).data(NAME_COLUMN, ROUNDING_ROLE) == "Stbd"
 
 
 def test_double_click_item_name_renames_track(tmp_path):

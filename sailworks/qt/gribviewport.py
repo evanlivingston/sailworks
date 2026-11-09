@@ -3278,6 +3278,14 @@ def _viewport_widget_class():  # noqa: C901 - lazy factory
             if placements is not None:
                 placements[id(item)] = placement
 
+        def set_move_preview(self, preview):
+            """Update only the lightweight relocation preview on the canvas."""
+            item = self._route_overlay
+            if item is None:
+                return False
+            item.setProperty("movePreview", preview)
+            return True
+
         def set_route_overlay(self, overlay):
             """Present retained route geometry over a padded pan window."""
             item = self._route_overlay

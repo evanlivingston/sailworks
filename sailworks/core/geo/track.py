@@ -62,7 +62,11 @@ class Track(ElementMultiPoint):
         gpx_track.segments.append(gpx_segment)
 
         for x in self.points:
-            gpx_segment.points.append(gpxpy.gpx.GPXTrackPoint(x[0], x[1]))
+            gpx_point = gpxpy.gpx.GPXTrackPoint(x[0], x[1])
+            name = getattr(x, "name", "") or ""
+            if name:
+                gpx_point.name = name
+            gpx_segment.points.append(gpx_point)
 
         return gpx_track
 

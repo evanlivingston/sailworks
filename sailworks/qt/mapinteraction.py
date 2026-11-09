@@ -46,20 +46,73 @@ class MapInteractionMixin:
                 "start" if selected is start else "destination", position.get_degrees()
             )
 
-    def begin_move(self, callback):
+    def begin_move(self, callback, preview=None, restore=None):
         self._cancel_cursor()
         self._cancel_inertia()
         self._finish_zoom_silent()
         self.move_callback = callback
+        self._move_preview_callback = preview
+        self._move_restore_callback = restore
+        self._move_press_position = None
         self.drag = None
         self.setCursor(Qt.CursorShape.CrossCursor)
         self.setFocus()
         self.update()
 
     def cancel_move(self):
+        self._end_move(restore=True)
+
+    def _end_move(self, restore):
+        if (
+            self.move_callback is None
+            and getattr(self, "_move_preview_callback", None) is None
+        ):
+            return
+        if restore:
+            restore_callback = getattr(self, "_move_restore_callback", None)
+            if restore_callback is not None:
+                restore_callback()
         self.move_callback = None
+        self._move_preview_callback = None
+        self._move_restore_callback = None
+        self._move_press_position = None
         self.setCursor(Qt.CursorShape.OpenHandCursor)
+        clear = getattr(self, "clear_move_preview", None)
+        if callable(clear):
+            clear()
+        publish = getattr(self, "publish_route_overlay", None)
+        if callable(publish):
+            publish()
         self.update()
+
+    def _begin_move_drag(self, position):
+        """Start a move gesture; the point relocates on release."""
+        if self.move_callback is None:
+            return False
+        self._move_press_position = position
+        return True
+
+    def _move_preview(self, position):
+        """Place the moving point under the cursor without committing."""
+        preview = getattr(self, "_move_preview_callback", None)
+        if preview is None:
+            return False
+        preview(
+            self.convert_screen_to_geographic(position.x(), position.y()).get_degrees()
+        )
+        self.update()
+        return True
+
+    def _finish_move_drag(self, position):
+        """Commit a move at the release position (or a plain click)."""
+        if self.move_callback is None or self._move_press_position is None:
+            return False
+        callback = self.move_callback
+        self._end_move(restore=False)
+        callback(
+            self.convert_screen_to_geographic(position.x(), position.y()).get_degrees()
+        )
+        return True
 
     def keyPressEvent(self, event):  # noqa: N802 - Qt virtual method name
         if event.key() == Qt.Key.Key_I:

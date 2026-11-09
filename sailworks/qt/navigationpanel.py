@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from sailworks.core.aismanager import SHIP_TYPE_COLORS
+from sailworks.core.geo.rounding import ROUNDING_SHORT, normalize_rounding
 from .backgroundtask import BackgroundTask
 from .theme import MenuBuilder, ThemedMenu
 from sailworks.rendering.navigation import routing_summary
@@ -48,7 +49,7 @@ def table(headers, editable=False):
     return widget
 
 
-def cells(widget, rows, check_column=None):
+def cells(widget, rows, check_column=None, editable_columns=(0,)):
     widget.blockSignals(True)
     widget.setRowCount(len(rows))
     for row, values in enumerate(rows):
@@ -63,7 +64,7 @@ def cells(widget, rows, check_column=None):
                 item.setCheckState(
                     Qt.CheckState.Checked if value else Qt.CheckState.Unchecked
                 )
-            elif column:
+            elif column not in editable_columns:
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             widget.setItem(row, column, item)
     widget.blockSignals(False)
@@ -143,6 +144,29 @@ class RemoveNavigationCommand(QUndoCommand):
         self.panel.changed.emit()
 
 
+class MovePointCommand(QUndoCommand):
+    """Undoable relocation of one track point."""
+
+    def __init__(self, refresh, element, index, before, after):
+        super().__init__(f"Move {element.name} point {index + 1}")
+        self.refresh = refresh
+        self.element = element
+        self.index = index
+        self.before = (before[0], before[1])
+        self.after = (after[0], after[1])
+
+    def _move(self, position):
+        if 0 <= self.index < len(self.element):
+            self.element.move(self.index, position[0], position[1])
+            self.refresh()
+
+    def redo(self):
+        self._move(self.after)
+
+    def undo(self):
+        self._move(self.before)
+
+
 class NavigationPanel(QWidget):
     changed = Signal()
     route_selected = Signal(object)
@@ -171,7 +195,7 @@ class NavigationPanel(QWidget):
         for column, width in enumerate((140, 45, 90, 65)):
             self.tracks.setColumnWidth(column, width)
         self._compact_columns(self.tracks)
-        self.track_points = table(["#", "Latitude", "Longitude"])
+        self.track_points = table(["#", "Name", "Latitude", "Longitude"], True)
         self.track_split.addWidget(self.tracks)
         self.track_split.addWidget(self.track_points)
         self.track_split.setChildrenCollapsible(False)
@@ -191,7 +215,9 @@ class NavigationPanel(QWidget):
         self.route_split = QSplitter(Qt.Orientation.Vertical)
         self.routes = table(["Name", "Summary", "Visible"], True)
         self.routes.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
-        self.route_points = table(["#", "Time", "TWA", "TWS", "Speed", "Brg"])
+        self.route_points = table(
+            ["#", "Time", "TWA", "TWS", "Speed", "Brg", "Rounding"]
+        )
         self.route_split.addWidget(self.routes)
         self.route_split.addWidget(self.route_points)
         self.route_split.setChildrenCollapsible(False)
@@ -220,6 +246,7 @@ class NavigationPanel(QWidget):
         self.tracks.currentCellChanged.connect(self._select_track)
         self._wire_track_selection()
         self.track_points.currentCellChanged.connect(self._select_point)
+        self.track_points.itemChanged.connect(self._edit_point_name)
         self.pois.currentCellChanged.connect(self._select_poi)
         self.routes.currentCellChanged.connect(self._select_route)
         self.route_points.currentCellChanged.connect(
@@ -478,13 +505,12 @@ class NavigationPanel(QWidget):
 
     def refresh_points(self):
         active = self.core.trackManager.get_active()
-        cells(
-            self.track_points,
-            [
-                (i + 1, f"{p[0]:.5f}", f"{p[1]:.5f}")
-                for i, p in enumerate(active.points if active is not None else [])
-            ],
-        )
+        point_name = getattr(active, "point_name", None)
+        rows = []
+        for i, p in enumerate(active.points if active is not None else []):
+            name = point_name(i) if callable(point_name) else ""
+            rows.append((i + 1, name, f"{p[0]:.5f}", f"{p[1]:.5f}"))
+        cells(self.track_points, rows, editable_columns=(1,))
         self.point_index = (
             self.point_index
             if active is not None and 0 <= self.point_index < len(active)
@@ -494,6 +520,19 @@ class NavigationPanel(QWidget):
         self.track_points.setCurrentCell(self.point_index, 0)
         self.track_points.blockSignals(False)
         self.canvas.navigation.hl_track_item = self.point_index
+
+    def _edit_point_name(self, item):
+        if self.syncing or item.column() != 1:
+            return
+        active = self.core.trackManager.get_active()
+        if active is None or not 0 <= item.row() < len(active):
+            return
+        rename_point = getattr(active, "rename_point", None)
+        if not callable(rename_point):
+            return
+        if rename_point(item.row(), item.text()):
+            self.changed.emit()
+        self.refresh()
 
     def _select_point(self, row, *_):
         if self.syncing:
@@ -530,6 +569,7 @@ class NavigationPanel(QWidget):
 
     def refresh_route_points(self):
         rows = []
+        point_rounding = getattr(self.route, "point_rounding", None)
         for i, p in enumerate(self.route.points if self.route is not None else []):
             try:
                 stamp = dateutil.parser.parse(str(p[2]))
@@ -537,6 +577,7 @@ class NavigationPanel(QWidget):
                 label = stamp.strftime("%d/%m %H:%M")
             except (ValueError, TypeError):
                 label = str(p[2])
+            rounding = point_rounding(i) if callable(point_rounding) else None
             rows.append(
                 (
                     i + 1,
@@ -545,6 +586,7 @@ class NavigationPanel(QWidget):
                     f"{p[4]:.1f}" if p[4] else "",
                     f"{p[5]:.1f}" if p[5] else "",
                     f"{p[6]:.0f}°" if p[6] else "",
+                    ROUNDING_SHORT[normalize_rounding(rounding)],
                 )
             )
         cells(self.route_points, rows)
@@ -725,11 +767,21 @@ class NavigationPanel(QWidget):
                 and index < len(active)
                 and active.points[index] is point
             ):
-                active.move(index, *coordinates)
-                self.refresh()
-                self.changed.emit()
+                self.undo_stack.push(
+                    MovePointCommand(
+                        self._refresh_point_move,
+                        active,
+                        index,
+                        (point[0], point[1]),
+                        coordinates,
+                    )
+                )
 
         self.move_requested.emit(move)
+
+    def _refresh_point_move(self):
+        self.refresh()
+        self.changed.emit()
 
     def fit_track(self):
         active = self.core.trackManager.get_active()

@@ -16,6 +16,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 
 from sailworks.core import utils
 from sailworks.core.geo.element import Element
+from sailworks.core.geo.rounding import DEFAULT_ROUNDING, ROUNDING_LABELS
 
 try:
     from pyproj import Geod as _Geod
@@ -23,6 +24,30 @@ try:
     _CACHED_GEOD = _Geod(ellps="WGS84")
 except Exception:
     _CACHED_GEOD = False
+
+
+class NamedPoint(tuple):
+    """A point tuple that can carry optional user-facing metadata.
+
+    It stays a plain tuple (``lat, lon, ...``) for every existing consumer;
+    the name and rounding are extra metadata used by the scene tree, tables
+    and exports.
+    """
+
+    def __new__(cls, values, name="", rounding=None):
+        point = super().__new__(cls, values)
+        point.name = name or ""
+        point.rounding = rounding
+        return point
+
+
+def _point_name(point):
+    return getattr(point, "name", "") or ""
+
+
+def _point_rounding(point):
+    value = getattr(point, "rounding", None)
+    return None if value is None else int(value)
 
 
 class _TrackedPoints(list):
@@ -91,12 +116,83 @@ class ElementMultiPoint(Element):
     def to_json(self):
         c = super().to_json()
         c["points"] = self.points
+        names = [_point_name(point) for point in self.points]
+        # Keep the legacy payload byte-for-byte identical when no point has
+        # been named. The parallel list stays index-aligned with ``points``.
+        if any(names):
+            c["point_names"] = names
+        roundings = [_point_rounding(point) for point in self.points]
+        if any(
+            rounding is not None and rounding != DEFAULT_ROUNDING
+            for rounding in roundings
+        ):
+            c["point_roundings"] = [
+                DEFAULT_ROUNDING if rounding is None else rounding
+                for rounding in roundings
+            ]
         return c
 
     @staticmethod
     def from_json(j):
         d = Element.from_json(j)
-        return ElementMultiPoint(d.name, j["points"], d.visible)
+        points = list(j["points"])
+        names = j.get("point_names") or []
+        roundings = j.get("point_roundings") or []
+        for index in range(len(points)):
+            name = names[index] if index < len(names) else ""
+            rounding = roundings[index] if index < len(roundings) else None
+            if name or rounding is not None:
+                points[index] = NamedPoint(tuple(points[index]), name or "", rounding)
+        return ElementMultiPoint(d.name, points, d.visible)
+
+    def point_name(self, index):
+        """Return the user-facing name for a point, or an empty string."""
+        if 0 <= index < len(self.points):
+            return _point_name(self.points[index])
+        return ""
+
+    def point_rounding(self, index):
+        """Return the mark rounding value, or None when not applicable."""
+        if 0 <= index < len(self.points):
+            return _point_rounding(self.points[index])
+        return None
+
+    def rename_point(self, index, name):
+        """Set a point's name, keeping the point tuple itself unchanged."""
+        if not 0 <= index < len(self.points):
+            return False
+        point = self.points[index]
+        name = "" if name is None else str(name).strip()
+        if _point_name(point) == name:
+            return False
+        try:
+            values = tuple(point)
+        except TypeError:
+            return False
+        self.points[index] = NamedPoint(values, name, _point_rounding(point))
+        self.touch()
+        if self.collection is not None:
+            self.collection.save()
+        return True
+
+    def set_point_rounding(self, index, rounding):
+        """Set a mark's rounding value, keeping the point tuple unchanged."""
+        if not 0 <= index < len(self.points):
+            return False
+        try:
+            value = int(rounding)
+        except (TypeError, ValueError):
+            return False
+        if value not in ROUNDING_LABELS:
+            return False
+        point = self.points[index]
+        if _point_rounding(point) == value:
+            return False
+        self.points[index] = NamedPoint(tuple(point), _point_name(point), value)
+        self.touch()
+        if self.collection is not None:
+            self.collection.save()
+        return True
 
     def __len__(self):
         return len(self.points)
@@ -165,16 +261,28 @@ class ElementMultiPoint(Element):
             self.collection.save()
 
     def duplicate(self, i):
-        self.points.append(self.points[i])
+        point = self.points[i]
+        try:
+            values = tuple(point)
+        except TypeError:
+            self.points.append(point)
+        else:
+            self.points.append(
+                NamedPoint(values, _point_name(point), _point_rounding(point))
+            )
+        self.touch()
         self.collection.save()
 
     def add(self, lat, lon, t=None):
-        self.points.append((lat, lon, t))
+        self.points.append(NamedPoint((lat, lon, t)))
         self.touch()
         self.collection.save()
 
     def move(self, i, lat, lon):
-        self.points[i] = (lat, lon, None)
+        point = self.points[i]
+        self.points[i] = NamedPoint(
+            (lat, lon, None), _point_name(point), _point_rounding(point)
+        )
         self.touch()
         self.collection.save()
 

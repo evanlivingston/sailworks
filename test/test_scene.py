@@ -3,6 +3,7 @@ from sailworks.core.geo.track import Track
 from sailworks.core.geo.trackcollection import _TrackCollection
 from sailworks.core.scene import (
     KIND_LOG,
+    KIND_POI,
     KIND_ROUTING,
     KIND_TRACK,
     SceneCollection,
@@ -31,9 +32,10 @@ def entry(kind, element, detail=""):
 def test_default_groups_are_created(tmp_path):
     scene = SceneCollection(tmp_path / "scene.json")
     names = [group.name for group in scene.groups.values()]
-    assert names == ["Tracks", "Routings", "Logs"]
+    assert names == ["Tracks", "Routings", "POIs", "Logs"]
     assert scene.default_group(KIND_TRACK) == "default-tracks"
     assert scene.default_group(KIND_ROUTING) == "default-routings"
+    assert scene.default_group(KIND_POI) == "default-pois"
     assert scene.default_group(KIND_LOG) == "default-logs"
 
 

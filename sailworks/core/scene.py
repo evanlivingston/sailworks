@@ -1,6 +1,6 @@
 """User-authored scene tree over navigation data.
 
-The scene collection only stores grouping and visibility. Tracks, routings and
+The scene collection only stores grouping and visibility. Tracks, routings, POIs and
 log-library entries remain owned by their existing collections; scene items
 refer to them by ``Element.uid`` (or the log-library identifier).
 """
@@ -15,18 +15,21 @@ from .workspacestate import WorkspaceStateStore
 
 KIND_TRACK = "track"
 KIND_ROUTING = "routing"
+KIND_POI = "poi"
 KIND_LOG = "log"
-KINDS = (KIND_TRACK, KIND_ROUTING, KIND_LOG)
+KINDS = (KIND_TRACK, KIND_ROUTING, KIND_POI, KIND_LOG)
 
 TYPE_TITLES = {
     KIND_TRACK: "Track",
     KIND_ROUTING: "Routing",
+    KIND_POI: "Point of interest",
     KIND_LOG: "Log",
 }
 
 DEFAULT_GROUPS = (
     (KIND_TRACK, "default-tracks", "Tracks"),
     (KIND_ROUTING, "default-routings", "Routings"),
+    (KIND_POI, "default-pois", "POIs"),
     (KIND_LOG, "default-logs", "Logs"),
 )
 

@@ -2635,6 +2635,47 @@ class QtPreviewChecks(unittest.TestCase):
         self.assertFalse(manager.elements)
         self.assertFalse(self.window.map.route)
 
+    def test_scene_point_move_is_undoable(self):
+        from sailworks.core.scene import KIND_TRACK
+
+        tracks = self.controller.core.trackManager
+        track = tracks.new_element(points=[(48.1, -123.1)])
+        scene = self.window.scene_panel
+        scene.refresh()
+        node = ("point", KIND_TRACK, track.uid, 0)
+
+        scene._move_point(node)
+        self.assertIsNotNone(self.window.map.move_callback)
+        self.window.map.move_callback((48.6, -123.6))
+        self.window.map.cancel_move()
+
+        self.assertEqual(track[0][:2], (48.6, -123.6))
+        self.assertTrue(self.window.undo_action.isEnabled())
+        self.window.undo_stack.undo()
+        self.assertEqual(track[0][:2], (48.1, -123.1))
+        self.window.undo_stack.redo()
+        self.assertEqual(track[0][:2], (48.6, -123.6))
+
+    def test_scene_point_move_preview_restores_on_cancel(self):
+        from sailworks.core.scene import KIND_TRACK
+
+        tracks = self.controller.core.trackManager
+        track = tracks.new_element(points=[(48.1, -123.1)])
+        scene = self.window.scene_panel
+        scene.refresh()
+
+        scene._move_point(("point", KIND_TRACK, track.uid, 0))
+        preview = self.window.map._move_preview_callback
+        self.assertIsNotNone(preview)
+        preview((48.5, -123.5))
+        self.assertEqual(self.window.map._move_preview_state, (track, 0, 48.5, -123.5))
+        self.assertEqual(track[0][:2], (48.1, -123.1))
+
+        self.window.map.cancel_move()
+        self.assertIsNone(self.window.map._move_preview_state)
+        self.assertEqual(track[0][:2], (48.1, -123.1))
+        self.assertFalse(self.window.undo_action.isEnabled())
+
     def test_navigation_workspace_restore_and_late_import_shutdown(self):
         from threading import Event
 

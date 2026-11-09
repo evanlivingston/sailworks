@@ -3,13 +3,18 @@
 from pathlib import Path
 
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QFont
+from PySide6.QtGui import QBrush, QColor, QFont, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
+    QDialog,
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QPushButton,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -17,23 +22,35 @@ from PySide6.QtWidgets import (
 )
 
 from sailworks.common import resource_path
+from sailworks.core.geo.rounding import (
+    DEFAULT_ROUNDING,
+    ROUNDING_SHORT,
+    normalize_rounding,
+)
 from sailworks.core.scene import (
     KIND_LOG,
+    KIND_POI,
     KIND_ROUTING,
     KIND_TRACK,
     TYPE_TITLES,
     SceneCollection,
     SceneEntry,
 )
+from .pointeditdialog import PointEditDialog
 from .theme import MenuBuilder, symbol_icon, ThemedMenu
 
 NODE_ROLE = Qt.ItemDataRole.UserRole
+COORDINATE_ROLE = Qt.ItemDataRole.UserRole + 1
+ROUNDING_ROLE = Qt.ItemDataRole.UserRole + 2
 MUTED = QColor("#b0b0ad")
+POINT_COORDINATE = QColor("#8a8a87")
+ROUNDING_COLOR = QColor("#78aeed")
 NAME_COLUMN = 0
 VISIBLE_COLUMN = 1
 TYPE_ICONS = {
     KIND_TRACK: "track-symbolic",
     KIND_ROUTING: "isochrone-symbolic",
+    KIND_POI: "poi-symbolic",
     KIND_LOG: "information-symbolic",
 }
 
@@ -63,6 +80,84 @@ class SceneTree(QTreeWidget):
         self.panel.drop_scene_items(event)
 
 
+class SceneItemDelegate(QStyledItemDelegate):
+    """Paint point coordinates and mark rounding in a point's name cell."""
+
+    def paint(self, painter, option, index):
+        coordinates = index.data(COORDINATE_ROLE)
+        if coordinates is None:
+            super().paint(painter, option, index)
+            return
+
+        adjusted = QStyleOptionViewItem(option)
+        self.initStyleOption(adjusted, index)
+        label = adjusted.text
+        adjusted.text = ""
+        widget = adjusted.widget
+        style = widget.style() if widget is not None else QApplication.style()
+        style.drawControl(
+            QStyle.ControlElement.CE_ItemViewItem, adjusted, painter, widget
+        )
+
+        selected = bool(adjusted.state & QStyle.StateFlag.State_Selected)
+        if selected:
+            label_color = adjusted.palette.color(QPalette.ColorRole.HighlightedText)
+            coordinate_color = label_color
+        else:
+            foreground = index.data(Qt.ItemDataRole.ForegroundRole)
+            label_color = (
+                foreground.color()
+                if isinstance(foreground, QBrush)
+                else adjusted.palette.color(QPalette.ColorRole.Text)
+            )
+            coordinate_color = POINT_COORDINATE
+
+        rect = adjusted.rect.adjusted(4, 0, -4, 0)
+        metrics = adjusted.fontMetrics
+        icon_width = 0
+        if index.data(Qt.ItemDataRole.DecorationRole) is not None:
+            size = adjusted.decorationSize
+            if size is None or size.width() <= 0:
+                size = widget.iconSize() if widget is not None else None
+            icon_width = (size.width() if size is not None else 16) + 4
+        label_rect = rect.adjusted(icon_width, 0, 0, 0)
+        rounding_text = str(index.data(ROUNDING_ROLE) or "")
+        rounding_width = metrics.horizontalAdvance(rounding_text)
+        coordinate_text = metrics.elidedText(
+            str(coordinates), Qt.TextElideMode.ElideLeft, int(rect.width() * 0.6)
+        )
+        coordinate_width = metrics.horizontalAdvance(coordinate_text)
+        label_width = max(
+            0, label_rect.width() - coordinate_width - rounding_width - 16
+        )
+        label_text = metrics.elidedText(
+            str(label), Qt.TextElideMode.ElideRight, label_width
+        )
+
+        painter.save()
+        painter.setFont(adjusted.font)
+        painter.setPen(label_color)
+        painter.drawText(
+            label_rect,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            label_text,
+        )
+        if rounding_text:
+            painter.setPen(label_color if selected else ROUNDING_COLOR)
+            painter.drawText(
+                rect.adjusted(0, 0, -(coordinate_width + 12), 0),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                rounding_text,
+            )
+        painter.setPen(coordinate_color)
+        painter.drawText(
+            rect,
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            coordinate_text,
+        )
+        painter.restore()
+
+
 class ScenePanel(QWidget):
     """Compact tree of collections over tracks, routings and logs."""
 
@@ -71,6 +166,7 @@ class ScenePanel(QWidget):
     open_requested = Signal(str, str)
     fit_requested = Signal(object)
     delete_requested = Signal(object)
+    move_point_requested = Signal(object, int)
 
     def __init__(self, controller, parent=None, scene_path=None):
         super().__init__(parent)
@@ -95,6 +191,7 @@ class ScenePanel(QWidget):
         self.tree.setFrameShape(QFrame.Shape.NoFrame)
         self.tree.setColumnCount(2)
         self.tree.setHeaderHidden(True)
+        self.tree.setItemDelegateForColumn(NAME_COLUMN, SceneItemDelegate(self.tree))
         self.tree.setUniformRowHeights(True)
         self.tree.setRootIsDecorated(True)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -163,6 +260,22 @@ class ScenePanel(QWidget):
                     visible=bool(route.visible),
                     detail=f"{len(route.points)} waypoints",
                     element=route,
+                )
+            )
+        for poi in self.core.poiManager:
+            position = getattr(poi, "position", None)
+            entries.append(
+                SceneEntry(
+                    kind=KIND_POI,
+                    key=poi.uid,
+                    name=poi.name,
+                    visible=bool(poi.visible),
+                    detail=(
+                        f"{position[0]:.5f}, {position[1]:.5f}"
+                        if position is not None
+                        else ""
+                    ),
+                    element=poi,
                 )
             )
         race_panel = getattr(self.window(), "race_panel", None)
@@ -256,6 +369,8 @@ class ScenePanel(QWidget):
             self.core.trackManager.save()
         if KIND_ROUTING in kinds:
             self.core.routingManager.save()
+        if KIND_POI in kinds:
+            self.core.poiManager.save()
 
     # ------------------------------------------------------------------
     # Tree construction
@@ -347,13 +462,13 @@ class ScenePanel(QWidget):
                 | Qt.ItemFlag.ItemIsSelectable
                 | Qt.ItemFlag.ItemIsDragEnabled
             )
-            if entry.kind in (KIND_TRACK, KIND_ROUTING):
+            if entry.kind in (KIND_TRACK, KIND_ROUTING, KIND_POI):
                 flags |= Qt.ItemFlag.ItemIsUserCheckable
                 row.setCheckState(
                     VISIBLE_COLUMN,
                     Qt.CheckState.Checked if entry.visible else Qt.CheckState.Unchecked,
                 )
-            if entry.kind in (KIND_TRACK, KIND_ROUTING, KIND_LOG):
+            if entry.kind in (KIND_TRACK, KIND_ROUTING, KIND_POI, KIND_LOG):
                 flags |= Qt.ItemFlag.ItemIsEditable
             if entry.kind == KIND_LOG:
                 row.setIcon(
@@ -373,7 +488,7 @@ class ScenePanel(QWidget):
             self._rows[("item", entry.kind, entry.key)] = row
             live = self.scene.live_entry(entry.kind, entry.key)
             if (
-                entry.kind == KIND_TRACK
+                entry.kind in (KIND_TRACK, KIND_ROUTING)
                 and live is not None
                 and live.element is not None
             ):
@@ -385,23 +500,38 @@ class ScenePanel(QWidget):
                     self._populate_track_points(row, entry)
 
     def _populate_track_points(self, row, entry):
-        """Show a track's recorded positions beneath its expanded tree row."""
+        """Show a track or routing element's positions beneath its tree row."""
         if row.childCount():
             return
         live = self.scene.live_entry(entry.kind, entry.key)
         if live is None or live.element is None:
             return
-        for index, point in enumerate(live.element.points):
-            child = QTreeWidgetItem(
-                [f"Point {index + 1}  {point[0]:.6f}, {point[1]:.6f}", ""]
-            )
+        element = live.element
+        rename_point = getattr(element, "rename_point", None)
+        point_name = getattr(element, "point_name", None)
+        point_rounding = getattr(element, "point_rounding", None)
+        default_label = "Mark" if entry.kind == KIND_ROUTING else "Point"
+        for index, point in enumerate(element.points):
+            name = point_name(index) if callable(point_name) else ""
+            label = name or f"{default_label} {index + 1}"
+            coordinates = f"{point[0]:.6f}, {point[1]:.6f}"
+            child = QTreeWidgetItem([label, ""])
             child.setData(
                 NAME_COLUMN, NODE_ROLE, ("point", entry.kind, entry.key, index)
             )
+            child.setData(NAME_COLUMN, COORDINATE_ROLE, coordinates)
+            if callable(point_rounding):
+                child.setData(
+                    NAME_COLUMN,
+                    ROUNDING_ROLE,
+                    ROUNDING_SHORT[normalize_rounding(point_rounding(index))],
+                )
             child.setIcon(NAME_COLUMN, symbol_icon("poi-symbolic"))
-            child.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+            if callable(rename_point):
+                flags |= Qt.ItemFlag.ItemIsEditable
+            child.setFlags(flags)
             child.setForeground(NAME_COLUMN, QBrush(MUTED))
-            child.setToolTip(NAME_COLUMN, f"{point[0]:.6f}, {point[1]:.6f}")
             row.addChild(child)
 
     def _first_selectable(self):
@@ -505,6 +635,9 @@ class ScenePanel(QWidget):
                 changed = (
                     self.scene.set_item_visible(node[1], node[2], visible) or changed
                 )
+        elif node[0] == "point":
+            self._rename_point(node, row.text(NAME_COLUMN))
+            return
         if changed:
             if structural:
                 self._after_change(structural=True)
@@ -530,7 +663,7 @@ class ScenePanel(QWidget):
             return
         if node[0] == "group":
             self.scene.set_group_collapsed(node[1], False)
-        elif node[0] == "item" and node[1] == KIND_TRACK:
+        elif node[0] == "item" and node[1] in (KIND_TRACK, KIND_ROUTING):
             identity = (node[1], node[2])
             self._expanded_items.add(identity)
             item = self.scene.item(*identity)
@@ -545,7 +678,7 @@ class ScenePanel(QWidget):
             return
         if node[0] == "group":
             self.scene.set_group_collapsed(node[1], True)
-        elif node[0] == "item" and node[1] == KIND_TRACK:
+        elif node[0] == "item" and node[1] in (KIND_TRACK, KIND_ROUTING):
             self._expanded_items.discard((node[1], node[2]))
 
     def _rename_item(self, item, name):
@@ -567,15 +700,91 @@ class ScenePanel(QWidget):
             if entry is None or entry.element is None:
                 self.refresh()
                 return
-            manager = (
-                self.core.trackManager
-                if item.kind == KIND_TRACK
-                else self.core.routingManager
-            )
+            manager = {
+                KIND_TRACK: self.core.trackManager,
+                KIND_ROUTING: self.core.routingManager,
+                KIND_POI: self.core.poiManager,
+            }.get(item.kind)
+            if manager is None:
+                self.refresh()
+                return
             entry.element.name = manager.get_unique_name(name)
             manager.save()
         self.refresh()
         self.changed.emit()
+
+    def _point_element(self, node):
+        if node is None or node[0] != "point":
+            return None
+        entry = self.scene.live_entry(node[1], node[2])
+        element = entry.element if entry is not None else None
+        if element is None or not callable(getattr(element, "rename_point", None)):
+            return None
+        return element
+
+    def _rename_point(self, node, name):
+        element = self._point_element(node)
+        if element is None:
+            return
+        if element.rename_point(node[3], name):
+            self.changed.emit()
+        self.refresh()
+
+    def _move_point(self, node):
+        element = self._point_element(node)
+        if element is not None:
+            self.move_point_requested.emit(element, int(node[3]))
+
+    def _edit_point(self, node):
+        element = self._point_element(node)
+        if element is None:
+            return
+        index = int(node[3])
+        if not 0 <= index < len(element.points):
+            return
+        point_rounding = getattr(element, "point_rounding", None)
+        current_rounding = normalize_rounding(
+            point_rounding(index) if callable(point_rounding) else None
+        )
+        dialog = PointEditDialog(
+            element.point_name(index),
+            rounding=current_rounding,
+            coordinates=tuple(element.points[index][:2]),
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        changed = False
+        name = dialog.point_name()
+        if name != element.point_name(index):
+            changed = element.rename_point(index, name) or changed
+        rounding = dialog.point_rounding()
+        set_rounding = getattr(element, "set_point_rounding", None)
+        if (
+            rounding is not None
+            and callable(set_rounding)
+            and normalize_rounding(current_rounding) != rounding
+        ):
+            changed = set_rounding(index, rounding) or changed
+        if changed:
+            self.changed.emit()
+        self.refresh()
+
+    def _cycle_rounding(self, node):
+        element = self._point_element(node)
+        if element is None:
+            return
+        set_rounding = getattr(element, "set_point_rounding", None)
+        if not callable(set_rounding):
+            return
+        index = int(node[3])
+        point_rounding = getattr(element, "point_rounding", None)
+        current = normalize_rounding(
+            point_rounding(index) if callable(point_rounding) else None
+        )
+        if set_rounding(index, (current + 1) % 4):
+            self.changed.emit()
+        self.refresh()
 
     def _selection_changed(self):
         if self.syncing:
@@ -590,7 +799,7 @@ class ScenePanel(QWidget):
         node = row.data(NAME_COLUMN, NODE_ROLE)
         if node is None:
             return
-        if node[0] in ("group", "item"):
+        if node[0] in ("group", "item", "point"):
             self.tree.editItem(row, NAME_COLUMN)
 
     def _after_change(self, structural=False):
@@ -654,7 +863,7 @@ class ScenePanel(QWidget):
         node = nodes[0]
         if node[0] == "point":
             return nodes
-        if node[0] == "item" and node[1] in (KIND_TRACK, KIND_ROUTING):
+        if node[0] == "item" and node[1] in (KIND_TRACK, KIND_ROUTING, KIND_POI):
             return nodes
         return ()
 
@@ -684,7 +893,10 @@ class ScenePanel(QWidget):
         groups = self._selected_groups()
         fit_nodes = self._nodes_for_fit(nodes)
         delete_nodes = self._nodes_for_delete(nodes)
-        rename = len(groups) == 1 and node is not None and node[0] == "group"
+        point_element = self._point_element(node)
+        rename = (
+            len(groups) == 1 and node is not None and node[0] == "group"
+        ) or point_element is not None
         deletable = [
             identifier
             for identifier in groups
@@ -700,9 +912,26 @@ class ScenePanel(QWidget):
             builder.add("Group Selection", self._group_selection, key="G")
         if keys or groups:
             self._add_move_menu(builder, keys, groups, key="M")
-        if fit_nodes:
+        if fit_nodes or point_element is not None:
             builder.section()
-            builder.add("Fit", lambda: self.fit_requested.emit(fit_nodes), key="F")
+            if fit_nodes:
+                builder.add("Fit", lambda: self.fit_requested.emit(fit_nodes), key="F")
+            if point_element is not None:
+                builder.add(
+                    "Edit…",
+                    lambda: self._edit_point(node),
+                    key="E",
+                )
+                builder.add(
+                    "Move",
+                    lambda: self._move_point(node),
+                    key="V",
+                )
+                builder.add(
+                    "Cycle Rounding",
+                    lambda: self._cycle_rounding(node),
+                    key="C",
+                )
         if rename or open_log:
             builder.section()
             if rename:

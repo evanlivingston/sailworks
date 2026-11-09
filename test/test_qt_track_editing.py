@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from sailworks.core.geo.track import Track
-from sailworks.qt.navigationpanel import NavigationPanel
+from sailworks.qt.navigationpanel import MovePointCommand, NavigationPanel
 
 
 class _Tracks(list):
@@ -101,6 +101,40 @@ def test_point_modifications_require_selected_editable_track(qtbot):
     panel.canvas.navigation.edit_track = track
     NavigationPanel.edit_point(panel, "remove")
     assert len(track.points) == 1
+
+
+def test_edit_point_name_updates_active_track(qtbot):
+    track = Track("Track", [(1, 2, None)])
+    panel = _Panel(track)
+    panel.syncing = False
+    panel.track_points.setColumnCount(4)
+    panel.track_points.setRowCount(1)
+    item = QTableWidgetItem("Start")
+    panel.track_points.setItem(0, 1, item)
+
+    NavigationPanel._edit_point_name(panel, item)
+
+    assert track.point_name(0) == "Start"
+    assert track[0] == (1, 2, None)
+
+
+def test_move_point_command_undoes_and_redoes_relocation(qtbot):
+    track = Track("Track", [(1, 2, None)])
+    _Tracks(track)
+    refreshed = []
+    command = MovePointCommand(
+        lambda: refreshed.append(True),
+        track,
+        0,
+        (1, 2),
+        (5, 6),
+    )
+
+    command.redo()
+    assert track[0] == (5, 6, None)
+    command.undo()
+    assert track[0] == (1, 2, None)
+    assert len(refreshed) == 2
 
 
 def test_add_point_requires_edit_mode_for_existing_tracks(qtbot):

@@ -17,6 +17,7 @@ For detail about GNU see <http://www.gnu.org/licenses/>.
 from typing import Generic, TypeVar
 
 from sailworks.core.geo.collection import CollectionWithActiveElement
+from sailworks.core.geo.elementmultipoint import NamedPoint
 from sailworks.core.geo.track import Track
 
 T = TypeVar("T", bound=Track)
@@ -32,7 +33,13 @@ class _TrackCollection(CollectionWithActiveElement, Generic[T]):
 
             for segment in track.segments:
                 for point in segment.points:
-                    waypoints.append([point.latitude, point.longitude])
+                    name = getattr(point, "name", "") or ""
+                    if name:
+                        waypoints.append(
+                            NamedPoint((point.latitude, point.longitude), name)
+                        )
+                    else:
+                        waypoints.append([point.latitude, point.longitude])
 
             self.append(Track(track.name, waypoints, collection=self))
 

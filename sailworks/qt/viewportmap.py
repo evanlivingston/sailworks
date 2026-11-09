@@ -571,6 +571,33 @@ class ViewportMap(
         self._viewport_overlay_cache = None
         self.publish_route_overlay(force=True)
 
+    def preview_move_point(self, element, index, lat, lon):
+        """Show a point under the cursor without rebuilding track geometry."""
+        self._move_preview_state = (element, int(index), float(lat), float(lon))
+        visible = _overlay_tracks(self)[1]
+        track_index = next(
+            (i for i, track in enumerate(visible) if track is element), -1
+        )
+        preview = (
+            [track_index, int(index), float(lat), float(lon)]
+            if track_index >= 0
+            else []
+        )
+        self.set_move_preview(preview)
+        return True
+
+    def clear_move_preview(self):
+        self._move_preview_state = None
+        self.set_move_preview([])
+
+    def set_move_preview(self, preview):
+        presenter = getattr(self, "_weather_presenter", None)
+        widget = getattr(presenter, "widget", None)
+        setter = getattr(widget, "set_move_preview", None)
+        if callable(setter):
+            return setter(preview)
+        return False
+
     def publish_route_overlay(self, force=False):
         """Publish the overlay only when its content or host changed.
 

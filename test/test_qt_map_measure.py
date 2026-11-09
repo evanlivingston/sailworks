@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QKeyEvent
 
 from sailworks.qt.mapinteraction import MapInteractionMixin
@@ -30,9 +30,6 @@ class MeasureHost(MapInteractionMixin):
 
     def _cancel_cursor(self):
         pass
-
-    def cancel_move(self):
-        self.move_callback = None
 
     def setCursor(self, _):
         pass
@@ -92,6 +89,33 @@ class TestQtMapMeasure(unittest.TestCase):
             135.8,
             delta=1,
         )
+
+    def test_move_drag_commits_on_release_not_press(self):
+        host = MeasureHost()
+        received = []
+        host.move_callback = received.append
+
+        self.assertTrue(host._begin_move_drag(QPointF(1, 2)))
+        self.assertEqual(received, [])
+        self.assertTrue(host._finish_move_drag(QPointF(3, 4)))
+        self.assertEqual(received, [(3.0, 4.0)])
+        self.assertIsNone(host.move_callback)
+
+    def test_move_preview_follows_cursor_and_cancel_restores(self):
+        host = MeasureHost()
+        previewed = []
+        restored = []
+        host.move_callback = lambda coordinates: None
+        host._move_preview_callback = previewed.append
+        host._move_restore_callback = lambda: restored.append(True)
+
+        self.assertTrue(host._move_preview(QPointF(3, 4)))
+        self.assertEqual(previewed, [(3.0, 4.0)])
+
+        host.cancel_move()
+        self.assertEqual(restored, [True])
+        self.assertIsNone(host.move_callback)
+        self.assertIsNone(host._move_preview_callback)
 
     def test_overlay_paints_line_and_distance_label(self):
         host = SimpleNamespace(
