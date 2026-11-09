@@ -293,6 +293,7 @@ Item {
                 property var measurePoints: []
                 property var measurePreview: []
                 property real measureDistance: -1
+                property var movePreview: []
                 property real centerLatitude: 0
                 property real centerLongitude: 0
                 property real zoom: 1
@@ -585,12 +586,20 @@ Item {
                             const points = track.points
                             if (!points || points.length < 2)
                                 continue
+                            const preview = (movePreview && movePreview.length === 4
+                                             && movePreview[0] === t)
+                                            ? movePreview : null
+                            const previewIndex = preview ? preview[1] : -1
                             const active = Boolean(track.active)
                             context.beginPath()
-                            const first = screenPoint(points[0])
+                            const first = previewIndex === 0
+                                ? screenPoint([preview[2], preview[3]])
+                                : screenPoint(points[0])
                             context.moveTo(first.x, first.y)
                             for (let i = 1; i < points.length; ++i) {
-                                const point = screenPoint(points[i])
+                                const point = i === previewIndex
+                                    ? screenPoint([preview[2], preview[3]])
+                                    : screenPoint(points[i])
                                 context.lineTo(point.x, point.y)
                             }
                             context.lineWidth = active ? 1 : 0.8
@@ -604,7 +613,9 @@ Item {
                             context.fillStyle = "rgba(17,17,17,0.7)"
                             context.fillText(track.name, first.x - 10, first.y - 10)
                             for (let i = 0; i < points.length; ++i) {
-                                const point = screenPoint(points[i])
+                                const point = i === previewIndex
+                                    ? screenPoint([preview[2], preview[3]])
+                                    : screenPoint(points[i])
                                 context.fillStyle = i === track.highlight
                                     ? "rgba(255,0,0,0.9)"
                                     : active
@@ -960,6 +971,7 @@ Item {
                 onMeasurePointsChanged: requestPaint()
                 onMeasurePreviewChanged: requestPaint()
                 onMeasureDistanceChanged: requestPaint()
+                onMovePreviewChanged: requestPaint()
                 onCenterLatitudeChanged: requestPaint()
                 onCenterLongitudeChanged: requestPaint()
                 onZoomChanged: requestPaint()

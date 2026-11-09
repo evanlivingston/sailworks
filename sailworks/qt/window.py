@@ -47,7 +47,7 @@ from sailworks.core.timecontrol import (
 )
 from sailworks.core.n2kdevices import source_label
 from sailworks.core.places import PlaceIndex, index_chart_files
-from sailworks.core.scene import KIND_LOG, KIND_ROUTING, KIND_TRACK
+from sailworks.core.scene import KIND_LOG, KIND_POI, KIND_ROUTING, KIND_TRACK
 from sailworks.common import resource_path
 from .theme import MenuBuilder, section_label, symbol_icon, ThemedMenu
 from .dropdown import Dropdown
@@ -68,7 +68,7 @@ from .plotdata import elapsed_offsets
 from .workspace import WorkspacePreferences
 from .polarworkspace import PolarWorkspace
 from .polarlibrary import PolarLibrary
-from .navigationpanel import NavigationPanel, RemoveNavigationCommand
+from .navigationpanel import MovePointCommand, NavigationPanel, RemoveNavigationCommand
 from .scenepanel import ScenePanel
 from .racepanel import RacesPanel
 from .marinepanel import MarinePanel
@@ -207,6 +207,7 @@ class PreviewWindow(QMainWindow):
         self.scene_panel.open_requested.connect(self._scene_open)
         self.scene_panel.fit_requested.connect(self._scene_fit)
         self.scene_panel.delete_requested.connect(self._scene_delete)
+        self.scene_panel.move_point_requested.connect(self._move_scene_point)
         controller.log_library_changed.connect(self.scene_panel.refresh)
         self.navigation_panel = NavigationPanel(
             controller, self.map, self, undo_stack=self.undo_stack
@@ -1173,6 +1174,16 @@ class PreviewWindow(QMainWindow):
             if route is not None:
                 self.controller.core.routingManager.set_active(route)
                 self._select_saved_route(route)
+        elif kind == KIND_POI:
+            poi = next(
+                (item for item in self.controller.core.poiManager if item.uid == key),
+                None,
+            )
+            if poi is not None:
+                self.navigation_panel.poi = poi
+                self.navigation_panel.refresh()
+                self.map.invalidate_navigation()
+                self.map.update()
 
     def _scene_open(self, kind, key):
         if kind != KIND_LOG:
@@ -1194,6 +1205,8 @@ class PreviewWindow(QMainWindow):
                 index = int(node[3])
                 if 0 <= index < len(element.points):
                     coordinates.append(tuple(element.points[index][:2]))
+            elif getattr(element, "position", None) is not None:
+                coordinates.append(tuple(element.position[:2]))
             elif hasattr(element, "to_list"):
                 coordinates.extend(element.to_list())
             else:
@@ -1269,6 +1282,40 @@ class PreviewWindow(QMainWindow):
         if changed:
             self.navigation_panel.refresh()
             self.navigation_panel.changed.emit()
+
+    def _move_scene_point(self, element, index):
+        if not 0 <= index < len(element):
+            return
+        before = (element.points[index][0], element.points[index][1])
+
+        def preview(coordinates):
+            self.map.preview_move_point(element, index, coordinates[0], coordinates[1])
+
+        def restore():
+            self.map.clear_move_preview()
+
+        def move(coordinates):
+            # A caller may invoke the commit callback directly (as tests and
+            # the retained map API do); dropping the pending preview first
+            # keeps a later cancel from restoring the old position.
+            self.map._end_move(restore=False)
+            if 0 <= index < len(element):
+                self.undo_stack.push(
+                    MovePointCommand(
+                        self._refresh_scene_point,
+                        element,
+                        index,
+                        before,
+                        coordinates,
+                    )
+                )
+
+        self.views.setCurrentWidget(self.map)
+        self.map.begin_move(move, preview=preview, restore=restore)
+
+    def _refresh_scene_point(self):
+        self.scene_panel.refresh()
+        self._scene_changed()
 
     def _move_navigation_point(self, callback):
         self.views.setCurrentWidget(self.map)

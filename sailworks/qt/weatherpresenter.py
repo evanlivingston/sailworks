@@ -618,7 +618,11 @@ class WeatherPresenter(QObject):
             cancel_fly = getattr(self.canvas, "cancel_fly", None)
             if cancel_fly is not None:
                 cancel_fly()
-        if watched is self.widget and event.type() == QEvent.Type.MouseMove:
+        if (
+            watched is self.widget
+            and event.type() == QEvent.Type.MouseMove
+            and self.canvas.move_callback is None
+        ):
             # Sampling the weather under the pointer is far too expensive to
             # run on every move while the map is being dragged.  Coalesce to
             # 20 Hz and skip it during camera motion.
@@ -642,13 +646,23 @@ class WeatherPresenter(QObject):
             and event.button() == Qt.MouseButton.LeftButton
             and self.canvas.move_callback is not None
         ):
-            position = self.canvas.convert_screen_to_geographic(
-                event.position().x(), event.position().y()
-            )
-            callback = self.canvas.move_callback
-            self.canvas.cancel_move()
-            callback(position.get_degrees())
+            self.canvas._begin_move_drag(event.position())
             return True
+        if (
+            watched is self.widget
+            and event.type() == QEvent.Type.MouseMove
+            and self.canvas.move_callback is not None
+        ):
+            self.canvas._move_preview(event.position())
+            return True
+        if (
+            watched is self.widget
+            and event.type() == QEvent.Type.MouseButtonRelease
+            and event.button() == Qt.MouseButton.LeftButton
+            and self.canvas.move_callback is not None
+        ):
+            if self.canvas._finish_move_drag(event.position()):
+                return True
         if (
             watched is self.widget
             and getattr(self.canvas, "_desktop_viewport", False)
