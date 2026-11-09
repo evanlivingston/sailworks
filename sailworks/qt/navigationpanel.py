@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
-    QMenu,
     QPushButton,
     QSplitter,
     QTabWidget,
@@ -29,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from sailworks.core.aismanager import SHIP_TYPE_COLORS
 from .backgroundtask import BackgroundTask
+from .theme import MenuBuilder, ThemedMenu
 from sailworks.rendering.navigation import routing_summary
 
 
@@ -240,31 +240,46 @@ class NavigationPanel(QWidget):
         self._menu(
             self.tracks,
             [
-                ("Select", self.select_track),
-                ("Edit", self.edit_track),
-                ("Fit", self.fit_track),
-                ("Remove", self.remove_track),
-                ("Export…", self.export_track),
+                ("Select", self.select_track, "S"),
+                ("Edit", self.edit_track, "E"),
+                None,
+                ("Fit", self.fit_track, "F"),
+                None,
+                ("Export…", self.export_track, "X"),
+                None,
+                ("Remove", self.remove_track, "R"),
             ],
         )
         self._menu(
             self.track_points,
             [
-                ("Fit", self.fit_track_point),
-                ("Move", self.move_point),
-                ("Move Up", lambda: self.edit_point("move_up")),
-                ("Move Down", lambda: self.edit_point("move_down")),
-                ("Remove", lambda: self.edit_point("remove")),
-                ("Duplicate", lambda: self.edit_point("duplicate")),
+                ("Fit", self.fit_track_point, "F"),
+                None,
+                ("Move", self.move_point, "M"),
+                ("Move Up", lambda: self.edit_point("move_up"), "U"),
+                ("Move Down", lambda: self.edit_point("move_down"), "D"),
+                None,
+                ("Duplicate", lambda: self.edit_point("duplicate"), "P"),
+                None,
+                ("Remove", lambda: self.edit_point("remove"), "R"),
             ],
         )
-        self._menu(self.pois, [("Move", self.move_poi), ("Remove", self.remove_poi)])
+        self._menu(
+            self.pois,
+            [
+                ("Move", self.move_poi, "M"),
+                None,
+                ("Remove", self.remove_poi, "R"),
+            ],
+        )
         self._menu(
             self.routes,
             [
-                ("Fit", self.fit_route),
-                ("Remove", self.remove_route),
-                ("Export…", self.export_route),
+                ("Fit", self.fit_route, "F"),
+                None,
+                ("Export…", self.export_route, "X"),
+                None,
+                ("Remove", self.remove_route, "R"),
             ],
         )
         self.refresh()
@@ -307,9 +322,14 @@ class NavigationPanel(QWidget):
             if item is None:
                 return
             self._select_context_item(widget, item)
-            menu = QMenu(widget)
-            for name, callback in actions:
-                menu.addAction(name, callback)
+            menu = ThemedMenu(widget)
+            builder = MenuBuilder(menu)
+            for entry in actions:
+                if entry is None:
+                    builder.section()
+                    continue
+                name, callback, *rest = entry
+                builder.add(name, callback, key=rest[0] if rest else None)
             menu.exec(widget.viewport().mapToGlobal(position))
 
         widget.customContextMenuRequested.connect(show)

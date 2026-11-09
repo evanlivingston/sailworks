@@ -1,8 +1,9 @@
 """Application interaction handlers shared by Qt map widgets."""
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QMenu
 import math
+
+from .theme import MenuBuilder, ThemedMenu
 
 
 class MapInteractionMixin:
@@ -28,12 +29,13 @@ class MapInteractionMixin:
         self._cancel_cursor()
         self.cancel_move()
         position = self.convert_screen_to_geographic(event.pos().x(), event.pos().y())
-        menu = QMenu(self)
-        poi = menu.addAction("Add POI here")
-        point = menu.addAction("Add track point here")
-        menu.addSeparator()
-        start = menu.addAction("Set routing start here")
-        destination = menu.addAction("Set routing destination here")
+        menu = ThemedMenu(self)
+        builder = MenuBuilder(menu)
+        poi = builder.add("Add POI here", key="P")
+        point = builder.add("Add track point here", key="T")
+        builder.section()
+        start = builder.add("Set routing start here", key="S")
+        destination = builder.add("Set routing destination here", key="D")
         selected = menu.exec(event.globalPos())
         if selected is poi or selected is point:
             self.navigation_request.emit(

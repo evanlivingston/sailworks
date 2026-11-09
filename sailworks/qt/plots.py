@@ -7,12 +7,11 @@ from datetime import timedelta
 import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QCursor, QKeySequence, QShortcut
-from PySide6.QtWidgets import QMenu
 from matplotlib.patches import Rectangle
 from matplotlib.ticker import FuncFormatter
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
-from .theme import SURFACE, TEXT, MUTED
+from .theme import MUTED, SURFACE, TEXT, MenuBuilder, ThemedMenu
 
 logger = logging.getLogger(__name__)
 
@@ -439,30 +438,32 @@ class LogPlots(FigureCanvasQTAgg):
         menu.exec(QCursor.pos())
 
     def _build_context_menu(self):
-        menu = QMenu(self)
+        menu = ThemedMenu(self)
+        builder = MenuBuilder(menu)
         if self.selection is not None and self.selection[1] > self.selection[0]:
-            delete_action = menu.addAction("Delete")
+            delete_action = builder.add("Delete", key="D")
             delete_action.triggered.connect(self.delete_selected_range)
-            menu.addSeparator()
-        for key, label in (
-            ("speed", "Speed"),
-            ("aws", "Apparent wind speed"),
-            ("tws", "True wind speed"),
-            ("depth", "Water depth"),
-            ("hdg", "Heading"),
-            ("twa", "Wind angles (AWA / TWA)"),
+            builder.section()
+        for key, label, mnemonic in (
+            ("speed", "Speed", "S"),
+            ("aws", "Apparent wind speed", "A"),
+            ("tws", "True wind speed", "T"),
+            ("depth", "Water depth", "W"),
+            ("hdg", "Heading", "H"),
+            ("twa", "Wind angles (AWA / TWA)", "N"),
         ):
-            action = menu.addAction(label)
+            action = builder.add(label, key=mnemonic)
             action.setCheckable(True)
             action.setChecked(self.series[key])
             action.triggered.connect(
                 lambda enabled, series_key=key: self.set_series(series_key, enabled)
             )
         if self.logged_fields:
-            menu.addSeparator()
-            recorded = menu.addMenu("Recorded log fields")
+            builder.section()
+            recorded = builder.add_menu("Recorded log fields", key="R")
+            recorded_builder = MenuBuilder(recorded)
             for field in self.logged_fields:
-                action = recorded.addAction(field.label)
+                action = recorded_builder.add(field.label)
                 action.setCheckable(True)
                 action.setChecked(field.key in self.selected_logged_fields)
                 action.triggered.connect(

@@ -2,13 +2,13 @@
 
 from pathlib import Path
 
-from PySide6.QtCore import QSignalBlocker, Qt, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
-    QMenu,
     QPushButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sailworks.common import resource_path
 from sailworks.core.scene import (
     KIND_LOG,
     KIND_ROUTING,
@@ -24,9 +25,31 @@ from sailworks.core.scene import (
     SceneCollection,
     SceneEntry,
 )
+from .theme import MenuBuilder, symbol_icon, ThemedMenu
 
 NODE_ROLE = Qt.ItemDataRole.UserRole
 MUTED = QColor("#b0b0ad")
+NAME_COLUMN = 0
+VISIBLE_COLUMN = 1
+TYPE_ICONS = {
+    KIND_TRACK: "track-symbolic",
+    KIND_ROUTING: "isochrone-symbolic",
+    KIND_LOG: "information-symbolic",
+}
+
+
+def _visibility_style():
+    open_eye = Path(
+        resource_path("sailworks", "data/icons/eye-open-negative-filled-symbolic.svg")
+    ).as_posix()
+    closed_eye = Path(
+        resource_path("sailworks", "data/icons/eye-closed-symbolic.svg")
+    ).as_posix()
+    return (
+        "QTreeWidget::indicator { width: 14px; height: 14px; }"
+        f'QTreeWidget::indicator:checked {{ image: url("{open_eye}"); }}'
+        f'QTreeWidget::indicator:unchecked {{ image: url("{closed_eye}"); }}'
+    )
 
 
 class SceneTree(QTreeWidget):
@@ -46,6 +69,8 @@ class ScenePanel(QWidget):
     changed = Signal()
     selected = Signal(str, str)
     open_requested = Signal(str, str)
+    fit_requested = Signal(object)
+    delete_requested = Signal(object)
 
     def __init__(self, controller, parent=None, scene_path=None):
         super().__init__(parent)
@@ -56,12 +81,18 @@ class ScenePanel(QWidget):
         self._rows = {}
         self._expanded_items = set()
         self._opened_logs = set()
+        # Rebuilding clears the tree, so never do it from inside itemChanged:
+        # deleting the emitting item there can crash Qt. Defer to the event loop.
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.timeout.connect(self._deferred_change)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 12)
         layout.setSpacing(6)
 
         self.tree = SceneTree(self)
+        self.tree.setFrameShape(QFrame.Shape.NoFrame)
         self.tree.setColumnCount(2)
         self.tree.setHeaderHidden(True)
         self.tree.setUniformRowHeights(True)
@@ -73,11 +104,15 @@ class ScenePanel(QWidget):
         self.tree.setDropIndicatorShown(True)
         self.tree.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.setStyleSheet(_visibility_style())
         self.tree.header().setStretchLastSection(False)
-        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.tree.header().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.ResizeToContents
+            NAME_COLUMN, QHeaderView.ResizeMode.Stretch
         )
+        self.tree.header().setSectionResizeMode(
+            VISIBLE_COLUMN, QHeaderView.ResizeMode.Fixed
+        )
+        self.tree.header().resizeSection(VISIBLE_COLUMN, 24)
         self.tree.itemChanged.connect(self._item_changed)
         self.tree.itemSelectionChanged.connect(self._selection_changed)
         self.tree.itemExpanded.connect(self._expanded_changed)
@@ -231,11 +266,11 @@ class ScenePanel(QWidget):
             self.tree.clear()
             self._rows = {}
             root = QTreeWidgetItem(["Scene Collection", ""])
-            root.setData(0, NODE_ROLE, ("root",))
-            font = QFont(root.font(0))
+            root.setData(NAME_COLUMN, NODE_ROLE, ("root",))
+            root.setIcon(NAME_COLUMN, symbol_icon("collection-symbolic"))
+            font = QFont(root.font(NAME_COLUMN))
             font.setBold(True)
-            root.setFont(0, font)
-            root.setForeground(1, QBrush(MUTED))
+            root.setFont(NAME_COLUMN, font)
             root.setFlags(Qt.ItemFlag.ItemIsEnabled)
             self.tree.addTopLevelItem(root)
             root.setExpanded(True)
@@ -268,8 +303,9 @@ class ScenePanel(QWidget):
 
     def _add_groups(self, parent_item, parent_id):
         for group in self.scene.groups_in(parent_id):
-            row = QTreeWidgetItem([group.name, "Collection"])
-            row.setData(0, NODE_ROLE, ("group", group.id))
+            row = QTreeWidgetItem([group.name, ""])
+            row.setData(NAME_COLUMN, NODE_ROLE, ("group", group.id))
+            row.setIcon(NAME_COLUMN, symbol_icon("collection-symbolic"))
             row.setFlags(
                 Qt.ItemFlag.ItemIsEnabled
                 | Qt.ItemFlag.ItemIsSelectable
@@ -279,21 +315,20 @@ class ScenePanel(QWidget):
                 | Qt.ItemFlag.ItemIsDropEnabled
             )
             row.setCheckState(
-                0,
+                VISIBLE_COLUMN,
                 Qt.CheckState.Checked if group.visible else Qt.CheckState.Unchecked,
             )
-            row.setForeground(1, QBrush(MUTED))
             row.setToolTip(
-                0,
-                "Collection. Uncheck to hide every item inside."
+                NAME_COLUMN,
+                "Collection. Click the eye to hide every item inside."
                 + (" Built-in." if group.builtin else ""),
             )
             if not self.scene.group_visible(group.id):
-                row.setForeground(0, QBrush(MUTED))
+                row.setForeground(NAME_COLUMN, QBrush(MUTED))
             else:
-                font = QFont(row.font(0))
+                font = QFont(row.font(NAME_COLUMN))
                 font.setBold(True)
-                row.setFont(0, font)
+                row.setFont(NAME_COLUMN, font)
             parent_item.addChild(row)
             self._rows[("group", group.id)] = row
             self._add_groups(row, group.id)
@@ -301,8 +336,12 @@ class ScenePanel(QWidget):
 
     def _add_items(self, parent_item, group_id):
         for entry in self.scene.items_in(group_id):
-            row = QTreeWidgetItem([entry.name, TYPE_TITLES.get(entry.kind, "")])
-            row.setData(0, NODE_ROLE, ("item", entry.kind, entry.key))
+            row = QTreeWidgetItem([entry.name, ""])
+            row.setData(NAME_COLUMN, NODE_ROLE, ("item", entry.kind, entry.key))
+            row.setIcon(
+                NAME_COLUMN,
+                symbol_icon(TYPE_ICONS.get(entry.kind, "information-symbolic")),
+            )
             flags = (
                 Qt.ItemFlag.ItemIsEnabled
                 | Qt.ItemFlag.ItemIsSelectable
@@ -310,22 +349,26 @@ class ScenePanel(QWidget):
             )
             if entry.kind in (KIND_TRACK, KIND_ROUTING):
                 flags |= Qt.ItemFlag.ItemIsUserCheckable
+                row.setCheckState(
+                    VISIBLE_COLUMN,
+                    Qt.CheckState.Checked if entry.visible else Qt.CheckState.Unchecked,
+                )
             if entry.kind in (KIND_TRACK, KIND_ROUTING, KIND_LOG):
                 flags |= Qt.ItemFlag.ItemIsEditable
-                row.setCheckState(
-                    0,
-                    Qt.CheckState.Checked if entry.visible else Qt.CheckState.Unchecked,
+            if entry.kind == KIND_LOG:
+                row.setIcon(
+                    VISIBLE_COLUMN,
+                    symbol_icon("eye-open-negative-filled-symbolic"),
                 )
             row.setFlags(flags)
             live = self.scene.live_entry(entry.kind, entry.key)
             detail = live.detail if live is not None else ""
             row.setToolTip(
-                0, f"{entry.name}\n{TYPE_TITLES.get(entry.kind, '')}\n{detail}"
+                NAME_COLUMN,
+                f"{entry.name}\n{TYPE_TITLES.get(entry.kind, '')}\n{detail}",
             )
-            row.setForeground(1, QBrush(MUTED))
             if not self.scene.effective_visible(entry.kind, entry.key):
-                row.setForeground(0, QBrush(MUTED))
-                row.setForeground(1, QBrush(MUTED))
+                row.setForeground(NAME_COLUMN, QBrush(MUTED))
             parent_item.addChild(row)
             self._rows[("item", entry.kind, entry.key)] = row
             live = self.scene.live_entry(entry.kind, entry.key)
@@ -350,13 +393,15 @@ class ScenePanel(QWidget):
             return
         for index, point in enumerate(live.element.points):
             child = QTreeWidgetItem(
-                [f"Point {index + 1}", f"{point[0]:.6f}, {point[1]:.6f}"]
+                [f"Point {index + 1}  {point[0]:.6f}, {point[1]:.6f}", ""]
             )
-            child.setData(0, NODE_ROLE, ("point", entry.kind, entry.key, index))
+            child.setData(
+                NAME_COLUMN, NODE_ROLE, ("point", entry.kind, entry.key, index)
+            )
+            child.setIcon(NAME_COLUMN, symbol_icon("poi-symbolic"))
             child.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            child.setForeground(0, QBrush(MUTED))
-            child.setForeground(1, QBrush(MUTED))
-            child.setToolTip(0, f"{point[0]:.6f}, {point[1]:.6f}")
+            child.setForeground(NAME_COLUMN, QBrush(MUTED))
+            child.setToolTip(NAME_COLUMN, f"{point[0]:.6f}, {point[1]:.6f}")
             row.addChild(child)
 
     def _first_selectable(self):
@@ -438,30 +483,44 @@ class ScenePanel(QWidget):
             group = self.scene.group(node[1])
             if group is None:
                 return
-            name = row.text(0).strip()
+            name = row.text(NAME_COLUMN).strip()
             if name and name != group.name:
                 changed = self.scene.rename_group(group.id, name) or changed
                 structural = True
-            visible = row.checkState(0) == Qt.CheckState.Checked
+            visible = row.checkState(VISIBLE_COLUMN) == Qt.CheckState.Checked
             if visible != group.visible:
                 changed = self.scene.set_group_visible(group.id, visible) or changed
         elif node[0] == "item":
             item = self.scene.item(node[1], node[2])
             if item is None:
                 return
-            name = row.text(0).strip()
+            name = row.text(NAME_COLUMN).strip()
             if name and name != item.name:
                 self._rename_item(item, name)
                 return
             if item.kind == KIND_LOG:
                 return
-            visible = row.checkState(0) == Qt.CheckState.Checked
+            visible = row.checkState(VISIBLE_COLUMN) == Qt.CheckState.Checked
             if visible != item.visible:
                 changed = (
                     self.scene.set_item_visible(node[1], node[2], visible) or changed
                 )
         if changed:
-            self._after_change(structural=structural)
+            if structural:
+                self._after_change(structural=True)
+            else:
+                applied = self.scene.apply_visibility()
+                if applied:
+                    self._save_visible_elements(applied)
+                self._refresh_timer.start(0)
+
+    def _deferred_change(self):
+        self.syncing = True
+        try:
+            self._rebuild()
+        finally:
+            self.syncing = False
+        self.changed.emit()
 
     def _expanded_changed(self, row):
         if self.syncing:
@@ -526,13 +585,13 @@ class ScenePanel(QWidget):
             self.selected.emit(nodes[0][1], nodes[0][2])
 
     def _double_clicked(self, row, _column):
-        if _column != 0:
+        if _column != NAME_COLUMN:
             return
-        node = row.data(0, NODE_ROLE)
+        node = row.data(NAME_COLUMN, NODE_ROLE)
         if node is None:
             return
         if node[0] in ("group", "item"):
-            self.tree.editItem(row, 0)
+            self.tree.editItem(row, NAME_COLUMN)
 
     def _after_change(self, structural=False):
         changed = self.scene.apply_visibility()
@@ -554,7 +613,7 @@ class ScenePanel(QWidget):
         if row is not None:
             self._expand_group_path(group.id)
             self.tree.setCurrentItem(row)
-            self.tree.editItem(row, 0)
+            self.tree.editItem(row, NAME_COLUMN)
         self.changed.emit()
 
     def _group_selection(self):
@@ -586,8 +645,30 @@ class ScenePanel(QWidget):
         if row is not None:
             self._expand_group_path(group.id)
             self.tree.setCurrentItem(row)
-            self.tree.editItem(row, 0)
+            self.tree.editItem(row, NAME_COLUMN)
         self.changed.emit()
+
+    def _nodes_for_fit(self, nodes):
+        if len(nodes) != 1:
+            return ()
+        node = nodes[0]
+        if node[0] == "point":
+            return nodes
+        if node[0] == "item" and node[1] in (KIND_TRACK, KIND_ROUTING):
+            return nodes
+        return ()
+
+    def _nodes_for_delete(self, nodes):
+        deletable = []
+        for node in nodes:
+            if node[0] == "point":
+                if not node[2].startswith("race:"):
+                    deletable.append(node)
+            elif node[0] == "item" and node[1] in (KIND_TRACK, KIND_ROUTING):
+                if node[1] == KIND_TRACK and node[2].startswith("race:"):
+                    continue
+                deletable.append(node)
+        return deletable
 
     def _context_menu(self, position):
         row = self.tree.itemAt(position)
@@ -595,15 +676,15 @@ class ScenePanel(QWidget):
             self.tree.clearSelection()
             row.setSelected(True)
         node = row.data(0, NODE_ROLE) if row is not None else None
-        menu = QMenu(self)
+        menu = ThemedMenu(self)
+        builder = MenuBuilder(menu)
 
-        menu.addAction("New Collection", self._new_collection)
         keys = self._selected_item_keys()
-        if keys:
-            menu.addAction("Group Selection", self._group_selection)
+        nodes = self._selected_nodes()
         groups = self._selected_groups()
-        if len(groups) == 1 and node is not None and node[0] == "group":
-            menu.addAction("Rename", lambda: self.tree.editItem(row, 0))
+        fit_nodes = self._nodes_for_fit(nodes)
+        delete_nodes = self._nodes_for_delete(nodes)
+        rename = len(groups) == 1 and node is not None and node[0] == "group"
         deletable = [
             identifier
             for identifier in groups
@@ -612,18 +693,53 @@ class ScenePanel(QWidget):
                 and not self.scene.group(identifier).builtin
             )
         ]
-        if deletable:
-            menu.addAction(
-                "Delete Collection",
-                lambda ids=tuple(deletable): self._delete_groups(ids),
-            )
-        if node is not None and node[0] == "item" and node[1] == KIND_LOG:
-            menu.addAction(
-                "Open log",
-                lambda kind=node[1], key=node[2]: self.open_requested.emit(kind, key),
-            )
+        open_log = node is not None and node[0] == "item" and node[1] == KIND_LOG
+
+        builder.add("New Collection", self._new_collection, key="N")
+        if keys:
+            builder.add("Group Selection", self._group_selection, key="G")
         if keys or groups:
-            self._add_move_menu(menu, keys, groups)
+            self._add_move_menu(builder, keys, groups, key="M")
+        if fit_nodes:
+            builder.section()
+            builder.add("Fit", lambda: self.fit_requested.emit(fit_nodes), key="F")
+        if rename or open_log:
+            builder.section()
+            if rename:
+                builder.add(
+                    "Rename",
+                    lambda: self.tree.editItem(row, NAME_COLUMN),
+                    key="R",
+                )
+            if open_log:
+                builder.add(
+                    "Open log",
+                    lambda kind=node[1], key=node[2]: self.open_requested.emit(
+                        kind, key
+                    ),
+                    key="O",
+                )
+        destructive = []
+        if delete_nodes:
+            destructive.append(
+                (
+                    "Delete",
+                    lambda: self.delete_requested.emit(delete_nodes),
+                    "D",
+                )
+            )
+        if deletable:
+            destructive.append(
+                (
+                    "Delete Collection",
+                    lambda ids=tuple(deletable): self._delete_groups(ids),
+                    "C",
+                )
+            )
+        if destructive:
+            builder.section()
+            for text, callback, key in destructive:
+                builder.add(text, callback, key=key)
         if menu.actions():
             menu.exec(self.tree.viewport().mapToGlobal(position))
 
@@ -635,12 +751,13 @@ class ScenePanel(QWidget):
             self.refresh()
             self.changed.emit()
 
-    def _add_move_menu(self, menu, keys, groups):
+    def _add_move_menu(self, builder, keys, groups, key=None):
         targets = [(None, "Scene Collection")]
         targets.extend((group.id, group.name) for group in self.scene.groups.values())
-        submenu = menu.addMenu("Move to")
+        submenu = builder.add_menu("Move to", key=key)
+        sub_builder = MenuBuilder(submenu)
         for identifier, name in targets:
-            action = submenu.addAction(name)
+            action = sub_builder.add(name)
             action.triggered.connect(
                 lambda _checked=False, target=identifier: self._move_to(
                     keys, groups, target

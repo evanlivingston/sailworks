@@ -6,7 +6,7 @@ from functools import lru_cache
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPalette, QIcon, QPainter
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QLabel, QMenu
 from sailworks.common import resource_path
 from .scrollchrome import install_wheel_guard
 
@@ -20,6 +20,85 @@ BORDER = "#454545"
 
 
 logger = logging.getLogger("sailworks")
+
+
+class ThemedMenu(QMenu):
+    """Menu without the native light popup frame on macOS."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
+
+    def _mnemonic_action(self, letter):
+        for action in self.actions():
+            if action.isSeparator() or not action.isEnabled():
+                continue
+            text = action.text()
+            index = text.find("&")
+            if index >= 0 and index + 1 < len(text):
+                if text[index + 1].lower() == letter:
+                    return action
+        return None
+
+    def keyPressEvent(self, event):  # noqa: N802 - Qt virtual method name
+        modifiers = event.modifiers()
+        if not modifiers & (
+            Qt.KeyboardModifier.ControlModifier
+            | Qt.KeyboardModifier.AltModifier
+            | Qt.KeyboardModifier.MetaModifier
+        ):
+            text = event.text()
+            if len(text) == 1 and text.isalnum():
+                action = self._mnemonic_action(text.lower())
+                if action is not None:
+                    if action.menu() is not None:
+                        self.setActiveAction(action)
+                        geometry = self.actionGeometry(action)
+                        action.menu().popup(self.mapToGlobal(geometry.topRight()))
+                    else:
+                        self.close()
+                        action.trigger()
+                    return
+        super().keyPressEvent(event)
+
+
+class MenuBuilder:
+    """Add menu entries with unique underlined mnemonic keys."""
+
+    def __init__(self, menu):
+        self.menu = menu
+        self._keys = set()
+
+    def _mark(self, text, key=None):
+        if "&" in text:
+            return text
+        letters = [char for char in text if char.isalnum()]
+        if key is None:
+            key = next(
+                (char for char in letters if char.lower() not in self._keys),
+                letters[0] if letters else None,
+            )
+        if key is None:
+            return text
+        self._keys.add(key.lower())
+        index = text.lower().find(key.lower())
+        if index < 0:
+            return text
+        return f"{text[:index]}&{text[index:]}"
+
+    def add(self, text, callback=None, key=None):
+        return self.menu.addAction(self._mark(text, key), callback)
+
+    def add_menu(self, text, key=None):
+        submenu = ThemedMenu(self.menu)
+        self.menu.addMenu(submenu)
+        submenu.setTitle(self._mark(text, key))
+        return submenu
+
+    def section(self):
+        actions = self.menu.actions()
+        if actions and not actions[-1].isSeparator():
+            self.menu.addSeparator()
 
 
 def _force_macos_dark_appearance() -> bool:
@@ -191,6 +270,11 @@ def apply_theme(app: QApplication):
             border: none; outline: 0; padding: 0;
             selection-background-color: #3584e4; selection-color: #ffffff; }
         QComboBoxPrivateContainer { border: none; background: #1e1e1e; }
+        QMenu { background: #303030; border: none; padding: 4px; }
+        QMenu::item { padding: 4px 18px 4px 10px; border-radius: 4px; }
+        QMenu::item:selected { background: #3584e4; color: #ffffff; }
+        QMenu::item:disabled { color: #777774; }
+        QMenu::separator { height: 1px; background: #454545; margin: 4px 8px; }
         QComboBox QAbstractItemView::item { padding: 4px 6px; border: none;
             background: transparent; }
         QComboBox QAbstractItemView::item:hover { background: #3c3c3c;
