@@ -1460,7 +1460,9 @@ class PreviewWindow(QMainWindow):
         refresh_log_editor = getattr(self, "_refresh_log_editor_controls", None)
         if callable(refresh_log_editor):
             refresh_log_editor()
-        self.scene_panel.refresh()
+        scene_panel = getattr(self, "scene_panel", None)
+        if scene_panel is not None:
+            scene_panel.refresh()
         self._refresh_data()
         self._refresh_log_position()
 
