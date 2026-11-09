@@ -526,6 +526,18 @@ class RoutingPanel(QWidget):
         self.priority_info.clicked.connect(self._explain_priority)
         priority_row.addWidget(self.priority_info)
         advanced.addLayout(priority_row)
+        advanced.addWidget(section_label("Isochrones"))
+        self.isochrone_step = Dropdown("Time step")
+        self.isochrone_step.addItem("Adaptive (10–60 min)", "adaptive")
+        self.isochrone_step.addItem("1 hour (faster)", "hourly")
+        self.isochrone_step.setToolTip(
+            "Adaptive keeps consecutive isochrones about 5 km apart as boat "
+            "speed rises. Choose 1 hour for the faster, legacy spacing."
+        )
+        self.isochrone_step.currentIndexChanged.connect(
+            lambda *_: self.options_changed.emit()
+        )
+        advanced.addWidget(self.isochrone_step)
         advanced.addStretch()
         self.pages.addTab(self._scroll_page(advanced_page), "Advanced")
         self.wind_algorithm_name = self.algorithm.currentText()
@@ -667,6 +679,7 @@ class RoutingPanel(QWidget):
             advanced_expanded=self.parameters_header.isChecked(),
             use_currents=self.use_currents.isChecked(),
             current_priority=self.current_priority.currentData(),
+            isochrone_step=self.isochrone_step.currentData(),
             coastline_clearance_nm=self.coastline_clearance.value(),
             safety={
                 key: (
@@ -744,6 +757,10 @@ class RoutingPanel(QWidget):
         self.current_priority.setCurrentIndex(
             max(0, self.current_priority.findData(priority))
         )
+        step = saved.get("isochrone_step")
+        step_index = self.isochrone_step.findData(step)
+        if step_index >= 0:
+            self.isochrone_step.setCurrentIndex(step_index)
         self._algorithm_changed()
         safety = mapping(saved.get("safety"))
         for key in (
@@ -918,6 +935,7 @@ class RoutingPanel(QWidget):
             motor_speed_kn=self.motor_speed.value(),
             wave_correct=self.wave_proxy.isChecked(),
             coastline_clearance_distance_m=self.coastline_clearance.value() * 1852,
+            isochrone_step=self.isochrone_step.currentData(),
         )
         axes = {
             key: values.text()

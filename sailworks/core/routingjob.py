@@ -411,6 +411,8 @@ class RouteRequest:
     wave_correct: bool = False
     land_avoidance: Optional[bool] = None
     coastline_clearance_distance_m: float = 0.0
+    isochrone_step: str = "hourly"
+    isochrone_gap_km: float = 2.2
 
     def __post_init__(self):
         if (
@@ -422,6 +424,10 @@ class RouteRequest:
             object.__setattr__(self, "land_avoidance", self.coastline_checks)
         else:
             object.__setattr__(self, "coastline_checks", self.land_avoidance)
+        if self.isochrone_step not in {"hourly", "adaptive"}:
+            raise ValueError("Isochrone step must be 'hourly' or 'adaptive'")
+        if not math.isfinite(self.isochrone_gap_km) or self.isochrone_gap_km <= 0:
+            raise ValueError("Isochrone gap must be a positive distance")
 
 
 class RoutingPreview(tuple):
@@ -470,6 +476,31 @@ class CalculatedRoute:
     contours: object = None
 
 
+MIN_ISOCHRONE_STEP_HOURS = 10 / 60
+MAX_ISOCHRONE_STEP_HOURS = 1.0
+TARGET_ISOCHRONE_SPACING_KM = 5.0
+
+
+def isochrone_step_hours(request, result=None):
+    """Choose the next isochrone interval from the current best speed.
+
+    Adaptive mode mirrors the 10-60 minute range used by Expedition and keeps
+    consecutive isochrones roughly five kilometres apart. Hourly mode is the
+    unchanged legacy behavior.
+    """
+    if request.isochrone_step != "adaptive":
+        return 1.0
+    frontier = result.isochrones[-1] if result is not None else ()
+    speeds = [
+        float(point.speed)
+        for point in frontier
+        if getattr(point, "speed", 0) is not None and float(point.speed) > 0
+    ]
+    speed_kn = max(speeds) if speeds else 6.0
+    hours = TARGET_ISOCHRONE_SPACING_KM / max(speed_kn * 1.852, 0.1)
+    return min(max(hours, MIN_ISOCHRONE_STEP_HOURS), MAX_ISOCHRONE_STEP_HOURS)
+
+
 def calculate_route(
     core,
     request,
@@ -490,6 +521,7 @@ def calculate_route(
         routing = create_requested_routing(
             core, request, providers, wind, current_selection
         )
+        routing.algorithm.contour_gap_m = request.isochrone_gap_km * 1000.0
         from sailworks.core.routingcoverage import prepare_coverage
 
         prepare_coverage(
@@ -596,12 +628,18 @@ def run_requested_routing(core, routing, request, wind, progress, report, save_f
     result = None
     while not routing.end:
         wind.check_cancelled()
+        step_hours = isochrone_step_hours(request, result)
         result = (
             step_with_coverage(
-                routing, core.marine_manager, request.auto_download, report, save_fields
+                routing,
+                core.marine_manager,
+                request.auto_download,
+                report,
+                save_fields,
+                timedelta=step_hours,
             )
             if request.use_currents
-            else routing.step()
+            else routing.step(timedelta=step_hours)
         )
         path = result.path or routing.get_current_best_path()
         contours = snapshot.capture_contours(routing.algorithm)
@@ -646,6 +684,8 @@ def run_requested_routing(core, routing, request, wind, progress, report, save_f
         or request.tws_max_kn is not None
         or request.min_sailing_speed_kn is not None
         or request.wave_correct
+        or request.isochrone_step != "hourly"
+        or request.isochrone_gap_km != 2.2
     ):
         provenance["options"] = dict(
             algorithm=request.algorithm.__name__,
@@ -656,6 +696,8 @@ def run_requested_routing(core, routing, request, wind, progress, report, save_f
             wind_dir_offset=request.wind_dir_offset,
             coastline_checks=request.coastline_checks,
             coastline_clearance_distance_m=request.coastline_clearance_distance_m,
+            isochrone_step=request.isochrone_step,
+            isochrone_gap_km=request.isochrone_gap_km,
             waypoints=request.waypoints,
             tws_max_kn=request.tws_max_kn,
             min_sailing_speed_kn=request.min_sailing_speed_kn,

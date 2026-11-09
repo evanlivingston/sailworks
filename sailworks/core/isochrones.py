@@ -6,10 +6,10 @@ a renderer cannot reconstruct a truthful boundary from them after the fact.
 
 This module keeps the extra evidence while candidates are still local to one
 time slice: each accepted sample remembers its parent frontier point and its
-heading ordinal.  Adjacent accepted samples at the same time form a local fan;
-the union of those fans, extracted in a local metric projection, is the
-sampled search envelope.  It is explicitly a search envelope, not a claim
-about the complete physically reachable set.
+heading ordinal. Adjacent accepted samples at the same time form observed
+arcs. Local fan cells can occlude arcs, but their union cannot add new contour
+edges. The exposed arcs are a sampled search envelope, not a claim about the
+complete physically reachable set.
 
 The data is immutable and JSON-serialisable.  A missing sidecar means a legacy
 route, and an unknown sidecar version is reported as unavailable rather than
@@ -18,6 +18,7 @@ preventing the route from loading.
 
 from __future__ import annotations
 
+import json
 import math
 import os
 from dataclasses import dataclass
@@ -28,7 +29,7 @@ SAMPLED_ENVELOPE = "sampled-envelope"
 LEGACY_FRONTIER = "legacy-frontier"
 UNAVAILABLE = "unavailable"
 
-CONTOURS_VERSION = 1
+CONTOURS_VERSION = 4
 
 _EARTH_RADIUS_M = 6_371_008.8
 
@@ -253,6 +254,7 @@ class IsochroneContours:
     slices: tuple = ()
     version: int = CONTOURS_VERSION
     representation: str = SAMPLED_ENVELOPE
+    _unsupported_json: str = ""
 
     def __post_init__(self):
         object.__setattr__(
@@ -300,31 +302,21 @@ class IsochroneContours:
         return IsochroneContours(self.for_leg(leg), self.version, self.representation)
 
     def displayed(self):
-        """All steps of the active leg plus each older leg's latest step.
+        """Keep the geometry already shown while each leg was calculated.
 
-        Older legs remain visible on the route, but showing every one of their
-        intermediate steps stacks dozens of crossing envelopes on top of the
-        current search.
+        Collapsing a completed leg to just its last step abruptly replaced its
+        previously visible contours with a single, often irregular envelope.
+        The saved route should display the same steps as the live preview.
         """
-        active = self.active_leg
-        if active is None:
-            return IsochroneContours((), self.version, self.representation)
-        latest = {}
-        for item in self.slices:
-            if item.leg_id == active:
-                continue
-            current = latest.get(item.leg_id)
-            if current is None or item.step >= current.step:
-                latest[item.leg_id] = item
-        shown = [latest[leg] for leg in sorted(latest)]
-        shown.extend(item for item in self.slices if item.leg_id == active)
-        return IsochroneContours(tuple(shown), self.version, self.representation)
+        return self
 
     @property
     def runs(self):
         return tuple(run for item in self.slices for run in item.runs)
 
     def to_json(self):
+        if self._unsupported_json:
+            return json.loads(self._unsupported_json)
         return {
             "version": self.version,
             "representation": self.representation,
@@ -345,7 +337,12 @@ class IsochroneContours:
         except (TypeError, ValueError):
             version = 0
         if version != CONTOURS_VERSION:
-            return IsochroneContours((), version=version, representation=UNAVAILABLE)
+            return IsochroneContours(
+                (),
+                version=version,
+                representation=UNAVAILABLE,
+                _unsupported_json=json.dumps(value),
+            )
         try:
             slices = tuple(
                 IsochroneSlice.from_json(item) for item in value.get("slices", ())
@@ -427,26 +424,37 @@ def _dedupe(points):
 
 
 def _valid_edges(points, closed, lines_validity, line_validity):
-    edges = []
     count = len(points)
     last = count if closed else count - 1
-    for index in range(max(0, last)):
-        start = points[index]
-        end = points[(index + 1) % count]
-        valid = True
-        if lines_validity is not None:
+    pairs = [
+        (points[index], points[(index + 1) % count]) for index in range(max(0, last))
+    ]
+    if not pairs:
+        return []
+    if lines_validity is not None:
+        try:
+            answers = [
+                bool(value)
+                for value in np.asarray(
+                    lines_validity(
+                        [[start[0], start[1], end[0], end[1]] for start, end in pairs]
+                    ),
+                    dtype=bool,
+                ).ravel()
+            ]
+        except Exception:
+            answers = [False] * len(pairs)
+    else:
+        answers = [True] * len(pairs)
+    if line_validity is not None:
+        for index, (start, end) in enumerate(pairs):
             try:
-                answer = lines_validity([[start[0], start[1], end[0], end[1]]])
-                valid = bool(np.asarray(answer, dtype=bool).ravel()[0])
+                answers[index] = answers[index] and bool(
+                    line_validity(start[0], start[1], end[0], end[1])
+                )
             except Exception:
-                valid = False
-        if valid and line_validity is not None:
-            try:
-                valid = bool(line_validity(start[0], start[1], end[0], end[1]))
-            except Exception:
-                valid = False
-        edges.append(valid)
-    return edges
+                answers[index] = False
+    return answers
 
 
 def _split_antimeridian(points, closed):
@@ -465,51 +473,12 @@ def _split_antimeridian(points, closed):
         else:
             current.append(point)
     if current:
-        runs.append((tuple(current), bool(closed)))
-    return runs
-
-
-def _parent_key(point):
-    return round(float(point[0]), 6), round(float(point[1]), 6)
-
-
-def _ring_without_parent_edges(coordinates, parent_keys):
-    """Split a union boundary into arcs, removing radial spokes to parents.
-
-    A fan polygon contributes the parent-to-first and parent-to-last edges as
-    part of its boundary.  Those spokes are search ancestry, not contour
-    geometry: keeping them drew radial spikes from every previous frontier
-    point.  Removing every boundary edge incident to a parent leaves the
-    exposed candidate-to-candidate envelope.
-    """
-    points = list(coordinates)
-    if len(points) > 1 and points[0] == points[-1]:
-        points = points[:-1]
-    if len(points) < 3:
-        return []
-    if not any(_parent_key(point) in parent_keys for point in points):
-        return [(points, True)]
-
-    runs = []
-    current = []
-    count = len(points)
-    for index in range(count):
-        start = points[index]
-        end = points[(index + 1) % count]
-        clean = (
-            _parent_key(start) not in parent_keys
-            and _parent_key(end) not in parent_keys
+        # A piece of a split ring is never itself a closed ring; closing it
+        # would invent an edge. Check the omitted last-to-first edge too.
+        keep_closed = (
+            bool(closed) and not runs and abs(current[-1][1] - current[0][1]) <= 180.0
         )
-        if clean:
-            if not current:
-                current = [start]
-            current.append(end)
-        else:
-            if len(current) > 1:
-                runs.append((current, False))
-            current = []
-    if len(current) > 1:
-        runs.append((current, False))
+        runs.append((tuple(current), keep_closed))
     return runs
 
 
@@ -520,126 +489,51 @@ def _approx_distance_m(first, second):
     return _EARTH_RADIUS_M * math.hypot(delta_latitude, delta_longitude)
 
 
-def _simplify_run(run, tolerance_m, accepted):
-    if len(run.points) < 3 or run.closed:
-        return run
-    from shapely.geometry import LineString
+def _ring_on_observed_arcs(coordinates, arcs, arc_index):
+    """Trace only boundary edges supported by adjacent same-parent samples.
 
-    latitude = math.radians(sum(point[0] for point in run.points) / len(run.points))
-    scale = max(abs(math.cos(latitude)), 1e-9)
-    coordinates = [
-        (
-            math.radians(point[1]) * scale * _EARTH_RADIUS_M,
-            math.radians(point[0]) * _EARTH_RADIUS_M,
-        )
-        for point in run.points
-    ]
-    simplified = LineString(coordinates).simplify(
-        float(tolerance_m), preserve_topology=False
-    )
-    points = tuple(
-        (
-            math.degrees(y / _EARTH_RADIUS_M),
-            math.degrees(x / (scale * _EARTH_RADIUS_M)),
-        )
-        for x, y in simplified.coords
-    )
-    if len(points) < 2:
-        return run
-    return ContourRun(points, False, _sources_for(points, accepted))
-
-
-def _merge_open_runs(runs, lines_validity, line_validity, accepted):
-    """Join contiguous pieces using the local sample spacing, not a fixed gap.
-
-    Fan extraction can leave one short arc per parent even when those arcs are
-    the same boundary.  Nearby endpoints are joined, but only when the
-    connector passes the configured geographic predicates.  The merge
-    tolerance is derived from the slice's own sample spacing.
+    Unioning fan cells can subdivide an ancestry spoke at an intersection.
+    Checking for parent vertices misses the exposed remainder of that spoke;
+    requiring coverage by a sampled candidate arc removes it regardless of
+    how the union subdivided it. Missing heading slots cannot become edges.
     """
-    open_runs = [run for run in runs if not run.closed and len(run.points) >= 2]
-    untouched = [run for run in runs if run.closed or len(run.points) < 2]
-    if len(open_runs) < 2:
-        return runs
+    from shapely.geometry import LineString
+    from shapely.ops import unary_union
 
-    edges = [
-        _approx_distance_m(first, second)
-        for run in open_runs
-        for first, second in zip(run.points, run.points[1:])
-    ]
-    if not edges:
-        return runs
-    spacing = float(np.median(edges))
-    tolerance = max(spacing * 10.0, 1500.0)
+    points = list(coordinates)
+    if len(points) > 1 and points[0] == points[-1]:
+        points = points[:-1]
+    if len(points) < 3:
+        return []
+    count = len(points)
+    supported = []
+    for index in range(count):
+        start = points[index]
+        end = points[(index + 1) % count]
+        edge = LineString((start, end))
+        nearby = [arcs[i] for i in arc_index.query(edge)] if start != end else []
+        supported.append(
+            any(arc.covers(edge) for arc in nearby)
+            or (len(nearby) > 1 and unary_union(nearby).covers(edge))
+        )
+    if all(supported):
+        return [(points, True)]
 
-    changed = True
-    while changed:
-        changed = False
-        best = None
-        for left_index, left in enumerate(open_runs):
-            for right_index in range(left_index + 1, len(open_runs)):
-                right = open_runs[right_index]
-                combinations = (
-                    (
-                        _approx_distance_m(left.points[-1], right.points[0]),
-                        "append",
-                    ),
-                    (
-                        _approx_distance_m(left.points[-1], right.points[-1]),
-                        "append_reverse",
-                    ),
-                    (
-                        _approx_distance_m(left.points[0], right.points[0]),
-                        "reverse_append",
-                    ),
-                    (
-                        _approx_distance_m(left.points[0], right.points[-1]),
-                        "reverse_both",
-                    ),
-                )
-                distance, mode = min(combinations)
-                if distance > tolerance:
-                    continue
-                if best is None or distance < best[0]:
-                    best = (distance, left_index, right_index, mode)
-        if best is None:
-            break
-        distance, left_index, right_index, mode = best
-        left = open_runs[left_index]
-        right = open_runs[right_index]
-        if mode == "append":
-            start, end = left.points[-1], right.points[0]
-            points = left.points + right.points
-            sources = left.sources + right.sources
-        elif mode == "append_reverse":
-            start, end = left.points[-1], right.points[-1]
-            points = left.points + tuple(reversed(right.points))
-            sources = left.sources + tuple(reversed(right.sources))
-        elif mode == "reverse_append":
-            start, end = left.points[0], right.points[0]
-            points = tuple(reversed(left.points)) + right.points
-            sources = tuple(reversed(left.sources)) + right.sources
-        else:
-            start, end = left.points[0], right.points[-1]
-            points = tuple(reversed(left.points)) + tuple(reversed(right.points))
-            sources = tuple(reversed(left.sources)) + tuple(reversed(right.sources))
-        if not all(_valid_edges([start, end], False, lines_validity, line_validity)):
-            continue
-        merged = ContourRun(points, False, sources)
-        open_runs = [
-            run
-            for index, run in enumerate(open_runs)
-            if index not in (left_index, right_index)
-        ] + [merged]
-        changed = True
-
-    simplify_tolerance = max(spacing * 0.6, 10.0)
-    merged_runs = []
-    for run in open_runs:
-        simplified = _simplify_run(run, simplify_tolerance, accepted)
-        for points, flag in _split_antimeridian(simplified.points, False):
-            merged_runs.append(ContourRun(points, flag, _sources_for(points, accepted)))
-    return merged_runs + untouched
+    # Start after a break so a continuous arc crossing the ring's first
+    # coordinate remains a single run, without joining across any gap.
+    first_break = supported.index(False)
+    runs = []
+    current = []
+    for offset in range(1, count + 1):
+        index = (first_break + offset) % count
+        if supported[index]:
+            if not current:
+                current = [points[index]]
+            current.append(points[(index + 1) % count])
+        elif current:
+            runs.append((current, False))
+            current = []
+    return runs
 
 
 def _ring_runs(points, closed, lines_validity, line_validity):
@@ -725,7 +619,22 @@ def _fan_groups(candidates):
     return groups
 
 
+def _polygons(geometry):
+    from shapely.geometry import GeometryCollection, MultiPolygon, Polygon
+
+    if isinstance(geometry, Polygon):
+        return [geometry]
+    if isinstance(geometry, MultiPolygon):
+        return list(geometry.geoms)
+    if isinstance(geometry, GeometryCollection):
+        return [item for item in geometry.geoms if isinstance(item, Polygon)]
+    return []
+
+
 def _run_from_points(points, closed, candidates, lines_validity, line_validity):
+    points = list(points)
+    if len(points) > 1 and points[0] == points[-1]:
+        points = points[:-1]
     parts = []
     for part, flag in _split_antimeridian(points, closed):
         parts.extend(_ring_runs(part, flag, lines_validity, line_validity))
@@ -736,77 +645,249 @@ def _run_from_points(points, closed, candidates, lines_validity, line_validity):
     ]
 
 
-def build_contour_slice(
-    parent_points,
-    candidates,
-    *,
-    leg_id=0,
-    step=0,
-    valid_time=None,
-    frontier=(),
-    lines_validity=None,
-    line_validity=None,
-    fallback=True,
-) -> IsochroneSlice:
-    """Build one ordered contour slice from observed candidates.
+def _path_between(start, end, ring, edge_midpoint):
+    """Choose the hull path between two points that detours farthest in."""
+    count = len(ring)
+    start_index = min(range(count), key=lambda i: _distance_xy(ring[i], start))
+    end_index = min(range(count), key=lambda i: _distance_xy(ring[i], end))
+    if start_index == end_index:
+        return None
 
-    ``parent_points`` are the frontier points the candidates were advanced
-    from.  ``candidates`` may include rejected slots; only accepted samples
-    contribute geometry, and a missing slot always breaks a run.
-    """
-    parents = [_valid_position(point) for point in (parent_points or ())]
-    accepted = []
-    for candidate in candidates or ():
-        if isinstance(candidate, CandidateSample):
-            if candidate.accepted:
-                accepted.append(candidate)
-        else:
-            try:
-                sample = CandidateSample.from_json(candidate)
-            except (TypeError, ValueError, IndexError):
+    def walk(first, last):
+        if first <= last:
+            return ring[first : last + 1]
+        return ring[first:] + ring[: last + 1]
+
+    candidates = [walk(start_index, end_index), walk(end_index, start_index)]
+    best = None
+    for path in candidates:
+        middle = path[len(path) // 2]
+        distance = _distance_xy(middle, edge_midpoint)
+        if best is None or distance > best[0]:
+            best = (distance, path)
+    return best[1] if best else None
+
+
+def _distance_xy(first, second):
+    return math.hypot(first[0] - second[0], first[1] - second[1])
+
+
+def _concave_boundary_runs(
+    points,
+    lines_validity,
+    line_validity,
+    max_edge_m=5000.0,
+    min_spacing_m=200.0,
+):
+    """LuckGrib-style boundary: convex hull refined by concave long edges."""
+    from shapely.geometry import MultiPoint, Polygon
+
+    if len(points) < 3:
+        return []
+    reference_latitude = float(np.mean([point[0] for point in points]))
+    reference_longitude = _circular_mean_longitude([point[1] for point in points])
+    projected = _project(points, reference_latitude, reference_longitude)
+    local = [tuple(point) for point in projected]
+    xs = np.asarray([point[0] for point in local], dtype=float)
+    ys = np.asarray([point[1] for point in local], dtype=float)
+    hull = MultiPoint(local).convex_hull
+    if not isinstance(hull, Polygon):
+        return []
+    ring = list(hull.exterior.coords)
+    if ring and ring[0] == ring[-1]:
+        ring = ring[:-1]
+
+    for _ in range(6):
+        refined = []
+        changed = False
+        count = len(ring)
+        for index in range(count):
+            start = ring[index]
+            end = ring[(index + 1) % count]
+            length = _distance_xy(start, end)
+            if length <= max_edge_m:
+                refined.append(start)
                 continue
-            if sample.accepted:
-                accepted.append(sample)
-
-    frontier_points = tuple(
-        point for point in (_valid_position(item) for item in frontier or ()) if point
-    )
-
-    if not accepted:
-        if fallback and frontier_points:
-            return IsochroneSlice(
-                leg_id,
-                step,
-                _iso_time(valid_time),
-                tuple(
-                    ContourRun((point,), False, ((None, None),))
-                    for point in frontier_points
-                ),
-                UNAVAILABLE,
-                frontier_points,
+            dx = end[0] - start[0]
+            dy = end[1] - start[1]
+            denominator = dx * dx + dy * dy
+            if denominator == 0:
+                refined.append(start)
+                continue
+            t = ((xs - start[0]) * dx + (ys - start[1]) * dy) / denominator
+            projection_x = start[0] + t * dx
+            projection_y = start[1] + t * dy
+            distance = np.hypot(xs - projection_x, ys - projection_y)
+            mask = (t > 0.0) & (t < 1.0) & (distance <= max_edge_m)
+            support = list(zip(xs[mask].tolist(), ys[mask].tolist()))
+            if len(support) < 2:
+                refined.append(start)
+                continue
+            if len(support) > 400:
+                step = int(np.ceil(len(support) / 400))
+                support = support[::step]
+            try:
+                local_hull = MultiPoint([start, end] + support).concave_hull(ratio=0.55)
+            except Exception:
+                refined.append(start)
+                continue
+            if not isinstance(local_hull, Polygon) or local_hull.is_empty:
+                refined.append(start)
+                continue
+            local_ring = list(local_hull.exterior.coords)
+            if local_ring and local_ring[0] == local_ring[-1]:
+                local_ring = local_ring[:-1]
+            path = _path_between(
+                start,
+                end,
+                local_ring,
+                ((start[0] + end[0]) / 2, (start[1] + end[1]) / 2),
             )
-        return IsochroneSlice(
-            leg_id, step, _iso_time(valid_time), (), SAMPLED_ENVELOPE, frontier_points
-        )
+            if not path or len(path) < 2:
+                refined.append(start)
+                continue
+            if _distance_xy(path[0], start) > _distance_xy(path[-1], start):
+                path = list(reversed(path))
+            refined.extend(path[:-1])
+            changed = True
+        ring = _dedupe_xy(refined)
+        if not changed:
+            break
 
+    if len(ring) < 3:
+        return []
+    filtered = [ring[0]]
+    for point in ring[1:]:
+        if _distance_xy(point, filtered[-1]) >= min_spacing_m:
+            filtered.append(point)
+    if len(filtered) > 2 and _distance_xy(filtered[-1], filtered[0]) < min_spacing_m:
+        filtered.pop()
+    if len(filtered) < 3:
+        return []
+
+    coordinates = _unproject(filtered, reference_latitude, reference_longitude)
+    runs = []
+    for part, flag in _split_antimeridian(coordinates, True):
+        for run_points, run_closed in _ring_runs(
+            part, flag, lines_validity, line_validity
+        ):
+            runs.append(ContourRun(run_points, run_closed))
+    return runs
+
+
+def _dedupe_xy(points):
+    result = []
+    for point in points:
+        if not result or point != result[-1]:
+            result.append(point)
+    return result
+
+
+def _ordered_frontier_runs(
+    frontier_points,
+    frontier_bearings,
+    accepted,
+    lines_validity,
+    line_validity,
+    gap_m=2200.0,
+):
+    """Chain the published frontier in bearing order, breaking real gaps."""
+    ordered = [
+        point
+        for _, point in sorted(
+            zip(frontier_bearings, frontier_points), key=lambda item: item[0]
+        )
+    ]
+    source_by_position = {
+        candidate.pos: (candidate.parent, candidate.heading_index)
+        for candidate in accepted
+    }
+    chains = []
+    current = [ordered[0]] if ordered else []
+    for first, second in zip(ordered, ordered[1:]):
+        if _approx_distance_m(first, second) <= gap_m:
+            current.append(second)
+        else:
+            if current:
+                chains.append(current)
+            current = [second]
+    if current:
+        chains.append(current)
+    # A singleton is only worth drawing when the whole slice is sparse.
+    if any(len(chain) >= 2 for chain in chains):
+        chains = [chain for chain in chains if len(chain) >= 2]
+
+    edges = []
+    bounds = []
+    offset = 0
+    for chain in chains:
+        for first, second in zip(chain, chain[1:]):
+            edges.append([first[0], first[1], second[0], second[1]])
+        bounds.append((offset, offset + max(0, len(chain) - 1)))
+        offset += max(0, len(chain) - 1)
+
+    if lines_validity is not None and edges:
+        try:
+            answers = [
+                bool(value)
+                for value in np.asarray(lines_validity(edges), dtype=bool).ravel()
+            ]
+        except Exception:
+            answers = [False] * len(edges)
+    else:
+        answers = [True] * len(edges)
+
+    if line_validity is not None:
+        for (start, _), chain in zip(bounds, chains):
+            for index, (first, second) in enumerate(zip(chain, chain[1:])):
+                try:
+                    answers[start + index] = answers[start + index] and bool(
+                        line_validity(first[0], first[1], second[0], second[1])
+                    )
+                except Exception:
+                    answers[start + index] = False
+
+    runs = []
+    for chain, (start, stop) in zip(chains, bounds):
+        pieces = []
+        current = [chain[0]]
+        for valid, point in zip(answers[start:stop], chain[1:]):
+            if valid:
+                current.append(point)
+            else:
+                if current:
+                    pieces.append(current)
+                current = [point]
+        if current:
+            pieces.append(current)
+        for piece in pieces:
+            for part, flag in _split_antimeridian(piece, False):
+                runs.append(
+                    ContourRun(
+                        part,
+                        flag,
+                        tuple(
+                            source_by_position.get(point, (None, None))
+                            for point in part
+                        ),
+                    )
+                )
+    return runs
+
+
+def _envelope_runs(accepted, parent_points, lines_validity, line_validity):
+    """Fallback for callers that do not publish frontier bearings."""
+    parents = [_valid_position(point) for point in (parent_points or ())]
     groups = _fan_groups(accepted)
     polygons = []
-    from shapely.geometry import Polygon
+    observed_arcs = []
+    from shapely.geometry import LineString, Polygon
     from shapely.ops import unary_union
 
     reference_latitude = float(np.mean([candidate.latitude for candidate in accepted]))
     reference_longitude = _circular_mean_longitude(
         [candidate.longitude for candidate in accepted]
     )
-
-    parent_keys = set()
-    for parent in parents:
-        if parent is None:
-            continue
-        projected_parent = _project([parent], reference_latitude, reference_longitude)[
-            0
-        ]
-        parent_keys.add(_parent_key(projected_parent))
 
     for group in groups:
         parent = group[0].parent
@@ -826,38 +907,131 @@ def build_contour_slice(
         if polygon.is_empty or polygon.area <= 0:
             continue
         polygons.append(polygon)
+        for first, second in zip(projected[1:-1], projected[2:]):
+            if not np.array_equal(first, second):
+                observed_arcs.append(LineString((first, second)))
 
     runs = []
     if polygons:
         merged = unary_union(polygons)
-        from shapely.geometry import GeometryCollection, MultiPolygon, Polygon
+        from shapely.strtree import STRtree
 
-        polygons_out = []
-        if isinstance(merged, Polygon):
-            polygons_out.append(merged)
-        elif isinstance(merged, MultiPolygon):
-            polygons_out.extend(merged.geoms)
-        elif isinstance(merged, GeometryCollection):
-            polygons_out.extend(
-                geometry for geometry in merged.geoms if isinstance(geometry, Polygon)
-            )
-        for polygon in polygons_out:
+        arc_index = STRtree(observed_arcs)
+        for polygon in _polygons(merged):
             rings = [polygon.exterior] + list(polygon.interiors)
             for ring in rings:
-                for coordinates, closed in _ring_without_parent_edges(
-                    list(ring.coords), parent_keys
+                for coordinates, flag in _ring_on_observed_arcs(
+                    list(ring.coords), observed_arcs, arc_index
                 ):
                     points = _unproject(
                         coordinates, reference_latitude, reference_longitude
                     )
                     runs.extend(
                         _run_from_points(
-                            points, closed, accepted, lines_validity, line_validity
+                            points, flag, accepted, lines_validity, line_validity
                         )
                     )
+    return runs
 
-    if runs:
-        runs = _merge_open_runs(runs, lines_validity, line_validity, accepted)
+
+def build_contour_slice(
+    parent_points,
+    candidates,
+    *,
+    leg_id=0,
+    step=0,
+    valid_time=None,
+    frontier=(),
+    frontier_bearings=(),
+    gap_m=2200.0,
+    boundary=True,
+    lines_validity=None,
+    line_validity=None,
+    fallback=True,
+) -> IsochroneSlice:
+    """Build one ordered contour slice from the published frontier.
+
+    ``frontier_bearings`` chains the pruned frontier in lateral bearing order.
+    Without them, the captured candidate fans provide a conservative envelope.
+    """
+    accepted = []
+    boundary_points = []
+    for candidate in candidates or ():
+        if isinstance(candidate, CandidateSample):
+            if candidate.accepted:
+                accepted.append(candidate)
+                boundary_points.append(candidate.pos)
+            continue
+        if isinstance(candidate, (tuple, list)) and len(candidate) == 2:
+            try:
+                boundary_points.append((float(candidate[0]), float(candidate[1])))
+            except (TypeError, ValueError):
+                pass
+            continue
+        try:
+            sample = CandidateSample.from_json(candidate)
+        except (TypeError, ValueError, IndexError):
+            continue
+        if sample.accepted:
+            accepted.append(sample)
+            boundary_points.append(sample.pos)
+
+    frontier_points = tuple(
+        point for point in (_valid_position(item) for item in frontier or ()) if point
+    )
+
+    if boundary_points and boundary:
+        runs = _concave_boundary_runs(boundary_points, lines_validity, line_validity)
+        if runs:
+            runs = [run for run in runs if run.points]
+            runs.sort(key=lambda run: (not run.closed, -len(run.points)))
+            return IsochroneSlice(
+                leg_id,
+                step,
+                _iso_time(valid_time),
+                tuple(runs),
+                SAMPLED_ENVELOPE,
+                frontier_points,
+            )
+
+    if frontier_bearings and len(frontier_bearings) == len(frontier_points):
+        runs = _ordered_frontier_runs(
+            frontier_points,
+            frontier_bearings,
+            accepted,
+            lines_validity,
+            line_validity,
+            gap_m=gap_m,
+        )
+        runs = [run for run in runs if run.points]
+        runs.sort(key=lambda run: (not run.closed, -len(run.points)))
+        return IsochroneSlice(
+            leg_id,
+            step,
+            _iso_time(valid_time),
+            tuple(runs),
+            SAMPLED_ENVELOPE if runs else UNAVAILABLE,
+            frontier_points,
+        )
+
+    if not accepted:
+        if fallback and frontier_points:
+            return IsochroneSlice(
+                leg_id,
+                step,
+                _iso_time(valid_time),
+                tuple(
+                    ContourRun((point,), False, ((None, None),))
+                    for point in frontier_points
+                ),
+                UNAVAILABLE,
+                frontier_points,
+            )
+        return IsochroneSlice(
+            leg_id, step, _iso_time(valid_time), (), SAMPLED_ENVELOPE, frontier_points
+        )
+
+    runs = _envelope_runs(accepted, parent_points, lines_validity, line_validity)
 
     if not runs:
         # Sparse steps have no exposed cell to join.  Keep the observed

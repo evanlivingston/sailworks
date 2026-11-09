@@ -34,13 +34,7 @@ def _contours(frame):
 
 
 def _visible_contours(frame):
-    """Show the active leg's search plus each completed leg's latest slice.
-
-    Every leg stays in the sidecar for persistence and route switching.
-    Stacking every intermediate step of every leg draws a scribble of crossing
-    arcs, while hiding older legs entirely makes saved multi-leg routes appear
-    to have no isochrones.
-    """
+    """Show the same contour steps during routing and after saving a route."""
     contours = _contours(frame)
     if contours is None:
         return None

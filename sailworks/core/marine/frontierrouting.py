@@ -494,6 +494,8 @@ def route_frontier(self, lastlog, t, hours, start, end):  # noqa: C901
                     step=len(isochrones),
                     valid_time=valid_time,
                     frontier=[point.pos for point in published],
+                    frontier_bearings=[point.brg for point in published],
+                    gap_m=getattr(self, "contour_gap_m", 2200.0),
                 ),
             )
         except Exception:

@@ -660,6 +660,8 @@ class CurrentIsoRouter(LinearBestIsoRouter):
                         step=len(isochrones),
                         valid_time=valid_time,
                         frontier=[point.pos for point in published],
+                        frontier_bearings=[point.brg for point in published],
+                        gap_m=getattr(self, "contour_gap_m", 2200.0),
                     ),
                 )
             except Exception:
@@ -755,19 +757,19 @@ def install_downloaded_fields(routing, manager, fields, save_fields=None):
 
 
 def step_with_coverage(  # noqa: C901
-    routing, manager, auto_download, report, save_fields=None
+    routing, manager, auto_download, report, save_fields=None, timedelta=1.0
 ):
     """Retry the unchanged isochrone after bounded coverage recovery."""
     environment = getattr(routing, "current_environment", None)
     if environment is None:
-        return routing.step()
+        return routing.step(timedelta=timedelta)
     if environment.prefetch is not None:
         fields, _ = environment.prefetch.ready()
         if fields:
             install_downloaded_fields(routing, manager, fields, save_fields)
     for attempt in range(3):
         try:
-            return routing.step()
+            return routing.step(timedelta=timedelta)
         except RoutingDataGapError as error:
             report(str(error))
             if any(g.kind == "wind" for g in error.gaps):
