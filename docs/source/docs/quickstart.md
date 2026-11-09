@@ -84,16 +84,19 @@ The app reads complete NMEA 2000 PGNs from gateways that provide Actisense BST
 or Actisense N2K ASCII output. The NGT-1 uses BST; an NGX-1 must be in transfer
 mode, and its hardware compatibility has not yet been verified. N2K ASCII
 gateways must reassemble fast and ISO transport packets before sending them to
-the app. These connections are input only: Actisense BST receives one
-gateway-local receive-mode command at connection time, but the app does not send
-vessel-control or NMEA 2000 transmit messages.
+the app. These connections are input only: a serial Actisense BST gateway receives
+one gateway-local receive-mode command at connection time, but the app does not
+send vessel-control or NMEA 2000 transmit messages. Network data servers such as
+the W2K-1 are transmit only, so the app never writes to them.
 
 1. Connect the gateway to the powered NMEA 2000 network and your computer.
 2. In **Settings > Connections**, set **Protocol** to **NMEA 2000**, then
    choose the **Gateway data format** your gateway provides. For an Actisense
    NGT-1, choose **Actisense BST**. For a gateway configured to output
    **N2K ASCII**, choose that format; it can use a serial port or a TCP/UDP
-   network connection.
+   network connection. For a W2K-1, set the data server **Format** to
+   **Actisense NGT** (the app labels this **Actisense BST**), **Direction** to
+   **Transmit Only**, and enter the server's IP address and port.
 3. For a serial gateway, select its serial port (on macOS, normally
    `/dev/cu.usbserial-...`). If your
    operating system does not expose the port, install the appropriate Actisense

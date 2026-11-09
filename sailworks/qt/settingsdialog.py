@@ -323,9 +323,16 @@ class SettingsDialog(QDialog):
         statuses = [] if busy else self.controller.connections.get_status()
         connected = sum(s["connected"] for s in statuses)
         packets = sum(s["packets"] for s in statuses)
-        self.connection_status.setText(
-            f"{connected} / {len(statuses)} connected · {packets:,} packets"
-        )
+        errors = [
+            f"{s['name']}: {s['error']}"
+            for s in statuses
+            if not s["connected"] and s.get("error")
+        ]
+        summary = f"{connected} / {len(statuses)} connected · {packets:,} packets"
+        if errors:
+            summary += f" · {errors[0]}"
+        self.connection_status.setText(summary)
+        self.connection_status.setToolTip("\n".join(errors))
         message = self.task.message
         if not busy and message == "Done":
             message = ""

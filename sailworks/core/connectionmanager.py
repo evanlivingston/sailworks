@@ -134,6 +134,7 @@ class ConnectionManager(EventDispatcher):
                     "name": key,
                     "connected": ds.connected,
                     "packets": self._packets.get(key, 0),
+                    "error": getattr(ds, "error", None),
                 }
             )
         self._last_status = result

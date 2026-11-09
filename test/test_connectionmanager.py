@@ -261,6 +261,16 @@ class TestGetStatus(unittest.TestCase):
         self.assertEqual(len(status), 1)
         self.assertFalse(status[0]["connected"])
         self.assertEqual(status[0]["packets"], 0)
+        self.assertIsNone(status[0]["error"])
+
+    def test_status_includes_source_error(self):
+        cm = _make_cm()
+        ds = FakeDataSource()
+        ds.error = "Connection refused"
+        cm.sources["src1"] = ds
+
+        status = cm.get_status()
+        self.assertEqual(status[0]["error"], "Connection refused")
 
     def test_mixed_sources(self):
         cm = _make_cm()
@@ -551,6 +561,23 @@ class TestPollingLifecycle(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+class TestNetworkDataSourceConnect(unittest.TestCase):
+    def test_connect_success_clears_error(self):
+        with patch("socket.socket") as MockSocket:
+            ds = NetworkDataSource("nmea0183", "in", "localhost", 10110, "tcp")
+            ds.error = "stale"
+            self.assertTrue(ds.connect())
+            self.assertIsNone(ds.error)
+
+    def test_connect_failure_records_error(self):
+        with patch("socket.socket") as MockSocket:
+            MockSocket.return_value.connect.side_effect = OSError("Connection refused")
+            ds = NetworkDataSource("nmea0183", "in", "localhost", 10110, "tcp")
+            self.assertFalse(ds.connect())
+            self.assertFalse(ds.connected)
+            self.assertEqual(ds.error, "Connection refused")
+
+
 class TestNetworkDataSourceClose(unittest.TestCase):
     def test_close_sets_disconnected(self):
         with patch("socket.socket"):
@@ -599,6 +626,7 @@ class TestNetworkDataSourceRead(unittest.TestCase):
             result = ds._read()
             self.assertEqual(result, [])
             self.assertFalse(ds.connected)
+            self.assertEqual(ds.error, "connection reset")
 
     def test_read_peer_disconnect_zero_bytes(self):
         with patch("socket.socket") as MockSocket:
@@ -610,6 +638,7 @@ class TestNetworkDataSourceRead(unittest.TestCase):
             result = ds._read()
             self.assertEqual(result, [])
             self.assertFalse(ds.connected)
+            self.assertEqual(ds.error, "Connection closed by peer")
 
     def test_read_timeout_returns_empty(self):
         with patch("socket.socket") as MockSocket:
