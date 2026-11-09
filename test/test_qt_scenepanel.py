@@ -308,6 +308,30 @@ def test_grouping_multiple_types_moves_all_selected_rows(tmp_path):
     assert panel.item_row("routing", "r1") is not None
 
 
+def test_scene_actions_fit_single_track_or_point(tmp_path):
+    application()
+    panel = panel_for(tmp_path, tracks=[FakeTrack("t1", "Morning")])
+    track_node = ("item", KIND_TRACK, "t1")
+    point_node = ("point", KIND_TRACK, "t1", 0)
+
+    assert panel._nodes_for_fit([track_node]) == [track_node]
+    assert panel._nodes_for_fit([point_node]) == [point_node]
+    assert panel._nodes_for_fit([track_node, point_node]) == ()
+    assert panel._nodes_for_fit([("item", KIND_LOG, "log-1")]) == ()
+
+
+def test_scene_actions_delete_skips_logs_and_race_tracks(tmp_path):
+    application()
+    panel = panel_for(tmp_path)
+    track_node = ("item", KIND_TRACK, "t1")
+    point_node = ("point", KIND_TRACK, "t1", 0)
+
+    assert panel._nodes_for_delete([track_node, point_node]) == [track_node, point_node]
+    assert panel._nodes_for_delete([("item", KIND_LOG, "log-1")]) == []
+    assert panel._nodes_for_delete([("item", KIND_TRACK, "race:r:1")]) == []
+    assert panel._nodes_for_delete([("point", KIND_TRACK, "race:r:1", 0)]) == []
+
+
 def test_scene_accumulates_opened_library_logs(tmp_path):
     application()
     first = log_entry(tmp_path, "log-1", "Saturday.log")

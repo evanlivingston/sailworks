@@ -102,7 +102,7 @@ def test_context_menu_targets_row_without_changing_selection(panel):
     panel.race_list.setCurrentRow(0)
     item = panel.race_list.item(1)
     position = panel.race_list.visualItemRect(item).center()
-    with patch("sailworks.qt.racepanel.QMenu") as menu:
+    with patch("sailworks.qt.racepanel.ThemedMenu") as menu:
         panel._race_context_menu(position)
         menu.return_value.exec.assert_called_once()
         load = menu.return_value.addAction.return_value

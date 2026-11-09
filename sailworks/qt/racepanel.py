@@ -12,7 +12,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QListWidget,
-    QMenu,
     QMessageBox,
     QPushButton,
     QTabWidget,
@@ -34,6 +33,7 @@ from sailworks.core.timecontrol import utc_to_wall, wall_to_utc
 
 from sailworks.qt.ybracedialog import YBRaceDialog
 from .text import qt_text
+from .theme import MenuBuilder, ThemedMenu
 
 
 def _hex_colour(value) -> tuple[float, float, float] | None:
@@ -433,21 +433,22 @@ class RacesPanel(QWidget):
             return
         race = self._races[row]
         loaded = bool(self.race_tracks(race))
-        menu = QMenu(self.race_list)
-        load = menu.addAction("Load tracks")
+        menu = ThemedMenu(self.race_list)
+        builder = MenuBuilder(menu)
+        load = builder.add("Load tracks", key="L")
         load.setEnabled(not loaded)
         load.triggered.connect(lambda: self.load_race_tracks(race))
-        unload = menu.addAction("Unload tracks")
+        unload = builder.add("Unload tracks", key="U")
         unload.setEnabled(loaded)
         unload.triggered.connect(lambda: self.unload_race_tracks(race))
-        create = menu.addAction("Create track")
+        create = builder.add("Create track", key="C")
         create.setEnabled(
             any(course.points for course in race.course)
             or any(len(boat.positions) >= 2 for boat in race.boats)
         )
         create.triggered.connect(lambda: self.create_track_from_race(race))
-        menu.addSeparator()
-        delete = menu.addAction("Delete race")
+        builder.section()
+        delete = builder.add("Delete race", key="D")
         delete.triggered.connect(lambda: self._confirm_delete_race(race))
         menu.exec(self.race_list.viewport().mapToGlobal(position))
 

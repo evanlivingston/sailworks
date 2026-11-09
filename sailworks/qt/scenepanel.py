@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QHeaderView,
-    QMenu,
     QPushButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -26,7 +25,7 @@ from sailworks.core.scene import (
     SceneCollection,
     SceneEntry,
 )
-from .theme import symbol_icon
+from .theme import MenuBuilder, symbol_icon, ThemedMenu
 
 NODE_ROLE = Qt.ItemDataRole.UserRole
 MUTED = QColor("#b0b0ad")
@@ -70,6 +69,8 @@ class ScenePanel(QWidget):
     changed = Signal()
     selected = Signal(str, str)
     open_requested = Signal(str, str)
+    fit_requested = Signal(object)
+    delete_requested = Signal(object)
 
     def __init__(self, controller, parent=None, scene_path=None):
         super().__init__(parent)
@@ -647,21 +648,43 @@ class ScenePanel(QWidget):
             self.tree.editItem(row, NAME_COLUMN)
         self.changed.emit()
 
+    def _nodes_for_fit(self, nodes):
+        if len(nodes) != 1:
+            return ()
+        node = nodes[0]
+        if node[0] == "point":
+            return nodes
+        if node[0] == "item" and node[1] in (KIND_TRACK, KIND_ROUTING):
+            return nodes
+        return ()
+
+    def _nodes_for_delete(self, nodes):
+        deletable = []
+        for node in nodes:
+            if node[0] == "point":
+                if not node[2].startswith("race:"):
+                    deletable.append(node)
+            elif node[0] == "item" and node[1] in (KIND_TRACK, KIND_ROUTING):
+                if node[1] == KIND_TRACK and node[2].startswith("race:"):
+                    continue
+                deletable.append(node)
+        return deletable
+
     def _context_menu(self, position):
         row = self.tree.itemAt(position)
         if row is not None and row not in self.tree.selectedItems():
             self.tree.clearSelection()
             row.setSelected(True)
         node = row.data(0, NODE_ROLE) if row is not None else None
-        menu = QMenu(self)
+        menu = ThemedMenu(self)
+        builder = MenuBuilder(menu)
 
-        menu.addAction("New Collection", self._new_collection)
         keys = self._selected_item_keys()
-        if keys:
-            menu.addAction("Group Selection", self._group_selection)
+        nodes = self._selected_nodes()
         groups = self._selected_groups()
-        if len(groups) == 1 and node is not None and node[0] == "group":
-            menu.addAction("Rename", lambda: self.tree.editItem(row, NAME_COLUMN))
+        fit_nodes = self._nodes_for_fit(nodes)
+        delete_nodes = self._nodes_for_delete(nodes)
+        rename = len(groups) == 1 and node is not None and node[0] == "group"
         deletable = [
             identifier
             for identifier in groups
@@ -670,18 +693,53 @@ class ScenePanel(QWidget):
                 and not self.scene.group(identifier).builtin
             )
         ]
-        if deletable:
-            menu.addAction(
-                "Delete Collection",
-                lambda ids=tuple(deletable): self._delete_groups(ids),
-            )
-        if node is not None and node[0] == "item" and node[1] == KIND_LOG:
-            menu.addAction(
-                "Open log",
-                lambda kind=node[1], key=node[2]: self.open_requested.emit(kind, key),
-            )
+        open_log = node is not None and node[0] == "item" and node[1] == KIND_LOG
+
+        builder.add("New Collection", self._new_collection, key="N")
+        if keys:
+            builder.add("Group Selection", self._group_selection, key="G")
         if keys or groups:
-            self._add_move_menu(menu, keys, groups)
+            self._add_move_menu(builder, keys, groups, key="M")
+        if fit_nodes:
+            builder.section()
+            builder.add("Fit", lambda: self.fit_requested.emit(fit_nodes), key="F")
+        if rename or open_log:
+            builder.section()
+            if rename:
+                builder.add(
+                    "Rename",
+                    lambda: self.tree.editItem(row, NAME_COLUMN),
+                    key="R",
+                )
+            if open_log:
+                builder.add(
+                    "Open log",
+                    lambda kind=node[1], key=node[2]: self.open_requested.emit(
+                        kind, key
+                    ),
+                    key="O",
+                )
+        destructive = []
+        if delete_nodes:
+            destructive.append(
+                (
+                    "Delete",
+                    lambda: self.delete_requested.emit(delete_nodes),
+                    "D",
+                )
+            )
+        if deletable:
+            destructive.append(
+                (
+                    "Delete Collection",
+                    lambda ids=tuple(deletable): self._delete_groups(ids),
+                    "C",
+                )
+            )
+        if destructive:
+            builder.section()
+            for text, callback, key in destructive:
+                builder.add(text, callback, key=key)
         if menu.actions():
             menu.exec(self.tree.viewport().mapToGlobal(position))
 
@@ -693,12 +751,13 @@ class ScenePanel(QWidget):
             self.refresh()
             self.changed.emit()
 
-    def _add_move_menu(self, menu, keys, groups):
+    def _add_move_menu(self, builder, keys, groups, key=None):
         targets = [(None, "Scene Collection")]
         targets.extend((group.id, group.name) for group in self.scene.groups.values())
-        submenu = menu.addMenu("Move to")
+        submenu = builder.add_menu("Move to", key=key)
+        sub_builder = MenuBuilder(submenu)
         for identifier, name in targets:
-            action = submenu.addAction(name)
+            action = sub_builder.add(name)
             action.triggered.connect(
                 lambda _checked=False, target=identifier: self._move_to(
                     keys, groups, target

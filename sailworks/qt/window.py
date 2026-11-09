@@ -49,7 +49,7 @@ from sailworks.core.n2kdevices import source_label
 from sailworks.core.places import PlaceIndex, index_chart_files
 from sailworks.core.scene import KIND_LOG, KIND_ROUTING, KIND_TRACK
 from sailworks.common import resource_path
-from .theme import section_label, symbol_icon
+from .theme import MenuBuilder, section_label, symbol_icon, ThemedMenu
 from .dropdown import Dropdown
 from .scrollchrome import style_scrollarea
 from .collapsiblepanel import (
@@ -68,7 +68,7 @@ from .plotdata import elapsed_offsets
 from .workspace import WorkspacePreferences
 from .polarworkspace import PolarWorkspace
 from .polarlibrary import PolarLibrary
-from .navigationpanel import NavigationPanel
+from .navigationpanel import NavigationPanel, RemoveNavigationCommand
 from .scenepanel import ScenePanel
 from .racepanel import RacesPanel
 from .marinepanel import MarinePanel
@@ -205,6 +205,8 @@ class PreviewWindow(QMainWindow):
         self.scene_panel.changed.connect(self._scene_changed)
         self.scene_panel.selected.connect(self._scene_selected)
         self.scene_panel.open_requested.connect(self._scene_open)
+        self.scene_panel.fit_requested.connect(self._scene_fit)
+        self.scene_panel.delete_requested.connect(self._scene_delete)
         controller.log_library_changed.connect(self.scene_panel.refresh)
         self.navigation_panel = NavigationPanel(
             controller, self.map, self, undo_stack=self.undo_stack
@@ -1181,6 +1183,93 @@ class PreviewWindow(QMainWindow):
             return
         self.controller.load_paths([path])
 
+    def _scene_fit(self, nodes):
+        coordinates = []
+        for node in nodes:
+            entry = self.scene_panel.scene.live_entry(node[1], node[2])
+            element = entry.element if entry is not None else None
+            if element is None:
+                continue
+            if node[0] == "point":
+                index = int(node[3])
+                if 0 <= index < len(element.points):
+                    coordinates.append(tuple(element.points[index][:2]))
+            elif hasattr(element, "to_list"):
+                coordinates.extend(element.to_list())
+            else:
+                coordinates.extend((point[0], point[1]) for point in element.points)
+        if coordinates:
+            self.views.setCurrentWidget(self.map)
+            self.map.fit_coordinates(coordinates)
+
+    def _scene_delete(self, nodes):
+        item_keys = {(node[1], node[2]) for node in nodes if node[0] == "item"}
+        tracks = []
+        routes = []
+        points = {}
+        for node in nodes:
+            entry = self.scene_panel.scene.live_entry(node[1], node[2])
+            element = entry.element if entry is not None else None
+            if element is None:
+                continue
+            if node[0] == "item":
+                if node[1] == KIND_ROUTING:
+                    routes.append(element)
+                elif node[1] == KIND_TRACK and not node[2].startswith("race:"):
+                    tracks.append(element)
+            elif (node[1], node[2]) not in item_keys:
+                points.setdefault(id(element), (element, set()))[1].add(int(node[3]))
+
+        removals = []
+        for manager, elements, current, kind in (
+            (
+                self.controller.core.trackManager,
+                tracks,
+                self.controller.core.trackManager.get_active(),
+                "track",
+            ),
+            (
+                self.controller.core.routingManager,
+                routes,
+                self.navigation_panel.route,
+                "route",
+            ),
+        ):
+            wanted = {id(element) for element in elements}
+            removed = [
+                (index, element)
+                for index, element in enumerate(manager)
+                if id(element) in wanted
+            ]
+            if removed:
+                removals.append((manager, removed, current, kind))
+        if removals:
+            self.undo_stack.beginMacro("Delete scene items")
+            try:
+                for manager, removed, current, kind in removals:
+                    self.undo_stack.push(
+                        RemoveNavigationCommand(
+                            self.navigation_panel,
+                            manager,
+                            removed,
+                            current,
+                            self.navigation_panel.point_index,
+                            kind,
+                        )
+                    )
+            finally:
+                self.undo_stack.endMacro()
+
+        changed = False
+        for element, indices in points.values():
+            for index in sorted(indices, reverse=True):
+                if 0 <= index < len(element):
+                    element.remove(index)
+                    changed = True
+        if changed:
+            self.navigation_panel.refresh()
+            self.navigation_panel.changed.emit()
+
     def _move_navigation_point(self, callback):
         self.views.setCurrentWidget(self.map)
         self.map.begin_move(callback)
@@ -1195,11 +1284,14 @@ class PreviewWindow(QMainWindow):
         self.log_map.update()
 
     def _export_navigation(self):
-        from PySide6.QtWidgets import QMenu
-
-        menu = QMenu(self)
-        menu.addAction("Export GPX…", self.navigation_panel.export_all)
-        menu.addAction("Export POIs as NMEA PFEC…", self.navigation_panel.export_pfec)
+        menu = ThemedMenu(self)
+        builder = MenuBuilder(menu)
+        builder.add("Export GPX…", self.navigation_panel.export_all, key="G")
+        builder.add(
+            "Export POIs as NMEA PFEC…",
+            self.navigation_panel.export_pfec,
+            key="P",
+        )
         menu.exec(
             self.navigation_panel.mapToGlobal(self.navigation_panel.rect().bottomLeft())
         )

@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from sailworks.core.loglibrary import LOG_SUFFIXES
 from .loginfo import LogInfoDialog
+from .theme import MenuBuilder, ThemedMenu
 
 LOG_FILTER = "Instrument logs (*.log *.nmea *.txt *.ebl *.EBL);;All files (*)"
 
@@ -337,12 +338,11 @@ class LogLibraryDialog(QDialog):
             QMessageBox.critical(self, "Cannot delete log", "\n".join(errors))
 
     def _context_menu(self, position):
-        from PySide6.QtWidgets import QMenu
-
         if not self.selected_identifiers():
             return
-        menu = QMenu(self)
-        menu.addAction("Delete", self.delete_selected)
+        menu = ThemedMenu(self)
+        builder = MenuBuilder(menu)
+        builder.add("Delete", self.delete_selected, key="D")
         menu.exec(self.logs.viewport().mapToGlobal(position))
 
     def eventFilter(self, watched, event):
