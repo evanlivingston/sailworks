@@ -276,6 +276,45 @@ def test_n2k_ascii_network_source_reads_tcp_stream():
         source.close()
 
 
+def test_actisense_network_source_does_not_write_to_transmit_only_server():
+    with patch("sailworks.core.nmea2000datasource.socket.socket") as factory:
+        sock = factory.return_value
+        source = NMEA2000DataSource(
+            {
+                "type": "network",
+                "protocol": "nmea2000",
+                "format": "actisense",
+                "direction": "in",
+                "network": "tcp",
+                "host": "192.168.4.1",
+                "port": 60001,
+            }
+        )
+        assert source.connect()
+        sock.connect.assert_called_once_with(("192.168.4.1", 60001))
+        sock.send.assert_not_called()
+        assert source.error is None
+        source.close()
+
+
+def test_actisense_network_connect_failure_records_error():
+    with patch("sailworks.core.nmea2000datasource.socket.socket") as factory:
+        factory.return_value.connect.side_effect = OSError("Connection refused")
+        source = NMEA2000DataSource(
+            {
+                "type": "network",
+                "protocol": "nmea2000",
+                "format": "actisense",
+                "direction": "in",
+                "network": "tcp",
+                "host": "192.168.4.1",
+                "port": 60001,
+            }
+        )
+        assert not source.connect()
+        assert source.error == "Connection refused"
+
+
 def test_nmea2000_protocol_keeps_gateway_format_separate():
     source = create_data_source(
         {

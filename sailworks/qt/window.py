@@ -1517,6 +1517,11 @@ class PreviewWindow(QMainWindow):
         for status in statuses:
             if not status["connected"]:
                 name = escape(str(status.get("name", "Unknown source")))
+                error = status.get("error")
+                if error:
+                    name += (
+                        f' <span style="color:#8a8a8a;">— {escape(str(error))}</span>'
+                    )
                 rows.append(f'<span style="color:#ff5544;">●</span> {name}')
         return "<br>".join(rows)
 

@@ -72,6 +72,46 @@ def create_data_source(config):
     )
 
 
+def probe_connection(config, timeout=3.0):
+    """Open a source briefly and report ``(connected, packets, error)``.
+
+    The probe owns a separate connection and always closes it. A reachable
+    transport with no traffic still counts as connected so a wrong gateway
+    format can be told apart from an unreachable server.
+    """
+    config = connection_config(config)
+    source = create_data_source(config)
+    # Keep an unresponsive peer from holding the probe for the full transport
+    # timeout; both network source types expose their socket.
+    connection = getattr(source, "s", None) or getattr(source, "socket_conn", None)
+    if connection is not None:
+        try:
+            connection.settimeout(min(0.25, timeout))
+        except OSError:
+            pass
+    try:
+        if not source.connect():
+            return False, 0, getattr(source, "error", None) or "Could not connect"
+        if config.get("direction") == "out":
+            return True, 0, None
+        packets = 0
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not source.connected:
+                return (
+                    False,
+                    packets,
+                    getattr(source, "error", None) or "Connection lost",
+                )
+            packets += len(source.read())
+            if packets:
+                break
+            time.sleep(0.05)
+        return True, packets, None
+    finally:
+        source.close()
+
+
 # { type: 'serial|network', protocol: 'nmea0183|nmea2000', direction: 'in|out|both' }
 # NMEA 2000 connections also store the gateway's output format separately.
 # Serial: { data-port: '/dev/ttyACM0', baudrate: 9600 }
@@ -134,6 +174,7 @@ class ConnectionManager(EventDispatcher):
                     "name": key,
                     "connected": ds.connected,
                     "packets": self._packets.get(key, 0),
+                    "error": getattr(ds, "error", None),
                 }
             )
         self._last_status = result

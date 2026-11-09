@@ -19,7 +19,7 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
-from sailworks.core.connectionmanager import ConnectionManager
+from sailworks.core.connectionmanager import ConnectionManager, probe_connection
 from sailworks.core.datasource import DataSource
 from sailworks.core.networkdatasource import MAX_LINE_LENGTH, NetworkDataSource
 from sailworks.core.serialdatasource import SerialDataSource
@@ -261,6 +261,16 @@ class TestGetStatus(unittest.TestCase):
         self.assertEqual(len(status), 1)
         self.assertFalse(status[0]["connected"])
         self.assertEqual(status[0]["packets"], 0)
+        self.assertIsNone(status[0]["error"])
+
+    def test_status_includes_source_error(self):
+        cm = _make_cm()
+        ds = FakeDataSource()
+        ds.error = "Connection refused"
+        cm.sources["src1"] = ds
+
+        status = cm.get_status()
+        self.assertEqual(status[0]["error"], "Connection refused")
 
     def test_mixed_sources(self):
         cm = _make_cm()
@@ -551,6 +561,23 @@ class TestPollingLifecycle(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+class TestNetworkDataSourceConnect(unittest.TestCase):
+    def test_connect_success_clears_error(self):
+        with patch("socket.socket") as MockSocket:
+            ds = NetworkDataSource("nmea0183", "in", "localhost", 10110, "tcp")
+            ds.error = "stale"
+            self.assertTrue(ds.connect())
+            self.assertIsNone(ds.error)
+
+    def test_connect_failure_records_error(self):
+        with patch("socket.socket") as MockSocket:
+            MockSocket.return_value.connect.side_effect = OSError("Connection refused")
+            ds = NetworkDataSource("nmea0183", "in", "localhost", 10110, "tcp")
+            self.assertFalse(ds.connect())
+            self.assertFalse(ds.connected)
+            self.assertEqual(ds.error, "Connection refused")
+
+
 class TestNetworkDataSourceClose(unittest.TestCase):
     def test_close_sets_disconnected(self):
         with patch("socket.socket"):
@@ -599,6 +626,7 @@ class TestNetworkDataSourceRead(unittest.TestCase):
             result = ds._read()
             self.assertEqual(result, [])
             self.assertFalse(ds.connected)
+            self.assertEqual(ds.error, "connection reset")
 
     def test_read_peer_disconnect_zero_bytes(self):
         with patch("socket.socket") as MockSocket:
@@ -610,6 +638,7 @@ class TestNetworkDataSourceRead(unittest.TestCase):
             result = ds._read()
             self.assertEqual(result, [])
             self.assertFalse(ds.connected)
+            self.assertEqual(ds.error, "Connection closed by peer")
 
     def test_read_timeout_returns_empty(self):
         with patch("socket.socket") as MockSocket:
@@ -715,6 +744,61 @@ class TestSerialDataSourceClose(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # EventDispatcher instance isolation
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# probe_connection
+# ---------------------------------------------------------------------------
+
+
+class LostDataSource(FakeDataSource):
+    def read(self):
+        self.connected = False
+        self.error = "Connection lost"
+        return []
+
+
+class TestProbeConnection(unittest.TestCase):
+    CONFIG = {
+        "type": "network",
+        "protocol": "nmea0183",
+        "direction": "in",
+        "network": "tcp",
+        "host": "localhost",
+        "port": 10110,
+    }
+
+    def probe(self, source, config=None, timeout=0.5):
+        with patch(
+            "sailworks.core.connectionmanager.create_data_source",
+            return_value=source,
+        ):
+            return probe_connection(config or self.CONFIG, timeout=timeout)
+
+    def test_reports_received_messages_and_closes(self):
+        sentence = (
+            "$GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A"
+        )
+        source = FakeDataSource(data=[sentence, sentence])
+        self.assertEqual(self.probe(source), (True, 2, None))
+        self.assertTrue(source.closed)
+
+    def test_reports_connect_error(self):
+        source = FakeDataSource()
+        source.connect = MagicMock(return_value=False)
+        source.error = "Connection refused"
+        self.assertEqual(self.probe(source), (False, 0, "Connection refused"))
+
+    def test_reports_connection_lost_after_connect(self):
+        source = LostDataSource()
+        self.assertEqual(self.probe(source), (False, 0, "Connection lost"))
+
+    def test_output_only_connects_without_reading(self):
+        source = FakeDataSource()
+        source.read = MagicMock(return_value=[])
+        config = dict(self.CONFIG, direction="out")
+        self.assertEqual(self.probe(source, config), (True, 0, None))
+        source.read.assert_not_called()
 
 
 class TestEventDispatcherIsolation(unittest.TestCase):

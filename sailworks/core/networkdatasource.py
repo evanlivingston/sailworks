@@ -31,6 +31,7 @@ class NetworkDataSource(DataSource):
         self.host = host
         self.port = port
         self.cached = ""
+        self.error = None
 
         # Create socket
         if cnetwork == "tcp":
@@ -43,8 +44,10 @@ class NetworkDataSource(DataSource):
         try:
             self.s.connect((self.host, self.port))
             self.connected = True
+            self.error = None
             return True
         except Exception as e:
+            self.error = str(e) or e.__class__.__name__
             logger.error("Error while connecting to the network: %s", e)
             return False
 
@@ -66,12 +69,14 @@ class NetworkDataSource(DataSource):
                 return []
             except OSError as e:
                 logger.warning("Connection lost on %s:%d: %s", self.host, self.port, e)
+                self.error = str(e) or e.__class__.__name__
                 self.connected = False
                 return []
 
             if len(d) == 0:
                 # Peer closed the connection
                 logger.info("Connection closed by peer on %s:%d", self.host, self.port)
+                self.error = "Connection closed by peer"
                 self.connected = False
                 return []
 

@@ -68,6 +68,7 @@ class NMEA2000DataSource:
         self.serial_conn = None
         self.socket_conn = None
         self.raw_messages = []
+        self.error = None
 
         if self.direction != "in":
             raise ValueError("NMEA 2000 connections currently support input only")
@@ -110,13 +111,19 @@ class NMEA2000DataSource:
             else:
                 raise ValueError("Unsupported NMEA 2000 transport")
 
-            if N2K_FORMATS[self.format]["configure_gateway"]:
+            if N2K_FORMATS[self.format]["configure_gateway"] and (
+                self.connection_type == "serial"
+            ):
                 # This gateway-local command selects receive-all output; it
-                # does not transmit vessel-control PGNs onto the bus.
+                # does not transmit vessel-control PGNs onto the bus. Network
+                # data servers such as the W2K-1 are transmit only, so writing
+                # to them is unsupported and can drop the connection.
                 writer(frame(0xA1, b"\x11\x02\x00"))
             self.connected = True
+            self.error = None
             return True
         except (OSError, serial.SerialException, ValueError) as exc:
+            self.error = str(exc) or exc.__class__.__name__
             logger.warning("Cannot connect to NMEA 2000 input %s: %s", self.name, exc)
             self.close()
             return False
@@ -130,6 +137,7 @@ class NMEA2000DataSource:
                 return b""
             chunk = self.socket_conn.recv(65536)
             if not chunk and self.config["network"] == "tcp":
+                self.error = "Connection closed by peer"
                 self.connected = False
             return chunk
         return b""
@@ -143,8 +151,9 @@ class NMEA2000DataSource:
             if not chunk:
                 return []
             self.raw_messages = self.decoder.feed(chunk)
-        except (OSError, serial.SerialException):
+        except (OSError, serial.SerialException) as exc:
             logger.warning("NMEA 2000 connection lost: %s", self.name)
+            self.error = str(exc) or exc.__class__.__name__
             self.close()
             return []
         packets = []
