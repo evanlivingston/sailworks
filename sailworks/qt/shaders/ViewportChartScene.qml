@@ -459,6 +459,42 @@ Item {
                 onPaint: {
                     const context = getContext("2d")
                     context.clearRect(0, 0, width, height)
+                    if (isochrones && isochrones.contours &&
+                        isochrones.contours.runs) {
+                        const runs = isochrones.contours.runs
+                        for (let r = 0; r < runs.length; ++r) {
+                            const run = runs[r]
+                            const points = run.points
+                            if (!points || !points.length)
+                                continue
+                            context.strokeStyle = run.highlight
+                                ? "rgba(242,89,26,0.95)"
+                                : "rgba(0,0,204,0.5)"
+                            context.lineWidth = run.highlight ? 3.0 : 1.5
+                            context.setLineDash([])
+                            if (points.length === 1) {
+                                const only = screenPoint(points[0])
+                                context.fillStyle = run.highlight
+                                    ? "rgba(242,89,26,0.95)"
+                                    : "rgba(0,0,204,0.5)"
+                                context.beginPath()
+                                context.arc(only.x, only.y, 1.5, 0, Math.PI * 2)
+                                context.fill()
+                                continue
+                            }
+                            const edges = run.closed ? points.length : points.length - 1
+                            context.beginPath()
+                            for (let i = 0; i < edges; ++i) {
+                                const first = screenPoint(points[i])
+                                const second = screenPoint(
+                                    points[(i + 1) % points.length]
+                                )
+                                context.moveTo(first.x, first.y)
+                                context.lineTo(second.x, second.y)
+                            }
+                            context.stroke()
+                        }
+                    }
                     if (isochrones && isochrones.frontiers) {
                         for (let f = 0; f < isochrones.frontiers.length; ++f) {
                             const frontier = isochrones.frontiers[f]

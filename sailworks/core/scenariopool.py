@@ -204,6 +204,7 @@ def run_scenario(job, progress_queue=None, cancel_event=None, calculate=None):
             float(percent),
             tuple(points),
             tuple(getattr(points, "isochrones", ())),
+            getattr(points, "contours", None),
         )
 
     def report(message):

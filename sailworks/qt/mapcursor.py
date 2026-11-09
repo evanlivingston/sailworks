@@ -1,5 +1,7 @@
 """Cursor weather and depth readouts for the Qt map canvas."""
 
+from sailworks.rendering.isochrones import hit_test_isochrone_frame
+
 
 class MapCursorMixin:
     def _weather_context(self):
@@ -27,18 +29,21 @@ class MapCursorMixin:
             "current": "",
             "wave": "",
             "depth": "",
+            "isochrone": "",
         }
+        self._isochrone_hit = None
         self.cursor_readout.emit("")
 
     def _emit_cursor_readout(self):
         parts = [
             part
             for part in (
-                self._cursor_parts["wind"],
-                self._cursor_parts["gust"],
-                self._cursor_parts["current"],
-                self._cursor_parts["wave"],
-                self._cursor_parts["depth"],
+                self._cursor_parts.get("wind", ""),
+                self._cursor_parts.get("gust", ""),
+                self._cursor_parts.get("current", ""),
+                self._cursor_parts.get("wave", ""),
+                self._cursor_parts.get("depth", ""),
+                self._cursor_parts.get("isochrone", ""),
             )
             if part
         ]
@@ -87,8 +92,19 @@ class MapCursorMixin:
             "current": "",
             "wave": "",
             "depth": "",
+            "isochrone": "",
         }
         point = (lat, lon)
+        frame = getattr(self, "isochrone_frame", None)
+        hit = hit_test_isochrone_frame(frame, lat, lon) if frame is not None else None
+        if hit is not None:
+            self._cursor_parts["isochrone"] = (
+                "Isochrone " + hit.valid_time if hit.valid_time else "Isochrone"
+            )
+        self._isochrone_hit = hit
+        set_selected = getattr(self, "set_selected_isochrone", None)
+        if callable(set_selected):
+            set_selected(hit)
         self._cursor_coords = "Lat %.6f°  Lon %.6f°" % (lat, lon)
         if not self.is_moving() and self.move_callback is None:
             marine = self.marine.cursor_text(lat, lon)

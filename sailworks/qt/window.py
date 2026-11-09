@@ -317,6 +317,7 @@ class PreviewWindow(QMainWindow):
         self.map.route_location.connect(self.routing_panel.set_location)
         controller.routing.preview_changed.connect(self.map.set_route_preview)
         controller.routing.isochrones_changed.connect(self.map.set_isochrones)
+        controller.routing.contours_changed.connect(self.map.set_isochrone_contours)
         controller.routing.changed.connect(self._routing_changed)
         self.routing_panel._plan_changed()
         self._select_saved_route(
@@ -1265,7 +1266,8 @@ class PreviewWindow(QMainWindow):
         if not self.controller.routing.busy:
             route = self.navigation_panel.route
             self.map.set_isochrones(
-                route.isochrones if route is not None and route.visible else ()
+                route.isochrones if route is not None and route.visible else (),
+                route.contours if route is not None and route.visible else None,
             )
 
     def _nmea_panel(self):

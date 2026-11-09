@@ -23,9 +23,10 @@ class RoutingController(QObject):
     changed = Signal()
     preview_changed = Signal(object)
     isochrones_changed = Signal(object)
+    contours_changed = Signal(object)
     completed = Signal(object)
     dismiss_preflight = Signal()
-    _progress = Signal(int, float, object, object)
+    _progress = Signal(int, float, object, object, object)
     _message = Signal(int, str)
     _finished = Signal(int, object, object)
 
@@ -91,6 +92,7 @@ class RoutingController(QObject):
         self.changed.emit()
         self.preview_changed.emit(())
         self.isochrones_changed.emit(())
+        self.contours_changed.emit(None)
 
         def worker():
             self._run_requests(
@@ -187,6 +189,11 @@ class RoutingController(QObject):
                         points,
                         (
                             getattr(points, "isochrones", ())
+                            if points is not None
+                            else None
+                        ),
+                        (
+                            getattr(points, "contours", None)
                             if points is not None
                             else None
                         ),
@@ -347,13 +354,16 @@ class RoutingController(QObject):
                 continue
             kind, job_id, *values = message
             if kind == "progress":
-                percent, points, isochrones = values
+                percent, points, isochrones, *rest = values
+                contours = rest[0] if rest else None
                 self._parallel_progress[job_id] = min(100.0, float(percent))
                 active = sum(self._parallel_progress.values()) / 100.0
                 overall = (
                     (self.saved_count + active) / max(1, self.scenario_count) * 100
                 )
-                self._progress.emit(token, min(100.0, overall), points, isochrones)
+                self._progress.emit(
+                    token, min(100.0, overall), points, isochrones, contours
+                )
             elif kind == "message":
                 self._message.emit(token, values[0])
 
@@ -396,6 +406,7 @@ class RoutingController(QObject):
         )
         self.preview_changed.emit(())
         self.isochrones_changed.emit(())
+        self.contours_changed.emit(None)
         self.changed.emit()
 
     def _save_fields(self, fields):
@@ -410,6 +421,7 @@ class RoutingController(QObject):
             list(result.isochrones),
             collection=collection,
             provenance=result.provenance,
+            contours=getattr(result, "contours", None),
         )
         try:
             collection.append(route)
@@ -426,6 +438,7 @@ class RoutingController(QObject):
             self.cancel_event.set()
             self.dismiss_preflight.emit()
             self.isochrones_changed.emit(())
+            self.contours_changed.emit(None)
             self.message = "Cancelling…"
             self.changed.emit()
 
@@ -440,8 +453,8 @@ class RoutingController(QObject):
             self.message = message
             self.changed.emit()
 
-    @Slot(int, float, object, object)
-    def _apply_progress(self, token, percent, points, isochrones=None):
+    @Slot(int, float, object, object, object)
+    def _apply_progress(self, token, percent, points, isochrones=None, contours=None):
         if (
             self.closed
             or not self.busy
@@ -460,6 +473,8 @@ class RoutingController(QObject):
             self.preview_changed.emit(points)
         if isochrones is not None:
             self.isochrones_changed.emit(isochrones)
+        if isochrones is not None or contours is not None:
+            self.contours_changed.emit(contours)
         self.changed.emit()
 
     @Slot(int, object, object)
@@ -471,6 +486,7 @@ class RoutingController(QObject):
         self._parallel_progress = {}
         self.preview_changed.emit(())
         self.isochrones_changed.emit(())
+        self.contours_changed.emit(None)
         if self.cancel_event.is_set() or isinstance(
             error, (RoutingCancelledError, DownloadCancelledError)
         ):
@@ -499,6 +515,7 @@ class RoutingController(QObject):
 
     def close(self):
         self.isochrones_changed.emit(())
+        self.contours_changed.emit(None)
         self.closed = True
         self.cancel_event.set()
         self.generation += 1

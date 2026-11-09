@@ -20,6 +20,7 @@ import gpxpy
 from weatherrouting import IsoPoint
 
 from sailworks.core.geo.track import Track
+from sailworks.core.isochrones import IsochroneContours, normalize_contours
 
 
 class Routing(Track):
@@ -31,11 +32,14 @@ class Routing(Track):
         visible=True,
         collection=None,
         provenance=None,
+        contours=None,
     ):
         super().__init__(name, points, visible, collection)
         self.isochrones = isochrones
         # None explicitly means provenance is unknown, including legacy routes.
         self.provenance = deepcopy(provenance)
+        # A missing sidecar means this is a legacy route; never fabricate one.
+        self.contours = normalize_contours(contours)
 
     def to_gpx_object(self):
         gpx_route = gpxpy.gpx.GPXRoute()
@@ -51,10 +55,29 @@ class Routing(Track):
             map(lambda x: list(map(lambda y: y.to_list(), x)), self.isochrones)
         )
         c["provenance"] = deepcopy(self.provenance)
+        if self.contours is not None:
+            c["isochrone_contours"] = self.contours.to_json()
         return c
 
     @staticmethod
     def from_json(j):
         d = Track.from_json(j)
         ic = list(map(lambda x: list(map(IsoPoint.from_list, x)), j["isochrones"]))
-        return Routing(d.name, d.points, ic, d.visible, provenance=j.get("provenance"))
+        try:
+            raw_contours = j.get("isochrone_contours")
+            contours = (
+                IsochroneContours.from_json(raw_contours)
+                if raw_contours is not None
+                else None
+            )
+        except Exception:
+            # A malformed or future sidecar must not prevent loading the route.
+            contours = IsochroneContours((), version=0, representation="unavailable")
+        return Routing(
+            d.name,
+            d.points,
+            ic,
+            d.visible,
+            provenance=j.get("provenance"),
+            contours=contours,
+        )

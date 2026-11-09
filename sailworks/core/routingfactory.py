@@ -55,6 +55,12 @@ def build_routing(
         if not use_currents and safety_policy.tws_max_kn is not None:
             algorithm = wind_limit_router(algorithm)
 
+    if not use_currents:
+        # Observe the dependency's pre-pruning candidates without editing it.
+        from sailworks.core.marine.windcontours import contour_observing_router
+
+        algorithm = contour_observing_router(algorithm)
+
     pval: Optional[Callable] = utils.points_validity
     lval: Optional[Callable] = None
 

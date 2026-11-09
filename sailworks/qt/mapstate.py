@@ -64,11 +64,42 @@ class MapStateMixin:
         self._ais_visible_state = bool(visible)
         self.invalidate_navigation()
 
-    def set_isochrones(self, frontiers):
-        self.isochrone_frame = IsochroneFrame(tuple(frontiers), (), ())
-        if not frontiers:
+    def set_isochrones(self, frontiers, contours=None):
+        self.isochrone_frame = IsochroneFrame(tuple(frontiers), (), (), contours, None)
+        if not frontiers and not contours:
             self.isochrones.forget(self)
         self.invalidate_navigation()
+        self._publish_route_overlay()
+        self.update()
+
+    def set_isochrone_contours(self, contours):
+        frame = getattr(self, "isochrone_frame", None)
+        if frame is None:
+            return
+        self.isochrone_frame = IsochroneFrame(
+            frame.isochrones,
+            frame.path,
+            frame.exclusions,
+            contours,
+            getattr(frame, "selected", None),
+        )
+        self.invalidate_navigation()
+        self._publish_route_overlay()
+        self.update()
+
+    def set_selected_isochrone(self, selected):
+        frame = getattr(self, "isochrone_frame", None)
+        if frame is None:
+            return
+        if getattr(frame, "selected", None) == selected:
+            return
+        self.isochrone_frame = IsochroneFrame(
+            frame.isochrones,
+            frame.path,
+            frame.exclusions,
+            getattr(frame, "contours", None),
+            selected,
+        )
         self._publish_route_overlay()
         self.update()
 

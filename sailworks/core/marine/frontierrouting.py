@@ -6,6 +6,7 @@ candidates allocate IsoPoints and detailed sample dictionaries.
 """
 
 import json
+import logging
 import math
 from dataclasses import dataclass
 from datetime import timedelta
@@ -13,6 +14,11 @@ from datetime import timedelta
 import numpy as np
 from weatherrouting import IsoPoint, Polar
 
+from sailworks.core.isochrones import (
+    CandidateSample,
+    append_contour_slice,
+    build_contour_slice,
+)
 from sailworks.core.polarwrapper import PolarWrapper
 
 from .batchrouting import distances, move_many
@@ -28,6 +34,8 @@ from .routing import (
     distance_bearing,
     routing_utc,
 )
+
+logger = logging.getLogger("sailworks")
 
 
 def restore_time(microseconds, original):
@@ -184,6 +192,7 @@ class ArrayEnvironment:
 def propagate(self, frontier, seconds, end, gaps, numeric):  # noqa: C901
     parent_ids = []
     heading_values = []
+    heading_slots = []
     for i, point in enumerate(frontier):
         if self.environment.cancel.is_set():
             raise DownloadCancelledError()
@@ -195,8 +204,10 @@ def propagate(self, frontier, seconds, end, gaps, numeric):  # noqa: C901
             continue
         parent_ids.extend([i] * len(hh))
         heading_values.extend(hh)
+        heading_slots.extend(range(len(hh)))
     parents = np.asarray(parent_ids, dtype=int)
     headings = np.asarray(heading_values)
+    slots = np.asarray(heading_slots, dtype=int)
     count = len(parents)
     if not count:
         return None
@@ -323,6 +334,7 @@ def propagate(self, frontier, seconds, end, gaps, numeric):  # noqa: C901
     return dict(
         parents=parents,
         headings=headings,
+        slots=slots,
         positions=positions,
         times=times,
         elapsed=elapsed,
@@ -335,6 +347,10 @@ def propagate(self, frontier, seconds, end, gaps, numeric):  # noqa: C901
 def route_frontier(self, lastlog, t, hours, start, end):  # noqa: C901
     if self.environment.cancel.is_set():
         raise DownloadCancelledError()
+    if lastlog is None:
+        self._contour_leg = getattr(self, "_contour_leg", -1) + 1
+    elif not hasattr(self, "_contour_leg"):
+        self._contour_leg = 0
     isochrones = (
         list(lastlog.isochrones)
         if lastlog
@@ -454,12 +470,44 @@ def route_frontier(self, lastlog, t, hours, start, end):  # noqa: C901
         result.marine_samples = tuple(samples)
         return result
 
+    def publish_contour(published, valid_time):
+        if data is None or not getattr(self, "capture_contours", True):
+            return
+        try:
+            accepted = np.flatnonzero(data["alive"])
+            candidates = [
+                CandidateSample(
+                    float(data["positions"][i, 0]),
+                    float(data["positions"][i, 1]),
+                    int(data["parents"][i]),
+                    int(data["slots"][i]),
+                    float(data["headings"][i]),
+                )
+                for i in accepted
+            ]
+            append_contour_slice(
+                self,
+                build_contour_slice(
+                    [point.pos for point in frontier],
+                    candidates,
+                    leg_id=getattr(self, "_contour_leg", 0),
+                    step=len(isochrones),
+                    valid_time=valid_time,
+                    frontier=[point.pos for point in published],
+                ),
+            )
+        except Exception:
+            # Contour capture is best-effort evidence; it must never change
+            # candidate selection, path reconstruction or arrival behavior.
+            logger.debug("Isochrone contour capture failed", exc_info=True)
+
     if winner is not None:
         win = materialize(winner)
         # The trajectory has already been integrated to within one metre;
         # normalize only this residual in the published route position.
         win.pos = tuple(end)
         win.next_wp_dist = 0.0
+        publish_contour([win], win.time)
         path = [win]
         for front in reversed(isochrones):
             path.append(front[path[-1].prev_idx])
@@ -467,4 +515,5 @@ def route_frontier(self, lastlog, t, hours, start, end):  # noqa: C901
         return self.result(win.time, path, isochrones + [[win]], win.pos)
     retained = [idx for group in bins.values() for idx in group]
     new = [materialize(i) for i in retained]
+    publish_contour(new, new[0].time)
     return self.result(new[0].time, [], isochrones + [new], start)

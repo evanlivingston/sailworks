@@ -12,6 +12,8 @@ from typing import Optional
 from weatherrouting import IsoPoint, RoutingNoWindError
 from weatherrouting.routers.linearbestisorouter import LinearBestIsoRouter
 
+from sailworks.core.isochrones import IsochroneContours, collect_contours
+
 _original_linear_route = LinearBestIsoRouter._route
 
 
@@ -426,10 +428,12 @@ class RoutingPreview(tuple):
     """Path-compatible progress payload with frozen isochrone coordinates."""
 
     isochrones: tuple
+    contours: object
 
-    def __new__(cls, path=(), isochrones=()):
+    def __new__(cls, path=(), isochrones=(), contours=None):
         result = super().__new__(cls, path)
         result.isochrones = isochrones
+        result.contours = contours
         return result
 
 
@@ -438,6 +442,7 @@ class IsochroneSnapshot:
 
     def __init__(self):
         self.frontiers: dict[int, tuple] = {}
+        self.contours = IsochroneContours(())
 
     def capture(self, frontiers):
         current = {}
@@ -449,12 +454,20 @@ class IsochroneSnapshot:
         self.frontiers = current
         return tuple(current[id(frontier)][1] for frontier in frontiers)
 
+    def capture_contours(self, router=None, slices=None):
+        """Freeze the accumulated immutable slices from the algorithm."""
+        if slices is None:
+            slices = getattr(router, "contour_slices", ())
+        self.contours = IsochroneContours(tuple(slices or ()))
+        return self.contours
+
 
 @dataclass(frozen=True)
 class CalculatedRoute:
     points: tuple
     isochrones: tuple
     provenance: dict
+    contours: object = None
 
 
 def calculate_route(
@@ -591,10 +604,13 @@ def run_requested_routing(core, routing, request, wind, progress, report, save_f
             else routing.step()
         )
         path = result.path or routing.get_current_best_path()
+        contours = snapshot.capture_contours(routing.algorithm)
         progress(
             routing_completion(routing),
             RoutingPreview(
-                tuple(tuple(p.pos) for p in path), snapshot.capture(result.isochrones)
+                tuple(tuple(p.pos) for p in path),
+                snapshot.capture(result.isochrones),
+                contours,
             ),
         )
     wind.check_cancelled()
@@ -657,6 +673,7 @@ def run_requested_routing(core, routing, request, wind, progress, report, save_f
         serialize_routing_points(routing, result.path),
         tuple(tuple(group) for group in result.isochrones),
         provenance,
+        collect_contours(routing.algorithm),
     )
 
 

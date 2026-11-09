@@ -167,5 +167,6 @@ def advance_headings(router, point, seconds, headings, end):  # noqa: C901
             next_wp_dist=float(distances(positions[i : i + 1], end)[0]) / 1852,
         )
         candidate.marine_samples = tuple(samples[i])
+        candidate.heading_index = int(i)
         result.append(candidate)
     return result, gaps

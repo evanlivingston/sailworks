@@ -21,6 +21,12 @@ from weatherrouting.routers.router import RoutingResult
 
 from sailworks.core.grib import Grib
 from sailworks.core.gribsampling import WeatherSampler
+from sailworks.core.isochrones import (
+    CandidateSample,
+    append_contour_slice,
+    build_contour_slice,
+    contours_enabled,
+)
 
 from .chs import DownloadCancelledError
 from .fields import Area, FieldSelection, field_sort_key, normalize_priority
@@ -359,6 +365,7 @@ class CurrentIsoRouter(LinearBestIsoRouter):
     def __init__(self, *args, environment, **kwargs):
         super().__init__(*args, **kwargs)
         self.environment = environment
+        self.capture_contours = contours_enabled()
         if (self.points_validity or self.point_validity) and (
             self.lines_validity or self.line_validity
         ):
@@ -513,13 +520,16 @@ class CurrentIsoRouter(LinearBestIsoRouter):
             if gaps:
                 yield RoutingDataGapError(gaps)
             return
-        for heading in headings:
+        for index, heading in enumerate(headings):
             try:
-                yield self.advance(point, seconds, heading, end)
+                candidate = self.advance(point, seconds, heading, end)
             except InvalidMarineLegError:
                 continue
             except RoutingDataGapError as error:
                 yield error
+                continue
+            candidate.heading_index = index
+            yield candidate
 
     def route(self, lastlog, t, hours, start, end):  # noqa: C901
         # Preserve custom candidate generators and the scalar reference path.
@@ -535,6 +545,10 @@ class CurrentIsoRouter(LinearBestIsoRouter):
                 return route_frontier(self, lastlog, t, hours, start, end)
         if self.environment.cancel.is_set():
             raise DownloadCancelledError()
+        if lastlog is None:
+            self._contour_leg = getattr(self, "_contour_leg", -1) + 1
+        elif not hasattr(self, "_contour_leg"):
+            self._contour_leg = 0
         isochrones = (
             list(lastlog.isochrones)
             if lastlog
@@ -555,6 +569,7 @@ class CurrentIsoRouter(LinearBestIsoRouter):
         bins: dict = {}
         gaps = {}
         winner = None
+        observed = []
         best_distance = min(p.next_wp_dist for p in isochrones[-1]) * 1852
         total = len(isochrones[-1])
         for index, point in enumerate(isochrones[-1]):
@@ -576,6 +591,7 @@ class CurrentIsoRouter(LinearBestIsoRouter):
                         gaps[(gap.position, gap.time, gap.kind)] = gap
                 else:
                     candidate.prev_idx = index
+                    observed.append(candidate)
                     best_distance = min(best_distance, candidate.next_wp_dist * 1852)
                     if candidate.next_wp_dist * 1852 <= ARRIVAL_METRES:
                         # Normalize only the already-integrated sub-metre
@@ -620,7 +636,37 @@ class CurrentIsoRouter(LinearBestIsoRouter):
             )
         if not bins:
             raise ValueError("No navigable route through the current search area")
+
+        def publish_contour(published, valid_time):
+            if not getattr(self, "capture_contours", True):
+                return
+            try:
+                candidates = [
+                    CandidateSample(
+                        float(point.pos[0]),
+                        float(point.pos[1]),
+                        int(point.prev_idx),
+                        int(getattr(point, "heading_index", 0)),
+                        float(getattr(point, "brg", 0.0)),
+                    )
+                    for point in observed
+                ]
+                append_contour_slice(
+                    self,
+                    build_contour_slice(
+                        [point.pos for point in isochrones[-1]],
+                        candidates,
+                        leg_id=getattr(self, "_contour_leg", 0),
+                        step=len(isochrones),
+                        valid_time=valid_time,
+                        frontier=[point.pos for point in published],
+                    ),
+                )
+            except Exception:
+                logger.debug("Isochrone contour capture failed", exc_info=True)
+
         if winner is not None:
+            publish_contour([winner], winner.time)
             path = [winner]
             for frontier in reversed(isochrones):
                 path.append(frontier[path[-1].prev_idx])
@@ -628,6 +674,7 @@ class CurrentIsoRouter(LinearBestIsoRouter):
             return self.result(winner.time, path, isochrones + [[winner]], winner.pos)
         # Equal-time isochrones, pruned by bearing from the leg's start.
         frontier = [item for group in bins.values() for item in group]
+        publish_contour(frontier, frontier[0].time)
         return self.result(frontier[0].time, [], isochrones + [frontier], start)
 
     def result(self, time, path, isochrones, position):
@@ -637,6 +684,7 @@ class CurrentIsoRouter(LinearBestIsoRouter):
             "excluded_current_samples",
             tuple(self.environment.excluded_samples.values()),
         )
+        setattr(result, "contours", tuple(getattr(self, "contour_slices", ())))
         return result
 
 
