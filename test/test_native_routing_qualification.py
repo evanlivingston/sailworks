@@ -197,3 +197,37 @@ def test_matched_builtin_and_sampled_provider_runs(tmp_path, capsys):
     )
     with capsys.disabled():
         print(measurement)
+
+
+def test_worker_payload_matches_the_in_process_bridge(capsys):
+    """Bridge-versus-direct evidence: worker transport must not change results."""
+    from sailworks.core.marine.nativeworker import NativeRoutingWorker
+
+    bridge = _bridge()
+    direct = bridge.synthetic_route("main")
+
+    worker = NativeRoutingWorker()
+    try:
+        worker.submit(engine="main")
+        deadline = time.monotonic() + 90
+        status = None
+        while time.monotonic() < deadline:
+            status = worker.poll(0.1)
+            if status is not None:
+                break
+    finally:
+        worker.shutdown()
+
+    assert status is not None and status.state == "completed"
+    through_worker = status.payload
+    assert through_worker["digest"] == direct["digest"]
+    assert through_worker["legs"] == direct["legs"]
+    assert through_worker["layer_count"] == direct["layer_count"]
+
+    measurement = (
+        "worker-vs-direct: digest="
+        f"{direct['digest']} legs={direct['leg_count']} "
+        f"layers={direct['layer_count']}"
+    )
+    with capsys.disabled():
+        print(measurement)
