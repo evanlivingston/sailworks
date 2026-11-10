@@ -81,6 +81,13 @@ SyntheticRun runSynthetic(const std::string& engine);
 SyntheticRun runCancelled(const std::string& engine);
 SyntheticRun runInvalidDestination();
 
+// Run the same synthetic scenario but with weather supplied by an external
+// provider (for example a Python adapter over established Sailworks sampling).
+// The fixture polar, constraints and request limits are unchanged.
+SyntheticRun runWithProvider(const std::string& engine,
+                             std::shared_ptr<wr::WeatherProvider> provider,
+                             bool cancelled = false);
+
 [[nodiscard]] bool isCompleteStatus(wr::RoutingStatus status);
 [[nodiscard]] std::string statusName(wr::RoutingStatus status);
 [[nodiscard]] std::string solverPathName(wr::SolverPath path);

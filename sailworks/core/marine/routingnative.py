@@ -9,6 +9,7 @@ are passed through exactly as the engine emitted them.
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
 from collections.abc import Mapping, Sequence
 from typing import Any, Optional
 
@@ -33,6 +34,25 @@ from .routingresult import RoutingResult, canonical_utc
 UNVALIDATED_STATUSES = frozenset(
     {"cancelled", "incomplete", "resource_limit_reached", "internal_error"}
 )
+
+
+def wind_callable_from_sampler(sampler: Any):
+    """Adapt ``WeatherSampler.wind_at`` into the native bridge wind callback.
+
+    The bridge expects ``(from_degrees, speed_ms, available)`` — exactly the
+    established Sailworks sampling representation, so no unit conversion happens
+    on this side. A missing sample is reported as unavailable rather than calm.
+    """
+
+    def wind(latitude: float, longitude: float, epoch_s: int):
+        instant = datetime.fromtimestamp(epoch_s, timezone.utc)
+        value = sampler.wind_at(instant, latitude, longitude)
+        if value is None:
+            return (0.0, 0.0, False)
+        from_degrees, speed_ms = value
+        return (float(from_degrees), float(speed_ms), True)
+
+    return wind
 
 
 def to_routing_result(

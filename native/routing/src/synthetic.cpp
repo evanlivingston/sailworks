@@ -356,6 +356,15 @@ SyntheticRun runCancelled(const std::string& engine) {
                        fixtureEnvironment());
 }
 
+SyntheticRun runWithProvider(const std::string& engine,
+                             std::shared_ptr<wr::WeatherProvider> provider,
+                             bool cancelled) {
+  wr::RoutingEnvironment environment = fixtureEnvironment();
+  environment.grib = std::move(provider);
+  return runWithEngine(engine, fixtureRequest(cancelled, false),
+                       environment);
+}
+
 SyntheticRun runInvalidDestination() {
   return runWithEngine("main", fixtureRequest(false, true),
                        fixtureEnvironment());

@@ -54,6 +54,18 @@ to `build/native-routing/python`.
   it is submitted: there is no mid-route or live cancellation.
 - `synthetic_invalid_destination()` — structured failure outside coverage.
 - `synthetic_validation_failure()` — tampered leg replay for the failure path.
+- `route_with_weather(wind, current, coverage, provider_identity=..., source="grib", engine="main")`
+  — runs the same request and polar with weather sampled through Python
+  callables, so established Sailworks sampling can drive the native solver.
+  `wind(latitude, longitude, epoch_s)` returns
+  `(from_degrees, speed_ms, available)` — exactly the sampling representation
+  used by `WeatherSampler.wind_at`. `current(...)` returns
+  `(east_ms, north_ms, available)` with components pointing toward water
+  motion. The bridge converts to engine knots once at this boundary. The
+  solver runs with the GIL held on the calling thread and no native
+  concurrency; a Sailworks vessel-performance adapter is not wired yet, so the
+  fixture polar and constraints are still used. Missing samples must be
+  reported with `available=False` rather than as calm water.
 
 The synthetic polar uses the frozen contract angles 30, 60, 90, 120, 150 and
 180 degrees. There is no 0-degree row; the engine clamps lower true wind

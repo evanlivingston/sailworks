@@ -14,6 +14,7 @@
 namespace py = pybind11;
 namespace wr = supercpn::weather_routing;
 using sailworks::native_routing::SyntheticRun;
+using sailworks::native_routing::kKnotsPerMetreSecond;
 
 namespace {
 
@@ -280,6 +281,153 @@ py::dict layerDict(const wr::IsochroneLayer& layer, std::size_t index) {
   return result;
 }
 
+// Weather supplied by Python callables so ordinary Sailworks sampling can drive
+// the native solver. The route call keeps the GIL, so callbacks execute on the
+// calling thread; no native concurrency is enabled by this adapter.
+class PythonWeatherProvider final : public wr::WeatherProvider {
+ public:
+  PythonWeatherProvider(py::function wind, py::function current,
+                        wr::ParameterCoverage coverage, std::string identity,
+                        wr::EnvironmentalSource source)
+      : wind_(std::move(wind)),
+        current_(std::move(current)),
+        coverage_(coverage),
+        identity_(std::move(identity)),
+        source_(source) {}
+
+  [[nodiscard]] wr::ParameterCoverage windCoverage() const override {
+    return coverage_;
+  }
+  [[nodiscard]] wr::ParameterCoverage currentCoverage() const override {
+    return coverage_;
+  }
+  [[nodiscard]] wr::ParameterCoverage waveCoverage() const override {
+    wr::ParameterCoverage waves;
+    waves.available = false;
+    waves.datasetIdentity = identity_ + "-waves-absent";
+    return waves;
+  }
+
+  [[nodiscard]] wr::WindSample wind(wr::GeoPoint position,
+                                    wr::TimePoint time) const override {
+    py::gil_scoped_acquire guard;
+    const py::object value =
+        wind_(position.latitude, position.longitude, seconds(time));
+    if (value.is_none()) return {};
+    const py::tuple item = asTuple(value, "wind");
+    wr::WindSample sample;
+    // The callback reports established sampling semantics: wind FROM degrees
+    // and speed in metres per second. The engine stores a toward-vector in
+    // knots, so the conversion happens here once.
+    const double fromDegrees = asDouble(item[0], "wind from_degrees");
+    const double speedMs = asDouble(item[1], "wind speed_ms");
+    const bool available = asBool(item[2], "wind available");
+    sample.available = available;
+    if (available) {
+      const double radians = fromDegrees * 3.14159265358979323846 / 180.0;
+      sample.velocity = wr::Vector2{
+          -speedMs * std::sin(radians) * kKnotsPerMetreSecond,
+          -speedMs * std::cos(radians) * kKnotsPerMetreSecond};
+    }
+    sample.metadata = metadata(time);
+    return sample;
+  }
+
+  [[nodiscard]] wr::CurrentSample current(wr::GeoPoint position,
+                                          wr::TimePoint time) const override {
+    py::gil_scoped_acquire guard;
+    const py::object value =
+        current_(position.latitude, position.longitude, seconds(time));
+    if (value.is_none()) return {};
+    const py::tuple item = asTuple(value, "current");
+    wr::CurrentSample sample;
+    // Currents keep the Sailworks component convention: east/north metres per
+    // second pointing toward where the water moves.
+    const double eastMs = asDouble(item[0], "current east_ms");
+    const double northMs = asDouble(item[1], "current north_ms");
+    const bool available = asBool(item[2], "current available");
+    sample.available = available;
+    if (available) {
+      sample.velocity = wr::Vector2{eastMs * kKnotsPerMetreSecond,
+                                    northMs * kKnotsPerMetreSecond};
+    }
+    sample.metadata = metadata(time);
+    return sample;
+  }
+
+  [[nodiscard]] wr::WaveSample waves(wr::GeoPoint,
+                                     wr::TimePoint) const override {
+    return {};
+  }
+
+  [[nodiscard]] std::string identity() const override { return identity_; }
+
+ private:
+  static std::int64_t seconds(wr::TimePoint time) {
+    return static_cast<std::int64_t>(time.time_since_epoch().count());
+  }
+
+  static py::tuple asTuple(const py::object& value, const char* label) {
+    if (!py::isinstance<py::tuple>(value))
+      throw std::runtime_error(std::string(label) +
+                               " provider must return a tuple");
+    return py::reinterpret_borrow<py::tuple>(value);
+  }
+
+  static double asDouble(const py::handle& value, const char* label) {
+    if (!py::isinstance<py::float_>(value) && !py::isinstance<py::int_>(value))
+      throw std::runtime_error(std::string(label) + " must be a number");
+    return py::cast<double>(value);
+  }
+
+  static bool asBool(const py::handle& value, const char* label) {
+    if (!py::isinstance<py::bool_>(value))
+      throw std::runtime_error(std::string(label) + " must be a boolean");
+    return py::cast<bool>(value);
+  }
+
+  [[nodiscard]] wr::EnvironmentalSourceMetadata metadata(
+      wr::TimePoint time) const {
+    wr::EnvironmentalSourceMetadata value;
+    value.source = source_;
+    value.datasetIdentity = identity_;
+    value.modelIdentity = identity_;
+    value.sourceTimestamp = time;
+    return value;
+  }
+
+  py::function wind_;
+  py::function current_;
+  wr::ParameterCoverage coverage_;
+  std::string identity_;
+  wr::EnvironmentalSource source_;
+};
+
+wr::ParameterCoverage coverageFromDict(const py::dict& value,
+                                       const std::string& identity) {
+  wr::ParameterCoverage coverage;
+  coverage.available = true;
+  coverage.datasetIdentity = identity;
+  if (value.contains("available")) coverage.available = py::cast<bool>(value["available"]);
+  coverage.area.south = py::cast<double>(value["south"]);
+  coverage.area.north = py::cast<double>(value["north"]);
+  coverage.area.west = py::cast<double>(value["west"]);
+  coverage.area.east = py::cast<double>(value["east"]);
+  coverage.begins = wr::TimePoint{wr::Duration{py::cast<std::int64_t>(value["start_epoch_s"])}};
+  coverage.ends = wr::TimePoint{wr::Duration{py::cast<std::int64_t>(value["end_epoch_s"])}};
+  return coverage;
+}
+
+wr::EnvironmentalSource sourceFromName(const std::string& name) {
+  if (name == "grib" || name == "grib_forecast")
+    return wr::EnvironmentalSource::GribForecast;
+  if (name == "climatology") return wr::EnvironmentalSource::Climatology;
+  if (name == "current_prediction" || name == "xtd_current")
+    return wr::EnvironmentalSource::XtdCurrentPrediction;
+  if (name == "synthetic") return wr::EnvironmentalSource::SyntheticTestField;
+  return wr::EnvironmentalSource::Missing;
+}
+
 py::dict runDict(const SyntheticRun& run) {
   py::dict result;
   result["engine"] = run.engine;
@@ -441,6 +589,16 @@ py::dict identityDict() {
   capabilities["bundled_shoreline_data"] = false;
   capabilities["gshhg_data"] = false;
   capabilities["real_forecast_acquisition"] = false;
+  capabilities["external_weather_provider"] = true;
+  capabilities["external_weather_contract"] =
+      "route_with_weather(wind, current, coverage) calls Python for every "
+      "sample; wind is (from_degrees, speed_ms, available) and current is "
+      "(east_ms, north_ms, available) pointing toward motion; the solver runs "
+      "with the GIL held on the calling thread and no native concurrency";
+  capabilities["external_weather_vessel_model"] =
+      "the fixture polar, constraints and request limits are unchanged by the "
+      "external weather path; a Sailworks vessel-performance adapter is not "
+      "wired yet";
   capabilities["production_routing_default"] = false;
   result["capabilities"] = capabilities;
 
@@ -605,4 +763,23 @@ PYBIND11_MODULE(sailworks_native_routing, module) {
   }, "Run a structured failure outside the synthetic coverage area");
   module.def("synthetic_validation_failure", &validationFailureDict,
              "Replay a tampered leg with the independent validator");
+  module.def(
+      "route_with_weather",
+      [](py::function wind, py::function current, py::dict coverage,
+         const std::string& provider_identity, const std::string& source,
+         const std::string& engine, bool cancelled) {
+        auto provider = std::make_shared<PythonWeatherProvider>(
+            std::move(wind), std::move(current),
+            coverageFromDict(coverage, provider_identity), provider_identity,
+            sourceFromName(source));
+        return runDict(sailworks::native_routing::runWithProvider(
+            engine, std::move(provider), cancelled));
+      },
+      py::arg("wind"), py::arg("current"), py::arg("coverage"),
+      py::arg("provider_identity") = "python-weather-provider",
+      py::arg("source") = "grib", py::arg("engine") = "main",
+      py::arg("cancelled") = false,
+      "Run the synthetic scenario with weather sampled through Python "
+      "callables; wind returns (from_degrees, speed_ms, available) and "
+      "current returns (east_ms, north_ms, available) toward motion");
 }
