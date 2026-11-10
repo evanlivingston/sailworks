@@ -6,7 +6,7 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
-from sailworks.core.marine.routinginspection import READOUT_FIELDS, RoutingInspector
+from sailworks.core.marine.routinginspection import RoutingInspector
 from sailworks.core.marine.routingresult import RoutingResult
 from sailworks.core.marine.routingselection import RoutingSelection
 

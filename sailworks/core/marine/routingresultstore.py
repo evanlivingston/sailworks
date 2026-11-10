@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import re
 import tempfile
-from typing import Optional, Union
+from typing import Union
 
 from .routingrecord import ArtifactRef, ArtifactIntegrityError, SchemaError
 

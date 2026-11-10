@@ -71,6 +71,7 @@ jobs:
       env:
         SAILWORKS_NATIVE_ROUTING_BUILD: ${{ github.workspace }}/build/native-routing/python
       run: |
+        python -m pip install pytest
         ctest --test-dir build/native-routing --output-on-failure
         python -m pytest test/test_native_routing_import.py test/test_native_routing_smoke.py \
           test/test_native_routing_cancellation.py test/test_native_routing_adapter.py -q
