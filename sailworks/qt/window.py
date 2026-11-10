@@ -23,6 +23,7 @@ from PySide6.QtGui import (
     QUndoStack,
 )
 from PySide6.QtWidgets import (
+    QDockWidget,
     QFileDialog,
     QLabel,
     QMainWindow,
@@ -63,6 +64,7 @@ from .viewportmap import ViewportMap
 from .backgroundtask import BackgroundTask
 from .placesearch import PlaceSearch
 from .routingpanel import RoutingPanel
+from .routinginspector import RoutingInspectorPanel
 from .settingsdialog import SettingsDialog
 from .datalibrary import DataLibrary
 from .plotdata import elapsed_offsets
@@ -281,6 +283,7 @@ class PreviewWindow(QMainWindow):
         self.settings_action = file_menu.addAction("Settings…", self.show_settings)
         self.settings_action.setMenuRole(QAction.MenuRole.PreferencesRole)
         self.settings_action.setShortcut(QKeySequence.StandardKey.Preferences)
+        self._create_routing_inspector()
         self._create_marine_panels(controller)
         self.weather_panel = WeatherPanel(
             controller, self._active_map, self.show_library
@@ -1412,6 +1415,16 @@ class PreviewWindow(QMainWindow):
             )
             self.map.native_routing = self.controller.routing.native_overlay
 
+    def _create_routing_inspector(self):
+        self.routing_inspector = RoutingInspectorPanel(self)
+        self.routing_inspector_dock = QDockWidget("Routing inspector", self)
+        self.routing_inspector_dock.setObjectName("routing-inspector-dock")
+        self.routing_inspector_dock.setWidget(self.routing_inspector)
+        self.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea, self.routing_inspector_dock
+        )
+        self.routing_inspector_dock.hide()
+
     def show_native_routing_result(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Open native routing result", "", "Routing result (*.json)"
@@ -1423,6 +1436,12 @@ class PreviewWindow(QMainWindow):
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "Native routing result", str(exc))
             return
+        model = self.controller.routing.native_overlay
+        self.routing_inspector.set_result(model.result)
+        self.routing_inspector.select_nearest_layer(
+            model.result.layers[0].time_epoch_s if model.result.layers else 0
+        )
+        self.routing_inspector_dock.show()
         self._sync_route_isochrones()
 
     def _nmea_panel(self):

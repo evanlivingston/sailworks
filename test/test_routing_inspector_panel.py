@@ -1,0 +1,112 @@
+"""Tests for the Qt routing inspector panel."""
+
+from __future__ import annotations
+
+import pytest
+from PySide6.QtWidgets import QApplication
+
+from sailworks.core.marine.routingrecord import (
+    Capabilities,
+    Contour,
+    EngineIdentity,
+    Layer,
+    Leg,
+    Outcome,
+    Point,
+    Provenance,
+    Validation,
+)
+from sailworks.core.marine.routingresult import RoutingResult, canonical_utc
+from sailworks.qt.routinginspector import RoutingInspectorPanel
+
+CALCULATION = "6f1c1a1e-0000-4000-8000-000000000009"
+
+
+@pytest.fixture(scope="module")
+def app():
+    instance = QApplication.instance() or QApplication([])
+    return instance
+
+
+def _result() -> RoutingResult:
+    layers = tuple(
+        Layer(
+            f"layer-{index}",
+            1767226500 + 1800 * index,
+            canonical_utc(1767226500 + 1800 * index),
+            index == 1,
+            (Contour(f"c-{index}", True, (Point(48.0, -124.0), Point(48.1, -123.9))),),
+        )
+        for index in range(2)
+    )
+    leg = Leg(
+        "leg-0",
+        Point(48.2, -123.7),
+        Point(48.4, -123.5),
+        1767225600,
+        "2026-01-01T00:00:00Z",
+        1767226500,
+        "2026-01-01T00:15:00Z",
+        None,
+        {"heading_degrees": 43.5, "warning_count": 0},
+    )
+    return RoutingResult(
+        calculation_id=CALCULATION,
+        generation=1,
+        sequence=1,
+        status="complete",
+        outcome=Outcome(True, True, Validation("passed", True)),
+        engine_identity=EngineIdentity(
+            "rgleason/weather_routing_pi",
+            "4df1b519e75e664dd72eed62dbb62b4a3e02b8d1",
+            "1.2.1",
+            "1.1.0",
+            "a" * 64,
+            None,
+        ),
+        provenance=Provenance("2026-01-01T00:00:00Z", "recorded"),
+        legs=(leg,),
+        layers=layers,
+        capabilities=Capabilities("main", "absent", "sampled", 12, 1800),
+    )
+
+
+def test_panel_lists_layers_with_exact_time_and_direction(app):
+    panel = RoutingInspectorPanel()
+    panel.set_result(_result())
+
+    assert panel.layer_combo.count() == 2
+    assert panel.layer_combo.currentText() == "layer-0"
+    text = panel.time_label.text()
+    assert "2026-01-01T00:15:00Z" in text
+    assert "+0 s" in text
+    assert "forward" in text
+
+    panel.layer_combo.setCurrentIndex(1)
+    text = panel.time_label.text()
+    assert "2026-01-01T00:45:00Z" in text
+    assert "+1800 s" in text
+    assert "reverse" in text
+
+
+def test_panel_readout_shows_recorded_values_and_unknown_absent_fields(app):
+    panel = RoutingInspectorPanel()
+    panel.set_result(_result())
+
+    text = panel.readout.toPlainText()
+    assert "heading_degrees: 43.5" in text
+    assert "speed_over_ground_knots: unknown" in text
+    assert "missing:" in text
+
+
+def test_panel_nearest_layer_selection_links_to_selection_signal(app):
+    panel = RoutingInspectorPanel()
+    panel.set_result(_result())
+    selected = []
+    panel.layer_selected.connect(selected.append)
+
+    assert panel.select_nearest_layer(1767228300) is True
+    assert panel.layer_combo.currentText() == "layer-1"
+    assert selected[-1] == "layer-1"
+    assert panel.select_nearest_layer(1767226500) is True
+    assert panel.layer_combo.currentText() == "layer-0"
