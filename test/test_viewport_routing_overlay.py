@@ -22,7 +22,7 @@ from sailworks.rendering.routingoverlay import RoutingOverlayModel
 CALCULATION = "6f1c1a1e-0000-4000-8000-000000000005"
 
 
-def _result(layer_count: int = 1) -> RoutingResult:
+def _result(layer_count: int = 1, traces=()) -> RoutingResult:
     layers = tuple(
         Layer(
             f"layer-{index}",
@@ -67,6 +67,7 @@ def _result(layer_count: int = 1) -> RoutingResult:
         ),
         layers=layers,
         capabilities=Capabilities("main", "absent", "sampled", 12, 1800),
+        traces=traces,
     )
 
 
@@ -98,3 +99,33 @@ def test_hidden_native_layers_disappear_from_the_viewport_payload():
 
     assert [layer["id"] for layer in payload["layers"]] == ["layer-1"]
     assert len(payload["frontiers"]) == 1
+
+
+def test_hover_previews_and_click_pins_through_selection():
+    from types import SimpleNamespace
+
+    from sailworks.core.marine.routingrecord import Trace
+    from sailworks.core.marine.routingselection import RoutingSelection
+    from sailworks.qt.viewportmap import ViewportMap
+
+    from sailworks.core.marine.routingrecord import Trace
+
+    trace = Trace("t-0", Point(48.1, -123.9), (Point(48.0, -124.0),))
+    result = _result(layer_count=1, traces=(trace,))
+    model = RoutingOverlayModel(result)
+    selection = RoutingSelection(result)
+    host = SimpleNamespace(
+        native_routing=model,
+        controller=SimpleNamespace(routing=SimpleNamespace(native_selection=selection)),
+        _viewport_overlay_cache=None,
+        publish_route_overlay=lambda force=False: True,
+    )
+
+    model_with_trace = model
+    host.native_routing = model_with_trace
+
+    ViewportMap._update_routing_hover(host, 48.11, -123.89)
+    assert model_with_trace.hover_trace_id == "t-0"
+
+    assert ViewportMap.pin_routing_trace(host) is True
+    assert selection.trace_id == "t-0"

@@ -145,6 +145,8 @@ class RoutingOverlayModel:
             (trace.trace_id, trace.endpoint.lat, trace.endpoint.lon)
             for trace in result.traces
         )
+        self._selection = None
+        self._hover_trace_id: Optional[str] = None
         self._geometry_revision = 1
         self._style = _Style()
         self._style_revision = 0
@@ -199,6 +201,41 @@ class RoutingOverlayModel:
             return
         self._style.traces_visible = visible
         self._style_revision += 1
+
+    @property
+    def selection(self):
+        return self._selection
+
+    def attach_selection(self, selection) -> None:
+        """Share the calculation-scoped selection used for pinned traces."""
+        self._selection = selection
+
+    @property
+    def hover_trace_id(self) -> Optional[str]:
+        return self._hover_trace_id
+
+    def set_hover_trace(self, trace_id: Optional[str]) -> None:
+        """Hover preview only: never changes selection or geometry."""
+        if trace_id is not None and trace_id not in self._trace_ids:
+            raise KeyError(f"unknown routing trace: {trace_id}")
+        if self._hover_trace_id == trace_id:
+            return
+        self._hover_trace_id = trace_id
+        self._style_revision += 1
+
+    def pick_trace_near(
+        self, latitude: float, longitude: float, max_degrees: float = 0.5
+    ) -> Optional[str]:
+        """Nearest retained trace endpoint within a bounded pick radius."""
+        best = None
+        for trace_id, lat, lon in self._trace_endpoints:
+            distance = (lat - latitude) ** 2 + (lon - longitude) ** 2
+            if distance > max_degrees * max_degrees:
+                continue
+            candidate = (distance, trace_id)
+            if best is None or candidate < best:
+                best = candidate
+        return None if best is None else best[1]
 
     @property
     def traces_visible(self) -> bool:
@@ -263,6 +300,15 @@ class RoutingOverlayModel:
         return digest.hexdigest()
 
 
+def _selected_trace_ids(model: RoutingOverlayModel):
+    """Trace ids the shared selection currently pins, if any."""
+    selection = getattr(model, "selection", None)
+    if selection is None:
+        return ()
+    trace_id = getattr(selection, "trace_id", None)
+    return () if trace_id is None else (trace_id,)
+
+
 def routing_overlay_data(model: RoutingOverlayModel) -> dict:
     """QML-ready payload built only from engine-provided routing geometry.
 
@@ -318,6 +364,8 @@ def routing_overlay_data(model: RoutingOverlayModel) -> dict:
             traces.append(
                 {
                     "id": polyline.object_id,
+                    "hover": polyline.object_id == model.hover_trace_id,
+                    "selected": polyline.object_id in _selected_trace_ids(model),
                     "segments": [
                         [list(first), list(second)]
                         for first, second in zip(polyline.points, polyline.points[1:])
@@ -331,6 +379,7 @@ def routing_overlay_data(model: RoutingOverlayModel) -> dict:
         "style_revision": model.style_revision,
         "layers": layers,
         "selected_layer_id": model.selected_layer_id,
+        "hover_trace_id": model.hover_trace_id,
         "frontiers": frontiers,
         "traces": traces,
         "path": [],

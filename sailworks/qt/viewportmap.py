@@ -599,6 +599,32 @@ class ViewportMap(
             return setter(preview)
         return False
 
+    def _update_routing_hover(self, latitude, longitude):
+        """Preview the nearest retained trace under the cursor."""
+        model = getattr(self, "native_routing", None)
+        if model is None:
+            return
+        trace = model.pick_trace_near(latitude, longitude)
+        if trace != model.hover_trace_id:
+            model.set_hover_trace(trace)
+            self._viewport_overlay_cache = None
+            self.publish_route_overlay(force=True)
+
+    def pin_routing_trace(self):
+        """Pin the hovered retained trace through the shared selection."""
+        model = getattr(self, "native_routing", None)
+        routing = getattr(getattr(self, "controller", None), "routing", None)
+        selection = getattr(routing, "native_selection", None)
+        if model is None or selection is None:
+            return False
+        trace = model.hover_trace_id
+        if trace is None:
+            return False
+        selection.select_trace(trace)
+        self._viewport_overlay_cache = None
+        self.publish_route_overlay(force=True)
+        return True
+
     def publish_route_overlay(self, force=False):
         """Publish the overlay only when its content or host changed.
 

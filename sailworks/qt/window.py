@@ -1420,6 +1420,9 @@ class PreviewWindow(QMainWindow):
                 route.isochrones if route is not None and route.visible else ()
             )
             self.map.native_routing = self.controller.routing.native_overlay
+            selection = self.controller.routing.native_selection
+            if selection is not None and self.map.native_routing is not None:
+                self.map.native_routing.attach_selection(selection)
 
     def _create_routing_inspector(self):
         self.routing_inspector = RoutingInspectorPanel(self)

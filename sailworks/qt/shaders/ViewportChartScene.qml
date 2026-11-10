@@ -488,6 +488,28 @@ Item {
                                 context.fill()
                             }
                         }
+                        if (isochrones.traces) {
+                            for (let t = 0; t < isochrones.traces.length; ++t) {
+                                const trace = isochrones.traces[t]
+                                context.strokeStyle = trace.hover
+                                    ? "rgba(255,140,0,0.95)"
+                                    : (trace.selected
+                                        ? "rgba(220,40,40,0.95)"
+                                        : "rgba(0,0,204,0.25)")
+                                context.lineWidth = trace.hover || trace.selected
+                                    ? 2.0
+                                    : 1.0
+                                for (let s = 0; s < trace.segments.length; ++s) {
+                                    const segment = trace.segments[s]
+                                    const first = screenPoint(segment[0])
+                                    const second = screenPoint(segment[1])
+                                    context.beginPath()
+                                    context.moveTo(first.x, first.y)
+                                    context.lineTo(second.x, second.y)
+                                    context.stroke()
+                                }
+                            }
+                        }
                         if (isochrones.path && isochrones.path.length) {
                             context.strokeStyle = "rgba(255,0,0,0.8)"
                             context.lineWidth = 1

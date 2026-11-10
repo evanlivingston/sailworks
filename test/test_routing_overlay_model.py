@@ -267,3 +267,25 @@ def test_qml_payload_carries_layer_time_and_selection():
     assert frontier["time"] == 1767226500
     assert frontier["selected"] is True
     assert frontier["reverse"] is False
+
+
+def test_hover_pick_is_bounded_and_does_not_touch_geometry():
+    from sailworks.rendering.routingoverlay import routing_overlay_data
+
+    trace = Trace("t-0", Point(48.10, -123.60), (Point(48.0, -123.7),))
+    model = RoutingOverlayModel(_result(traces=(trace,)))
+    digest = model.geometry_digest
+    revision = model.geometry_revision
+
+    assert model.pick_trace_near(48.11, -123.59, 0.1) == "t-0"
+    assert model.pick_trace_near(49.5, -123.6, 0.1) is None
+
+    model.set_hover_trace("t-0")
+    payload = routing_overlay_data(model)
+    assert payload["hover_trace_id"] == "t-0"
+    assert payload["traces"][0]["hover"] is True
+    assert model.geometry_digest == digest
+    assert model.geometry_revision == revision
+
+    model.set_hover_trace(None)
+    assert routing_overlay_data(model)["traces"][0]["hover"] is False
