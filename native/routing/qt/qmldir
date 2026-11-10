@@ -1,0 +1,2 @@
+module SailworksRouting
+plugin sailworks_routing_qmlplugin

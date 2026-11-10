@@ -36,6 +36,10 @@ Item {
     property bool leftDrawerClosed: false
     property bool rightDrawerClosed: false
     property bool drawerTabsVisible: true
+    // Source for the retained native routing overlay; empty keeps the
+    // image-backed canvas path. Set by the viewport when a native result is
+    // attached and a Qt build that can load the C++ item is in use.
+    property string retainedRoutingSource: ""
     signal layerToggled(string layer, bool visible)
     signal drawerToggled(string side)
     // Embedded use supplies the world/raster base here. It must not depend
@@ -1155,4 +1159,19 @@ Item {
             onClicked: root.drawerToggled("right")
         }
     }
+    Loader {
+        id: retainedRoutingLoader
+        objectName: "retainedRoutingLoader"
+        anchors.fill: parent
+        z: 20
+        active: root.retainedRoutingSource !== ""
+        source: active ? root.retainedRoutingSource : ""
+        visible: status === Loader.Ready
+        onStatusChanged: {
+            if (status === Loader.Error) {
+                console.warn("retained routing overlay unavailable")
+            }
+        }
+    }
+
 }

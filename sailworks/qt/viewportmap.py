@@ -7,8 +7,11 @@ gestures to the Qt Quick viewport. It does not depend on the retired map widget.
 from bisect import bisect_right
 from dataclasses import dataclass
 import math
+import os
+from pathlib import Path
 
-from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtCore import QObject, QTimer, Qt, QUrl, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QWidget
 
 from sailworks.core.aismanager import SHIP_TYPE_COLORS
@@ -599,6 +602,61 @@ class ViewportMap(
             return setter(preview)
         return False
 
+    def _retained_qml_dir(self):
+        configured = os.environ.get("SAILWORKS_ROUTING_QML_PATH")
+        if configured:
+            return configured if Path(configured).is_dir() else None
+        default = Path(__file__).resolve().parents[2] / "build" / "routing-qt" / "qml"
+        return str(default) if default.is_dir() else None
+
+    def _sync_retained_overlay(self):
+        """Prefer the retained QSG item when its Qt module can be loaded.
+
+        Falls back to the image-backed canvas payload when the C++ module is
+        absent, for example when the app runs on PySide6's bundled Qt.
+        """
+        presenter = getattr(self, "_weather_presenter", None)
+        widget = getattr(presenter, "widget", None)
+        root = (
+            widget.rootObject()
+            if widget is not None and hasattr(widget, "rootObject")
+            else None
+        )
+        if root is None:
+            return False
+        model = getattr(self, "native_routing", None)
+        qml_dir = self._retained_qml_dir() if model is not None else None
+        if model is None or qml_dir is None:
+            if root.property("retainedRoutingSource"):
+                root.setProperty("retainedRoutingSource", "")
+            return False
+        if not getattr(self, "_retained_import_added", False):
+            widget.engine().addImportPath(qml_dir)
+            self._retained_import_added = True
+        overlay = Path(__file__).with_name("shaders") / "RoutingRetainedOverlay.qml"
+        source = QUrl.fromLocalFile(str(overlay)).toString()
+        if root.property("retainedRoutingSource") != source:
+            root.setProperty("retainedRoutingSource", source)
+        item = root.findChild(QObject, "retainedRoutingOverlay")
+        if item is None:
+            return False
+        camera = self.camera_state
+        segments = [
+            [[float(point[0]), float(point[1])] for point in polyline.points]
+            for polyline in model.polylines
+            if (polyline.kind != "trace" or model.traces_visible)
+            and (
+                polyline.kind != "contour" or model.is_layer_visible(polyline.layer_id)
+            )
+        ]
+        item.setProperty("segments", segments)
+        item.setProperty("color", QColor(0, 0, 204, 160))
+        item.setProperty("lineWidth", 1.5)
+        item.setProperty("centerLatitude", float(camera.center_lat))
+        item.setProperty("centerLongitude", float(camera.center_lon))
+        item.setProperty("zoom", float(camera.zoom))
+        return True
+
     def _update_routing_hover(self, latitude, longitude):
         """Preview the nearest retained trace under the cursor."""
         model = getattr(self, "native_routing", None)
@@ -631,6 +689,7 @@ class ViewportMap(
         A camera-only change moves the retained overlay through the viewport's
         own pan window; it must not rebuild or re-key the content.
         """
+        self._sync_retained_overlay()
         presenter = getattr(self, "_weather_presenter", None)
         widget = getattr(presenter, "widget", None)
         if widget is None:
