@@ -27,4 +27,4 @@ add_custom_command(TARGET sailworks_routing_qmlplugin POST_BUILD
 add_executable(sailworks_routing_qsg_check qsgcheck.cpp)
 target_link_libraries(sailworks_routing_qsg_check PRIVATE sailworks_routing_qt)
 target_compile_definitions(sailworks_routing_qsg_check PRIVATE
-    SAILWORKS_RETAINED_TEST_QML="${CMAKE_CURRENT_SOURCE_DIR}/retainedtest.qml")
+    SAILWORKS_RETAINED_TEST_QML="${CMAKE_CURRENT_SOURCE_DIR}/test/retainedtest.qml")
