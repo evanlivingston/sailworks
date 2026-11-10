@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 from datetime import datetime, timezone
@@ -90,3 +91,70 @@ def test_sampled_wind_drives_a_native_route():
         assert leg["wind_east_knots"] == pytest.approx(0.0, abs=1e-6)
         assert leg["wind_north_knots"] == pytest.approx(expected_north, abs=1e-6)
         assert leg["wind_source"]["dataset_identity"] == "sailworks-sampler-test"
+
+
+class FakePolar:
+    """Minimal Sailworks/weatherrouting polar shape: radians, m/s, [twa][tws]."""
+
+    def __init__(self, twa_radians, tws_ms, table):
+        self.twa = twa_radians
+        self.tws = tws_ms
+        self.speed_table = table
+
+
+def _constant_polar(speed_kn):
+    angles_deg = [30.0, 60.0, 90.0, 120.0, 150.0, 180.0]
+    tws_ms = [4.0, 8.0, 12.0, 16.0]
+    table = [
+        [speed_kn / KNOTS_PER_METRE_PER_SECOND for _ in tws_ms] for _ in angles_deg
+    ]
+    return FakePolar([math.radians(angle) for angle in angles_deg], tws_ms, table)
+
+
+def test_polar_conversion_preserves_angles_speeds_and_units():
+    from sailworks.core.marine.routingnative import polar_rows_from_polar
+
+    rows = polar_rows_from_polar(_constant_polar(3.0))
+    assert [row["true_wind_speed_knots"] for row in rows] == pytest.approx(
+        [w * KNOTS_PER_METRE_PER_SECOND for w in (4.0, 8.0, 12.0, 16.0)]
+    )
+    assert [point[0] for point in rows[0]["points"]] == pytest.approx(
+        [30.0, 60.0, 90.0, 120.0, 150.0, 180.0]
+    )
+    assert all(
+        point[1] == pytest.approx(3.0) for row in rows for point in row["points"]
+    )
+
+
+def test_supplied_polar_replaces_the_fixture_vessel_model():
+    from sailworks.core.marine.routingnative import polar_rows_from_polar
+
+    bridge = _bridge()
+    wind = wind_callable_from_sampler(FakeSampler((270.0, 10.0)))
+    current = lambda latitude, longitude, epoch_s: (0.0, 0.0, True)  # noqa: E731
+
+    run = bridge.route_with_weather(
+        wind,
+        current,
+        COVERAGE,
+        polar=polar_rows_from_polar(_constant_polar(3.0)),
+        polar_identity="test-constant-polar",
+    )
+
+    assert run["accepted"] is True
+    speeds = [leg["speed_through_water_knots"] for leg in run["legs"]]
+    assert speeds
+    assert max(speeds) <= 3.05
+
+
+def test_invalid_supplied_polar_is_rejected():
+    bridge = _bridge()
+    wind = wind_callable_from_sampler(FakeSampler((270.0, 10.0)))
+    current = lambda latitude, longitude, epoch_s: (0.0, 0.0, True)  # noqa: E731
+    bad = [
+        {"true_wind_speed_knots": 8.0, "points": [[30.0, 3.0], [60.0, 4.0]]},
+        {"true_wind_speed_knots": 4.0, "points": [[30.0, 2.0], [60.0, 3.0]]},
+    ]
+
+    with pytest.raises(RuntimeError):
+        bridge.route_with_weather(wind, current, COVERAGE, polar=bad)

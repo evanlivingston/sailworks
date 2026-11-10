@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "supercpn/weather_routing/Engine.h"
@@ -86,7 +87,9 @@ SyntheticRun runInvalidDestination();
 // The fixture polar, constraints and request limits are unchanged.
 SyntheticRun runWithProvider(const std::string& engine,
                              std::shared_ptr<wr::WeatherProvider> provider,
-                             bool cancelled = false);
+                             bool cancelled = false,
+                             std::optional<wr::VesselConfiguration> vessel =
+                                 std::nullopt);
 
 [[nodiscard]] bool isCompleteStatus(wr::RoutingStatus status);
 [[nodiscard]] std::string statusName(wr::RoutingStatus status);

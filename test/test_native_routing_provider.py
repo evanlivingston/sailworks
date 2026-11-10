@@ -132,4 +132,4 @@ def test_identity_discloses_external_weather_contract():
     capabilities = bridge.identity()["capabilities"]
     assert capabilities["external_weather_provider"] is True
     assert "GIL" in capabilities["external_weather_contract"]
-    assert "not wired yet" in capabilities["external_weather_vessel_model"]
+    assert "polar_rows_from_polar" in capabilities["external_weather_vessel_model"]

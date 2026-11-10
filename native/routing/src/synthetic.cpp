@@ -358,11 +358,17 @@ SyntheticRun runCancelled(const std::string& engine) {
 
 SyntheticRun runWithProvider(const std::string& engine,
                              std::shared_ptr<wr::WeatherProvider> provider,
-                             bool cancelled) {
+                             bool cancelled,
+                             std::optional<wr::VesselConfiguration> vessel) {
   wr::RoutingEnvironment environment = fixtureEnvironment();
   environment.grib = std::move(provider);
-  return runWithEngine(engine, fixtureRequest(cancelled, false),
-                       environment);
+  wr::RoutingRequest request = fixtureRequest(cancelled, false);
+  if (vessel.has_value()) {
+    request.vessel = *vessel;
+    environment.performance =
+        std::make_shared<wr::PolarPerformanceModel>(*vessel);
+  }
+  return runWithEngine(engine, request, environment);
 }
 
 SyntheticRun runInvalidDestination() {

@@ -418,6 +418,52 @@ wr::ParameterCoverage coverageFromDict(const py::dict& value,
   return coverage;
 }
 
+wr::VesselConfiguration vesselFromPolar(const py::object& polar,
+                                        const std::string& identity,
+                                        const std::string& assumptions) {
+  wr::VesselConfiguration vessel;
+  wr::PerformanceProfile profile;
+  profile.role = wr::ProfileRole::SailOnly;
+  profile.identity = identity;
+  profile.assumptions = assumptions;
+  double previousTws = -1.0;
+  for (const py::handle rowValue : py::cast<py::sequence>(polar)) {
+    const py::dict row = py::cast<py::dict>(rowValue);
+    const double tws = py::cast<double>(row["true_wind_speed_knots"]);
+    if (!std::isfinite(tws) || tws <= previousTws)
+      throw std::runtime_error(
+          "polar true wind speeds must be finite and strictly increasing");
+    previousTws = tws;
+    wr::PolarRow polarRow;
+    polarRow.trueWindSpeedKnots = tws;
+    double previousTwa = -1.0;
+    for (const py::handle pointValue : py::cast<py::sequence>(row["points"])) {
+      const py::sequence point = py::cast<py::sequence>(pointValue);
+      if (py::len(point) != 2)
+        throw std::runtime_error("polar points must be (twa_degrees, speed_kn)");
+      const double twa = py::cast<double>(point[0]);
+      const double speed = py::cast<double>(point[1]);
+      if (!std::isfinite(twa) || twa < 0.0 || twa > 180.0 || twa <= previousTwa)
+        throw std::runtime_error(
+            "polar true wind angles must be strictly increasing within 0-180");
+      if (!std::isfinite(speed) || speed < 0.0)
+        throw std::runtime_error("polar boat speeds must be finite and >= 0");
+      previousTwa = twa;
+      polarRow.points.push_back(wr::PolarPoint{twa, speed});
+    }
+    if (polarRow.points.size() < 2)
+      throw std::runtime_error("each polar row needs at least two angles");
+    profile.rows.push_back(std::move(polarRow));
+  }
+  if (profile.rows.empty())
+    throw std::runtime_error("polar needs at least one true wind speed row");
+  vessel.profiles = {std::move(profile)};
+  vessel.propulsion.allowSailing = true;
+  vessel.propulsion.allowMotorSailing = false;
+  vessel.propulsion.allowMotor = false;
+  return vessel;
+}
+
 wr::EnvironmentalSource sourceFromName(const std::string& name) {
   if (name == "grib" || name == "grib_forecast")
     return wr::EnvironmentalSource::GribForecast;
@@ -596,9 +642,10 @@ py::dict identityDict() {
       "(east_ms, north_ms, available) pointing toward motion; the solver runs "
       "with the GIL held on the calling thread and no native concurrency";
   capabilities["external_weather_vessel_model"] =
-      "the fixture polar, constraints and request limits are unchanged by the "
-      "external weather path; a Sailworks vessel-performance adapter is not "
-      "wired yet";
+      "the fixture polar, constraints and request limits are used unless a "
+      "polar is supplied to route_with_weather as (twa_degrees, speed_kn) "
+      "rows; polar_rows_from_polar() converts Sailworks radians and m/s "
+      "without changing interpolation or efficiency";
   capabilities["production_routing_default"] = false;
   result["capabilities"] = capabilities;
 
@@ -767,19 +814,27 @@ PYBIND11_MODULE(sailworks_native_routing, module) {
       "route_with_weather",
       [](py::function wind, py::function current, py::dict coverage,
          const std::string& provider_identity, const std::string& source,
-         const std::string& engine, bool cancelled) {
+         const std::string& engine, bool cancelled,
+         const py::object& polar, const std::string& polar_identity,
+         const std::string& polar_assumptions) {
         auto provider = std::make_shared<PythonWeatherProvider>(
             std::move(wind), std::move(current),
             coverageFromDict(coverage, provider_identity), provider_identity,
             sourceFromName(source));
+        std::optional<wr::VesselConfiguration> vessel;
+        if (!polar.is_none())
+          vessel = vesselFromPolar(polar, polar_identity, polar_assumptions);
         return runDict(sailworks::native_routing::runWithProvider(
-            engine, std::move(provider), cancelled));
+            engine, std::move(provider), cancelled, std::move(vessel)));
       },
       py::arg("wind"), py::arg("current"), py::arg("coverage"),
       py::arg("provider_identity") = "python-weather-provider",
       py::arg("source") = "grib", py::arg("engine") = "main",
-      py::arg("cancelled") = false,
+      py::arg("cancelled") = false, py::arg("polar") = py::none(),
+      py::arg("polar_identity") = "supplied-polar",
+      py::arg("polar_assumptions") = "",
       "Run the synthetic scenario with weather sampled through Python "
       "callables; wind returns (from_degrees, speed_ms, available) and "
-      "current returns (east_ms, north_ms, available) toward motion");
+      "current returns (east_ms, north_ms, available) toward motion. An "
+      "optional polar replaces the fixture vessel model.");
 }

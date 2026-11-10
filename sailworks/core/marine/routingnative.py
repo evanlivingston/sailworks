@@ -36,6 +36,26 @@ UNVALIDATED_STATUSES = frozenset(
 )
 
 
+def polar_rows_from_polar(polar: Any) -> list[dict]:
+    """Convert a Sailworks/weatherrouting polar into bridge polar rows.
+
+    The library stores true wind angles in radians and wind/boat speeds in
+    metres per second. The bridge works in degrees and knots, so both are
+    converted here once; no interpolation or efficiency change is applied.
+    """
+
+    factor = 3600.0 / 1852.0
+    twa_degrees = [math.degrees(float(angle)) for angle in polar.twa]
+    rows = []
+    for wind_index, tws_ms in enumerate(polar.tws):
+        points = [
+            [twa_degrees[angle_index], float(row[wind_index]) * factor]
+            for angle_index, row in enumerate(polar.speed_table)
+        ]
+        rows.append({"true_wind_speed_knots": float(tws_ms) * factor, "points": points})
+    return rows
+
+
 def wind_callable_from_sampler(sampler: Any):
     """Adapt ``WeatherSampler.wind_at`` into the native bridge wind callback.
 

@@ -65,7 +65,12 @@ to `build/native-routing/python`.
   solver runs with the GIL held on the calling thread and no native
   concurrency; a Sailworks vessel-performance adapter is not wired yet, so the
   fixture polar and constraints are still used. Missing samples must be
-  reported with `available=False` rather than as calm water.
+  reported with `available=False` rather than as calm water. An optional
+  `polar` argument replaces the fixture vessel model: rows are
+  `{true_wind_speed_knots, points: [(twa_degrees, speed_kn), ...]}` and must be
+  strictly increasing in both axes with finite non-negative speeds.
+  `polar_rows_from_polar()` converts a Sailworks/weatherrouting polar (radians,
+  m/s) without changing interpolation or efficiency.
 
 The synthetic polar uses the frozen contract angles 30, 60, 90, 120, 150 and
 180 degrees. There is no 0-degree row; the engine clamps lower true wind
