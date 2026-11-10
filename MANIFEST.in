@@ -1,2 +1,5 @@
 graft native/geometry
 prune native/geometry/target
+graft native/routing
+prune native/routing/build
+prune native/routing/upstream/**/build

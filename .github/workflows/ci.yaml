@@ -57,9 +57,28 @@ jobs:
         python -m pip install setuptools setuptools-rust setuptools_scm
         python setup.py build_ext --inplace
 
+    - name: Build native routing bridge
+      run: |
+        sudo apt-get install -y cmake zlib1g-dev
+        python -m pip install pybind11
+        cmake -S native/routing -B build/native-routing \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DPython3_EXECUTABLE="$(command -v python)" \
+          -Dpybind11_DIR="$(python -m pybind11 --cmakedir)"
+        cmake --build build/native-routing --parallel 4
+
+    - name: Test native routing bridge
+      env:
+        SAILWORKS_NATIVE_ROUTING_BUILD: ${{ github.workspace }}/build/native-routing/python
+      run: |
+        ctest --test-dir build/native-routing --output-on-failure
+        python -m pytest test/test_native_routing_import.py test/test_native_routing_smoke.py \
+          test/test_native_routing_cancellation.py test/test_native_routing_adapter.py -q
+
     - name: Run tests
       env:
         SAILWORKS_EXPECT_NATIVE_GEOMETRY: "1"
+        SAILWORKS_NATIVE_ROUTING_BUILD: ${{ github.workspace }}/build/native-routing/python
       run: |
         sudo apt-get install -y xvfb xauth
         xvfb-run -a tox -e unit-tests
