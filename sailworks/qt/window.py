@@ -1407,6 +1407,12 @@ class PreviewWindow(QMainWindow):
         else:
             self._sync_route_isochrones()
 
+    def _routing_selection_changed(self):
+        model = getattr(self, "_routing_selection_target", None)
+        selection = self.controller.routing.native_selection
+        if model is not None and selection is not None:
+            model.set_selected_layer(selection.layer_id)
+
     def _sync_route_isochrones(self):
         if not self.controller.routing.busy:
             route = self.navigation_panel.route
@@ -1436,10 +1442,18 @@ class PreviewWindow(QMainWindow):
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "Native routing result", str(exc))
             return
+        previous_unsubscribe = getattr(self, "_routing_selection_unsubscribe", None)
+        if previous_unsubscribe is not None:
+            previous_unsubscribe()
         model = self.controller.routing.native_overlay
-        self.routing_inspector.set_result(model.result)
+        selection = self.controller.routing.native_selection
+        self.routing_inspector.set_result(model.result, selection)
         self.routing_inspector.select_nearest_layer(
             model.result.layers[0].time_epoch_s if model.result.layers else 0
+        )
+        self._routing_selection_target = model
+        self._routing_selection_unsubscribe = selection.subscribe(
+            self._routing_selection_changed
         )
         self.routing_inspector_dock.show()
         self._sync_route_isochrones()

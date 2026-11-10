@@ -67,7 +67,19 @@ def _result() -> RoutingResult:
         provenance=Provenance("2026-01-01T00:00:00Z", "recorded"),
         legs=(leg,),
         layers=layers,
-        capabilities=Capabilities("main", "absent", "sampled", 12, 1800),
+        capabilities=Capabilities(
+            "main",
+            "absent",
+            "sampled",
+            12,
+            1800,
+            {
+                "inspection_geometry": "sampled",
+                "waves": "absent",
+                "shoreline": "unsupported",
+                "depth": "unsupported",
+            },
+        ),
     )
 
 
@@ -110,3 +122,53 @@ def test_panel_nearest_layer_selection_links_to_selection_signal(app):
     assert selected[-1] == "layer-1"
     assert panel.select_nearest_layer(1767226500) is True
     assert panel.layer_combo.currentText() == "layer-0"
+
+
+def test_panel_selection_is_shared_across_surfaces(app):
+    from sailworks.core.marine.routingselection import RoutingSelection
+
+    result = _result()
+    selection = RoutingSelection(result)
+    first = RoutingInspectorPanel()
+    second = RoutingInspectorPanel()
+    first.set_result(result, selection)
+    second.set_result(result, selection)
+
+    first.layer_combo.setCurrentIndex(1)
+    assert selection.layer_id == "layer-1"
+    # The second surface follows the same selection, not its own copy.
+    assert second.layer_combo.currentText() == "layer-1"
+    assert second.selection is selection
+
+
+def test_panel_diagnostics_disclose_sampling_and_services(app):
+    panel = RoutingInspectorPanel()
+    panel.set_result(_result())
+
+    text = panel.diagnostics.text()
+    assert "status: complete" in text
+    assert "validation: passed (independent)" in text
+    assert "inspection_geometry: sampled" in text
+    assert "trace times: absent" in text
+    assert "bounded" in text
+    assert "shoreline: unsupported" in text
+
+
+def test_forecast_time_change_keeps_readouts_and_geometry(app):
+    from sailworks.rendering.routingoverlay import (
+        RoutingOverlayModel,
+        routing_overlay_data,
+    )
+
+    result = _result()
+    model = RoutingOverlayModel(result)
+    panel = RoutingInspectorPanel()
+    panel.set_result(result)
+    readout = panel.readout.toPlainText()
+    digest = model.geometry_digest
+
+    assert panel.forecast_time_changed(1767228300) is True
+    assert panel.layer_combo.currentText() == "layer-1"
+    assert panel.readout.toPlainText() == readout
+    assert model.geometry_digest == digest
+    assert len(routing_overlay_data(model)["frontiers"]) == 2
