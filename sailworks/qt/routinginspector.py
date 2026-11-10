@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 from sailworks.core.marine.routinginspection import RoutingInspector
 from sailworks.core.marine.routingresult import RoutingResult
 from sailworks.core.marine.routingselection import RoutingSelection
+from .routingplot import RoutingLegPlot
 
 READOUT_ORDER = (
     "heading_degrees",
@@ -61,6 +62,9 @@ class RoutingInspectorPanel(QWidget):
         self.diagnostics.setWordWrap(True)
         layout.addWidget(self.diagnostics)
 
+        self.plot = RoutingLegPlot(self)
+        layout.addWidget(self.plot)
+
         self.readout = QPlainTextEdit(self)
         self.readout.setReadOnly(True)
         self.readout.setPlaceholderText("No routing result loaded")
@@ -86,6 +90,7 @@ class RoutingInspectorPanel(QWidget):
         if self._selection.calculation_id != result.calculation_id:
             raise ValueError("selection belongs to another calculation")
         self._unsubscribe = self._selection.subscribe(self._from_selection)
+        self.plot.set_result(result, self._selection)
         self._fill_combos()
         self._diagnostics_text()
         self._from_selection()

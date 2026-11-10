@@ -172,3 +172,18 @@ def test_forecast_time_change_keeps_readouts_and_geometry(app):
     assert panel.readout.toPlainText() == readout
     assert model.geometry_digest == digest
     assert len(routing_overlay_data(model)["frontiers"]) == 2
+
+
+def test_plot_follows_the_shared_selection(app):
+    from sailworks.core.marine.routingselection import RoutingSelection
+
+    result = _result()
+    selection = RoutingSelection(result)
+    panel = RoutingInspectorPanel()
+    panel.set_result(result, selection)
+
+    selection.select_leg("leg-0")
+    assert panel.plot._selection is selection
+    # Painting must not raise for a recorded leg.
+    panel.plot.repaint()
+    assert panel.plot._result is result
