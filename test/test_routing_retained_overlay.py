@@ -1,9 +1,10 @@
 """App-level wiring for the retained QSG routing overlay.
 
-Requires a Qt runtime that can load the C++ module: run with
-DYLD_FRAMEWORK_PATH pointing at the same Qt build and SAILWORKS_QT_ALIGNED=1.
-The default app runtime (PySide6's bundled Qt) falls back to the image-backed
-canvas overlay instead, which is covered by the routing-overlay-window gate.
+Requires the built QML module (tools/build_routing_qsg_module.py) and
+SAILWORKS_ROUTING_QML_PATH pointing at its parent directory. The module is
+relinked against PySide6's frameworks, so the default runtime loads it; without
+the module the viewport falls back to the image-backed canvas overlay, covered
+by the routing-overlay-window gate.
 """
 
 from __future__ import annotations
@@ -35,11 +36,10 @@ from sailworks.rendering.routingoverlay import RoutingOverlayModel
 
 ROOT = Path(__file__).resolve().parents[1]
 QML_DIR = os.environ.get("SAILWORKS_ROUTING_QML_PATH")
-ALIGNED = os.environ.get("SAILWORKS_QT_ALIGNED") == "1"
 
 pytestmark = pytest.mark.skipif(
-    not ALIGNED or not QML_DIR or not Path(QML_DIR).is_dir(),
-    reason="needs a Qt runtime aligned with the C++ routing module",
+    not QML_DIR or not Path(QML_DIR).is_dir(),
+    reason="needs the built retained routing QML module",
 )
 
 CALCULATION = "6f1c1a1e-0000-4000-8000-000000000015"
