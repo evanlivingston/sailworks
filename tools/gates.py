@@ -2575,6 +2575,104 @@ GATES["routing-overlay"] = {
     ],
 }
 
+GATES["routing-overlay-retained"] = {
+    "title": "Retained routing imagery reuses geometry across camera and style",
+    "milestone": "#134 P5",
+    "kind": "fidelity",
+    "tool": "tools/check_routing_overlay_retained.py",
+    "endpoint": (
+        "CPU retained-image fidelity: geometry is built once per result, camera "
+        "moves and style changes reuse it, the line lands on the independently "
+        "projected segment midpoint, and DPR scales image and coordinates. NOT a "
+        "GPU or presentation timing measurement."
+    ),
+    "requires": [],
+    "dependencies": ["PySide6"],
+    "timeout_s": 120,
+    "env": {"QT_QPA_PLATFORM": "offscreen"},
+    "command": [
+        "{python}",
+        "{tool}",
+        "--output",
+        "{tool_output}",
+    ],
+    "defaults": {"scenarios": ["retained-routing"], "frames": 1, "repeats": 1},
+    "full": {"scenarios": ["retained-routing"], "frames": 1, "repeats": 1},
+    "tool_output": "{outdir}/{gate}.tool.json",
+    "result": "{outdir}/{gate}.tool.json",
+    "checks": [
+        {
+            "label": "camera moves do not rebuild geometry",
+            "metric": "retained.geometry_rebuilds_during_camera",
+            "aggregate": "max",
+            "op": "==",
+            "value": 0,
+            "source": "#134 P5 gate: camera motion does not rebuild or retransmit results",
+        },
+        {
+            "label": "style changes do not rebuild geometry",
+            "metric": "retained.geometry_rebuilds_during_style",
+            "aggregate": "max",
+            "op": "==",
+            "value": 0,
+            "source": "#134 P5 gate: selection/time styling does not rebuild static geometry",
+        },
+        {
+            "label": "line lands on the independently projected midpoint",
+            "metric": "fidelity.line_alpha_at_projected_midpoint",
+            "aggregate": "min",
+            "op": ">=",
+            "value": 1,
+            "source": "#134 P5 gate: no invented connections; drawn geometry matches projection",
+        },
+        {
+            "label": "line survives camera moves",
+            "metric": "fidelity.line_alpha_after_camera_moves",
+            "aggregate": "min",
+            "op": ">=",
+            "value": 1,
+            "source": "#134 P5 gate: camera motion keeps the retained content visible",
+        },
+        {
+            "label": "DPR scales the retained image width",
+            "metric": "fidelity.dpr_image_width",
+            "aggregate": "max",
+            "op": "==",
+            "value": {"metric": "expected.dpr_image_width", "aggregate": "max"},
+            "source": "#134 P5 gate: correct device-pixel-ratio handling",
+        },
+        {
+            "label": "DPR scales the retained image height",
+            "metric": "fidelity.dpr_image_height",
+            "aggregate": "max",
+            "op": "==",
+            "value": {"metric": "expected.dpr_image_height", "aggregate": "max"},
+            "source": "#134 P5 gate: correct device-pixel-ratio handling",
+        },
+        {
+            "label": "style colour reaches the retained image",
+            "metric": "fidelity.style_red_channel",
+            "aggregate": "max",
+            "op": "==",
+            "value": 255,
+            "source": "#134 P5 gate: style is applied without rebuilding geometry",
+        },
+    ],
+    "reference": {
+        "kind": "recorded-evidence",
+        "source": "issue #134 required rendering parity; issue #140 P5 contract",
+        "note": (
+            "Behavioural invariants from the accepted epic contract. Presence "
+            "checks assert ink at the independently projected midpoint, not a "
+            "visual baseline; the retained slice is CPU-image fidelity, and the "
+            "GPU retained-buffer slice remains open."
+        ),
+    },
+    "open_requirements": [
+        "No GPU retained-buffer upload, camera animation or presentation timing.",
+    ],
+}
+
 GATES_NEEDING_RATIFICATION = tuple(
     sorted(
         gate_id
