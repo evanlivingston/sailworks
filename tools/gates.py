@@ -2673,6 +2673,78 @@ GATES["routing-overlay-retained"] = {
     ],
 }
 
+GATES["routing-overlay-window"] = {
+    "title": "Routing overlay renders correctly in a real offscreen window",
+    "milestone": "#134 P5",
+    "kind": "fidelity",
+    "tool": "tools/check_routing_overlay_window.py",
+    "endpoint": (
+        "Offscreen QQuickView renders the application's routing overlay and the "
+        "result is compared against an independent Mercator oracle. Fidelity "
+        "only; not GPU upload, not presentation FPS."
+    ),
+    "requires": [],
+    "dependencies": ["PySide6"],
+    "timeout_s": 180,
+    "env": {
+        "QT_QPA_PLATFORM": "offscreen",
+        "QT_QUICK_BACKEND": "software",
+    },
+    "command": [
+        "{python}",
+        "{tool}",
+        "--output",
+        "{tool_output}",
+    ],
+    "defaults": {"scenarios": ["routing-window"], "frames": 1, "repeats": 1},
+    "full": {"scenarios": ["routing-window"], "frames": 1, "repeats": 1},
+    "tool_output": "{outdir}/{gate}.tool.json",
+    "result": "{outdir}/{gate}.tool.json",
+    "checks": [
+        {
+            "label": "rendered line lands on the independent projection",
+            "metric": "fidelity.ink_at_oracle_midpoint",
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "#134 P5 gate: displayed geometry matches the projection, no invented connections",
+        },
+        {
+            "label": "camera move keeps the line at the new projection",
+            "metric": "fidelity.ink_after_camera_move",
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "#134 P5 gate: camera motion does not leave stale routing content",
+        },
+        {
+            "label": "no stale ink at the previous position",
+            "metric": "fidelity.stale_ink_at_old_midpoint",
+            "aggregate": "all",
+            "op": "is_false",
+            "source": "#134 P5 gate: camera motion must not leave the old overlay behind",
+        },
+        {
+            "label": "sampled frontier pixel is the routing colour",
+            "metric": "fidelity.sampled_blue_minus_red",
+            "aggregate": "min",
+            "op": ">=",
+            "value": 1,
+            "source": "#134 P5 gate: the overlay draws the routing layer, not unrelated content",
+        },
+    ],
+    "reference": {
+        "kind": "recorded-evidence",
+        "source": "issue #134 required rendering parity; issue #140 P5 contract",
+        "note": (
+            "Fidelity comparison against an independent Mercator projection, "
+            "not a visual baseline and not a timing measurement. The GPU "
+            "retained-buffer item remains an explicit open requirement."
+        ),
+    },
+    "open_requirements": [
+        "No GPU retained-buffer upload; offscreen software rendering only.",
+    ],
+}
+
 GATES_NEEDING_RATIFICATION = tuple(
     sorted(
         gate_id
