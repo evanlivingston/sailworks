@@ -142,3 +142,58 @@ def test_frozen_fixture_qualification_run(tmp_path, capsys):
     )
     with capsys.disabled():
         print(measurement)
+
+
+def test_matched_builtin_and_sampled_provider_runs(tmp_path, capsys):
+    """Compare the built-in fixture provider with real sampling.
+
+    Differences are expected from interpolation policy: the built-in provider
+    snaps to the nearest fixture cell, while established sampling interpolates
+    bilinearly. The run records the measured deltas without imposing an
+    acceptance threshold.
+    """
+    bridge = _bridge()
+    builtin = bridge.synthetic_route("main")
+    with _forecast_inputs(tmp_path) as source:
+        sampler = WeatherSampler([source])
+        sampled = bridge.route_with_weather(
+            wind_callable_from_sampler(sampler),
+            _current,
+            COVERAGE,
+            provider_identity="qualification-sampler",
+        )
+
+        assert builtin["status"].startswith("complete")
+        assert sampled["status"].startswith("complete")
+        assert builtin["accepted"] is True
+        assert sampled["accepted"] is True
+        assert builtin["leg_count"] == sampled["leg_count"]
+
+        deltas = []
+        for first, second in zip(builtin["legs"], sampled["legs"]):
+            deltas.append(
+                (
+                    abs(first["wind_east_knots"] - second["wind_east_knots"]),
+                    abs(first["wind_north_knots"] - second["wind_north_knots"]),
+                    abs(
+                        first["speed_through_water_knots"]
+                        - second["speed_through_water_knots"]
+                    ),
+                )
+            )
+        assert all(math.isfinite(value) for row in deltas for value in row)
+        distance_delta = abs(
+            builtin["metrics"]["distance_nm"] - sampled["metrics"]["distance_nm"]
+        )
+
+    measurement = (
+        "matched: legs="
+        f"{builtin['leg_count']}/{sampled['leg_count']} "
+        f"max_dwind_kn={max(max(row) for row in deltas):.3f} "
+        f"max_dstw_kn={max(row[2] for row in deltas):.3f} "
+        f"distance_nm={builtin['metrics']['distance_nm']:.3f}/"
+        f"{sampled['metrics']['distance_nm']:.3f} "
+        f"delta={distance_delta:.3f} policy=nearest-vs-bilinear"
+    )
+    with capsys.disabled():
+        print(measurement)
