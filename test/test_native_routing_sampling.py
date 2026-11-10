@@ -158,3 +158,61 @@ def test_invalid_supplied_polar_is_rejected():
 
     with pytest.raises(RuntimeError):
         bridge.route_with_weather(wind, current, COVERAGE, polar=bad)
+
+
+class FakeCurrentSelection:
+    def __init__(self, status="available", values=(0.4, -0.2)):
+        self.status = status
+        self.values = values
+        self.calls = []
+
+    def sample(self, latitude, longitude, instant):
+        self.calls.append((latitude, longitude, instant))
+        return self
+
+
+def test_current_selection_preserves_toward_components():
+    from sailworks.core.marine.routingnative import current_callable_from_selection
+
+    selection = FakeCurrentSelection()
+    current = current_callable_from_selection(selection)
+
+    assert current(48.2, -123.7, 1767225600) == (0.4, -0.2, True)
+    assert selection.calls[0][2] == datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def test_missing_current_is_unavailable_not_calm():
+    from sailworks.core.marine.routingnative import current_callable_from_selection
+
+    current = current_callable_from_selection(
+        FakeCurrentSelection(status="no_coverage")
+    )
+    assert current(48.2, -123.7, 1767225600) == (0.0, 0.0, False)
+
+
+def test_current_selection_drives_a_native_route():
+    from sailworks.core.marine.routingnative import current_callable_from_selection
+
+    bridge = _bridge()
+    wind = wind_callable_from_sampler(FakeSampler((270.0, 10.0)))
+    selection = FakeCurrentSelection(values=(0.5, -0.25))
+
+    run = bridge.route_with_weather(
+        wind,
+        current_callable_from_selection(selection),
+        COVERAGE,
+        provider_identity="sailworks-current-selection",
+    )
+
+    assert run["accepted"] is True
+    assert selection.calls
+    for leg in run["legs"]:
+        assert leg["current_east_knots"] == pytest.approx(
+            0.5 * KNOTS_PER_METRE_PER_SECOND, abs=1e-6
+        )
+        assert leg["current_north_knots"] == pytest.approx(
+            -0.25 * KNOTS_PER_METRE_PER_SECOND, abs=1e-6
+        )
+        assert leg["current_source"]["dataset_identity"] == (
+            "sailworks-current-selection"
+        )

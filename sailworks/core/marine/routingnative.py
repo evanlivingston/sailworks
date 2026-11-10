@@ -56,6 +56,26 @@ def polar_rows_from_polar(polar: Any) -> list[dict]:
     return rows
 
 
+def current_callable_from_selection(selection: Any):
+    """Adapt a Sailworks current selection into the native current callback.
+
+    ``selection.sample(lat, lon, utc)`` returns the established record with a
+    status and toward-east/toward-north components in metres per second. Any
+    status other than ``available`` is reported as unavailable so the engine
+    keeps its missing-current policy instead of being given calm water.
+    """
+
+    def current(latitude: float, longitude: float, epoch_s: int):
+        instant = datetime.fromtimestamp(epoch_s, timezone.utc)
+        sample = selection.sample(latitude, longitude, instant)
+        if getattr(sample, "status", None) != "available":
+            return (0.0, 0.0, False)
+        east, north = sample.values
+        return (float(east), float(north), True)
+
+    return current
+
+
 def wind_callable_from_sampler(sampler: Any):
     """Adapt ``WeatherSampler.wind_at`` into the native bridge wind callback.
 
