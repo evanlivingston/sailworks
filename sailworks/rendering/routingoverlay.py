@@ -300,7 +300,16 @@ def routing_overlay_data(model: RoutingOverlayModel) -> dict:
                 "closed": closed,
             }
         )
-        frontiers.append({"segments": segments, "points": []})
+        frontiers.append(
+            {
+                "segments": segments,
+                "points": [],
+                "layer_id": layer.layer_id,
+                "time": layer.epoch_s,
+                "reverse": layer.reverse,
+                "selected": layer.layer_id == model.selected_layer_id,
+            }
+        )
     traces = []
     if model.trace_ids and model.traces_visible:
         for polyline in model.polylines:
@@ -321,6 +330,7 @@ def routing_overlay_data(model: RoutingOverlayModel) -> dict:
         "geometry_revision": model.geometry_revision,
         "style_revision": model.style_revision,
         "layers": layers,
+        "selected_layer_id": model.selected_layer_id,
         "frontiers": frontiers,
         "traces": traces,
         "path": [],

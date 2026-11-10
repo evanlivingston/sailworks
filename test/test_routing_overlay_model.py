@@ -251,3 +251,19 @@ def test_overlay_model_loads_an_offline_result_file(tmp_path):
     assert RoutingOverlayModel.from_result_json(result.to_json()).geometry_digest == (
         model.geometry_digest
     )
+
+
+def test_qml_payload_carries_layer_time_and_selection():
+    from sailworks.rendering.routingoverlay import routing_overlay_data
+
+    contour = Contour("c-0", True, (Point(48.0, -124.0), Point(48.1, -123.9)))
+    model = RoutingOverlayModel(_result(layers=(_layer(contours=(contour,)),)))
+    model.set_selected_layer("layer-0")
+    payload = routing_overlay_data(model)
+
+    assert payload["selected_layer_id"] == "layer-0"
+    frontier = payload["frontiers"][0]
+    assert frontier["layer_id"] == "layer-0"
+    assert frontier["time"] == 1767226500
+    assert frontier["selected"] is True
+    assert frontier["reverse"] is False

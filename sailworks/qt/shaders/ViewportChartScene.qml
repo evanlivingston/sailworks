@@ -463,8 +463,13 @@ Item {
                     if (isochrones && isochrones.frontiers) {
                         for (let f = 0; f < isochrones.frontiers.length; ++f) {
                             const frontier = isochrones.frontiers[f]
-                            context.strokeStyle = "rgba(0,0,204,0.5)"
-                            context.lineWidth = 1.5
+                            // Selected native layer is emphasised; a legacy
+                            // preview frontier has no selection identity.
+                            const selected = frontier.selected === true
+                            context.strokeStyle = selected
+                                ? "rgba(255,140,0,0.95)"
+                                : "rgba(0,0,204,0.5)"
+                            context.lineWidth = selected ? 2.5 : 1.5
                             context.setLineDash([])
                             for (let s = 0; s < frontier.segments.length; ++s) {
                                 const segment = frontier.segments[s]
