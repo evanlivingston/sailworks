@@ -259,6 +259,7 @@ def _leg(value: Any, label: str) -> Leg:
         end_epoch_s=end_epoch,
         end_utc=canonical_utc(end_epoch),
         environment=_leg_environment(data, label),
+        readout=_leg_readout(data),
     )
 
 
@@ -292,6 +293,57 @@ def _leg_environment(
         # a set of unknown observations that could be misread as recorded data.
         return None
     return environment
+
+
+READOUT_NUMBERS = (
+    "heading_degrees",
+    "course_through_water_degrees",
+    "course_over_ground_degrees",
+    "speed_through_water_knots",
+    "speed_over_ground_knots",
+    "true_wind_speed_knots",
+    "true_wind_angle_degrees",
+    "wind_gust_knots",
+    "estimated_fuel_litres",
+)
+READOUT_TEXT = ("propulsion_mode", "tack", "profile_identity", "profile_role")
+
+
+def _leg_readout(leg: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+    """Record per-leg readouts the engine supplied; absent values stay absent."""
+    readout: dict[str, Any] = {}
+    for key in READOUT_NUMBERS:
+        value = _optional_number(leg.get(key))
+        if value is not None:
+            readout[key] = value
+    for key in READOUT_TEXT:
+        value = leg.get(key)
+        if isinstance(value, str) and value:
+            readout[key] = value
+    if leg.get("stationary_wait") is not None:
+        readout["stationary_wait"] = leg.get("stationary_wait") is True
+    for prefix in ("wind", "current"):
+        source = leg.get(f"{prefix}_source")
+        if isinstance(source, Mapping):
+            dataset = source.get("dataset_identity")
+            if isinstance(dataset, str) and dataset:
+                readout[f"{prefix}_dataset_identity"] = dataset
+    warnings = leg.get("warnings")
+    if isinstance(warnings, (list, tuple)):
+        codes = [
+            item.get("code")
+            for item in warnings
+            if isinstance(item, Mapping) and isinstance(item.get("code"), str)
+        ]
+        readout["warning_count"] = len(warnings)
+        readout["warning_codes"] = ";".join(codes)
+    margins = leg.get("safety_margins")
+    if isinstance(margins, Mapping):
+        for name, value in margins.items():
+            number = _optional_number(value)
+            if isinstance(name, str) and number is not None:
+                readout[f"margin_{name}"] = number
+    return readout or None
 
 
 def _layer(value: Any, label: str) -> Layer:

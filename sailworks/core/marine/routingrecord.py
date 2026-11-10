@@ -398,6 +398,7 @@ class Leg:
     end_epoch_s: int
     end_utc: str
     environment: Optional[Mapping[str, Observation]] = None
+    readout: Optional[Mapping[str, Any]] = None
 
     def __post_init__(self) -> None:
         text(self.leg_id, "leg_id")
@@ -405,18 +406,29 @@ class Leg:
             raise SchemaError("leg endpoints must be Point records")
         check_utc_epoch(self.start_epoch_s, self.start_utc, "leg start")
         check_utc_epoch(self.end_epoch_s, self.end_utc, "leg end")
-        if self.environment is None:
-            return
-        if not isinstance(self.environment, Mapping):
-            raise SchemaError("leg environment must be an object or null")
-        frozen = {}
-        for key, observation in self.environment.items():
-            if not isinstance(key, str) or not key:
-                raise SchemaError("environment keys must be non-empty strings")
-            if not isinstance(observation, Observation):
-                raise SchemaError("environment values must be observations")
-            frozen[key] = observation
-        object.__setattr__(self, "environment", MappingProxyType(frozen))
+        if self.environment is not None:
+            if not isinstance(self.environment, Mapping):
+                raise SchemaError("leg environment must be an object or null")
+            frozen = {}
+            for key, observation in self.environment.items():
+                if not isinstance(key, str) or not key:
+                    raise SchemaError("environment keys must be non-empty strings")
+                if not isinstance(observation, Observation):
+                    raise SchemaError("environment values must be observations")
+                frozen[key] = observation
+            object.__setattr__(self, "environment", MappingProxyType(frozen))
+        if self.readout is not None:
+            if not isinstance(self.readout, Mapping):
+                raise SchemaError("leg readout must be an object or null")
+            frozen_readout = {}
+            for key, value in self.readout.items():
+                if not isinstance(key, str) or not key:
+                    raise SchemaError("readout keys must be non-empty strings")
+                if value is None or isinstance(value, (str, bool, int, float)):
+                    frozen_readout[key] = value
+                else:
+                    raise SchemaError("readout values must be scalars or null")
+            object.__setattr__(self, "readout", MappingProxyType(frozen_readout))
 
     def to_dict(self) -> dict:
         environment = None
@@ -434,6 +446,7 @@ class Leg:
             "end_epoch_s": self.end_epoch_s,
             "end_utc": self.end_utc,
             "environment": environment,
+            "readout": None if self.readout is None else dict(self.readout),
         }
 
 

@@ -276,3 +276,43 @@ def test_records_without_feature_capabilities_still_parse():
     record["capabilities"]["backend"].pop("features", None)
     reloaded = type(result).from_native(record)
     assert reloaded.capabilities.features is None
+
+
+def test_leg_readout_records_engine_values_and_absence():
+    run = _run(
+        legs=[
+            _leg(
+                1767225600,
+                1767226500,
+                heading_degrees=43.5,
+                speed_through_water_knots=4.4,
+                true_wind_angle_degrees=152.6,
+                propulsion_mode="sail",
+                tack="starboard",
+                stationary_wait=False,
+                warnings=[{"code": "search_pruned", "message": "pruned"}],
+                safety_margins={"wind": 3.0},
+            )
+        ]
+    )
+    result = _convert(run)
+    readout = result.legs[0].readout
+
+    assert readout["heading_degrees"] == 43.5
+    assert readout["speed_through_water_knots"] == 4.4
+    assert readout["propulsion_mode"] == "sail"
+    assert readout["tack"] == "starboard"
+    assert readout["stationary_wait"] is False
+    assert readout["warning_count"] == 1
+    assert readout["warning_codes"] == "search_pruned"
+    assert readout["margin_wind"] == 3.0
+    # Fields the bridge did not supply are absent, not zero.
+    assert "estimated_fuel_litres" not in readout
+    assert "wind_gust_knots" not in readout
+
+
+def test_leg_readout_roundtrips_losslessly():
+    run = _run(legs=[_leg(1767225600, 1767226500, heading_degrees=12.5)])
+    result = _convert(run)
+    reloaded = type(result).from_json(result.to_json())
+    assert dict(reloaded.legs[0].readout) == dict(result.legs[0].readout)

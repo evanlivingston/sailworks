@@ -298,6 +298,7 @@ def _leg_from_dict(value: Any, label: str) -> Leg:
             "end_utc",
             "environment",
         ),
+        optional=("readout",),
     )
     return Leg(
         data["leg_id"],
@@ -308,6 +309,7 @@ def _leg_from_dict(value: Any, label: str) -> Leg:
         data["end_epoch_s"],
         data["end_utc"],
         _environment_from_dict(data["environment"], f"{label}.environment"),
+        data.get("readout"),
     )
 
 
@@ -387,7 +389,7 @@ def _leg_from_native(value: Any, label: str) -> Leg:
         value,
         label,
         required=("id", "start", "end", "start_epoch_s", "end_epoch_s"),
-        optional=("start_utc", "end_utc", "environment"),
+        optional=("start_utc", "end_utc", "environment", "readout"),
     )
     start_epoch = data["start_epoch_s"]
     end_epoch = data["end_epoch_s"]
@@ -408,6 +410,7 @@ def _leg_from_native(value: Any, label: str) -> Leg:
         end_epoch,
         end_utc,
         _environment_from_native(data.get("environment"), f"{label}.environment"),
+        data.get("readout"),
     )
 
 
@@ -737,6 +740,7 @@ class RoutingResult:
                     "start_epoch_s": leg.start_epoch_s,
                     "end_epoch_s": leg.end_epoch_s,
                     "environment": _environment_to_native(leg.environment),
+                    "readout": None if leg.readout is None else dict(leg.readout),
                 }
                 for leg in self.legs
             ],
