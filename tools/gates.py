@@ -2498,6 +2498,83 @@ GATES["wind-all-points"] = {
     "open_requirements": ["Functional GPU readback only; no FPS or RSS/VRAM claim."],
 }
 
+GATES["routing-overlay"] = {
+    "title": "Retained native routing geometry keeps engine topology",
+    "milestone": "#134 P5",
+    "kind": "correctness",
+    "tool": "tools/check_routing_overlay.py",
+    "endpoint": (
+        "Headless retained-geometry fidelity: engine contour order, open "
+        "state, world-wrap separation, stable geometry across style changes "
+        "and deterministic picking. NOT a timing measurement."
+    ),
+    "requires": [],
+    "dependencies": ["numpy"],
+    "timeout_s": 120,
+    "env": {},
+    "command": [
+        "{python}",
+        "{tool}",
+        "--output",
+        "{tool_output}",
+    ],
+    "defaults": {"scenarios": ["retained-overlay"], "frames": 1, "repeats": 1},
+    "full": {"scenarios": ["retained-overlay"], "frames": 1, "repeats": 1},
+    "tool_output": "{outdir}/{gate}.tool.json",
+    "result": "{outdir}/{gate}.tool.json",
+    "checks": [
+        {
+            "label": "engine contour order preserved",
+            "metric": "topology.contour_order_preserved",
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "#134 required parity: explicit engine contours, no renderer inference",
+        },
+        {
+            "label": "engine open/closed state preserved",
+            "metric": "topology.open_state_preserved",
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "#134 required parity: disconnected contours with explicit state",
+        },
+        {
+            "label": "no segment crosses the antimeridian",
+            "metric": "topology.cross_world_segments",
+            "aggregate": "max",
+            "op": "==",
+            "value": 0,
+            "source": "#134 P5 gate: no invented connections or cross-world lines",
+        },
+        {
+            "label": "style changes do not rebuild geometry",
+            "metric": "style.geometry_stable",
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "#134 P5 gate: selection/time styling does not rebuild static geometry",
+        },
+        {
+            "label": "picking is deterministic",
+            "metric": "picking.deterministic",
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "#134 P5 gate: spatial picking index uses the displayed geometry",
+        },
+    ],
+    "reference": {
+        "kind": "recorded-evidence",
+        "source": "issue #134 required rendering parity; issue #140 P5 contract",
+        "note": (
+            "These are behavioural invariants from the accepted epic contract "
+            "(engine contour order and open state, no proximity joins, stable "
+            "geometry across style changes, deterministic picking), not a "
+            "measured performance baseline. No numeric timing threshold is set."
+        ),
+    },
+    "open_requirements": [
+        "No GPU buffer upload, camera transform or presentation timing in this gate.",
+    ],
+}
+
 GATES_NEEDING_RATIFICATION = tuple(
     sorted(
         gate_id
