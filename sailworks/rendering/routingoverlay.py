@@ -73,9 +73,22 @@ def _split_world_wrap(
 class RoutingOverlayModel:
     """Geometry, identity and picking for one routing calculation."""
 
+    @classmethod
+    def from_result_file(cls, path) -> "RoutingOverlayModel":
+        """Load an offline schema-v1 result and retain its geometry."""
+        from pathlib import Path
+
+        text = Path(path).read_text(encoding="utf-8")
+        return cls(RoutingResult.from_json(text))
+
+    @classmethod
+    def from_result_json(cls, text: str) -> "RoutingOverlayModel":
+        return cls(RoutingResult.from_json(text))
+
     def __init__(self, result: RoutingResult):
         if not isinstance(result, RoutingResult):
             raise TypeError("result must be a RoutingResult")
+        self._result = result
         self._calculation_id = result.calculation_id
         self._layers: Tuple[LayerInfo, ...] = tuple(
             LayerInfo(
@@ -136,6 +149,10 @@ class RoutingOverlayModel:
         self._style = _Style()
         self._style_revision = 0
         self._digest = self._compute_digest()
+
+    @property
+    def result(self) -> RoutingResult:
+        return self._result
 
     @property
     def calculation_id(self) -> str:

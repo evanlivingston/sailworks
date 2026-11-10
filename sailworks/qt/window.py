@@ -23,6 +23,7 @@ from PySide6.QtGui import (
     QUndoStack,
 )
 from PySide6.QtWidgets import (
+    QFileDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -270,6 +271,9 @@ class PreviewWindow(QMainWindow):
         )
         file_menu.addAction("Data Library…", self.show_library)
         file_menu.addAction("Polars", self.show_polar_workspace)
+        file_menu.addAction(
+            "Open native routing result…", self.show_native_routing_result
+        )
         file_menu.addSeparator()
         file_menu.addAction("Close window", self.close).setShortcut(
             QKeySequence.StandardKey.Close
@@ -1406,6 +1410,20 @@ class PreviewWindow(QMainWindow):
             self.map.set_isochrones(
                 route.isochrones if route is not None and route.visible else ()
             )
+            self.map.native_routing = self.controller.routing.native_overlay
+
+    def show_native_routing_result(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open native routing result", "", "Routing result (*.json)"
+        )
+        if not path:
+            return
+        try:
+            self.controller.routing.show_native_result_file(path)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Native routing result", str(exc))
+            return
+        self._sync_route_isochrones()
 
     def _nmea_panel(self):
         panel = QWidget()

@@ -237,3 +237,17 @@ def test_qml_payload_is_stable_across_style_changes():
     assert after["frontiers"] == before["frontiers"]
     assert after["geometry_revision"] == before["geometry_revision"]
     assert after["style_revision"] > before["style_revision"]
+
+
+def test_overlay_model_loads_an_offline_result_file(tmp_path):
+    contour = Contour("c-0", True, (Point(48.0, -124.0), Point(48.1, -123.9)))
+    result = _result(layers=(_layer(contours=(contour,)),))
+    path = tmp_path / "result.json"
+    path.write_text(result.to_json(), encoding="utf-8")
+
+    model = RoutingOverlayModel.from_result_file(path)
+    assert model.calculation_id == CALCULATION
+    assert [polyline.object_id for polyline in model.polylines] == ["c-0"]
+    assert RoutingOverlayModel.from_result_json(result.to_json()).geometry_digest == (
+        model.geometry_digest
+    )
