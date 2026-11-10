@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QWidget
 from sailworks.core.aismanager import SHIP_TYPE_COLORS
 from sailworks.core.mapviewport import MercatorProjection
 from sailworks.rendering.isochrones import IsochroneFrame, isochrone_overlay_data
+from sailworks.rendering.routingoverlay import routing_overlay_data
 from .mapcoverage import MapCoverageMixin
 from .mapcursor import MapCursorMixin
 from .mapenvironment import MapEnvironmentMixin
@@ -889,7 +890,7 @@ def _build_viewport_route_overlay(host):
             if host.ais_visible
             else []
         ),
-        "isochrones": isochrone_overlay_data(host.isochrone_frame),
+        "isochrones": _routing_overlay(host),
         "dashboard": (host.dashboard.overlay_data() if host.dashboard_visible else []),
         "caption": _viewport_caption(host.move_callback, host.controller.chart_errors),
         "dashboard_visible": host.dashboard_visible,
@@ -1029,6 +1030,19 @@ def _track_point_heading(points, index):
     if east == north == 0:
         return None
     return math.degrees(math.atan2(east, north)) % 360.0
+
+
+def _routing_overlay(host):
+    """Prefer the validated native routing geometry when one is attached.
+
+    The legacy preview payload keeps its proximity joins only while no native
+    calculation is selected, so a native result is never drawn with invented
+    connections.
+    """
+    model = getattr(host, "native_routing", None)
+    if model is not None:
+        return routing_overlay_data(model)
+    return isochrone_overlay_data(host.isochrone_frame)
 
 
 def _viewport_caption(move_callback, chart_errors):

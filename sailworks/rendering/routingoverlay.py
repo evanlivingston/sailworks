@@ -183,6 +183,10 @@ class RoutingOverlayModel:
         self._style.traces_visible = visible
         self._style_revision += 1
 
+    @property
+    def traces_visible(self) -> bool:
+        return self._style.traces_visible
+
     def set_selected_layer(self, layer_id: Optional[str]) -> None:
         if layer_id is not None:
             self._require_layer(layer_id)
@@ -240,3 +244,68 @@ class RoutingOverlayModel:
             digest.update(polyline.revision_payload)
             digest.update(b"\x1e")
         return digest.hexdigest()
+
+
+def routing_overlay_data(model: RoutingOverlayModel) -> dict:
+    """QML-ready payload built only from engine-provided routing geometry.
+
+    Segments are consecutive engine points; no point is joined to another
+    polyline, so disconnected contours stay disconnected and a dateline
+    crossing stays split. ``frontiers`` mirrors the shape the existing viewport
+    isochrone overlay already consumes, so the native layer can replace the
+    proximity-joined preview without changing the QML consumer.
+    """
+
+    if not isinstance(model, RoutingOverlayModel):
+        raise TypeError("model must be a RoutingOverlayModel")
+    layers = []
+    frontiers = []
+    for layer in model.layers:
+        if not model.is_layer_visible(layer.layer_id):
+            continue
+        segments = []
+        closed = []
+        for polyline in model.polylines:
+            if polyline.kind != "contour" or polyline.layer_id != layer.layer_id:
+                continue
+            segments.extend(
+                [list(first), list(second)]
+                for first, second in zip(polyline.points, polyline.points[1:])
+            )
+            closed.append(polyline.closed)
+        layers.append(
+            {
+                "id": layer.layer_id,
+                "time": layer.epoch_s,
+                "reverse": layer.reverse,
+                "segments": segments,
+                "contour_count": len(closed),
+                "closed": closed,
+            }
+        )
+        frontiers.append({"segments": segments, "points": []})
+    traces = []
+    if model.trace_ids and model.traces_visible:
+        for polyline in model.polylines:
+            if polyline.kind != "trace":
+                continue
+            traces.append(
+                {
+                    "id": polyline.object_id,
+                    "segments": [
+                        [list(first), list(second)]
+                        for first, second in zip(polyline.points, polyline.points[1:])
+                    ],
+                }
+            )
+    return {
+        "schema_version": 1,
+        "calculation_id": model.calculation_id,
+        "geometry_revision": model.geometry_revision,
+        "style_revision": model.style_revision,
+        "layers": layers,
+        "frontiers": frontiers,
+        "traces": traces,
+        "path": [],
+        "exclusions": [],
+    }

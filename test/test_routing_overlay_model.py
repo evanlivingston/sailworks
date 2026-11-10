@@ -181,3 +181,59 @@ def test_unknown_layer_reference_is_rejected():
         model.set_layer_visible("missing", False)
     with pytest.raises(KeyError):
         model.set_selected_layer("missing")
+
+
+def test_qml_payload_uses_engine_segments_without_joins():
+    from sailworks.rendering.routingoverlay import routing_overlay_data
+
+    crossing = Contour("c-dateline", False, (Point(10.0, 179.5), Point(10.0, -179.5)))
+    layer = _layer(contours=(crossing,))
+    model = RoutingOverlayModel(_result(layers=(layer,)))
+    payload = routing_overlay_data(model)
+
+    assert payload["schema_version"] == 1
+    assert payload["calculation_id"] == CALCULATION
+    assert payload["layers"][0]["id"] == "layer-0"
+    # The dateline contour is split, so no segment crosses the world.
+    segments = payload["frontiers"][0]["segments"]
+    assert segments == []
+    assert payload["frontiers"][0]["points"] == []
+    assert payload["layers"][0]["contour_count"] == 2
+    assert payload["layers"][0]["closed"] == [False, False]
+
+
+def test_qml_payload_respects_visibility_and_trace_toggle():
+    from sailworks.rendering.routingoverlay import routing_overlay_data
+
+    contour = Contour("c-0", True, (Point(48.0, -124.0), Point(48.1, -123.9)))
+    trace = Trace(
+        "t-0", Point(48.1, -123.9), (Point(48.2, -123.7), Point(48.1, -123.9))
+    )
+    model = RoutingOverlayModel(
+        _result(layers=(_layer(contours=(contour,)),), traces=(trace,))
+    )
+    assert routing_overlay_data(model)["frontiers"][0]["segments"] == [
+        [[48.0, -124.0], [48.1, -123.9]]
+    ]
+    assert routing_overlay_data(model)["traces"][0]["id"] == "t-0"
+
+    model.set_traces_visible(False)
+    assert routing_overlay_data(model)["traces"] == []
+    model.set_layer_visible("layer-0", False)
+    payload = routing_overlay_data(model)
+    assert payload["layers"] == []
+    assert payload["frontiers"] == []
+
+
+def test_qml_payload_is_stable_across_style_changes():
+    from sailworks.rendering.routingoverlay import routing_overlay_data
+
+    contour = Contour("c-0", True, (Point(48.0, -124.0), Point(48.1, -123.9)))
+    model = RoutingOverlayModel(_result(layers=(_layer(contours=(contour,)),)))
+    before = routing_overlay_data(model)
+    model.set_thickness("contour", 2.5)
+    after = routing_overlay_data(model)
+
+    assert after["frontiers"] == before["frontiers"]
+    assert after["geometry_revision"] == before["geometry_revision"]
+    assert after["style_revision"] > before["style_revision"]
