@@ -162,8 +162,9 @@ int main(int argc, char **argv) {
       {"pan_pixels", strokePixels},
   };
   report["integration"] =
-      "Standalone harness built against Homebrew Qt; the PySide6 app must run "
-      "with DYLD_FRAMEWORK_PATH pointing at the same Qt build.";
+      "Standalone harness built against a Qt C++ SDK. The application loads the "
+      "module after tools/build_routing_qsg_module.py relinks it to PySide6's "
+      "frameworks; no DYLD_FRAMEWORK_PATH is required.";
 
   const QByteArray json = QJsonDocument(report).toJson(QJsonDocument::Indented);
   std::fwrite(json.constData(), 1, static_cast<size_t>(json.size()), stdout);
