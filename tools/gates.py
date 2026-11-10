@@ -2745,6 +2745,96 @@ GATES["routing-overlay-window"] = {
     ],
 }
 
+GATES["routing-overlay-qsg"] = {
+    "title": "Retained QSG routing item keeps geometry across pan and style",
+    "milestone": "#134 P5",
+    "kind": "fidelity",
+    "tool": "tools/check_routing_overlay_qsg.py",
+    "endpoint": (
+        "Real Qt Quick window with the retained QSG segment item; geometry is "
+        "built once and reused across pan and restyle, compared against an "
+        "independent Mercator oracle. Fidelity only; NOT presentation FPS."
+    ),
+    "requires": [],
+    "dependencies": [],
+    "timeout_s": 600,
+    "env": {
+        "QT_QPA_PLATFORM": "offscreen",
+        "QT_QUICK_BACKEND": "software",
+    },
+    "command": [
+        "{python}",
+        "{tool}",
+        "--output",
+        "{tool_output}",
+    ],
+    "defaults": {"scenarios": ["retained-qsg"], "frames": 1, "repeats": 1},
+    "full": {"scenarios": ["retained-qsg"], "frames": 1, "repeats": 1},
+    "tool_output": "{outdir}/{gate}.tool.json",
+    "result": "{outdir}/{gate}.tool.json",
+    "checks": [
+        {
+            "label": "panning does not rebuild retained geometry",
+            "metric": "retained.geometry_rebuilds_during_pan",
+            "aggregate": "max",
+            "op": "==",
+            "value": 0,
+            "source": "#134 P5 gate: camera motion does not rebuild or retransmit results",
+        },
+        {
+            "label": "restyling does not rebuild retained geometry",
+            "metric": "retained.geometry_rebuilds_during_style",
+            "aggregate": "max",
+            "op": "==",
+            "value": 0,
+            "source": "#134 P5 gate: selection/time styling does not rebuild static geometry",
+        },
+        {
+            "label": "retained line lands on the independent projection",
+            "metric": "fidelity.ink_at_oracle_midpoint",
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "#134 P5 gate: displayed geometry matches the projection",
+        },
+        {
+            "label": "retained line follows a camera pan",
+            "metric": "fidelity.ink_after_pan",
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "#134 P5 gate: camera motion keeps current content",
+        },
+        {
+            "label": "no stale retained ink after the pan",
+            "metric": "fidelity.stale_ink_at_old_midpoint",
+            "aggregate": "all",
+            "op": "is_false",
+            "source": "#134 P5 gate: camera motion must not leave the old geometry behind",
+        },
+        {
+            "label": "sampled pixel is the routing colour",
+            "metric": "fidelity.sampled_blue_minus_red",
+            "aggregate": "min",
+            "op": ">=",
+            "value": 1,
+            "source": "#134 P5 gate: the retained item draws the routing layer",
+        },
+    ],
+    "reference": {
+        "kind": "recorded-evidence",
+        "source": "issue #134 required rendering parity; issue #140 P5 contract",
+        "note": (
+            "Fidelity against an independent Mercator oracle and retention "
+            "counters from the item itself. No visual baseline and no timing "
+            "threshold. App integration requires launching the PySide6 app "
+            "against the same Qt build (DYLD_FRAMEWORK_PATH)."
+        ),
+    },
+    "open_requirements": [
+        "Requires cmake and a Qt6 Quick C++ SDK (SAILWORKS_QT_PREFIX or /opt/homebrew/opt/qt).",
+        "App-side Qt runtime alignment and GPU hardware timing are not measured here.",
+    ],
+}
+
 GATES_NEEDING_RATIFICATION = tuple(
     sorted(
         gate_id
