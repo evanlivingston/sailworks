@@ -146,7 +146,7 @@ def to_routing_result(
         ),
         legs=legs,
         layers=layers,
-        capabilities=_capabilities(run, traces),
+        capabilities=_capabilities(run, traces, identity),
         traces=traces,
     )
 
@@ -200,7 +200,27 @@ def _engine_identity(identity: Mapping[str, Any]) -> EngineIdentity:
     )
 
 
-def _capabilities(run: Mapping[str, Any], traces: Sequence[Trace]) -> Capabilities:
+def _feature_states(
+    identity: Mapping[str, Any], run: Mapping[str, Any]
+) -> Mapping[str, str]:
+    """Explicit per-feature state so absent services are never implied."""
+
+    inspection = run.get("inspection_geometry")
+    return {
+        "weather_sampling": "sampled",
+        "waves": "absent",
+        "shoreline": "unsupported",
+        "depth": "unsupported",
+        "chart_hazards": "unsupported",
+        "inspection_geometry": "sampled" if inspection else "absent",
+    }
+
+
+def _capabilities(
+    run: Mapping[str, Any],
+    traces: Sequence[Trace],
+    identity: Mapping[str, Any],
+) -> Capabilities:
     validation = _mapping(run.get("validation"), "native validation")
     samples = validation.get("samples")
     request = _mapping(run.get("request"), "native request")
@@ -222,6 +242,7 @@ def _capabilities(run: Mapping[str, Any], traces: Sequence[Trace]) -> Capabiliti
         validation_mode="sampled" if sampled else "none",
         sample_count=samples if sampled else None,
         cadence=cadence if sampled else None,
+        features=_feature_states(identity, run),
     )
 
 

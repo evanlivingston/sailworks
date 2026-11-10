@@ -21,6 +21,7 @@ SCHEMA_VERSION = 1
 STATUSES = frozenset({"complete", "cancelled", "failed", "incomplete", "preview"})
 VALIDATION_STATES = frozenset({"passed", "failed", "unknown"})
 VALIDATION_MODES = frozenset({"sampled", "exhaustive", "none"})
+FEATURE_STATES = frozenset({"complete", "sampled", "absent", "unsupported"})
 TRACE_TIME_CAPABILITIES = frozenset({"absent", "per_position"})
 ROUTE_ENVIRONMENTS = frozenset({"recorded", "absent"})
 
@@ -325,6 +326,7 @@ class Capabilities:
     validation_mode: str
     sample_count: Optional[int]
     cadence: Optional[int]
+    features: Optional[Mapping[str, str]] = None
 
     def __post_init__(self) -> None:
         text(self.producer, "capabilities producer")
@@ -356,11 +358,25 @@ class Capabilities:
             raise SchemaError(
                 f"{self.validation_mode} validation cannot report samples"
             )
+        if self.features is not None:
+            if not isinstance(self.features, Mapping):
+                raise SchemaError("feature capabilities must be an object or null")
+            frozen = {}
+            for key, state in self.features.items():
+                if not isinstance(key, str) or not key:
+                    raise SchemaError("feature names must be non-empty strings")
+                if not isinstance(state, str) or state not in FEATURE_STATES:
+                    raise SchemaError(
+                        "feature state must be complete, sampled, absent or unsupported"
+                    )
+                frozen[key] = state
+            object.__setattr__(self, "features", MappingProxyType(frozen))
 
     def to_dict(self) -> dict:
         return {
             "schema": dict(SCHEMA_CAPABILITIES),
             "backend": {
+                "features": None if self.features is None else dict(self.features),
                 "producer": self.producer,
                 "trace_times": self.trace_times,
                 "validation": {

@@ -246,3 +246,33 @@ def test_conversion_is_deterministic_and_does_not_mutate_input():
     assert [trace.trace_id for trace in first.traces] == [
         trace.trace_id for trace in second.traces
     ]
+
+
+def test_capabilities_disclose_unsupported_and_absent_features():
+    result = _convert(_run())
+    features = result.capabilities.features
+    assert features["weather_sampling"] == "sampled"
+    assert features["inspection_geometry"] == "sampled"
+    assert features["waves"] == "absent"
+    assert features["shoreline"] == "unsupported"
+    assert features["depth"] == "unsupported"
+    assert features["chart_hazards"] == "unsupported"
+
+
+def test_feature_capabilities_roundtrip_and_are_validated():
+    result = _convert(_run())
+    reloaded = type(result).from_json(result.to_json())
+    assert dict(reloaded.capabilities.features) == dict(result.capabilities.features)
+
+    record = result.to_native()
+    record["capabilities"]["backend"]["features"] = {"shoreline": "invented"}
+    with pytest.raises(SchemaError):
+        type(result).from_native(record)
+
+
+def test_records_without_feature_capabilities_still_parse():
+    result = _convert(_run())
+    record = result.to_native()
+    record["capabilities"]["backend"].pop("features", None)
+    reloaded = type(result).from_native(record)
+    assert reloaded.capabilities.features is None

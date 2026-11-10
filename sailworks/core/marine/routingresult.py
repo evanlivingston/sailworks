@@ -216,6 +216,7 @@ def _capabilities_from_dict(value: Any) -> Capabilities:
         data["backend"],
         "capabilities.backend",
         required=("producer", "trace_times", "validation"),
+        optional=("features",),
     )
     validation = _object(
         backend["validation"],
@@ -228,6 +229,7 @@ def _capabilities_from_dict(value: Any) -> Capabilities:
         validation["mode"],
         validation["sample_count"],
         validation["cadence"],
+        backend.get("features"),
     )
 
 
