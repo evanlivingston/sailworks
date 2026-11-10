@@ -231,3 +231,115 @@ def test_worker_payload_matches_the_in_process_bridge(capsys):
     )
     with capsys.disabled():
         print(measurement)
+
+
+def _legacy_constant_route():
+    """Old frontier solver on the same constant wind/polar/current inputs."""
+    from datetime import timedelta
+    from unittest.mock import Mock
+
+    import numpy as np
+
+    from sailworks.core.marine.fields import CurrentField, FieldSelection
+    from sailworks.core.marine.models import canonical_json
+    from sailworks.core.marine.routing import (
+        CurrentIsoRouter,
+        CurrentRoutingEnvironment,
+    )
+
+    reference = datetime.fromtimestamp(int(START.timestamp()), tz=timezone.utc)
+    metadata = dict(
+        schema_version=1,
+        provider="fixture",
+        model="synthetic",
+        composition="total",
+        vector_reference="true_east_north",
+        sources=[],
+        resolution_m=9000,
+        run=reference.isoformat(),
+    )
+    times = np.array(
+        [(reference + timedelta(hours=hour)).timestamp() for hour in range(7)]
+    )
+    field = CurrentField(
+        canonical_json(metadata),
+        times,
+        np.array([48.0, 50.0]),
+        np.array([-124.0, -122.0]),
+        np.zeros((7, 2, 2)),
+        np.zeros((7, 2, 2)),
+    )
+    wind = type(
+        "W",
+        (),
+        {
+            "get_wind_at": staticmethod(lambda instant, lat, lon: (288.4, 12.7)),
+            "last_source": "fixture",
+        },
+    )()
+    environment = CurrentRoutingEnvironment(wind, FieldSelection([field]))
+    router = CurrentIsoRouter(
+        Mock(get_speed=Mock(return_value=4.0)), wind, environment=environment
+    )
+    router.use_numpy = False
+    log = None
+    for _ in range(36):
+        log = router.route(log, reference, 1, (48.2, -123.7), (48.4, -123.5))
+        if log.path:
+            break
+    return reference, log
+
+
+def test_old_solver_and_native_agree_on_a_constant_condition_route(capsys):
+    """Matched old/new run under identical constant conditions.
+
+    Both use a 4 kn boat speed at every heading, constant wind from 288.4 deg at
+    12.7 kn and no current. This isolates search policy and integration from
+    polar interpolation, which the provider comparison already covers.
+    """
+    from test_native_routing_fixture import START as fixture_start
+
+    bridge = _bridge()
+    coverage = {
+        "south": 48.0,
+        "north": 50.0,
+        "west": -124.0,
+        "east": -122.0,
+        "start_epoch_s": int(fixture_start.timestamp()),
+        "end_epoch_s": int(fixture_start.timestamp()) + 6 * 3600,
+    }
+    wind = lambda latitude, longitude, epoch_s: (
+        288.4,
+        12.7 / KNOTS_PER_METRE_PER_SECOND,
+        True,
+    )  # noqa: E731
+    current = lambda latitude, longitude, epoch_s: (0.0, 0.0, True)  # noqa: E731
+    polar = [
+        {
+            "true_wind_speed_knots": tws,
+            "points": [[angle, 4.0] for angle in (30, 60, 90, 120, 150, 180)],
+        }
+        for tws in (4.0, 8.0, 12.0, 16.0)
+    ]
+    native = bridge.route_with_weather(
+        wind, current, coverage, polar=polar, polar_identity="const-4kn"
+    )
+
+    reference, legacy = _legacy_constant_route()
+    assert legacy.path, "old solver did not complete the constant-condition route"
+    assert native["status"].startswith("complete")
+    assert native["accepted"] is True
+
+    legacy_hours = (legacy.path[-1].time - reference).total_seconds() / 3600.0
+    native_hours = native["metrics"]["elapsed_seconds"] / 3600.0
+    legacy_end = legacy.path[-1].pos
+
+    measurement = (
+        "old-vs-native(const): "
+        f"native_h={native_hours:.3f} legacy_h={legacy_hours:.3f} "
+        f"delta_h={native_hours - legacy_hours:+.3f} "
+        f"native_nm={native['metrics']['distance_nm']:.3f} "
+        f"legacy_end=({legacy_end[0]:.4f},{legacy_end[1]:.4f})"
+    )
+    with capsys.disabled():
+        print(measurement)
