@@ -61,3 +61,35 @@ class TestRoutingSummaryFallback(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_partial_points_do_not_crash_the_summary():
+    class PartialRoute(list):
+        def __init__(self):
+            super().__init__(
+                [
+                    (48.2, -123.7),
+                    (48.4, -123.5),
+                ]
+            )
+            self.provenance = None
+
+    # A saved route with coordinate-only points has no usable summary, but it
+    # must not raise while the navigation panel lists routes.
+    assert routing_summary(PartialRoute()) == ""
+
+
+def test_partial_points_are_skipped_beside_complete_ones():
+    class MixedRoute(list):
+        def __init__(self):
+            super().__init__(
+                [
+                    (49.0, -125.0, "2026-01-01 00:00:00", 0, 0, 5.0, 90.0),
+                    (49.0, -124.9),
+                    (49.0, -124.8, "2026-01-01 01:00:00", 0, 0, 5.0, 90.0),
+                ]
+            )
+            self.provenance = None
+
+    summary = routing_summary(MixedRoute())
+    assert "nm" in summary
