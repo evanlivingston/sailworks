@@ -12,6 +12,7 @@ import numpy as np
 
 from sailworks.core.marine.manager import MarineManager
 from sailworks.core.marine.models import Capability
+from sailworks.core.mapviewport import MapPoint
 from sailworks.core.settings import SettingsManager
 from sailworks.core.timecontrol import TimeControl
 from sailworks.rendering.marinepresentation import (
@@ -76,7 +77,7 @@ class TestCurrentDensity(unittest.TestCase):
                     )
                 positions = [
                     camera.view().convert_geographic_to_screen(
-                        display.MapPoint(arrow.latitude, arrow.longitude)
+                        MapPoint(arrow.latitude, arrow.longitude)
                     )
                     for arrow in snapshot.arrows
                     if not arrow.station
