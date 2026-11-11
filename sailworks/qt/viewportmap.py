@@ -689,7 +689,9 @@ class ViewportMap(
         A camera-only change moves the retained overlay through the viewport's
         own pan window; it must not rebuild or re-key the content.
         """
-        self._sync_retained_overlay()
+        sync_retained = getattr(self, "_sync_retained_overlay", None)
+        if sync_retained is not None:
+            sync_retained()
         presenter = getattr(self, "_weather_presenter", None)
         widget = getattr(presenter, "widget", None)
         if widget is None:
