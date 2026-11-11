@@ -6,6 +6,7 @@ import copy
 
 import pytest
 
+from sailworks.core.marine.routinginspection import diagnostics
 from sailworks.core.marine.routingnative import to_routing_result
 from sailworks.core.marine.routingrecord import Observation, SchemaError
 from sailworks.core.marine.routingresult import export_blockers, export_eligible
@@ -103,6 +104,40 @@ def _convert(run: dict):
         created_epoch_s=1767225600,
         identity=IDENTITY,
     )
+
+
+@pytest.mark.parametrize("status", ["resource_limit_reached", "internal_error"])
+def test_unvalidated_native_statuses_bridge_to_valid_distinct_records(status):
+    run = _run(
+        status=status,
+        accepted=False,
+        validation={"passed": False, "failure_reason": "", "samples": 0},
+        legs=[],
+        layers=[],
+    )
+
+    result = _convert(run)
+
+    assert result.status == status
+    # The adapter must not turn a terminal non-route state into a validation
+    # failure of a route that was never delivered.
+    assert result.outcome.validation.state == "unknown"
+    assert export_eligible(result) is False
+
+    states = {state.code: state.state for state in diagnostics(result)}
+    # The raw native status is preserved on the result, while diagnostics show
+    # the human-readable label for that status.
+    visible = (
+        "resource exhausted" if status == "resource_limit_reached" else "internal error"
+    )
+    assert states["status"].startswith(visible)
+    assert states["search"].startswith(visible)
+    if status == "resource_limit_reached":
+        assert states["resource"].startswith("exhausted")
+        assert "native status resource_limit_reached" in states["resource"]
+    else:
+        assert states["status"].startswith("internal error")
+        assert "resource" not in states
 
 
 def test_validated_run_becomes_export_eligible_record():

@@ -529,7 +529,14 @@ class RoutingResult:
         object.__setattr__(self, "traces", traces)
         object.__setattr__(self, "previews", previews)
 
-        if self.status in {"cancelled", "failed", "incomplete", "preview"}:
+        if self.status in {
+            "cancelled",
+            "failed",
+            "incomplete",
+            "preview",
+            "resource_limit_reached",
+            "internal_error",
+        }:
             if self.outcome.accepted or self.outcome.delivered:
                 raise SchemaError(
                     f"{self.status} results cannot be accepted or delivered"
