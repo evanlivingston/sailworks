@@ -79,9 +79,20 @@ struct SyntheticRun {
   bool accepted{};
 };
 
+// Narrow request override for weather supplied by an external provider. Only
+// the request's start, destination and departure can be relocated; polar,
+// constraints, options and limits stay frozen. Empty members keep the frozen
+// fixture request values.
+struct FixtureRequestOverride {
+  std::optional<wr::GeoPoint> start;
+  std::optional<wr::GeoPoint> destination;
+  std::optional<wr::TimePoint> departure;
+};
+
 wr::VesselConfiguration fixtureVesselConfiguration();
-wr::RoutingRequest fixtureRequest(bool cancelled = false,
-                                  bool invalidDestination = false);
+wr::RoutingRequest fixtureRequest(
+    bool cancelled = false, bool invalidDestination = false,
+    const FixtureRequestOverride& overrides = {});
 wr::RoutingEnvironment fixtureEnvironment();
 
 SyntheticRun runSynthetic(const std::string& engine);
@@ -90,12 +101,14 @@ SyntheticRun runInvalidDestination();
 
 // Run the same synthetic scenario but with weather supplied by an external
 // provider (for example a Python adapter over established Sailworks sampling).
-// The fixture polar, constraints and request limits are unchanged.
-SyntheticRun runWithProvider(const std::string& engine,
-                             std::shared_ptr<wr::WeatherProvider> provider,
-                             bool cancelled = false,
-                             std::optional<wr::VesselConfiguration> vessel =
-                                 std::nullopt);
+// The fixture polar, constraints and request limits are unchanged. Optional
+// request overrides relocate start/destination/departure for external weather
+// sources; when absent the frozen synthetic request is used verbatim.
+SyntheticRun runWithProvider(
+    const std::string& engine, std::shared_ptr<wr::WeatherProvider> provider,
+    bool cancelled = false,
+    std::optional<wr::VesselConfiguration> vessel = std::nullopt,
+    const FixtureRequestOverride& requestOverrides = {});
 
 [[nodiscard]] bool isCompleteStatus(wr::RoutingStatus status);
 [[nodiscard]] std::string statusName(wr::RoutingStatus status);

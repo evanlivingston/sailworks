@@ -182,7 +182,8 @@ wr::VesselConfiguration fixtureVesselConfiguration() {
   return vessel;
 }
 
-wr::RoutingRequest fixtureRequest(bool cancelled, bool invalidDestination) {
+wr::RoutingRequest fixtureRequest(bool cancelled, bool invalidDestination,
+                                  const FixtureRequestOverride& overrides) {
   wr::RoutingRequest request;
   request.start = wr::GeoPoint{48.2, -123.7};
   // The valid destination is deliberately farther than the engine's direct
@@ -214,6 +215,12 @@ wr::RoutingRequest fixtureRequest(bool cancelled, bool invalidDestination) {
   request.limits.maximumGeneratedStates = 500000;
   request.limits.maximumRetainedStates = 50000;
   request.limits.maximumExplorationDistanceNm = 500.0;
+  // External-provider runs may relocate the geometry to their forecast domain.
+  // Unset members keep the frozen contract above.
+  if (overrides.start.has_value()) request.start = *overrides.start;
+  if (overrides.destination.has_value())
+    request.destination = *overrides.destination;
+  if (overrides.departure.has_value()) request.departure = *overrides.departure;
   if (cancelled) request.cancellation.cancel();
   return request;
 }
@@ -383,10 +390,11 @@ SyntheticRun runCancelled(const std::string& engine) {
 SyntheticRun runWithProvider(const std::string& engine,
                              std::shared_ptr<wr::WeatherProvider> provider,
                              bool cancelled,
-                             std::optional<wr::VesselConfiguration> vessel) {
+                             std::optional<wr::VesselConfiguration> vessel,
+                             const FixtureRequestOverride& requestOverrides) {
   wr::RoutingEnvironment environment = fixtureEnvironment();
   environment.grib = std::move(provider);
-  wr::RoutingRequest request = fixtureRequest(cancelled, false);
+  wr::RoutingRequest request = fixtureRequest(cancelled, false, requestOverrides);
   if (vessel.has_value()) {
     request.vessel = *vessel;
     environment.performance =
