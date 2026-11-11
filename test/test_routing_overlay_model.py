@@ -18,7 +18,10 @@ from sailworks.core.marine.routingrecord import (
     Validation,
 )
 from sailworks.core.marine.routingresult import RoutingResult, canonical_utc
-from sailworks.rendering.routingoverlay import RoutingOverlayModel
+from sailworks.rendering.routingoverlay import (
+    RoutingOverlayModel,
+    routing_overlay_data,
+)
 
 CALCULATION = "6f1c1a1e-0000-4000-8000-000000000003"
 
@@ -167,12 +170,65 @@ def test_nearest_layer_ties_choose_the_earlier_layer():
     assert model.nearest_layer(1767230000) == "layer-1"
 
 
+def test_hidden_geometry_is_not_pickable_or_hoverable():
+    contour = Contour("c-0", True, (Point(48.0, -124.0), Point(48.1, -123.9)))
+    trace = Trace(
+        "t-0",
+        Point(48.1, -123.9),
+        (Point(48.2, -123.7), Point(48.1, -123.9)),
+    )
+    model = RoutingOverlayModel(
+        _result(layers=(_layer(contours=(contour,)),), traces=(trace,))
+    )
+    digest = model.geometry_digest
+    revision = model.geometry_revision
+
+    model.set_hover_trace("t-0")
+    assert model.hover_trace_id == "t-0"
+    model.set_traces_visible(False)
+    assert model.hover_trace_id is None
+    assert model.pick_trace_near(48.11, -123.89) is None
+    model.set_hover_trace("t-0")
+    assert model.hover_trace_id is None
+
+    model.set_layer_visible("layer-0", False)
+    assert model.nearest_layer(1767226500) is None
+    assert model.geometry_digest == digest
+    assert model.geometry_revision == revision
+
+
+def test_nearest_layer_skips_hidden_layers():
+    layers = (
+        _layer("layer-0", 1767226500),
+        _layer("layer-1", 1767228300),
+    )
+    model = RoutingOverlayModel(_result(layers=layers))
+    model.set_layer_visible("layer-0", False)
+
+    assert model.nearest_layer(1767226500) == "layer-1"
+
+
 def test_empty_geometry_and_absent_traces_are_explicit():
     model = RoutingOverlayModel(_result())
     assert model.layers == ()
     assert model.polylines == ()
     assert model.pick_trace(0.0, 0.0) is None
     assert model.nearest_layer(1767226500) is None
+    assert model.geometry_state == "absent"
+    assert model.trace_times == "absent"
+    payload = routing_overlay_data(model)
+    assert payload["geometry_state"] == "absent"
+    assert payload["trace_times"] == "absent"
+
+
+def test_hidden_geometry_is_disclosed_not_reported_as_drawn():
+    contour = Contour("c-0", True, (Point(48.0, -124.0), Point(48.1, -123.9)))
+    model = RoutingOverlayModel(_result(layers=(_layer(contours=(contour,)),)))
+    assert model.geometry_state == "drawn"
+
+    model.set_layer_visible("layer-0", False)
+    assert model.geometry_state == "hidden"
+    assert routing_overlay_data(model)["geometry_state"] == "hidden"
 
 
 def test_unknown_layer_reference_is_rejected():

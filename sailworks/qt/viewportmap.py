@@ -728,7 +728,9 @@ class ViewportMap(
         if model is None or selection is None:
             return False
         trace = model.hover_trace_id
-        if trace is None:
+        if trace is None or not model.trace_is_visible(trace):
+            if trace is not None:
+                model.set_hover_trace(None)
             return False
         selection.select_trace(trace)
         apply_highlight = getattr(self, "_apply_retained_highlight", None)
@@ -1050,7 +1052,11 @@ def _build_viewport_route_overlay(host):
         ),
         "isochrones": _routing_overlay(host),
         "dashboard": (host.dashboard.overlay_data() if host.dashboard_visible else []),
-        "caption": _viewport_caption(host.move_callback, host.controller.chart_errors),
+        "caption": _viewport_caption(
+            host.move_callback,
+            host.controller.chart_errors,
+            _routing_absence_caption(getattr(host, "native_routing", None)),
+        ),
         "dashboard_visible": host.dashboard_visible,
     }
     if measure[0] or measure[1]:
@@ -1200,25 +1206,54 @@ def _routing_overlay(host):
     """
     model = getattr(host, "native_routing", None)
     if model is not None:
+        payload = routing_overlay_data(model)
         if getattr(host, "_retained_active", False):
-            return {
-                "frontiers": [],
-                "traces": [],
-                "path": [],
-                "exclusions": [],
-            }
-        return routing_overlay_data(model)
+            # The retained item draws this geometry, so the canvas payload only
+            # suppresses duplicates. "retained" keeps that case distinct from
+            # a result with no drawable geometry.
+            payload.update(
+                {
+                    "retained": True,
+                    "frontiers": [],
+                    "traces": [],
+                    "path": [],
+                    "exclusions": [],
+                }
+            )
+            return payload
+        return payload
     return isochrone_overlay_data(host.isochrone_frame)
 
 
-def _viewport_caption(move_callback, chart_errors):
+def _routing_absence_caption(model):
+    """Disclosure for missing routing geometry or trace times."""
+    if model is None:
+        return ""
+    parts = []
+    state = model.geometry_state
+    if state == "absent":
+        parts.append("No routing layers in this result")
+    elif state == "empty":
+        parts.append("Routing result has no drawable geometry")
+    elif state == "hidden":
+        parts.append("Routing overlay hidden")
+    if model.trace_times == "absent" and model.trace_ids:
+        parts.append("Routing trace times unavailable")
+    return " · ".join(parts)
+
+
+def _viewport_caption(move_callback, chart_errors, routing_note=""):
     if move_callback is not None and chart_errors:
-        return (
+        caption = (
             "Click to place the selected point · Esc to cancel · "
             "Some saved charts could not be opened"
         )
-    if move_callback is not None:
-        return "Click to place the selected point · Esc to cancel"
-    if chart_errors:
-        return "Some saved charts could not be opened"
-    return ""
+    elif move_callback is not None:
+        caption = "Click to place the selected point · Esc to cancel"
+    elif chart_errors:
+        caption = "Some saved charts could not be opened"
+    else:
+        caption = ""
+    if routing_note:
+        caption = f"{caption} · {routing_note}" if caption else routing_note
+    return caption
