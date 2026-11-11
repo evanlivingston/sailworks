@@ -408,19 +408,29 @@ class RoutingController(QObject):
 
     def _save_result(self, request, result):
         collection = self.core.routingManager
-        route = Routing(
-            collection.get_unique_name(request.name),
-            list(result.points),
-            list(result.isochrones),
-            collection=collection,
-            provenance=result.provenance,
-        )
+        from sailworks.core.marine.routingrecord import RoutingResultError
+        from sailworks.core.marine.routingresult import RoutingResult
+
+        route = None
         try:
+            if isinstance(result, RoutingResult):
+                # Schema-v1 results are stored once by digest; the route keeps
+                # only its polyline, a small summary and the artifact reference.
+                route = collection.save_result(request.name, result)
+            else:
+                route = Routing(
+                    collection.get_unique_name(request.name),
+                    list(result.points),
+                    list(result.isochrones),
+                    collection=collection,
+                    provenance=result.provenance,
+                )
             collection.append(route)
             collection.set_active(route)
-        except OSError as exc:
+        except (OSError, RoutingResultError) as exc:
             self.error = f"Route calculated, but could not be saved: {exc}"
-            self.completed.emit(route)
+            if route is not None:
+                self.completed.emit(route)
             raise ValueError(self.error) from exc
         self.saved_count += 1
         self.completed.emit(route)
