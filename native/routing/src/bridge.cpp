@@ -4,12 +4,15 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "native_routing_tree_identity.h"
+#include "sailworks_performance.h"
 #include "synthetic.h"
+#include "user_request.h"
 
 namespace py = pybind11;
 namespace wr = supercpn::weather_routing;
@@ -464,6 +467,62 @@ wr::VesselConfiguration vesselFromPolar(const py::object& polar,
   return vessel;
 }
 
+SyntheticRun runUserBridge(py::function wind, py::function current,
+                           const py::dict& coverage, const py::object& polar,
+                           const py::dict& settings,
+                           const std::string& providerIdentity,
+                           const std::string& polarIdentity,
+                           const std::string& engine) {
+  const std::set<std::string> required{
+      "start", "destination", "departure_epoch_s", "use_currents",
+      "polar_efficiency", "tws_max_kn", "min_sailing_speed_kn",
+      "motor_speed_kn", "wave_correct", "coastline_checks"};
+  if (py::len(settings) != required.size())
+    throw py::value_error("real request requires all supported settings and no unknown settings");
+  for (const auto& key : required)
+    if (!settings.contains(py::str(key)))
+      throw py::value_error("real request missing setting: " + key);
+  if (py::cast<bool>(settings["coastline_checks"]))
+    throw py::value_error("real request shoreline checks require a worker-local shoreline adapter");
+  auto point = [](const py::handle value) {
+    const auto pair = py::cast<py::sequence>(value);
+    if (py::len(pair) != 2)
+      throw py::value_error("real request point must be (latitude, longitude)");
+    return wr::GeoPoint{py::cast<double>(pair[0]), py::cast<double>(pair[1])};
+  };
+  auto optionalSpeed = [](const py::handle value) -> std::optional<double> {
+    if (value.is_none()) return std::nullopt;
+    return py::cast<double>(value);
+  };
+  sailworks::native_routing::UserSettings input;
+  input.start = point(settings["start"]);
+  input.destination = point(settings["destination"]);
+  input.departureEpochSeconds = py::cast<std::int64_t>(settings["departure_epoch_s"]);
+  input.useCurrents = py::cast<bool>(settings["use_currents"]);
+  input.polarEfficiency = py::cast<double>(settings["polar_efficiency"]);
+  input.maximumWindKnots = optionalSpeed(settings["tws_max_kn"]);
+  input.minimumSailingKnots = optionalSpeed(settings["min_sailing_speed_kn"]);
+  input.motorKnots = py::cast<double>(settings["motor_speed_kn"]);
+  input.windBasedWaveProxy = py::cast<bool>(settings["wave_correct"]);
+
+  if (polar.is_none())
+    throw py::value_error("real request requires selected polar rows");
+  const auto windCoverage = coverageFromDict(coverage, providerIdentity);
+  auto vessel = vesselFromPolar(polar, polarIdentity, "selected Sailworks polar");
+  auto request = sailworks::native_routing::buildUserRequest(input, vessel,
+                                                               windCoverage);
+  wr::RoutingEnvironment environment;
+  environment.grib = std::make_shared<PythonWeatherProvider>(
+      std::move(wind), std::move(current), windCoverage, providerIdentity,
+      wr::EnvironmentalSource::GribForecast);
+  environment.landAndBoundaries = std::make_shared<wr::OpenWaterProvider>();
+  environment.performance = std::make_shared<sailworks::native_routing::SailworksPerformance>(
+      std::move(vessel), input.maximumWindKnots, input.minimumSailingKnots,
+      input.motorKnots, input.windBasedWaveProxy);
+  return sailworks::native_routing::runRequest(engine, std::move(request),
+                                               std::move(environment));
+}
+
 wr::EnvironmentalSource sourceFromName(const std::string& name) {
   if (name == "grib" || name == "grib_forecast")
     return wr::EnvironmentalSource::GribForecast;
@@ -877,5 +936,21 @@ PYBIND11_MODULE(sailworks_native_routing, module) {
       "optional polar replaces the fixture vessel model. Optional start and "
       "destination are (latitude, longitude) pairs and departure_epoch_s is "
       "UTC epoch seconds; setting them relocates only the request geometry, "
-      "the polar, constraints, options and limits stay frozen.");
+       "the polar, constraints, options and limits stay frozen.");
+  module.def("route_user_request",
+             [](py::function wind, py::function current, py::dict coverage,
+                py::object polar, py::dict settings,
+                const std::string& providerIdentity,
+                const std::string& polarIdentity,
+                const std::string& engine) {
+               return runDict(runUserBridge(
+                   std::move(wind), std::move(current), coverage, polar,
+                   settings, providerIdentity, polarIdentity, engine));
+             },
+             py::arg("wind"), py::arg("current"), py::arg("coverage"),
+             py::arg("polar"), py::arg("settings"),
+             py::arg("provider_identity"), py::arg("polar_identity"),
+             py::arg("engine") = "main",
+             "Run a selected single-leg request; reject unsupported settings "
+             "rather than inheriting synthetic fixture defaults");
 }

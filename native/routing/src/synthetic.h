@@ -110,6 +110,10 @@ SyntheticRun runWithProvider(
     std::optional<wr::VesselConfiguration> vessel = std::nullopt,
     const FixtureRequestOverride& requestOverrides = {});
 
+// Explicit user request and environment: no fixture defaults or fixture data.
+SyntheticRun runRequest(const std::string& engine, wr::RoutingRequest request,
+                        wr::RoutingEnvironment environment);
+
 [[nodiscard]] bool isCompleteStatus(wr::RoutingStatus status);
 [[nodiscard]] std::string statusName(wr::RoutingStatus status);
 [[nodiscard]] std::string solverPathName(wr::SolverPath path);

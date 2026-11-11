@@ -317,7 +317,7 @@ SyntheticRun runWithEngine(const std::string& engine,
                            const wr::RoutingEnvironment& environment) {
   if (engine != "main" && engine != "standard" && engine != "original" &&
       engine != "professional") {
-    throw std::invalid_argument("unknown synthetic engine: " + engine);
+    throw std::invalid_argument("unknown routing engine: " + engine);
   }
   SyntheticRun run;
   run.engine = engine;
@@ -400,6 +400,14 @@ SyntheticRun runWithProvider(const std::string& engine,
     environment.performance =
         std::make_shared<wr::PolarPerformanceModel>(*vessel);
   }
+  return runWithEngine(engine, request, environment);
+}
+
+SyntheticRun runRequest(const std::string& engine, wr::RoutingRequest request,
+                        wr::RoutingEnvironment environment) {
+  if (!environment.grib || !environment.landAndBoundaries ||
+      !environment.performance)
+    throw std::invalid_argument("real request requires complete providers");
   return runWithEngine(engine, request, environment);
 }
 

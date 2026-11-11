@@ -88,6 +88,8 @@ def test_all_selected_inputs_survive_spawn_serialization(polar):
     assert job.current_field_ids == ("regional", "global")
     assert job.current_priority == "newest"
     assert job.polar_rows and len(job.polar_sha256) == 64
+    assert job.polar_rows[0][0] == 4.0  # file-backed polar is already in knots
+    assert job.polar_rows[0][1][0] == pytest.approx((30.0, 6.7))
     assert job.polar_efficiency == 0.85
     assert job.wind_speed_pct == -20
     assert job.wind_dir_offset == -15

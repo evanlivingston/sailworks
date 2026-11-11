@@ -4,6 +4,7 @@
 #include <string>
 
 #include "native_routing_tree_identity.h"
+#include "sailworks_performance.h"
 #include "synthetic.h"
 
 namespace {
@@ -52,6 +53,37 @@ int main() {
               near(observables.polarSpeed90At12, 3.0) &&
               near(observables.polarSpeed180At16, 5.2),
           "synthetic polar speeds do not match the fixture formula");
+
+  auto vessel = fixtureVesselConfiguration();
+  vessel.profiles.front().efficiency = 0.85;
+  const wr::WaveSample missingWaves{};
+  const SailworksPerformance baseline(vessel, {}, {}, 5.0, false);
+  const SailworksPerformance policy(vessel, 30.0, 3.0, 5.0, true);
+  const auto sail = baseline.evaluate(wr::PropulsionMode::Sail,
+                                      wr::ProfileRole::SailOnly, {}, 8.0, 60.0,
+                                      missingWaves);
+  const auto motored = policy.evaluate(wr::PropulsionMode::Sail,
+                                       wr::ProfileRole::SailOnly, {}, 8.0, 60.0,
+                                       missingWaves);
+  require(near(sail.speedThroughWaterKnots, 1.7) &&
+              near(motored.speedThroughWaterKnots, 5.0) &&
+              motored.mode == wr::PropulsionMode::Sail,
+          "Sailworks motor fallback must substitute speed after efficiency");
+  const auto proxied = policy.evaluate(wr::PropulsionMode::Sail,
+                                       wr::ProfileRole::SailOnly, {}, 24.0, 180.0,
+                                       missingWaves);
+  const auto unproxied = baseline.evaluate(wr::PropulsionMode::Sail,
+                                           wr::ProfileRole::SailOnly, {}, 24.0,
+                                           180.0, missingWaves);
+  require(near(proxied.speedThroughWaterKnots,
+               unproxied.speedThroughWaterKnots * 0.95),
+          "wind-based wave proxy must not require a wave sample");
+  require(policy.candidates(31.0, 90.0, missingWaves,
+                            wr::PropulsionMode::Sail, wr::Duration{}).empty() &&
+              !policy.evaluate(wr::PropulsionMode::Sail,
+                               wr::ProfileRole::SailOnly, {}, 31.0, 90.0,
+                               missingWaves).valid,
+          "wind limit must reject search and independent replay candidates");
 
   const SyntheticRun first = runSynthetic("main");
   const SyntheticRun second = runSynthetic("main");

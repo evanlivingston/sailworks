@@ -16,8 +16,6 @@ from sailworks.core.routingjob import RouteRequest
 from sailworks.core.scenariopool import provider_descriptors
 from sailworks.core.tranchestore import ResolvedForecast
 
-from .routingnative import polar_rows_from_polar
-
 
 @dataclass(frozen=True)
 class NativeRequest:
@@ -101,12 +99,19 @@ def freeze_native_requests(
     import weatherrouting
 
     polar_data = Path(request.polar_file).read_bytes()
+    polar = weatherrouting.Polar(request.polar_file)
+    # The installed weatherrouting.Polar parser retains the .pol wind and boat
+    # speeds in knots. The generic adapter for m/s-backed polar objects must
+    # not be applied here: that would multiply both axes by 3600/1852 twice.
     rows = tuple(
         (
-            row["true_wind_speed_knots"],
-            tuple(tuple(point) for point in row["points"]),
+            float(tws),
+            tuple(
+                (math.degrees(float(angle)), float(polar.speed_table[index][column]))
+                for index, angle in enumerate(polar.twa)
+            ),
         )
-        for row in polar_rows_from_polar(weatherrouting.Polar(request.polar_file))
+        for column, tws in enumerate(polar.tws)
     )
     if Path(request.polar_file).read_bytes() != polar_data:
         raise ValueError("Native polar changed while freezing its rows")
