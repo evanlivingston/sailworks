@@ -1,0 +1,36 @@
+{
+  "geometry": {
+    "coordinates": [
+      [
+        [
+          -123.1,
+          48.9
+        ],
+        [
+          -122.9,
+          48.9
+        ],
+        [
+          -122.9,
+          49.1
+        ],
+        [
+          -123.1,
+          49.1
+        ],
+        [
+          -123.1,
+          48.9
+        ]
+      ]
+    ],
+    "type": "Polygon"
+  },
+  "properties": {
+    "crs": "EPSG:4326",
+    "fixture_id": "native-routing-synthetic-v1",
+    "name": "synthetic-islet",
+    "synthetic": true
+  },
+  "type": "Feature"
+}

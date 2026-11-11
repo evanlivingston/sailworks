@@ -644,6 +644,15 @@ class WeatherPresenter(QObject):
             watched is self.widget
             and event.type() == QEvent.Type.MouseButtonPress
             and event.button() == Qt.MouseButton.LeftButton
+            and self.canvas.move_callback is None
+        ):
+            pin = getattr(self.canvas, "pin_routing_trace", None)
+            if pin is not None and pin():
+                return True
+        if (
+            watched is self.widget
+            and event.type() == QEvent.Type.MouseButtonPress
+            and event.button() == Qt.MouseButton.LeftButton
             and self.canvas.move_callback is not None
         ):
             self.canvas._begin_move_drag(event.position())

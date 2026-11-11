@@ -1,0 +1,9 @@
+#pragma once
+
+#define SAILWORKS_NATIVE_ROUTING_TREE_SHA256 "@_identity_sha256@"
+#define SAILWORKS_NATIVE_ROUTING_TREE_FILE_COUNT @_identity_file_count@
+#define SAILWORKS_NATIVE_ROUTING_UPSTREAM_COMMIT "@_identity_upstream_commit@"
+#define SAILWORKS_NATIVE_ROUTING_ENGINE_VERSION "@_identity_engine_version@"
+#define SAILWORKS_NATIVE_ROUTING_ENGINE_CMAKE_VERSION "@_identity_engine_cmake_version@"
+#define SAILWORKS_NATIVE_ROUTING_ORIGINAL_CMAKE_VERSION "@_identity_original_cmake_version@"
+#define SAILWORKS_NATIVE_ROUTING_BRIDGE_VERSION "@_identity_bridge_version@"

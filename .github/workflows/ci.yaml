@@ -57,9 +57,41 @@ jobs:
         python -m pip install setuptools setuptools-rust setuptools_scm
         python setup.py build_ext --inplace
 
+    - name: Build native routing bridge
+      run: |
+        sudo apt-get install -y cmake zlib1g-dev
+        python -m pip install pybind11
+        cmake -S native/routing -B build/native-routing \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DPython3_EXECUTABLE="$(command -v python)" \
+          -Dpybind11_DIR="$(python -m pybind11 --cmakedir)"
+        cmake --build build/native-routing --parallel 4
+
+    - name: Test native routing bridge
+      env:
+        SAILWORKS_NATIVE_ROUTING_BUILD: ${{ github.workspace }}/build/native-routing/python
+      run: |
+        python -m pip install pytest
+        test -d build/native-routing/python
+        ctest --test-dir build/native-routing --output-on-failure
+        python -m pytest test/test_native_routing_import.py test/test_native_routing_smoke.py \
+          test/test_native_routing_cancellation.py -q
+
+    - name: Build retained routing QSG module
+      run: |
+        sudo apt-get install -y qt6-base-dev qt6-declarative-dev \
+          qml6-module-qtquick qml6-module-qtqml-workerscript
+        cmake -S native/routing/qt -B build/routing-qt \
+          -DCMAKE_BUILD_TYPE=Release
+        cmake --build build/routing-qt --parallel 4
+        QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
+          ./build/routing-qt/sailworks_routing_qsg_check > build/routing-qsg.json
+        cat build/routing-qsg.json
+
     - name: Run tests
       env:
         SAILWORKS_EXPECT_NATIVE_GEOMETRY: "1"
+        SAILWORKS_NATIVE_ROUTING_BUILD: ${{ github.workspace }}/build/native-routing/python
       run: |
         sudo apt-get install -y xvfb xauth
         xvfb-run -a tox -e unit-tests

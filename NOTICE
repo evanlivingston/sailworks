@@ -29,6 +29,14 @@ upstream.
 Bundled third-party components and assets, with their licenses and origins, are
 recorded in sailworks/data/COPYRIGHT.
 
+The pinned native weather-routing sources under `native/routing/upstream` come
+from rgleason/weather_routing_pi commit
+4df1b519e75e664dd72eed62dbb62b4a3e02b8d1. The `weather-routing-engine`
+component is Apache-2.0; the `original-routing-engine` component is
+GPL-3.0-or-later and links ZLIB; the SuperCPN Apache-2.0 licence and NOTICE are
+retained under `native/routing/third_party/supercpn-weather-routing`. Full
+identity, version and local-patch records are in `native/routing/NOTICE`.
+
 This program is distributed in the hope that it will be useful, but WITHOUT ANY
 WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
 PARTICULAR PURPOSE. See the GNU General Public License for more details.

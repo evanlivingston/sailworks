@@ -17,6 +17,8 @@ from sailworks.core.routingjob import (
 )
 from sailworks.core.tranchestore import ResolvedForecast
 from sailworks.core.marine.chs import DownloadCancelledError
+from sailworks.core.marine.routingselection import RoutingSelection
+from sailworks.rendering.routingoverlay import RoutingOverlayModel
 
 
 class RoutingController(QObject):
@@ -35,6 +37,8 @@ class RoutingController(QObject):
         self.core = session_controller.core
         self.busy = False
         self.closed = False
+        self.native_overlay = None
+        self.native_selection = None
         self.cancel_event = Event()
         self.generation = 0
         self.percent = 0.0
@@ -420,6 +424,31 @@ class RoutingController(QObject):
             raise ValueError(self.error) from exc
         self.saved_count += 1
         self.completed.emit(route)
+
+    def show_native_result_file(self, path):
+        """Retain a validated native result for display and inspection.
+
+        The overlay only accepts schema-v1 records, so provisional preview
+        data cannot be presented as a calculated route.
+        """
+        from sailworks.core.marine.routingresult import export_blockers
+
+        model = RoutingOverlayModel.from_result_file(path)
+        blockers = export_blockers(model.result)
+        if blockers:
+            raise ValueError(
+                "native routing result is not an accepted validated route: "
+                + ", ".join(blockers)
+            )
+        self.native_overlay = model
+        self.native_selection = RoutingSelection(model.result)
+        self.changed.emit()
+        return model
+
+    def clear_native_result(self):
+        self.native_overlay = None
+        self.native_selection = None
+        self.changed.emit()
 
     def cancel(self):
         if self.busy:

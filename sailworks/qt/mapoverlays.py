@@ -105,6 +105,15 @@ class RetainedOverlayMixin:
         self._isochrones = value
 
     @property
+    def native_routing(self):
+        """Retained native routing geometry, when a validated result is shown."""
+        return getattr(self, "_native_routing", None)
+
+    @native_routing.setter
+    def native_routing(self, value):
+        self._native_routing = value
+
+    @property
     def marine(self):
         services = getattr(self, "_overlay_services", None)
         if services is not None:

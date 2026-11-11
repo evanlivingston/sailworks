@@ -23,6 +23,8 @@ from PySide6.QtGui import (
     QUndoStack,
 )
 from PySide6.QtWidgets import (
+    QDockWidget,
+    QFileDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -62,6 +64,7 @@ from .viewportmap import ViewportMap
 from .backgroundtask import BackgroundTask
 from .placesearch import PlaceSearch
 from .routingpanel import RoutingPanel
+from .routinginspector import RoutingInspectorPanel
 from .settingsdialog import SettingsDialog
 from .datalibrary import DataLibrary
 from .plotdata import elapsed_offsets
@@ -270,6 +273,9 @@ class PreviewWindow(QMainWindow):
         )
         file_menu.addAction("Data Library…", self.show_library)
         file_menu.addAction("Polars", self.show_polar_workspace)
+        file_menu.addAction(
+            "Open native routing result…", self.show_native_routing_result
+        )
         file_menu.addSeparator()
         file_menu.addAction("Close window", self.close).setShortcut(
             QKeySequence.StandardKey.Close
@@ -277,6 +283,7 @@ class PreviewWindow(QMainWindow):
         self.settings_action = file_menu.addAction("Settings…", self.show_settings)
         self.settings_action.setMenuRole(QAction.MenuRole.PreferencesRole)
         self.settings_action.setShortcut(QKeySequence.StandardKey.Preferences)
+        self._create_routing_inspector()
         self._create_marine_panels(controller)
         self.weather_panel = WeatherPanel(
             controller, self._active_map, self.show_library
@@ -1400,12 +1407,62 @@ class PreviewWindow(QMainWindow):
         else:
             self._sync_route_isochrones()
 
+    def _routing_selection_changed(self):
+        model = getattr(self, "_routing_selection_target", None)
+        selection = self.controller.routing.native_selection
+        if model is not None and selection is not None:
+            model.set_selected_layer(selection.layer_id)
+            apply_highlight = getattr(self.map, "_apply_retained_highlight", None)
+            if apply_highlight is not None:
+                apply_highlight()
+
     def _sync_route_isochrones(self):
         if not self.controller.routing.busy:
             route = self.navigation_panel.route
             self.map.set_isochrones(
                 route.isochrones if route is not None and route.visible else ()
             )
+            self.map.native_routing = self.controller.routing.native_overlay
+            selection = self.controller.routing.native_selection
+            if selection is not None and self.map.native_routing is not None:
+                self.map.native_routing.attach_selection(selection)
+
+    def _create_routing_inspector(self):
+        self.routing_inspector = RoutingInspectorPanel(self)
+        self.routing_inspector_dock = QDockWidget("Routing inspector", self)
+        self.routing_inspector_dock.setObjectName("routing-inspector-dock")
+        self.routing_inspector_dock.setWidget(self.routing_inspector)
+        self.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea, self.routing_inspector_dock
+        )
+        self.routing_inspector_dock.hide()
+
+    def show_native_routing_result(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open native routing result", "", "Routing result (*.json)"
+        )
+        if not path:
+            return
+        try:
+            self.controller.routing.show_native_result_file(path)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Native routing result", str(exc))
+            return
+        previous_unsubscribe = getattr(self, "_routing_selection_unsubscribe", None)
+        if previous_unsubscribe is not None:
+            previous_unsubscribe()
+        model = self.controller.routing.native_overlay
+        selection = self.controller.routing.native_selection
+        self.routing_inspector.set_result(model.result, selection)
+        self.routing_inspector.select_nearest_layer(
+            model.result.layers[0].time_epoch_s if model.result.layers else 0
+        )
+        self._routing_selection_target = model
+        self._routing_selection_unsubscribe = selection.subscribe(
+            self._routing_selection_changed
+        )
+        self.routing_inspector_dock.show()
+        self._sync_route_isochrones()
 
     def _nmea_panel(self):
         panel = QWidget()

@@ -7,13 +7,17 @@ gestures to the Qt Quick viewport. It does not depend on the retired map widget.
 from bisect import bisect_right
 from dataclasses import dataclass
 import math
+import os
+from pathlib import Path
 
-from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtCore import QObject, QTimer, Qt, QUrl, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QWidget
 
 from sailworks.core.aismanager import SHIP_TYPE_COLORS
 from sailworks.core.mapviewport import MercatorProjection
 from sailworks.rendering.isochrones import IsochroneFrame, isochrone_overlay_data
+from sailworks.rendering.routingoverlay import routing_overlay_data
 from .mapcoverage import MapCoverageMixin
 from .mapcursor import MapCursorMixin
 from .mapenvironment import MapEnvironmentMixin
@@ -598,12 +602,152 @@ class ViewportMap(
             return setter(preview)
         return False
 
+    def _retained_qml_dir(self):
+        configured = os.environ.get("SAILWORKS_ROUTING_QML_PATH")
+        if configured:
+            return configured if Path(configured).is_dir() else None
+        build = Path(__file__).resolve().parents[2] / "build"
+        for default in (build / "routing-qsg-module", build / "routing-qt" / "qml"):
+            if default.is_dir():
+                return str(default)
+        return None
+
+    def _sync_retained_overlay(self):
+        """Prefer the retained QSG item when its Qt module can be loaded.
+
+        Falls back to the image-backed canvas payload when the C++ module is
+        absent, for example when the app runs on PySide6's bundled Qt.
+        """
+        presenter = getattr(self, "_weather_presenter", None)
+        widget = getattr(presenter, "widget", None)
+        root = (
+            widget.rootObject()
+            if widget is not None and hasattr(widget, "rootObject")
+            else None
+        )
+        if root is None:
+            return False
+        model = getattr(self, "native_routing", None)
+        qml_dir = self._retained_qml_dir() if model is not None else None
+        if model is None or qml_dir is None:
+            self._retained_active = False
+            self._retained_segments_signature = None
+            if root.property("retainedRoutingSource"):
+                root.setProperty("retainedRoutingSource", "")
+            return False
+        if not getattr(self, "_retained_import_added", False):
+            widget.engine().addImportPath(qml_dir)
+            self._retained_import_added = True
+        overlay = Path(__file__).with_name("shaders") / "RoutingRetainedOverlay.qml"
+        source = QUrl.fromLocalFile(str(overlay)).toString()
+        if root.property("retainedRoutingSource") != source:
+            root.setProperty("retainedRoutingSource", source)
+        item = root.findChild(QObject, "retainedRoutingOverlay")
+        self._retained_active = item is not None
+        if item is None:
+            return False
+        camera = self.camera_state
+        signature = (
+            id(model),
+            model.geometry_digest,
+            model.geometry_revision,
+            bool(model.traces_visible),
+            tuple(
+                layer.layer_id
+                for layer in model.layers
+                if model.is_layer_visible(layer.layer_id)
+            ),
+        )
+        if getattr(self, "_retained_segments_signature", None) != signature:
+            polylines = [
+                {
+                    "id": polyline.object_id,
+                    "points": [
+                        [float(point[0]), float(point[1])] for point in polyline.points
+                    ],
+                }
+                for polyline in model.polylines
+                if (polyline.kind != "trace" or model.traces_visible)
+                and (
+                    polyline.kind != "contour"
+                    or model.is_layer_visible(polyline.layer_id)
+                )
+            ]
+            item.setProperty("polylines", polylines)
+            self._retained_segments_signature = signature
+        self._retained_item = item
+        apply_highlight = getattr(self, "_apply_retained_highlight", None)
+        if apply_highlight is not None:
+            apply_highlight()
+        item.setProperty("color", QColor(0, 0, 204, 160))
+        item.setProperty("lineWidth", 1.5)
+        item.setProperty("centerLatitude", float(camera.center_lat))
+        item.setProperty("centerLongitude", float(camera.center_lon))
+        item.setProperty("zoom", float(camera.zoom))
+        return True
+
+    def _selected_trace_id(self):
+        routing = getattr(getattr(self, "controller", None), "routing", None)
+        selection = getattr(routing, "native_selection", None)
+        return "" if selection is None else (selection.trace_id or "")
+
+    def _apply_retained_highlight(self):
+        item = getattr(self, "_retained_item", None)
+        model = getattr(self, "native_routing", None)
+        if item is None or model is None:
+            return
+        selected = getattr(self, "_selected_trace_id", None)
+        item.setProperty("hoverId", model.hover_trace_id or "")
+        item.setProperty("selectedId", selected() if selected is not None else "")
+
+    def _update_routing_hover(self, latitude, longitude):
+        """Preview the nearest retained trace under the cursor."""
+        model = getattr(self, "native_routing", None)
+        if model is None:
+            return
+        trace = model.pick_trace_near(latitude, longitude)
+        if trace == model.hover_trace_id:
+            return
+        model.set_hover_trace(trace)
+        if getattr(self, "_retained_active", False):
+            # The retained item owns the geometry; republishing the full
+            # canvas payload on every pointer move is what made panning and
+            # hovering feel locked up. Recolour the hit trace instead.
+            apply_highlight = getattr(self, "_apply_retained_highlight", None)
+            if apply_highlight is not None:
+                apply_highlight()
+            return
+        self._viewport_overlay_cache = None
+        self.publish_route_overlay(force=True)
+
+    def pin_routing_trace(self):
+        """Pin the hovered retained trace through the shared selection."""
+        model = getattr(self, "native_routing", None)
+        routing = getattr(getattr(self, "controller", None), "routing", None)
+        selection = getattr(routing, "native_selection", None)
+        if model is None or selection is None:
+            return False
+        trace = model.hover_trace_id
+        if trace is None:
+            return False
+        selection.select_trace(trace)
+        apply_highlight = getattr(self, "_apply_retained_highlight", None)
+        if apply_highlight is not None:
+            apply_highlight()
+        if not getattr(self, "_retained_active", False):
+            self._viewport_overlay_cache = None
+            self.publish_route_overlay(force=True)
+        return True
+
     def publish_route_overlay(self, force=False):
         """Publish the overlay only when its content or host changed.
 
         A camera-only change moves the retained overlay through the viewport's
         own pan window; it must not rebuild or re-key the content.
         """
+        sync_retained = getattr(self, "_sync_retained_overlay", None)
+        if sync_retained is not None:
+            sync_retained()
         presenter = getattr(self, "_weather_presenter", None)
         widget = getattr(presenter, "widget", None)
         if widget is None:
@@ -722,6 +866,21 @@ def _viewport_overlay_key(host):
         _overlay_size(getattr(host, "race_boat_markers", ())),
         _overlay_ais(host),
         id(frame),
+        id(getattr(host, "native_routing", None)),
+        getattr(getattr(host, "native_routing", None), "geometry_revision", -1),
+        bool(getattr(host, "_retained_active", False)),
+        (
+            tuple(
+                layer.layer_id
+                for layer in getattr(
+                    getattr(host, "native_routing", None), "layers", ()
+                )
+                if host.native_routing.is_layer_visible(layer.layer_id)
+            )
+            if getattr(host, "native_routing", None) is not None
+            else None
+        ),
+        getattr(getattr(host, "native_routing", None), "traces_visible", None),
         _overlay_size(getattr(frame, "isochrones", ())),
         _overlay_size(getattr(frame, "path", ())),
         _overlay_size(getattr(frame, "exclusions", ())),
@@ -889,7 +1048,7 @@ def _build_viewport_route_overlay(host):
             if host.ais_visible
             else []
         ),
-        "isochrones": isochrone_overlay_data(host.isochrone_frame),
+        "isochrones": _routing_overlay(host),
         "dashboard": (host.dashboard.overlay_data() if host.dashboard_visible else []),
         "caption": _viewport_caption(host.move_callback, host.controller.chart_errors),
         "dashboard_visible": host.dashboard_visible,
@@ -1029,6 +1188,27 @@ def _track_point_heading(points, index):
     if east == north == 0:
         return None
     return math.degrees(math.atan2(east, north)) % 360.0
+
+
+def _routing_overlay(host):
+    """Prefer the validated native routing geometry when one is attached.
+
+    The legacy preview payload keeps its proximity joins only while no native
+    calculation is selected, so a native result is never drawn with invented
+    connections. When the retained QSG item is drawing the same result, the
+    canvas payload is empty so the geometry is not drawn twice.
+    """
+    model = getattr(host, "native_routing", None)
+    if model is not None:
+        if getattr(host, "_retained_active", False):
+            return {
+                "frontiers": [],
+                "traces": [],
+                "path": [],
+                "exclusions": [],
+            }
+        return routing_overlay_data(model)
+    return isochrone_overlay_data(host.isochrone_frame)
 
 
 def _viewport_caption(move_callback, chart_errors):

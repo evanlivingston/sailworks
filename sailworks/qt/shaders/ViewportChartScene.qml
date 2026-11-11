@@ -36,6 +36,10 @@ Item {
     property bool leftDrawerClosed: false
     property bool rightDrawerClosed: false
     property bool drawerTabsVisible: true
+    // Source for the retained native routing overlay; empty keeps the
+    // image-backed canvas path. Set by the viewport when a native result is
+    // attached and a Qt build that can load the C++ item is in use.
+    property string retainedRoutingSource: ""
     signal layerToggled(string layer, bool visible)
     signal drawerToggled(string side)
     // Embedded use supplies the world/raster base here. It must not depend
@@ -463,8 +467,13 @@ Item {
                     if (isochrones && isochrones.frontiers) {
                         for (let f = 0; f < isochrones.frontiers.length; ++f) {
                             const frontier = isochrones.frontiers[f]
-                            context.strokeStyle = "rgba(0,0,204,0.5)"
-                            context.lineWidth = 1.5
+                            // Selected native layer is emphasised; a legacy
+                            // preview frontier has no selection identity.
+                            const selected = frontier.selected === true
+                            context.strokeStyle = selected
+                                ? "rgba(255,140,0,0.95)"
+                                : "rgba(0,0,204,0.5)"
+                            context.lineWidth = selected ? 2.5 : 1.5
                             context.setLineDash([])
                             for (let s = 0; s < frontier.segments.length; ++s) {
                                 const segment = frontier.segments[s]
@@ -481,6 +490,28 @@ Item {
                                 context.beginPath()
                                 context.arc(point.x, point.y, 1.5, 0, Math.PI * 2)
                                 context.fill()
+                            }
+                        }
+                        if (isochrones.traces) {
+                            for (let t = 0; t < isochrones.traces.length; ++t) {
+                                const trace = isochrones.traces[t]
+                                context.strokeStyle = trace.hover
+                                    ? "rgba(255,140,0,0.95)"
+                                    : (trace.selected
+                                        ? "rgba(220,40,40,0.95)"
+                                        : "rgba(0,0,204,0.25)")
+                                context.lineWidth = trace.hover || trace.selected
+                                    ? 2.0
+                                    : 1.0
+                                for (let s = 0; s < trace.segments.length; ++s) {
+                                    const segment = trace.segments[s]
+                                    const first = screenPoint(segment[0])
+                                    const second = screenPoint(segment[1])
+                                    context.beginPath()
+                                    context.moveTo(first.x, first.y)
+                                    context.lineTo(second.x, second.y)
+                                    context.stroke()
+                                }
                             }
                         }
                         if (isochrones.path && isochrones.path.length) {
@@ -1128,4 +1159,19 @@ Item {
             onClicked: root.drawerToggled("right")
         }
     }
+    Loader {
+        id: retainedRoutingLoader
+        objectName: "retainedRoutingLoader"
+        anchors.fill: parent
+        z: 20
+        active: root.retainedRoutingSource !== ""
+        source: active ? root.retainedRoutingSource : ""
+        visible: status === Loader.Ready
+        onStatusChanged: {
+            if (status === Loader.Error) {
+                console.warn("retained routing overlay unavailable")
+            }
+        }
+    }
+
 }

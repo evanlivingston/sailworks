@@ -1,0 +1,63 @@
+# Vendored native weather-routing sources
+
+This directory vendors an imported integration snapshot of the pinned upstream
+routing engines at the plugin commit recorded below. It is not claimed to be
+byte-for-byte identical to that upstream commit: the integration repository
+carries subsequent fixes, documented in
+`upstream/weather-routing-engine/LOCAL_PATCHES.md`. It is also not a
+reimplementation of the production Sailworks sampler, host policy or
+Qt/OpenCPN front end.
+
+## Source identity
+
+- Repository: `https://github.com/rgleason/weather_routing_pi`
+- Commit: `4df1b519e75e664dd72eed62dbb62b4a3e02b8d1`
+- Vendored components:
+  - `upstream/weather-routing-engine/` — Apache-2.0, `VERSION` 1.2.1,
+    CMake project version 1.1.0. Reported separately because the two
+    version schemes disagree upstream.
+  - `upstream/original-routing-engine/` — GPL-3.0-or-later, CMake project
+    version 0.1.0, README label "catalogue v1.15.45.7". The label cannot be
+    verified from this repository and is recorded separately as an upstream
+    label, not as a build or runtime version.
+  - `upstream/weather-routing-engine.version` — pinned commit record.
+  - `third_party/supercpn-weather-routing/` — retained Apache-2.0 licence
+    and SuperCPN NOTICE.
+
+The original engine links ZLIB for its optional gzip shoreline dataset
+reader. No GSHHG dataset, OpenCPN host, wxWidgets, Qt or chart data is
+vendor-owned or shipped here.
+
+## Local patches
+
+The vendored tree is the integration snapshot, not upstream byte-identical.
+The documented integration patch set is in
+`upstream/weather-routing-engine/LOCAL_PATCHES.md`: the xWeatherRouting 1.29.2
+coastal-departure validation fix, the xWeatherRouting 1.29 low-wind
+motor-heading rule, and the Weather Routing 1.17.5 bounded-progress and
+forward-retry changes. `identity()["local_patches"]` reports this documented
+set, its documentation path, and that the tree is not byte-identical to the
+pinned commit. The authored files in `src/`, `cmake/` and `tests/` are
+Sailworks bridge code and do not alter the vendored engines.
+
+## Tree identity
+
+`cmake/tree_identity.cmake` computes the identity exposed by
+`sailworks_native_routing.identity()["source"]`. The algorithm is:
+
+1. consider every non-hidden regular file below `native/routing/upstream`;
+2. sort the POSIX relative paths bytewise;
+3. form one line per file: `<sha256(file bytes)>  <path>\n`;
+4. hash the concatenated manifest with SHA-256.
+
+The generated identity header lives in the build tree, so the identity never
+includes itself.
+
+## Licences
+
+The Apache-2.0 text is in `upstream/weather-routing-engine/LICENSE`. The
+GPL-3.0 text is in `upstream/original-routing-engine/LICENSE`. The SuperCPN
+Apache-2.0 licence and NOTICE are retained under
+`third_party/supercpn-weather-routing/`. The bridge is distributed as part of
+this GPL-3.0-or-later project. See the repository `NOTICE` for the project
+level statement.

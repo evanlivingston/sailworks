@@ -1,0 +1,196 @@
+{
+  "artifacts": [
+    {
+      "bytes": 3602,
+      "path": "contract.json",
+      "sha256": "a6fda4b39f50e4540312c0f607435f016ff7715a89742ede9ddbbd0b5eacc732"
+    },
+    {
+      "bytes": 4738,
+      "path": "current.json",
+      "sha256": "8cab9a1dc721295ba59662a5da7d51909976e4bd223745619d7f2dab59a319d2"
+    },
+    {
+      "bytes": 7193,
+      "path": "forecast.json",
+      "sha256": "8c3208c4fd501905000250730bae18721774df089087d49a5f277e38fcedde97"
+    },
+    {
+      "bytes": 529,
+      "path": "obstacle.geojson",
+      "sha256": "3f2c405d70715fd466abd4d3a292bfbfae317b39a829fbd5ef2d1feb9f23cb43"
+    },
+    {
+      "bytes": 125,
+      "path": "polar.csv",
+      "sha256": "6ef24f3e72fdd2e5777da86c46f08c595bfa2563836dafdc6f122b2cf60978d9"
+    }
+  ],
+  "bands": {
+    "current": [
+      {
+        "component": "east",
+        "hours": [
+          0,
+          3,
+          6
+        ],
+        "shapes": [
+          [
+            5,
+            5
+          ],
+          [
+            5,
+            5
+          ],
+          [
+            5,
+            5
+          ]
+        ],
+        "unit": "m/s"
+      },
+      {
+        "component": "north",
+        "hours": [
+          0,
+          3,
+          6
+        ],
+        "shapes": [
+          [
+            5,
+            5
+          ],
+          [
+            5,
+            5
+          ],
+          [
+            5,
+            5
+          ]
+        ],
+        "unit": "m/s"
+      }
+    ],
+    "forecast": [
+      {
+        "element": "UGRD",
+        "hours": [
+          0,
+          3,
+          6
+        ],
+        "level": "10-HTGL",
+        "shapes": [
+          [
+            5,
+            5
+          ],
+          [
+            5,
+            5
+          ],
+          [
+            5,
+            5
+          ]
+        ],
+        "unit": "m/s"
+      },
+      {
+        "element": "VGRD",
+        "hours": [
+          0,
+          3,
+          6
+        ],
+        "level": "10-HTGL",
+        "shapes": [
+          [
+            5,
+            5
+          ],
+          [
+            5,
+            5
+          ],
+          [
+            5,
+            5
+          ]
+        ],
+        "unit": "m/s"
+      },
+      {
+        "element": "PRMSL",
+        "hours": [
+          0,
+          3,
+          6
+        ],
+        "level": "0-MSL",
+        "shapes": [
+          [
+            5,
+            5
+          ],
+          [
+            5,
+            5
+          ],
+          [
+            5,
+            5
+          ]
+        ],
+        "unit": "Pa"
+      }
+    ]
+  },
+  "fixture_id": "native-routing-synthetic-v1",
+  "grid": {
+    "crs": "EPSG:4326",
+    "dx": 0.5,
+    "dy": 0.5,
+    "lat0": 48.0,
+    "lat0_semantics": "pixel center of the southwest corner cell",
+    "lon0": -124.0,
+    "nx": 5,
+    "ny": 5,
+    "row_order": "north_to_south"
+  },
+  "identity": {
+    "baseline_commit": "b6258343592e104d754297d504c381ebae78947d",
+    "generator": {
+      "bytes": 12241,
+      "path": "test/native_routing_fixtures.py",
+      "sha256": "e29982c6cd123a66a7c1fe361e74ae7e6bc39e051232e6dd75184d565d3f6a4f"
+    },
+    "scheme": "fixture_id+revision name the set; each artifact is bound by SHA-256 and byte size; generator SHA-256 binds the uncommitted producer; baseline_commit identifies the commit whose frozen artifacts were reused"
+  },
+  "reference_time_utc": "2026-01-01T00:00:00Z",
+  "revision": 1,
+  "source_metadata": {
+    "center": 7,
+    "current_frame": "east, north toward; m/s",
+    "current_unit": "m/s",
+    "pdt": 0,
+    "pressure_established_sampler_unit": "hPa (WeatherSampler scale 0.01)",
+    "pressure_level": "0-MSL",
+    "pressure_unit": "Pa",
+    "process": 96,
+    "subcenter": 0,
+    "wind_frame": "U east, V north; sampler direction is FROM",
+    "wind_level": "10-HTGL",
+    "wind_unit": "m/s"
+  },
+  "temporal_interpolation": "linear between adjacent valid hours in each sampled variable (U, V, pressure, current east/north)",
+  "valid_hours": [
+    0,
+    3,
+    6
+  ]
+}

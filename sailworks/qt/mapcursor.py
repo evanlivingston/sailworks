@@ -80,6 +80,9 @@ class MapCursorMixin:
         context = self._weather_context()
         self._cursor_context = context
         self._cursor_position = (lat, lon)
+        update_routing = getattr(self, "_update_routing_hover", None)
+        if update_routing is not None:
+            update_routing(lat, lon)
         self._cursor_screen_position = position
         self._cursor_parts = {
             "wind": "Wind …",

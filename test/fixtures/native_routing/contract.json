@@ -1,0 +1,150 @@
+{
+  "canonical_encoding": {
+    "csv": "UTF-8, LF, tab separated, trailing newline",
+    "json": "UTF-8, sorted keys, 2-space indent, trailing newline"
+  },
+  "expected_observables": {
+    "current_ne_h0": {
+      "east_ms": 0.32,
+      "north_ms": -0.1
+    },
+    "current_ne_h3": {
+      "east_ms": 0.35,
+      "north_ms": -0.085
+    },
+    "current_ne_h6": {
+      "east_ms": 0.38,
+      "north_ms": -0.07
+    },
+    "current_sw_h0": {
+      "east_ms": 0.2,
+      "north_ms": -0.1
+    },
+    "obstacle_bbox": [
+      -123.1,
+      48.9,
+      -122.9,
+      49.1
+    ],
+    "obstacle_center": [
+      -123.0,
+      49.0
+    ],
+    "polar_180_16_kn": 5.2,
+    "polar_60_8_kn": 2.0,
+    "polar_90_12_kn": 3.0,
+    "pressure_ne_h0_hpa": 1024.0,
+    "pressure_sw_h0_hpa": 1012.0,
+    "wind_ne_h0": {
+      "from_deg": 265.23635830927384,
+      "speed_knots": 23.406987302188046,
+      "speed_ms": 12.041594578792296,
+      "u_ms": 12.0,
+      "v_ms": 1.0
+    },
+    "wind_sw_h0": {
+      "from_deg": 251.56505117707798,
+      "speed_knots": 12.293952026572533,
+      "speed_ms": 6.324555320336759,
+      "u_ms": 6.0,
+      "v_ms": 2.0
+    },
+    "wind_sw_h1_blended": {
+      "from_deg": 251.56505117707798,
+      "speed_knots": 15.367440033215665,
+      "speed_ms": 7.905694150420948,
+      "u_ms": 7.5,
+      "v_ms": 2.5
+    }
+  },
+  "fixture_id": "native-routing-synthetic-v1",
+  "formulas": {
+    "current_east_ms": "0.20 + 0.01*i + 0.02*j + 0.01*h",
+    "current_north_ms": "-0.10 + 0.01*i - 0.01*j + 0.005*h",
+    "indices": "east i=0..4, north j=0..4, valid hour h in {0,3,6}",
+    "pressure_pa": "101200 + 100*i + 200*j + 50*h",
+    "u_ms": "6 + 0.5*i + 1.0*j + 1.5*h",
+    "v_ms": "2 + 0.25*i - 0.5*j + 0.5*h",
+    "wind_from_deg": "(degrees(atan2(-u, -v)) + 360) % 360",
+    "wind_speed_ms": "hypot(u, v)"
+  },
+  "grid": {
+    "crs": "EPSG:4326",
+    "dx": 0.5,
+    "dy": 0.5,
+    "lat0": 48.0,
+    "lat0_semantics": "pixel center of the southwest corner cell",
+    "lon0": -124.0,
+    "nx": 5,
+    "ny": 5,
+    "row_order": "north_to_south"
+  },
+  "orientation": {
+    "geotransform": [
+      -124.25,
+      0.5,
+      0.0,
+      50.25,
+      0.0,
+      -0.5
+    ],
+    "note": "no negative-latitude or flipped convention is implied",
+    "pixel_center": "lon = lon0 + col*dx; lat = lat0 + north_index*dy; GeoTransform origin is the northwest corner"
+  },
+  "polar": {
+    "axes": {
+      "twa_deg": [
+        30,
+        60,
+        90,
+        120,
+        150,
+        180
+      ],
+      "tws_kn": [
+        4,
+        8,
+        12,
+        16
+      ]
+    },
+    "columns": [
+      "TWA\\TWS",
+      "4",
+      "8",
+      "12",
+      "16"
+    ],
+    "formula": "boatspeed_kn = round(0.02*twa_deg + 0.1*tws_kn, 2)",
+    "source": "synthetic",
+    "synthetic": true,
+    "units": {
+      "boatspeed_kn": "knots",
+      "twa_deg": "degrees true wind angle",
+      "tws_kn": "knots true wind speed"
+    }
+  },
+  "reference_time_utc": "2026-01-01T00:00:00Z",
+  "revision": 1,
+  "source_metadata": {
+    "center": 7,
+    "current_frame": "east, north toward; m/s",
+    "current_unit": "m/s",
+    "pdt": 0,
+    "pressure_established_sampler_unit": "hPa (WeatherSampler scale 0.01)",
+    "pressure_level": "0-MSL",
+    "pressure_unit": "Pa",
+    "process": 96,
+    "subcenter": 0,
+    "wind_frame": "U east, V north; sampler direction is FROM",
+    "wind_level": "10-HTGL",
+    "wind_unit": "m/s"
+  },
+  "synthetic": true,
+  "temporal_interpolation": "linear between adjacent valid hours in each sampled variable (U, V, pressure, current east/north)",
+  "valid_hours": [
+    0,
+    3,
+    6
+  ]
+}
