@@ -237,7 +237,12 @@ def test_manifest_and_grib_identity_are_checked_offline():
             assert len(digest) == 64
     assert manifest["licence"]["name"] == "NOAA public domain"
     assert "gdal_translate" in manifest["generator"]["method"]
-    assert manifest["generator"]["value_fidelity"].startswith("exact")
+    assert "cropped values equal" in manifest["generator"]["value_fidelity"]
+    assert "unverified" in manifest["generator"]["value_fidelity"]
+    assert (
+        manifest["generator"]["pinned_local_source"]["sha256"]
+        == "fcbbb9b0963deab749f9a6be47afb6f1919b36756a39c4e93f73aad35342f131"
+    )
     assert manifest["consumer"]["path"] == ("test/test_native_routing_real_forecast.py")
 
     source = _open_source()
@@ -296,7 +301,7 @@ def test_bridge_override_routes_real_grib_wind_and_currents():
         assert request["departure"] == CYCLE_EPOCH_S
 
         assert run["accepted"] is True, run["message"]
-        assert run["legs"]
+        assert len(run["legs"]) == 7
         for leg in run["legs"]:
             instant = datetime.fromtimestamp(leg["start_time"], tz=timezone.utc)
             latitude = leg["start"]["latitude"]

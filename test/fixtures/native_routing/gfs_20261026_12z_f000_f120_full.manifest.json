@@ -1,149 +1,934 @@
 {
-  "revision": 3,
-  "artifact": {
-    "path": "gfs_20261026_12z_f000_f120_full.grib2",
-    "bytes": 372813,
-    "sha256": "d7cede11957637649c718719309303767629e581a1686fab92f733e8c59809b1"
-  },
-  "provider": {
-    "name": "NOAA NCEP GFS",
-    "model": "GFS",
-    "cycle_utc": "2026-10-26T12:00:00Z",
-    "cycle_epoch_s": 1793016000,
-    "valid_hours": [
-      0,
-      3,
-      6,
-      9,
-      12,
-      15,
-      18,
-      21,
-      24,
-      27,
-      30,
-      33,
-      36,
-      39,
-      42,
-      45,
-      48,
-      51,
-      54,
-      57,
-      60,
-      63,
-      66,
-      69,
-      72,
-      75,
-      78,
-      81,
-      84,
-      87,
-      90,
-      93,
-      96,
-      99,
-      102,
-      105,
-      108,
-      111,
-      114,
-      117,
-      120
-    ],
-    "horizon_hours": 120,
-    "step_hours": 3,
-    "elements": [
-      "PRMSL",
-      "UGRD",
-      "VGRD"
-    ],
-    "wind_level": "10-HTGL",
-    "pressure_level": "0-MSL",
-    "grid": {
-      "crs": "EPSG:4326",
-      "nx": 17,
-      "ny": 21,
-      "source_grid": "NCEP GFS 0.25 degree global regular latitude/longitude grid (1440x721)",
-      "envelope": {
-        "west": -126.125,
-        "south": 41.875,
-        "east": -121.875,
-        "north": 47.125
-      },
-      "sampling": "cell-centered; envelope corners fall outside the stencil and are unavailable"
-    }
-  },
-  "source_identity": {
-    "producer_url": "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20261026/12/atmos/",
-    "nomads_filter_url": "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl",
-    "object_url_pattern": "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20261026/12/atmos/gfs.t12z.pgrb2.0p25.f{hour:03d}",
-    "index_url_pattern": "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20261026/12/atmos/gfs.t12z.pgrb2.0p25.f{hour:03d}.idx",
-    "archive": "NOAA GFS public S3 archive (noaa-gfs-bdp-pds)",
-    "retrieval_rule": "For each hour, fetch the .idx; select the single PRMSL/mean sea level, UGRD/10 m above ground and VGRD/10 m above ground lines; range-fetch [offset, next_offset - 1] from the object URL. Messages are cropped with gdal_translate -of GRIB -projwin (no value interpolation) and byte-concatenated in valid-hour order. Each frame records [byte_offset, byte_length, sha256] per element in that same order.",
-    "frames": [
-      {"hour":0,"messages":{"PRMSL":[0,997220,"95ee5cf8f3d9badc7ab9ed882fe54a8357a2490f3da42989d6e6340f0abe66e9"],"UGRD":[407052319,482064,"3d4aea1807d54b18092782d89c951cde9fe388509e9159f7a815f00e678d11e2"],"VGRD":[407534383,474117,"7a3c14324589c05f3d47dcf4437616f4e52917ea14678ac869ac22249b06f0b1"]}},
-      {"hour":3,"messages":{"PRMSL":[0,1000859,"97d45b3d164b0163308ce725d5cb057d193088091da29bcfebc3181cfabb601c"],"UGRD":[409423121,586546,"c36b9e4bbbb60d5f17a1368b565246552b138bb8f102d560ee7f4f280b4561c3"],"VGRD":[410009667,569879,"811b699369064bd28abd1b813a31a31edc8e0c0f88adc9ac9955cfcea810d02f"]}},
-      {"hour":6,"messages":{"PRMSL":[0,1001994,"50640dd6185035eb8a62aa3c66f8957108a3d4091bf01d2e6b4a73b7a7bc9e39"],"UGRD":[413022167,974737,"8d5e8bbe3f6abcc89ad678d20321655335d978b7e4082a894cb9746197c70697"],"VGRD":[413996904,948881,"37ccab43130115a878767e1825823398634722fe2c895f03cce890469c725c25"]}},
-      {"hour":9,"messages":{"PRMSL":[0,1000260,"c79cb0c272aa241259cede766be92342b0eee62738257276ad6d3404336cc9ef"],"UGRD":[414586793,968846,"669cc0a32bd47449cb0989955799f5bcf36cc73ccad34e4eeccddf228c669d09"],"VGRD":[415555639,947394,"c02e34749ba2352ccb50035ce5683751d26be3631959d81e5c49f3efc5c6b02e"]}},
-      {"hour":12,"messages":{"PRMSL":[0,994176,"ab71445b537160483b6064ecb987156780a839e78234bc79886aa5903a157901"],"UGRD":[415563107,963879,"d0e6a2b5e734a94874fdd46d5f156003116b7957469215e8f32a831c1a9bf9a7"],"VGRD":[416526986,944974,"ad17aa702f9bcbded3d59352b4bff62006b02c21990ec024aed2ffde66a6b037"]}},
-      {"hour":15,"messages":{"PRMSL":[0,987435,"f2214dabbc563ce6de9d55cbb84ecb9327e894a020521f6da5ca333314ce5447"],"UGRD":[419106555,961640,"c9ce05497ac6b7b6ed89e1d0348fb0f9679dd14cba4b0dd6d04c5de423fd2a66"],"VGRD":[420068195,943982,"f84099cc42cdb2c2cee8c704efaa53ca9c99743d7483b10c933cc7b5448b86bd"]}},
-      {"hour":18,"messages":{"PRMSL":[0,985380,"13eec94fdeeec2b7b7990a6da94613001bb7e2aa697f50df42dbbda551d5bf86"],"UGRD":[417573909,964936,"13d19ed1792d468ed2ced750e740a76e1f0d8692add23b49e7f80f0bccbb6e9c"],"VGRD":[418538845,943406,"0e526b23391752d1c2142340773fb72fe5779693ce5a3b270d1cd68747cbb9b5"]}},
-      {"hour":21,"messages":{"PRMSL":[0,987082,"11181aa6eba7cb428186930a267183971ed1235f1b308e010aa447f21be6cce9"],"UGRD":[417559694,965867,"80d40a7eb1168f088b747390291a0ff27757516ee20da5e27a0c8b3e67bf2b86"],"VGRD":[418525561,943559,"57b2eac2468a4e69ac422148151e4f50dbd1dd9cf0eda056dfa2f83b7ce32006"]}},
-      {"hour":24,"messages":{"PRMSL":[0,992669,"0a38115a62b9370e4609c49430a88fffe593a63398e669278bda1b614fa80da4"],"UGRD":[417476042,964643,"e30814548bd8075dd49170f273a1a44d6aed4b13dd0901da56d58547029b0512"],"VGRD":[418440685,940466,"58e764836c9363c68d8b04d06ec780e84723e3fff04fe16478a7320d7610ba1d"]}},
-      {"hour":27,"messages":{"PRMSL":[0,997001,"99a48f299c0246e9b044b6445f99bca15f01049cf97d7ac7d0646a0efc479d42"],"UGRD":[417111353,968743,"e1bfa93c297157c66bf00ef780d954af86ef29dee2490b8322baf8f6ae3385f4"],"VGRD":[418080096,947540,"198da2883af6c8c76c90fc551b3baa39851a0e3a5638c4e2c1966adaaea28149"]}},
-      {"hour":30,"messages":{"PRMSL":[0,1001587,"c5f1753c0cb893af2fbfeee8ad25e82190835959e1d922bee9689351fc32a220"],"UGRD":[417725028,969551,"903ab83b6b318cdc87ca29dc5cd22c611bf246cbb68b5fc684b2a1af5f649a3a"],"VGRD":[418694579,948647,"253ad43291eda70d7a4ffd485c44d60b85a92893820534891da7b623ee69db52"]}},
-      {"hour":33,"messages":{"PRMSL":[0,999625,"c663669184fe161bd631be52d9b41ccef5eacba674fc8a7c7de78d07476bb75d"],"UGRD":[418320576,969669,"b4c0491538bfc63c996c6b6ba0a60717575ac0fb5c795ab85ce1b2a1ca5b40f7"],"VGRD":[419290245,948203,"385cfd35b43bfb8404d57a503a552532611a45558f546850e830e88ad5ddf4c8"]}},
-      {"hour":36,"messages":{"PRMSL":[0,996762,"d49a9fbce80dcff7e6d1060960d061859e70032a445700b9b9ba002e3c1ca0aa"],"UGRD":[419104261,966037,"f87c36b631bb9f87d027ca0196cd993d1e9376921f453cbb9dd92e150760d75b"],"VGRD":[420070298,947413,"d4ad34d60b4b41098ca70c525dcabc5c4642c8582f5ac6a2c2c8ce9c8e658036"]}},
-      {"hour":39,"messages":{"PRMSL":[0,993632,"5670a053fe2006061e2cdfc2de57ee3c0a2e4930bf786946f5c57b071d378fdb"],"UGRD":[410979401,968596,"298f5ff8556c7222311b01804fdb01a69f4b2b39075403f028b86b65517607d0"],"VGRD":[411947997,945843,"413f8011e029cb522452d02df4810594b52b7abdd1188476c2dd0df3d698c800"]}},
-      {"hour":42,"messages":{"PRMSL":[0,986777,"795714a6983d069e5d04e5de3c7dfc254c3ab4662c7f8a23610dbc89dc13a61d"],"UGRD":[417294598,962996,"038f97b2e2cd1b7073157adbd46939cad63aa502ec54899b209404c9611d6a9d"],"VGRD":[418257594,944955,"132f4fc185229689451665fe3ba9203f2e85a62ff5769b31f6560c3456574fb9"]}},
-      {"hour":45,"messages":{"PRMSL":[0,987009,"dc95cfcd035dbab0f0cb08bbe1eff9c36d433a4c65d50abd7abe95968fc959ff"],"UGRD":[419502216,968128,"f758f31d7e88b4679effdd76f2064ea65bdc15c8efc71f2cdac55bde92278862"],"VGRD":[420470344,944438,"eb0779067f51f022a05683a13f44755f1156822adcfaefd864fdb90967de0c31"]}},
-      {"hour":48,"messages":{"PRMSL":[0,990888,"656d797e436cadb7a2359b74f5606187acf6909e8158ae6ec1d59c5cc2126c9a"],"UGRD":[417563070,966905,"b65304b49cde3a91556e6d0b8284014d94fb0a31fd11ea6c8350b747d102c448"],"VGRD":[418529975,941368,"ffb8e7ce3155ac5aabdcf0b278756e9fad301a141d17163da16a239599089346"]}},
-      {"hour":51,"messages":{"PRMSL":[0,873428,"9037ee9f9da2ffeebc936827bfe920d50d8339564f5f0a1643fefdf26caafbd9"],"UGRD":[418122111,973287,"f3e797fd6cc0c09cdc29bb646d02a2e556015454d96f3834f2b0a1ad77daaa6b"],"VGRD":[419095398,943683,"c9de631f66b52ef6ecd9dc3cd2ee4811507eda07a7ee48fc9190219d3402114d"]}},
-      {"hour":54,"messages":{"PRMSL":[0,874400,"5e5a0e92dd0711082078a6755fb61e60f45fc6a960cf585b1e9fd11b3e10fbc3"],"UGRD":[415024184,969282,"1d6b2baa83be501cfc1a9658945c6d90b757c2e1007bea0449569dd047ec7093"],"VGRD":[415993466,948579,"0a5c49194ef7f7ecc7451716d68a664b1b6068352562055be7c5ee41f8754f74"]}},
-      {"hour":57,"messages":{"PRMSL":[0,995233,"c72f35d3653d4549481571c72ff9e85fbea57fe31955d3723e60ced0d1a60a78"],"UGRD":[418509556,966324,"f6c478e65791ecbd010f015fa4bfaf5079f8442316c9769118da2b9593695619"],"VGRD":[419475880,947159,"ea4d10faff96eb260feda01e86e6f325a3977b43c7220d5bb321493af5cfa558"]}},
-      {"hour":60,"messages":{"PRMSL":[0,991349,"a194af837684a4b50043e438dc0f934aea9b7e69045da906de2473e40e1dbddb"],"UGRD":[420558266,962869,"addf373c15db8f63335aae43685c69d18e5679d2720f64172b0d481b8315d1ab"],"VGRD":[421521135,939748,"a4ba669868c502ce5e29570a33f4edc84ee5da87fbcec14700e8208e151193e3"]}},
-      {"hour":63,"messages":{"PRMSL":[0,984253,"65caa5a7dc2f0e138f8d69ec95d656a2f3660c344dc31552d819075c21821284"],"UGRD":[421929064,962639,"9fdcca49286f1b6df96cd5d05cd22cced38123ac438c530656694756bcbcf199"],"VGRD":[422891703,939327,"4fc71795c6dd96433dc90700e0ba7f19b9de39db642d379821f77712b967cb22"]}},
-      {"hour":66,"messages":{"PRMSL":[0,980922,"82f3da2da38b8b7f50922487ba80599817636f16e31bce2ed42cd67b83a85803"],"UGRD":[420205476,965819,"4a07d800564cfbab5b1aa32fef786b3673cc9a9cf683d8da0c32ae598a2e1d37"],"VGRD":[421171295,939049,"7535b6dccc533f97c7203f6436d8eeda0b45bd5251c5b6936e54e7e620c13095"]}},
-      {"hour":69,"messages":{"PRMSL":[0,980703,"8031c5ee00ccc339e453d4f3bab620355664e547c3d19e695eaca9651888c0a3"],"UGRD":[420570450,961623,"fb98e1e5aadb0698aa215a941dfb5892543ba39c2e815aed9598fd6ebf8a34f9"],"VGRD":[421532073,938822,"30e7acfccaea70ad79a40d1eb08011346d94b08f6bcef6f5335fc46a361b7874"]}},
-      {"hour":72,"messages":{"PRMSL":[0,983644,"76b3b35803e48ff97ab2aa92ffc0fd008d817140793c0091d1ad686192b8036b"],"UGRD":[420045298,967994,"2b2ab1eb4900d67df8b730db95568d97384e0ac442139e8027fd6f1f90c5d58c"],"VGRD":[421013292,938379,"44d2ac00df87aa63ce30be8bcfb55d697896e1a16b69d5ab06b2276ec15bafec"]}},
-      {"hour":75,"messages":{"PRMSL":[0,988701,"6ecb8e072cdd8d0a5336541ceacf5de783b6245979bdf1a125d39ee797948031"],"UGRD":[419794545,966819,"eeb2ca1ab7256a4771e760de222bfb1a5f34d4468b659843fa00450bcb57b5d5"],"VGRD":[420761364,939871,"05ab4d17e02c1fd28a1329d9d74f6b37821754c9362a24999065bd4313a4e124"]}},
-      {"hour":78,"messages":{"PRMSL":[0,988971,"e64219bc351234601d79a40a6f616353f424dd2c8b18a3800fbc1449b17b4f4c"],"UGRD":[416162661,969832,"0d69be81870085131bd3dd2539b7d8465159b72a1c9f70949202c51bafc0da41"],"VGRD":[417132493,942793,"509dbda821a0827420d60ed9d2250bf6d02fceeebf7079b33ddfd41ddf42a7f6"]}},
-      {"hour":81,"messages":{"PRMSL":[0,982613,"be108a35a46c7b74c1b57e7a7dc3e08b7d1e9da043d43c5a5597086a14d50da3"],"UGRD":[419164363,963862,"2d958cccb7b01fcac4c01112a646763a43b4f83dc7f16f96660c31354d359983"],"VGRD":[420128225,940690,"cc4a5ae98590e6fa3509fde1f688ff6959b867a0da97b9d91d4713489b9d9b98"]}},
-      {"hour":84,"messages":{"PRMSL":[0,978168,"8f7e22207b1c3cfeb55e142dc1d19729d8031e53a7833bc9e43dfd074c0a3f1d"],"UGRD":[420079961,958984,"060acf9a08818871c10126ae00832cd66a24363421c4d82f6629f0a775845fd8"],"VGRD":[421038945,932672,"f23b2527400550b6147291400ce295ddbfea6b8b247bb6b531d29d39a9eb009f"]}},
-      {"hour":87,"messages":{"PRMSL":[0,1018266,"fd9a83645b649c2e4f8f73aeb5a75c440dc6d079ab0e4264d84eb871e42606a3"],"UGRD":[422936289,958786,"62233ce216af50f051d8d2561684c7ec996b81c59a9cfa2cff8daeeecd27c5bc"],"VGRD":[423895075,930856,"a8ea8e0ae7d28fd3aa150d8697095e9915b9808ded216ed7484cb3658cd9b385"]}},
-      {"hour":90,"messages":{"PRMSL":[0,1017021,"17ae2a854c3ef0b7ba7c13f8a484df8976657f20604d251391fe729417875955"],"UGRD":[423092527,961658,"ff506570615b0b22fc2dbefc5862f09bdbc345a165592b19b291829b46569ee6"],"VGRD":[424054185,931364,"2afcd1f50c63a6f3b83e9120c04e917b533ca63c7c1504092988c0fa992997b1"]}},
-      {"hour":93,"messages":{"PRMSL":[0,1020717,"de5baeaeb41e84ae812d430c611ea1b6c92c6134d4819f7ae88adc081d3b1023"],"UGRD":[425419060,960286,"f2c9ffa1dacb6ffe9862ea34e799781eef9e56e51e2a3a7d0ecd6b5c42fe0de2"],"VGRD":[426379346,931920,"db74cb7caac0725527e4aa1df1127bb4bc536bac17ad517ca024a1596f408a3d"]}},
-      {"hour":96,"messages":{"PRMSL":[0,1024888,"89b00eeb2bbb576a51c13b40231e83ef03cf3e2c064e7c4d17e38e5981a6a012"],"UGRD":[425378350,962420,"21097fcde391875e90c3a6cececc7dfcb492d12fcb53a61940ebc4d91aa4145e"],"VGRD":[426340770,938072,"6b6bb0f21e2c2fb84d98044cf8f51a5d5a281cddca2a47fa59f0237415d35d44"]}},
-      {"hour":99,"messages":{"PRMSL":[0,983240,"fb7790f0ef8b8154556939c7c9ce650a43cddfaee4ebe192effaa9ca055e4255"],"UGRD":[424132103,963897,"5039622097c5c6f5bc8913c57d64adeaf4d563bcb516c65e2dfa77cc8d12bb7f"],"VGRD":[425096000,936294,"3da2612f3919ab7e06db3601a23d38a58162a4e43eee690c59a929203b58ff50"]}},
-      {"hour":102,"messages":{"PRMSL":[0,986479,"04c92c0c9730527c7dcbf0db16744f3e0a2be8e7d93188dbd2398ba91fdd4460"],"UGRD":[425431507,965258,"4e7f38e13c54ad827b1479c46db07fdd4ee95cbbb3501d9f18ce2b10fdcc2d3f"],"VGRD":[426396765,935501,"bae8a713ff6f463c84ca84c945d4c8ba86b94394d7c58109dda5c9553bbe0a22"]}},
-      {"hour":105,"messages":{"PRMSL":[0,984130,"93d5bf2c028a5ffd128d005e3451e22b58c9123cded0960081e9c4357ea94546"],"UGRD":[419170449,958159,"3a27e599607774b3a76b7fc702ba1868391a7090d3eb7e816a5a34cd5b218464"],"VGRD":[420128608,936409,"0949130f567e0b2b7dbd46dda56d71fef0e994836d9fd63155ee0b1ad33b1c41"]}},
-      {"hour":108,"messages":{"PRMSL":[0,980231,"ba0258cc1cdf824986942bcf933f056e5af2deedfc4184e3b275f234f66d2e0c"],"UGRD":[423503640,954052,"25e0297cf67b4d087b63253d0ebd7a376cbbe12519f8a13705b9d57d4c505b11"],"VGRD":[424457692,933006,"b2c6193f5e7afec9915e68a1f58b740818507150e53feff8e337ded219f99df8"]}},
-      {"hour":111,"messages":{"PRMSL":[0,1015890,"0a06fe32380dc494e26614b69b0a1774bcb2293db96744600b7f002122988b91"],"UGRD":[420374892,952756,"399a183021a1b8324031b8fdc468497dd9fc0465c9bd6f9ea33a4069ad35474b"],"VGRD":[421327648,928274,"311be3ee09cee30e8154e3dc6ba8db7493764fa2d701491f8ce649890faa853c"]}},
-      {"hour":114,"messages":{"PRMSL":[0,1014112,"fd6489c609d24ca412320d9866d59c5eb928204daef32a03a83ee3db5325391f"],"UGRD":[420875884,955308,"14ee7d29066e6e0609aaae3eca7476feb795c8b9a6dd8c091b520baa59135b9c"],"VGRD":[421831192,927743,"32488967a499559237993fb97a38c5c3bb71e7de54976b09dcf6535b05b2beec"]}},
-      {"hour":117,"messages":{"PRMSL":[0,1016708,"5e2b174756743af9882cc138f888fd821cbc96cf537dafaaaa350ba37c07d4fc"],"UGRD":[417086376,952732,"b90338157fda8cff2eb46852b9df13155f5eca1536cfa9ce70e7989c77fabad7"],"VGRD":[418039108,931910,"9b1c53fc353f2ffe7665e61575481d1efb1834d2168d932b289dc10a985d5018"]}},
-      {"hour":120,"messages":{"PRMSL":[0,1018317,"2659a46f88620ecc89b7916f4d71eb76c9289653d1be8146083c514b19fc0940"],"UGRD":[414377784,959708,"c3ddb5a4f905631db667c4e032f21e56f37b723c67067ed203bb0efb0562c4a7"],"VGRD":[415337492,934584,"a954ed77de8a102169dacf7955aca10360f24ab7eeb227d5735d792c8fdf3fec"]}}
-    ]
-  },
-  "licence": {
-    "name": "NOAA public domain"
-  },
-  "generator": {
-    "role": "raw GRIB2 source messages cropped to a sub-grid by GDAL and concatenated",
-    "method": "gdal_translate -q -of GRIB -projwin -126.125 47.125 -121.875 41.875 on each raw message, then byte-concatenated in valid-hour order",
-    "gdal_version": "3.13.3",
-    "projwin": [
-      -126.125,
-      47.125,
-      -121.875,
-      41.875
-    ],
-    "value_fidelity": "exact aligned 0.25-degree window; cropped arrays equal the source window"
-  },
-  "consumer": {
-    "path": "test/test_native_routing_real_forecast.py",
-    "companion": "test/test_native_routing_real_forecast_samples.py"
+ "revision": 3,
+ "artifact": {
+  "path": "gfs_20261026_12z_f000_f120_full.grib2",
+  "bytes": 372813,
+  "sha256": "d7cede11957637649c718719309303767629e581a1686fab92f733e8c59809b1"
+ },
+ "provider": {
+  "name": "NOAA NCEP GFS",
+  "model": "GFS",
+  "cycle_utc": "2026-10-26T12:00:00Z",
+  "cycle_epoch_s": 1793016000,
+  "valid_hours": [
+   0,
+   3,
+   6,
+   9,
+   12,
+   15,
+   18,
+   21,
+   24,
+   27,
+   30,
+   33,
+   36,
+   39,
+   42,
+   45,
+   48,
+   51,
+   54,
+   57,
+   60,
+   63,
+   66,
+   69,
+   72,
+   75,
+   78,
+   81,
+   84,
+   87,
+   90,
+   93,
+   96,
+   99,
+   102,
+   105,
+   108,
+   111,
+   114,
+   117,
+   120
+  ],
+  "horizon_hours": 120,
+  "step_hours": 3,
+  "elements": [
+   "PRMSL",
+   "UGRD",
+   "VGRD"
+  ],
+  "wind_level": "10-HTGL",
+  "pressure_level": "0-MSL",
+  "grid": {
+   "crs": "EPSG:4326",
+   "nx": 17,
+   "ny": 21,
+   "source_grid": "NCEP GFS 0.25 degree global regular latitude/longitude grid (1440x721)",
+   "envelope": {
+    "west": -126.125,
+    "south": 41.875,
+    "east": -121.875,
+    "north": 47.125
+   },
+   "sampling": "cell-centered; envelope corners fall outside the stencil and are unavailable"
   }
+ },
+ "source_identity": {
+  "producer_url": "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20261026/12/atmos/",
+  "nomads_filter_url": "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl",
+  "object_url_pattern": "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20261026/12/atmos/gfs.t12z.pgrb2.0p25.f{hour:03d}",
+  "index_url_pattern": "https://noaa-gfs-bdp-pds.s3.amazonaws.com/gfs.20261026/12/atmos/gfs.t12z.pgrb2.0p25.f{hour:03d}.idx",
+  "archive": "NOAA GFS public S3 archive (noaa-gfs-bdp-pds)",
+  "retrieval_rule": "For each hour, fetch the .idx; select the single PRMSL/mean sea level, UGRD/10 m above ground and VGRD/10 m above ground lines; range-fetch [offset, next_offset - 1] from the object URL. Messages are cropped with gdal_translate -of GRIB -projwin (no value interpolation) and byte-concatenated in valid-hour order. Each frame records [byte_offset, byte_length, sha256] per element in that same order.",
+  "frames": [
+   {
+    "hour": 0,
+    "messages": {
+     "PRMSL": [
+      0,
+      997220,
+      "95ee5cf8f3d9badc7ab9ed882fe54a8357a2490f3da42989d6e6340f0abe66e9"
+     ],
+     "UGRD": [
+      407052319,
+      482064,
+      "3d4aea1807d54b18092782d89c951cde9fe388509e9159f7a815f00e678d11e2"
+     ],
+     "VGRD": [
+      407534383,
+      474117,
+      "7a3c14324589c05f3d47dcf4437616f4e52917ea14678ac869ac22249b06f0b1"
+     ]
+    }
+   },
+   {
+    "hour": 3,
+    "messages": {
+     "PRMSL": [
+      0,
+      1000859,
+      "97d45b3d164b0163308ce725d5cb057d193088091da29bcfebc3181cfabb601c"
+     ],
+     "UGRD": [
+      409423121,
+      586546,
+      "c36b9e4bbbb60d5f17a1368b565246552b138bb8f102d560ee7f4f280b4561c3"
+     ],
+     "VGRD": [
+      410009667,
+      569879,
+      "811b699369064bd28abd1b813a31a31edc8e0c0f88adc9ac9955cfcea810d02f"
+     ]
+    }
+   },
+   {
+    "hour": 6,
+    "messages": {
+     "PRMSL": [
+      0,
+      1001994,
+      "50640dd6185035eb8a62aa3c66f8957108a3d4091bf01d2e6b4a73b7a7bc9e39"
+     ],
+     "UGRD": [
+      413022167,
+      974737,
+      "8d5e8bbe3f6abcc89ad678d20321655335d978b7e4082a894cb9746197c70697"
+     ],
+     "VGRD": [
+      413996904,
+      948881,
+      "37ccab43130115a878767e1825823398634722fe2c895f03cce890469c725c25"
+     ]
+    }
+   },
+   {
+    "hour": 9,
+    "messages": {
+     "PRMSL": [
+      0,
+      1000260,
+      "c79cb0c272aa241259cede766be92342b0eee62738257276ad6d3404336cc9ef"
+     ],
+     "UGRD": [
+      414586793,
+      968846,
+      "669cc0a32bd47449cb0989955799f5bcf36cc73ccad34e4eeccddf228c669d09"
+     ],
+     "VGRD": [
+      415555639,
+      947394,
+      "c02e34749ba2352ccb50035ce5683751d26be3631959d81e5c49f3efc5c6b02e"
+     ]
+    }
+   },
+   {
+    "hour": 12,
+    "messages": {
+     "PRMSL": [
+      0,
+      994176,
+      "ab71445b537160483b6064ecb987156780a839e78234bc79886aa5903a157901"
+     ],
+     "UGRD": [
+      415563107,
+      963879,
+      "d0e6a2b5e734a94874fdd46d5f156003116b7957469215e8f32a831c1a9bf9a7"
+     ],
+     "VGRD": [
+      416526986,
+      944974,
+      "ad17aa702f9bcbded3d59352b4bff62006b02c21990ec024aed2ffde66a6b037"
+     ]
+    }
+   },
+   {
+    "hour": 15,
+    "messages": {
+     "PRMSL": [
+      0,
+      987435,
+      "f2214dabbc563ce6de9d55cbb84ecb9327e894a020521f6da5ca333314ce5447"
+     ],
+     "UGRD": [
+      419106555,
+      961640,
+      "c9ce05497ac6b7b6ed89e1d0348fb0f9679dd14cba4b0dd6d04c5de423fd2a66"
+     ],
+     "VGRD": [
+      420068195,
+      943982,
+      "f84099cc42cdb2c2cee8c704efaa53ca9c99743d7483b10c933cc7b5448b86bd"
+     ]
+    }
+   },
+   {
+    "hour": 18,
+    "messages": {
+     "PRMSL": [
+      0,
+      985380,
+      "13eec94fdeeec2b7b7990a6da94613001bb7e2aa697f50df42dbbda551d5bf86"
+     ],
+     "UGRD": [
+      417573909,
+      964936,
+      "13d19ed1792d468ed2ced750e740a76e1f0d8692add23b49e7f80f0bccbb6e9c"
+     ],
+     "VGRD": [
+      418538845,
+      943406,
+      "0e526b23391752d1c2142340773fb72fe5779693ce5a3b270d1cd68747cbb9b5"
+     ]
+    }
+   },
+   {
+    "hour": 21,
+    "messages": {
+     "PRMSL": [
+      0,
+      987082,
+      "11181aa6eba7cb428186930a267183971ed1235f1b308e010aa447f21be6cce9"
+     ],
+     "UGRD": [
+      417559694,
+      965867,
+      "80d40a7eb1168f088b747390291a0ff27757516ee20da5e27a0c8b3e67bf2b86"
+     ],
+     "VGRD": [
+      418525561,
+      943559,
+      "57b2eac2468a4e69ac422148151e4f50dbd1dd9cf0eda056dfa2f83b7ce32006"
+     ]
+    }
+   },
+   {
+    "hour": 24,
+    "messages": {
+     "PRMSL": [
+      0,
+      992669,
+      "0a38115a62b9370e4609c49430a88fffe593a63398e669278bda1b614fa80da4"
+     ],
+     "UGRD": [
+      417476042,
+      964643,
+      "e30814548bd8075dd49170f273a1a44d6aed4b13dd0901da56d58547029b0512"
+     ],
+     "VGRD": [
+      418440685,
+      940466,
+      "58e764836c9363c68d8b04d06ec780e84723e3fff04fe16478a7320d7610ba1d"
+     ]
+    }
+   },
+   {
+    "hour": 27,
+    "messages": {
+     "PRMSL": [
+      0,
+      997001,
+      "99a48f299c0246e9b044b6445f99bca15f01049cf97d7ac7d0646a0efc479d42"
+     ],
+     "UGRD": [
+      417111353,
+      968743,
+      "e1bfa93c297157c66bf00ef780d954af86ef29dee2490b8322baf8f6ae3385f4"
+     ],
+     "VGRD": [
+      418080096,
+      947540,
+      "198da2883af6c8c76c90fc551b3baa39851a0e3a5638c4e2c1966adaaea28149"
+     ]
+    }
+   },
+   {
+    "hour": 30,
+    "messages": {
+     "PRMSL": [
+      0,
+      1001587,
+      "c5f1753c0cb893af2fbfeee8ad25e82190835959e1d922bee9689351fc32a220"
+     ],
+     "UGRD": [
+      417725028,
+      969551,
+      "903ab83b6b318cdc87ca29dc5cd22c611bf246cbb68b5fc684b2a1af5f649a3a"
+     ],
+     "VGRD": [
+      418694579,
+      948647,
+      "253ad43291eda70d7a4ffd485c44d60b85a92893820534891da7b623ee69db52"
+     ]
+    }
+   },
+   {
+    "hour": 33,
+    "messages": {
+     "PRMSL": [
+      0,
+      999625,
+      "c663669184fe161bd631be52d9b41ccef5eacba674fc8a7c7de78d07476bb75d"
+     ],
+     "UGRD": [
+      418320576,
+      969669,
+      "b4c0491538bfc63c996c6b6ba0a60717575ac0fb5c795ab85ce1b2a1ca5b40f7"
+     ],
+     "VGRD": [
+      419290245,
+      948203,
+      "385cfd35b43bfb8404d57a503a552532611a45558f546850e830e88ad5ddf4c8"
+     ]
+    }
+   },
+   {
+    "hour": 36,
+    "messages": {
+     "PRMSL": [
+      0,
+      996762,
+      "d49a9fbce80dcff7e6d1060960d061859e70032a445700b9b9ba002e3c1ca0aa"
+     ],
+     "UGRD": [
+      419104261,
+      966037,
+      "f87c36b631bb9f87d027ca0196cd993d1e9376921f453cbb9dd92e150760d75b"
+     ],
+     "VGRD": [
+      420070298,
+      947413,
+      "d4ad34d60b4b41098ca70c525dcabc5c4642c8582f5ac6a2c2c8ce9c8e658036"
+     ]
+    }
+   },
+   {
+    "hour": 39,
+    "messages": {
+     "PRMSL": [
+      0,
+      993632,
+      "5670a053fe2006061e2cdfc2de57ee3c0a2e4930bf786946f5c57b071d378fdb"
+     ],
+     "UGRD": [
+      410979401,
+      968596,
+      "298f5ff8556c7222311b01804fdb01a69f4b2b39075403f028b86b65517607d0"
+     ],
+     "VGRD": [
+      411947997,
+      945843,
+      "413f8011e029cb522452d02df4810594b52b7abdd1188476c2dd0df3d698c800"
+     ]
+    }
+   },
+   {
+    "hour": 42,
+    "messages": {
+     "PRMSL": [
+      0,
+      986777,
+      "795714a6983d069e5d04e5de3c7dfc254c3ab4662c7f8a23610dbc89dc13a61d"
+     ],
+     "UGRD": [
+      417294598,
+      962996,
+      "038f97b2e2cd1b7073157adbd46939cad63aa502ec54899b209404c9611d6a9d"
+     ],
+     "VGRD": [
+      418257594,
+      944955,
+      "132f4fc185229689451665fe3ba9203f2e85a62ff5769b31f6560c3456574fb9"
+     ]
+    }
+   },
+   {
+    "hour": 45,
+    "messages": {
+     "PRMSL": [
+      0,
+      987009,
+      "dc95cfcd035dbab0f0cb08bbe1eff9c36d433a4c65d50abd7abe95968fc959ff"
+     ],
+     "UGRD": [
+      419502216,
+      968128,
+      "f758f31d7e88b4679effdd76f2064ea65bdc15c8efc71f2cdac55bde92278862"
+     ],
+     "VGRD": [
+      420470344,
+      944438,
+      "eb0779067f51f022a05683a13f44755f1156822adcfaefd864fdb90967de0c31"
+     ]
+    }
+   },
+   {
+    "hour": 48,
+    "messages": {
+     "PRMSL": [
+      0,
+      990888,
+      "656d797e436cadb7a2359b74f5606187acf6909e8158ae6ec1d59c5cc2126c9a"
+     ],
+     "UGRD": [
+      417563070,
+      966905,
+      "b65304b49cde3a91556e6d0b8284014d94fb0a31fd11ea6c8350b747d102c448"
+     ],
+     "VGRD": [
+      418529975,
+      941368,
+      "ffb8e7ce3155ac5aabdcf0b278756e9fad301a141d17163da16a239599089346"
+     ]
+    }
+   },
+   {
+    "hour": 51,
+    "messages": {
+     "PRMSL": [
+      0,
+      873428,
+      "9037ee9f9da2ffeebc936827bfe920d50d8339564f5f0a1643fefdf26caafbd9"
+     ],
+     "UGRD": [
+      418122111,
+      973287,
+      "f3e797fd6cc0c09cdc29bb646d02a2e556015454d96f3834f2b0a1ad77daaa6b"
+     ],
+     "VGRD": [
+      419095398,
+      943683,
+      "c9de631f66b52ef6ecd9dc3cd2ee4811507eda07a7ee48fc9190219d3402114d"
+     ]
+    }
+   },
+   {
+    "hour": 54,
+    "messages": {
+     "PRMSL": [
+      0,
+      874400,
+      "5e5a0e92dd0711082078a6755fb61e60f45fc6a960cf585b1e9fd11b3e10fbc3"
+     ],
+     "UGRD": [
+      415024184,
+      969282,
+      "1d6b2baa83be501cfc1a9658945c6d90b757c2e1007bea0449569dd047ec7093"
+     ],
+     "VGRD": [
+      415993466,
+      948579,
+      "0a5c49194ef7f7ecc7451716d68a664b1b6068352562055be7c5ee41f8754f74"
+     ]
+    }
+   },
+   {
+    "hour": 57,
+    "messages": {
+     "PRMSL": [
+      0,
+      995233,
+      "c72f35d3653d4549481571c72ff9e85fbea57fe31955d3723e60ced0d1a60a78"
+     ],
+     "UGRD": [
+      418509556,
+      966324,
+      "f6c478e65791ecbd010f015fa4bfaf5079f8442316c9769118da2b9593695619"
+     ],
+     "VGRD": [
+      419475880,
+      947159,
+      "ea4d10faff96eb260feda01e86e6f325a3977b43c7220d5bb321493af5cfa558"
+     ]
+    }
+   },
+   {
+    "hour": 60,
+    "messages": {
+     "PRMSL": [
+      0,
+      991349,
+      "a194af837684a4b50043e438dc0f934aea9b7e69045da906de2473e40e1dbddb"
+     ],
+     "UGRD": [
+      420558266,
+      962869,
+      "addf373c15db8f63335aae43685c69d18e5679d2720f64172b0d481b8315d1ab"
+     ],
+     "VGRD": [
+      421521135,
+      939748,
+      "a4ba669868c502ce5e29570a33f4edc84ee5da87fbcec14700e8208e151193e3"
+     ]
+    }
+   },
+   {
+    "hour": 63,
+    "messages": {
+     "PRMSL": [
+      0,
+      984253,
+      "65caa5a7dc2f0e138f8d69ec95d656a2f3660c344dc31552d819075c21821284"
+     ],
+     "UGRD": [
+      421929064,
+      962639,
+      "9fdcca49286f1b6df96cd5d05cd22cced38123ac438c530656694756bcbcf199"
+     ],
+     "VGRD": [
+      422891703,
+      939327,
+      "4fc71795c6dd96433dc90700e0ba7f19b9de39db642d379821f77712b967cb22"
+     ]
+    }
+   },
+   {
+    "hour": 66,
+    "messages": {
+     "PRMSL": [
+      0,
+      980922,
+      "82f3da2da38b8b7f50922487ba80599817636f16e31bce2ed42cd67b83a85803"
+     ],
+     "UGRD": [
+      420205476,
+      965819,
+      "4a07d800564cfbab5b1aa32fef786b3673cc9a9cf683d8da0c32ae598a2e1d37"
+     ],
+     "VGRD": [
+      421171295,
+      939049,
+      "7535b6dccc533f97c7203f6436d8eeda0b45bd5251c5b6936e54e7e620c13095"
+     ]
+    }
+   },
+   {
+    "hour": 69,
+    "messages": {
+     "PRMSL": [
+      0,
+      980703,
+      "8031c5ee00ccc339e453d4f3bab620355664e547c3d19e695eaca9651888c0a3"
+     ],
+     "UGRD": [
+      420570450,
+      961623,
+      "fb98e1e5aadb0698aa215a941dfb5892543ba39c2e815aed9598fd6ebf8a34f9"
+     ],
+     "VGRD": [
+      421532073,
+      938822,
+      "30e7acfccaea70ad79a40d1eb08011346d94b08f6bcef6f5335fc46a361b7874"
+     ]
+    }
+   },
+   {
+    "hour": 72,
+    "messages": {
+     "PRMSL": [
+      0,
+      983644,
+      "76b3b35803e48ff97ab2aa92ffc0fd008d817140793c0091d1ad686192b8036b"
+     ],
+     "UGRD": [
+      420045298,
+      967994,
+      "2b2ab1eb4900d67df8b730db95568d97384e0ac442139e8027fd6f1f90c5d58c"
+     ],
+     "VGRD": [
+      421013292,
+      938379,
+      "44d2ac00df87aa63ce30be8bcfb55d697896e1a16b69d5ab06b2276ec15bafec"
+     ]
+    }
+   },
+   {
+    "hour": 75,
+    "messages": {
+     "PRMSL": [
+      0,
+      988701,
+      "6ecb8e072cdd8d0a5336541ceacf5de783b6245979bdf1a125d39ee797948031"
+     ],
+     "UGRD": [
+      419794545,
+      966819,
+      "eeb2ca1ab7256a4771e760de222bfb1a5f34d4468b659843fa00450bcb57b5d5"
+     ],
+     "VGRD": [
+      420761364,
+      939871,
+      "05ab4d17e02c1fd28a1329d9d74f6b37821754c9362a24999065bd4313a4e124"
+     ]
+    }
+   },
+   {
+    "hour": 78,
+    "messages": {
+     "PRMSL": [
+      0,
+      988971,
+      "e64219bc351234601d79a40a6f616353f424dd2c8b18a3800fbc1449b17b4f4c"
+     ],
+     "UGRD": [
+      416162661,
+      969832,
+      "0d69be81870085131bd3dd2539b7d8465159b72a1c9f70949202c51bafc0da41"
+     ],
+     "VGRD": [
+      417132493,
+      942793,
+      "509dbda821a0827420d60ed9d2250bf6d02fceeebf7079b33ddfd41ddf42a7f6"
+     ]
+    }
+   },
+   {
+    "hour": 81,
+    "messages": {
+     "PRMSL": [
+      0,
+      982613,
+      "be108a35a46c7b74c1b57e7a7dc3e08b7d1e9da043d43c5a5597086a14d50da3"
+     ],
+     "UGRD": [
+      419164363,
+      963862,
+      "2d958cccb7b01fcac4c01112a646763a43b4f83dc7f16f96660c31354d359983"
+     ],
+     "VGRD": [
+      420128225,
+      940690,
+      "cc4a5ae98590e6fa3509fde1f688ff6959b867a0da97b9d91d4713489b9d9b98"
+     ]
+    }
+   },
+   {
+    "hour": 84,
+    "messages": {
+     "PRMSL": [
+      0,
+      978168,
+      "8f7e22207b1c3cfeb55e142dc1d19729d8031e53a7833bc9e43dfd074c0a3f1d"
+     ],
+     "UGRD": [
+      420079961,
+      958984,
+      "060acf9a08818871c10126ae00832cd66a24363421c4d82f6629f0a775845fd8"
+     ],
+     "VGRD": [
+      421038945,
+      932672,
+      "f23b2527400550b6147291400ce295ddbfea6b8b247bb6b531d29d39a9eb009f"
+     ]
+    }
+   },
+   {
+    "hour": 87,
+    "messages": {
+     "PRMSL": [
+      0,
+      1018266,
+      "fd9a83645b649c2e4f8f73aeb5a75c440dc6d079ab0e4264d84eb871e42606a3"
+     ],
+     "UGRD": [
+      422936289,
+      958786,
+      "62233ce216af50f051d8d2561684c7ec996b81c59a9cfa2cff8daeeecd27c5bc"
+     ],
+     "VGRD": [
+      423895075,
+      930856,
+      "a8ea8e0ae7d28fd3aa150d8697095e9915b9808ded216ed7484cb3658cd9b385"
+     ]
+    }
+   },
+   {
+    "hour": 90,
+    "messages": {
+     "PRMSL": [
+      0,
+      1017021,
+      "17ae2a854c3ef0b7ba7c13f8a484df8976657f20604d251391fe729417875955"
+     ],
+     "UGRD": [
+      423092527,
+      961658,
+      "ff506570615b0b22fc2dbefc5862f09bdbc345a165592b19b291829b46569ee6"
+     ],
+     "VGRD": [
+      424054185,
+      931364,
+      "2afcd1f50c63a6f3b83e9120c04e917b533ca63c7c1504092988c0fa992997b1"
+     ]
+    }
+   },
+   {
+    "hour": 93,
+    "messages": {
+     "PRMSL": [
+      0,
+      1020717,
+      "de5baeaeb41e84ae812d430c611ea1b6c92c6134d4819f7ae88adc081d3b1023"
+     ],
+     "UGRD": [
+      425419060,
+      960286,
+      "f2c9ffa1dacb6ffe9862ea34e799781eef9e56e51e2a3a7d0ecd6b5c42fe0de2"
+     ],
+     "VGRD": [
+      426379346,
+      931920,
+      "db74cb7caac0725527e4aa1df1127bb4bc536bac17ad517ca024a1596f408a3d"
+     ]
+    }
+   },
+   {
+    "hour": 96,
+    "messages": {
+     "PRMSL": [
+      0,
+      1024888,
+      "89b00eeb2bbb576a51c13b40231e83ef03cf3e2c064e7c4d17e38e5981a6a012"
+     ],
+     "UGRD": [
+      425378350,
+      962420,
+      "21097fcde391875e90c3a6cececc7dfcb492d12fcb53a61940ebc4d91aa4145e"
+     ],
+     "VGRD": [
+      426340770,
+      938072,
+      "6b6bb0f21e2c2fb84d98044cf8f51a5d5a281cddca2a47fa59f0237415d35d44"
+     ]
+    }
+   },
+   {
+    "hour": 99,
+    "messages": {
+     "PRMSL": [
+      0,
+      983240,
+      "fb7790f0ef8b8154556939c7c9ce650a43cddfaee4ebe192effaa9ca055e4255"
+     ],
+     "UGRD": [
+      424132103,
+      963897,
+      "5039622097c5c6f5bc8913c57d64adeaf4d563bcb516c65e2dfa77cc8d12bb7f"
+     ],
+     "VGRD": [
+      425096000,
+      936294,
+      "3da2612f3919ab7e06db3601a23d38a58162a4e43eee690c59a929203b58ff50"
+     ]
+    }
+   },
+   {
+    "hour": 102,
+    "messages": {
+     "PRMSL": [
+      0,
+      986479,
+      "04c92c0c9730527c7dcbf0db16744f3e0a2be8e7d93188dbd2398ba91fdd4460"
+     ],
+     "UGRD": [
+      425431507,
+      965258,
+      "4e7f38e13c54ad827b1479c46db07fdd4ee95cbbb3501d9f18ce2b10fdcc2d3f"
+     ],
+     "VGRD": [
+      426396765,
+      935501,
+      "bae8a713ff6f463c84ca84c945d4c8ba86b94394d7c58109dda5c9553bbe0a22"
+     ]
+    }
+   },
+   {
+    "hour": 105,
+    "messages": {
+     "PRMSL": [
+      0,
+      984130,
+      "93d5bf2c028a5ffd128d005e3451e22b58c9123cded0960081e9c4357ea94546"
+     ],
+     "UGRD": [
+      419170449,
+      958159,
+      "3a27e599607774b3a76b7fc702ba1868391a7090d3eb7e816a5a34cd5b218464"
+     ],
+     "VGRD": [
+      420128608,
+      936409,
+      "0949130f567e0b2b7dbd46dda56d71fef0e994836d9fd63155ee0b1ad33b1c41"
+     ]
+    }
+   },
+   {
+    "hour": 108,
+    "messages": {
+     "PRMSL": [
+      0,
+      980231,
+      "ba0258cc1cdf824986942bcf933f056e5af2deedfc4184e3b275f234f66d2e0c"
+     ],
+     "UGRD": [
+      423503640,
+      954052,
+      "25e0297cf67b4d087b63253d0ebd7a376cbbe12519f8a13705b9d57d4c505b11"
+     ],
+     "VGRD": [
+      424457692,
+      933006,
+      "b2c6193f5e7afec9915e68a1f58b740818507150e53feff8e337ded219f99df8"
+     ]
+    }
+   },
+   {
+    "hour": 111,
+    "messages": {
+     "PRMSL": [
+      0,
+      1015890,
+      "0a06fe32380dc494e26614b69b0a1774bcb2293db96744600b7f002122988b91"
+     ],
+     "UGRD": [
+      420374892,
+      952756,
+      "399a183021a1b8324031b8fdc468497dd9fc0465c9bd6f9ea33a4069ad35474b"
+     ],
+     "VGRD": [
+      421327648,
+      928274,
+      "311be3ee09cee30e8154e3dc6ba8db7493764fa2d701491f8ce649890faa853c"
+     ]
+    }
+   },
+   {
+    "hour": 114,
+    "messages": {
+     "PRMSL": [
+      0,
+      1014112,
+      "fd6489c609d24ca412320d9866d59c5eb928204daef32a03a83ee3db5325391f"
+     ],
+     "UGRD": [
+      420875884,
+      955308,
+      "14ee7d29066e6e0609aaae3eca7476feb795c8b9a6dd8c091b520baa59135b9c"
+     ],
+     "VGRD": [
+      421831192,
+      927743,
+      "32488967a499559237993fb97a38c5c3bb71e7de54976b09dcf6535b05b2beec"
+     ]
+    }
+   },
+   {
+    "hour": 117,
+    "messages": {
+     "PRMSL": [
+      0,
+      1016708,
+      "5e2b174756743af9882cc138f888fd821cbc96cf537dafaaaa350ba37c07d4fc"
+     ],
+     "UGRD": [
+      417086376,
+      952732,
+      "b90338157fda8cff2eb46852b9df13155f5eca1536cfa9ce70e7989c77fabad7"
+     ],
+     "VGRD": [
+      418039108,
+      931910,
+      "9b1c53fc353f2ffe7665e61575481d1efb1834d2168d932b289dc10a985d5018"
+     ]
+    }
+   },
+   {
+    "hour": 120,
+    "messages": {
+     "PRMSL": [
+      0,
+      1018317,
+      "2659a46f88620ecc89b7916f4d71eb76c9289653d1be8146083c514b19fc0940"
+     ],
+     "UGRD": [
+      414377784,
+      959708,
+      "c3ddb5a4f905631db667c4e032f21e56f37b723c67067ed203bb0efb0562c4a7"
+     ],
+     "VGRD": [
+      415337492,
+      934584,
+      "a954ed77de8a102169dacf7955aca10360f24ab7eeb227d5735d792c8fdf3fec"
+     ]
+    }
+   }
+  ]
+ },
+ "licence": {
+  "name": "NOAA public domain"
+ },
+ "generator": {
+  "role": "derived GRIB2: selected messages of the pinned GFS run cropped by GDAL and byte-concatenated (not the raw source file)",
+  "method": "gdal_translate -q -of GRIB -projwin -126.125 47.125 -121.875 41.875 on each raw message, then byte-concatenated in valid-hour order",
+  "gdal_version": "3.13.3",
+  "projwin": [
+   -126.125,
+   47.125,
+   -121.875,
+   41.875
+  ],
+  "value_fidelity": "cropped values equal the 0.25-degree source window; offline provenance is unverified because the source GFS messages are not committed",
+  "pinned_local_source": {
+   "sha256": "fcbbb9b0963deab749f9a6be47afb6f1919b36756a39c4e93f73aad35342f131",
+   "bytes": 22247,
+   "grid": "2x1",
+   "note": "insufficient coverage for a route; the maintainer approved a derived crop of the same GFS run"
+  }
+ },
+ "consumer": {
+  "path": "test/test_native_routing_real_forecast.py",
+  "companion": "test/test_native_routing_real_forecast_samples.py"
+ }
 }
