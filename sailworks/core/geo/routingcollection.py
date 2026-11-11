@@ -14,17 +14,98 @@ GNU General Public License for more details.
 For detail about GNU see <http://www.gnu.org/licenses/>.
 """
 
+from pathlib import Path
 from typing import Generic, TypeVar
 
 from sailworks.core.geo.collection import CollectionWithActiveElement
-from sailworks.core.geo.routing import Routing
+from sailworks.core.geo.routing import Routing, contour_frontiers
 
 T = TypeVar("T", bound=Routing)
 
 
+def _result_points(result):
+    """Map schema-v1 leg endpoints onto the legacy route polyline."""
+    points = []
+    for leg in result.legs:
+        if not points:
+            points.append((leg.start.lat, leg.start.lon))
+        points.append((leg.end.lat, leg.end.lon))
+    return points
+
+
+def result_summary(result):
+    """Small metadata safe to keep in the collection JSON."""
+    from sailworks.core.marine.routingresult import export_eligible
+
+    validation = result.outcome.validation
+    return {
+        "schema_version": result.schema_version,
+        "calculation_id": result.calculation_id,
+        "generation": result.generation,
+        "sequence": result.sequence,
+        "status": result.status,
+        "leg_count": len(result.legs),
+        "layer_count": len(result.layers),
+        "validation_state": validation.state,
+        "export_eligible": export_eligible(result),
+    }
+
+
 class _RoutingCollection(CollectionWithActiveElement, Generic[T]):
-    def __init__(self):
+    def __init__(self, result_store=None):
+        # Constructed lazily so startup never scans or reads stored artifacts.
+        self._result_store = result_store
         super().__init__(Routing, "routing")
+
+    @property
+    def result_store(self):
+        if self._result_store is None:
+            from sailworks.core import storage
+            from sailworks.core.marine.routingresultstore import RoutingResultStore
+
+            self._result_store = RoutingResultStore(
+                Path(storage.DATA_DIR) / "routing-results"
+            )
+        return self._result_store
+
+    def load_result(self, route):
+        """Load one route's schema-v1 result on demand through the bounded store."""
+        if not isinstance(route, Routing):
+            raise TypeError("route must be a Routing")
+        return route.load_result(self.result_store)
+
+    def inspector(self, route):
+        """Offline inspection view over the result referenced by ``route``."""
+        from sailworks.core.marine.routinginspection import RoutingInspector
+
+        return RoutingInspector(self.load_result(route))
+
+    def save_result(self, name, result, points=None):
+        """Persist a schema-v1 result once and return a lightweight route.
+
+        The artifact payload is canonical result JSON. The route keeps the
+        polyline needed by the map plus a small summary, and links the artifact
+        by digest instead of embedding isochrones or traces.
+        """
+        from sailworks.core.marine.routingresult import RoutingResult
+
+        if not isinstance(result, RoutingResult):
+            raise TypeError("result must be a RoutingResult")
+        payload = result.to_json().encode("utf-8")
+        ref = self.result_store.put(payload)
+        provenance = result.provenance.to_dict()
+        return Routing(
+            self.get_unique_name(name),
+            list(points) if points is not None else _result_points(result),
+            # Display frontiers are derived from the result we just saved, so
+            # the live route renders immediately without a store round-trip.
+            contour_frontiers(result),
+            collection=self,
+            provenance=provenance,
+            result_ref=ref,
+            result_summary=result_summary(result),
+            result_verified=True,
+        )
 
     def import_from_gpx(self, gpx):
         for track in gpx.routes:
