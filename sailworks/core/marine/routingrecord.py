@@ -18,7 +18,19 @@ from urllib.parse import urlsplit
 
 SCHEMA_VERSION = 1
 
-STATUSES = frozenset({"complete", "cancelled", "failed", "incomplete", "preview"})
+STATUSES = frozenset(
+    {
+        "complete",
+        "cancelled",
+        "failed",
+        "incomplete",
+        "preview",
+        # Native bridge terminal states that carry no route but are still
+        # valid records. They stay distinct so diagnostics can name the cause.
+        "resource_limit_reached",
+        "internal_error",
+    }
+)
 VALIDATION_STATES = frozenset({"passed", "failed", "unknown"})
 VALIDATION_MODES = frozenset({"sampled", "exhaustive", "none"})
 FEATURE_STATES = frozenset({"complete", "sampled", "absent", "unsupported"})

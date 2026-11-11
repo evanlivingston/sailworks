@@ -39,6 +39,9 @@ class RoutingController(QObject):
         self.closed = False
         self.native_overlay = None
         self.native_selection = None
+        # One independent selection per calculation, kept while the window
+        # switches between alternatives.
+        self._native_selections = {}
         self.cancel_event = Event()
         self.generation = 0
         self.percent = 0.0
@@ -435,29 +438,58 @@ class RoutingController(QObject):
         self.saved_count += 1
         self.completed.emit(route)
 
+    def selection_for(self, result):
+        """Independent selection for one calculation, reused when revisited."""
+        from sailworks.core.marine.routinginspection import InspectionContext
+        from sailworks.core.marine.routingresult import RoutingResult
+
+        if not isinstance(result, RoutingResult):
+            raise TypeError("result must be a RoutingResult")
+        selection = self._native_selections.get(result.calculation_id)
+        if selection is not None and selection._result is result:
+            return selection
+        fresh = RoutingSelection(result)
+        if selection is not None:
+            # Same calculation, newly loaded artifact: keep the identifiers the
+            # fresh result still records instead of pinning the stale geometry.
+            InspectionContext.from_selection(selection).apply(fresh)
+        self._native_selections[result.calculation_id] = fresh
+        return fresh
+
+    def show_native_result(self, result, require_validated=False):
+        """Present a schema-v1 result for display and offline inspection.
+
+        Saved alternatives may be incomplete or failed; those results are
+        inspectable with explicit diagnostics but cannot be exported.
+        """
+        from sailworks.core.marine.routingresult import export_blockers
+
+        model = RoutingOverlayModel(result)
+        if require_validated:
+            blockers = export_blockers(model.result)
+            if blockers:
+                raise ValueError(
+                    "native routing result is not an accepted validated route: "
+                    + ", ".join(blockers)
+                )
+        self.native_overlay = model
+        self.native_selection = self.selection_for(model.result)
+        self.changed.emit()
+        return model
+
     def show_native_result_file(self, path):
         """Retain a validated native result for display and inspection.
 
         The overlay only accepts schema-v1 records, so provisional preview
         data cannot be presented as a calculated route.
         """
-        from sailworks.core.marine.routingresult import export_blockers
-
         model = RoutingOverlayModel.from_result_file(path)
-        blockers = export_blockers(model.result)
-        if blockers:
-            raise ValueError(
-                "native routing result is not an accepted validated route: "
-                + ", ".join(blockers)
-            )
-        self.native_overlay = model
-        self.native_selection = RoutingSelection(model.result)
-        self.changed.emit()
-        return model
+        return self.show_native_result(model.result, require_validated=True)
 
     def clear_native_result(self):
         self.native_overlay = None
         self.native_selection = None
+        self._native_selections.clear()
         self.changed.emit()
 
     def cancel(self):

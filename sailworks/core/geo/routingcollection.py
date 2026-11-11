@@ -80,7 +80,7 @@ class _RoutingCollection(CollectionWithActiveElement, Generic[T]):
 
         return RoutingInspector(self.load_result(route))
 
-    def save_result(self, name, result, points=None):
+    def save_result(self, name, result, points=None, inspection_context=None):
         """Persist a schema-v1 result once and return a lightweight route.
 
         The artifact payload is canonical result JSON. The route keeps the
@@ -105,6 +105,7 @@ class _RoutingCollection(CollectionWithActiveElement, Generic[T]):
             result_ref=ref,
             result_summary=result_summary(result),
             result_verified=True,
+            inspection_context=inspection_context,
         )
 
     def import_from_gpx(self, gpx):

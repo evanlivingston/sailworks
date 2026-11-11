@@ -121,6 +121,7 @@ class Routing(Track):
         result_ref=None,
         result_summary=None,
         result_verified=False,
+        inspection_context=None,
     ):
         super().__init__(name, points, visible, collection)
         # None means schema-v1 contours have not been hydrated for display yet.
@@ -132,6 +133,9 @@ class Routing(Track):
         # until display or inspection explicitly asks for it.
         self.result_ref = result_ref
         self.result_summary = deepcopy(result_summary)
+        # Layer, trace and leg selection saved with the referenced result so an
+        # offline reload restores the same inspection context.
+        self.inspection_context = deepcopy(inspection_context)
         # Eligibility is only trusted after this session verified the artifact.
         self._result_verified = bool(result_verified) and result_ref is not None
         # Set when a referenced artifact could not be read for display.
@@ -245,6 +249,8 @@ class Routing(Track):
             c["result_ref"] = self.result_ref.to_dict()
             c["result_summary"] = _json_value(self.result_summary or {})
             c["provenance"] = _json_value(self.provenance)
+            if self.inspection_context is not None:
+                c["inspection_context"] = _json_value(self.inspection_context)
             # Isochrones are deliberately omitted: the referenced artifact is
             # authoritative and duplicating them would grow the collection file
             # without adding information.
@@ -275,6 +281,7 @@ class Routing(Track):
                 provenance=j.get("provenance"),
                 result_ref=_artifact_ref_from_json(result_ref),
                 result_summary=_summary_from_json(j.get("result_summary")),
+                inspection_context=j.get("inspection_context"),
             )
         ic = list(map(lambda x: list(map(IsoPoint.from_list, x)), j["isochrones"]))
         return Routing(d.name, d.points, ic, d.visible, provenance=j.get("provenance"))
