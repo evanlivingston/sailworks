@@ -63,8 +63,13 @@ def _route_datetime(value):
 
 
 def routing_summary(r):
-    """Build a short summary string for a routing."""
-    points = list(r)
+    """Build a short summary string for a routing.
+
+    Saved routes may carry partial points (for example a two-value coordinate
+    without time or speed). They are skipped rather than allowed to crash the
+    navigation panel; a route with too few complete points has no summary.
+    """
+    points = [point for point in r if len(point) >= 6]
     if len(points) < 2:
         return ""
     total_dist = 0.0
@@ -139,7 +144,7 @@ class NavigationRenderer:
                 prevx = None
                 prevy = None
                 prevp = None
-                points_list = list(tr)
+                points_list = [point for point in tr if len(point) >= 7]
 
                 for i, p in enumerate(points_list):
                     x, y = gpsmap.convert_geographic_to_screen(
@@ -226,6 +231,8 @@ class NavigationRenderer:
         points = []
         rows = []
         for p in route:
+            if len(p) < 7:
+                continue
             lat, lon = float(p[0]), float(p[1])
             speed = float(p[5] if p[5] is not None else 0)
             stamp = _route_datetime(p[2]).timestamp()
