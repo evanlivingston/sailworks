@@ -9,6 +9,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import QRect
 from PySide6.QtWidgets import QApplication, QWidget
 
 from sailworks.qt import weatherpresenter
@@ -894,6 +895,7 @@ def test_map_host_translates_app_state_to_the_viewport_camera_contract():
         camera_state=camera_state,
         width=lambda: 710,
         height=lambda: 743,
+        viewport_rect=lambda: QRect(0, 0, 710, 743),
         time_control=SimpleNamespace(time=instant),
         controller=SimpleNamespace(settings=SimpleNamespace(gribBarbDensity="dense")),
     )
