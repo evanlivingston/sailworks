@@ -36,6 +36,26 @@ def test_worker_returns_a_real_native_result():
         worker.shutdown()
 
 
+@pytest.mark.parametrize(
+    ("mode", "layer_count"),
+    [("standard", 0), ("original", 30), ("professional", 5)],
+)
+def test_worker_delivers_qualified_mode(mode, layer_count):
+    worker = NativeRoutingWorker()
+    try:
+        generation = worker.submit(engine=mode)
+        status = _wait(worker)
+        assert status.generation == generation
+        assert status.state == "completed"
+        assert status.payload["status"] == "complete"
+        assert status.payload["accepted"] is True
+        assert status.payload["validation"]["passed"] is True
+        assert status.payload["independent_validation"]["passed"] is True
+        assert status.payload["layer_count"] == layer_count
+    finally:
+        worker.shutdown()
+
+
 def test_superseded_generation_never_publishes():
     worker = NativeRoutingWorker()
     try:

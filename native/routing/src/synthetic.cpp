@@ -11,6 +11,7 @@
 #include <utility>
 
 #include "original_routing/Engine.h"
+#include "supercpn/weather_routing/QuickEngine.h"
 
 namespace sailworks::native_routing {
 namespace {
@@ -307,7 +308,8 @@ void mixDigest(unsigned long long& hash, std::int64_t value) {
 SyntheticRun runWithEngine(const std::string& engine,
                            const wr::RoutingRequest& request,
                            const wr::RoutingEnvironment& environment) {
-  if (engine != "main" && engine != "original" && engine != "professional") {
+  if (engine != "main" && engine != "standard" && engine != "original" &&
+      engine != "professional") {
     throw std::invalid_argument("unknown synthetic engine: " + engine);
   }
   SyntheticRun run;
@@ -317,18 +319,40 @@ SyntheticRun runWithEngine(const std::string& engine,
   try {
     if (engine == "main") {
       run.result = wr::RoutingEngine{}.route(run.request, run.environment);
+    } else if (engine == "standard") {
+      run.result = wr::QuickRoutingEngine{}.route(run.request, run.environment).route;
     } else if (engine == "original") {
-      run.result =
-          original_routing::Engine{}.route(run.request, run.environment);
+      original_routing::Options options;
+      options.captureVisualization = true;
+      run.result = original_routing::Engine{}.route(run.request, run.environment,
+                                                    options);
     } else {
-      const wr::RoutingResult quick =
-          original_routing::Engine{}.route(run.request, run.environment);
-      if (isCompleteStatus(quick.status) && quick.validation.passed) {
-        run.result = wr::ProfessionalEngine{}.route(run.request, run.environment,
-                                                    &quick);
+      original_routing::Options options;
+      options.captureVisualization = true;
+      run.incumbentAttempted = true;
+      const wr::RoutingResult quick = original_routing::Engine{}.route(
+          run.request, run.environment, options);
+      run.incumbentStatus = quick.status;
+      if (run.request.cancellation.cancelled() ||
+          quick.status == wr::RoutingStatus::Cancelled) {
+        run.result.status = wr::RoutingStatus::Cancelled;
+        run.result.message = "Professional incumbent search cancelled";
       } else {
-        run.result =
-            wr::ProfessionalEngine{}.route(run.request, run.environment);
+        run.incumbentValidated =
+            isCompleteStatus(quick.status) && quick.validation.passed &&
+            !quick.legs.empty() &&
+            wr::RouteValidator{}
+                .validate(run.request, run.environment,
+                          *run.environment.performance, quick.legs)
+                .passed;
+        if (run.incumbentValidated) {
+          run.incumbentForwarded = true;
+          run.result = wr::ProfessionalEngine{}.route(
+              run.request, run.environment, &quick);
+        } else {
+          run.result =
+              wr::ProfessionalEngine{}.route(run.request, run.environment);
+        }
       }
     }
   } catch (const std::exception& error) {

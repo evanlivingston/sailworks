@@ -227,21 +227,45 @@ def test_independent_validator_rejects_tampered_route():
     assert failure["failure_reason"]
 
 
-def test_original_and_professional_bridges_do_not_claim_parity():
+@pytest.mark.parametrize(
+    ("mode", "layer_count", "incumbent"),
+    [("standard", 0, False), ("original", 30, False), ("professional", 5, True)],
+)
+def test_qualified_synthetic_mode_delivery(mode, layer_count, incumbent):
     bridge = _bridge()
-    original = bridge.synthetic_route("original")
-    professional = bridge.synthetic_route("professional")
+    result = bridge.synthetic_route(mode)
+    assert result["status"] == "complete"
+    assert result["accepted"] is True
+    assert result["validation"]["passed"] is True
+    assert result["independent_validation"]["passed"] is True
+    assert result["layer_count"] == layer_count
+    assert len(result["layers"]) == layer_count
+    assert result["orchestration"]["incumbent_attempted"] is incumbent
+    assert result["orchestration"]["incumbent_forwarded"] is incumbent
+    assert result["orchestration"]["incumbent_independently_validated"] is incumbent
+    assert result["orchestration"]["incumbent_status"] == (
+        "complete" if incumbent else None
+    )
 
-    for result in (original, professional):
-        assert isinstance(result["status"], str)
-        assert result["validation_pass_flags_equal"] is True
-        if result["accepted"]:
-            assert result["validation"]["passed"] is True
-            assert result["independent_validation"]["passed"] is True
+
+def test_orchestration_does_not_claim_host_parity():
+    bridge = _bridge()
 
     identity = bridge.identity()
+    assert set(("standard", "original", "professional")) <= set(
+        identity["capabilities"]["engines"]
+    )
     assert identity["capabilities"]["professional_incumbent_wired"] is True
     assert identity["capabilities"]["professional_parity_claimed"] is False
+    assert "host memory probing" in identity["capabilities"]["orchestration_limits"]
+
+
+@pytest.mark.parametrize("mode", ["standard", "original", "professional"])
+def test_qualified_mode_pre_cancellation(mode):
+    result = _bridge().synthetic_cancelled_route(mode)
+    assert result["status"] == "cancelled"
+    assert result["accepted"] is False
+    assert result["orchestration"]["incumbent_forwarded"] is False
 
 
 def test_structured_failure_outside_coverage():

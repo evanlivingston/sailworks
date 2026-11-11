@@ -63,6 +63,18 @@ int main() {
   require(routeDigest(first.result) == routeDigest(second.result),
           "two synthetic routes are not deterministic");
 
+  for (const std::string mode : {"standard", "original", "professional"}) {
+    const SyntheticRun run = runSynthetic(mode);
+    require(run.result.validation.passed == run.independentValidation.passed,
+            mode + " replay validation disagrees");
+    require(!run.accepted || (run.result.validation.passed &&
+                              run.independentValidation.passed),
+            mode + " accepted without both validations");
+    require(run.incumbentForwarded ==
+                (mode == "professional" && run.incumbentValidated),
+            mode + " incumbent handoff disagrees with validation");
+  }
+
   const SyntheticRun cancelled = runCancelled("main");
   require(cancelled.result.status == wr::RoutingStatus::Cancelled,
           "cancelled request did not report Cancelled");
@@ -74,6 +86,10 @@ int main() {
           "original cancelled request did not report Cancelled");
   require(!original.accepted,
           "original cancelled request reported accepted completion");
+  const SyntheticRun professional = runCancelled("professional");
+  require(professional.result.status == wr::RoutingStatus::Cancelled &&
+              !professional.incumbentForwarded && !professional.accepted,
+          "professional cancellation forwarded or accepted incumbent");
 
   const SyntheticRun invalid = runInvalidDestination();
   require(!invalid.accepted, "invalid destination reported accepted completion");

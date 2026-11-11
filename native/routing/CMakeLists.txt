@@ -65,6 +65,7 @@ target_compile_features(sailworks_native_routing_core PUBLIC cxx_std_20)
 target_link_libraries(sailworks_native_routing_core
   PUBLIC
     weather_routing_engine::weather_routing_engine
+    weather_routing_engine::quick_weather_routing_engine
     hardened_original_engine)
 
 if(MSVC)

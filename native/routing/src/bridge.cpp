@@ -480,6 +480,14 @@ py::dict runDict(const SyntheticRun& run) {
   result["status"] = sailworks::native_routing::statusName(run.result.status);
   result["status_code"] = static_cast<int>(run.result.status);
   result["accepted"] = run.accepted;
+  py::dict orchestration;
+  orchestration["incumbent_attempted"] = run.incumbentAttempted;
+  orchestration["incumbent_status"] = run.incumbentAttempted
+                                           ? py::cast(sailworks::native_routing::statusName(run.incumbentStatus))
+                                           : py::none();
+  orchestration["incumbent_independently_validated"] = run.incumbentValidated;
+  orchestration["incumbent_forwarded"] = run.incumbentForwarded;
+  result["orchestration"] = orchestration;
   result["solver_path"] =
       sailworks::native_routing::solverPathName(run.result.solverPath);
   result["message"] = run.result.message;
@@ -617,18 +625,26 @@ py::dict identityDict() {
       "possibly sampled (at most 48 traces per layer, one contour "
       "representative per heading sector)";
   capabilities["inspection_geometry_producers"] =
-      "isochrone layers are emitted by the main isochrone search; the "
-      "original/professional entry points may return an empty layer list";
+      "main and original-contour searches can emit layers; Standard Quick "
+      "may return none; Professional returns only its selected result's layers";
   capabilities["inspection_trace_times"] =
       "absent times mean unknown, never zero and never a synthesized constant "
       "step";
   py::list engines;
   engines.append("main");
+  engines.append("standard");
   engines.append("original");
   engines.append("professional");
   capabilities["engines"] = engines;
   capabilities["professional_incumbent_wired"] = true;
   capabilities["professional_parity_claimed"] = false;
+  capabilities["orchestration_limits"] =
+      "Standard uses QuickRoutingEngine default budgets; original contour "
+      "uses its default 15-minute runtime and resource limits with inspection "
+      "capture; Professional runs contour Quick first and forwards only an "
+      "independently validated incumbent. Its second-stage deadline starts "
+      "after Quick, not at the beginning of the combined operation; host "
+      "memory probing and multi-worker parallel search are not implemented";
   capabilities["gui"] = false;
   capabilities["opencpn"] = false;
   capabilities["wxwidgets"] = false;

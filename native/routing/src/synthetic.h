@@ -66,6 +66,12 @@ class FixtureWeatherProvider final : public wr::WeatherProvider {
 
 struct SyntheticRun {
   std::string engine;
+  // The contour incumbent is a separate solve, never an accepted result by
+  // itself when Professional is requested.
+  bool incumbentAttempted{};
+  bool incumbentForwarded{};
+  wr::RoutingStatus incumbentStatus{};
+  bool incumbentValidated{};
   wr::RoutingRequest request;
   wr::RoutingEnvironment environment;
   wr::RoutingResult result;
