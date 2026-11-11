@@ -280,9 +280,9 @@ def diagnostics(result: RoutingResult) -> Tuple[DiagnosticState, ...]:
             "cancelled": "cancelled: stopped before completion",
             "preview": "preview: provisional search output, not a calculated route",
             "resource_limit_reached": (
-                "resource_limit_reached: stopped at a configured resource limit"
+                "resource exhausted: stopped at a configured resource limit"
             ),
-            "internal_error": "internal_error: engine reported an internal failure",
+            "internal_error": "internal error: engine reported an internal failure",
         }.get(result.status, f"search ended: {result.status}")
         states.append(DiagnosticState("search", search_detail))
     resource = _resource_state(result)
