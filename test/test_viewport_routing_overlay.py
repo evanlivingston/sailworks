@@ -131,6 +131,54 @@ def test_hover_previews_and_click_pins_through_selection():
     assert selection.trace_id == "t-0"
 
 
+def test_hidden_trace_is_not_hovered_or_pinned_through_the_app_path():
+    from types import SimpleNamespace
+
+    from sailworks.core.marine.routingrecord import Trace
+    from sailworks.core.marine.routingselection import RoutingSelection
+    from sailworks.qt.viewportmap import ViewportMap
+
+    trace = Trace("t-0", Point(48.1, -123.9), (Point(48.0, -124.0),))
+    result = _result(layer_count=1, traces=(trace,))
+    model = RoutingOverlayModel(result)
+    selection = RoutingSelection(result)
+    host = SimpleNamespace(
+        native_routing=model,
+        controller=SimpleNamespace(routing=SimpleNamespace(native_selection=selection)),
+        _viewport_overlay_cache=None,
+        publish_route_overlay=lambda force=False: True,
+    )
+
+    ViewportMap._update_routing_hover(host, 48.11, -123.89)
+    assert model.hover_trace_id == "t-0"
+    model.set_traces_visible(False)
+    ViewportMap._update_routing_hover(host, 48.11, -123.89)
+    assert model.hover_trace_id is None
+    assert ViewportMap.pin_routing_trace(host) is False
+    assert selection.trace_id is None
+
+
+def test_absent_native_geometry_is_disclosed_in_the_viewport_payload():
+    from sailworks.qt.viewportmap import _routing_absence_caption
+
+    model = RoutingOverlayModel(_result(layer_count=0))
+    payload = _routing_overlay(_host(model))
+
+    assert payload["geometry_state"] == "absent"
+    assert payload["trace_times"] == "absent"
+    assert payload["layers"] == []
+    assert payload["traces"] == []
+    assert "No routing layers" in _routing_absence_caption(model)
+
+    host = _host(model)
+    host._retained_active = True
+    retained = _routing_overlay(host)
+    assert retained["retained"] is True
+    assert retained["geometry_state"] == "absent"
+    assert retained["frontiers"] == []
+    assert retained["traces"] == []
+
+
 def test_retained_item_suppresses_the_duplicate_canvas_geometry():
     from types import SimpleNamespace
 

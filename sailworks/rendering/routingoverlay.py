@@ -184,6 +184,39 @@ class RoutingOverlayModel:
     def trace_ids(self) -> Tuple[str, ...]:
         return self._trace_ids
 
+    @property
+    def capabilities(self):
+        """The result's own capability record, never an inferred substitute."""
+        return self._result.capabilities
+
+    @property
+    def trace_times(self) -> str:
+        return self._result.capabilities.trace_times
+
+    @property
+    def feature_states(self) -> Dict[str, str]:
+        features = self._result.capabilities.features
+        return {} if features is None else dict(features)
+
+    @property
+    def geometry_state(self) -> str:
+        """Explicit drawable state: drawn, hidden, empty or absent."""
+        if any(
+            (polyline.kind == "trace" and self._style.traces_visible)
+            or (polyline.kind == "contour" and self.is_layer_visible(polyline.layer_id))
+            for polyline in self._polylines
+        ):
+            return "drawn"
+        if self._polylines:
+            return "hidden"
+        if self._layers or self._trace_ids:
+            return "empty"
+        return "absent"
+
+    def trace_is_visible(self, trace_id: str) -> bool:
+        """A trace is selectable only while it is in the displayed geometry."""
+        return self._style.traces_visible and trace_id in self._trace_ids
+
     def set_layer_visible(self, layer_id: str, visible: bool) -> None:
         self._require_layer(layer_id)
         if self._style.visible.get(layer_id) == visible:
@@ -200,6 +233,9 @@ class RoutingOverlayModel:
         if self._style.traces_visible == visible:
             return
         self._style.traces_visible = visible
+        if not visible:
+            # A hidden trace must not stay hovered and become pinnable.
+            self._hover_trace_id = None
         self._style_revision += 1
 
     @property
@@ -218,6 +254,8 @@ class RoutingOverlayModel:
         """Hover preview only: never changes selection or geometry."""
         if trace_id is not None and trace_id not in self._trace_ids:
             raise KeyError(f"unknown routing trace: {trace_id}")
+        if trace_id is not None and not self.trace_is_visible(trace_id):
+            trace_id = None
         if self._hover_trace_id == trace_id:
             return
         self._hover_trace_id = trace_id
@@ -227,6 +265,8 @@ class RoutingOverlayModel:
         self, latitude: float, longitude: float, max_degrees: float = 0.5
     ) -> Optional[str]:
         """Nearest retained trace endpoint within a bounded pick radius."""
+        if not self._style.traces_visible:
+            return None
         best = None
         for trace_id, lat, lon in self._trace_endpoints:
             distance = (lat - latitude) ** 2 + (lon - longitude) ** 2
@@ -268,9 +308,11 @@ class RoutingOverlayModel:
         )
 
     def nearest_layer(self, epoch_s: int) -> Optional[str]:
-        """Layer nearest a forecast time; ties choose the earlier layer."""
+        """Nearest displayed layer; ties choose the earlier layer."""
         best = None
         for layer in self._layers:
+            if not self.is_layer_visible(layer.layer_id):
+                continue
             distance = abs(layer.epoch_s - epoch_s)
             if best is None or distance < best[0]:
                 best = (distance, layer.layer_id)
@@ -377,6 +419,9 @@ def routing_overlay_data(model: RoutingOverlayModel) -> dict:
         "calculation_id": model.calculation_id,
         "geometry_revision": model.geometry_revision,
         "style_revision": model.style_revision,
+        "geometry_state": model.geometry_state,
+        "trace_times": model.trace_times,
+        "features": model.feature_states,
         "layers": layers,
         "selected_layer_id": model.selected_layer_id,
         "hover_trace_id": model.hover_trace_id,

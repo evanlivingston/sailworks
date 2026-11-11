@@ -1549,7 +1549,11 @@ class PreviewWindow(QMainWindow):
             previous_unsubscribe()
         selection = self.controller.routing.native_selection
         self.routing_inspector.set_result(
-            model.result, selection, context=context, context_error=context_error
+            model.result,
+            selection,
+            context=context,
+            context_error=context_error,
+            layer_visibility=getattr(model, "is_layer_visible", None),
         )
         self._routing_selection_target = model
         self._routing_active_route = route
