@@ -570,7 +570,12 @@ class NavigationPanel(QWidget):
     def refresh_route_points(self):
         rows = []
         point_rounding = getattr(self.route, "point_rounding", None)
-        for i, p in enumerate(self.route.points if self.route is not None else []):
+        points = [
+            point
+            for point in (self.route.points if self.route is not None else [])
+            if len(point) >= 7
+        ]
+        for i, p in enumerate(points):
             try:
                 stamp = dateutil.parser.parse(str(p[2]))
                 stamp = stamp.astimezone() if stamp.tzinfo is not None else stamp
