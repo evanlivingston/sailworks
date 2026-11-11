@@ -19,7 +19,7 @@ from unittest.mock import Mock
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import QSize, QUrl
 from PySide6.QtGui import QColor
 from PySide6.QtQml import QQmlComponent, QQmlEngine
 from PySide6.QtQuick import QQuickWindow
@@ -271,12 +271,17 @@ class TestStreamlineModel(unittest.TestCase):
         canvas.controller.settings = settings
         canvas.wind_visible = True
         canvas._desktop_viewport = True
-        camera = object()
+        camera = SimpleNamespace(width=800, height=600)
         canvas.requested_viewport_camera.return_value = camera
         widget._chart_palette = "dark"
         widget._camera = camera
         widget._environment = None
         presenter.canvas, presenter.widget = canvas, widget
+        # The presenter adopts the host viewport's real QSize after layout, so
+        # the harness must supply geometry rather than an auto-generated Mock.
+        presenter.host_widget = SimpleNamespace(
+            size=lambda: QSize(800, 600), show=Mock(), raise_=Mock()
+        )
         presenter._source, presenter._rendered = None, True
         for style in ("streamlines", "barbs"):
             settings.gribWindStyle = style

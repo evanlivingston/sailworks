@@ -102,7 +102,7 @@ def test_desktop_native_pinch_zooms_the_viewport_at_the_gesture_anchor():
 
 def test_desktop_native_gesture_end_clears_viewport_gesture_state():
     method = _viewport_widget_class()._native_gesture_event
-    widget = SimpleNamespace(_native_gesture_active=True)
+    widget = SimpleNamespace(_native_gesture_active=True, _end_zoom_gesture=Mock())
 
     class Gesture:
         def gestureType(self):
@@ -158,6 +158,7 @@ def test_desktop_cancel_motion_stops_pending_camera_motion():
         _pan_inertia_tick=timers[3],
         _pan_inertia=(8.0, 9.0),
         _pan_inertia_last_tick=10.0,
+        _end_zoom_gesture=Mock(),
     )
     method(widget)
     for timer in timers:
@@ -228,6 +229,7 @@ def test_desktop_mouse_wheel_zoom_keeps_the_pointer_anchor():
         _wheel_trackpad_panning=False,
         _smooth_zoom=False,
         set_camera=Mock(),
+        _end_zoom_gesture=Mock(),
     )
     widget._set_zoom_around = lambda zoom, x, y, anchor=None: (
         _viewport_widget_class()._set_zoom_around(widget, zoom, x, y, anchor)
@@ -323,6 +325,8 @@ def test_viewport_mouse_drag_inertia_is_bounded_and_cancelable():
             _wheel_trackpad_panning=False,
             _native_gesture_active=False,
             pan_pixels=Mock(),
+            measurement_canvas=lambda: None,
+            _end_zoom_gesture=Mock(),
         )
         widget.cancel_motion = lambda: viewport_type.cancel_motion(widget)
         widget.is_moving = lambda: viewport_type.is_moving(widget)

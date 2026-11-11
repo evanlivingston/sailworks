@@ -488,7 +488,7 @@ def test_antimeridian_seam_anchors_translate_to_the_current_projection():
 
     from sailworks.qt.gpuweather import decode_component
     from sailworks.qt.viewporttransform import PanReference
-    from sailworks.rendering.weatherbarbs import stage_selection
+    from sailworks.rendering.weatherbarbs import _node_key, stage_selection
     from sailworks.rendering.windpainter import mercator_project_flat
 
     # A native grid straddling the seam, represented as continuous west
@@ -502,10 +502,7 @@ def test_antimeridian_seam_anchors_translate_to_the_current_projection():
         generation="g",
         points=points,
         grids=(SimpleNamespace(nodes=lambda bounds: points),),
-        index={
-            (round(lat, 9), round(lon, 9)): index
-            for index, (lat, lon) in enumerate(points)
-        },
+        index={_node_key((lat, lon)): index for index, (lat, lon) in enumerate(points)},
         staged=SimpleNamespace(
             first=(zeros,),
             second=(zeros,),
@@ -998,6 +995,7 @@ def test_stage_selection_reuses_supplied_geometry_without_node_lookup():
     from types import SimpleNamespace
 
     from sailworks.rendering.weatherbarbs import (
+        _node_key,
         selection_geometry,
         stage_selection,
     )
@@ -1021,10 +1019,7 @@ def test_stage_selection_reuses_supplied_geometry_without_node_lookup():
 
     index = ExplodingIndex()
     index.update(
-        {
-            (round(float(lat), 9), round(float(lon), 9)): position
-            for position, (lat, lon) in enumerate(points)
-        }
+        {_node_key((lat, lon)): position for position, (lat, lon) in enumerate(points)}
     )
     field = SimpleNamespace(
         generation="g",

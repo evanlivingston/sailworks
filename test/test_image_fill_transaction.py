@@ -65,6 +65,18 @@ class Scene:
         self._state = "loading"
         self._disposed = False
         self._camera = _camera()
+        # Motion state the real widget initialises in __init__.  The camera
+        # pass calls is_moving() while a selection is staged, so these must
+        # exist and report an idle gesture rather than fall through the
+        # class-descriptor lookup above.
+        self._drag = None
+        self._drag_velocity = gribviewport.DragVelocity()
+        self._pan_inertia = None
+        self._pan_inertia_tick = SimpleNamespace(isActive=lambda: False)
+        self._wheel_zoom_target = None
+        self._wheel_zoom_tick = SimpleNamespace(isActive=lambda: False)
+        self._wheel_trackpad_panning = False
+        self._native_gesture_active = False
         # Wave layers stay unbound in this headless scene; the camera pass
         # reads their visibility and the retained items on a rebase.
         self._wave_visible = False
@@ -201,7 +213,7 @@ def test_rebase_and_hide_show_do_not_restore_old_reference_front():
     scene._publish_streamlines = lambda camera: None
     scene._wind_style = "barbs"
     scene._model = SimpleNamespace(
-        update=lambda camera, ref=None: ("loading", None, None)
+        update=lambda camera, ref=None, reuse_steps=0: ("loading", None, None)
     )
     scene._weather_display_camera = _camera()
     scene.cameraChanged = SimpleNamespace(emit=lambda camera: None)
