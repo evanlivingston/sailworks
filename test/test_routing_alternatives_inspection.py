@@ -478,3 +478,51 @@ def test_window_preflights_context_saved_beside_another_calculation(tmp_path, ap
     assert panel.selection.calculation_id == CALCULATION_B
     assert panel.layer_combo.currentText() == "layer-0"
     assert "belongs to calculation" in panel.diagnostics.text()
+
+
+def test_selection_change_persists_inspection_context_to_disk(
+    tmp_path, app, monkeypatch
+):
+    monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path))
+    store = RoutingResultStore(tmp_path / "artifacts")
+    writer = RoutingCollection(store)
+    route = writer.save_result("alternative-a", _result())
+    writer.append(route)
+    writer.save()
+
+    model_result = writer.load_result(route)
+    selection = RoutingSelection(model_result)
+    host = SimpleNamespace(
+        controller=SimpleNamespace(routing=SimpleNamespace(native_selection=selection)),
+        _routing_selection_target=SimpleNamespace(
+            set_selected_layer=lambda _layer: None
+        ),
+        map=SimpleNamespace(_apply_retained_highlight=lambda: None),
+        _routing_active_route=route,
+    )
+
+    selection.select_layer("layer-1")
+    PreviewWindow._routing_selection_changed(host)
+
+    # The write-back must survive a real collection save and reload.
+    reader = RoutingCollection(store)
+    saved = reader.elements[0]
+    assert saved.inspection_context is not None
+    assert saved.inspection_context["layer_id"] == "layer-1"
+    assert saved.inspection_context["calculation_id"] == CALCULATION_A
+
+
+def test_complete_route_is_never_labelled_resource_exhausted():
+    result = _result(
+        status="complete",
+        diagnostics_payload={"time_limit": "configured 900 s", "exhausted": False},
+    )
+    states = _states(result)
+    assert "resource" not in states
+    assert states["status"].startswith("complete")
+
+
+def test_non_complete_status_and_search_lines_differ():
+    result = _result(status="incomplete")
+    states = _states(result)
+    assert states["status"] != states["search"]

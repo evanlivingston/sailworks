@@ -199,7 +199,14 @@ def _resource_evidence(value: Any) -> Optional[str]:
 
 
 def _resource_state(result: RoutingResult) -> Optional[DiagnosticState]:
-    """Resource exhaustion only when the native status or a marker records it."""
+    """Resource exhaustion only when the native status or a marker records it.
+
+    A delivered route is never labelled resource-exhausted: recorded budgets
+    often echo configured limits, and a complete status means a route was
+    delivered within them.
+    """
+    if result.status == "complete":
+        return None
     evidence = _resource_evidence(result.outcome.diagnostics)
     if result.status == "resource_limit_reached":
         detail = "exhausted: native status resource_limit_reached"
@@ -267,12 +274,17 @@ def diagnostics(result: RoutingResult) -> Tuple[DiagnosticState, ...]:
         DiagnosticState("status", _STATUS_DETAIL.get(result.status, result.status))
     ]
     if result.status != "complete":
-        states.append(
-            DiagnosticState(
-                "search",
-                _STATUS_DETAIL.get(result.status, result.status),
-            )
-        )
+        search_detail = {
+            "incomplete": "incomplete: no complete route was delivered",
+            "failed": "failed: no route was delivered",
+            "cancelled": "cancelled: stopped before completion",
+            "preview": "preview: provisional search output, not a calculated route",
+            "resource_limit_reached": (
+                "resource_limit_reached: stopped at a configured resource limit"
+            ),
+            "internal_error": "internal_error: engine reported an internal failure",
+        }.get(result.status, f"search ended: {result.status}")
+        states.append(DiagnosticState("search", search_detail))
     resource = _resource_state(result)
     if resource is not None:
         states.append(resource)

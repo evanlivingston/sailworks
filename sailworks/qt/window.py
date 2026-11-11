@@ -1464,7 +1464,14 @@ class PreviewWindow(QMainWindow):
             Qt.DockWidgetArea.RightDockWidgetArea, self.routing_inspector_dock
         )
         self.routing_inspector_dock.hide()
+        self.routing_inspector_dock.visibilityChanged.connect(
+            self._routing_inspector_visibility_changed
+        )
         self._refresh_routing_alternatives()
+
+    def _routing_inspector_visibility_changed(self, visible):
+        if visible:
+            self._refresh_routing_alternatives()
 
     def _routing_alternatives(self):
         manager = getattr(
@@ -1570,6 +1577,7 @@ class PreviewWindow(QMainWindow):
             QMessageBox.warning(self, "Native routing result", str(exc))
             return
         self._present_routing_result(model)
+        self._refresh_routing_alternatives()
         self.routing_inspector.select_nearest_layer(
             model.result.layers[0].time_epoch_s if model.result.layers else 0
         )
