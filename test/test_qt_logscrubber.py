@@ -217,51 +217,10 @@ def test_delete_selected_range_ripple_updates_loaded_session(transport, monkeypa
     session = controller.session
     before = session.log
 
-    class ActionSignal:
-        def connect(self, callback):
-            self.callback = callback
-
-        def emit(self, *args):
-            self.callback(*args)
-
-    class MenuAction:
-        def __init__(self, text):
-            self.text = text
-            self.triggered = ActionSignal()
-            self.checkable = False
-            self.checked = False
-
-        def setCheckable(self, checkable):
-            self.checkable = checkable
-
-        def setChecked(self, checked):
-            self.checked = checked
-
-        def trigger(self):
-            self.triggered.emit(False)
-
-    class Menu:
-        def __init__(self, parent):
-            self.actions = []
-
-        def addAction(self, text, callback=None):
-            action = MenuAction(text)
-            if callback is not None:
-                action.triggered.connect(callback)
-            self.actions.append(action)
-            return action
-
-        def addSeparator(self):
-            pass
-
-        def addMenu(self, text):
-            self.actions.append(MenuAction(text))
-            return Menu(self)
-
-        def exec(self, _position):
-            self.actions[0].trigger()
-
-    monkeypatch.setattr("sailworks.qt.plots.QMenu", Menu)
+    monkeypatch.setattr(
+        "sailworks.qt.plots.ThemedMenu.exec",
+        lambda menu, _position: menu.actions()[0].trigger(),
+    )
     plot = LogPlots(delete_range=session.delete_log_range)
     plot.set_points(plot_points(), (10, 20, 30), True)
     plot.set_time_bounds(0, before.duration, reset=True)
@@ -349,7 +308,7 @@ def test_chart_context_menu_toggles_instrument_series():
         action = next(
             action
             for action in menu.actions()
-            if action.text() == "Apparent wind speed"
+            if action.text() == "&Apparent wind speed"
         )
         assert action.isCheckable()
         assert not action.isChecked()
@@ -382,12 +341,15 @@ def test_chart_menu_discovers_numeric_fields_from_loaded_log():
         recorded = next(
             action.menu()
             for action in menu.actions()
-            if action.text() == "Recorded log fields"
+            if action.text() == "&Recorded log fields"
         )
         field = next(item for item in fields if item.label == "MWV · Wind speed (kn)")
         action = next(
-            action for action in recorded.actions() if action.text() == field.label
+            action
+            for action in recorded.actions()
+            if action.text().replace("&", "") == field.label
         )
+        assert action.text().count("&") == 1
         action.trigger()
         assert field.key in plot.selected_logged_fields
         assert field.label in [axis.get_ylabel() for axis in plot.axes]
