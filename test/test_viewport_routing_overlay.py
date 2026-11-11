@@ -129,3 +129,18 @@ def test_hover_previews_and_click_pins_through_selection():
 
     assert ViewportMap.pin_routing_trace(host) is True
     assert selection.trace_id == "t-0"
+
+
+def test_retained_item_suppresses_the_duplicate_canvas_geometry():
+    from types import SimpleNamespace
+
+    from sailworks.qt.viewportmap import _routing_overlay
+
+    model = RoutingOverlayModel(_result(layer_count=1))
+    host = SimpleNamespace(native_routing=model, _retained_active=True)
+    payload = _routing_overlay(host)
+    assert payload["frontiers"] == []
+    assert payload["traces"] == []
+
+    host._retained_active = False
+    assert _routing_overlay(host)["frontiers"]

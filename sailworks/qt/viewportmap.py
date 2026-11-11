@@ -627,6 +627,7 @@ class ViewportMap(
         model = getattr(self, "native_routing", None)
         qml_dir = self._retained_qml_dir() if model is not None else None
         if model is None or qml_dir is None:
+            self._retained_active = False
             if root.property("retainedRoutingSource"):
                 root.setProperty("retainedRoutingSource", "")
             return False
@@ -638,6 +639,7 @@ class ViewportMap(
         if root.property("retainedRoutingSource") != source:
             root.setProperty("retainedRoutingSource", source)
         item = root.findChild(QObject, "retainedRoutingOverlay")
+        self._retained_active = item is not None
         if item is None:
             return False
         camera = self.camera_state
@@ -1124,10 +1126,18 @@ def _routing_overlay(host):
 
     The legacy preview payload keeps its proximity joins only while no native
     calculation is selected, so a native result is never drawn with invented
-    connections.
+    connections. When the retained QSG item is drawing the same result, the
+    canvas payload is empty so the geometry is not drawn twice.
     """
     model = getattr(host, "native_routing", None)
     if model is not None:
+        if getattr(host, "_retained_active", False):
+            return {
+                "frontiers": [],
+                "traces": [],
+                "path": [],
+                "exclusions": [],
+            }
         return routing_overlay_data(model)
     return isochrone_overlay_data(host.isochrone_frame)
 
