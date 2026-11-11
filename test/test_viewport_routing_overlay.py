@@ -144,3 +144,55 @@ def test_retained_item_suppresses_the_duplicate_canvas_geometry():
 
     host._retained_active = False
     assert _routing_overlay(host)["frontiers"]
+
+
+def test_retained_sync_does_not_rebuild_segments_per_publish():
+    from types import SimpleNamespace
+
+    from sailworks.qt.viewportmap import ViewportMap
+
+    class FakeItem:
+        def __init__(self):
+            self.values = {}
+            self.segment_writes = 0
+
+        def setProperty(self, name, value):
+            if name == "segments":
+                self.segment_writes += 1
+            self.values[name] = value
+            return True
+
+    class FakeRoot:
+        def __init__(self, item):
+            self.item = item
+
+        def property(self, name):
+            return ""
+
+        def setProperty(self, name, value):
+            return True
+
+        def findChild(self, _type, name):
+            return self.item if name == "retainedRoutingOverlay" else None
+
+    item = FakeItem()
+    host = SimpleNamespace(
+        native_routing=RoutingOverlayModel(_result(layer_count=2)),
+        camera_state=SimpleNamespace(center_lat=48.3, center_lon=-123.6, zoom=6.0),
+        _weather_presenter=SimpleNamespace(widget=None),
+        _retained_qml_dir=lambda: "/tmp",
+        _retained_import_added=True,
+    )
+    fake_widget = SimpleNamespace(
+        rootObject=lambda: FakeRoot(item),
+        engine=lambda: SimpleNamespace(addImportPath=lambda _path: None),
+    )
+    host._weather_presenter = SimpleNamespace(widget=fake_widget)
+
+    for _ in range(5):
+        assert ViewportMap._sync_retained_overlay(host) is True
+    assert item.segment_writes == 1
+
+    host.native_routing.set_layer_visible("layer-1", False)
+    assert ViewportMap._sync_retained_overlay(host) is True
+    assert item.segment_writes == 2

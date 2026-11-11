@@ -631,6 +631,7 @@ class ViewportMap(
         qml_dir = self._retained_qml_dir() if model is not None else None
         if model is None or qml_dir is None:
             self._retained_active = False
+            self._retained_segments_signature = None
             if root.property("retainedRoutingSource"):
                 root.setProperty("retainedRoutingSource", "")
             return False
@@ -646,15 +647,29 @@ class ViewportMap(
         if item is None:
             return False
         camera = self.camera_state
-        segments = [
-            [[float(point[0]), float(point[1])] for point in polyline.points]
-            for polyline in model.polylines
-            if (polyline.kind != "trace" or model.traces_visible)
-            and (
-                polyline.kind != "contour" or model.is_layer_visible(polyline.layer_id)
-            )
-        ]
-        item.setProperty("segments", segments)
+        signature = (
+            id(model),
+            model.geometry_digest,
+            model.geometry_revision,
+            bool(model.traces_visible),
+            tuple(
+                layer.layer_id
+                for layer in model.layers
+                if model.is_layer_visible(layer.layer_id)
+            ),
+        )
+        if getattr(self, "_retained_segments_signature", None) != signature:
+            segments = [
+                [[float(point[0]), float(point[1])] for point in polyline.points]
+                for polyline in model.polylines
+                if (polyline.kind != "trace" or model.traces_visible)
+                and (
+                    polyline.kind != "contour"
+                    or model.is_layer_visible(polyline.layer_id)
+                )
+            ]
+            item.setProperty("segments", segments)
+            self._retained_segments_signature = signature
         item.setProperty("color", QColor(0, 0, 204, 160))
         item.setProperty("lineWidth", 1.5)
         item.setProperty("centerLatitude", float(camera.center_lat))
@@ -668,10 +683,16 @@ class ViewportMap(
         if model is None:
             return
         trace = model.pick_trace_near(latitude, longitude)
-        if trace != model.hover_trace_id:
-            model.set_hover_trace(trace)
-            self._viewport_overlay_cache = None
-            self.publish_route_overlay(force=True)
+        if trace == model.hover_trace_id:
+            return
+        model.set_hover_trace(trace)
+        if getattr(self, "_retained_active", False):
+            # The retained item owns the geometry; republishing the full
+            # canvas payload on every pointer move is what made panning and
+            # hovering feel locked up.
+            return
+        self._viewport_overlay_cache = None
+        self.publish_route_overlay(force=True)
 
     def pin_routing_trace(self):
         """Pin the hovered retained trace through the shared selection."""
@@ -684,8 +705,9 @@ class ViewportMap(
         if trace is None:
             return False
         selection.select_trace(trace)
-        self._viewport_overlay_cache = None
-        self.publish_route_overlay(force=True)
+        if not getattr(self, "_retained_active", False):
+            self._viewport_overlay_cache = None
+            self.publish_route_overlay(force=True)
         return True
 
     def publish_route_overlay(self, force=False):
