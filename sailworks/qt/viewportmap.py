@@ -606,8 +606,11 @@ class ViewportMap(
         configured = os.environ.get("SAILWORKS_ROUTING_QML_PATH")
         if configured:
             return configured if Path(configured).is_dir() else None
-        default = Path(__file__).resolve().parents[2] / "build" / "routing-qt" / "qml"
-        return str(default) if default.is_dir() else None
+        build = Path(__file__).resolve().parents[2] / "build"
+        for default in (build / "routing-qsg-module", build / "routing-qt" / "qml"):
+            if default.is_dir():
+                return str(default)
+        return None
 
     def _sync_retained_overlay(self):
         """Prefer the retained QSG item when its Qt module can be loaded.

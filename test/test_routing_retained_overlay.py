@@ -35,7 +35,22 @@ from sailworks.qt.viewportmap import ViewportMap
 from sailworks.rendering.routingoverlay import RoutingOverlayModel
 
 ROOT = Path(__file__).resolve().parents[1]
-QML_DIR = os.environ.get("SAILWORKS_ROUTING_QML_PATH")
+
+
+def _qml_dir():
+    configured = os.environ.get("SAILWORKS_ROUTING_QML_PATH")
+    if configured:
+        return configured
+    for candidate in (
+        ROOT / "build" / "routing-qsg-module",
+        ROOT / "build" / "routing-qt" / "qml",
+    ):
+        if candidate.is_dir():
+            return str(candidate)
+    return None
+
+
+QML_DIR = _qml_dir()
 
 pytestmark = pytest.mark.skipif(
     not QML_DIR or not Path(QML_DIR).is_dir(),
