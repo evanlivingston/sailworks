@@ -134,6 +134,8 @@ class Routing(Track):
         self.result_summary = deepcopy(result_summary)
         # Eligibility is only trusted after this session verified the artifact.
         self._result_verified = bool(result_verified) and result_ref is not None
+        # Set when a referenced artifact could not be read for display.
+        self.contour_error = None
 
     @property
     def isochrones(self):
@@ -145,11 +147,23 @@ class Routing(Track):
         """
         if self._isochrones is not None:
             return self._isochrones
-        store = self._attached_store()
-        if self.result_ref is None or store is None:
+        if self.result_ref is None:
             self._isochrones = []
             return self._isochrones
-        self._isochrones = contour_frontiers(self.load_result(store))
+        store = self._attached_store()
+        if store is None:
+            # No collection yet: leave the cache unset so a later attach still
+            # hydrates the reference instead of pinning an empty result.
+            return ()
+        try:
+            result = self.load_result(store)
+        except (OSError, KeyError, ValueError) as exc:
+            # Missing, pruned or corrupt artifact: show no contours rather than
+            # raising from a display slot, and keep the route unverified.
+            self.contour_error = f"{type(exc).__name__}: {exc}"
+            return ()
+        self.contour_error = None
+        self._isochrones = contour_frontiers(result)
         return self._isochrones
 
     @isochrones.setter
@@ -206,6 +220,12 @@ class Routing(Track):
         claimed = summary.get("calculation_id")
         if claimed is not None and claimed != result.calculation_id:
             raise SchemaError("result artifact does not match the saved summary")
+        for name, claimed_value, actual in (
+            ("generation", summary.get("generation"), result.generation),
+            ("sequence", summary.get("sequence"), result.sequence),
+        ):
+            if claimed_value is not None and claimed_value != actual:
+                raise SchemaError(f"result artifact does not match the saved {name}")
         self.result_summary = result_summary(result)
         self._result_verified = True
         return result

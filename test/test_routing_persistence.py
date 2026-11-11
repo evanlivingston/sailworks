@@ -276,9 +276,15 @@ def test_schema_result_persists_reference_without_duplicate_isochrones(
 
     reloaded_route = Routing.from_json(payload)
     assert reloaded_route.result_ref == route.result_ref
-    # No collection is attached, so there is nothing to hydrate from; the
-    # artifact remains authoritative and is reloaded through the collection.
-    assert reloaded_route.isochrones == []
+    # No collection is attached, so display cannot hydrate yet; the empty
+    # result must not be cached, or attaching later would never load.
+    assert reloaded_route.isochrones == ()
+    reloaded_route.collection = collection
+    assert reloaded_route.isochrones == [
+        [(48.0, -124.0), (48.0, -123.0), (48.5, -123.0)],
+        [(48.1, -124.1)],
+        [(48.2, -123.9)],
+    ]
     assert RoutingResult.from_dict(store.load_json(route.result_ref)) == result
 
 
@@ -384,3 +390,33 @@ def test_controller_reports_routing_store_errors(tmp_path, monkeypatch):
 
     assert "artifact store unavailable" in host.error
     assert host.saved_count == 0
+
+
+def test_missing_or_corrupt_artifact_shows_no_contours_without_raising(
+    tmp_path, monkeypatch
+):
+    from dataclasses import replace
+
+    writer, store = _collection(tmp_path, monkeypatch)
+    route = writer.save_result("alpha", _result())
+    reloaded = Routing.from_json(route.to_json())
+    reloaded.collection = writer
+
+    # Remove the artifact: a restored collection without the store file must
+    # degrade to "no contours" rather than raising from a display path.
+    store._path(reloaded.result_ref.artifact_id).unlink()
+
+    assert reloaded.isochrones == ()
+    assert reloaded.contour_error is not None
+    assert reloaded.export_eligible is False
+
+
+def test_artifact_mismatched_generation_is_rejected(tmp_path, monkeypatch):
+    writer, store = _collection(tmp_path, monkeypatch)
+    route = writer.save_result("alpha", _result())
+    reloaded = Routing.from_json(route.to_json())
+    reloaded.collection = writer
+    reloaded.result_summary = dict(reloaded.result_summary, generation=99)
+
+    assert reloaded.isochrones == ()
+    assert "generation" in (reloaded.contour_error or "")
