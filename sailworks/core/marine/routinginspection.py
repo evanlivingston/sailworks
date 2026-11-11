@@ -8,7 +8,7 @@ absent field is reported as missing rather than as a reassuring zero.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 from .routingresult import RoutingResult
 
@@ -322,10 +322,16 @@ class RoutingInspector:
             for layer in self._result.layers
         )
 
-    def nearest_layer(self, epoch_s: int) -> Optional[LayerSummary]:
-        """Layer nearest a forecast instant; ties choose the earlier layer."""
+    def nearest_layer(
+        self,
+        epoch_s: int,
+        is_visible: Optional[Callable[[str], bool]] = None,
+    ) -> Optional[LayerSummary]:
+        """Nearest displayed layer; ties choose the earlier layer."""
         best = None
         for layer in self.layers():
+            if is_visible is not None and not is_visible(layer.layer_id):
+                continue
             distance = abs(layer.time_epoch_s - epoch_s)
             if best is None or distance < best[0]:
                 best = (distance, layer)

@@ -50,6 +50,7 @@ class RoutingInspectorPanel(QWidget):
         self._syncing = False
         self._restore_missing = ()
         self._context_error = None
+        self._layer_visibility = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 12)
 
@@ -90,7 +91,12 @@ class RoutingInspectorPanel(QWidget):
         return self._selection
 
     def set_result(
-        self, result: RoutingResult, selection=None, context=None, context_error=None
+        self,
+        result: RoutingResult,
+        selection=None,
+        context=None,
+        context_error=None,
+        layer_visibility=None,
     ):
         if not isinstance(result, RoutingResult):
             raise TypeError("result must be a RoutingResult")
@@ -126,6 +132,7 @@ class RoutingInspectorPanel(QWidget):
             self._unsubscribe = None
         self._result = result
         self._inspector = RoutingInspector(result)
+        self._layer_visibility = layer_visibility
         self._selection = next_selection
         self._restore_missing = ()
         self._context_error = str(context_error) if context_error is not None else None
@@ -236,7 +243,7 @@ class RoutingInspectorPanel(QWidget):
     def select_nearest_layer(self, epoch_s: int) -> bool:
         if self._inspector is None or self._selection is None:
             return False
-        layer = self._inspector.nearest_layer(epoch_s)
+        layer = self._inspector.nearest_layer(epoch_s, self._layer_visibility)
         if layer is None:
             return False
         self._selection.select_layer(layer.layer_id)

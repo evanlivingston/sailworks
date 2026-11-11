@@ -124,6 +124,22 @@ def test_panel_nearest_layer_selection_links_to_selection_signal(app):
     assert panel.layer_combo.currentText() == "layer-0"
 
 
+def test_panel_nearest_layer_skips_hidden_overlay_layers(app):
+    from sailworks.rendering.routingoverlay import RoutingOverlayModel
+
+    result = _result()
+    model = RoutingOverlayModel(result)
+    panel = RoutingInspectorPanel()
+    panel.set_result(result, layer_visibility=model.is_layer_visible)
+
+    model.set_layer_visible("layer-0", False)
+    assert panel.select_nearest_layer(1767226500) is True
+    assert panel.layer_combo.currentText() == "layer-1"
+
+    model.set_layer_visible("layer-1", False)
+    assert panel.select_nearest_layer(1767228300) is False
+
+
 def test_panel_selection_is_shared_across_surfaces(app):
     from sailworks.core.marine.routingselection import RoutingSelection
 
