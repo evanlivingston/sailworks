@@ -2818,6 +2818,13 @@ GATES["routing-overlay-qsg"] = {
             "value": 1,
             "source": "#134 P5 gate: the retained item draws the routing layer",
         },
+        {
+            "label": "hover highlight survives a zoom rebuild",
+            "metric": "fidelity.highlight_survives_zoom",
+            "aggregate": "all",
+            "op": "is_true",
+            "source": "#134 P6: hover/pin emphasis must survive geometry rebuilds",
+        },
     ],
     "reference": {
         "kind": "recorded-evidence",

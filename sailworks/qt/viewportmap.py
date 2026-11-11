@@ -866,6 +866,21 @@ def _viewport_overlay_key(host):
         _overlay_size(getattr(host, "race_boat_markers", ())),
         _overlay_ais(host),
         id(frame),
+        id(getattr(host, "native_routing", None)),
+        getattr(getattr(host, "native_routing", None), "geometry_revision", -1),
+        bool(getattr(host, "_retained_active", False)),
+        (
+            tuple(
+                layer.layer_id
+                for layer in getattr(
+                    getattr(host, "native_routing", None), "layers", ()
+                )
+                if host.native_routing.is_layer_visible(layer.layer_id)
+            )
+            if getattr(host, "native_routing", None) is not None
+            else None
+        ),
+        getattr(getattr(host, "native_routing", None), "traces_visible", None),
         _overlay_size(getattr(frame, "isochrones", ())),
         _overlay_size(getattr(frame, "path", ())),
         _overlay_size(getattr(frame, "exclusions", ())),

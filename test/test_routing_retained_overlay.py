@@ -126,7 +126,7 @@ def test_retained_overlay_is_attached_to_the_scene():
         time.sleep(0.02)
     item = view.rootObject().findChild(object, "retainedRoutingOverlay")
     assert item is not None
-    assert item.property("segments")
+    assert item.property("polylines")
     assert item.property("zoom") == pytest.approx(6.0)
 
     image = view.grabWindow()

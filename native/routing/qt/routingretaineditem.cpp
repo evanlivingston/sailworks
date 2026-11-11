@@ -197,8 +197,16 @@ QSGNode *RoutingRetainedItem::updatePaintNode(QSGNode *node,
             matrix.translate(previous.x(), previous.y());
             matrix.rotate(qRadiansToDegrees(std::atan2(dy, dx)), 0, 0, 1);
             segmentTransform->setMatrix(matrix);
+            QColor segmentColour = color_;
+            if (!polylineId.isEmpty()) {
+              if (polylineId == hoverId_) {
+                segmentColour = hoverColor_;
+              } else if (polylineId == selectedId_) {
+                segmentColour = selectedColor_;
+              }
+            }
             auto *rect = new SegmentRect(
-                QRectF(0.0, -stroke / 2.0, length, stroke), color_,
+                QRectF(0.0, -stroke / 2.0, length, stroke), segmentColour,
                 polylineId);
             segmentTransform->appendChildNode(rect);
             camera->appendChildNode(segmentTransform);
@@ -210,7 +218,8 @@ QSGNode *RoutingRetainedItem::updatePaintNode(QSGNode *node,
     }
     ++geometryRebuilds_;
     geometryDirty_ = false;
-    styleDirty_ = false;
+    // Keep one style pass pending so a later highlight change is not lost.
+    styleDirty_ = true;
   } else if (styleDirty_) {
     for (QSGNode *segment = camera->firstChild(); segment != nullptr;
          segment = segment->nextSibling()) {

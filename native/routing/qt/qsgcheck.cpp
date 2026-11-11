@@ -95,9 +95,12 @@ int main(int argc, char **argv) {
   QVariantList segment;
   segment.append(QVariant(QVariantList{48.2, -123.7}));
   segment.append(QVariant(QVariantList{48.4, -123.5}));
-  QVariantList segments;
-  segments.append(QVariant(segment));
-  item->setProperty("segments", segments);
+  QVariantMap polyline;
+  polyline["id"] = QStringLiteral("trace-0");
+  polyline["points"] = segment;
+  QVariantList polylines;
+  polylines.append(polyline);
+  item->setProperty("polylines", polylines);
   item->setProperty("color", QColor(0, 0, 204, 200));
   item->setProperty("lineWidth", 3.0);
   item->setProperty("zoom", kZoom);
@@ -125,6 +128,34 @@ int main(int argc, char **argv) {
   const QPointF movedMidpoint{(startMoved.x() + endMoved.x()) / 2.0,
                               (startMoved.y() + endMoved.y()) / 2.0};
   const int rebuildsAfterPan = item->property("geometryRebuilds").toInt();
+
+  // Highlight must survive a geometry rebuild (zoom recreates the quads).
+  item->setProperty("hoverId", QStringLiteral("trace-0"));
+  spin(app);
+  item->setProperty("zoom", kZoom + 0.5);
+  spin(app);
+  const QImage zoomed = view.grabWindow();
+  const QPointF zoomedStart =
+      projectPoint(48.2, -123.7, kCenterLat, movedLon, kZoom + 0.5);
+  const QPointF zoomedEnd =
+      projectPoint(48.4, -123.5, kCenterLat, movedLon, kZoom + 0.5);
+  const QPointF zoomedMidpoint{(zoomedStart.x() + zoomedEnd.x()) / 2.0,
+                               (zoomedStart.y() + zoomedEnd.y()) / 2.0};
+  bool highlightSurvivesZoom = false;
+  for (int dy = -4; dy <= 4 && !highlightSurvivesZoom; ++dy) {
+    for (int dx = -4; dx <= 4; ++dx) {
+      const int px = static_cast<int>(zoomedMidpoint.x()) + dx;
+      const int py = static_cast<int>(zoomedMidpoint.y()) + dy;
+      if (px < 0 || py < 0 || px >= zoomed.width() || py >= zoomed.height()) {
+        continue;
+      }
+      const QColor c = zoomed.pixelColor(px, py);
+      if (c.red() > c.blue() + 40) {
+        highlightSurvivesZoom = true;
+        break;
+      }
+    }
+  }
   const qreal strokePixels = std::fabs(movedMidpoint.x() - midpoint.x());
 
   QJsonObject report;
@@ -136,6 +167,7 @@ int main(int argc, char **argv) {
       {"ink_at_oracle_midpoint", inkAtOracle},
       {"ink_after_pan", inkNear(moved, movedMidpoint)},
       {"stale_ink_at_old_midpoint", inkNear(moved, midpoint)},
+      {"highlight_survives_zoom", highlightSurvivesZoom},
       {"sampled_blue_minus_red",
        first.pixelColor(static_cast<int>(midpoint.x()),
                         static_cast<int>(midpoint.y()))

@@ -15,9 +15,7 @@ import multiprocessing
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
-STATES = frozenset(
-    {"queued", "running", "completed", "cancelled", "failed", "superseded"}
-)
+STATES = frozenset({"queued", "running", "completed", "cancelled", "failed"})
 
 
 @dataclass
@@ -63,6 +61,7 @@ class NativeRoutingWorker:
         self._connection = None
         self._generation = 0
         self._active_generation: Optional[int] = None
+        self._superseded_generation: Optional[int] = None
         self._status: Optional[NativeJobStatus] = None
 
     @property
@@ -72,6 +71,11 @@ class NativeRoutingWorker:
     @property
     def running(self) -> bool:
         return self._process is not None and self._process.is_alive()
+
+    @property
+    def superseded_generation(self) -> Optional[int]:
+        """Generation replaced by the most recent submit, if any."""
+        return self._superseded_generation
 
     @property
     def status(self) -> Optional[NativeJobStatus]:
@@ -86,7 +90,14 @@ class NativeRoutingWorker:
         process = self._context.Process(
             target=_worker_main, args=(child, engine), daemon=True
         )
-        process.start()
+        try:
+            process.start()
+        except BaseException:
+            parent.close()
+            child.close()
+            self._status = None
+            self._active_generation = None
+            raise
         child.close()
         self._process = process
         self._connection = parent
@@ -156,9 +167,8 @@ class NativeRoutingWorker:
     def _supersede(self) -> None:
         if self._active_generation is None:
             return
-        previous = self._active_generation
+        self._superseded_generation = self._active_generation
         self._terminate()
-        self._status = NativeJobStatus(previous, "superseded")
 
     def _terminate(self) -> None:
         if self._process is not None:
