@@ -1412,6 +1412,9 @@ class PreviewWindow(QMainWindow):
         selection = self.controller.routing.native_selection
         if model is not None and selection is not None:
             model.set_selected_layer(selection.layer_id)
+            apply_highlight = getattr(self.map, "_apply_retained_highlight", None)
+            if apply_highlight is not None:
+                apply_highlight()
 
     def _sync_route_isochrones(self):
         if not self.controller.routing.busy:

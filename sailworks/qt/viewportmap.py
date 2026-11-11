@@ -659,8 +659,13 @@ class ViewportMap(
             ),
         )
         if getattr(self, "_retained_segments_signature", None) != signature:
-            segments = [
-                [[float(point[0]), float(point[1])] for point in polyline.points]
+            polylines = [
+                {
+                    "id": polyline.object_id,
+                    "points": [
+                        [float(point[0]), float(point[1])] for point in polyline.points
+                    ],
+                }
                 for polyline in model.polylines
                 if (polyline.kind != "trace" or model.traces_visible)
                 and (
@@ -668,14 +673,32 @@ class ViewportMap(
                     or model.is_layer_visible(polyline.layer_id)
                 )
             ]
-            item.setProperty("segments", segments)
+            item.setProperty("polylines", polylines)
             self._retained_segments_signature = signature
+        self._retained_item = item
+        apply_highlight = getattr(self, "_apply_retained_highlight", None)
+        if apply_highlight is not None:
+            apply_highlight()
         item.setProperty("color", QColor(0, 0, 204, 160))
         item.setProperty("lineWidth", 1.5)
         item.setProperty("centerLatitude", float(camera.center_lat))
         item.setProperty("centerLongitude", float(camera.center_lon))
         item.setProperty("zoom", float(camera.zoom))
         return True
+
+    def _selected_trace_id(self):
+        routing = getattr(getattr(self, "controller", None), "routing", None)
+        selection = getattr(routing, "native_selection", None)
+        return "" if selection is None else (selection.trace_id or "")
+
+    def _apply_retained_highlight(self):
+        item = getattr(self, "_retained_item", None)
+        model = getattr(self, "native_routing", None)
+        if item is None or model is None:
+            return
+        selected = getattr(self, "_selected_trace_id", None)
+        item.setProperty("hoverId", model.hover_trace_id or "")
+        item.setProperty("selectedId", selected() if selected is not None else "")
 
     def _update_routing_hover(self, latitude, longitude):
         """Preview the nearest retained trace under the cursor."""
@@ -689,7 +712,10 @@ class ViewportMap(
         if getattr(self, "_retained_active", False):
             # The retained item owns the geometry; republishing the full
             # canvas payload on every pointer move is what made panning and
-            # hovering feel locked up.
+            # hovering feel locked up. Recolour the hit trace instead.
+            apply_highlight = getattr(self, "_apply_retained_highlight", None)
+            if apply_highlight is not None:
+                apply_highlight()
             return
         self._viewport_overlay_cache = None
         self.publish_route_overlay(force=True)
@@ -705,6 +731,9 @@ class ViewportMap(
         if trace is None:
             return False
         selection.select_trace(trace)
+        apply_highlight = getattr(self, "_apply_retained_highlight", None)
+        if apply_highlight is not None:
+            apply_highlight()
         if not getattr(self, "_retained_active", False):
             self._viewport_overlay_cache = None
             self.publish_route_overlay(force=True)

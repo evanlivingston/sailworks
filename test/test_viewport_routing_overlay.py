@@ -157,7 +157,7 @@ def test_retained_sync_does_not_rebuild_segments_per_publish():
             self.segment_writes = 0
 
         def setProperty(self, name, value):
-            if name == "segments":
+            if name == "polylines":
                 self.segment_writes += 1
             self.values[name] = value
             return True
@@ -196,3 +196,33 @@ def test_retained_sync_does_not_rebuild_segments_per_publish():
     host.native_routing.set_layer_visible("layer-1", False)
     assert ViewportMap._sync_retained_overlay(host) is True
     assert item.segment_writes == 2
+
+
+def test_retained_highlight_properties_follow_hover_and_selection():
+    from types import SimpleNamespace
+
+    from sailworks.core.marine.routingselection import RoutingSelection
+    from sailworks.qt.viewportmap import ViewportMap
+
+    class FakeItem:
+        def __init__(self):
+            self.values = {}
+
+        def setProperty(self, name, value):
+            self.values[name] = value
+            return True
+
+    result = _result(layer_count=1)
+    model = RoutingOverlayModel(result)
+    model._hover_trace_id = "trace-0"
+    selection = RoutingSelection(result)
+    item = FakeItem()
+    host = SimpleNamespace(
+        _retained_item=item,
+        native_routing=model,
+        controller=SimpleNamespace(routing=SimpleNamespace(native_selection=selection)),
+    )
+
+    ViewportMap._apply_retained_highlight(host)
+    assert item.values["hoverId"] == "trace-0"
+    assert item.values["selectedId"] == ""

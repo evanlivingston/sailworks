@@ -12,6 +12,23 @@
 
 namespace {
 
+// Rectangle node that remembers which routing polyline it belongs to so a
+// hover/selection change can recolour without rebuilding geometry.
+class SegmentRect : public QSGSimpleRectNode {
+ public:
+  explicit SegmentRect(const QRectF &rect, const QColor &colour,
+                       const QString &polylineId)
+      : QSGSimpleRectNode(rect, colour), polylineId_(polylineId) {}
+  QString polylineId() const { return polylineId_; }
+
+ private:
+  QString polylineId_;
+};
+
+}  // namespace
+
+namespace {
+
 qreal mercatorY(qreal latitude) {
   const qreal clamped = qBound<qreal>(-85.05112878, latitude, 85.05112878);
   return 0.5 - std::asinh(std::tan(qDegreesToRadians(clamped))) / (2.0 * M_PI);
@@ -24,6 +41,44 @@ qreal mercatorX(qreal longitude) { return (longitude + 180.0) / 360.0; }
 RoutingRetainedItem::RoutingRetainedItem(QQuickItem *parent)
     : QQuickItem(parent) {
   setFlag(ItemHasContents, true);
+  // Geometry only: mouse, hover and wheel must reach the map beneath.
+  setAcceptedMouseButtons(Qt::NoButton);
+  setAcceptHoverEvents(false);
+}
+
+void RoutingRetainedItem::setPolylines(const QVariantList &polylines) {
+  if (polylines_ == polylines) return;
+  polylines_ = polylines;
+  markGeometryDirty();
+  emit segmentsChanged();
+}
+
+void RoutingRetainedItem::setHoverId(const QString &value) {
+  if (hoverId_ == value) return;
+  hoverId_ = value;
+  markStyleDirty();
+  emit highlightChanged();
+}
+
+void RoutingRetainedItem::setSelectedId(const QString &value) {
+  if (selectedId_ == value) return;
+  selectedId_ = value;
+  markStyleDirty();
+  emit highlightChanged();
+}
+
+void RoutingRetainedItem::setHoverColor(const QColor &value) {
+  if (hoverColor_ == value) return;
+  hoverColor_ = value;
+  markStyleDirty();
+  emit styleChanged();
+}
+
+void RoutingRetainedItem::setSelectedColor(const QColor &value) {
+  if (selectedColor_ == value) return;
+  selectedColor_ = value;
+  markStyleDirty();
+  emit styleChanged();
 }
 
 void RoutingRetainedItem::setSegments(const QVariantList &segments) {
@@ -108,8 +163,19 @@ QSGNode *RoutingRetainedItem::updatePaintNode(QSGNode *node,
       camera->removeChildNode(child);
       delete child;
     }
-    for (const QVariant &entry : segments_) {
-      const QVariantList polyline = entry.toList();
+    QVariantList effective = polylines_;
+    if (effective.isEmpty()) {
+      for (const QVariant &entry : segments_) {
+        QVariantMap map;
+        map["id"] = QString();
+        map["points"] = entry;
+        effective.append(map);
+      }
+    }
+    for (const QVariant &entryValue : effective) {
+      const QVariantMap entry = entryValue.toMap();
+      const QVariantList polyline = entry.value("points").toList();
+      const QString polylineId = entry.value("id").toString();
       if (polyline.size() < 2) continue;
       QPointF previous;
       bool havePrevious = false;
@@ -131,8 +197,9 @@ QSGNode *RoutingRetainedItem::updatePaintNode(QSGNode *node,
             matrix.translate(previous.x(), previous.y());
             matrix.rotate(qRadiansToDegrees(std::atan2(dy, dx)), 0, 0, 1);
             segmentTransform->setMatrix(matrix);
-            auto *rect = new QSGSimpleRectNode(
-                QRectF(0.0, -stroke / 2.0, length, stroke), color_);
+            auto *rect = new SegmentRect(
+                QRectF(0.0, -stroke / 2.0, length, stroke), color_,
+                polylineId);
             segmentTransform->appendChildNode(rect);
             camera->appendChildNode(segmentTransform);
           }
@@ -149,8 +216,16 @@ QSGNode *RoutingRetainedItem::updatePaintNode(QSGNode *node,
          segment = segment->nextSibling()) {
       for (QSGNode *rect = segment->firstChild(); rect != nullptr;
            rect = rect->nextSibling()) {
-        if (auto *rectangle = dynamic_cast<QSGSimpleRectNode *>(rect)) {
-          rectangle->setColor(color_);
+        if (auto *rectangle = dynamic_cast<SegmentRect *>(rect)) {
+          QColor colour = color_;
+          if (!rectangle->polylineId().isEmpty()) {
+            if (rectangle->polylineId() == hoverId_) {
+              colour = hoverColor_;
+            } else if (rectangle->polylineId() == selectedId_) {
+              colour = selectedColor_;
+            }
+          }
+          rectangle->setColor(colour);
           rectangle->markDirty(QSGNode::DirtyMaterial);
         }
       }

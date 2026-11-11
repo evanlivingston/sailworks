@@ -21,6 +21,15 @@ class RoutingRetainedItem : public QQuickItem {
   Q_PROPERTY(qreal centerLongitude READ centerLongitude WRITE setCenterLongitude
                  NOTIFY cameraChanged)
   Q_PROPERTY(qreal zoom READ zoom WRITE setZoom NOTIFY zoomChanged)
+  Q_PROPERTY(QVariantList polylines READ polylines WRITE setPolylines NOTIFY
+                 segmentsChanged)
+  Q_PROPERTY(QString hoverId READ hoverId WRITE setHoverId NOTIFY highlightChanged)
+  Q_PROPERTY(QString selectedId READ selectedId WRITE setSelectedId NOTIFY
+                 highlightChanged)
+  Q_PROPERTY(QColor hoverColor READ hoverColor WRITE setHoverColor NOTIFY
+                 styleChanged)
+  Q_PROPERTY(QColor selectedColor READ selectedColor WRITE setSelectedColor NOTIFY
+                 styleChanged)
   Q_PROPERTY(int geometryRebuilds READ geometryRebuilds)
   Q_PROPERTY(int matrixUpdates READ matrixUpdates)
 
@@ -29,6 +38,17 @@ class RoutingRetainedItem : public QQuickItem {
 
   QVariantList segments() const { return segments_; }
   void setSegments(const QVariantList &segments);
+
+  QVariantList polylines() const { return polylines_; }
+  void setPolylines(const QVariantList &polylines);
+  QString hoverId() const { return hoverId_; }
+  void setHoverId(const QString &value);
+  QString selectedId() const { return selectedId_; }
+  void setSelectedId(const QString &value);
+  QColor hoverColor() const { return hoverColor_; }
+  void setHoverColor(const QColor &value);
+  QColor selectedColor() const { return selectedColor_; }
+  void setSelectedColor(const QColor &value);
 
   QColor color() const { return color_; }
   void setColor(const QColor &color);
@@ -48,6 +68,7 @@ class RoutingRetainedItem : public QQuickItem {
  signals:
   void segmentsChanged();
   void styleChanged();
+  void highlightChanged();
   void cameraChanged();
   void zoomChanged();
 
@@ -60,6 +81,11 @@ class RoutingRetainedItem : public QQuickItem {
   void markCameraDirty();
 
   QVariantList segments_;
+  QVariantList polylines_;
+  QString hoverId_;
+  QString selectedId_;
+  QColor hoverColor_{QColor(255, 140, 0, 230)};
+  QColor selectedColor_{QColor(220, 40, 40, 230)};
   QColor color_{QColor(0, 0, 204, 160)};
   qreal lineWidth_ = 1.5;
   qreal centerLatitude_ = 0.0;
