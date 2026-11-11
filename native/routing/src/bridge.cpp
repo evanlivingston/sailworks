@@ -832,7 +832,9 @@ PYBIND11_MODULE(sailworks_native_routing, module) {
          const std::string& provider_identity, const std::string& source,
          const std::string& engine, bool cancelled,
          const py::object& polar, const std::string& polar_identity,
-         const std::string& polar_assumptions) {
+         const std::string& polar_assumptions, const py::object& start,
+         const py::object& destination,
+         const py::object& departure_epoch_s) {
         auto provider = std::make_shared<PythonWeatherProvider>(
             std::move(wind), std::move(current),
             coverageFromDict(coverage, provider_identity), provider_identity,
@@ -840,17 +842,40 @@ PYBIND11_MODULE(sailworks_native_routing, module) {
         std::optional<wr::VesselConfiguration> vessel;
         if (!polar.is_none())
           vessel = vesselFromPolar(polar, polar_identity, polar_assumptions);
+        auto requestPoint = [](const py::object& value,
+                               const char* name) -> std::optional<wr::GeoPoint> {
+          if (value.is_none()) return std::nullopt;
+          const py::sequence pair = py::cast<py::sequence>(value);
+          if (py::len(pair) != 2)
+            throw py::value_error(std::string(name) +
+                                  " must be a (latitude, longitude) pair");
+          return wr::GeoPoint{py::cast<double>(pair[0]),
+                              py::cast<double>(pair[1])};
+        };
+        sailworks::native_routing::FixtureRequestOverride overrides;
+        overrides.start = requestPoint(start, "start");
+        overrides.destination = requestPoint(destination, "destination");
+        if (!departure_epoch_s.is_none()) {
+          overrides.departure = wr::TimePoint{wr::Duration{
+              py::cast<std::int64_t>(departure_epoch_s)}};
+        }
         return runDict(sailworks::native_routing::runWithProvider(
-            engine, std::move(provider), cancelled, std::move(vessel)));
+            engine, std::move(provider), cancelled, std::move(vessel),
+            overrides));
       },
       py::arg("wind"), py::arg("current"), py::arg("coverage"),
       py::arg("provider_identity") = "python-weather-provider",
       py::arg("source") = "grib", py::arg("engine") = "main",
       py::arg("cancelled") = false, py::arg("polar") = py::none(),
       py::arg("polar_identity") = "supplied-polar",
-      py::arg("polar_assumptions") = "",
+      py::arg("polar_assumptions") = "", py::arg("start") = py::none(),
+      py::arg("destination") = py::none(),
+      py::arg("departure_epoch_s") = py::none(),
       "Run the synthetic scenario with weather sampled through Python "
       "callables; wind returns (from_degrees, speed_ms, available) and "
       "current returns (east_ms, north_ms, available) toward motion. An "
-      "optional polar replaces the fixture vessel model.");
+      "optional polar replaces the fixture vessel model. Optional start and "
+      "destination are (latitude, longitude) pairs and departure_epoch_s is "
+      "UTC epoch seconds; setting them relocates only the request geometry, "
+      "the polar, constraints, options and limits stay frozen.");
 }
