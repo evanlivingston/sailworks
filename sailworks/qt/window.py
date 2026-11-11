@@ -910,6 +910,9 @@ class PreviewWindow(QMainWindow):
         self.scene_panel.refresh()
         self._select_saved_route(route)
         self.map.fit_route()
+        self._refresh_routing_alternatives(select_route=route)
+        if getattr(route, "result_ref", None) is not None:
+            self._show_saved_routing_route(route)
 
     def _navigation_route_selected(self, route):
         coordinates = (
@@ -1415,6 +1418,26 @@ class PreviewWindow(QMainWindow):
             apply_highlight = getattr(self.map, "_apply_retained_highlight", None)
             if apply_highlight is not None:
                 apply_highlight()
+            # Persist the inspection context with the referenced result so a
+            # reload restores it without touching a forecast.
+            route = getattr(self, "_routing_active_route", None)
+            if route is not None:
+                from sailworks.core.marine.routinginspection import InspectionContext
+
+                summary = getattr(route, "result_summary", None)
+                recorded = (
+                    summary.get("calculation_id") if isinstance(summary, dict) else None
+                )
+                if recorded is not None and recorded != selection.calculation_id:
+                    # A selection that is not this route's result must never
+                    # overwrite the context saved beside it.
+                    return
+                context = InspectionContext.from_selection(selection).to_dict()
+                if route.inspection_context != context:
+                    route.inspection_context = context
+                    collection = getattr(route, "collection", None)
+                    if collection is not None:
+                        collection.save()
 
     def _sync_route_isochrones(self):
         if not self.controller.routing.busy:
@@ -1429,6 +1452,11 @@ class PreviewWindow(QMainWindow):
 
     def _create_routing_inspector(self):
         self.routing_inspector = RoutingInspectorPanel(self)
+        self.routing_inspector.alternative_selected.connect(
+            self._routing_alternative_selected
+        )
+        self._routing_alternative_routes = ()
+        self._routing_active_route = None
         self.routing_inspector_dock = QDockWidget("Routing inspector", self)
         self.routing_inspector_dock.setObjectName("routing-inspector-dock")
         self.routing_inspector_dock.setWidget(self.routing_inspector)
@@ -1436,6 +1464,99 @@ class PreviewWindow(QMainWindow):
             Qt.DockWidgetArea.RightDockWidgetArea, self.routing_inspector_dock
         )
         self.routing_inspector_dock.hide()
+        self._refresh_routing_alternatives()
+
+    def _routing_alternatives(self):
+        manager = getattr(
+            getattr(getattr(self, "controller", None), "core", None),
+            "routingManager",
+            None,
+        )
+        return tuple(
+            route
+            for route in getattr(manager, "elements", ())
+            if getattr(route, "result_ref", None) is not None
+        )
+
+    def _refresh_routing_alternatives(self, select_route=None):
+        routes = self._routing_alternatives()
+        self._routing_alternative_routes = routes
+        labels = []
+        for route in routes:
+            summary = (
+                route.result_summary if isinstance(route.result_summary, dict) else {}
+            )
+            calculation = str(summary.get("calculation_id", ""))[:8]
+            labels.append(
+                f"{route.name} · {calculation}" if calculation else str(route.name)
+            )
+        try:
+            current = routes.index(select_route)
+        except ValueError:
+            current = None
+        self.routing_inspector.set_alternatives(labels, current)
+
+    def _show_saved_routing_route(self, route):
+        try:
+            manager = getattr(
+                getattr(getattr(self, "controller", None), "core", None),
+                "routingManager",
+                None,
+            )
+            if manager is None:
+                raise ValueError("no routing collection is loaded")
+            result = manager.load_result(route)
+            model = self.controller.routing.show_native_result(result)
+        except (OSError, KeyError, ValueError) as exc:
+            self.routing_inspector.show_error(f"Routing result unavailable: {exc}")
+            self.routing_inspector_dock.show()
+            return
+        self._select_saved_route(route)
+        from sailworks.core.marine.routinginspection import InspectionContext
+
+        try:
+            context = InspectionContext.from_dict(route.inspection_context)
+        except ValueError as exc:
+            context = None
+            context_error = str(exc)
+        else:
+            context_error = None
+            recorded = getattr(context, "calculation_id", None)
+            if recorded is not None and recorded != result.calculation_id:
+                # Preflight before presenting so a stored context from another
+                # calculation cannot half-switch the inspector.
+                context_error = (
+                    "stored inspection context belongs to calculation "
+                    f"{recorded}; this result is {result.calculation_id}"
+                )
+                context = None
+        self._present_routing_result(
+            model, route=route, context=context, context_error=context_error
+        )
+
+    def _present_routing_result(
+        self, model, route=None, context=None, context_error=None
+    ):
+        previous_unsubscribe = getattr(self, "_routing_selection_unsubscribe", None)
+        if previous_unsubscribe is not None:
+            previous_unsubscribe()
+        selection = self.controller.routing.native_selection
+        self.routing_inspector.set_result(
+            model.result, selection, context=context, context_error=context_error
+        )
+        self._routing_selection_target = model
+        self._routing_active_route = route
+        self._routing_selection_unsubscribe = selection.subscribe(
+            self._routing_selection_changed
+        )
+        self.routing_inspector_dock.show()
+        self._sync_route_isochrones()
+
+    def _routing_alternative_selected(self, index):
+        routes = getattr(self, "_routing_alternative_routes", ())
+        if index < 0 or index >= len(routes):
+            return
+        self._show_saved_routing_route(routes[index])
 
     def show_native_routing_result(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -1444,25 +1565,14 @@ class PreviewWindow(QMainWindow):
         if not path:
             return
         try:
-            self.controller.routing.show_native_result_file(path)
+            model = self.controller.routing.show_native_result_file(path)
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "Native routing result", str(exc))
             return
-        previous_unsubscribe = getattr(self, "_routing_selection_unsubscribe", None)
-        if previous_unsubscribe is not None:
-            previous_unsubscribe()
-        model = self.controller.routing.native_overlay
-        selection = self.controller.routing.native_selection
-        self.routing_inspector.set_result(model.result, selection)
+        self._present_routing_result(model)
         self.routing_inspector.select_nearest_layer(
             model.result.layers[0].time_epoch_s if model.result.layers else 0
         )
-        self._routing_selection_target = model
-        self._routing_selection_unsubscribe = selection.subscribe(
-            self._routing_selection_changed
-        )
-        self.routing_inspector_dock.show()
-        self._sync_route_isochrones()
 
     def _nmea_panel(self):
         panel = QWidget()

@@ -12,7 +12,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sailworks.core.marine.routinginspection import RoutingInspector
+from sailworks.core.marine.routinginspection import (
+    InspectionContext,
+    RoutingInspector,
+    diagnostics,
+)
 from sailworks.core.marine.routingresult import RoutingResult
 from sailworks.core.marine.routingselection import RoutingSelection
 from .routingplot import RoutingLegPlot
@@ -35,6 +39,7 @@ class RoutingInspectorPanel(QWidget):
 
     layer_selected = Signal(str)
     leg_selected = Signal(str)
+    alternative_selected = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -43,8 +48,16 @@ class RoutingInspectorPanel(QWidget):
         self._selection = None
         self._unsubscribe = None
         self._syncing = False
+        self._restore_missing = ()
+        self._context_error = None
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 12)
+
+        self.alternative_combo = QComboBox(self)
+        self.alternative_combo.currentIndexChanged.connect(self._alternative_changed)
+        form = QFormLayout()
+        form.addRow("Alternative", self.alternative_combo)
+        layout.addLayout(form)
 
         self.layer_combo = QComboBox(self)
         self.layer_combo.currentIndexChanged.connect(self._layer_changed)
@@ -56,6 +69,8 @@ class RoutingInspectorPanel(QWidget):
         self.leg_combo = QComboBox(self)
         self.leg_combo.currentIndexChanged.connect(self._leg_changed)
         form.addRow("Leg", self.leg_combo)
+        self.trace_label = QLabel("none", self)
+        form.addRow("Pinned trace", self.trace_label)
         layout.addLayout(form)
 
         self.diagnostics = QLabel("No routing result loaded", self)
@@ -74,26 +89,115 @@ class RoutingInspectorPanel(QWidget):
     def selection(self) -> RoutingSelection:
         return self._selection
 
-    def set_result(self, result: RoutingResult, selection=None):
+    def set_result(
+        self, result: RoutingResult, selection=None, context=None, context_error=None
+    ):
         if not isinstance(result, RoutingResult):
             raise TypeError("result must be a RoutingResult")
+        # Resolve and preflight the stored context before touching the current
+        # result or its subscription. A context from another calculation is a
+        # visible diagnostic, never a half-installed switch.
+        if context is not None and not isinstance(context, InspectionContext):
+            try:
+                context = InspectionContext.from_dict(context)
+            except ValueError as exc:
+                context = None
+                context_error = str(exc)
+        if context is not None and context.calculation_id != result.calculation_id:
+            context_error = (
+                "stored context belongs to calculation "
+                f"{context.calculation_id}; this result is {result.calculation_id}"
+            )
+            context = None
+        next_selection = (
+            selection
+            if isinstance(selection, RoutingSelection)
+            else RoutingSelection(result)
+        )
+        if next_selection.calculation_id != result.calculation_id:
+            # Never apply one calculation's selection to another; keep that
+            # selection untouched and report the mismatch instead.
+            context_error = context_error or (
+                "selection belongs to another calculation; installed a fresh one"
+            )
+            next_selection = RoutingSelection(result)
         if self._unsubscribe is not None:
             self._unsubscribe()
             self._unsubscribe = None
         self._result = result
         self._inspector = RoutingInspector(result)
-        self._selection = (
-            selection
-            if isinstance(selection, RoutingSelection)
-            else RoutingSelection(result)
-        )
-        if self._selection.calculation_id != result.calculation_id:
-            raise ValueError("selection belongs to another calculation")
+        self._selection = next_selection
+        self._restore_missing = ()
+        self._context_error = str(context_error) if context_error is not None else None
+        if context is not None:
+            self._restore_missing = context.apply(self._selection)
+        if context_error is not None:
+            self._context_error = str(context_error)
         self._unsubscribe = self._selection.subscribe(self._from_selection)
         self.plot.set_result(result, self._selection)
         self._fill_combos()
         self._diagnostics_text()
         self._from_selection()
+
+    def set_alternatives(self, labels, current_index=0):
+        """List calculations without loading or recalculating any of them."""
+        self._syncing = True
+        try:
+            self.alternative_combo.clear()
+            self.alternative_combo.addItems([str(label) for label in labels])
+            if not self.alternative_combo.count():
+                return
+            if current_index is None:
+                self.alternative_combo.setCurrentIndex(-1)
+                return
+            self.alternative_combo.setCurrentIndex(
+                max(0, min(int(current_index), self.alternative_combo.count() - 1))
+            )
+        finally:
+            self._syncing = False
+
+    def clear_result(self, message="No routing result loaded"):
+        """Drop a previous result so no stale inspection data is left behind."""
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
+        self._result = None
+        self._inspector = None
+        self._selection = None
+        self._restore_missing = ()
+        self._context_error = None
+        self._syncing = True
+        try:
+            self.layer_combo.clear()
+            self.leg_combo.clear()
+            self.time_label.setText("No layer")
+            self.trace_label.setText("none")
+        finally:
+            self._syncing = False
+        self.readout.setPlainText("")
+        self.plot.clear()
+        self.diagnostics.setText(str(message))
+
+    def show_error(self, message):
+        """Surface an unavailable artifact instead of stale inspection data."""
+        self.clear_result(message)
+
+    def pin_trace(self, trace_id):
+        if self._selection is None:
+            return False
+        self._selection.select_trace(trace_id)
+        return True
+
+    @property
+    def inspection_context(self):
+        if self._selection is None:
+            return None
+        return InspectionContext.from_selection(self._selection)
+
+    def _alternative_changed(self, index):
+        if self._syncing or index < 0:
+            return
+        self.alternative_selected.emit(index)
 
     def _fill_combos(self):
         self._syncing = True
@@ -123,6 +227,7 @@ class RoutingInspectorPanel(QWidget):
             leg_index = self.leg_combo.findText(leg_id or "")
             if leg_index >= 0 and leg_index != self.leg_combo.currentIndex():
                 self.leg_combo.setCurrentIndex(leg_index)
+            self.trace_label.setText(self._selection.trace_id or "none")
         finally:
             self._syncing = False
         self._render_layer()
@@ -196,16 +301,13 @@ class RoutingInspectorPanel(QWidget):
         if self._result is None:
             self.diagnostics.setText("No routing result loaded")
             return
-        outcome = self._result.outcome
-        features = dict(self._result.capabilities.features or {})
-        parts = [
-            f"status: {self._result.status}",
-            f"validation: {outcome.validation.state}"
-            + (" (independent)" if outcome.validation.independent else ""),
-        ]
-        for name in ("inspection_geometry", "waves", "shoreline", "depth"):
-            if name in features:
-                parts.append(f"{name}: {features[name]}")
-        parts.append("trace times: " + self._result.capabilities.trace_times)
-        parts.append("inspection geometry is bounded and may be sampled")
-        self.diagnostics.setText(" · ".join(parts))
+        lines = [f"{state.code}: {state.state}" for state in diagnostics(self._result)]
+        if self._restore_missing:
+            lines.append(
+                "inspection context: stored "
+                + ", ".join(self._restore_missing)
+                + " no longer recorded by this result"
+            )
+        if self._context_error:
+            lines.append(f"inspection context: {self._context_error}")
+        self.diagnostics.setText("\n".join(lines))

@@ -40,6 +40,16 @@ class RoutingLegPlot(QWidget):
         self._unsubscribe = selection.subscribe(self.update)
         self.update()
 
+    def clear(self):
+        """Drop the retained result so no stale plot survives a failed load."""
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
+        self._result = None
+        self._inspector = None
+        self._selection = None
+        self.update()
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(250, 250, 250))
