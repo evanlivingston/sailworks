@@ -119,13 +119,32 @@ def test_missing_source_and_start_are_explicit(polar):
         )
     with pytest.raises(ValueError, match="explicit start"):
         freeze_native_requests(
-            replace(request, start=None, use_currents=False),
+            replace(request, start=None, waypoints=(), use_currents=False),
             (),
             _forecast(),
             (),
             None,
             engine="main",
         )
+
+
+def test_first_waypoint_start_matches_the_legacy_track_workflow(polar):
+    request = replace(
+        _request(polar), start=None, use_currents=False, waypoints=((48.3, -123.6),)
+    )
+    with pytest.raises(ValueError, match="explicit start"):
+        freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+
+    chain = ((48.3, -123.6), (48.4, -123.5))
+    (job,) = freeze_native_requests(
+        replace(request, waypoints=chain), (), _forecast(), (), None, engine="main"
+    )
+
+    # "First waypoint" means the track's first point is the start, exactly as
+    # the legacy track route treats it, so it is not repeated in the chain.
+    assert job.start == chain[0]
+    assert job.waypoints == chain[1:]
+    assert job.destination == chain[-1]
 
 
 def test_legacy_algorithm_parameters_cannot_be_ignored(polar):
@@ -222,3 +241,19 @@ def test_unknown_parameter_is_rejected(polar):
     )
     with pytest.raises(ValueError, match="not_a_parameter"):
         freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+
+
+def test_naive_local_departure_is_interpreted_like_the_legacy_panel(polar):
+    local = datetime(2026, 1, 1, 9, 30)
+    (job,) = freeze_native_requests(
+        replace(_request(polar), departure=local, use_currents=False),
+        (),
+        _forecast(),
+        (),
+        None,
+        engine="main",
+    )
+
+    # The panel's departure has no offset and legacy routes read it as local
+    # wall time, so native attaches the local offset instead of refusing.
+    assert job.departure_epoch_s == int(local.astimezone().timestamp())
