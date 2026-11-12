@@ -3,6 +3,7 @@
 from pathlib import Path
 from datetime import datetime
 import math
+import time
 from typing import cast
 
 import weatherrouting
@@ -303,6 +304,9 @@ class RoutingPanel(QWidget):
         self.status = QLabel(qt_text(self.routing.message))
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+        self._native_elapsed_timer = QTimer(self)
+        self._native_elapsed_timer.setInterval(1000)
+        self._native_elapsed_timer.timeout.connect(self._tick_native_heartbeat)
         layout.addLayout(actions)
         self._build_advanced_pages()
         self._build_safety_controls()
@@ -1114,6 +1118,65 @@ class RoutingPanel(QWidget):
         )
         return request, scenarios
 
+    @staticmethod
+    def _elapsed_text(seconds):
+        total = max(0, int(seconds))
+        if total >= 3600:
+            return f"{total // 3600}:{(total % 3600) // 60:02d}:{total % 60:02d}"
+        return f"{total // 60:02d}:{total % 60:02d}"
+
+    @staticmethod
+    def _counter_text(counters):
+        if not isinstance(counters, dict):
+            return ""
+        parts = []
+        retained = counters.get("retained_states")
+        generated = counters.get("generated_states")
+        if isinstance(retained, int) and not isinstance(retained, bool):
+            if isinstance(generated, int) and not isinstance(generated, bool):
+                parts.append(f"retained {retained:,}/{generated:,} states")
+            else:
+                parts.append(f"retained {retained:,} states")
+        elif isinstance(generated, int) and not isinstance(generated, bool):
+            parts.append(f"generated {generated:,} states")
+        land_checks = counters.get("land_checks")
+        if isinstance(land_checks, int) and not isinstance(land_checks, bool):
+            parts.append(f"land checks {land_checks:,}")
+        closest = counters.get("closest_approach_nm")
+        if (
+            isinstance(closest, (int, float))
+            and not isinstance(closest, bool)
+            and math.isfinite(closest)
+        ):
+            parts.append(f"closest {closest:.1f} nm")
+        return " · ".join(parts)
+
+    def _native_heartbeat_active(self):
+        cancel = getattr(self.routing, "cancel_event", None)
+        return bool(
+            self.routing.busy
+            and getattr(self.routing, "backend", None) == "native"
+            and getattr(self.routing, "native_started_at", None) is not None
+            and not (cancel is not None and cancel.is_set())
+        )
+
+    def _display_status(self):
+        message = self.routing.message
+        if not self._native_heartbeat_active():
+            return message
+        elapsed = self._elapsed_text(time.monotonic() - self.routing.native_started_at)
+        text = f"{message} · elapsed {elapsed}"
+        counters = self._counter_text(getattr(self.routing, "native_counters", None))
+        if counters:
+            text += f" · {counters}"
+        return text
+
+    def _tick_native_heartbeat(self):
+        if not self._native_heartbeat_active():
+            self._native_elapsed_timer.stop()
+            return
+        self.status.setText(self._display_status())
+
     def refresh(self):
         busy = self.routing.busy
         self._refresh_safety()
@@ -1147,4 +1210,9 @@ class RoutingPanel(QWidget):
             if self.progress.maximum() == 0:
                 self.progress.setRange(0, 100)
             self.progress.setValue(round(self.routing.percent))
-        self.status.setText(self.routing.message)
+        if self._native_heartbeat_active():
+            if not self._native_elapsed_timer.isActive():
+                self._native_elapsed_timer.start()
+        else:
+            self._native_elapsed_timer.stop()
+        self.status.setText(self._display_status())
