@@ -68,18 +68,27 @@ def routing_summary(r):
     Saved routes may carry partial points (for example a two-value coordinate
     without time or speed). They are skipped rather than allowed to crash the
     navigation panel; a route with too few complete points has no summary.
+
+    Average speed is ground speed over the whole route when usable timestamps
+    exist, so it agrees with the displayed distance and duration. Only when
+    they do not is it the mean of the per-leg speeds that are present; missing
+    speeds are absent, not zero. That fallback is labelled because it can
+    disagree with the distance and duration figures.
     """
     points = [point for point in r if len(point) >= 6]
     if len(points) < 2:
         return ""
     total_dist = 0.0
     total_speed = 0.0
+    speed_count = 0
     for j in range(1, len(points)):
         total_dist += utils.point_distance(
             points[j - 1][0], points[j - 1][1], points[j][0], points[j][1]
         )
-        total_speed += points[j][5] if points[j][5] else 0
-    avg_speed = total_speed / (len(points) - 1)
+        speed = points[j][5]
+        if speed:
+            total_speed += speed
+            speed_count += 1
     total_dist_nm = total_dist
     provenance = r.provenance or {}
     source_note = ""
@@ -100,19 +109,32 @@ def routing_summary(r):
             source_note += " · incl. fallback"
     elif provenance.get("routing") == "wind-only":
         source_note = " | wind only"
+    dur_str = None
+    avg_speed = None
+    leg_mean = False
     try:
         t_start = dateutil.parser.parse(points[0][2])
         t_end = dateutil.parser.parse(points[-1][2])
         hours = (t_end - t_start).total_seconds() / 3600.0
-        days = int(hours // 24)
-        rem_hours = hours % 24
-        dur_str = f"{days}d {rem_hours:.0f}h" if days > 0 else f"{rem_hours:.1f}h"
-        return (
-            "%.0f nm | %s | avg %.1f kts" % (total_dist_nm, dur_str, avg_speed)
-            + source_note
-        )
+        if hours > 0:
+            days = int(hours // 24)
+            rem_hours = hours % 24
+            dur_str = f"{days}d {rem_hours:.0f}h" if days > 0 else f"{rem_hours:.1f}h"
+            avg_speed = total_dist / hours
     except Exception:
-        return "%.0f nm | avg %.1f kts" % (total_dist_nm, avg_speed) + source_note
+        pass
+    if avg_speed is None and speed_count:
+        avg_speed = total_speed / speed_count
+        leg_mean = True
+    parts = ["%.0f nm" % total_dist_nm]
+    if dur_str:
+        parts.append(dur_str)
+    if avg_speed is not None:
+        avg_str = "avg %.1f kts" % avg_speed
+        if leg_mean:
+            avg_str += " (leg mean)"
+        parts.append(avg_str)
+    return " | ".join(parts) + source_note
 
 
 class NavigationRenderer:
