@@ -1028,5 +1028,13 @@ class RoutingPanel(QWidget):
             and self.destination.currentData() is not None
         )
         self.cancel_button.setEnabled(busy and not self.routing.cancel_event.is_set())
-        self.progress.setValue(round(self.routing.percent))
+        if getattr(self.routing, "progress_indeterminate", False):
+            # Native runs expose lifecycle messages only: show a busy bar
+            # rather than a percentage the engine cannot report.
+            if self.progress.maximum() != 0:
+                self.progress.setRange(0, 0)
+        else:
+            if self.progress.maximum() == 0:
+                self.progress.setRange(0, 100)
+            self.progress.setValue(round(self.routing.percent))
         self.status.setText(self.routing.message)
