@@ -27,6 +27,7 @@ class RoutingController(QObject):
     isochrones_changed = Signal(object)
     completed = Signal(object)
     native_diagnostic = Signal(object)
+    native_cleared = Signal()
     dismiss_preflight = Signal()
     _progress = Signal(int, float, object, object)
     _message = Signal(int, str)
@@ -40,6 +41,7 @@ class RoutingController(QObject):
         self.closed = False
         self.backend = "legacy"
         self.native_worker = None
+        self._native_diagnostic_token = None
         self.native_overlay = None
         self.native_selection = None
         # One independent selection per calculation, kept while the window
@@ -66,9 +68,10 @@ class RoutingController(QObject):
         if backend not in ("legacy", "native"):
             return self.fail("Choose the Legacy or Native calculation backend.")
         if backend == "native":
-            refusal = self._native_parameter_refusal(request)
-            if refusal:
-                return self.fail(refusal)
+            for item in (request, *tuple(scenarios)):
+                refusal = self._native_parameter_refusal(item)
+                if refusal:
+                    return self.fail(refusal)
         if (
             self.session_controller.data.task.busy
             or self.session_controller.polars.task.busy
@@ -84,6 +87,10 @@ class RoutingController(QObject):
             sources = analysis.snapshot(required_fields=("wind",))
         except Exception as exc:
             return self.fail(str(exc))
+        # A new calculation never inherits a previous native overlay or its
+        # diagnostic inspection text.
+        self.clear_native_result()
+        self._native_diagnostic_token = None
         self.generation += 1
         token = self.generation
         self.request = request
@@ -102,9 +109,10 @@ class RoutingController(QObject):
         providers = tuple(
             self.session_controller.charts.get_line_point_validity_providers()
         )
+        marine_manager = getattr(self.core, "marine_manager", None)
         selection = (
-            self.core.marine_manager.fields.snapshot(request.current_priority)
-            if request.use_currents
+            marine_manager.fields.snapshot(request.current_priority)
+            if request.use_currents and marine_manager is not None
             else None
         )
         self.changed.emit()
@@ -228,6 +236,7 @@ class RoutingController(QObject):
                 blockers = export_blockers(result)
                 if blockers:
                     self._check(token)
+                    self._native_diagnostic_token = token
                     self.native_diagnostic.emit(result)
                     raise ValueError(
                         "native calculation did not produce a validated route: "
@@ -626,6 +635,7 @@ class RoutingController(QObject):
         self.native_overlay = None
         self.native_selection = None
         self._native_selections.clear()
+        self.native_cleared.emit()
         self.changed.emit()
 
     def cancel(self):
@@ -676,6 +686,8 @@ class RoutingController(QObject):
         self.busy = False
         self._parallel_mode = False
         self._parallel_progress = {}
+        if error is not None and self._native_diagnostic_token != token:
+            self.clear_native_result()
         self.preview_changed.emit(())
         self.isochrones_changed.emit(())
         if self.cancel_event.is_set() or isinstance(

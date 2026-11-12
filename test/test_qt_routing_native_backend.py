@@ -8,7 +8,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
@@ -22,6 +23,8 @@ from sailworks.core.marine.nativeworker import NativeJobStatus
 from sailworks.core.routingjob import RouteRequest
 from sailworks.qt.routingcontroller import RoutingController
 from sailworks.qt.routingpanel import RoutingPanel
+from sailworks.qt.window import PreviewWindow
+from test.test_routing_persistence import _result as _routing_result
 
 ROOT = Path(__file__).resolve().parents[1]
 POLAR = ROOT / "sailworks/data/polars/test.pol"
@@ -92,6 +95,11 @@ class FakeSession(QObject):
     def __init__(self):
         super().__init__()
         self.core = SimpleNamespace(marine_manager=None)
+        self.analysis = SimpleNamespace(snapshot=lambda required_fields=(): object())
+        self.data = SimpleNamespace(task=SimpleNamespace(busy=False))
+        self.polars = SimpleNamespace(task=SimpleNamespace(busy=False))
+        self.map_data = SimpleNamespace(task=SimpleNamespace(busy=False))
+        self.charts = SimpleNamespace(get_line_point_validity_providers=lambda: ())
 
 
 def _request(**overrides):
@@ -170,6 +178,102 @@ def test_panel_keeps_legacy_backend_and_unchanged_parameters(app):
     panel.deleteLater()
 
 
+def test_controller_start_native_uses_analysis_snapshot_and_finishes(app):
+    session = FakeSession()
+    binding = object()
+    session.analysis = SimpleNamespace(snapshot=lambda required_fields=(): binding)
+    controller = RoutingController(session)
+    seen = {}
+
+    def run_native(token, request, scenarios, sources, providers, cancel, selection):
+        seen.update(
+            token=token,
+            request=request,
+            sources=sources,
+            providers=providers,
+            selection=selection,
+        )
+        controller._finished.emit(token, None, None)
+
+    controller._run_native_requests = run_native
+    assert controller.start(_request(), backend="native")
+
+    deadline = time.monotonic() + 5
+    while controller.busy and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    assert not controller.busy
+    assert seen["sources"] is binding
+    assert seen["selection"] is None
+    assert controller.backend == "native"
+    assert controller.message == "Native route calculated and saved · validated"
+
+
+def test_controller_start_native_refuses_changed_scenario_parameters(app):
+    import weatherrouting
+
+    algorithm = next(
+        entry["class"]
+        for entry in weatherrouting.list_routing_algorithms()
+        if entry["name"] == "LinearBestIsoRouter"
+    )
+    defaults = tuple((key, param.value) for key, param in algorithm.PARAMS.items())
+    changed = tuple(
+        (key, 42.0 if key == "min_increase" else value) for key, value in defaults
+    )
+    controller = RoutingController(FakeSession())
+    request = _request(algorithm=algorithm, parameters=defaults)
+    scenario = _request(name="scenario", algorithm=algorithm, parameters=changed)
+
+    assert not controller.start(request, (scenario,), backend="native")
+    assert "min_increase" in controller.error
+    assert not controller.busy
+
+
+def test_controller_start_with_currents_without_manager_does_not_raise(app):
+    controller = RoutingController(FakeSession())
+    controller._run_requests = lambda *args: None
+
+    assert controller.start(_request(use_currents=True), backend="legacy")
+    controller.worker_thread.join(1)
+    assert not controller.worker_thread.is_alive()
+
+
+def test_failed_native_then_legacy_clears_overlay_and_inspector(app):
+    controller = RoutingController(FakeSession())
+    controller._run_requests = lambda *args: None
+    controller.show_native_result(_routing_result())
+    assert controller.native_overlay is not None
+
+    window = SimpleNamespace(
+        controller=SimpleNamespace(routing=controller),
+        map=SimpleNamespace(
+            native_routing=controller.native_overlay,
+            set_isochrones=Mock(),
+        ),
+        navigation_panel=SimpleNamespace(route=None),
+        routing_inspector=Mock(),
+        _routing_selection_unsubscribe=None,
+        _routing_selection_target=None,
+        _routing_active_route=None,
+    )
+    window._native_cleared = MethodType(PreviewWindow._native_cleared, window)
+    window._sync_route_isochrones = MethodType(
+        PreviewWindow._sync_route_isochrones, window
+    )
+    controller.native_cleared.connect(window._native_cleared)
+
+    assert controller.start(_request(), backend="legacy")
+    controller.worker_thread.join(1)
+
+    assert controller.native_overlay is None
+    assert controller.native_selection is None
+    assert window.map.native_routing is None
+    window.routing_inspector.clear_result.assert_called_once_with(
+        "No routing result loaded"
+    )
+
+
 class FakeWorker:
     def __init__(self, status):
         self.status = status
@@ -241,12 +345,14 @@ def test_controller_native_failure_never_saves_or_falls_back(tmp_path, monkeypat
     )
     errors = []
     controller._finished.connect(lambda _token, _result, error: errors.append(error))
+    controller.native_overlay = object()
 
     controller._run_native_requests(
         1, _request(), (), SimpleNamespace(), (), Event(), None
     )
 
     assert collection.elements == []
+    assert controller.native_overlay is None
     assert worker.shutdown_called
     assert errors and "worker crashed" in str(errors[0])
 
