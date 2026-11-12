@@ -19,6 +19,8 @@ struct UserSettings {
   std::optional<double> minimumSailingKnots;
   double motorKnots{5.0};
   bool windBasedWaveProxy{};
+  double landSafetyMarginNm{};
+  bool coastlineChecks{};
 };
 
 // No fixture request, weather, polar, source or fixed six-hour limit enters

@@ -12,6 +12,43 @@ from .nativerequest import NativeRequest
 from .routingnative import current_callable_from_selection
 
 
+class SelectedShoreline:
+    """Worker-local adapter over the selected GSHHS descriptor.
+
+    Search, departure clearance and independent replay all call this one
+    object, so they share one reviewed predicate set. ``margin_nm`` from the
+    engine is converted to metres once and passed to the established
+    ``lines_validity`` clearance check.
+    """
+
+    def __init__(self, path):
+        from sailworks.core.geo.shoreline import ShorelineValidity
+
+        self.provider = ShorelineValidity(path)
+
+    def point_forbidden(self, latitude, longitude):
+        return not self.provider.points_validity([(latitude, longitude)])[0]
+
+    def segment_forbidden(self, start_lat, start_lon, end_lat, end_lon, margin_nm):
+        if margin_nm < 0:
+            raise ValueError("Shoreline margin must be non-negative")
+        return not self.provider.lines_validity(
+            [(start_lat, start_lon, end_lat, end_lon)], margin_nm * 1852.0
+        )[0]
+
+    def distance_nm(self, latitude, longitude):
+        return self.provider.distance_to_forbidden_nm(latitude, longitude)
+
+
+def _shoreline(job):
+    if not job.provider_descriptors:
+        raise ValueError("Native coastline checks require a selected shoreline")
+    (descriptor,) = job.provider_descriptors
+    if descriptor.kind != "gshhs":
+        raise ValueError("Unsupported native shoreline provider: " + descriptor.kind)
+    return SelectedShoreline(descriptor.path)
+
+
 def run_native_request(job: NativeRequest) -> dict:
     """Run only inputs the real bridge currently honors; reject all others.
 
@@ -21,10 +58,17 @@ def run_native_request(job: NativeRequest) -> dict:
     """
     if not isinstance(job, NativeRequest) or job.version != 1:
         raise ValueError("Unsupported frozen native request")
-    if job.waypoints:
-        raise ValueError("Native waypoint chaining is not implemented")
-    if job.coastline_checks or job.provider_descriptors:
-        raise ValueError("Native shoreline and clearance adapter is not implemented")
+    if (
+        job.coastline_checks
+        and job.coastline_clearance_distance_m
+        and job.provider_descriptors[0].kind != "gshhs"
+    ):
+        raise ValueError("Unsupported native shoreline provider")
+    if job.coastline_checks and not job.provider_descriptors:
+        raise ValueError("Native coastline checks require a selected shoreline")
+    if job.provider_descriptors and not job.coastline_checks:
+        raise ValueError("Shoreline providers were supplied with coastline checks off")
+    land = _shoreline(job) if job.coastline_checks else None
     if job.use_currents and (not job.marine_directory or not job.current_field_ids):
         raise ValueError("Selected local current inputs are missing")
     if job.current_field_ids and not job.use_currents:
@@ -59,6 +103,13 @@ def run_native_request(job: NativeRequest) -> dict:
         motor_speed_kn=job.motor_speed_kn,
         wave_correct=job.wave_correct,
         coastline_checks=job.coastline_checks,
+        waypoints=list(job.waypoints),
+        # The keep-off control is disabled with coastline checks off; the
+        # legacy path ignores it then, so native does not apply it either. The
+        # fingerprint below records whether it was applied.
+        land_safety_margin_nm=(
+            job.coastline_clearance_distance_m / 1852.0 if job.coastline_checks else 0.0
+        ),
     )
     selection = None
     if job.use_currents:
@@ -107,6 +158,7 @@ def run_native_request(job: NativeRequest) -> dict:
             coverage,
             polar,
             settings,
+            land,
             job.forecast.entry.artifacts[0].sha256,
             job.polar_sha256,
             job.engine,
@@ -116,8 +168,22 @@ def run_native_request(job: NativeRequest) -> dict:
         run["input_fingerprints"] = dict(
             forecast=job.forecast.entry.artifacts[0].sha256,
             polar=job.polar_sha256,
+            waypoints=[list(point) for point in job.waypoints],
+            start=job.start,
+            destination=job.destination,
             current_field_ids=list(job.current_field_ids),
             current_priority=job.current_priority if job.use_currents else None,
+            shoreline=(
+                [
+                    dict(kind=item.kind, path=item.path)
+                    for item in job.provider_descriptors
+                ]
+                if job.coastline_checks
+                else None
+            ),
+            coastline_clearance_distance_m=(
+                job.coastline_clearance_distance_m if job.coastline_checks else None
+            ),
         )
         run["scenario"] = dict(
             name=job.name,

@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <utility>
@@ -409,6 +410,214 @@ SyntheticRun runRequest(const std::string& engine, wr::RoutingRequest request,
       !environment.performance)
     throw std::invalid_argument("real request requires complete providers");
   return runWithEngine(engine, request, environment);
+}
+
+namespace {
+
+int statusRecoveryRank(wr::RoutingStatus status) {
+  switch (status) {
+    case wr::RoutingStatus::Complete: return 0;
+    case wr::RoutingStatus::CompleteUsingReverseRecovery: return 1;
+    case wr::RoutingStatus::CompleteUsingFrontierRecovery: return 2;
+    case wr::RoutingStatus::CompleteUsingGraphFallback: return 3;
+    default: return 4;
+  }
+}
+
+// Same aggregation rules as the engine's own delivered-route metrics.
+void addChainMetrics(wr::RouteMetrics& metrics,
+                     const wr::RoutingResult& segment) {
+  metrics.distanceNm += segment.metrics.distanceNm;
+  metrics.estimatedFuelLitres += segment.metrics.estimatedFuelLitres;
+  metrics.maximumWindKnots =
+      std::max(metrics.maximumWindKnots, segment.metrics.maximumWindKnots);
+  metrics.maximumWaveHeightMetres = std::max(
+      metrics.maximumWaveHeightMetres, segment.metrics.maximumWaveHeightMetres);
+  metrics.sailingTime += segment.metrics.sailingTime;
+  metrics.motorSailingTime += segment.metrics.motorSailingTime;
+  metrics.motorOnlyTime += segment.metrics.motorOnlyTime;
+  metrics.waitingTime += segment.metrics.waitingTime;
+  metrics.propulsionTransitions += segment.metrics.propulsionTransitions;
+  metrics.tackCount += segment.metrics.tackCount;
+  metrics.gybeCount += segment.metrics.gybeCount;
+}
+
+void addChainDiagnostics(wr::RoutingDiagnostics& total,
+                         const wr::RoutingDiagnostics& part) {
+  total.generatedStates += part.generatedStates;
+  total.coastalEndpointGeneratedStates += part.coastalEndpointGeneratedStates;
+  total.forwardGeneratedStates += part.forwardGeneratedStates;
+  total.frontierRecoveryGeneratedStates += part.frontierRecoveryGeneratedStates;
+  total.graphGeneratedStates += part.graphGeneratedStates;
+  total.retainedStates += part.retainedStates;
+  total.weatherSamples += part.weatherSamples;
+  total.xtdSamples += part.xtdSamples;
+  total.xtdCoverageExpansions += part.xtdCoverageExpansions;
+  total.landChecks += part.landChecks;
+  total.landRejections += part.landRejections;
+  total.landGuidedRecoveryLayers += part.landGuidedRecoveryLayers;
+  total.landGuidedGeneratedStates += part.landGuidedGeneratedStates;
+  total.landGuidedPortStates += part.landGuidedPortStates;
+  total.landGuidedStarboardStates += part.landGuidedStarboardStates;
+  total.constraintRejections += part.constraintRejections;
+  total.propulsionRejections += part.propulsionRejections;
+  total.reverseLayers += part.reverseLayers;
+  total.reverseNodes += part.reverseNodes;
+  total.reverseCandidateBridges += part.reverseCandidateBridges;
+  total.reverseRejectedBridges += part.reverseRejectedBridges;
+  total.graphLabels += part.graphLabels;
+  total.frontierRecoveryLabels += part.frontierRecoveryLabels;
+  total.waitStates += part.waitStates;
+  total.validationSamples += part.validationSamples;
+  total.cumulativeGeneratedStates += part.cumulativeGeneratedStates;
+  total.closestApproachNm =
+      std::min(total.closestApproachNm, part.closestApproachNm);
+  total.completedEffortPercent =
+      std::min(total.completedEffortPercent, part.completedEffortPercent);
+  total.stageStopReasons.insert(total.stageStopReasons.end(),
+                                part.stageStopReasons.begin(),
+                                part.stageStopReasons.end());
+  total.effortTiersAttempted.insert(total.effortTiersAttempted.end(),
+                                    part.effortTiersAttempted.begin(),
+                                    part.effortTiersAttempted.end());
+}
+
+}  // namespace
+
+ChainRun runUserChain(const std::string& engine, wr::RoutingRequest request,
+                      wr::RoutingEnvironment environment,
+                      const std::vector<wr::GeoPoint>& chain) {
+  if (chain.size() < 2)
+    throw std::invalid_argument("a waypoint chain needs at least one leg");
+  if (!environment.grib || !environment.landAndBoundaries ||
+      !environment.performance)
+    throw std::invalid_argument("real request requires complete providers");
+
+  ChainRun chainRun;
+  SyntheticRun& result = chainRun.result;
+  result.engine = engine;
+  result.environment = environment;
+  const wr::TimePoint originalDeparture = request.departure;
+  request.start = chain.front();
+  request.destination = chain.back();
+  result.request = request;
+  // Established by the segments below; the default is InternalError.
+  result.result.status = wr::RoutingStatus::Complete;
+  result.result.validation.passed = true;
+  result.result.diagnostics.completedEffortPercent =
+      std::numeric_limits<unsigned>::max();
+  result.result.diagnostics.closestApproachNm =
+      std::numeric_limits<double>::infinity();
+
+  wr::GeoPoint position = chain.front();
+  wr::TimePoint departure = originalDeparture;
+  for (std::size_t index = 1; index < chain.size(); ++index) {
+    const auto elapsed = departure - originalDeparture;
+    if (elapsed >= request.limits.maximumRouteDuration) {
+      ChainSegment segment;
+      segment.index = index - 1;
+      segment.status = wr::RoutingStatus::ResourceLimitReached;
+      segment.message = "waypoint chain exhausted the selected time window";
+      chainRun.segments.push_back(segment);
+      chainRun.failedSegment = static_cast<int>(index - 1);
+      result.result.status = segment.status;
+      result.result.message = segment.message;
+      break;
+    }
+    wr::RoutingRequest legRequest = request;
+    legRequest.start = position;
+    legRequest.destination = chain[index];
+    legRequest.departure = departure;
+    legRequest.limits.maximumRouteDuration =
+        request.limits.maximumRouteDuration - elapsed;
+    SyntheticRun leg = runWithEngine(engine, legRequest, environment);
+    ChainSegment summary;
+    summary.index = index - 1;
+    summary.status = leg.result.status;
+    summary.accepted = leg.accepted;
+    summary.engineValidationPassed = leg.result.validation.passed;
+    summary.independentValidationPassed = leg.independentValidation.passed;
+    summary.legCount = leg.result.legs.size();
+    summary.message = leg.result.message;
+    chainRun.segments.push_back(summary);
+    // Retain delivered legs for diagnosis even when a later leg fails.
+    result.result.legs.insert(result.result.legs.end(), leg.result.legs.begin(),
+                              leg.result.legs.end());
+    result.result.visualization.isochrones.insert(
+        result.result.visualization.isochrones.end(),
+        leg.result.visualization.isochrones.begin(),
+        leg.result.visualization.isochrones.end());
+    result.result.warnings.insert(result.result.warnings.end(),
+                                  leg.result.warnings.begin(),
+                                  leg.result.warnings.end());
+    result.result.validation.passed =
+        result.result.validation.passed && leg.result.validation.passed;
+    result.result.validation.samples += leg.result.validation.samples;
+    result.result.validation.estimatedPolarWind =
+        result.result.validation.estimatedPolarWind ||
+        leg.result.validation.estimatedPolarWind;
+    addChainMetrics(result.result.metrics, leg.result);
+    addChainDiagnostics(result.result.diagnostics, leg.result.diagnostics);
+    result.result.environment.gribWindDuration +=
+        leg.result.environment.gribWindDuration;
+    result.result.environment.climatologyWindDuration +=
+        leg.result.environment.climatologyWindDuration;
+    result.result.environment.gribCurrentDuration +=
+        leg.result.environment.gribCurrentDuration;
+    result.result.environment.xtdCurrentDuration +=
+        leg.result.environment.xtdCurrentDuration;
+    result.result.environment.currentAssumedZeroDuration +=
+        leg.result.environment.currentAssumedZeroDuration;
+    result.result.environment.gribWaveDuration +=
+        leg.result.environment.gribWaveDuration;
+    result.result.environment.missingWaveDuration +=
+        leg.result.environment.missingWaveDuration;
+    result.result.environment.estimatedWaveDuration +=
+        leg.result.environment.estimatedWaveDuration;
+    if (!leg.accepted || leg.result.legs.empty()) {
+      chainRun.failedSegment = static_cast<int>(index - 1);
+      result.result.status = leg.result.status;
+      result.result.validation.failureReason =
+          leg.result.validation.failureReason;
+      result.result.message =
+          "waypoint leg " + std::to_string(index) + " failed: " +
+          (leg.result.message.empty() ? "no feasible route"
+                                      : leg.result.message);
+      result.accepted = false;
+      result.independentValidation = leg.independentValidation;
+      return chainRun;
+    }
+    position = leg.result.legs.back().end;
+    departure = leg.result.legs.back().endTime;
+    if (statusRecoveryRank(leg.result.status) >
+        statusRecoveryRank(result.result.status)) {
+      result.result.status = leg.result.status;
+      result.result.solverPath = leg.result.solverPath;
+    }
+    result.result.engineIdentity = leg.result.engineIdentity;
+  }
+  if (result.result.diagnostics.completedEffortPercent ==
+      std::numeric_limits<unsigned>::max())
+    result.result.diagnostics.completedEffortPercent = 0;
+  if (chainRun.failedSegment >= 0) {
+    result.accepted = false;
+    return chainRun;
+  }
+
+  result.independentValidation = wr::RouteValidator{}.validate(
+      result.request, environment, *environment.performance,
+      result.result.legs);
+  result.result.metrics.elapsed =
+      result.result.legs.back().endTime - result.result.legs.front().startTime;
+  result.result.metrics.elapsed =
+      std::chrono::duration_cast<wr::Duration>(result.result.metrics.elapsed);
+  result.accepted = chainRun.segments.size() > 0 &&
+                    result.result.validation.passed &&
+                    result.independentValidation.passed &&
+                    !result.result.legs.empty();
+  result.result.message =
+      std::to_string(chainRun.segments.size()) + "-leg waypoint chain";
+  return chainRun;
 }
 
 SyntheticRun runInvalidDestination() {

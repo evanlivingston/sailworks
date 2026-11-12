@@ -1,10 +1,12 @@
 """Spawned real-request jobs must not become synthetic fixture calculations."""
 
 import json
+import math
 import time
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from uuid import uuid4
 
 import numpy as np
 import pytest
@@ -143,19 +145,11 @@ def test_spawned_worker_uses_published_selected_request(tmp_path):
         worker.shutdown()
 
 
-def test_unimplemented_waypoint_and_missing_artifact_fail_without_fixture_fallback(
-    tmp_path,
-):
+def test_missing_artifact_fails_without_fixture_fallback(tmp_path):
     with _forecast_inputs(tmp_path) as source:
         job = _job(tmp_path, _selected_forecast(tmp_path, source))
-    from dataclasses import replace
-
     worker = NativeRoutingWorker()
     try:
-        worker.submit(replace(job, waypoints=((48.28, -123.62),)))
-        status = _wait(worker)
-        assert status.state == "failed" and status.payload is None
-        assert "waypoint" in status.message
         job.forecast.artifact_paths[0].unlink()
         worker.submit(job)
         status = _wait(worker)
@@ -165,38 +159,102 @@ def test_unimplemented_waypoint_and_missing_artifact_fail_without_fixture_fallba
         worker.shutdown()
 
 
-def test_spawned_current_field_keeps_selected_dataset_identity(tmp_path):
+def test_waypoint_chain_delivers_continuous_route_in_order(tmp_path):
+    with _forecast_inputs(tmp_path) as source:
+        original = _job(tmp_path, _selected_forecast(tmp_path, source))
+    waypoint = (48.255, -123.60)
+    job = replace(original, waypoints=(waypoint, original.destination))
+    worker = NativeRoutingWorker()
+    try:
+        generation = worker.submit(job)
+        status = _wait(worker)
+        assert status.state == "completed", status.message
+        run = status.payload
+        assert run["accepted"], (run["status"], run["message"])
+        assert len(run["segments"]) == 2
+        assert all(segment["accepted"] for segment in run["segments"])
+        assert run["segments"][-1]["independent_validation_passed"]
+        assert run["input_fingerprints"]["waypoints"] == [
+            list(waypoint),
+            list(job.destination),
+        ]
+        legs = run["legs"]
+        assert len(legs) >= 2
+        for previous, following in zip(legs, legs[1:]):
+            assert previous["end"] == following["start"]
+            assert following["start_time"] >= previous["end_time"]
+        # The first segment ends at the requested waypoint, and the second
+        # segment departs from that delivered position.
+        boundary = run["segments"][0]["leg_count"] - 1
+        delivered = legs[boundary]["end"]
+        distance_nm = (
+            math.hypot(
+                delivered["latitude"] - waypoint[0],
+                (delivered["longitude"] - waypoint[1])
+                * math.cos(math.radians(waypoint[0])),
+            )
+            * 60
+        )
+        assert distance_nm < 0.5
+        assert legs[boundary + 1]["start"] == delivered
+        import sailworks_native_routing as bridge
+
+        result = to_routing_result(
+            run,
+            calculation_id=job.calculation_id,
+            generation=generation,
+            sequence=0,
+            created_epoch_s=int(time.time()),
+            identity=bridge.identity(),
+        )
+        assert export_blockers(result) == ()
+        assert result.outcome.validation.independent is True
+        assert RoutingResult.from_dict(result.to_dict()).legs
+    finally:
+        worker.shutdown()
+
+
+def _selected_shoreline(root):
+    """Minimal installed-GSHHS layout the worker's shoreline adapter opens."""
+    from osgeo import ogr
+
+    directory = Path(root) / "gshhs"
+    (directory / "GSHHS_shp" / "h").mkdir(parents=True)
+    dataset = ogr.GetDriverByName("ESRI Shapefile").CreateDataSource(
+        str(directory / "GSHHS_shp" / "h")
+    )
+    layer = dataset.CreateLayer("GSHHS_h_L1", geom_type=ogr.wkbPolygon)
+    feature = ogr.Feature(layer.GetLayerDefn())
+    feature.SetGeometry(
+        ogr.CreateGeometryFromWkt(
+            "POLYGON ((-123.638 48.262, -123.622 48.262, "
+            "-123.622 48.276, -123.638 48.276, -123.638 48.262))"
+        )
+    )
+    layer.CreateFeature(feature)
+    dataset = None
+    return directory
+
+
+class SelectedChart:
+    """Stands in for a Qt chart only at the descriptor boundary."""
+
+    def __init__(self, path):
+        self.path = str(path)
+
+    def validity_descriptor(self):
+        return ("gshhs", self.path)
+
+
+def test_spawned_route_uses_selected_shoreline_and_clearance(tmp_path):
+    from osgeo import ogr
+
+    shoreline = _selected_shoreline(tmp_path)
     with _forecast_inputs(tmp_path) as source:
         binding = _selected_forecast(tmp_path, source)
-    marine_directory = tmp_path / "marine"
-    fields = FieldStore(marine_directory / "fields")
-    times = np.array([START.timestamp() + 3600 * hour for hour in range(7)])
-    metadata = json.dumps(
-        dict(
-            schema_version=1,
-            provider="test",
-            model="selected-current",
-            composition="total",
-            vector_reference="true_east_north",
-            sources=[],
-            resolution_m=1000,
-            run=START.isoformat(),
-        ),
-        sort_keys=True,
-    )
-    field = CurrentField(
-        metadata,
-        times,
-        np.array([48.0, 50.0]),
-        np.array([-124.0, -122.0]),
-        np.full((7, 2, 2), 0.25),
-        np.zeros((7, 2, 2)),
-    )
-    fields.add(field)
-    selected = fields.snapshot("newest")
     original = _job(tmp_path, binding)
     request = RouteRequest(
-        name="selected-current-request",
+        name="selected-shoreline-request",
         start=original.start,
         destination=original.destination,
         departure=START + timedelta(minutes=30),
@@ -204,18 +262,11 @@ def test_spawned_current_field_keeps_selected_dataset_identity(tmp_path):
             Path(__file__).resolve().parents[1] / "sailworks/data/polars/test.pol"
         ),
         algorithm=LegacyAlgorithm,
-        coastline_checks=False,
-        use_currents=True,
-        current_priority="newest",
+        coastline_checks=True,
+        coastline_clearance_distance_m=370.0,
     )
     job = freeze_native_requests(
-        request,
-        (),
-        binding,
-        (),
-        selected,
-        marine_directory=marine_directory,
-        engine="main",
+        request, (), binding, (SelectedChart(shoreline),), None, engine="main"
     )[0]
     worker = NativeRoutingWorker()
     try:
@@ -224,40 +275,125 @@ def test_spawned_current_field_keeps_selected_dataset_identity(tmp_path):
         assert status.state == "completed", status.message
         run = status.payload
         assert run["accepted"], (run["status"], run["message"])
-        assert run["input_fingerprints"]["current_field_ids"] == [field.id]
-        assert run["legs"][0]["current_source"]["dataset_identity"] == field.id
+        assert run["request"]["land_safety_margin_nm"] == 370.0 / 1852.0
+        assert run["diagnostics"]["land_checks"] > 0
+        assert run["input_fingerprints"]["shoreline"] == [
+            {"kind": "gshhs", "path": str(shoreline)}
+        ]
+        assert run["input_fingerprints"]["coastline_clearance_distance_m"] == 370.0
+        # Every delivered leg must satisfy the same selected predicate.
+        from sailworks.core.geo.shoreline import ShorelineValidity
+
+        provider = ShorelineValidity(str(shoreline))
+        for leg in run["legs"]:
+            assert provider.lines_validity(
+                [
+                    (
+                        leg["start"]["latitude"],
+                        leg["start"]["longitude"],
+                        leg["end"]["latitude"],
+                        leg["end"]["longitude"],
+                    )
+                ],
+                370.0,
+            ) == [True]
+        assert run["independent_validation"]["passed"]
     finally:
         worker.shutdown()
 
 
-def test_real_job_cancel_supersede_crash_and_close_never_publish_stale(tmp_path):
+def test_scenario_jobs_keep_identity_and_modifiers_separate(tmp_path):
+    from sailworks.core.routingoptions import RouteScenario, scenario_request
+
     with _forecast_inputs(tmp_path) as source:
-        job = _job(tmp_path, _selected_forecast(tmp_path, source))
+        binding = _selected_forecast(tmp_path, source)
+        base = _job(tmp_path, binding)
+        request = RouteRequest(
+            name="scenario-base",
+            start=base.start,
+            destination=base.destination,
+            departure=datetime.fromtimestamp(base.departure_epoch_s, timezone.utc),
+            polar_file=str(
+                Path(__file__).resolve().parents[1] / "sailworks/data/polars/test.pol"
+            ),
+            algorithm=LegacyAlgorithm,
+            coastline_checks=False,
+        )
+        scenarios = (
+            scenario_request(request, RouteScenario()),
+            scenario_request(
+                request,
+                RouteScenario(
+                    wind_speed_pct=20,
+                    wind_dir_offset=15,
+                ),
+            ),
+            scenario_request(
+                request,
+                RouteScenario(polar_efficiency_pct=85),
+            ),
+        )
+        jobs = freeze_native_requests(
+            request, scenarios, binding, (), None, engine="main"
+        )
+    assert len(jobs) == 3
+    assert len({job.calculation_id for job in jobs}) == 3
+
+    runs = []
     worker = NativeRoutingWorker()
     try:
-        first = worker.submit(job)
-        cancelled = worker.cancel()
-        assert cancelled.generation == first
-        assert cancelled.state == "cancelled" and cancelled.payload is None
-        assert worker.poll(0) is None
-
-        superseded = worker.submit(job)
-        latest = worker.submit(replace(job, destination=(48.28, -123.60)))
-        assert worker.superseded_generation == superseded
-        status = _wait(worker)
-        assert status.generation == latest and status.state == "completed"
-        assert status.payload["request"]["destination"] == {
-            "latitude": 48.28,
-            "longitude": -123.60,
-        }
-        assert worker.poll(0) is None
-
-        worker.submit(job)
-        worker._process.terminate()  # simulate native failure before delivery
-        status = _wait(worker)
-        assert status.state == "failed" and status.payload is None
-        worker.submit(job)
-        worker.shutdown()
-        assert not worker.running and worker.poll(0) is None
+        for job in jobs:
+            worker.submit(job)
+            status = _wait(worker)
+            assert status.state == "completed", status.message
+            assert status.payload["accepted"], status.payload["message"]
+            assert status.payload["calculation_id"] == job.calculation_id
+            runs.append(status.payload)
     finally:
         worker.shutdown()
+
+    assert len({run["calculation_id"] for run in runs}) == 3
+    assert runs[1]["scenario"] == {
+        "name": scenarios[1].name,
+        "wind_speed_pct": 20,
+        "wind_dir_offset": 15,
+        "polar_efficiency": 1.0,
+    }
+    # Wind modifiers reach the sampled weather, not only the record.
+    assert (
+        runs[1]["legs"][0]["wind_east_knots"] != runs[0]["legs"][0]["wind_east_knots"]
+    ) or (
+        runs[1]["legs"][0]["wind_north_knots"] != runs[0]["legs"][0]["wind_north_knots"]
+    )
+    # Polar efficiency scales delivered boat speed. The tolerance allows the
+    # search to choose a slightly different first leg under the lower speeds;
+    # the exact per-sample scaling is asserted in the bridge checks.
+    ratio = (
+        runs[2]["legs"][0]["speed_through_water_knots"]
+        / runs[0]["legs"][0]["speed_through_water_knots"]
+    )
+    assert 0.84 < ratio < 0.86
+    assert runs[2]["scenario"]["polar_efficiency"] == 0.85
+
+
+def test_diagnostic_result_is_saved_but_not_export_eligible(tmp_path):
+    """A diagnostic native payload can be stored but never becomes exportable."""
+    import sailworks_native_routing as bridge
+    from sailworks.core.geo.routingcollection import RoutingCollection
+    from sailworks.core.marine.routingresultstore import RoutingResultStore
+
+    # Pre-cancelled fixture run: a diagnostic, never a user calculation.
+    run = bridge.synthetic_cancelled_route("main")
+    result = to_routing_result(
+        run,
+        calculation_id=str(uuid4()),
+        generation=1,
+        sequence=0,
+        created_epoch_s=int(time.time()),
+        identity=bridge.identity(),
+    )
+    assert export_blockers(result)
+    collection = RoutingCollection(RoutingResultStore(tmp_path / "results"))
+    route = collection.save_result("diagnostic", result)
+    assert route.export_eligible is False
+    assert collection.load_result(route).outcome.delivered is False

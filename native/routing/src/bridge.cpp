@@ -284,6 +284,41 @@ py::dict layerDict(const wr::IsochroneLayer& layer, std::size_t index) {
   return result;
 }
 
+// Selected GSHHS shoreline supplied by Python so the native search and its
+// independent replay use exactly the reviewed Sailworks predicates. The route
+// call keeps the GIL; no native concurrency is enabled by this adapter.
+class PythonLandProvider final : public wr::LandAndBoundaryProvider {
+ public:
+  PythonLandProvider(py::object land, std::string identity)
+      : land_(std::move(land)), identity_(std::move(identity)) {}
+
+  [[nodiscard]] bool pointForbidden(wr::GeoPoint point) const override {
+    py::gil_scoped_acquire guard;
+    return py::cast<bool>(
+        land_.attr("point_forbidden")(point.latitude, point.longitude));
+  }
+
+  [[nodiscard]] bool segmentForbidden(wr::GeoPoint start, wr::GeoPoint end,
+                                      double safetyMarginNm) const override {
+    py::gil_scoped_acquire guard;
+    return py::cast<bool>(land_.attr("segment_forbidden")(
+        start.latitude, start.longitude, end.latitude, end.longitude,
+        safetyMarginNm));
+  }
+
+  [[nodiscard]] double distanceToForbiddenNm(wr::GeoPoint point) const override {
+    py::gil_scoped_acquire guard;
+    return py::cast<double>(
+        land_.attr("distance_nm")(point.latitude, point.longitude));
+  }
+
+  [[nodiscard]] std::string identity() const override { return identity_; }
+
+ private:
+  py::object land_;
+  std::string identity_;
+};
+
 // Weather supplied by Python callables so ordinary Sailworks sampling can drive
 // the native solver. The route call keeps the GIL, so callbacks execute on the
 // calling thread; no native concurrency is enabled by this adapter.
@@ -474,62 +509,6 @@ wr::VesselConfiguration vesselFromPolar(const py::object& polar,
   return vessel;
 }
 
-SyntheticRun runUserBridge(py::function wind, py::function current,
-                           const py::dict& coverage, const py::object& polar,
-                           const py::dict& settings,
-                           const std::string& providerIdentity,
-                           const std::string& polarIdentity,
-                           const std::string& engine) {
-  const std::set<std::string> required{
-      "start", "destination", "departure_epoch_s", "use_currents",
-      "polar_efficiency", "tws_max_kn", "min_sailing_speed_kn",
-      "motor_speed_kn", "wave_correct", "coastline_checks"};
-  if (py::len(settings) != required.size())
-    throw py::value_error("real request requires all supported settings and no unknown settings");
-  for (const auto& key : required)
-    if (!settings.contains(py::str(key)))
-      throw py::value_error("real request missing setting: " + key);
-  if (py::cast<bool>(settings["coastline_checks"]))
-    throw py::value_error("real request shoreline checks require a worker-local shoreline adapter");
-  auto point = [](const py::handle value) {
-    const auto pair = py::cast<py::sequence>(value);
-    if (py::len(pair) != 2)
-      throw py::value_error("real request point must be (latitude, longitude)");
-    return wr::GeoPoint{py::cast<double>(pair[0]), py::cast<double>(pair[1])};
-  };
-  auto optionalSpeed = [](const py::handle value) -> std::optional<double> {
-    if (value.is_none()) return std::nullopt;
-    return py::cast<double>(value);
-  };
-  sailworks::native_routing::UserSettings input;
-  input.start = point(settings["start"]);
-  input.destination = point(settings["destination"]);
-  input.departureEpochSeconds = py::cast<std::int64_t>(settings["departure_epoch_s"]);
-  input.useCurrents = py::cast<bool>(settings["use_currents"]);
-  input.polarEfficiency = py::cast<double>(settings["polar_efficiency"]);
-  input.maximumWindKnots = optionalSpeed(settings["tws_max_kn"]);
-  input.minimumSailingKnots = optionalSpeed(settings["min_sailing_speed_kn"]);
-  input.motorKnots = py::cast<double>(settings["motor_speed_kn"]);
-  input.windBasedWaveProxy = py::cast<bool>(settings["wave_correct"]);
-
-  if (polar.is_none())
-    throw py::value_error("real request requires selected polar rows");
-  const auto windCoverage = coverageFromDict(coverage, providerIdentity);
-  auto vessel = vesselFromPolar(polar, polarIdentity, "selected Sailworks polar");
-  auto request = sailworks::native_routing::buildUserRequest(input, vessel,
-                                                               windCoverage);
-  wr::RoutingEnvironment environment;
-  environment.grib = std::make_shared<PythonWeatherProvider>(
-      std::move(wind), std::move(current), windCoverage, providerIdentity,
-      wr::EnvironmentalSource::GribForecast);
-  environment.landAndBoundaries = std::make_shared<wr::OpenWaterProvider>();
-  environment.performance = std::make_shared<sailworks::native_routing::SailworksPerformance>(
-      std::move(vessel), input.maximumWindKnots, input.minimumSailingKnots,
-      input.motorKnots, input.windBasedWaveProxy);
-  return sailworks::native_routing::runRequest(engine, std::move(request),
-                                               std::move(environment));
-}
-
 wr::EnvironmentalSource sourceFromName(const std::string& name) {
   if (name == "grib" || name == "grib_forecast")
     return wr::EnvironmentalSource::GribForecast;
@@ -540,7 +519,9 @@ wr::EnvironmentalSource sourceFromName(const std::string& name) {
   return wr::EnvironmentalSource::Missing;
 }
 
-py::dict runDict(const SyntheticRun& run) {
+py::dict runDict(const SyntheticRun& run,
+                 const std::vector<sailworks::native_routing::ChainSegment>*
+                     chainSegments = nullptr) {
   py::dict result;
   result["engine"] = run.engine;
   result["status"] = sailworks::native_routing::statusName(run.result.status);
@@ -606,8 +587,128 @@ py::dict runDict(const SyntheticRun& run) {
   requestInfo["maximum_route_duration_seconds"] =
       seconds(run.request.limits.maximumRouteDuration);
   requestInfo["time_step_seconds"] = seconds(run.request.options.timeStep);
+  // Native settings are engine-defined for now; expose them so a result can
+  // never imply that an unexposed legacy parameter was applied.
+  requestInfo["heading_step_degrees"] = run.request.options.headingStepDegrees;
+  requestInfo["maximum_search_angle_degrees"] =
+      run.request.options.maximumSearchAngleDegrees;
+  requestInfo["destination_tolerance_nm"] =
+      run.request.options.destinationToleranceNm;
+  requestInfo["land_safety_margin_nm"] =
+      run.request.constraints.landSafetyMarginNm;
+  requestInfo["maximum_generated_states"] =
+      run.request.limits.maximumGeneratedStates;
+  requestInfo["maximum_retained_states"] =
+      run.request.limits.maximumRetainedStates;
+  requestInfo["maximum_exploration_distance_nm"] =
+      run.request.limits.maximumExplorationDistanceNm;
   result["request"] = requestInfo;
+  if (chainSegments != nullptr) {
+    py::list segments;
+    for (const auto& segment : *chainSegments) {
+      py::dict item;
+      item["index"] = static_cast<std::size_t>(segment.index);
+      item["status"] =
+          sailworks::native_routing::statusName(segment.status);
+      item["accepted"] = segment.accepted;
+      item["engine_validation_passed"] = segment.engineValidationPassed;
+      item["independent_validation_passed"] =
+          segment.independentValidationPassed;
+      item["leg_count"] = segment.legCount;
+      item["message"] = segment.message;
+      segments.append(item);
+    }
+    result["segments"] = segments;
+    result["metrics_note"] =
+        "chain metrics aggregate delivered legs with the engine's own "
+        "delivered-route rules; a join maneuver is counted in the segment "
+        "that delivered it";
+  }
   return result;
+}
+
+py::dict runUserBridge(py::function wind, py::function current,
+                           const py::dict& coverage, const py::object& polar,
+                           const py::dict& settings,
+                           const py::object& land,
+                           const std::string& providerIdentity,
+                           const std::string& polarIdentity,
+                           const std::string& engine) {
+  const std::set<std::string> required{
+      "start", "destination", "departure_epoch_s", "use_currents",
+      "polar_efficiency", "tws_max_kn", "min_sailing_speed_kn",
+      "motor_speed_kn", "wave_correct", "coastline_checks",
+      "land_safety_margin_nm", "waypoints"};
+  if (py::len(settings) != required.size())
+    throw py::value_error("real request requires all supported settings and no unknown settings");
+  for (const auto& key : required)
+    if (!settings.contains(py::str(key)))
+      throw py::value_error("real request missing setting: " + key);
+  if (py::cast<bool>(settings["coastline_checks"]) && land.is_none())
+    throw py::value_error(
+        "real request shoreline checks require a worker-local shoreline adapter");
+  auto point = [](const py::handle value) {
+    const auto pair = py::cast<py::sequence>(value);
+    if (py::len(pair) != 2)
+      throw py::value_error("real request point must be (latitude, longitude)");
+    return wr::GeoPoint{py::cast<double>(pair[0]), py::cast<double>(pair[1])};
+  };
+  auto optionalSpeed = [](const py::handle value) -> std::optional<double> {
+    if (value.is_none()) return std::nullopt;
+    return py::cast<double>(value);
+  };
+  sailworks::native_routing::UserSettings input;
+  input.start = point(settings["start"]);
+  input.destination = point(settings["destination"]);
+  input.departureEpochSeconds = py::cast<std::int64_t>(settings["departure_epoch_s"]);
+  input.useCurrents = py::cast<bool>(settings["use_currents"]);
+  input.polarEfficiency = py::cast<double>(settings["polar_efficiency"]);
+  input.maximumWindKnots = optionalSpeed(settings["tws_max_kn"]);
+  input.minimumSailingKnots = optionalSpeed(settings["min_sailing_speed_kn"]);
+  input.motorKnots = py::cast<double>(settings["motor_speed_kn"]);
+  input.windBasedWaveProxy = py::cast<bool>(settings["wave_correct"]);
+  input.coastlineChecks = py::cast<bool>(settings["coastline_checks"]);
+  input.landSafetyMarginNm =
+      py::cast<double>(settings["land_safety_margin_nm"]);
+
+  if (polar.is_none())
+    throw py::value_error("real request requires selected polar rows");
+  const auto windCoverage = coverageFromDict(coverage, providerIdentity);
+  auto vessel = vesselFromPolar(polar, polarIdentity, "selected Sailworks polar");
+  auto request = sailworks::native_routing::buildUserRequest(input, vessel,
+                                                               windCoverage);
+  wr::RoutingEnvironment environment;
+  environment.grib = std::make_shared<PythonWeatherProvider>(
+      std::move(wind), std::move(current), windCoverage, providerIdentity,
+      wr::EnvironmentalSource::GribForecast);
+  environment.landAndBoundaries =
+      input.coastlineChecks
+          ? std::shared_ptr<wr::LandAndBoundaryProvider>(
+                std::make_shared<PythonLandProvider>(std::move(land),
+                                                     providerIdentity +
+                                                         "-shoreline"))
+          : std::make_shared<wr::OpenWaterProvider>();
+  environment.performance = std::make_shared<sailworks::native_routing::SailworksPerformance>(
+      std::move(vessel), input.maximumWindKnots, input.minimumSailingKnots,
+      input.motorKnots, input.windBasedWaveProxy);
+
+  std::vector<wr::GeoPoint> chain{input.start};
+  for (const auto& value : py::cast<py::sequence>(settings["waypoints"])) {
+    const wr::GeoPoint next = point(value);
+    if (next.latitude == chain.back().latitude &&
+        next.longitude == chain.back().longitude)
+      continue;
+    chain.push_back(next);
+  }
+  if (chain.size() == 1 || chain.back().latitude != input.destination.latitude ||
+      chain.back().longitude != input.destination.longitude)
+    chain.push_back(input.destination);
+  if (chain.size() == 2)
+    return runDict(sailworks::native_routing::runRequest(
+        engine, std::move(request), std::move(environment)));
+  const auto run = sailworks::native_routing::runUserChain(
+      engine, std::move(request), std::move(environment), chain);
+  return runDict(run.result, &run.segments);
 }
 
 py::dict identityDict() {
@@ -946,16 +1047,16 @@ PYBIND11_MODULE(sailworks_native_routing, module) {
        "the polar, constraints, options and limits stay frozen.");
   module.def("route_user_request",
              [](py::function wind, py::function current, py::dict coverage,
-                py::object polar, py::dict settings,
+                py::object polar, py::dict settings, py::object land,
                 const std::string& providerIdentity,
                 const std::string& polarIdentity,
                 const std::string& engine) {
-               return runDict(runUserBridge(
-                   std::move(wind), std::move(current), coverage, polar,
-                   settings, providerIdentity, polarIdentity, engine));
+               return runUserBridge(std::move(wind), std::move(current),
+                                    coverage, polar, settings, land,
+                                    providerIdentity, polarIdentity, engine);
              },
              py::arg("wind"), py::arg("current"), py::arg("coverage"),
-             py::arg("polar"), py::arg("settings"),
+             py::arg("polar"), py::arg("settings"), py::arg("land"),
              py::arg("provider_identity"), py::arg("polar_identity"),
              py::arg("engine") = "main",
              "Run a selected single-leg request; reject unsupported settings "

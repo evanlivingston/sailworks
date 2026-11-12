@@ -114,6 +114,30 @@ SyntheticRun runWithProvider(
 SyntheticRun runRequest(const std::string& engine, wr::RoutingRequest request,
                         wr::RoutingEnvironment environment);
 
+struct ChainSegment {
+  std::size_t index{};
+  wr::RoutingStatus status{wr::RoutingStatus::InternalError};
+  bool accepted{};
+  bool engineValidationPassed{};
+  bool independentValidationPassed{};
+  std::size_t legCount{};
+  std::string message;
+};
+
+struct ChainRun {
+  SyntheticRun result;
+  std::vector<ChainSegment> segments;
+  int failedSegment{-1};
+};
+
+// Route through a waypoint chain exactly as the legacy workflow does: each
+// segment starts at the previous delivered position and departs at the previous
+// arrival time. The whole delivered route is then replayed once by the
+// engine's independent validator so joins and cumulative times are included.
+ChainRun runUserChain(const std::string& engine, wr::RoutingRequest request,
+                      wr::RoutingEnvironment environment,
+                      const std::vector<wr::GeoPoint>& chain);
+
 [[nodiscard]] bool isCompleteStatus(wr::RoutingStatus status);
 [[nodiscard]] std::string statusName(wr::RoutingStatus status);
 [[nodiscard]] std::string solverPathName(wr::SolverPath path);

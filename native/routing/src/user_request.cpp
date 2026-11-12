@@ -45,6 +45,14 @@ wr::RoutingRequest buildUserRequest(const UserSettings& settings,
   request.environment.useWaves = false;
   request.environment.missingCurrent = wr::MissingCurrentPolicy::Disallow;
   request.objective.kind = wr::ObjectiveKind::FastestUnderSafetyLimits;
+  if (!std::isfinite(settings.landSafetyMarginNm) ||
+      settings.landSafetyMarginNm < 0.0)
+    throw std::invalid_argument("land safety margin must be non-negative");
+  if (!settings.coastlineChecks && settings.landSafetyMarginNm > 0.0)
+    throw std::invalid_argument(
+        "land safety margin requires enabled coastline checks");
+  request.constraints.landSafetyMarginNm =
+      settings.coastlineChecks ? settings.landSafetyMarginNm : 0.0;
   // The wind-based wave proxy acts on performance, not real wave constraints.
   request.limits.maximumRouteDuration =
       *windCoverage.ends - request.departure;
