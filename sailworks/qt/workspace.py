@@ -368,6 +368,9 @@ class WorkspacePreferences(QObject):
                 if type(old_page) is int
                 else None
             )
+        if page == "Advanced":
+            # The former Advanced tab is now the Advanced disclosure on Plan.
+            page = "Plan"
         for index in range(panel.pages.count()):
             if panel.pages.tabText(index) == page:
                 panel.pages.setCurrentIndex(index)
