@@ -83,16 +83,16 @@ class TestDependencyScripts(unittest.TestCase):
         result = self.run_script("ubuntu_dep.sh")
         self.assertEqual(result.returncode, 0, result.stderr)
         commands = self.commands()
-        self.assertEqual(len(commands), 4)
-        self.assertIn("<Acquire::Retries=3> <update>", commands[0])
-        self.assertEqual(commands[1], "apt-cache <show> <gdal-plugins>")
-        self.assertIn("<libgdal-dev> <gdal-data> <gdal-plugins>", commands[2])
-        self.assertNotIn("libgdal34", commands[2])
+        self.assertEqual(len(commands), 5)
+        self.assertIn("<Acquire::Retries=3> <update>", commands[1])
+        self.assertEqual(commands[2], "apt-cache <show> <gdal-plugins>")
+        self.assertIn("<libgdal-dev> <gdal-data> <gdal-plugins>", commands[3])
+        self.assertNotIn("libgdal34", commands[3])
 
     def test_native_install_skips_plugins_where_the_package_is_absent(self):
         result = self.run_script("ubuntu_dep.sh", APT_CACHE_EXIT="1")
         self.assertEqual(result.returncode, 0, result.stderr)
-        install = self.commands()[2]
+        install = self.commands()[3]
         self.assertIn("<libgdal-dev> <gdal-data>", install)
         self.assertNotIn("gdal-plugins", install)
 
@@ -103,4 +103,67 @@ class TestDependencyScripts(unittest.TestCase):
         )
         result = self.run_script("ubuntu_dep.sh")
         self.assertEqual(result.returncode, 42)
-        self.assertEqual(len(self.commands()), 3)
+        self.assertEqual(len(self.commands()), 4)
+
+
+class TestPpaRetry(unittest.TestCase):
+    """The PPA setup retries a transient launchpad failure before giving up."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name)
+        self.log = self.path / "commands"
+        self.environment = dict(
+            os.environ,
+            PATH=str(self.path),
+            COMMAND_LOG=str(self.log),
+            PPA_RETRY_SLEEP="0",
+        )
+        self.bash = shutil.which("bash")
+        for name, body in (
+            (
+                "sudo",
+                'if [[ "${SUDO_FAIL_ADD-}" == "1" && "$*" == *add-apt-repository* ]]; then exit 1; fi\n'
+                'exit "${SUDO_EXIT-0}"',
+            ),
+            ("apt-get", "exit 0"),
+            ("apt-cache", "exit 0"),
+            ("sleep", "exit 0"),
+        ):
+            script = self.path / name
+            script.write_text(
+                f"#!{self.bash}\n"
+                f"printf '{name}' >> \"$COMMAND_LOG\"\n"
+                'printf " <%s>" "$@" >> "$COMMAND_LOG"\n'
+                'printf "\\n" >> "$COMMAND_LOG"\n' + body + "\n"
+            )
+            script.chmod(0o755)
+
+    def run_script(self, **environment):
+        return subprocess.run(
+            [self.bash, str(ROOT / ".github/workflows/script/ubuntu_dep.sh")],
+            cwd=self.path,
+            env=dict(self.environment, **environment),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    def add_attempts(self):
+        return [
+            line
+            for line in self.log.read_text().splitlines()
+            if line.startswith("sudo <add-apt-repository>")
+        ]
+
+    def test_transient_launchpad_failure_is_retried(self):
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.add_attempts()), 1)
+
+    def test_persistent_failure_explains_the_archive_is_not_a_substitute(self):
+        result = self.run_script(SUDO_FAIL_ADD="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("after 3 attempts", result.stderr)
+        self.assertIn("numpy 2", result.stderr)
