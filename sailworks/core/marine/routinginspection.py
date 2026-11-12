@@ -161,6 +161,7 @@ _STATUS_DETAIL = {
     "failed": "failed: no route was delivered",
     "cancelled": "cancelled: the calculation stopped before completion",
     "preview": "preview: provisional geometry, not a calculated route",
+    "no_feasible_route": "no feasible route: no path within the configured bounds",
     "resource_limit_reached": (
         "resource exhausted: the search stopped at a configured resource limit"
     ),
@@ -279,6 +280,9 @@ def diagnostics(result: RoutingResult) -> Tuple[DiagnosticState, ...]:
             "failed": "failed: no route was delivered",
             "cancelled": "cancelled: stopped before completion",
             "preview": "preview: provisional search output, not a calculated route",
+            "no_feasible_route": (
+                "no feasible route: no path within the configured bounds"
+            ),
             "resource_limit_reached": (
                 "resource exhausted: stopped at a configured resource limit"
             ),
