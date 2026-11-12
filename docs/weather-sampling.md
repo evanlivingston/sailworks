@@ -118,6 +118,18 @@ References: [GDAL geotransforms](https://gdal.org/en/stable/tutorials/geotransfo
 [GRIB2 template 4.0](https://codes.ecmwf.int/grib/format/grib2/templates/4/0/),
 [NCEP process identifiers](https://www.nco.ncep.noaa.gov/sib/grib2/grib2_all_tables_module.pdf).
 
+## Waves
+
+Wave fields use the same record selection, bilinear sampling and temporal
+blending as wind and pressure. Recognized aliases are `SWH`/`HTSGW`
+(significant height, metres), `MWP`/`PERPW` (period, seconds) and
+`MWD`/`DIRPW` (direction, degrees). ERA5's aliases at surface level are
+accepted, including centimetre/kilometre height and minute period units, which
+are converted to metres and seconds. Wave direction stays in meteorological
+degrees: the direction the waves come **from**, relative to true north.
+Bearing blending is circular, so 350° and 10° interpolate through north rather
+than through 180°.
+
 ## Regional wind sources
 
 Data Library lists NOAA HRRR and CMC HRDPS alongside GFS and OpenSkiron. HRRR

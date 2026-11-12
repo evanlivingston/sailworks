@@ -234,7 +234,8 @@ class WeatherPanel(QWidget):
         self.wave_forecast = Dropdown("Wave forecast")
         self.wave_forecast.setAccessibleName("Wave forecast display")
         self.wave_forecast.setToolTip(
-            "Show a wave-only published forecast. Routing keeps its own model."
+            "Display-only: show a wave-only published forecast. Routing uses "
+            "its own wave-data selection and reports the source it sampled."
         )
         self.wave_forecast.currentIndexChanged.connect(self._select_wave)
         waves.addWidget(self.wave_forecast)

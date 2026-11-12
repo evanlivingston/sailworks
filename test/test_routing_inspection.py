@@ -131,3 +131,52 @@ def test_unknown_leg_is_rejected():
     inspector = RoutingInspector(_result(legs=(_leg("leg-0"),)))
     with pytest.raises(KeyError):
         inspector.leg_readout("missing")
+
+
+def _wave_result(provenance):
+    from dataclasses import replace
+
+    from sailworks.core.marine.routinginspection import diagnostics
+
+    result = _result(legs=(_leg("leg-0"),))
+    result = replace(
+        result,
+        outcome=Outcome(
+            True,
+            True,
+            Validation("passed", True),
+            {"wave_provenance": provenance},
+        ),
+    )
+    return {state.code: state.state for state in diagnostics(result)}
+
+
+def test_diagnostics_disclose_real_wave_source_and_proxy_separately():
+    states = _wave_result(
+        {
+            "mode": "real_waves_and_wind_proxy",
+            "uses_real_wave_heights": True,
+            "uses_wind_proxy": True,
+            "dataset_identity": "GFSWAVE:run:sha",
+            "units": {
+                "height": "m",
+                "period": "s",
+                "direction": "degrees coming from true north",
+            },
+        }
+    )
+    assert "GFSWAVE:run:sha" in states["wave source"]
+    assert "legacy wind proxy" in states["wave source"]
+    assert "height m" in states["wave units"]
+
+
+def test_diagnostics_do_not_dress_the_wind_proxy_as_wave_data():
+    states = _wave_result(
+        {
+            "mode": "wind_proxy",
+            "uses_real_wave_heights": False,
+            "uses_wind_proxy": True,
+        }
+    )
+    assert "no wave heights" in states["wave source"]
+    assert "wave units" not in states

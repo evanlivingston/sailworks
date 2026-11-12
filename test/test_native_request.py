@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from pickle import dumps, loads
+import sys
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -257,3 +258,235 @@ def test_naive_local_departure_is_interpreted_like_the_legacy_panel(polar):
     # The panel's departure has no offset and legacy routes read it as local
     # wall time, so native attaches the local offset instead of refusing.
     assert job.departure_epoch_s == int(local.astimezone().timestamp())
+
+
+def _wave_forecast(
+    *,
+    fields=("wave_height", "wave_period", "wave_direction"),
+    region=(40, -130, 50, -120),
+    start=None,
+    end=None,
+):
+    wind = _forecast()
+    start = start or datetime(2026, 1, 1, tzinfo=timezone.utc)
+    end = end or datetime(2026, 1, 1, 6, tzinfo=timezone.utc)
+    entry = SimpleNamespace(
+        entry_id="wave",
+        model_id="GFSWAVE",
+        member="deterministic",
+        artifacts=(SimpleNamespace(sha256="wave-sha"),),
+        fields=fields,
+        field_times=tuple((field, (start, end)) for field in fields),
+        region=region,
+        run_time=start,
+    )
+    return ResolvedForecast(
+        selection=SimpleNamespace(tranche_id="selected", entry_id="wave"),
+        tranche=wind.tranche,
+        entry=entry,
+        artifact_paths=(Path("/local/selected/artifacts/wave-sha"),),
+    )
+
+
+def test_wave_selection_is_frozen_with_its_binding(polar):
+    request = replace(_request(polar), use_currents=False, wave_entry_id="wave")
+    wave = _wave_forecast()
+    (job,) = freeze_native_requests(
+        request,
+        (),
+        _forecast(),
+        (),
+        None,
+        engine="main",
+        wave_forecast=wave,
+    )
+    restored = loads(dumps(job))
+    assert restored.wave_forecast.entry.model_id == "GFSWAVE"
+    assert restored.wave_forecast.entry.entry_id == "wave"
+
+
+def test_wave_selection_requires_height_period_and_direction(polar):
+    request = replace(_request(polar), use_currents=False, wave_entry_id="wave")
+    wave = _wave_forecast(fields=("wave_height", "wave_period"))
+    with pytest.raises(ValueError, match="wave_direction"):
+        freeze_native_requests(
+            request,
+            (),
+            _forecast(),
+            (),
+            None,
+            engine="main",
+            wave_forecast=wave,
+        )
+
+
+def test_wave_selection_must_cover_the_route_window(polar):
+    request = replace(_request(polar), use_currents=False, wave_entry_id="wave")
+    wave = _wave_forecast(
+        start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        end=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    with pytest.raises(ValueError, match="does not cover the route window"):
+        freeze_native_requests(
+            request,
+            (),
+            _forecast(),
+            (),
+            None,
+            engine="main",
+            wave_forecast=wave,
+        )
+
+
+def test_wave_selection_cannot_change_between_scenarios(polar):
+    request = replace(_request(polar), use_currents=False, wave_entry_id="wave")
+    scenario = replace(request, wave_entry_id=None)
+    with pytest.raises(ValueError, match="frozen source selection"):
+        freeze_native_requests(
+            request,
+            (scenario,),
+            _forecast(),
+            (),
+            None,
+            engine="main",
+            wave_forecast=_wave_forecast(),
+        )
+
+
+def _wind_routable_forecast():
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    wind = _forecast()
+    entry = SimpleNamespace(
+        entry_id="wind",
+        model_id="GFS",
+        member="deterministic",
+        artifacts=wind.entry.artifacts,
+        field_times=(("wind", (start, start.replace(hour=6))),),
+        region=(40, -130, 50, -120),
+        run_time=start,
+    )
+    return ResolvedForecast(
+        selection=wind.selection,
+        tranche=wind.tranche,
+        entry=entry,
+        artifact_paths=wind.artifact_paths,
+    )
+
+
+class _FakeWind:
+    def __init__(self, *_args):
+        self.closed = False
+
+    def get_wind_at(self, instant, latitude, longitude):
+        return (270.0, 8.0)
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeWaves:
+    def __init__(self, *_args):
+        self.closed = False
+
+    def coverage(self):
+        return {
+            "south": 40.0,
+            "west": -130.0,
+            "north": 50.0,
+            "east": -120.0,
+            "start_epoch_s": 1767225600,
+            "end_epoch_s": 1767247200,
+            "dataset_identity": "GFSWAVE:wave-sha",
+        }
+
+    def get_wave_at(self, instant, latitude, longitude):
+        return (1.4, 8.0, 250.0, True, "GFSWAVE:wave-sha", "GFSWAVE")
+
+    def close(self):
+        self.closed = True
+
+
+def test_native_execution_passes_wave_sampler_and_coverage_to_the_bridge(
+    polar, monkeypatch
+):
+    from sailworks.core.marine import nativeexecution
+
+    request = replace(_request(polar), use_currents=False, wave_entry_id="wave")
+    (job,) = freeze_native_requests(
+        request,
+        (),
+        _wind_routable_forecast(),
+        (),
+        None,
+        engine="main",
+        wave_forecast=_wave_forecast(),
+    )
+    captured = {}
+
+    def route_user_request(
+        wind, current, coverage, polar_rows, settings, *args, **kwargs
+    ):
+        captured.update(settings=settings, kwargs=kwargs)
+        return {"status": "complete"}
+
+    bridge = SimpleNamespace(
+        route_user_request=route_user_request,
+        identity=lambda: {
+            "source": {
+                "repository": "test",
+                "commit": "0" * 40,
+                "tree_sha256": "a" * 64,
+            },
+            "versions": {"engine": "test"},
+        },
+    )
+    monkeypatch.setitem(sys.modules, "sailworks_native_routing", bridge)
+    monkeypatch.setattr(nativeexecution, "BoundRoutingWind", _FakeWind)
+    monkeypatch.setattr(nativeexecution, "BoundRoutingWaves", _FakeWaves)
+
+    run = nativeexecution.run_native_request(job)
+    assert run["status"] == "complete"
+    assert captured["settings"]["use_waves"] is True
+    assert captured["kwargs"]["wave_coverage"]["dataset_identity"] == (
+        "GFSWAVE:wave-sha"
+    )
+    sample = captured["kwargs"]["waves"](48.0, -123.0, 1767225600)
+    assert sample == (1.4, 8.0, 250.0, True, "GFSWAVE:wave-sha", "GFSWAVE")
+    assert run["input_fingerprints"]["wave"]["model_id"] == "GFSWAVE"
+
+
+def test_native_execution_turns_wave_coverage_failure_into_an_explicit_error(
+    polar, monkeypatch
+):
+    from sailworks.core.marine import nativeexecution
+
+    request = replace(_request(polar), use_currents=False, wave_entry_id="wave")
+    (job,) = freeze_native_requests(
+        request,
+        (),
+        _wind_routable_forecast(),
+        (),
+        None,
+        engine="main",
+        wave_forecast=_wave_forecast(),
+    )
+
+    def route_user_request(*_args, **_kwargs):
+        return {
+            "status": "wave_data_required",
+            "wave_provenance": {
+                "dataset_identity": "GFSWAVE:wave-sha",
+                "coverage": {"begins": 1767225600, "ends": 1767229200},
+            },
+        }
+
+    bridge = SimpleNamespace(
+        route_user_request=route_user_request,
+        identity=lambda: {},
+    )
+    monkeypatch.setitem(sys.modules, "sailworks_native_routing", bridge)
+    monkeypatch.setattr(nativeexecution, "BoundRoutingWind", _FakeWind)
+    monkeypatch.setattr(nativeexecution, "BoundRoutingWaves", _FakeWaves)
+
+    with pytest.raises(ValueError, match="wind proxy was not substituted"):
+        nativeexecution.run_native_request(job)

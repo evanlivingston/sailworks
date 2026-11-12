@@ -9,13 +9,20 @@ from __future__ import annotations
 import hashlib
 import math
 from dataclasses import dataclass
-from datetime import timezone
+from datetime import timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
 from sailworks.core.routingjob import RouteRequest
 from sailworks.core.scenariopool import provider_descriptors
 from sailworks.core.tranchestore import ResolvedForecast
+
+WAVE_ROUTING_FIELDS = ("wave_height", "wave_period", "wave_direction")
+WAVE_UNITS = {
+    "wave_height": "m",
+    "wave_period": "s",
+    "wave_direction": "degrees (coming from true north)",
+}
 
 
 @dataclass(frozen=True)
@@ -51,6 +58,10 @@ class NativeRequest:
     # a changed value is rejected instead of silently ignored.
     legacy_algorithm: str
     unchanged_legacy_parameters: tuple
+    # Real wave fields are a separate published forecast entry from the wind
+    # binding. They stay optional so an untouched calculation keeps today's
+    # wind-only path; the wind-based proxy is still controlled by wave_correct.
+    wave_forecast: ResolvedForecast | None = None
 
 
 def changed_legacy_parameters(request: RouteRequest) -> tuple[str, dict]:
@@ -95,6 +106,99 @@ def _point(value, label):
     return (float(latitude), float(longitude))
 
 
+def _distance_nm(left, right):
+    """Great-circle distance for the native route-window estimate."""
+    lat1, lon1 = (math.radians(value) for value in left)
+    lat2, lon2 = (math.radians(value) for value in right)
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    h = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    )
+    return 2 * 3440.065 * math.asin(min(1.0, math.sqrt(h)))
+
+
+def wave_field_times(entry):
+    """Wave coverage recorded by the published entry, or an explicit gap."""
+    field_times = dict(getattr(entry, "field_times", ()) or ())
+    return {field: tuple(field_times.get(field) or ()) for field in WAVE_ROUTING_FIELDS}
+
+
+def validate_wave_forecast(wave_forecast):
+    """Require a deterministic, single-artifact entry with all wave fields."""
+    if not isinstance(wave_forecast, ResolvedForecast):
+        raise ValueError("Wave-aware routing requires a published wave forecast")
+    entry = wave_forecast.entry
+    if getattr(entry, "member", None) != "deterministic":
+        raise ValueError("Wave routing requires a deterministic wave forecast")
+    if len(getattr(entry, "artifacts", ())) != 1:
+        raise ValueError("Wave routing requires exactly one wave artifact")
+    times = wave_field_times(entry)
+    missing = [field for field in WAVE_ROUTING_FIELDS if not times[field]]
+    if missing:
+        raise ValueError(
+            "Selected wave forecast "
+            f"{getattr(entry, 'model_id', 'unknown')} has no validated "
+            + ", ".join(f"{field} ({WAVE_UNITS[field]})" for field in missing)
+            + "; wave-aware routing needs height, period and direction"
+        )
+    return times
+
+
+def _inside(region, point):
+    south, west, north, east = (float(value) for value in region)
+    latitude, longitude = point
+    if not south <= latitude <= north:
+        return False
+    if west <= east:
+        return west <= longitude <= east
+    return longitude >= west or longitude <= east
+
+
+def _check_wave_window(entry, start, destination, departure, wind_end=None):
+    """Refuse a wave request that does not cover the estimated route window.
+
+    This is the same endpoint/departure/window test the engine performs in
+    preflight, repeated here so a native calculation fails before a worker is
+    spawned. There is deliberately no fallback to the wind proxy.
+    """
+    region = getattr(entry, "region", None)
+    times = wave_field_times(entry)["wave_height"]
+    covered = bool(times)
+    if region is not None:
+        if not _inside(region, start) or not _inside(region, destination):
+            covered = False
+    if times:
+        first, last = min(times), max(times)
+        if departure < first or departure > last:
+            covered = False
+        nominal_seconds = _distance_nm(start, destination) / 3.0 * 3600.0
+        available_seconds = (
+            (wind_end - departure).total_seconds()
+            if wind_end is not None and wind_end > departure
+            else nominal_seconds
+        )
+        nominal_end = departure + timedelta(
+            seconds=min(nominal_seconds, available_seconds)
+        )
+        if nominal_end > last:
+            covered = False
+    if covered:
+        return
+    model = getattr(entry, "model_id", "unknown")
+    if times:
+        coverage = f"{min(times).isoformat()} to {max(times).isoformat()}"
+    else:
+        coverage = "no wave times"
+    raise ValueError(
+        f"Wave data {model} does not cover the route window from "
+        f"{departure.isoformat()} (coverage: {coverage}, area: {region}). "
+        "No wave-aware route was calculated and the wind proxy was not "
+        "substituted."
+    )
+
+
 def _start_and_waypoints(request):
     """Resolve the start the way the legacy track workflow does.
 
@@ -119,6 +223,7 @@ def freeze_native_requests(
     marine_directory=None,
     *,
     engine: str,
+    wave_forecast=None,
 ) -> tuple[NativeRequest, ...]:
     """Freeze every requested scenario before dispatch; never omit a provider.
 
@@ -132,6 +237,25 @@ def freeze_native_requests(
         raise ValueError("Choose an explicit supported native routing engine")
     if len(forecast.artifact_paths) != 1 or len(forecast.entry.artifacts) != 1:
         raise ValueError("Native routing requires one frozen forecast artifact")
+    if request.wave_entry_id:
+        if wave_forecast is None:
+            raise ValueError(
+                "Selected wave data is not available; choose a published "
+                "wave forecast or set Wave data to None"
+            )
+        if wave_forecast.tranche.tranche_id != forecast.tranche.tranche_id:
+            raise ValueError("Selected wave forecast is not in the active tranche")
+        if wave_forecast.entry.entry_id != request.wave_entry_id:
+            raise ValueError(
+                "Selected wave forecast changed while freezing the request"
+            )
+        validate_wave_forecast(wave_forecast)
+    elif wave_forecast is not None:
+        raise ValueError("Wave forecast supplied without a selected wave entry")
+    wind_times = tuple(
+        dict(getattr(forecast.entry, "field_times", ()) or ()).get("wind") or ()
+    )
+    wind_end = max(wind_times) if wind_times else None
     descriptors = provider_descriptors(providers) if request.coastline_checks else ()
     if descriptors is None:
         raise ValueError("Native shoreline provider cannot be rebuilt in a worker")
@@ -179,6 +303,7 @@ def freeze_native_requests(
             or item.use_currents != request.use_currents
             or item.current_priority != request.current_priority
             or item.coastline_checks != request.coastline_checks
+            or getattr(item, "wave_entry_id", None) != request.wave_entry_id
         ):
             raise ValueError("Native scenario changed frozen source selection")
         start, waypoints = _start_and_waypoints(item)
@@ -193,6 +318,12 @@ def freeze_native_requests(
             raise ValueError(
                 unapplied_legacy_parameter_message(algorithm_name, changed)
             )
+        destination = _point(item.destination, "destination")
+        start_point = _point(start, "start")
+        if wave_forecast is not None:
+            _check_wave_window(
+                wave_forecast.entry, start_point, destination, departure, wind_end
+            )
         unchanged = tuple(
             (str(key), value) for key, value in dict(item.parameters).items()
         )
@@ -202,8 +333,8 @@ def freeze_native_requests(
                 engine=engine,
                 calculation_id=str(uuid4()),
                 name=item.name,
-                start=_point(start, "start"),
-                destination=_point(item.destination, "destination"),
+                start=start_point,
+                destination=destination,
                 departure_epoch_s=int(departure.astimezone(timezone.utc).timestamp()),
                 waypoints=tuple(_point(point, "waypoint") for point in waypoints),
                 forecast=forecast,
@@ -230,6 +361,7 @@ def freeze_native_requests(
                 wave_correct=item.wave_correct,
                 legacy_algorithm=algorithm_name,
                 unchanged_legacy_parameters=unchanged,
+                wave_forecast=wave_forecast,
             )
         )
     return tuple(frozen)
