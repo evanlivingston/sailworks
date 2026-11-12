@@ -1,5 +1,6 @@
 """Qt lifecycle around the shared engines, scenarios and current-coverage workflow."""
 
+import math
 import multiprocessing
 import os
 import time
@@ -31,6 +32,36 @@ _NATIVE_PROGRESS_STAGES = {
     "validation": "Validation",
     "complete": "Complete",
 }
+
+
+def _native_progress_percent(update):
+    """Derive whole-solve progress from the current attempt and its effort."""
+    if not isinstance(update, dict):
+        return None
+    effort = update.get("effort_percent")
+    attempt = update.get("attempt")
+    total = update.get("total_attempts")
+    if (
+        isinstance(effort, bool)
+        or not isinstance(effort, (int, float))
+        or not math.isfinite(effort)
+        or isinstance(attempt, bool)
+        or not isinstance(attempt, int)
+        or isinstance(total, bool)
+        or not isinstance(total, int)
+        or total <= 0
+    ):
+        # Without an attempt window the engine has not supplied a whole-solve
+        # percentage; keep the previous state instead of inventing one.
+        return None
+    effort = min(100.0, max(0.0, float(effort)))
+    percent = ((attempt - 1) + effort / 100.0) / total * 100.0
+    percent = min(100.0, max(0.0, percent))
+    if update.get("stage") != "complete" and percent >= 100.0:
+        # The bar reaches 100 only when the engine reports Complete, or when
+        # the controller finishes the run.
+        percent = 99.0
+    return percent
 
 
 class RoutingController(QObject):
@@ -751,26 +782,31 @@ class RoutingController(QObject):
             or not isinstance(update, dict)
         ):
             return
-        try:
-            percent = min(100.0, max(0.0, float(update.get("effort_percent"))))
-        except (TypeError, ValueError):
-            # No engine percentage: keep the indeterminate fallback.
-            return
-        self.percent = percent
-        self.progress_indeterminate = False
+        percent = _native_progress_percent(update)
+        if percent is not None:
+            self.percent = percent
+            self.progress_indeterminate = False
         stage = _NATIVE_PROGRESS_STAGES.get(
             str(update.get("stage", "")), str(update.get("stage", "Engine"))
         )
         attempt = update.get("attempt")
         total = update.get("total_attempts")
-        if isinstance(attempt, int) and isinstance(total, int) and total > 0:
+        if (
+            isinstance(attempt, int)
+            and not isinstance(attempt, bool)
+            and isinstance(total, int)
+            and not isinstance(total, bool)
+            and total > 0
+        ):
             stage += f" ({attempt}/{total})"
         prefix = (
             f"Native scenario {self.scenario_index + 1}/{self.scenario_count} · "
             if self.scenario_count > 1
             else "Native calculation · "
         )
-        self.message = f"{prefix}{stage} · effort {percent:.0f}%"
+        self.message = f"{prefix}{stage}"
+        if percent is not None:
+            self.message += f" · effort {percent:.0f}%"
         self.changed.emit()
 
     @Slot(int, object, object)

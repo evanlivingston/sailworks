@@ -21,7 +21,10 @@ from PySide6.QtWidgets import QApplication
 
 from sailworks.core.marine.nativeworker import NativeJobStatus
 from sailworks.core.routingjob import RouteRequest
-from sailworks.qt.routingcontroller import RoutingController
+from sailworks.qt.routingcontroller import (
+    RoutingController,
+    _native_progress_percent,
+)
 from sailworks.qt.routingpanel import RoutingPanel
 from sailworks.qt.window import PreviewWindow
 from test.test_routing_persistence import _result as _routing_result
@@ -221,6 +224,102 @@ def test_panel_shows_determinate_native_progress_after_first_engine_update(app):
     panel.deleteLater()
 
 
+def test_native_progress_percent_uses_attempt_window():
+    assert _native_progress_percent(
+        {
+            "stage": "forward_isochrone",
+            "attempt": 1,
+            "total_attempts": 5,
+            "effort_percent": 100,
+        }
+    ) == pytest.approx(20.0)
+    assert _native_progress_percent(
+        {
+            "stage": "forward_isochrone",
+            "attempt": 1,
+            "total_attempts": 1,
+            "effort_percent": 42,
+        }
+    ) == pytest.approx(42.0)
+    assert _native_progress_percent(
+        {
+            "stage": "forward_isochrone",
+            "attempt": 2,
+            "total_attempts": 5,
+            "effort_percent": 50,
+        }
+    ) == pytest.approx(30.0)
+
+
+def test_native_progress_percent_clamps_and_never_reaches_100_before_complete():
+    over = _native_progress_percent(
+        {
+            "stage": "validation",
+            "attempt": 9,
+            "total_attempts": 5,
+            "effort_percent": 100,
+        }
+    )
+    assert over == pytest.approx(99.0)
+    assert over < 100.0
+    assert _native_progress_percent(
+        {
+            "stage": "forward_isochrone",
+            "attempt": 1,
+            "total_attempts": 5,
+            "effort_percent": -20,
+        }
+    ) == pytest.approx(0.0)
+    assert _native_progress_percent(
+        {
+            "stage": "complete",
+            "attempt": 5,
+            "total_attempts": 5,
+            "effort_percent": 100,
+        }
+    ) == pytest.approx(100.0)
+    assert (
+        _native_progress_percent(
+            {
+                "stage": "validation",
+                "attempt": 5,
+                "total_attempts": 5,
+                "effort_percent": 100,
+            }
+        )
+        < 100.0
+    )
+
+
+def test_native_progress_percent_guards_missing_attempt_fields():
+    assert (
+        _native_progress_percent(
+            {
+                "stage": "preflight",
+                "attempt": 0,
+                "total_attempts": 0,
+                "effort_percent": 100,
+            }
+        )
+        is None
+    )
+    assert (
+        _native_progress_percent(
+            {
+                "stage": "validation",
+                "attempt": None,
+                "total_attempts": 5,
+                "effort_percent": 100,
+            }
+        )
+        is None
+    )
+    assert (
+        _native_progress_percent({"stage": "validation", "effort_percent": None})
+        is None
+    )
+
+
 def test_controller_native_progress_sets_stage_and_rejects_stale_or_cancelled(app):
     controller = RoutingController(FakeSession())
     controller.busy = True
@@ -232,21 +331,38 @@ def test_controller_native_progress_sets_stage_and_rejects_stale_or_cancelled(ap
         "stage": "forward_isochrone",
         "attempt": 2,
         "total_attempts": 3,
-        "effort_percent": 67,
+        "effort_percent": 100,
     }
     controller._apply_native_progress(1, update)
-    assert controller.percent == 67.0
+    assert controller.percent == pytest.approx(200.0 / 3.0)
+    assert controller.percent < 100.0
     assert controller.progress_indeterminate is False
     assert "Forward isochrone (2/3)" in controller.message
     assert "effort 67%" in controller.message
 
-    controller._apply_native_progress(0, {"stage": "validation", "effort_percent": 99})
-    assert controller.percent == 67.0
+    controller._apply_native_progress(
+        0,
+        {
+            "stage": "validation",
+            "attempt": 3,
+            "total_attempts": 3,
+            "effort_percent": 100,
+        },
+    )
+    assert controller.percent == pytest.approx(200.0 / 3.0)
     assert "Forward isochrone" in controller.message
 
     controller.cancel_event.set()
-    controller._apply_native_progress(1, {"stage": "complete", "effort_percent": 100})
-    assert controller.percent == 67.0
+    controller._apply_native_progress(
+        1,
+        {
+            "stage": "complete",
+            "attempt": 3,
+            "total_attempts": 3,
+            "effort_percent": 100,
+        },
+    )
+    assert controller.percent == pytest.approx(200.0 / 3.0)
 
 
 def test_controller_clears_native_indeterminate_progress_on_finish_failure_and_cancel(
@@ -531,13 +647,19 @@ def test_controller_forwards_worker_progress_to_panel_state(tmp_path, monkeypatc
             "stage": "preflight",
             "attempt": 0,
             "total_attempts": 0,
-            "effort_percent": 33,
+            "effort_percent": 100,
+        },
+        {
+            "stage": "forward_isochrone",
+            "attempt": 1,
+            "total_attempts": 5,
+            "effort_percent": 100,
         },
         {
             "stage": "validation",
-            "attempt": 1,
-            "total_attempts": 1,
-            "effort_percent": 67,
+            "attempt": 5,
+            "total_attempts": 5,
+            "effort_percent": 100,
         },
     ]
     worker, _diagnostics = _install_fakes(
@@ -563,12 +685,22 @@ def test_controller_forwards_worker_progress_to_panel_state(tmp_path, monkeypatc
         1, _request(), (), SimpleNamespace(), (), Event(), None
     )
 
-    assert [state[1] for state in states] == ["preflight", "validation"]
+    assert [state[1] for state in states] == [
+        "preflight",
+        "forward_isochrone",
+        "validation",
+    ]
     assert states[0][0] == 1
-    assert states[0][2] == 33.0
-    assert states[0][3] is False
-    assert states[1][2] == 67.0
-    assert "Validation (1/1)" in states[1][4]
+    assert states[0][2] == 0.0
+    assert states[0][3] is True
+    assert "Preflight" in states[0][4]
+    assert states[1][2] == pytest.approx(20.0)
+    assert states[1][3] is False
+    assert "Forward isochrone (1/5)" in states[1][4]
+    assert "effort 20%" in states[1][4]
+    assert states[2][2] == pytest.approx(99.0)
+    assert states[2][2] < 100.0
+    assert "Validation (5/5)" in states[2][4]
     assert len(collection.elements) == 1
     assert worker.progress_updates == []
     assert worker.shutdown_called
