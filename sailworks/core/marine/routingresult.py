@@ -534,6 +534,7 @@ class RoutingResult:
             "failed",
             "incomplete",
             "preview",
+            "no_feasible_route",
             "resource_limit_reached",
             "internal_error",
         }:

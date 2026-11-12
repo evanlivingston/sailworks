@@ -27,6 +27,7 @@ STATUSES = frozenset(
         "preview",
         # Native bridge terminal states that carry no route but are still
         # valid records. They stay distinct so diagnostics can name the cause.
+        "no_feasible_route",
         "resource_limit_reached",
         "internal_error",
     }

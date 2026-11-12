@@ -106,7 +106,9 @@ def _convert(run: dict):
     )
 
 
-@pytest.mark.parametrize("status", ["resource_limit_reached", "internal_error"])
+@pytest.mark.parametrize(
+    "status", ["no_feasible_route", "resource_limit_reached", "internal_error"]
+)
 def test_unvalidated_native_statuses_bridge_to_valid_distinct_records(status):
     run = _run(
         status=status,
@@ -127,16 +129,17 @@ def test_unvalidated_native_statuses_bridge_to_valid_distinct_records(status):
     states = {state.code: state.state for state in diagnostics(result)}
     # The raw native status is preserved on the result, while diagnostics show
     # the human-readable label for that status.
-    visible = (
-        "resource exhausted" if status == "resource_limit_reached" else "internal error"
-    )
+    visible = {
+        "no_feasible_route": "no feasible route",
+        "resource_limit_reached": "resource exhausted",
+        "internal_error": "internal error",
+    }[status]
     assert states["status"].startswith(visible)
     assert states["search"].startswith(visible)
     if status == "resource_limit_reached":
         assert states["resource"].startswith("exhausted")
         assert "native status resource_limit_reached" in states["resource"]
     else:
-        assert states["status"].startswith("internal error")
         assert "resource" not in states
 
 
