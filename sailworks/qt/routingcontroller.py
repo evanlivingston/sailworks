@@ -50,6 +50,9 @@ class RoutingController(QObject):
         self.cancel_event = Event()
         self.generation = 0
         self.percent = 0.0
+        # The native engine has no intra-solve progress callback, so its runs
+        # expose an indeterminate state instead of a percentage.
+        self.progress_indeterminate = False
         self.message = "Wind-only routing"
         self.error = ""
         self.request = None
@@ -98,6 +101,7 @@ class RoutingController(QObject):
         self.cancel_event = Event()
         cancel = self.cancel_event
         self.busy, self.error, self.percent = True, "", 0.0
+        self.progress_indeterminate = backend == "native"
         self.message = (
             "Native calculation queued…" if backend == "native" else "Calculating…"
         )
@@ -261,6 +265,7 @@ class RoutingController(QObject):
         self.scenario_index = index
         self.scenario_count = count
         self.percent = 0.0
+        self.progress_indeterminate = True
         self.message = (
             "Native calculation queued…"
             if count == 1
@@ -511,6 +516,7 @@ class RoutingController(QObject):
 
     def fail(self, message):
         self.error = self.message = message
+        self.progress_indeterminate = False
         self.changed.emit()
         return False
 
@@ -643,6 +649,8 @@ class RoutingController(QObject):
             self.cancel_event.set()
             self.dismiss_preflight.emit()
             self.isochrones_changed.emit(())
+            self.percent = 0.0
+            self.progress_indeterminate = False
             self.message = "Cancelling…"
             self.changed.emit()
 
@@ -684,6 +692,7 @@ class RoutingController(QObject):
         if self.closed or token != self.generation:
             return
         self.busy = False
+        self.progress_indeterminate = False
         self._parallel_mode = False
         self._parallel_progress = {}
         if error is not None and self._native_diagnostic_token != token:

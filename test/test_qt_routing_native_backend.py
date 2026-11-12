@@ -53,6 +53,7 @@ class FakeRouting(QObject):
         self.busy = False
         self.message = "Idle"
         self.percent = 0.0
+        self.progress_indeterminate = False
         self.cancel_event = Event()
         self.calls = []
 
@@ -176,6 +177,68 @@ def test_panel_keeps_legacy_backend_and_unchanged_parameters(app):
     assert backend == "legacy"
     assert dict(request.parameters)  # unchanged PARAMS are still sent
     panel.deleteLater()
+
+
+def test_panel_shows_indeterminate_progress_for_native_and_percent_for_legacy(app):
+    controller = FakeController()
+    panel = RoutingPanel(controller)
+
+    controller.routing.busy = True
+    controller.routing.progress_indeterminate = True
+    controller.routing.message = "Native calculation running (1/1)…"
+    panel.refresh()
+    assert panel.progress.minimum() == 0
+    assert panel.progress.maximum() == 0
+    assert "%" not in panel.status.text()
+
+    controller.routing.busy = True
+    controller.routing.progress_indeterminate = False
+    controller.routing.percent = 42.0
+    controller.routing.message = "Calculating: approximately 42%"
+    panel.refresh()
+    assert panel.progress.minimum() == 0
+    assert panel.progress.maximum() == 100
+    assert panel.progress.value() == 42
+    panel.deleteLater()
+
+
+def test_controller_clears_native_indeterminate_progress_on_finish_failure_and_cancel(
+    app,
+):
+    session = FakeSession()
+    controller = RoutingController(session)
+    seen = {}
+
+    def run_native(token, request, scenarios, sources, providers, cancel, selection):
+        seen["indeterminate"] = controller.progress_indeterminate
+        controller._finished.emit(token, None, None)
+
+    controller._run_native_requests = run_native
+    assert controller.start(_request(), backend="native")
+    assert controller.progress_indeterminate is True
+    deadline = time.monotonic() + 5
+    while controller.busy and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    assert seen["indeterminate"] is True
+    assert controller.progress_indeterminate is False
+
+    failing = RoutingController(FakeSession())
+    failing.busy = True
+    failing.generation = 1
+    failing.request = _request()
+    failing.backend = "native"
+    failing.progress_indeterminate = True
+    failing._finish(1, None, RuntimeError("failed"))
+    assert failing.progress_indeterminate is False
+
+    cancelling = RoutingController(FakeSession())
+    cancelling.busy = True
+    cancelling.backend = "native"
+    cancelling.progress_indeterminate = True
+    cancelling.cancel()
+    assert cancelling.progress_indeterminate is False
+    assert cancelling.percent == 0.0
 
 
 def test_controller_start_native_uses_analysis_snapshot_and_finishes(app):
