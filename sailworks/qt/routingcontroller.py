@@ -64,6 +64,19 @@ def _native_progress_percent(update):
     return percent
 
 
+def _request_cooperative_cancel(worker):
+    """Ask a native worker to stop at its next checkpoint, if it can.
+
+    Workers are duck-typed here: the cooperative stop is an optional part of
+    the protocol, while ``shutdown()`` is the bounded fallback every worker
+    must honour. A worker without a callable ``cancel`` is simply asked to
+    shut down instead of raising in the caller's ``finally`` block.
+    """
+    cancel = getattr(worker, "cancel", None)
+    if callable(cancel):
+        cancel()
+
+
 class RoutingController(QObject):
     changed = Signal()
     preview_changed = Signal(object)
@@ -345,6 +358,13 @@ class RoutingController(QObject):
             if worker is not None:
                 if self.native_worker is worker:
                     self.native_worker = None
+                # Aborted by a changed run token or an explicit cancel: ask the
+                # engine to stop at its next progress checkpoint so the child
+                # exits on its own. shutdown() keeps termination as the bounded
+                # fallback, and no status from this run can be published as a
+                # result (the generation guard above already rejected it).
+                if isinstance(error, RoutingCancelledError):
+                    _request_cooperative_cancel(worker)
                 worker.shutdown()
         if not self.closed:
             self._finished.emit(token, None, error)
@@ -895,5 +915,8 @@ class RoutingController(QObject):
         worker = self.native_worker
         if worker is not None:
             self.native_worker = None
+            # Cooperative stop first; shutdown() terminates only if the child
+            # does not exit within its grace period.
+            _request_cooperative_cancel(worker)
             worker.shutdown()
         self.dismiss_preflight.emit()
