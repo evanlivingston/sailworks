@@ -7,16 +7,28 @@ import unittest
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(
-    0,
+BUILD_PYTHON = Path(
     os.environ.get(
         "SAILWORKS_NATIVE_ROUTING_BUILD",
-        str(ROOT / "build/native-routing-system/python"),
-    ),
+        str(ROOT / "build/native-routing/python"),
+    )
 )
 
-import sailworks_native_routing as bridge  # noqa: E402
+
+def _bridge():
+    if not BUILD_PYTHON.is_dir():
+        pytest.fail(
+            "native routing module build directory is missing: "
+            f"{BUILD_PYTHON}. Configure and build it before running this test."
+        )
+    sys.path.insert(0, str(BUILD_PYTHON))
+    import sailworks_native_routing
+
+    return sailworks_native_routing
+
 
 START = 1767225600
 COVERAGE = {
@@ -56,7 +68,7 @@ def _missing_current(latitude, longitude, epoch_s):
 
 
 def _run(settings, wind=_wind, land=None):
-    return bridge.route_user_request(
+    return _bridge().route_user_request(
         wind,
         _missing_current,
         COVERAGE,
@@ -215,7 +227,7 @@ class NativeUserBridgeTest(unittest.TestCase):
 
     def test_failed_intermediate_leg_stays_diagnostic(self):
         short = {**COVERAGE, "end_epoch_s": START + 3600}
-        run = bridge.route_user_request(
+        run = _bridge().route_user_request(
             _wind,
             _missing_current,
             short,
@@ -245,7 +257,7 @@ class NativeUserBridgeTest(unittest.TestCase):
             generation=1,
             sequence=0,
             created_epoch_s=START,
-            identity=bridge.identity(),
+            identity=_bridge().identity(),
         )
         # A failed chain has no delivered whole route to validate: the record
         # must not display a passed (or failed) validation verdict.

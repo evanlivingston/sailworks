@@ -2,6 +2,8 @@
 
 import json
 import math
+import os
+import sys
 import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -10,6 +12,17 @@ from uuid import uuid4
 
 import numpy as np
 import pytest
+
+# The spawned worker imports the bridge in the child, so the build directory has
+# to be on this process's path before any job is submitted.
+BUILD_PYTHON = Path(
+    os.environ.get(
+        "SAILWORKS_NATIVE_ROUTING_BUILD",
+        Path(__file__).resolve().parents[1] / "build" / "native-routing" / "python",
+    )
+)
+if BUILD_PYTHON.is_dir():
+    sys.path.insert(0, str(BUILD_PYTHON))
 
 from sailworks.core.forecasttranche import (
     AnalysisSelection,
