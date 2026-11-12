@@ -23,13 +23,52 @@ from sailworks.core.geo.routing import Routing, contour_frontiers
 T = TypeVar("T", bound=Routing)
 
 
+def _readout_value(readout, *keys):
+    """Return the first recorded readout value, keeping unknown values absent."""
+    for key in keys:
+        value = readout.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _leg_point(leg, latitude, longitude, time, readout):
+    """Build one seven-field legacy route point from a schema-v1 leg."""
+    readout = readout or {}
+    return (
+        latitude,
+        longitude,
+        time,
+        readout.get("true_wind_angle_degrees"),
+        readout.get("true_wind_speed_knots"),
+        _readout_value(readout, "speed_over_ground_knots", "speed_through_water_knots"),
+        _readout_value(readout, "heading_degrees", "course_over_ground_degrees"),
+    )
+
+
 def _result_points(result):
-    """Map schema-v1 leg endpoints onto the legacy route polyline."""
-    points = []
-    for leg in result.legs:
-        if not points:
-            points.append((leg.start.lat, leg.start.lon))
-        points.append((leg.end.lat, leg.end.lon))
+    """Map schema-v1 legs onto the legacy route point tuples.
+
+    Legacy consumers expect ``(lat, lon, time, wind angle, wind speed, speed,
+    heading)``. Each leg contributes its start point, and the last leg adds the
+    final endpoint with its end time. Missing readouts stay ``None`` so they
+    read as absent rather than as recorded zeroes.
+    """
+    points = [
+        _leg_point(leg, leg.start.lat, leg.start.lon, leg.start_utc, leg.readout)
+        for leg in result.legs
+    ]
+    if result.legs:
+        final = result.legs[-1]
+        points.append(
+            _leg_point(
+                final,
+                final.end.lat,
+                final.end.lon,
+                final.end_utc,
+                final.readout,
+            )
+        )
     return points
 
 
