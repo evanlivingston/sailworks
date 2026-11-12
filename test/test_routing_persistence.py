@@ -263,9 +263,9 @@ def test_schema_result_persists_reference_without_duplicate_isochrones(
     assert route.validation_state == "passed"
     assert route.export_eligible is True
     assert [point for point in route.points] == [
-        (48.0, -124.0),
-        (48.5, -123.5),
-        (48.8, -123.0),
+        (48.0, -124.0, canonical_utc(EPOCH), None, None, None, 90.0),
+        (48.5, -123.5, canonical_utc(LATER), None, None, None, None),
+        (48.8, -123.0, canonical_utc(LATER + 1200), None, None, None, None),
     ]
     # The just-saved route renders its retained contours without a store read.
     assert route.isochrones == [

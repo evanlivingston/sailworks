@@ -168,8 +168,9 @@ class NavigationRenderer:
                         cr.show_text(tr.name)
                         cr.stroke()
 
-                    # Interpolated boat position on route
-                    if prevp is not None:
+                    # Interpolated boat position on route. A point without a
+                    # recorded heading still draws, but cannot place the boat.
+                    if prevp is not None and p[6] is not None:
                         tprev = _route_datetime(prevp[2]).timestamp()
                         tcurr = _route_datetime(p[2]).timestamp()
 
@@ -236,7 +237,8 @@ class NavigationRenderer:
             lat, lon = float(p[0]), float(p[1])
             speed = float(p[5] if p[5] is not None else 0)
             stamp = _route_datetime(p[2]).timestamp()
-            rows.append((lat, lon, speed, stamp, math.radians(p[6])))
+            heading = None if p[6] is None else math.radians(p[6])
+            rows.append((lat, lon, speed, stamp, heading))
             points.append([lat, lon, speed])
         geometry = (points, tuple(rows), tuple(row[3] for row in rows))
         self._route_geometry[key] = (route, geometry)
@@ -258,7 +260,7 @@ class NavigationRenderer:
                 prev = rows[index - 1]
                 curr = rows[index]
                 dt = curr[3] - prev[3]
-                if dt > 0:
+                if dt > 0 and prev[4] is not None and curr[4] is not None:
                     dl = (
                         utils.point_distance(prev[0], prev[1], curr[0], curr[1])
                         / dt
