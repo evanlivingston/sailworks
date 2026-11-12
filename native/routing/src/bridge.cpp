@@ -48,6 +48,47 @@ std::string warningName(wr::RoutingWarningCode code) {
   return "unknown";
 }
 
+std::string progressStageName(wr::RoutingProgressStage stage) {
+  switch (stage) {
+    case wr::RoutingProgressStage::Preflight: return "preflight";
+    case wr::RoutingProgressStage::CurrentCoverage: return "current_coverage";
+    case wr::RoutingProgressStage::ForwardIsochrone:
+      return "forward_isochrone";
+    case wr::RoutingProgressStage::ReverseRecovery:
+      return "reverse_recovery";
+    case wr::RoutingProgressStage::FrontierRecovery:
+      return "frontier_recovery";
+    case wr::RoutingProgressStage::GraphFallback: return "graph_fallback";
+    case wr::RoutingProgressStage::Validation: return "validation";
+    case wr::RoutingProgressStage::Complete: return "complete";
+  }
+  return "unknown";
+}
+
+wr::RoutingProgressCallback makeProgressCallback(const py::object& callback) {
+  if (callback.is_none()) return {};
+  return [callback](const wr::RoutingProgressUpdate& update) {
+    try {
+      py::dict payload;
+      payload["stage"] = progressStageName(update.stage);
+      payload["attempt"] = update.attempt;
+      payload["total_attempts"] = update.totalAttempts;
+      payload["generated_states"] = update.generatedStates;
+      payload["retained_states"] = update.retainedStates;
+      payload["land_checks"] = update.landChecks;
+      if (std::isfinite(update.closestApproachNm))
+        payload["closest_approach_nm"] = update.closestApproachNm;
+      else
+        payload["closest_approach_nm"] = py::none();
+      payload["effort_percent"] = update.effortPercent;
+      callback(payload);
+    } catch (...) {
+      // Observation must never change the solve or leave a Python error set.
+      PyErr_Clear();
+    }
+  };
+}
+
 std::string tackName(wr::Tack tack) {
   switch (tack) {
     case wr::Tack::Port: return "port";
@@ -633,7 +674,8 @@ py::dict runUserBridge(py::function wind, py::function current,
                            const py::object& land,
                            const std::string& providerIdentity,
                            const std::string& polarIdentity,
-                           const std::string& engine) {
+                           const std::string& engine,
+                           const py::object& progress) {
   const std::set<std::string> required{
       "start", "destination", "departure_epoch_s", "use_currents",
       "polar_efficiency", "tws_max_kn", "min_sailing_speed_kn",
@@ -677,6 +719,7 @@ py::dict runUserBridge(py::function wind, py::function current,
   auto vessel = vesselFromPolar(polar, polarIdentity, "selected Sailworks polar");
   auto request = sailworks::native_routing::buildUserRequest(input, vessel,
                                                                windCoverage);
+  request.progress = makeProgressCallback(progress);
   wr::RoutingEnvironment environment;
   environment.grib = std::make_shared<PythonWeatherProvider>(
       std::move(wind), std::move(current), windCoverage, providerIdentity,
@@ -779,6 +822,25 @@ py::dict identityDict() {
   capabilities["cancellation_without_accepted_completion"] = true;
   capabilities["cancellation_scope"] =
       "pre-cancelled request only; no mid-route cancellation";
+  capabilities["progress"] = true;
+  capabilities["progress_updates"] = true;
+  capabilities["progress_source"] = "engine";
+  capabilities["progress_contract"] =
+      "RoutingRequest::progress reports RoutingProgressUpdate with stage, "
+      "attempt/totalAttempts, generated/retained states, land checks, closest "
+      "approach and effortPercent; the bridge forwards those engine values "
+      "and the worker throttles them over its result pipe. No percentage is "
+      "synthesized when the engine reports none";
+  py::list progressStages;
+  progressStages.append("preflight");
+  progressStages.append("current_coverage");
+  progressStages.append("forward_isochrone");
+  progressStages.append("reverse_recovery");
+  progressStages.append("frontier_recovery");
+  progressStages.append("graph_fallback");
+  progressStages.append("validation");
+  progressStages.append("complete");
+  capabilities["progress_stages"] = progressStages;
   capabilities["route_model_omissions"] =
       "leg wind/current/wave availability and per-leg safety metadata are "
       "exposed; bounded engine inspection geometry (isochrone layers, "
@@ -976,11 +1038,14 @@ PYBIND11_MODULE(sailworks_native_routing, module) {
              "Synthetic fixture samples evaluated by the native provider");
   module.def(
       "synthetic_route",
-      [](const std::string& engine) {
-        return runDict(sailworks::native_routing::runSynthetic(engine));
+      [](const std::string& engine, const py::object& progress) {
+        return runDict(sailworks::native_routing::runSynthetic(
+            engine, makeProgressCallback(progress)));
       },
-      py::arg("engine") = "main",
-      "Run the deterministic synthetic scenario through a native engine");
+      py::arg("engine") = "main", py::arg("progress") = py::none(),
+      "Run the deterministic synthetic scenario through a native engine; "
+      "an optional progress callback receives engine RoutingProgressUpdate "
+      "dictionaries");
   module.def(
       "synthetic_cancelled_route",
       [](const std::string& engine) {
@@ -1001,7 +1066,8 @@ PYBIND11_MODULE(sailworks_native_routing, module) {
          const py::object& polar, const std::string& polar_identity,
          const std::string& polar_assumptions, const py::object& start,
          const py::object& destination,
-         const py::object& departure_epoch_s) {
+         const py::object& departure_epoch_s,
+         const py::object& progress) {
         auto provider = std::make_shared<PythonWeatherProvider>(
             std::move(wind), std::move(current),
             coverageFromDict(coverage, provider_identity), provider_identity,
@@ -1028,7 +1094,7 @@ PYBIND11_MODULE(sailworks_native_routing, module) {
         }
         return runDict(sailworks::native_routing::runWithProvider(
             engine, std::move(provider), cancelled, std::move(vessel),
-            overrides));
+            overrides, makeProgressCallback(progress)));
       },
       py::arg("wind"), py::arg("current"), py::arg("coverage"),
       py::arg("provider_identity") = "python-weather-provider",
@@ -1038,27 +1104,30 @@ PYBIND11_MODULE(sailworks_native_routing, module) {
       py::arg("polar_assumptions") = "", py::arg("start") = py::none(),
       py::arg("destination") = py::none(),
       py::arg("departure_epoch_s") = py::none(),
+      py::arg("progress") = py::none(),
       "Run the synthetic scenario with weather sampled through Python "
       "callables; wind returns (from_degrees, speed_ms, available) and "
       "current returns (east_ms, north_ms, available) toward motion. An "
       "optional polar replaces the fixture vessel model. Optional start and "
       "destination are (latitude, longitude) pairs and departure_epoch_s is "
       "UTC epoch seconds; setting them relocates only the request geometry, "
-       "the polar, constraints, options and limits stay frozen.");
+       "the polar, constraints, options and limits stay frozen. Optional "
+       "progress receives engine RoutingProgressUpdate dictionaries.");
   module.def("route_user_request",
              [](py::function wind, py::function current, py::dict coverage,
                 py::object polar, py::dict settings, py::object land,
                 const std::string& providerIdentity,
                 const std::string& polarIdentity,
-                const std::string& engine) {
+                const std::string& engine, const py::object& progress) {
                return runUserBridge(std::move(wind), std::move(current),
                                     coverage, polar, settings, land,
-                                    providerIdentity, polarIdentity, engine);
+                                    providerIdentity, polarIdentity, engine,
+                                    progress);
              },
              py::arg("wind"), py::arg("current"), py::arg("coverage"),
              py::arg("polar"), py::arg("settings"), py::arg("land"),
              py::arg("provider_identity"), py::arg("polar_identity"),
-             py::arg("engine") = "main",
+             py::arg("engine") = "main", py::arg("progress") = py::none(),
              "Run a selected request, including its waypoint chain, through the "
              "native engine; reject unsupported settings rather than "
              "inheriting synthetic fixture defaults");

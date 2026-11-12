@@ -67,7 +67,7 @@ def _missing_current(latitude, longitude, epoch_s):
     return (0.0, 0.0, False)
 
 
-def _run(settings, wind=_wind, land=None):
+def _run(settings, wind=_wind, land=None, progress=None):
     return _bridge().route_user_request(
         wind,
         _missing_current,
@@ -78,6 +78,7 @@ def _run(settings, wind=_wind, land=None):
         "selected-forecast",
         "selected-polar",
         "main",
+        progress=progress,
     )
 
 
@@ -99,6 +100,17 @@ class NativeUserBridgeTest(unittest.TestCase):
             run["legs"][0]["wind_source"]["dataset_identity"], "selected-forecast"
         )
         self.assertEqual(run["legs"][0]["start_time"], START + 1800)
+
+    def test_selected_request_forwards_engine_progress_to_the_caller(self):
+        updates = []
+        run = _run(SETTINGS, progress=updates.append)
+
+        self.assertTrue(run["accepted"], run["message"])
+        stages = [update["stage"] for update in updates]
+        self.assertEqual(stages[0], "preflight")
+        self.assertIn("validation", stages)
+        self.assertEqual(stages[-1], "complete")
+        self.assertTrue(all(update["effort_percent"] > 0 for update in updates))
 
     def test_all_safety_settings_change_the_request_or_outcome(self):
         with_motor = _run({**SETTINGS, "min_sailing_speed_kn": 4.0})

@@ -49,8 +49,12 @@ def _shoreline(job):
     return SelectedShoreline(descriptor.path)
 
 
-def run_native_request(job: NativeRequest) -> dict:
+def run_native_request(job: NativeRequest, progress=None) -> dict:
     """Run only inputs the real bridge currently honors; reject all others.
+
+    ``progress`` receives the engine's ``RoutingProgressUpdate`` dictionaries
+    unchanged. It is an observer only: a failing callback must not alter the
+    solve or its accepted result.
 
     No network or live process objects enter this path. BoundRoutingWind checks
     the selected artifact's digest, run, model, member and coherent wind bands.
@@ -156,6 +160,7 @@ def run_native_request(job: NativeRequest) -> dict:
             job.forecast.entry.artifacts[0].sha256,
             job.polar_sha256,
             job.engine,
+            progress=progress,
         )
         run["request_kind"] = "selected-user-input"
         run["calculation_id"] = job.calculation_id

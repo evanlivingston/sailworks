@@ -2,20 +2,131 @@
 
 from __future__ import annotations
 
+import os
+import sys
 import time
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from sailworks.core.marine.nativeworker import NativeRoutingWorker
+ROOT = Path(__file__).resolve().parents[1]
+BUILD_PYTHON = Path(
+    os.environ.get(
+        "SAILWORKS_NATIVE_ROUTING_BUILD",
+        ROOT / "build" / "native-routing" / "python",
+    )
+)
+if BUILD_PYTHON.is_dir():
+    sys.path.insert(0, str(BUILD_PYTHON))
+
+from sailworks.core.marine.nativeworker import (  # noqa: E402
+    NativeJobStatus,
+    NativeProgressThrottle,
+    NativeRoutingWorker,
+)
 
 
-def _wait(worker, timeout=90.0):
+def _wait(worker, timeout=90.0, progress=None):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         status = worker.poll(0.1)
+        update = worker.take_progress()
+        if progress is not None and update is not None:
+            progress.append(update)
         if status is not None:
             return status
     pytest.fail("native worker did not publish a status in time")
+
+
+def test_progress_throttle_coalesces_fast_updates_and_keeps_stage_changes():
+    throttle = NativeProgressThrottle(interval=0.1)
+    assert throttle.should_emit({"stage": "preflight"}, 0.0)
+    assert not throttle.should_emit({"stage": "preflight"}, 0.01)
+    assert throttle.should_emit({"stage": "forward_isochrone"}, 0.02)
+    assert not throttle.should_emit({"stage": "forward_isochrone"}, 0.03)
+    assert throttle.should_emit({"stage": "forward_isochrone"}, 0.13)
+    assert throttle.should_emit({"stage": "complete"}, 0.135)
+
+
+def test_worker_forwards_engine_progress_without_blocking_result():
+    worker = NativeRoutingWorker()
+    progress = []
+    try:
+        generation = worker.submit_synthetic(engine="main")
+        status = _wait(worker, progress=progress)
+
+        assert status.generation == generation
+        assert status.state == "completed"
+        assert progress, "worker did not forward any engine progress"
+        stages = [update["stage"] for update in progress]
+        assert stages[0] == "preflight"
+        assert "validation" in stages
+        assert stages[-1] == "complete"
+        assert all("effort_percent" in update for update in progress)
+        assert worker.take_progress() is None
+    finally:
+        worker.shutdown()
+
+
+class _FakeConnection:
+    def __init__(self, messages):
+        self.messages = list(messages)
+
+    def poll(self, _timeout):
+        return bool(self.messages)
+
+    def recv(self):
+        return self.messages.pop(0)
+
+    def close(self):
+        pass
+
+
+def test_worker_rejects_progress_from_a_superseded_generation():
+    worker = NativeRoutingWorker()
+    worker._active_generation = 2
+    worker._status = NativeJobStatus(2, "running")
+    worker._process = SimpleNamespace(
+        is_alive=lambda: True,
+        exitcode=None,
+        terminate=lambda: None,
+        kill=lambda: None,
+        join=lambda timeout=None: None,
+    )
+    worker._connection = _FakeConnection(
+        [
+            {
+                "kind": "progress",
+                "generation": 1,
+                "payload": {"stage": "validation"},
+            },
+            {
+                "kind": "progress",
+                "generation": 2,
+                "payload": {"stage": "complete"},
+            },
+        ]
+    )
+    try:
+        assert worker.poll(0) is None
+        assert worker.take_progress() is None
+        assert worker.poll(0) is None
+        assert worker.take_progress() == {"stage": "complete"}
+    finally:
+        worker.shutdown()
+
+
+def test_cancel_discards_pending_progress():
+    worker = NativeRoutingWorker()
+    try:
+        worker.submit_synthetic(engine="main")
+        worker._pending_progress = {"stage": "validation"}
+        status = worker.cancel()
+        assert status.state == "cancelled"
+        assert worker.take_progress() is None
+    finally:
+        worker.shutdown()
 
 
 def test_worker_returns_an_explicit_synthetic_diagnostic():

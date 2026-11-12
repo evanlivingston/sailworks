@@ -202,6 +202,53 @@ def test_panel_shows_indeterminate_progress_for_native_and_percent_for_legacy(ap
     panel.deleteLater()
 
 
+def test_panel_shows_determinate_native_progress_after_first_engine_update(app):
+    controller = FakeController()
+    panel = RoutingPanel(controller)
+
+    controller.routing.busy = True
+    controller.routing.progress_indeterminate = False
+    controller.routing.percent = 67.0
+    controller.routing.message = (
+        "Native calculation · Forward isochrone (2/3) · effort 67%"
+    )
+    panel.refresh()
+
+    assert panel.progress.minimum() == 0
+    assert panel.progress.maximum() == 100
+    assert panel.progress.value() == 67
+    assert "Forward isochrone" in panel.status.text()
+    panel.deleteLater()
+
+
+def test_controller_native_progress_sets_stage_and_rejects_stale_or_cancelled(app):
+    controller = RoutingController(FakeSession())
+    controller.busy = True
+    controller.generation = 1
+    controller.backend = "native"
+    controller.progress_indeterminate = True
+
+    update = {
+        "stage": "forward_isochrone",
+        "attempt": 2,
+        "total_attempts": 3,
+        "effort_percent": 67,
+    }
+    controller._apply_native_progress(1, update)
+    assert controller.percent == 67.0
+    assert controller.progress_indeterminate is False
+    assert "Forward isochrone (2/3)" in controller.message
+    assert "effort 67%" in controller.message
+
+    controller._apply_native_progress(0, {"stage": "validation", "effort_percent": 99})
+    assert controller.percent == 67.0
+    assert "Forward isochrone" in controller.message
+
+    controller.cancel_event.set()
+    controller._apply_native_progress(1, {"stage": "complete", "effort_percent": 100})
+    assert controller.percent == 67.0
+
+
 def test_controller_clears_native_indeterminate_progress_on_finish_failure_and_cancel(
     app,
 ):
@@ -338,8 +385,9 @@ def test_failed_native_then_legacy_clears_overlay_and_inspector(app):
 
 
 class FakeWorker:
-    def __init__(self, status):
+    def __init__(self, status, progress=()):
         self.status = status
+        self.progress_updates = list(progress)
         self.shutdown_called = False
         self.submitted = []
 
@@ -347,8 +395,13 @@ class FakeWorker:
         self.submitted.append(job)
 
     def poll(self, timeout=0):
+        if self.progress_updates:
+            return None
         status, self.status = self.status, None
         return status
+
+    def take_progress(self):
+        return self.progress_updates.pop(0) if self.progress_updates else None
 
     def shutdown(self):
         self.shutdown_called = True
@@ -373,9 +426,9 @@ def _controller(tmp_path):
     return controller, collection
 
 
-def _install_fakes(monkeypatch, controller, status, blockers=()):
+def _install_fakes(monkeypatch, controller, status, blockers=(), progress=()):
     job = SimpleNamespace(calculation_id=str(uuid4()), request=_request())
-    worker = FakeWorker(status)
+    worker = FakeWorker(status, progress)
     diagnostics = []
 
     monkeypatch.setattr(
@@ -471,6 +524,56 @@ def test_controller_native_diagnostic_is_inspectable_but_not_saved(
     assert errors and "validation:unknown" in str(errors[0])
 
 
+def test_controller_forwards_worker_progress_to_panel_state(tmp_path, monkeypatch):
+    controller, collection = _controller(tmp_path)
+    updates = [
+        {
+            "stage": "preflight",
+            "attempt": 0,
+            "total_attempts": 0,
+            "effort_percent": 33,
+        },
+        {
+            "stage": "validation",
+            "attempt": 1,
+            "total_attempts": 1,
+            "effort_percent": 67,
+        },
+    ]
+    worker, _diagnostics = _install_fakes(
+        monkeypatch,
+        controller,
+        NativeJobStatus(1, "completed", payload={"engine_identity": {}}),
+        progress=updates,
+    )
+    states = []
+    controller._native_progress.connect(
+        lambda token, update: states.append(
+            (
+                token,
+                update["stage"],
+                controller.percent,
+                controller.progress_indeterminate,
+                controller.message,
+            )
+        )
+    )
+
+    controller._run_native_requests(
+        1, _request(), (), SimpleNamespace(), (), Event(), None
+    )
+
+    assert [state[1] for state in states] == ["preflight", "validation"]
+    assert states[0][0] == 1
+    assert states[0][2] == 33.0
+    assert states[0][3] is False
+    assert states[1][2] == 67.0
+    assert "Validation (1/1)" in states[1][4]
+    assert len(collection.elements) == 1
+    assert worker.progress_updates == []
+    assert worker.shutdown_called
+
+
 def test_controller_native_stale_generation_cannot_save(tmp_path, monkeypatch):
     controller, collection = _controller(tmp_path)
     worker, _diagnostics = _install_fakes(
@@ -550,9 +653,18 @@ def test_controller_runs_a_real_selected_request_and_keeps_provenance(
     controller.saved_count = 0
     controller.backend = "native"
     controller._ui_call = lambda _token, callback, *args: callback(*args)
+    progress = []
+    controller._native_progress.connect(lambda _token, update: progress.append(update))
 
     controller._run_native_requests(1, request, (), binding, (), Event(), None)
 
+    assert progress
+    stages = [update["stage"] for update in progress]
+    assert stages[0] == "preflight"
+    assert "validation" in stages
+    assert stages[-1] == "complete"
+    assert controller.percent == 100
+    assert controller.progress_indeterminate is False
     assert controller.saved_count == 1, controller.error
     assert len(collection.elements) == 1
     route = collection.elements[0]

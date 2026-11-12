@@ -30,8 +30,9 @@ to `build/native-routing/python`.
   hash, documented integration patch set, licences, capabilities, and
   explicit absent geometry/time/forecast data.
 - `synthetic_observables()` — native samples of the frozen analytic fixture.
-- `synthetic_route(engine="main"|"original"|"professional")` — deterministic
-  synthetic route with engine validation and independent `RouteValidator`
+- `synthetic_route(engine="main"|"original"|"professional", progress=None)` —
+  deterministic synthetic route with engine validation and independent
+  `RouteValidator`
   replay. `accepted` is true only for a complete status with both checks.
   `validation_pass_flags_equal` compares only the two validators' pass flags;
   the full validation dictionaries are exposed separately and may differ in
@@ -73,8 +74,11 @@ to `build/native-routing/python`.
   m/s) without changing interpolation or efficiency. This entry point still
   starts from the frozen synthetic request apart from start/destination/
   departure/polar; it is a sampling adapter, not a user calculation.
+  An optional `progress` callable receives the engine's
+  `RoutingProgressUpdate` fields as a dictionary.
 - `route_user_request(wind, current, coverage, polar, settings, land,
-  provider_identity, polar_identity, engine="main")` — a selected user request
+  provider_identity, polar_identity, engine="main", progress=None)` — a selected
+  user request
   with no fixture request values. `settings` must contain exactly `start`,
   `destination`, `departure_epoch_s`, `use_currents`, `polar_efficiency`,
   `tws_max_kn`, `min_sailing_speed_kn`, `motor_speed_kn`, `wave_correct`,
@@ -92,6 +96,12 @@ to `build/native-routing/python`.
   selected GSHHS predicate, so search, coastal departure and independent replay
   share one shoreline definition. `land_safety_margin_nm` is the keep-off
   distance; it must be zero unless `coastline_checks` is enabled.
+- `progress` is an observer, not an input: the engine's `RoutingRequest::progress`
+  reports `stage`, `attempt`/`total_attempts`, generated/retained states, land
+  checks, closest approach and `effort_percent`. The worker throttles those
+  updates over its result pipe; a superseded or cancelled generation is
+  discarded. The bridge never invents a percentage when the engine reports
+  none. `identity()["capabilities"]` records the engine source and stage set.
 - Safety mapping: the wind cap, efficiency, speed-substitution motor fallback
   and the wind-based wave proxy are applied by `SailworksPerformance` in both
   search and replay. The engine's separate motor propulsion modes and its
