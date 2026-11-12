@@ -3,6 +3,7 @@
 from pathlib import Path
 from datetime import datetime
 import math
+import time
 from typing import cast
 
 import weatherrouting
@@ -172,6 +173,15 @@ SAFETY_HELP = {
     ),
 }
 
+WAVE_DATA_HELP = (
+    "Samples real wave height (m), period (s) and direction (degrees coming "
+    "from true north) from a published wave forecast in the active tranche. "
+    "Native calculations only. Wave coverage must include the route window; "
+    "otherwise the calculation stops instead of substituting the wind proxy. "
+    "Real wave heights are recorded in provenance but do not yet replace the "
+    "wind-based speed reduction."
+)
+
 
 class RoutingPanel(QWidget):
     plan_changed = Signal(object)
@@ -210,6 +220,17 @@ class RoutingPanel(QWidget):
         )
         self.backend.currentIndexChanged.connect(self._backend_changed)
         form.addRow(self.backend)
+        self.wave_data = Dropdown("Wave data")
+        self.wave_data.setAccessibleName("Routing wave data")
+        self.wave_data.setToolTip(WAVE_DATA_HELP)
+        self.wave_data.currentIndexChanged.connect(self._wave_changed)
+        form.addRow(self._row_with_info(self.wave_data, WAVE_DATA_HELP))
+        self.wave_data_note = QLabel()
+        self.wave_data_note.setWordWrap(True)
+        self.wave_data_note.setProperty("secondary", True)
+        form.addRow(self.wave_data_note)
+        self._wave_entries = ()
+        self._wave_entry_id = ""
         self.polar = Dropdown("Polar")
         self.polar.addItems(controller.core.polar_manager.polars)
         form.addRow(self.polar)
@@ -283,12 +304,16 @@ class RoutingPanel(QWidget):
         self.status = QLabel(qt_text(self.routing.message))
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+        self._native_elapsed_timer = QTimer(self)
+        self._native_elapsed_timer.setInterval(1000)
+        self._native_elapsed_timer.timeout.connect(self._tick_native_heartbeat)
         layout.addLayout(actions)
         self._build_advanced_pages()
         self._build_safety_controls()
         form.addRow(self.parameters_section)
         self.inputs = (
             self.backend,
+            self.wave_data,
             self.polar,
             self.algorithm,
             self.departure,
@@ -300,8 +325,12 @@ class RoutingPanel(QWidget):
         self.routing.confirm = self._confirm_current
         self.routing.changed.connect(self.refresh)
         controller.boat_changed.connect(self._boat_changed)
+        analysis = getattr(controller, "analysis", None)
+        if analysis is not None and hasattr(analysis, "changed"):
+            analysis.changed.connect(self._refresh_wave_sources)
         self.options_changed.connect(self._update_backend_note)
         self.refresh_destinations()
+        self._refresh_wave_sources()
         self._backend_changed()
         self.refresh()
 
@@ -445,16 +474,86 @@ class RoutingPanel(QWidget):
                     " Changed Legacy parameters must be reset before a Native "
                     "calculation: " + ", ".join(changed) + "."
                 )
+            if self._wave_entry_id:
+                note += (
+                    " Real wave heights will be sampled for coverage and "
+                    "provenance; the wind-based speed reduction remains a "
+                    "separate Legacy-style proxy."
+                )
             self.backend_note.setText(note)
         else:
-            self.backend_note.setText(
+            note = (
                 "Legacy (default) uses the selected algorithm and Advanced "
                 "parameters."
             )
+            if self._wave_entry_id:
+                note += (
+                    " Wave data is a Native input: set Wave data to None or "
+                    "switch to Native."
+                )
+            self.backend_note.setText(note)
 
     def _backend_changed(self, *_):
+        self._refresh_wave_sources()
         self._update_backend_note()
         self.options_changed.emit()
+
+    def _wave_changed(self, *_):
+        self._wave_entry_id = str(self.wave_data.currentData() or "")
+        self._update_backend_note()
+        self.options_changed.emit()
+
+    def _refresh_wave_sources(self, *_):
+        """List wave entries published alongside the active wind forecast."""
+        analysis = getattr(self.controller, "analysis", None)
+        active = getattr(analysis, "active", None)
+        entries = ()
+        if active is not None:
+            entries = tuple(
+                entry
+                for entry in active.tranche.entries
+                if "wave_height" in entry.fields
+                and dict(getattr(entry, "field_times", ()) or ()).get("wave_height")
+            )
+        self._wave_entries = entries
+        selected = self._wave_entry_id
+        self.wave_data.blockSignals(True)
+        try:
+            self.wave_data.clear()
+            self.wave_data.addItem("None (no real wave heights)", "")
+            for entry in entries:
+                label = (
+                    f"{entry.model_id} · "
+                    f"{entry.run_time.day} {entry.run_time:%b %H:%M} UTC"
+                )
+                self.wave_data.addItem(label, entry.entry_id)
+            index = self.wave_data.findData(selected) if selected else 0
+            if entries:
+                self.wave_data.setCurrentIndex(max(0, index))
+                self._wave_entry_id = str(self.wave_data.currentData() or "")
+            elif active is None:
+                # The active forecast is still loading; keep the saved choice
+                # until the tranche can be inspected.
+                self.wave_data.setCurrentIndex(0)
+            else:
+                self.wave_data.setCurrentIndex(0)
+                self._wave_entry_id = ""
+        finally:
+            self.wave_data.blockSignals(False)
+        if not entries:
+            self.wave_data_note.setText(
+                "No wave forecast is published with the active forecast."
+            )
+        elif self.backend.currentData() != "native":
+            self.wave_data_note.setText("Real wave data applies to Native only.")
+        else:
+            self.wave_data_note.setText("Wave coverage must include the route window.")
+        self.wave_data.setEnabled(
+            not self.routing.busy
+            and self.backend.currentData() == "native"
+            and bool(entries)
+        )
+        self._update_backend_note()
 
     @staticmethod
     def _info_button(text):
@@ -725,6 +824,7 @@ class RoutingPanel(QWidget):
             advanced_expanded=self.parameters_header.isChecked(),
             use_currents=self.use_currents.isChecked(),
             current_priority=self.current_priority.currentData(),
+            wave_entry_id=self._wave_entry_id,
             coastline_clearance_nm=self.coastline_clearance.value(),
             safety={
                 key: (
@@ -811,6 +911,9 @@ class RoutingPanel(QWidget):
         self.current_priority.setCurrentIndex(
             max(0, self.current_priority.findData(priority))
         )
+        wave_entry_id = saved.get("wave_entry_id")
+        self._wave_entry_id = wave_entry_id if isinstance(wave_entry_id, str) else ""
+        self._refresh_wave_sources()
         self._algorithm_changed()
         safety = mapping(saved.get("safety"))
         for key in (
@@ -931,6 +1034,11 @@ class RoutingPanel(QWidget):
     def _calculate(self):
         backend = self.backend.currentData() or "legacy"
         try:
+            if backend != "native" and self._wave_entry_id:
+                raise ValueError(
+                    "Real wave data is a Native calculation input. Set Wave "
+                    "data to None or switch to Native."
+                )
             request, scenarios = self._request()
             if backend == "native":
                 from sailworks.core.marine.nativerequest import (
@@ -996,6 +1104,7 @@ class RoutingPanel(QWidget):
             ),
             motor_speed_kn=self.motor_speed.value(),
             wave_correct=self.wave_proxy.isChecked(),
+            wave_entry_id=self._wave_entry_id or None,
             coastline_clearance_distance_m=self.coastline_clearance.value() * 1852,
         )
         axes = {
@@ -1009,6 +1118,65 @@ class RoutingPanel(QWidget):
         )
         return request, scenarios
 
+    @staticmethod
+    def _elapsed_text(seconds):
+        total = max(0, int(seconds))
+        if total >= 3600:
+            return f"{total // 3600}:{(total % 3600) // 60:02d}:{total % 60:02d}"
+        return f"{total // 60:02d}:{total % 60:02d}"
+
+    @staticmethod
+    def _counter_text(counters):
+        if not isinstance(counters, dict):
+            return ""
+        parts = []
+        retained = counters.get("retained_states")
+        generated = counters.get("generated_states")
+        if isinstance(retained, int) and not isinstance(retained, bool):
+            if isinstance(generated, int) and not isinstance(generated, bool):
+                parts.append(f"retained {retained:,}/{generated:,} states")
+            else:
+                parts.append(f"retained {retained:,} states")
+        elif isinstance(generated, int) and not isinstance(generated, bool):
+            parts.append(f"generated {generated:,} states")
+        land_checks = counters.get("land_checks")
+        if isinstance(land_checks, int) and not isinstance(land_checks, bool):
+            parts.append(f"land checks {land_checks:,}")
+        closest = counters.get("closest_approach_nm")
+        if (
+            isinstance(closest, (int, float))
+            and not isinstance(closest, bool)
+            and math.isfinite(closest)
+        ):
+            parts.append(f"closest {closest:.1f} nm")
+        return " · ".join(parts)
+
+    def _native_heartbeat_active(self):
+        cancel = getattr(self.routing, "cancel_event", None)
+        return bool(
+            self.routing.busy
+            and getattr(self.routing, "backend", None) == "native"
+            and getattr(self.routing, "native_started_at", None) is not None
+            and not (cancel is not None and cancel.is_set())
+        )
+
+    def _display_status(self):
+        message = self.routing.message
+        if not self._native_heartbeat_active():
+            return message
+        elapsed = self._elapsed_text(time.monotonic() - self.routing.native_started_at)
+        text = f"{message} · elapsed {elapsed}"
+        counters = self._counter_text(getattr(self.routing, "native_counters", None))
+        if counters:
+            text += f" · {counters}"
+        return text
+
+    def _tick_native_heartbeat(self):
+        if not self._native_heartbeat_active():
+            self._native_elapsed_timer.stop()
+            return
+        self.status.setText(self._display_status())
+
     def refresh(self):
         busy = self.routing.busy
         self._refresh_safety()
@@ -1019,6 +1187,11 @@ class RoutingPanel(QWidget):
             self.current_priority,
         ):
             control.setEnabled(not busy)
+        self.wave_data.setEnabled(
+            not busy
+            and self.backend.currentData() == "native"
+            and bool(self._wave_entries)
+        )
         for enabled, values in self.comparison_axes.values():
             enabled.setEnabled(not busy)
             values.setEnabled(not busy and enabled.isChecked())
@@ -1028,5 +1201,18 @@ class RoutingPanel(QWidget):
             and self.destination.currentData() is not None
         )
         self.cancel_button.setEnabled(busy and not self.routing.cancel_event.is_set())
-        self.progress.setValue(round(self.routing.percent))
-        self.status.setText(self.routing.message)
+        if getattr(self.routing, "progress_indeterminate", False):
+            # Native runs expose lifecycle messages only: show a busy bar
+            # rather than a percentage the engine cannot report.
+            if self.progress.maximum() != 0:
+                self.progress.setRange(0, 0)
+        else:
+            if self.progress.maximum() == 0:
+                self.progress.setRange(0, 100)
+            self.progress.setValue(round(self.routing.percent))
+        if self._native_heartbeat_active():
+            if not self._native_elapsed_timer.isActive():
+                self._native_elapsed_timer.start()
+        else:
+            self._native_elapsed_timer.stop()
+        self.status.setText(self._display_status())

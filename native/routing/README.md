@@ -30,8 +30,9 @@ to `build/native-routing/python`.
   hash, documented integration patch set, licences, capabilities, and
   explicit absent geometry/time/forecast data.
 - `synthetic_observables()` — native samples of the frozen analytic fixture.
-- `synthetic_route(engine="main"|"original"|"professional")` — deterministic
-  synthetic route with engine validation and independent `RouteValidator`
+- `synthetic_route(engine="main"|"original"|"professional", progress=None)` —
+  deterministic synthetic route with engine validation and independent
+  `RouteValidator`
   replay. `accepted` is true only for a complete status with both checks.
   `validation_pass_flags_equal` compares only the two validators' pass flags;
   the full validation dictionaries are exposed separately and may differ in
@@ -73,30 +74,53 @@ to `build/native-routing/python`.
   m/s) without changing interpolation or efficiency. This entry point still
   starts from the frozen synthetic request apart from start/destination/
   departure/polar; it is a sampling adapter, not a user calculation.
+  An optional `progress` callable receives the engine's
+  `RoutingProgressUpdate` fields as a dictionary.
 - `route_user_request(wind, current, coverage, polar, settings, land,
-  provider_identity, polar_identity, engine="main")` — a selected user request
-  with no fixture request values. `settings` must contain exactly `start`,
+  provider_identity, polar_identity, engine="main", waves=None,
+  wave_coverage=None, progress=None)` — a selected user request with no
+  fixture request values. `settings` must contain `start`,
   `destination`, `departure_epoch_s`, `use_currents`, `polar_efficiency`,
   `tws_max_kn`, `min_sailing_speed_kn`, `motor_speed_kn`, `wave_correct`,
-  `coastline_checks`, `land_safety_margin_nm` and `waypoints`; unknown or
-  missing keys raise rather than being ignored. `waypoints` lists requested
-  points in order (the final point may equal the destination). More than one
-  leg routes each segment from the previous delivered position and arrival
-  time — the legacy waypoint workflow — then replays the whole delivered route
-  with the engine validator, so joins and cumulative timestamps are included.
-  `run.segments` reports per-leg status and validation; a failed leg keeps the
-  delivered prefix for diagnosis but the run is not accepted.
+  `coastline_checks`, `land_safety_margin_nm` and `waypoints`; `use_waves` is
+  optional and defaults off. Unknown or missing required keys raise rather
+  than being ignored. `waypoints` lists
+  requested points in order (the final point may equal the destination). More
+  than one leg routes each segment from the previous delivered position and
+  arrival time — the legacy waypoint workflow — then replays the whole
+  delivered route with the engine validator, so joins and cumulative
+  timestamps are included. `run.segments` reports per-leg status and
+  validation; a failed leg keeps the delivered prefix for diagnosis but the
+  run is not accepted.
+- `waves` is optional and returns
+  `(height_m, period_s, direction_from_degrees, available[, dataset_identity[,
+  model_identity]])`. `wave_coverage` carries its area, epoch range and dataset
+  identity. With `use_waves` the engine samples real wave heights, and missing
+  or incomplete coverage is an explicit `wave_data_required` failure: it never
+  substitutes the wind-based proxy. `run.wave_provenance` records `mode`,
+  `uses_real_wave_heights`, `uses_wind_proxy`, the dataset/model identity, the
+  units (`m`, `s`, degrees coming from true north) and the preflight coverage
+  and required actions. `SailworksPerformance` still applies the optional
+  wind-based proxy; real wave heights are data and provenance in this bridge,
+  not yet a performance-policy replacement.
 - `land` is `None` for open water or an object with `point_forbidden(lat, lon)`,
   `segment_forbidden(lat1, lon1, lat2, lon2, margin_nm)` and
   `distance_nm(lat, lon)`. Sailworks passes a worker-local adapter over its
   selected GSHHS predicate, so search, coastal departure and independent replay
   share one shoreline definition. `land_safety_margin_nm` is the keep-off
   distance; it must be zero unless `coastline_checks` is enabled.
+- `progress` is an observer, not an input: the engine's `RoutingRequest::progress`
+  reports `stage`, `attempt`/`total_attempts`, generated/retained states, land
+  checks, closest approach and `effort_percent`. The worker throttles those
+  updates over its result pipe; a superseded or cancelled generation is
+  discarded. The bridge never invents a percentage when the engine reports
+  none. `identity()["capabilities"]` records the engine source and stage set.
 - Safety mapping: the wind cap, efficiency, speed-substitution motor fallback
   and the wind-based wave proxy are applied by `SailworksPerformance` in both
-  search and replay. The engine's separate motor propulsion modes and its
-  wave-data penalty are not used, because they are different behavior from the
-  reviewed Sailworks policy.
+  search and replay. Real wave data selected through `use_waves` is sampled and
+  validated separately; the engine's wave-data penalty and maximum wave-height
+  constraint are not enabled here, because applying either would be a
+  different policy from the reviewed Sailworks behavior.
 - Engine options (time step, heading step, search angle, destination tolerance,
   resource limits) are the vendored engine defaults, not legacy algorithm
   parameters. `request` in the payload records them so a result cannot imply

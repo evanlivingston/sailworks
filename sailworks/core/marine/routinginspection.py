@@ -21,6 +21,9 @@ READOUT_FIELDS = (
     "true_wind_speed_knots",
     "true_wind_angle_degrees",
     "wind_gust_knots",
+    "wave_height_metres",
+    "wave_period_seconds",
+    "wave_direction_from_degrees",
     "estimated_fuel_litres",
     "propulsion_mode",
     "tack",
@@ -166,6 +169,10 @@ _STATUS_DETAIL = {
         "resource exhausted: the search stopped at a configured resource limit"
     ),
     "internal_error": "internal error: the engine reported an internal failure",
+    "wave_data_required": (
+        "wave data required: the selected wave source does not cover the "
+        "route window; no route was calculated"
+    ),
 }
 _RESOURCE_MARKERS = (
     "resource_limit",
@@ -298,7 +305,36 @@ def diagnostics(result: RoutingResult) -> Tuple[DiagnosticState, ...]:
     for name in ("waves", "shoreline", "depth", "chart_hazards"):
         if name in features:
             states.append(DiagnosticState(name, str(features[name])))
+    states.extend(_wave_provenance_states(result))
     states.append(DiagnosticState("trace times", str(result.capabilities.trace_times)))
+    return tuple(states)
+
+
+def _wave_provenance_states(result: RoutingResult) -> Tuple[DiagnosticState, ...]:
+    """Disclose real wave heights versus the legacy wind-based proxy."""
+    diagnostics = result.outcome.diagnostics or {}
+    provenance = diagnostics.get("wave_provenance")
+    if not isinstance(provenance, Mapping):
+        return ()
+    real = provenance.get("uses_real_wave_heights") is True
+    proxy = provenance.get("uses_wind_proxy") is True
+    dataset = provenance.get("dataset_identity") or provenance.get("model_identity")
+    if real:
+        source = f"real wave heights from {dataset}" if dataset else "real wave heights"
+    elif proxy:
+        source = "none (legacy wind-based speed reduction, no wave heights)"
+    else:
+        source = "none (no wave heights and no wind proxy)"
+    if real and proxy:
+        source += "; speed still uses the legacy wind proxy"
+    states = [DiagnosticState("wave source", source)]
+    if real:
+        units = provenance.get("units") or provenance.get("unit") or {}
+        if isinstance(units, Mapping) and units:
+            text = " · ".join(f"{name} {unit}" for name, unit in sorted(units.items()))
+        else:
+            text = "height m · period s · direction degrees coming from"
+        states.append(DiagnosticState("wave units", text))
     return tuple(states)
 
 

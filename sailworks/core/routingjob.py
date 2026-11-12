@@ -409,6 +409,9 @@ class RouteRequest:
     wave_correct: bool = False
     land_avoidance: Optional[bool] = None
     coastline_clearance_distance_m: float = 0.0
+    # A published wave entry selected for real wave sampling. The legacy
+    # wind-based proxy above is unaffected; it remains a separate opt-in.
+    wave_entry_id: Optional[str] = None
 
     def __post_init__(self):
         if (
@@ -416,6 +419,10 @@ class RouteRequest:
             or self.coastline_clearance_distance_m < 0
         ):
             raise ValueError("Coastline clearance distance must be nonnegative")
+        if self.wave_entry_id is not None and (
+            not isinstance(self.wave_entry_id, str) or not self.wave_entry_id
+        ):
+            raise ValueError("Wave entry id must be a non-empty string or None")
         if self.land_avoidance is None:
             object.__setattr__(self, "land_avoidance", self.coastline_checks)
         else:

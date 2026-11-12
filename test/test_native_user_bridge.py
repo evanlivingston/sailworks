@@ -43,6 +43,10 @@ POLAR = [
     {"true_wind_speed_knots": speed, "points": [[30, 3], [90, 3], [180, 3]]}
     for speed in (4, 8, 12, 16)
 ]
+WAVE_COVERAGE = {
+    **COVERAGE,
+    "dataset_identity": "GFSWAVE:2026-01-01T00:00Z:abc123",
+}
 SETTINGS = {
     "start": (48.25, -123.65),
     "destination": (48.29, -123.61),
@@ -53,6 +57,7 @@ SETTINGS = {
     "min_sailing_speed_kn": None,
     "motor_speed_kn": 5.0,
     "wave_correct": False,
+    "use_waves": False,
     "coastline_checks": False,
     "land_safety_margin_nm": 0.0,
     "waypoints": [],
@@ -67,7 +72,15 @@ def _missing_current(latitude, longitude, epoch_s):
     return (0.0, 0.0, False)
 
 
-def _run(settings, wind=_wind, land=None):
+def _run(
+    settings,
+    wind=_wind,
+    land=None,
+    progress=None,
+    *,
+    waves=None,
+    wave_coverage=None,
+):
     return _bridge().route_user_request(
         wind,
         _missing_current,
@@ -78,6 +91,9 @@ def _run(settings, wind=_wind, land=None):
         "selected-forecast",
         "selected-polar",
         "main",
+        progress=progress,
+        waves=waves,
+        wave_coverage=wave_coverage,
     )
 
 
@@ -99,6 +115,17 @@ class NativeUserBridgeTest(unittest.TestCase):
             run["legs"][0]["wind_source"]["dataset_identity"], "selected-forecast"
         )
         self.assertEqual(run["legs"][0]["start_time"], START + 1800)
+
+    def test_selected_request_forwards_engine_progress_to_the_caller(self):
+        updates = []
+        run = _run(SETTINGS, progress=updates.append)
+
+        self.assertTrue(run["accepted"], run["message"])
+        stages = [update["stage"] for update in updates]
+        self.assertEqual(stages[0], "preflight")
+        self.assertIn("validation", stages)
+        self.assertEqual(stages[-1], "complete")
+        self.assertTrue(all(update["effort_percent"] > 0 for update in updates))
 
     def test_all_safety_settings_change_the_request_or_outcome(self):
         with_motor = _run({**SETTINGS, "min_sailing_speed_kn": 4.0})
@@ -152,6 +179,61 @@ class NativeUserBridgeTest(unittest.TestCase):
             self.assertAlmostEqual(leg["speed_through_water_knots"], expected)
             self.assertEqual(leg["propulsion_mode"], "sail")
         self.assertTrue(run["independent_validation"]["passed"])
+
+    def test_real_wave_data_is_sampled_and_its_provenance_is_explicit(self):
+        def waves(latitude, longitude, epoch_s):
+            return (1.4, 8.0, 250.0, True, "GFSWAVE:run", "GFSWAVE")
+
+        run = _run(
+            {**SETTINGS, "use_waves": True},
+            waves=waves,
+            wave_coverage=WAVE_COVERAGE,
+        )
+        self.assertTrue(run["accepted"], run["message"])
+        provenance = run["wave_provenance"]
+        self.assertTrue(provenance["uses_real_wave_heights"])
+        self.assertFalse(provenance["uses_wind_proxy"])
+        self.assertEqual(provenance["mode"], "real_waves")
+        self.assertEqual(provenance["dataset_identity"], "GFSWAVE:run")
+        self.assertEqual(provenance["units"]["height"], "m")
+        self.assertEqual(provenance["units"]["period"], "s")
+        for leg in run["legs"]:
+            self.assertTrue(leg["waves_available"])
+            self.assertAlmostEqual(leg["wave_height_metres"], 1.4)
+            self.assertAlmostEqual(leg["wave_period_seconds"], 8.0)
+            self.assertAlmostEqual(leg["wave_direction_from_degrees"], 250.0)
+            self.assertEqual(leg["wave_source"]["dataset_identity"], "GFSWAVE:run")
+        from sailworks.core.marine.routingnative import to_routing_result
+
+        record = to_routing_result(
+            run,
+            calculation_id=str(uuid4()),
+            generation=1,
+            sequence=0,
+            created_epoch_s=START,
+            identity=_bridge().identity(),
+        )
+        self.assertEqual(record.capabilities.features["waves"], "sampled")
+        height = record.legs[0].environment["waves_height_m"]
+        self.assertEqual(height.availability, "reported")
+        self.assertAlmostEqual(height.value, 1.4)
+        self.assertEqual(record.legs[0].environment["waves_period_s"].unit, "s")
+
+    def test_missing_wave_coverage_never_falls_back_to_the_wind_proxy(self):
+        def waves(latitude, longitude, epoch_s):
+            return (1.4, 8.0, 250.0, True, "GFSWAVE:run", "GFSWAVE")
+
+        run = _run(
+            {**SETTINGS, "use_waves": True, "wave_correct": True},
+            waves=waves,
+            wave_coverage={**WAVE_COVERAGE, "end_epoch_s": START + 600},
+        )
+        self.assertFalse(run["accepted"])
+        self.assertEqual(run["status"], "wave_data_required")
+        actions = run["wave_provenance"]["preflight"]["required_actions"]
+        self.assertIn("confirm_routing_without_wave_data", actions)
+        self.assertTrue(run["wave_provenance"]["uses_wind_proxy"])
+        self.assertEqual(run["legs"], [])
 
     def test_unsupported_inputs_cannot_be_ignored(self):
         for key, value in (

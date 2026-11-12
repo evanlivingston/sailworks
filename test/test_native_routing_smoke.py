@@ -76,6 +76,20 @@ def test_native_observables_match_frozen_formulas():
     assert actual["polar_180_16_kn"] == pytest.approx(expected["polar_180_16_kn"])
 
 
+def test_engine_progress_reaches_preflight_validation_and_complete():
+    bridge = _bridge()
+    updates = []
+    result = bridge.synthetic_route("main", progress=updates.append)
+
+    assert result["accepted"] is True
+    stages = [update["stage"] for update in updates]
+    assert stages[0] == "preflight"
+    assert "validation" in stages
+    assert stages[-1] == "complete"
+    assert all(update["effort_percent"] > 0 for update in updates)
+    assert {"attempt", "total_attempts", "generated_states"} <= set(updates[-1])
+
+
 def test_two_synthetic_runs_are_deterministic_and_validated():
     bridge = _bridge()
     first = bridge.synthetic_route("main")

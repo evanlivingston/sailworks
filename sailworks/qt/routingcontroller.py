@@ -1,5 +1,6 @@
 """Qt lifecycle around the shared engines, scenarios and current-coverage workflow."""
 
+import math
 import multiprocessing
 import os
 import time
@@ -16,9 +17,51 @@ from sailworks.core.routingjob import (
     RoutingCancelledError,
 )
 from sailworks.core.tranchestore import ResolvedForecast
+from sailworks.core.forecasttranche import AnalysisSelection
 from sailworks.core.marine.chs import DownloadCancelledError
 from sailworks.core.marine.routingselection import RoutingSelection
 from sailworks.rendering.routingoverlay import RoutingOverlayModel
+
+_NATIVE_PROGRESS_STAGES = {
+    "preflight": "Preflight",
+    "current_coverage": "Current coverage",
+    "forward_isochrone": "Forward isochrone",
+    "reverse_recovery": "Reverse recovery",
+    "frontier_recovery": "Frontier recovery",
+    "graph_fallback": "Graph fallback",
+    "validation": "Validation",
+    "complete": "Complete",
+}
+
+
+def _native_progress_percent(update):
+    """Derive whole-solve progress from the current attempt and its effort."""
+    if not isinstance(update, dict):
+        return None
+    effort = update.get("effort_percent")
+    attempt = update.get("attempt")
+    total = update.get("total_attempts")
+    if (
+        isinstance(effort, bool)
+        or not isinstance(effort, (int, float))
+        or not math.isfinite(effort)
+        or isinstance(attempt, bool)
+        or not isinstance(attempt, int)
+        or isinstance(total, bool)
+        or not isinstance(total, int)
+        or total <= 0
+    ):
+        # Without an attempt window the engine has not supplied a whole-solve
+        # percentage; keep the previous state instead of inventing one.
+        return None
+    effort = min(100.0, max(0.0, float(effort)))
+    percent = ((attempt - 1) + effort / 100.0) / total * 100.0
+    percent = min(100.0, max(0.0, percent))
+    if update.get("stage") != "complete" and percent >= 100.0:
+        # The bar reaches 100 only when the engine reports Complete, or when
+        # the controller finishes the run.
+        percent = 99.0
+    return percent
 
 
 class RoutingController(QObject):
@@ -30,6 +73,7 @@ class RoutingController(QObject):
     native_cleared = Signal()
     dismiss_preflight = Signal()
     _progress = Signal(int, float, object, object)
+    _native_progress = Signal(int, object)
     _message = Signal(int, str)
     _finished = Signal(int, object, object)
 
@@ -50,6 +94,11 @@ class RoutingController(QObject):
         self.cancel_event = Event()
         self.generation = 0
         self.percent = 0.0
+        # Native runs start indeterminate until the engine reports a usable
+        # attempt window, then show its derived percentage and live counters.
+        self.progress_indeterminate = False
+        self.native_started_at = None
+        self.native_counters = {}
         self.message = "Wind-only routing"
         self.error = ""
         self.request = None
@@ -58,6 +107,7 @@ class RoutingController(QObject):
         self._parallel_mode = False
         self._parallel_progress = {}
         self._progress.connect(self._apply_progress)
+        self._native_progress.connect(self._apply_native_progress)
         self._message.connect(self._apply_message)
         self._finished.connect(self._finish)
         self.confirm = lambda report: False
@@ -67,6 +117,14 @@ class RoutingController(QObject):
             return False
         if backend not in ("legacy", "native"):
             return self.fail("Choose the Legacy or Native calculation backend.")
+        if backend != "native" and any(
+            getattr(item, "wave_entry_id", None)
+            for item in (request, *tuple(scenarios))
+        ):
+            return self.fail(
+                "Real wave data is a Native calculation input. Set Wave data "
+                "to None for a Legacy calculation, or switch to Native."
+            )
         if backend == "native":
             for item in (request, *tuple(scenarios)):
                 refusal = self._native_parameter_refusal(item)
@@ -98,6 +156,9 @@ class RoutingController(QObject):
         self.cancel_event = Event()
         cancel = self.cancel_event
         self.busy, self.error, self.percent = True, "", 0.0
+        self.progress_indeterminate = backend == "native"
+        self.native_started_at = time.monotonic() if backend == "native" else None
+        self.native_counters = {}
         self.message = (
             "Native calculation queued…" if backend == "native" else "Calculating…"
         )
@@ -166,6 +227,29 @@ class RoutingController(QObject):
         if not self.closed:
             self._finished.emit(token, None, error)
 
+    def _wave_binding(self, sources, entry_id):
+        """Resolve the selected wave entry from the active forecast tranche."""
+        if not entry_id:
+            return None
+        if not isinstance(sources, ResolvedForecast):
+            raise TypeError("wave routing requires a published model forecast")
+        analysis = getattr(self.session_controller, "analysis", None)
+        store = getattr(getattr(analysis, "state", None), "store", None)
+        if store is None:
+            raise ValueError("Wave routing requires the forecast tranche store")
+        entry = next(
+            (item for item in sources.tranche.entries if item.entry_id == entry_id),
+            None,
+        )
+        if entry is None:
+            raise ValueError("Selected wave forecast is not in the active tranche")
+        resolved = store.resolve(
+            AnalysisSelection(sources.tranche.tranche_id, entry_id)
+        )
+        if resolved.tranche.tranche_id != sources.tranche.tranche_id:
+            raise ValueError("Selected wave forecast changed tranche")
+        return resolved
+
     def _run_native_requests(
         self, token, request, scenarios, sources, providers, cancel, selection
     ):
@@ -189,6 +273,7 @@ class RoutingController(QObject):
         )
         try:
             items = tuple(scenarios) or (request,)
+            wave_forecast = self._wave_binding(sources, request.wave_entry_id)
             jobs = freeze_native_requests(
                 request,
                 scenarios,
@@ -197,6 +282,7 @@ class RoutingController(QObject):
                 selection,
                 marine_directory,
                 engine="main",
+                wave_forecast=wave_forecast,
             )
             worker = NativeRoutingWorker()
             self.native_worker = worker
@@ -212,6 +298,12 @@ class RoutingController(QObject):
                 while status is None:
                     self._check(token)
                     status = worker.poll(0.1)
+                    progress = worker.take_progress()
+                    if progress is not None:
+                        self._native_progress.emit(token, progress)
+                progress = worker.take_progress()
+                if progress is not None:
+                    self._native_progress.emit(token, progress)
                 self._check(token)
                 if status.state == "cancelled":
                     raise RoutingCancelledError()
@@ -261,6 +353,8 @@ class RoutingController(QObject):
         self.scenario_index = index
         self.scenario_count = count
         self.percent = 0.0
+        self.progress_indeterminate = True
+        self.native_counters = {}
         self.message = (
             "Native calculation queued…"
             if count == 1
@@ -511,6 +605,9 @@ class RoutingController(QObject):
 
     def fail(self, message):
         self.error = self.message = message
+        self.progress_indeterminate = False
+        self.native_started_at = None
+        self.native_counters = {}
         self.changed.emit()
         return False
 
@@ -643,6 +740,10 @@ class RoutingController(QObject):
             self.cancel_event.set()
             self.dismiss_preflight.emit()
             self.isochrones_changed.emit(())
+            self.percent = 0.0
+            self.progress_indeterminate = False
+            self.native_started_at = None
+            self.native_counters = {}
             self.message = "Cancelling…"
             self.changed.emit()
 
@@ -679,11 +780,62 @@ class RoutingController(QObject):
             self.isochrones_changed.emit(isochrones)
         self.changed.emit()
 
+    @Slot(int, object)
+    def _apply_native_progress(self, token, update):
+        if (
+            self.closed
+            or not self.busy
+            or self.backend != "native"
+            or token != self.generation
+            or self.cancel_event.is_set()
+            or not isinstance(update, dict)
+        ):
+            return
+        percent = _native_progress_percent(update)
+        if percent is not None:
+            self.percent = percent
+            self.progress_indeterminate = False
+        counter_keys = (
+            "generated_states",
+            "retained_states",
+            "land_checks",
+            "closest_approach_nm",
+        )
+        self.native_counters = {
+            key: update[key]
+            for key in counter_keys
+            if key in update and update[key] is not None
+        }
+        stage = _NATIVE_PROGRESS_STAGES.get(
+            str(update.get("stage", "")), str(update.get("stage", "Engine"))
+        )
+        attempt = update.get("attempt")
+        total = update.get("total_attempts")
+        if (
+            isinstance(attempt, int)
+            and not isinstance(attempt, bool)
+            and isinstance(total, int)
+            and not isinstance(total, bool)
+            and total > 0
+        ):
+            stage += f" ({attempt}/{total})"
+        prefix = (
+            f"Native scenario {self.scenario_index + 1}/{self.scenario_count} · "
+            if self.scenario_count > 1
+            else "Native calculation · "
+        )
+        self.message = f"{prefix}{stage}"
+        if percent is not None:
+            self.message += f" · effort {percent:.0f}%"
+        self.changed.emit()
+
     @Slot(int, object, object)
     def _finish(self, token, result, error):
         if self.closed or token != self.generation:
             return
         self.busy = False
+        self.progress_indeterminate = False
+        self.native_started_at = None
         self._parallel_mode = False
         self._parallel_progress = {}
         if error is not None and self._native_diagnostic_token != token:

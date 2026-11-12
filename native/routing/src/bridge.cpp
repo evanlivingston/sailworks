@@ -48,6 +48,47 @@ std::string warningName(wr::RoutingWarningCode code) {
   return "unknown";
 }
 
+std::string progressStageName(wr::RoutingProgressStage stage) {
+  switch (stage) {
+    case wr::RoutingProgressStage::Preflight: return "preflight";
+    case wr::RoutingProgressStage::CurrentCoverage: return "current_coverage";
+    case wr::RoutingProgressStage::ForwardIsochrone:
+      return "forward_isochrone";
+    case wr::RoutingProgressStage::ReverseRecovery:
+      return "reverse_recovery";
+    case wr::RoutingProgressStage::FrontierRecovery:
+      return "frontier_recovery";
+    case wr::RoutingProgressStage::GraphFallback: return "graph_fallback";
+    case wr::RoutingProgressStage::Validation: return "validation";
+    case wr::RoutingProgressStage::Complete: return "complete";
+  }
+  return "unknown";
+}
+
+wr::RoutingProgressCallback makeProgressCallback(const py::object& callback) {
+  if (callback.is_none()) return {};
+  return [callback](const wr::RoutingProgressUpdate& update) {
+    try {
+      py::dict payload;
+      payload["stage"] = progressStageName(update.stage);
+      payload["attempt"] = update.attempt;
+      payload["total_attempts"] = update.totalAttempts;
+      payload["generated_states"] = update.generatedStates;
+      payload["retained_states"] = update.retainedStates;
+      payload["land_checks"] = update.landChecks;
+      if (std::isfinite(update.closestApproachNm))
+        payload["closest_approach_nm"] = update.closestApproachNm;
+      else
+        payload["closest_approach_nm"] = py::none();
+      payload["effort_percent"] = update.effortPercent;
+      callback(payload);
+    } catch (...) {
+      // Observation must never change the solve or leave a Python error set.
+      PyErr_Clear();
+    }
+  };
+}
+
 std::string tackName(wr::Tack tack) {
   switch (tack) {
     case wr::Tack::Port: return "port";
@@ -110,6 +151,44 @@ py::dict sourceMetadata(const wr::EnvironmentalSourceMetadata& metadata) {
   return result;
 }
 
+py::dict coverageDict(const wr::ParameterCoverage& coverage) {
+  py::dict result;
+  result["available"] = coverage.available;
+  result["dataset_identity"] = coverage.datasetIdentity;
+  result["begins"] = coverage.begins ? py::cast(timestamp(*coverage.begins))
+                                     : py::none();
+  result["ends"] =
+      coverage.ends ? py::cast(timestamp(*coverage.ends)) : py::none();
+  py::dict area;
+  area["south"] = coverage.area.south;
+  area["west"] = coverage.area.west;
+  area["north"] = coverage.area.north;
+  area["east"] = coverage.area.east;
+  result["area"] = area;
+  return result;
+}
+
+std::string requiredActionName(wr::RequiredUserAction action) {
+  switch (action) {
+    case wr::RequiredUserAction::LoadSailingPolar: return "load_sailing_polar";
+    case wr::RequiredUserAction::ConfigureVesselPerformance:
+      return "configure_vessel_performance";
+    case wr::RequiredUserAction::LoadWeatherGrib: return "load_weather_grib";
+    case wr::RequiredUserAction::GenerateWeatherGrib:
+      return "generate_weather_grib";
+    case wr::RequiredUserAction::ConfirmClimatologyWindFallback:
+      return "confirm_climatology_wind_fallback";
+    case wr::RequiredUserAction::LoadCurrentPredictionDataset:
+      return "load_current_prediction_dataset";
+    case wr::RequiredUserAction::ConfirmRoutingWithoutCurrent:
+      return "confirm_routing_without_current";
+    case wr::RequiredUserAction::ConfirmRoutingWithoutWaveData:
+      return "confirm_routing_without_wave_data";
+    case wr::RequiredUserAction::LoadDepthData: return "load_depth_data";
+  }
+  return "unknown";
+}
+
 py::dict validationDict(const wr::RouteValidationResult& validation) {
   py::dict result;
   result["passed"] = validation.passed;
@@ -149,6 +228,15 @@ py::dict legDict(const wr::RouteLeg& leg) {
   result["current_source"] = sourceMetadata(leg.currentSource);
   result["waves_available"] = leg.waves.available;
   result["wave_source"] = sourceMetadata(leg.waveSource);
+  if (leg.waves.available) {
+    result["wave_height_metres"] = leg.waves.significantHeightMetres;
+    result["wave_period_seconds"] = leg.waves.periodSeconds;
+    result["wave_direction_from_degrees"] = leg.waves.directionFromDegrees;
+  } else {
+    result["wave_height_metres"] = py::none();
+    result["wave_period_seconds"] = py::none();
+    result["wave_direction_from_degrees"] = py::none();
+  }
   result["propulsion_mode"] = wr::toString(leg.propulsionMode);
   result["profile_role"] = wr::toString(leg.profileRole);
   result["profile_identity"] = leg.profileIdentity;
@@ -325,11 +413,14 @@ class PythonLandProvider final : public wr::LandAndBoundaryProvider {
 class PythonWeatherProvider final : public wr::WeatherProvider {
  public:
   PythonWeatherProvider(py::function wind, py::function current,
+                        py::object waves, wr::ParameterCoverage waveCoverage,
                         wr::ParameterCoverage coverage, std::string identity,
                         wr::EnvironmentalSource source)
       : wind_(std::move(wind)),
         current_(std::move(current)),
-        coverage_(coverage),
+        waves_(std::move(waves)),
+        waveCoverage_(std::move(waveCoverage)),
+        coverage_(std::move(coverage)),
         identity_(std::move(identity)),
         source_(source) {}
 
@@ -340,10 +431,7 @@ class PythonWeatherProvider final : public wr::WeatherProvider {
     return coverage_;
   }
   [[nodiscard]] wr::ParameterCoverage waveCoverage() const override {
-    wr::ParameterCoverage waves;
-    waves.available = false;
-    waves.datasetIdentity = identity_ + "-waves-absent";
-    return waves;
+    return waveCoverage_;
   }
 
   [[nodiscard]] wr::WindSample wind(wr::GeoPoint position,
@@ -400,9 +488,51 @@ class PythonWeatherProvider final : public wr::WeatherProvider {
     return sample;
   }
 
-  [[nodiscard]] wr::WaveSample waves(wr::GeoPoint,
-                                     wr::TimePoint) const override {
-    return {};
+  [[nodiscard]] wr::WaveSample waves(wr::GeoPoint position,
+                                     wr::TimePoint time) const override {
+    if (waves_.is_none()) return {};
+    py::gil_scoped_acquire guard;
+    const py::object value =
+        waves_(position.latitude, position.longitude, seconds(time));
+    if (value.is_none()) return {};
+    const py::tuple item = asTuple(value, "waves");
+    if (py::len(item) < 4)
+      throw py::value_error(
+          "wave provider must return (height_m, period_s, "
+          "direction_from_deg, available[, dataset[, model]])");
+    wr::WaveSample sample;
+    const bool available = asBool(item[3], "wave available");
+    sample.available = available;
+    if (available) {
+      const double height = asDouble(item[0], "wave height_m");
+      const double period = asDouble(item[1], "wave period_s");
+      const double direction = asDouble(item[2], "wave direction_from_deg");
+      if (!std::isfinite(height) || height < 0.0 ||
+          !std::isfinite(period) || period <= 0.0 ||
+          !std::isfinite(direction))
+        throw py::value_error(
+            "available wave sample needs a non-negative height, a positive "
+            "period and a finite direction");
+      sample.significantHeightMetres = height;
+      sample.periodSeconds = period;
+      double normalized = std::fmod(direction, 360.0);
+      if (normalized < 0.0) normalized += 360.0;
+      sample.directionFromDegrees = normalized;
+    }
+    sample.metadata = metadata(time);
+    if (available && py::len(item) >= 5) {
+      const auto dataset = py::cast<std::string>(item[4]);
+      if (dataset.empty())
+        throw py::value_error("selected wave dataset identity is empty");
+      sample.metadata.datasetIdentity = dataset;
+      if (py::len(item) >= 6) {
+        const auto model = py::cast<std::string>(item[5]);
+        if (!model.empty()) sample.metadata.modelIdentity = model;
+      } else {
+        sample.metadata.modelIdentity = dataset;
+      }
+    }
+    return sample;
   }
 
   [[nodiscard]] std::string identity() const override { return identity_; }
@@ -443,6 +573,8 @@ class PythonWeatherProvider final : public wr::WeatherProvider {
 
   py::function wind_;
   py::function current_;
+  py::object waves_;
+  wr::ParameterCoverage waveCoverage_;
   wr::ParameterCoverage coverage_;
   std::string identity_;
   wr::EnvironmentalSource source_;
@@ -454,6 +586,8 @@ wr::ParameterCoverage coverageFromDict(const py::dict& value,
   coverage.available = true;
   coverage.datasetIdentity = identity;
   if (value.contains("available")) coverage.available = py::cast<bool>(value["available"]);
+  if (value.contains("dataset_identity"))
+    coverage.datasetIdentity = py::cast<std::string>(value["dataset_identity"]);
   coverage.area.south = py::cast<double>(value["south"]);
   coverage.area.north = py::cast<double>(value["north"]);
   coverage.area.west = py::cast<double>(value["west"]);
@@ -627,23 +761,98 @@ py::dict runDict(const SyntheticRun& run,
   return result;
 }
 
+py::dict waveProvenanceDict(const wr::RoutingResult& result, bool useWaves,
+                            bool windProxy) {
+  py::dict provenance;
+  if (useWaves && windProxy) {
+    provenance["mode"] = "real_waves_and_wind_proxy";
+  } else if (useWaves) {
+    provenance["mode"] = "real_waves";
+  } else if (windProxy) {
+    provenance["mode"] = "wind_proxy";
+  } else {
+    provenance["mode"] = "none";
+  }
+  provenance["uses_real_wave_heights"] = useWaves;
+  provenance["uses_wind_proxy"] = windProxy;
+  py::dict units;
+  units["height"] = "m";
+  units["period"] = "s";
+  units["direction"] = "degrees coming from true north";
+  provenance["units"] = units;
+  provenance["direction_convention"] = "coming from";
+
+  const wr::EnvironmentalSourceMetadata* selected = nullptr;
+  std::set<std::string> datasets;
+  std::set<std::string> models;
+  for (const auto& leg : result.legs) {
+    if (!leg.waves.available) continue;
+    if (selected == nullptr) selected = &leg.waveSource;
+    if (!leg.waveSource.datasetIdentity.empty())
+      datasets.insert(leg.waveSource.datasetIdentity);
+    if (!leg.waveSource.modelIdentity.empty())
+      models.insert(leg.waveSource.modelIdentity);
+  }
+  if (selected != nullptr) {
+    provenance["dataset_identity"] = selected->datasetIdentity;
+    provenance["model_identity"] = selected->modelIdentity;
+  } else {
+    provenance["dataset_identity"] = py::none();
+    provenance["model_identity"] = py::none();
+  }
+  py::list identities;
+  for (const auto& value : datasets) identities.append(value);
+  provenance["dataset_identities"] = identities;
+  py::list modelIdentities;
+  for (const auto& value : models) modelIdentities.append(value);
+  provenance["model_identities"] = modelIdentities;
+
+  if (result.preflight) {
+    py::dict preflight;
+    preflight["can_route"] = result.preflight->canRoute;
+    py::list actions;
+    for (const auto action : result.preflight->requiredActions)
+      actions.append(requiredActionName(action));
+    preflight["required_actions"] = actions;
+    py::dict coverage;
+    coverage["wind"] = coverageDict(result.preflight->coverage.wind);
+    coverage["current"] = coverageDict(result.preflight->coverage.current);
+    coverage["waves"] = coverageDict(result.preflight->coverage.waves);
+    preflight["coverage"] = coverage;
+    provenance["coverage"] = coverage["waves"];
+    provenance["preflight"] = preflight;
+  } else {
+    provenance["coverage"] = py::none();
+  }
+  return provenance;
+}
+
 py::dict runUserBridge(py::function wind, py::function current,
+                           py::object waves, const py::object& waveCoverage,
                            const py::dict& coverage, const py::object& polar,
                            const py::dict& settings,
                            const py::object& land,
                            const std::string& providerIdentity,
                            const std::string& polarIdentity,
-                           const std::string& engine) {
+                           const std::string& engine,
+                           const py::object& progress) {
   const std::set<std::string> required{
       "start", "destination", "departure_epoch_s", "use_currents",
       "polar_efficiency", "tws_max_kn", "min_sailing_speed_kn",
       "motor_speed_kn", "wave_correct", "coastline_checks",
       "land_safety_margin_nm", "waypoints"};
-  if (py::len(settings) != required.size())
-    throw py::value_error("real request requires all supported settings and no unknown settings");
+  const std::set<std::string> optional{"use_waves"};
+  if (py::len(settings) < required.size() ||
+      py::len(settings) > required.size() + optional.size())
+    throw py::value_error(
+        "real request requires all supported settings and no unknown settings");
   for (const auto& key : required)
     if (!settings.contains(py::str(key)))
       throw py::value_error("real request missing setting: " + key);
+  for (const auto& item : settings)
+    if (!required.count(py::cast<std::string>(item.first)) &&
+        !optional.count(py::cast<std::string>(item.first)))
+      throw py::value_error("real request has an unknown setting");
   if (py::cast<bool>(settings["coastline_checks"]) && land.is_none())
     throw py::value_error(
         "real request shoreline checks require a worker-local shoreline adapter");
@@ -667,19 +876,34 @@ py::dict runUserBridge(py::function wind, py::function current,
   input.minimumSailingKnots = optionalSpeed(settings["min_sailing_speed_kn"]);
   input.motorKnots = py::cast<double>(settings["motor_speed_kn"]);
   input.windBasedWaveProxy = py::cast<bool>(settings["wave_correct"]);
+  input.useWaves = settings.contains("use_waves")
+                       ? py::cast<bool>(settings["use_waves"])
+                       : false;
   input.coastlineChecks = py::cast<bool>(settings["coastline_checks"]);
   input.landSafetyMarginNm =
       py::cast<double>(settings["land_safety_margin_nm"]);
 
   if (polar.is_none())
     throw py::value_error("real request requires selected polar rows");
+  if (input.useWaves && (waves.is_none() || waveCoverage.is_none()))
+    throw py::value_error(
+        "wave routing requires a wave sampler and wave coverage");
   const auto windCoverage = coverageFromDict(coverage, providerIdentity);
+  wr::ParameterCoverage waveFieldsCoverage;
+  if (!waveCoverage.is_none())
+    waveFieldsCoverage = coverageFromDict(
+        py::reinterpret_borrow<py::dict>(waveCoverage),
+        providerIdentity + "-waves");
+  if (input.useWaves && !waveFieldsCoverage.available)
+    throw py::value_error("selected wave coverage is unavailable");
   auto vessel = vesselFromPolar(polar, polarIdentity, "selected Sailworks polar");
-  auto request = sailworks::native_routing::buildUserRequest(input, vessel,
-                                                               windCoverage);
+  auto request = sailworks::native_routing::buildUserRequest(
+      input, vessel, windCoverage, waveFieldsCoverage);
+  request.progress = makeProgressCallback(progress);
   wr::RoutingEnvironment environment;
   environment.grib = std::make_shared<PythonWeatherProvider>(
-      std::move(wind), std::move(current), windCoverage, providerIdentity,
+      std::move(wind), std::move(current), std::move(waves),
+      waveFieldsCoverage, windCoverage, providerIdentity,
       wr::EnvironmentalSource::GribForecast);
   environment.landAndBoundaries =
       input.coastlineChecks
@@ -703,12 +927,20 @@ py::dict runUserBridge(py::function wind, py::function current,
   if (chain.size() == 1 || chain.back().latitude != input.destination.latitude ||
       chain.back().longitude != input.destination.longitude)
     chain.push_back(input.destination);
-  if (chain.size() == 2)
-    return runDict(sailworks::native_routing::runRequest(
-        engine, std::move(request), std::move(environment)));
+  if (chain.size() == 2) {
+    auto run = sailworks::native_routing::runRequest(
+        engine, std::move(request), std::move(environment));
+    py::dict result = runDict(run);
+    result["wave_provenance"] = waveProvenanceDict(
+        run.result, input.useWaves, input.windBasedWaveProxy);
+    return result;
+  }
   const auto run = sailworks::native_routing::runUserChain(
       engine, std::move(request), std::move(environment), chain);
-  return runDict(run.result, &run.segments);
+  py::dict result = runDict(run.result, &run.segments);
+  result["wave_provenance"] = waveProvenanceDict(
+      run.result.result, input.useWaves, input.windBasedWaveProxy);
+  return result;
 }
 
 py::dict identityDict() {
@@ -779,6 +1011,25 @@ py::dict identityDict() {
   capabilities["cancellation_without_accepted_completion"] = true;
   capabilities["cancellation_scope"] =
       "pre-cancelled request only; no mid-route cancellation";
+  capabilities["progress"] = true;
+  capabilities["progress_updates"] = true;
+  capabilities["progress_source"] = "engine";
+  capabilities["progress_contract"] =
+      "RoutingRequest::progress reports RoutingProgressUpdate with stage, "
+      "attempt/totalAttempts, generated/retained states, land checks, closest "
+      "approach and effortPercent; the bridge forwards those engine values "
+      "and the worker throttles them over its result pipe. No percentage is "
+      "synthesized when the engine reports none";
+  py::list progressStages;
+  progressStages.append("preflight");
+  progressStages.append("current_coverage");
+  progressStages.append("forward_isochrone");
+  progressStages.append("reverse_recovery");
+  progressStages.append("frontier_recovery");
+  progressStages.append("graph_fallback");
+  progressStages.append("validation");
+  progressStages.append("complete");
+  capabilities["progress_stages"] = progressStages;
   capabilities["route_model_omissions"] =
       "leg wind/current/wave availability and per-leg safety metadata are "
       "exposed; bounded engine inspection geometry (isochrone layers, "
@@ -824,6 +1075,12 @@ py::dict identityDict() {
       "sample; wind is (from_degrees, speed_ms, available) and current is "
       "(east_ms, north_ms, available) pointing toward motion; the solver runs "
       "with the GIL held on the calling thread and no native concurrency";
+  capabilities["wave_data_routing"] =
+      "route_user_request accepts an optional wave sampler and coverage with "
+      "dataset identity; use_waves makes missing coverage an explicit "
+      "wave_data_required failure and records real-versus-proxy provenance. "
+      "SailworksPerformance still applies only the optional wind-based proxy; "
+      "the engine wave-data penalty is not enabled by this bridge";
   capabilities["external_weather_vessel_model"] =
       "the fixture polar, constraints and request limits are used unless a "
       "polar is supplied to route_with_weather as (twa_degrees, speed_kn) "
@@ -976,11 +1233,14 @@ PYBIND11_MODULE(sailworks_native_routing, module) {
              "Synthetic fixture samples evaluated by the native provider");
   module.def(
       "synthetic_route",
-      [](const std::string& engine) {
-        return runDict(sailworks::native_routing::runSynthetic(engine));
+      [](const std::string& engine, const py::object& progress) {
+        return runDict(sailworks::native_routing::runSynthetic(
+            engine, makeProgressCallback(progress)));
       },
-      py::arg("engine") = "main",
-      "Run the deterministic synthetic scenario through a native engine");
+      py::arg("engine") = "main", py::arg("progress") = py::none(),
+      "Run the deterministic synthetic scenario through a native engine; "
+      "an optional progress callback receives engine RoutingProgressUpdate "
+      "dictionaries");
   module.def(
       "synthetic_cancelled_route",
       [](const std::string& engine) {
@@ -1001,9 +1261,11 @@ PYBIND11_MODULE(sailworks_native_routing, module) {
          const py::object& polar, const std::string& polar_identity,
          const std::string& polar_assumptions, const py::object& start,
          const py::object& destination,
-         const py::object& departure_epoch_s) {
+         const py::object& departure_epoch_s,
+         const py::object& progress) {
         auto provider = std::make_shared<PythonWeatherProvider>(
-            std::move(wind), std::move(current),
+            std::move(wind), std::move(current), py::none(),
+            wr::ParameterCoverage{},
             coverageFromDict(coverage, provider_identity), provider_identity,
             sourceFromName(source));
         std::optional<wr::VesselConfiguration> vessel;
@@ -1028,7 +1290,7 @@ PYBIND11_MODULE(sailworks_native_routing, module) {
         }
         return runDict(sailworks::native_routing::runWithProvider(
             engine, std::move(provider), cancelled, std::move(vessel),
-            overrides));
+            overrides, makeProgressCallback(progress)));
       },
       py::arg("wind"), py::arg("current"), py::arg("coverage"),
       py::arg("provider_identity") = "python-weather-provider",
@@ -1038,28 +1300,38 @@ PYBIND11_MODULE(sailworks_native_routing, module) {
       py::arg("polar_assumptions") = "", py::arg("start") = py::none(),
       py::arg("destination") = py::none(),
       py::arg("departure_epoch_s") = py::none(),
+      py::arg("progress") = py::none(),
       "Run the synthetic scenario with weather sampled through Python "
       "callables; wind returns (from_degrees, speed_ms, available) and "
       "current returns (east_ms, north_ms, available) toward motion. An "
       "optional polar replaces the fixture vessel model. Optional start and "
       "destination are (latitude, longitude) pairs and departure_epoch_s is "
       "UTC epoch seconds; setting them relocates only the request geometry, "
-       "the polar, constraints, options and limits stay frozen.");
+       "the polar, constraints, options and limits stay frozen. Optional "
+       "progress receives engine RoutingProgressUpdate dictionaries.");
   module.def("route_user_request",
              [](py::function wind, py::function current, py::dict coverage,
                 py::object polar, py::dict settings, py::object land,
                 const std::string& providerIdentity,
                 const std::string& polarIdentity,
-                const std::string& engine) {
+                const std::string& engine, py::object waves,
+                py::object waveCoverage, const py::object& progress) {
                return runUserBridge(std::move(wind), std::move(current),
-                                    coverage, polar, settings, land,
-                                    providerIdentity, polarIdentity, engine);
+                                    std::move(waves), waveCoverage, coverage,
+                                    polar, settings, land, providerIdentity,
+                                    polarIdentity, engine, progress);
              },
              py::arg("wind"), py::arg("current"), py::arg("coverage"),
              py::arg("polar"), py::arg("settings"), py::arg("land"),
              py::arg("provider_identity"), py::arg("polar_identity"),
-             py::arg("engine") = "main",
+             py::arg("engine") = "main", py::arg("waves") = py::none(),
+             py::arg("wave_coverage") = py::none(),
+             py::arg("progress") = py::none(),
              "Run a selected request, including its waypoint chain, through the "
              "native engine; reject unsupported settings rather than "
-             "inheriting synthetic fixture defaults");
+             "inheriting synthetic fixture defaults. Optional waves returns "
+             "(height_m, period_s, direction_from_deg, available[, dataset[, "
+             "model]]) and wave_coverage carries its area, times and dataset "
+             "identity; use_waves makes missing wave coverage an explicit "
+             "failure.");
 }

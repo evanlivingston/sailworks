@@ -5,7 +5,7 @@ from dataclasses import replace
 
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, QTimer, Qt, Signal
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from sailworks.core.forecastcapabilities import MODEL_CAPABILITIES, display_model_name
 
@@ -35,6 +35,9 @@ class WeatherPresenter(QObject):
         self._state = "unavailable"
         self._rendered = False
         self._host_generation = 0
+        # A routing click is resolved on release so the press still reaches
+        # the viewport's pan gesture. Cleared once the pointer is a drag.
+        self._routing_press_position = None
         self.status = QLabel(canvas)
         self.status.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.status.setStyleSheet(
@@ -635,6 +638,7 @@ class WeatherPresenter(QObject):
                 self._last_hover_at = now
                 self.canvas._hover(event.position())
         if watched is self.widget and event.type() == QEvent.Type.Leave:
+            self._routing_press_position = None
             self.canvas._cursor_screen_position = None
             cursor_timer = getattr(self.canvas, "_cursor_refresh_timer", None)
             if cursor_timer is not None:
@@ -645,10 +649,36 @@ class WeatherPresenter(QObject):
             and event.type() == QEvent.Type.MouseButtonPress
             and event.button() == Qt.MouseButton.LeftButton
             and self.canvas.move_callback is None
+            and not getattr(self.canvas, "_measure_mode", False)
         ):
-            pin = getattr(self.canvas, "pin_routing_trace", None)
-            if pin is not None and pin():
-                return True
+            # Do not consume the press: the viewport owns left-drag panning.
+            # A native routing trace under the pointer is pinned on release,
+            # and only when the pointer did not become a drag.
+            self._routing_press_position = event.position()
+        if (
+            watched is self.widget
+            and event.type() == QEvent.Type.MouseMove
+            and self._routing_press_position is not None
+            and (event.position() - self._routing_press_position).manhattanLength()
+            > QApplication.startDragDistance()
+        ):
+            self._routing_press_position = None
+        if (
+            watched is self.widget
+            and event.type() == QEvent.Type.MouseButtonRelease
+            and event.button() == Qt.MouseButton.LeftButton
+            and self.canvas.move_callback is None
+        ):
+            press = self._routing_press_position
+            self._routing_press_position = None
+            if (
+                press is not None
+                and (event.position() - press).manhattanLength()
+                <= QApplication.startDragDistance()
+            ):
+                pin = getattr(self.canvas, "pin_routing_trace", None)
+                if pin is not None:
+                    pin()
         if (
             watched is self.widget
             and event.type() == QEvent.Type.MouseButtonPress
