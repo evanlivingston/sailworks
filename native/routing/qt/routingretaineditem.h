@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QtCore/QRectF>
 #include <QtCore/QVariantList>
 #include <QtQuick/QQuickItem>
 
@@ -74,6 +75,8 @@ class RoutingRetainedItem : public QQuickItem {
 
  protected:
   QSGNode *updatePaintNode(QSGNode *node, UpdatePaintNodeData *data) override;
+  void geometryChange(const QRectF &newGeometry,
+                      const QRectF &oldGeometry) override;
 
  private:
   void markGeometryDirty();
@@ -95,6 +98,10 @@ class RoutingRetainedItem : public QQuickItem {
   bool geometryDirty_ = true;
   bool styleDirty_ = true;
   bool cameraDirty_ = true;
+  // Size the current camera matrix was built for. A resize must refresh the
+  // translation without rebuilding segment geometry.
+  qreal cameraWidth_ = -1.0;
+  qreal cameraHeight_ = -1.0;
   int geometryRebuilds_ = 0;
   int matrixUpdates_ = 0;
 };

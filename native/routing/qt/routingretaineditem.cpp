@@ -139,6 +139,16 @@ void RoutingRetainedItem::markCameraDirty() {
   update();
 }
 
+void RoutingRetainedItem::geometryChange(const QRectF &newGeometry,
+                                         const QRectF &oldGeometry) {
+  QQuickItem::geometryChange(newGeometry, oldGeometry);
+  if (newGeometry.size() != oldGeometry.size()) {
+    // The camera matrix centres the world on width()/height(); refresh only
+    // the translation, leaving the retained segment nodes untouched.
+    markCameraDirty();
+  }
+}
+
 QSGNode *RoutingRetainedItem::updatePaintNode(QSGNode *node,
                                               UpdatePaintNodeData *) {
   QSGNode *root = node;
@@ -242,12 +252,14 @@ QSGNode *RoutingRetainedItem::updatePaintNode(QSGNode *node,
     styleDirty_ = false;
   }
 
-  if (cameraDirty_) {
+  if (cameraDirty_ || cameraWidth_ != width() || cameraHeight_ != height()) {
     QMatrix4x4 matrix;
     matrix.translate(width() / 2.0 - mercatorX(centerLongitude_) * worldPixels,
                      height() / 2.0 - mercatorY(centerLatitude_) * worldPixels);
     camera->setMatrix(matrix);
     camera->markDirty(QSGNode::DirtyMatrix);
+    cameraWidth_ = width();
+    cameraHeight_ = height();
     ++matrixUpdates_;
     cameraDirty_ = false;
   }
