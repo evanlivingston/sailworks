@@ -149,7 +149,7 @@ class _SamplerWind:
         return self.sampler.wind_at(instant, latitude, longitude)
 
 
-def _run_bridge(bridge, sampler, selection):
+def _run_bridge(bridge, sampler, selection, *, engine="main"):
     started = time_module.perf_counter()
     run = bridge.route_with_weather(
         wind_callable_from_sampler(sampler),
@@ -161,6 +161,7 @@ def _run_bridge(bridge, sampler, selection):
         start=ROUTE_START,
         destination=ROUTE_DESTINATION,
         departure_epoch_s=CYCLE_EPOCH_S,
+        engine=engine,
     )
     return run, time_module.perf_counter() - started
 
