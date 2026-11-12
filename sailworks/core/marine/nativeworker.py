@@ -5,17 +5,43 @@ supersedes the running generation, so a superseded calculation can never
 publish a result. Cancellation terminates the process, and an abnormal exit is
 reported as a failure rather than as "no feasible route".
 
-Progress is lifecycle-only: the vendored bridge exposes no intra-solve progress
-callback, so this module does not invent one.
+The bridge forwards the vendored engine's own ``RoutingProgressUpdate`` values.
+They travel over the same pipe as the result, are throttled in the child, and a
+terminal result remains the only completion. Progress from a superseded or
+cancelled generation is discarded.
 """
 
 from __future__ import annotations
 
 import multiprocessing
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 STATES = frozenset({"queued", "running", "completed", "cancelled", "failed"})
+PROGRESS_INTERVAL_SECONDS = 0.1
+
+
+class NativeProgressThrottle:
+    """Bound forwarded progress to stage changes and a fixed cadence."""
+
+    def __init__(self, interval: float = PROGRESS_INTERVAL_SECONDS):
+        self.interval = interval
+        self._last_emit: Optional[float] = None
+        self._last_stage: Optional[str] = None
+
+    def should_emit(self, update: Dict[str, Any], now: float) -> bool:
+        stage = update.get("stage")
+        emit = (
+            self._last_emit is None
+            or stage == "complete"
+            or stage != self._last_stage
+            or now - self._last_emit >= self.interval
+        )
+        if emit:
+            self._last_emit = now
+            self._last_stage = stage
+        return emit
 
 
 @dataclass
@@ -36,27 +62,49 @@ class NativeJobStatus:
         }
 
 
-def _worker_main(connection, job, engine: str) -> None:
+def _worker_main(connection, job, engine: str, generation: int) -> None:
     """Child-process entry point; import provider handles only after spawn."""
+    throttle = NativeProgressThrottle()
+
+    def report(update):
+        if not throttle.should_emit(update, time.monotonic()):
+            return
+        try:
+            connection.send(
+                {
+                    "kind": "progress",
+                    "generation": generation,
+                    "payload": update,
+                }
+            )
+        except (BrokenPipeError, EOFError, OSError):
+            # Progress is an observer; a closed pipe must not abort the solve.
+            pass
+
     try:
         if job is None:
             import sailworks_native_routing as bridge
 
-            payload = bridge.synthetic_route(engine)
+            payload = bridge.synthetic_route(engine, progress=report)
         else:
             from .nativeexecution import run_native_request
 
-            payload = run_native_request(job)
-        connection.send({"kind": "result", "payload": payload})
+            payload = run_native_request(job, progress=report)
+        connection.send(
+            {"kind": "result", "generation": generation, "payload": payload}
+        )
     except ImportError as exc:
         connection.send(
             {
                 "kind": "failed",
+                "generation": generation,
                 "message": f"Native routing module is not built or importable: {exc}",
             }
         )
     except BaseException as exc:  # pragma: no cover - child process boundary
-        connection.send({"kind": "failed", "message": str(exc)})
+        connection.send(
+            {"kind": "failed", "generation": generation, "message": str(exc)}
+        )
     finally:
         connection.close()
 
@@ -76,10 +124,16 @@ class NativeRoutingWorker:
         self._superseded_generation: Optional[int] = None
         self._status: Optional[NativeJobStatus] = None
         self._status_consumed = False
+        self._pending_progress: Optional[Dict[str, Any]] = None
 
     @property
     def generation(self) -> int:
         return self._generation
+
+    @property
+    def progress(self) -> Optional[Dict[str, Any]]:
+        """Latest undelivered engine progress, or None."""
+        return self._pending_progress
 
     @property
     def running(self) -> bool:
@@ -113,7 +167,9 @@ class NativeRoutingWorker:
         generation = self._generation
         parent, child = self._context.Pipe(duplex=False)
         process = self._context.Process(
-            target=_worker_main, args=(child, job, engine), daemon=True
+            target=_worker_main,
+            args=(child, job, engine, generation),
+            daemon=True,
         )
         try:
             process.start()
@@ -122,6 +178,7 @@ class NativeRoutingWorker:
             child.close()
             self._status = None
             self._status_consumed = False
+            self._pending_progress = None
             self._active_generation = None
             raise
         child.close()
@@ -130,6 +187,7 @@ class NativeRoutingWorker:
         self._active_generation = generation
         self._status = NativeJobStatus(generation, "running")
         self._status_consumed = False
+        self._pending_progress = None
         return generation
 
     def poll(self, timeout: float = 0.0) -> Optional[NativeJobStatus]:
@@ -169,6 +227,11 @@ class NativeRoutingWorker:
                     exit_code=None if self._process is None else self._process.exitcode,
                 )
             )
+        if message.get("kind") == "progress":
+            self._accept_progress(message.get("generation"), message.get("payload"))
+            # Progress never terminates the job; the next poll can read the
+            # result that follows it on the pipe.
+            return None
         self._release()
         if message.get("kind") == "result":
             return self._publish(
@@ -181,6 +244,22 @@ class NativeRoutingWorker:
                 message=str(message.get("message", "worker failed")),
             )
         )
+
+    def take_progress(self) -> Optional[Dict[str, Any]]:
+        """Deliver the latest accepted progress update once."""
+        update, self._pending_progress = self._pending_progress, None
+        return update
+
+    def _accept_progress(self, generation, payload) -> bool:
+        if (
+            generation != self._active_generation
+            or not isinstance(payload, dict)
+            or self._status is None
+            or self._status.state != "running"
+        ):
+            return False
+        self._pending_progress = payload
+        return True
 
     def cancel(self) -> Optional[NativeJobStatus]:
         """Terminate the running worker; never publishes a completion."""
@@ -201,6 +280,7 @@ class NativeRoutingWorker:
         self._active_generation = None
         self._status = None
         self._status_consumed = True
+        self._pending_progress = None
 
     def _supersede(self) -> None:
         if self._active_generation is None:
@@ -209,6 +289,7 @@ class NativeRoutingWorker:
         self._terminate()
 
     def _terminate(self) -> None:
+        self._pending_progress = None
         if self._process is not None:
             if self._process.is_alive():
                 self._process.terminate()

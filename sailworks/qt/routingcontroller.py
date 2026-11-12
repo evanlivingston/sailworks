@@ -20,6 +20,17 @@ from sailworks.core.marine.chs import DownloadCancelledError
 from sailworks.core.marine.routingselection import RoutingSelection
 from sailworks.rendering.routingoverlay import RoutingOverlayModel
 
+_NATIVE_PROGRESS_STAGES = {
+    "preflight": "Preflight",
+    "current_coverage": "Current coverage",
+    "forward_isochrone": "Forward isochrone",
+    "reverse_recovery": "Reverse recovery",
+    "frontier_recovery": "Frontier recovery",
+    "graph_fallback": "Graph fallback",
+    "validation": "Validation",
+    "complete": "Complete",
+}
+
 
 class RoutingController(QObject):
     changed = Signal()
@@ -30,6 +41,7 @@ class RoutingController(QObject):
     native_cleared = Signal()
     dismiss_preflight = Signal()
     _progress = Signal(int, float, object, object)
+    _native_progress = Signal(int, object)
     _message = Signal(int, str)
     _finished = Signal(int, object, object)
 
@@ -61,6 +73,7 @@ class RoutingController(QObject):
         self._parallel_mode = False
         self._parallel_progress = {}
         self._progress.connect(self._apply_progress)
+        self._native_progress.connect(self._apply_native_progress)
         self._message.connect(self._apply_message)
         self._finished.connect(self._finish)
         self.confirm = lambda report: False
@@ -216,6 +229,12 @@ class RoutingController(QObject):
                 while status is None:
                     self._check(token)
                     status = worker.poll(0.1)
+                    progress = worker.take_progress()
+                    if progress is not None:
+                        self._native_progress.emit(token, progress)
+                progress = worker.take_progress()
+                if progress is not None:
+                    self._native_progress.emit(token, progress)
                 self._check(token)
                 if status.state == "cancelled":
                     raise RoutingCancelledError()
@@ -685,6 +704,39 @@ class RoutingController(QObject):
             self.preview_changed.emit(points)
         if isochrones is not None:
             self.isochrones_changed.emit(isochrones)
+        self.changed.emit()
+
+    @Slot(int, object)
+    def _apply_native_progress(self, token, update):
+        if (
+            self.closed
+            or not self.busy
+            or self.backend != "native"
+            or token != self.generation
+            or self.cancel_event.is_set()
+            or not isinstance(update, dict)
+        ):
+            return
+        try:
+            percent = min(100.0, max(0.0, float(update.get("effort_percent"))))
+        except (TypeError, ValueError):
+            # No engine percentage: keep the indeterminate fallback.
+            return
+        self.percent = percent
+        self.progress_indeterminate = False
+        stage = _NATIVE_PROGRESS_STAGES.get(
+            str(update.get("stage", "")), str(update.get("stage", "Engine"))
+        )
+        attempt = update.get("attempt")
+        total = update.get("total_attempts")
+        if isinstance(attempt, int) and isinstance(total, int) and total > 0:
+            stage += f" ({attempt}/{total})"
+        prefix = (
+            f"Native scenario {self.scenario_index + 1}/{self.scenario_count} · "
+            if self.scenario_count > 1
+            else "Native calculation · "
+        )
+        self.message = f"{prefix}{stage} · effort {percent:.0f}%"
         self.changed.emit()
 
     @Slot(int, object, object)
