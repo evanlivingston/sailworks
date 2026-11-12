@@ -507,3 +507,68 @@ def test_controller_runs_a_real_selected_request_and_keeps_provenance(
     assert diagnostics["input_fingerprints"]["start"] == request.start
     assert diagnostics["legacy_algorithm"]["selected"] == "LegacyAlgorithm"
     assert "not executed" in diagnostics["legacy_algorithm"]["note"]
+
+
+def test_panel_selects_a_wave_source_and_sends_it_to_native(app):
+    controller = FakeController()
+    run_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    fields = ("wind", "wave_height", "wave_period", "wave_direction")
+    entry = SimpleNamespace(
+        entry_id="wave-run",
+        model_id="GFSWAVE",
+        run_time=run_time,
+        fields=fields,
+        field_times=tuple(
+            (field, (run_time, run_time + timedelta(hours=3))) for field in fields
+        ),
+    )
+    controller.analysis = SimpleNamespace(
+        active=SimpleNamespace(tranche=SimpleNamespace(entries=(entry,))),
+        snapshot=lambda required_fields=(): object(),
+    )
+    panel = RoutingPanel(controller)
+    panel.set_location("start", (48.0, -123.5))
+    panel.set_location("destination", (48.4, -123.1))
+    panel.refresh_destinations()
+    panel.backend.setCurrentIndex(panel.backend.findData("native"))
+    assert panel.wave_data.count() == 2
+    panel.wave_data.setCurrentIndex(panel.wave_data.findData("wave-run"))
+    assert panel._wave_entry_id == "wave-run"
+    panel._calculate()
+
+    assert controller.routing.calls
+    request, _scenarios, backend = controller.routing.calls[0]
+    assert backend == "native"
+    assert request.wave_entry_id == "wave-run"
+    panel.deleteLater()
+
+
+def test_panel_refuses_wave_data_on_the_legacy_backend(app):
+    controller = FakeController()
+    run_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    fields = ("wind", "wave_height", "wave_period", "wave_direction")
+    entry = SimpleNamespace(
+        entry_id="wave-run",
+        model_id="GFSWAVE",
+        run_time=run_time,
+        fields=fields,
+        field_times=tuple(
+            (field, (run_time, run_time + timedelta(hours=3))) for field in fields
+        ),
+    )
+    controller.analysis = SimpleNamespace(
+        active=SimpleNamespace(tranche=SimpleNamespace(entries=(entry,))),
+        snapshot=lambda required_fields=(): object(),
+    )
+    panel = RoutingPanel(controller)
+    panel.set_location("start", (48.0, -123.5))
+    panel.set_location("destination", (48.4, -123.1))
+    panel.refresh_destinations()
+    panel.backend.setCurrentIndex(panel.backend.findData("native"))
+    panel.wave_data.setCurrentIndex(panel.wave_data.findData("wave-run"))
+    panel.backend.setCurrentIndex(panel.backend.findData("legacy"))
+    panel._calculate()
+
+    assert controller.routing.calls == []
+    assert "Native" in panel.status.text()
+    panel.deleteLater()

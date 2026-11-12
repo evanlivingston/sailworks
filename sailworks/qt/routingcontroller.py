@@ -16,6 +16,7 @@ from sailworks.core.routingjob import (
     RoutingCancelledError,
 )
 from sailworks.core.tranchestore import ResolvedForecast
+from sailworks.core.forecasttranche import AnalysisSelection
 from sailworks.core.marine.chs import DownloadCancelledError
 from sailworks.core.marine.routingselection import RoutingSelection
 from sailworks.rendering.routingoverlay import RoutingOverlayModel
@@ -67,6 +68,14 @@ class RoutingController(QObject):
             return False
         if backend not in ("legacy", "native"):
             return self.fail("Choose the Legacy or Native calculation backend.")
+        if backend != "native" and any(
+            getattr(item, "wave_entry_id", None)
+            for item in (request, *tuple(scenarios))
+        ):
+            return self.fail(
+                "Real wave data is a Native calculation input. Set Wave data "
+                "to None for a Legacy calculation, or switch to Native."
+            )
         if backend == "native":
             for item in (request, *tuple(scenarios)):
                 refusal = self._native_parameter_refusal(item)
@@ -166,6 +175,29 @@ class RoutingController(QObject):
         if not self.closed:
             self._finished.emit(token, None, error)
 
+    def _wave_binding(self, sources, entry_id):
+        """Resolve the selected wave entry from the active forecast tranche."""
+        if not entry_id:
+            return None
+        if not isinstance(sources, ResolvedForecast):
+            raise TypeError("wave routing requires a published model forecast")
+        analysis = getattr(self.session_controller, "analysis", None)
+        store = getattr(getattr(analysis, "state", None), "store", None)
+        if store is None:
+            raise ValueError("Wave routing requires the forecast tranche store")
+        entry = next(
+            (item for item in sources.tranche.entries if item.entry_id == entry_id),
+            None,
+        )
+        if entry is None:
+            raise ValueError("Selected wave forecast is not in the active tranche")
+        resolved = store.resolve(
+            AnalysisSelection(sources.tranche.tranche_id, entry_id)
+        )
+        if resolved.tranche.tranche_id != sources.tranche.tranche_id:
+            raise ValueError("Selected wave forecast changed tranche")
+        return resolved
+
     def _run_native_requests(
         self, token, request, scenarios, sources, providers, cancel, selection
     ):
@@ -189,6 +221,7 @@ class RoutingController(QObject):
         )
         try:
             items = tuple(scenarios) or (request,)
+            wave_forecast = self._wave_binding(sources, request.wave_entry_id)
             jobs = freeze_native_requests(
                 request,
                 scenarios,
@@ -197,6 +230,7 @@ class RoutingController(QObject):
                 selection,
                 marine_directory,
                 engine="main",
+                wave_forecast=wave_forecast,
             )
             worker = NativeRoutingWorker()
             self.native_worker = worker
