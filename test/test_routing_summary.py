@@ -59,6 +59,75 @@ class TestRoutingSummaryFallback(unittest.TestCase):
         self.assertNotIn("fallback", routing_summary(FakeRoute(bare)))
 
 
+class TestRoutingSummarySpeed(unittest.TestCase):
+    def test_distance_and_duration_define_average_speed(self):
+        # 3.5 degrees on the equator is about 210 nm; 42 h is 1d 18h, so the
+        # ground speed is about 5.0 kts. The old mean of 2.0 and 4.8 was 3.4.
+        route = [
+            (0.0, 0.0, "2026-01-01 00:00:00", 0, 0, 2.0, 90.0),
+            (0.0, 3.5, "2026-01-02 18:00:00", 0, 0, 4.8, 90.0),
+        ]
+        summary = routing_summary(_Route(route))
+        self.assertIn("210 nm", summary)
+        self.assertIn("1d 18h", summary)
+        self.assertIn("avg 5.0 kts", summary)
+
+    def test_duration_crossing_midnight_uses_elapsed_time(self):
+        # 22:00 on one day to 16:00 two days later is still 42 h, not 18 h or
+        # 66 h; the midnight boundary must not truncate the elapsed duration.
+        route = [
+            (0.0, 0.0, "2026-03-01 22:00:00", 0, 0, 2.0, 90.0),
+            (0.0, 3.5, "2026-03-03 16:00:00", 0, 0, 4.8, 90.0),
+        ]
+        summary = routing_summary(_Route(route))
+        self.assertIn("1d 18h", summary)
+        self.assertIn("avg 5.0 kts", summary)
+
+    def test_unparsable_timestamps_fall_back_to_leg_mean(self):
+        route = [
+            (0.0, 0.0, "not-a-time", 0, 0, None, 90.0),
+            (0.0, 0.5, "", 0, 0, 3.0, 90.0),
+            (0.0, 1.0, "", 0, 0, 5.0, 90.0),
+        ]
+        summary = routing_summary(_Route(route))
+        self.assertIn("avg 4.0 kts (leg mean)", summary)
+
+    def test_missing_speeds_are_absent_in_the_fallback(self):
+        route = [
+            (0.0, 0.0, None, 0, 0, None, 90.0),
+            (0.0, 1.0, None, 0, 0, 3.0, 90.0),
+            (0.0, 2.0, None, 0, 0, None, 90.0),
+            (0.0, 3.0, None, 0, 0, 5.0, 90.0),
+        ]
+        summary = routing_summary(_Route(route))
+        # Only the two present leg speeds count: averaging them gives 4.0
+        # rather than dragging the result toward zero with the missing one.
+        self.assertIn("avg 4.0 kts (leg mean)", summary)
+
+    def test_missing_speeds_do_not_affect_timed_average(self):
+        route = [
+            (0.0, 0.0, "2026-01-01 00:00:00", 0, 0, None, 90.0),
+            (0.0, 3.5, "2026-01-02 18:00:00", 0, 0, None, 90.0),
+        ]
+        summary = routing_summary(_Route(route))
+        self.assertIn("avg 5.0 kts", summary)
+
+    def test_no_speeds_and_no_timestamps_omit_the_average(self):
+        route = [
+            (0.0, 0.0, None, 0, 0, None, 90.0),
+            (0.0, 1.0, None, 0, 0, None, 90.0),
+        ]
+        summary = routing_summary(_Route(route))
+        self.assertIn("60 nm", summary)
+        self.assertNotIn("avg", summary)
+
+
+class _Route(list):
+    def __init__(self, points):
+        super().__init__(points)
+        self.provenance = None
+
+
 if __name__ == "__main__":
     unittest.main()
 
