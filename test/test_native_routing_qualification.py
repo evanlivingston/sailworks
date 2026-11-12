@@ -208,7 +208,7 @@ def test_worker_payload_matches_the_in_process_bridge(capsys):
 
     worker = NativeRoutingWorker()
     try:
-        worker.submit(engine="main")
+        worker.submit_synthetic(engine="main")
         deadline = time.monotonic() + 90
         status = None
         while time.monotonic() < deadline:

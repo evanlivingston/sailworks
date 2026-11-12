@@ -36,12 +36,17 @@ class NativeJobStatus:
         }
 
 
-def _worker_main(connection, engine: str) -> None:
-    """Child-process entry point; imports the bridge lazily."""
+def _worker_main(connection, job, engine: str) -> None:
+    """Child-process entry point; import provider handles only after spawn."""
     try:
-        import sailworks_native_routing as bridge
+        if job is None:
+            import sailworks_native_routing as bridge
 
-        payload = bridge.synthetic_route(engine)
+            payload = bridge.synthetic_route(engine)
+        else:
+            from .nativeexecution import run_native_request
+
+            payload = run_native_request(job)
         connection.send({"kind": "result", "payload": payload})
     except BaseException as exc:  # pragma: no cover - child process boundary
         connection.send({"kind": "failed", "message": str(exc)})
@@ -81,14 +86,26 @@ class NativeRoutingWorker:
     def status(self) -> Optional[NativeJobStatus]:
         return self._status
 
-    def submit(self, *, engine: str = "main") -> int:
-        """Start a calculation, superseding any running generation."""
+    def submit(self, job) -> int:
+        """Run a selected request; no fixture fallback on missing inputs."""
+        from .nativerequest import NativeRequest
+
+        if not isinstance(job, NativeRequest):
+            raise TypeError("submit requires a frozen NativeRequest")
+        return self._start(job, job.engine)
+
+    def submit_synthetic(self, *, engine: str = "main") -> int:
+        """Explicit diagnostic fixture only; never a selected user request."""
+        return self._start(None, engine)
+
+    def _start(self, job, engine: str) -> int:
+        """Start a bounded process, superseding any running generation."""
         self._supersede()
         self._generation += 1
         generation = self._generation
         parent, child = self._context.Pipe(duplex=False)
         process = self._context.Process(
-            target=_worker_main, args=(child, engine), daemon=True
+            target=_worker_main, args=(child, job, engine), daemon=True
         )
         try:
             process.start()
@@ -108,8 +125,9 @@ class NativeRoutingWorker:
     def poll(self, timeout: float = 0.0) -> Optional[NativeJobStatus]:
         """Return a terminal status once, or None while still running."""
         if self._status is not None and self._status.state != "running":
-            status, self._status = self._status, None
-            return status
+            # _publish already returned this status to poll() or cancel().
+            # Keep it inspectable through .status but never deliver it twice.
+            return None
         if self._active_generation is None:
             return None
         generation = self._active_generation

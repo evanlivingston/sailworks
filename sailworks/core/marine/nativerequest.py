@@ -11,6 +11,7 @@ import math
 from dataclasses import dataclass
 from datetime import timezone
 from pathlib import Path
+from uuid import uuid4
 
 from sailworks.core.routingjob import RouteRequest
 from sailworks.core.scenariopool import provider_descriptors
@@ -20,6 +21,8 @@ from sailworks.core.tranchestore import ResolvedForecast
 @dataclass(frozen=True)
 class NativeRequest:
     version: int
+    engine: str
+    calculation_id: str
     name: str
     start: tuple[float, float]
     destination: tuple[float, float]
@@ -43,8 +46,6 @@ class NativeRequest:
     min_sailing_speed_kn: float | None
     motor_speed_kn: float
     wave_correct: bool
-    algorithm: str
-    parameters: tuple
 
 
 def _point(value, label):
@@ -67,6 +68,8 @@ def freeze_native_requests(
     providers,
     current_selection,
     marine_directory=None,
+    *,
+    engine: str,
 ) -> tuple[NativeRequest, ...]:
     """Freeze every requested scenario before dispatch; never omit a provider.
 
@@ -76,6 +79,8 @@ def freeze_native_requests(
     """
     if not isinstance(forecast, ResolvedForecast):
         raise ValueError("Native routing requires a published forecast snapshot")
+    if engine not in {"main", "standard", "original", "professional"}:
+        raise ValueError("Choose an explicit supported native routing engine")
     if len(forecast.artifact_paths) != 1 or len(forecast.entry.artifacts) != 1:
         raise ValueError("Native routing requires one frozen forecast artifact")
     descriptors = provider_descriptors(providers) if request.coastline_checks else ()
@@ -132,12 +137,15 @@ def freeze_native_requests(
         departure = item.departure
         if departure.tzinfo is None or departure.utcoffset() is None:
             raise ValueError("Native departure requires an absolute time")
-        algorithm = getattr(item.algorithm, "__name__", None)
-        if not algorithm:
-            raise ValueError("Native algorithm must have an explicit identity")
+        if item.parameters:
+            raise ValueError(
+                "Legacy routing parameters cannot be applied to the native engine"
+            )
         frozen.append(
             NativeRequest(
                 version=1,
+                engine=engine,
+                calculation_id=str(uuid4()),
                 name=item.name,
                 start=_point(item.start, "start"),
                 destination=_point(item.destination, "destination"),
@@ -165,8 +173,6 @@ def freeze_native_requests(
                 min_sailing_speed_kn=item.min_sailing_speed_kn,
                 motor_speed_kn=item.motor_speed_kn,
                 wave_correct=item.wave_correct,
-                algorithm=algorithm,
-                parameters=tuple(item.parameters),
             )
         )
     return tuple(frozen)

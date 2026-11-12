@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from pickle import dumps, loads
 from types import SimpleNamespace
+from uuid import UUID
 
 import pytest
 
@@ -27,7 +28,7 @@ def _request(polar):
         polar_file=str(polar),
         algorithm=Algorithm,
         coastline_checks=False,
-        parameters=(("step", 5),),
+        parameters=(),
         waypoints=((48.3, -123.6), (48.4, -123.5)),
         polar_efficiency=0.9,
         use_currents=True,
@@ -77,9 +78,12 @@ def test_all_selected_inputs_survive_spawn_serialization(polar):
         (),
         selection,
         marine_directory="/local/marine",
+        engine="main",
     )
     (job,) = loads(dumps(jobs))
     assert job.version == 1
+    assert job.engine == "main"
+    assert str(UUID(job.calculation_id)) == job.calculation_id
     assert job.start == request.start
     assert job.destination == request.destination
     assert job.waypoints == request.waypoints
@@ -97,21 +101,55 @@ def test_all_selected_inputs_survive_spawn_serialization(polar):
     assert job.min_sailing_speed_kn == 3
     assert job.motor_speed_kn == 6
     assert job.wave_correct is True
-    assert job.algorithm == "Algorithm"
-    assert job.parameters == (("step", 5),)
 
 
 def test_unknown_shoreline_provider_is_not_silently_dropped(polar):
     request = replace(_request(polar), use_currents=False, land_avoidance=True)
     with pytest.raises(ValueError, match="shoreline provider"):
-        freeze_native_requests(request, (), _forecast(), (object(),), None)
+        freeze_native_requests(
+            request, (), _forecast(), (object(),), None, engine="main"
+        )
 
 
 def test_missing_source_and_start_are_explicit(polar):
     request = _request(polar)
     with pytest.raises(ValueError, match="selected local fields"):
-        freeze_native_requests(request, (), _forecast(), (), None, "/local/marine")
+        freeze_native_requests(
+            request, (), _forecast(), (), None, "/local/marine", engine="main"
+        )
     with pytest.raises(ValueError, match="explicit start"):
         freeze_native_requests(
-            replace(request, start=None, use_currents=False), (), _forecast(), (), None
+            replace(request, start=None, use_currents=False),
+            (),
+            _forecast(),
+            (),
+            None,
+            engine="main",
         )
+
+
+def test_legacy_algorithm_parameters_cannot_be_ignored(polar):
+    request = replace(_request(polar), parameters=(("legacy_step", 5),))
+    with pytest.raises(ValueError, match="Legacy routing parameters"):
+        freeze_native_requests(
+            request,
+            (),
+            _forecast(),
+            (),
+            SimpleNamespace(fields=(SimpleNamespace(id="field"),), priority="newest"),
+            "/local/marine",
+            engine="main",
+        )
+
+
+def test_alternatives_have_independent_calculation_identities(polar):
+    request = replace(_request(polar), use_currents=False)
+    early = scenario_request(request, RouteScenario(time_offset_hours=0))
+    later = scenario_request(request, RouteScenario(time_offset_hours=3))
+    jobs = freeze_native_requests(
+        request, (early, later), _forecast(), (), None, engine="original"
+    )
+    assert len(jobs) == 2
+    assert [job.engine for job in jobs] == ["original", "original"]
+    assert jobs[0].calculation_id != jobs[1].calculation_id
+    assert jobs[1].departure_epoch_s - jobs[0].departure_epoch_s == 3 * 3600

@@ -355,6 +355,13 @@ class PythonWeatherProvider final : public wr::WeatherProvider {
                                     northMs * kKnotsPerMetreSecond};
     }
     sample.metadata = metadata(time);
+    if (available && py::len(item) == 4) {
+      const auto dataset = py::cast<std::string>(item[3]);
+      if (dataset.empty())
+        throw py::value_error("selected current dataset identity is empty");
+      sample.metadata.datasetIdentity = dataset;
+      sample.metadata.modelIdentity = dataset;
+    }
     return sample;
   }
 
