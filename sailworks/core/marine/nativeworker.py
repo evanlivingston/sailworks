@@ -48,6 +48,13 @@ def _worker_main(connection, job, engine: str) -> None:
 
             payload = run_native_request(job)
         connection.send({"kind": "result", "payload": payload})
+    except ImportError as exc:
+        connection.send(
+            {
+                "kind": "failed",
+                "message": f"Native routing module is not built or importable: {exc}",
+            }
+        )
     except BaseException as exc:  # pragma: no cover - child process boundary
         connection.send({"kind": "failed", "message": str(exc)})
     finally:

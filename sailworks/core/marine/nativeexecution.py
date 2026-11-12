@@ -159,6 +159,7 @@ def run_native_request(job: NativeRequest) -> dict:
         )
         run["request_kind"] = "selected-user-input"
         run["calculation_id"] = job.calculation_id
+        run["engine_identity"] = bridge.identity()
         run["input_fingerprints"] = dict(
             forecast=job.forecast.entry.artifacts[0].sha256,
             polar=job.polar_sha256,
@@ -167,6 +168,7 @@ def run_native_request(job: NativeRequest) -> dict:
             destination=job.destination,
             current_field_ids=list(job.current_field_ids),
             current_priority=job.current_priority if job.use_currents else None,
+            auto_download=job.auto_download,
             shoreline=(
                 [
                     dict(kind=item.kind, path=item.path)

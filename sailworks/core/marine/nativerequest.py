@@ -53,6 +53,35 @@ class NativeRequest:
     unchanged_legacy_parameters: tuple
 
 
+def changed_legacy_parameters(request: RouteRequest) -> tuple[str, dict]:
+    """Return the selected legacy algorithm and parameters native cannot apply.
+
+    The routing panel always sends the selected algorithm plus every ``PARAMS``
+    widget value. The native engine runs its own search options, so unchanged
+    defaults are recorded as *not executed* and any changed or unknown value is
+    refused by name. Callers can use this before dispatch to show the same
+    decision the frozen-job boundary enforces.
+    """
+    algorithm_name = getattr(request.algorithm, "__name__", "")
+    if not algorithm_name:
+        raise ValueError("Native routing requires a named legacy algorithm")
+    declared = getattr(request.algorithm, "PARAMS", {}) or {}
+    changed = {}
+    for key, value in dict(request.parameters).items():
+        parameter = declared.get(key)
+        if parameter is None or value != parameter.default:
+            changed[str(key)] = value
+    return algorithm_name, changed
+
+
+def unapplied_legacy_parameter_message(algorithm_name: str, changed: dict) -> str:
+    return (
+        "Native routing cannot apply changed legacy algorithm parameters "
+        f"for {algorithm_name}: {', '.join(sorted(changed))}. "
+        "Reset them or calculate with the legacy backend."
+    )
+
+
 def _point(value, label):
     if value is None or len(value) != 2:
         raise ValueError(f"Native {label} requires a (latitude, longitude) pair")
@@ -142,20 +171,10 @@ def freeze_native_requests(
         departure = item.departure
         if departure.tzinfo is None or departure.utcoffset() is None:
             raise ValueError("Native departure requires an absolute time")
-        algorithm_name = getattr(item.algorithm, "__name__", "")
-        if not algorithm_name:
-            raise ValueError("Native routing requires a named legacy algorithm")
-        declared = getattr(item.algorithm, "PARAMS", {}) or {}
-        changed = {}
-        for key, value in dict(item.parameters).items():
-            parameter = declared.get(key)
-            if parameter is None or value != parameter.default:
-                changed[str(key)] = value
+        algorithm_name, changed = changed_legacy_parameters(item)
         if changed:
             raise ValueError(
-                "Native routing cannot apply changed legacy algorithm parameters "
-                f"for {algorithm_name}: {', '.join(sorted(changed))}. "
-                "Reset them or calculate with the legacy backend."
+                unapplied_legacy_parameter_message(algorithm_name, changed)
             )
         unchanged = tuple(
             (str(key), value) for key, value in dict(item.parameters).items()
