@@ -83,16 +83,16 @@ class TestDependencyScripts(unittest.TestCase):
         result = self.run_script("ubuntu_dep.sh")
         self.assertEqual(result.returncode, 0, result.stderr)
         commands = self.commands()
-        self.assertEqual(len(commands), 5)
-        self.assertIn("<Acquire::Retries=3> <update>", commands[1])
-        self.assertEqual(commands[2], "apt-cache <show> <gdal-plugins>")
-        self.assertIn("<libgdal-dev> <gdal-data> <gdal-plugins>", commands[3])
-        self.assertNotIn("libgdal34", commands[3])
+        self.assertEqual(len(commands), 4)
+        self.assertIn("<Acquire::Retries=3> <update>", commands[0])
+        self.assertEqual(commands[1], "apt-cache <show> <gdal-plugins>")
+        self.assertIn("<libgdal-dev> <gdal-data> <gdal-plugins>", commands[2])
+        self.assertNotIn("libgdal34", commands[2])
 
     def test_native_install_skips_plugins_where_the_package_is_absent(self):
         result = self.run_script("ubuntu_dep.sh", APT_CACHE_EXIT="1")
         self.assertEqual(result.returncode, 0, result.stderr)
-        install = self.commands()[3]
+        install = self.commands()[2]
         self.assertIn("<libgdal-dev> <gdal-data>", install)
         self.assertNotIn("gdal-plugins", install)
 
@@ -103,4 +103,4 @@ class TestDependencyScripts(unittest.TestCase):
         )
         result = self.run_script("ubuntu_dep.sh")
         self.assertEqual(result.returncode, 42)
-        self.assertEqual(len(self.commands()), 4)
+        self.assertEqual(len(self.commands()), 3)
