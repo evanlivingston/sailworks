@@ -68,6 +68,7 @@ class NativeRoutingWorker:
         self._active_generation: Optional[int] = None
         self._superseded_generation: Optional[int] = None
         self._status: Optional[NativeJobStatus] = None
+        self._status_consumed = False
 
     @property
     def generation(self) -> int:
@@ -113,6 +114,7 @@ class NativeRoutingWorker:
             parent.close()
             child.close()
             self._status = None
+            self._status_consumed = False
             self._active_generation = None
             raise
         child.close()
@@ -120,14 +122,21 @@ class NativeRoutingWorker:
         self._connection = parent
         self._active_generation = generation
         self._status = NativeJobStatus(generation, "running")
+        self._status_consumed = False
         return generation
 
     def poll(self, timeout: float = 0.0) -> Optional[NativeJobStatus]:
-        """Return a terminal status once, or None while still running."""
+        """Return the terminal status once, or None while still running.
+
+        A terminal status stays inspectable through ``.status``. It is delivered
+        exactly once: by this call, by ``cancel()``, or by whichever runs first.
+        A caller that polls after ``cancel()`` still observes the cancellation.
+        """
         if self._status is not None and self._status.state != "running":
-            # _publish already returned this status to poll() or cancel().
-            # Keep it inspectable through .status but never deliver it twice.
-            return None
+            if self._status_consumed:
+                return None
+            self._status_consumed = True
+            return self._status
         if self._active_generation is None:
             return None
         generation = self._active_generation
@@ -172,8 +181,11 @@ class NativeRoutingWorker:
             return None
         generation = self._active_generation
         self._terminate()
+        # The caller gets the status here, and a poll-only caller still gets it
+        # once from poll(); neither can turn it into a completion.
         return self._publish(
-            NativeJobStatus(generation, "cancelled", message="cancelled by caller")
+            NativeJobStatus(generation, "cancelled", message="cancelled by caller"),
+            consumed=False,
         )
 
     def shutdown(self) -> None:
@@ -181,6 +193,7 @@ class NativeRoutingWorker:
             self._terminate()
         self._active_generation = None
         self._status = None
+        self._status_consumed = True
 
     def _supersede(self) -> None:
         if self._active_generation is None:
@@ -208,7 +221,10 @@ class NativeRoutingWorker:
         self._process = None
         self._active_generation = None
 
-    def _publish(self, status: NativeJobStatus) -> NativeJobStatus:
+    def _publish(
+        self, status: NativeJobStatus, *, consumed: bool = True
+    ) -> NativeJobStatus:
         self._release()
         self._status = status
+        self._status_consumed = consumed
         return status

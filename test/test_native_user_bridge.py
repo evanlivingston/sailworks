@@ -5,6 +5,7 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
+from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(
@@ -197,10 +198,6 @@ class NativeUserBridgeTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "coastline checks"):
             _run({**SETTINGS, "land_safety_margin_nm": 1.0})
 
-
-if __name__ == "__main__":
-    unittest.main()
-
     def test_waypoint_chain_uses_selected_points_in_order(self):
         waypoint = (48.255, -123.60)
         run = _run({**SETTINGS, "waypoints": [waypoint, [48.29, -123.61]]})
@@ -239,3 +236,23 @@ if __name__ == "__main__":
         self.assertFalse(run["segments"][1]["accepted"])
         self.assertIn("leg 2", run["message"])
         self.assertTrue(run["legs"], "first-leg geometry stays inspectable")
+        self.assertFalse(run["validation"]["passed"])
+        from sailworks.core.marine.routingnative import to_routing_result
+
+        record = to_routing_result(
+            run,
+            calculation_id=str(uuid4()),
+            generation=1,
+            sequence=0,
+            created_epoch_s=START,
+            identity=bridge.identity(),
+        )
+        # A failed chain has no delivered whole route to validate: the record
+        # must not display a passed (or failed) validation verdict.
+        self.assertEqual(record.outcome.validation.state, "unknown")
+        self.assertFalse(record.outcome.validation.independent)
+        self.assertFalse(record.outcome.delivered)
+
+
+if __name__ == "__main__":
+    unittest.main()

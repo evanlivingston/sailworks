@@ -32,7 +32,13 @@ from .routingresult import RoutingResult, canonical_utc
 # Statuses that cannot carry a reliable validation verdict. Their outcome stays
 # unknown rather than being reported as a failure of the searched route.
 UNVALIDATED_STATUSES = frozenset(
-    {"cancelled", "incomplete", "resource_limit_reached", "internal_error"}
+    {
+        "cancelled",
+        "incomplete",
+        "no_feasible_route",
+        "resource_limit_reached",
+        "internal_error",
+    }
 )
 
 

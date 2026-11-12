@@ -1059,6 +1059,7 @@ PYBIND11_MODULE(sailworks_native_routing, module) {
              py::arg("polar"), py::arg("settings"), py::arg("land"),
              py::arg("provider_identity"), py::arg("polar_identity"),
              py::arg("engine") = "main",
-             "Run a selected single-leg request; reject unsupported settings "
-             "rather than inheriting synthetic fixture defaults");
+             "Run a selected request, including its waypoint chain, through the "
+             "native engine; reject unsupported settings rather than "
+             "inheriting synthetic fixture defaults");
 }

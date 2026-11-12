@@ -46,6 +46,11 @@ class NativeRequest:
     min_sailing_speed_kn: float | None
     motor_speed_kn: float
     wave_correct: bool
+    # The legacy algorithm selection is recorded, never executed. Its default
+    # parameter values describe no user preference the native engine can honor;
+    # a changed value is rejected instead of silently ignored.
+    legacy_algorithm: str
+    unchanged_legacy_parameters: tuple
 
 
 def _point(value, label):
@@ -137,10 +142,24 @@ def freeze_native_requests(
         departure = item.departure
         if departure.tzinfo is None or departure.utcoffset() is None:
             raise ValueError("Native departure requires an absolute time")
-        if item.parameters:
+        algorithm_name = getattr(item.algorithm, "__name__", "")
+        if not algorithm_name:
+            raise ValueError("Native routing requires a named legacy algorithm")
+        declared = getattr(item.algorithm, "PARAMS", {}) or {}
+        changed = {}
+        for key, value in dict(item.parameters).items():
+            parameter = declared.get(key)
+            if parameter is None or value != parameter.default:
+                changed[str(key)] = value
+        if changed:
             raise ValueError(
-                "Legacy routing parameters cannot be applied to the native engine"
+                "Native routing cannot apply changed legacy algorithm parameters "
+                f"for {algorithm_name}: {', '.join(sorted(changed))}. "
+                "Reset them or calculate with the legacy backend."
             )
+        unchanged = tuple(
+            (str(key), value) for key, value in dict(item.parameters).items()
+        )
         frozen.append(
             NativeRequest(
                 version=1,
@@ -173,6 +192,8 @@ def freeze_native_requests(
                 min_sailing_speed_kn=item.min_sailing_speed_kn,
                 motor_speed_kn=item.motor_speed_kn,
                 wave_correct=item.wave_correct,
+                legacy_algorithm=algorithm_name,
+                unchanged_legacy_parameters=unchanged,
             )
         )
     return tuple(frozen)

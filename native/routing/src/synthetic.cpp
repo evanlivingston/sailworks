@@ -521,7 +521,11 @@ ChainRun runUserChain(const std::string& engine, wr::RoutingRequest request,
       chainRun.segments.push_back(segment);
       chainRun.failedSegment = static_cast<int>(index - 1);
       result.result.status = segment.status;
-      result.result.message = segment.message;
+      result.result.validation.passed = false;
+      result.result.validation.failureReason = segment.message;
+      result.result.message =
+          "waypoint leg " + std::to_string(index) + " failed: " +
+          segment.message;
       break;
     }
     wr::RoutingRequest legRequest = request;
@@ -577,8 +581,14 @@ ChainRun runUserChain(const std::string& engine, wr::RoutingRequest request,
     if (!leg.accepted || leg.result.legs.empty()) {
       chainRun.failedSegment = static_cast<int>(index - 1);
       result.result.status = leg.result.status;
+      // A failed leg has no delivered whole route to validate. Never leave the
+      // chain claiming a passed validation because the individual leg's
+      // replay passed before it was rejected.
+      result.result.validation.passed = false;
       result.result.validation.failureReason =
-          leg.result.validation.failureReason;
+          leg.result.validation.failureReason.empty()
+              ? "waypoint leg did not deliver a validated route"
+              : leg.result.validation.failureReason;
       result.result.message =
           "waypoint leg " + std::to_string(index) + " failed: " +
           (leg.result.message.empty() ? "no feasible route"

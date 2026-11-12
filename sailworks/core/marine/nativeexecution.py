@@ -58,12 +58,6 @@ def run_native_request(job: NativeRequest) -> dict:
     """
     if not isinstance(job, NativeRequest) or job.version != 1:
         raise ValueError("Unsupported frozen native request")
-    if (
-        job.coastline_checks
-        and job.coastline_clearance_distance_m
-        and job.provider_descriptors[0].kind != "gshhs"
-    ):
-        raise ValueError("Unsupported native shoreline provider")
     if job.coastline_checks and not job.provider_descriptors:
         raise ValueError("Native coastline checks require a selected shoreline")
     if job.provider_descriptors and not job.coastline_checks:
@@ -190,6 +184,15 @@ def run_native_request(job: NativeRequest) -> dict:
             wind_speed_pct=job.wind_speed_pct,
             wind_dir_offset=job.wind_dir_offset,
             polar_efficiency=job.polar_efficiency,
+        )
+        run["legacy_algorithm"] = dict(
+            selected=job.legacy_algorithm,
+            unchanged_parameters=dict(job.unchanged_legacy_parameters),
+            note=(
+                "the native engine runs its own search options; these legacy "
+                "algorithm defaults were not executed and changed values are "
+                "rejected before the calculation starts"
+            ),
         )
         return run
     finally:

@@ -397,3 +397,105 @@ def test_diagnostic_result_is_saved_but_not_export_eligible(tmp_path):
     route = collection.save_result("diagnostic", result)
     assert route.export_eligible is False
     assert collection.load_result(route).outcome.delivered is False
+
+
+def test_spawned_current_field_keeps_selected_dataset_identity(tmp_path):
+    with _forecast_inputs(tmp_path) as source:
+        binding = _selected_forecast(tmp_path, source)
+    marine_directory = tmp_path / "marine"
+    fields = FieldStore(marine_directory / "fields")
+    times = np.array([START.timestamp() + 3600 * hour for hour in range(7)])
+    metadata = json.dumps(
+        dict(
+            schema_version=1,
+            provider="test",
+            model="selected-current",
+            composition="total",
+            vector_reference="true_east_north",
+            sources=[],
+            resolution_m=1000,
+            run=START.isoformat(),
+        ),
+        sort_keys=True,
+    )
+    field = CurrentField(
+        metadata,
+        times,
+        np.array([48.0, 50.0]),
+        np.array([-124.0, -122.0]),
+        np.full((7, 2, 2), 0.25),
+        np.zeros((7, 2, 2)),
+    )
+    fields.add(field)
+    selected = fields.snapshot("newest")
+    original = _job(tmp_path, binding)
+    request = RouteRequest(
+        name="selected-current-request",
+        start=original.start,
+        destination=original.destination,
+        departure=START + timedelta(minutes=30),
+        polar_file=str(
+            Path(__file__).resolve().parents[1] / "sailworks/data/polars/test.pol"
+        ),
+        algorithm=LegacyAlgorithm,
+        coastline_checks=False,
+        use_currents=True,
+        current_priority="newest",
+    )
+    job = freeze_native_requests(
+        request,
+        (),
+        binding,
+        (),
+        selected,
+        marine_directory=marine_directory,
+        engine="main",
+    )[0]
+    worker = NativeRoutingWorker()
+    try:
+        worker.submit(job)
+        status = _wait(worker)
+        assert status.state == "completed", status.message
+        run = status.payload
+        assert run["accepted"], (run["status"], run["message"])
+        assert run["input_fingerprints"]["current_field_ids"] == [field.id]
+        assert run["legs"][0]["current_source"]["dataset_identity"] == field.id
+    finally:
+        worker.shutdown()
+
+
+def test_real_job_cancel_supersede_crash_and_close_never_publish_stale(tmp_path):
+    with _forecast_inputs(tmp_path) as source:
+        job = _job(tmp_path, _selected_forecast(tmp_path, source))
+    worker = NativeRoutingWorker()
+    try:
+        first = worker.submit(job)
+        cancelled = worker.cancel()
+        assert cancelled.generation == first
+        assert cancelled.state == "cancelled" and cancelled.payload is None
+        # A poll-only caller observes the cancellation once, never a completion.
+        polled = worker.poll(0)
+        assert polled is not None and polled.state == "cancelled"
+        assert polled.payload is None
+        assert worker.poll(0) is None
+
+        superseded = worker.submit(job)
+        latest = worker.submit(replace(job, destination=(48.28, -123.60)))
+        assert worker.superseded_generation == superseded
+        status = _wait(worker)
+        assert status.generation == latest and status.state == "completed"
+        assert status.payload["request"]["destination"] == {
+            "latitude": 48.28,
+            "longitude": -123.60,
+        }
+        assert worker.poll(0) is None
+
+        worker.submit(job)
+        worker._process.terminate()  # simulate native failure before delivery
+        status = _wait(worker)
+        assert status.state == "failed" and status.payload is None
+        worker.submit(job)
+        worker.shutdown()
+        assert not worker.running and worker.poll(0) is None
+    finally:
+        worker.shutdown()

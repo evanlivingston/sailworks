@@ -130,7 +130,7 @@ def test_missing_source_and_start_are_explicit(polar):
 
 def test_legacy_algorithm_parameters_cannot_be_ignored(polar):
     request = replace(_request(polar), parameters=(("legacy_step", 5),))
-    with pytest.raises(ValueError, match="Legacy routing parameters"):
+    with pytest.raises(ValueError, match="changed legacy algorithm parameters"):
         freeze_native_requests(
             request,
             (),
@@ -153,3 +153,72 @@ def test_alternatives_have_independent_calculation_identities(polar):
     assert [job.engine for job in jobs] == ["original", "original"]
     assert jobs[0].calculation_id != jobs[1].calculation_id
     assert jobs[1].departure_epoch_s - jobs[0].departure_epoch_s == 3 * 3600
+
+
+def _panel_algorithm_and_parameters():
+    """Mirror RoutingPanel: the selected class plus every PARAMS widget value."""
+    import weatherrouting
+
+    algorithm = next(
+        entry["class"]
+        for entry in weatherrouting.list_routing_algorithms()
+        if entry["name"] == "LinearBestIsoRouter"
+    )
+    parameters = tuple(
+        (key, parameter.value) for key, parameter in algorithm.PARAMS.items()
+    )
+    return algorithm, parameters
+
+
+def test_default_panel_request_is_accepted_and_records_unapplied_defaults(polar):
+    """The panel always sends its algorithm PARAMS; defaults must not block it."""
+    from datetime import datetime, timezone
+
+    algorithm, parameters = _panel_algorithm_and_parameters()
+    assert len(parameters) == 3  # subdiv, concurrent, min_increase
+    request = RouteRequest(
+        name="routing-test",
+        start=(48.2, -123.7),
+        destination=(48.4, -123.5),
+        departure=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        polar_file=str(polar),
+        algorithm=algorithm,
+        coastline_checks=False,
+        parameters=parameters,
+    )
+    (job,) = freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+    assert job.legacy_algorithm == algorithm.__name__
+    assert dict(job.unchanged_legacy_parameters) == dict(parameters)
+
+
+def test_changed_panel_parameter_is_rejected_with_its_name(polar):
+    from datetime import datetime, timezone
+
+    algorithm, parameters = _panel_algorithm_and_parameters()
+    changed = tuple(
+        (key, 42.0 if key == "min_increase" else value) for key, value in parameters
+    )
+    request = RouteRequest(
+        name="routing-test",
+        start=(48.2, -123.7),
+        destination=(48.4, -123.5),
+        departure=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        polar_file=str(polar),
+        algorithm=algorithm,
+        coastline_checks=False,
+        parameters=changed,
+    )
+    with pytest.raises(ValueError, match="min_increase"):
+        freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+
+
+def test_unknown_parameter_is_rejected(polar):
+    algorithm, _ = _panel_algorithm_and_parameters()
+    request = replace(
+        _request(polar),
+        algorithm=algorithm,
+        use_currents=False,
+        parameters=(("not_a_parameter", 1),),
+    )
+    with pytest.raises(ValueError, match="not_a_parameter"):
+        freeze_native_requests(request, (), _forecast(), (), None, engine="main")

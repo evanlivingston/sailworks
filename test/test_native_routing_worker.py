@@ -72,7 +72,7 @@ def test_superseded_generation_never_publishes():
         worker.shutdown()
 
 
-def test_cancel_publishes_no_accepted_completion():
+def test_cancel_is_observable_through_poll_once():
     worker = NativeRoutingWorker()
     try:
         worker.submit_synthetic(engine="main")
@@ -80,7 +80,10 @@ def test_cancel_publishes_no_accepted_completion():
 
         assert status.state == "cancelled"
         assert status.payload is None
-        assert worker.poll(0) is None  # cancel already returned the status
+        # A poll-only caller still observes the terminal cancellation once.
+        polled = worker.poll(0)
+        assert polled is not None and polled.state == "cancelled"
+        assert polled.payload is None
         assert worker.poll(0) is None
         assert not worker.running
     finally:
