@@ -192,6 +192,7 @@ def _diagnostics(run: Mapping[str, Any]) -> dict[str, Any]:
         "request_kind",
         "input_fingerprints",
         "scenario",
+        "legacy_algorithm",
     ):
         if key in run:
             diagnostics[key] = run[key]

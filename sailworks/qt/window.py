@@ -324,6 +324,8 @@ class PreviewWindow(QMainWindow):
         self._view_changed()
         self.routing_panel.plan_changed.connect(self.map.set_route_plan)
         controller.routing.completed.connect(self._routing_completed)
+        controller.routing.native_diagnostic.connect(self._native_diagnostic)
+        controller.routing.native_cleared.connect(self._native_cleared)
         self.map.route_location.connect(self.routing_panel.set_location)
         controller.routing.preview_changed.connect(self.map.set_route_preview)
         controller.routing.isochrones_changed.connect(self.map.set_isochrones)
@@ -913,6 +915,40 @@ class PreviewWindow(QMainWindow):
         self._refresh_routing_alternatives(select_route=route)
         if getattr(route, "result_ref", None) is not None:
             self._show_saved_routing_route(route)
+
+    def _native_cleared(self):
+        """Detach a previous native overlay and its diagnostic inspection text."""
+        self.map.native_routing = None
+        unsubscribe = getattr(self, "_routing_selection_unsubscribe", None)
+        if unsubscribe is not None:
+            unsubscribe()
+            self._routing_selection_unsubscribe = None
+        self._routing_selection_target = None
+        self._routing_active_route = None
+        inspector = getattr(self, "routing_inspector", None)
+        if inspector is not None:
+            inspector.clear_result("No routing result loaded")
+        if not self.controller.routing.busy:
+            self._sync_route_isochrones()
+
+    def _native_diagnostic(self, result):
+        """Present a failed/incomplete native run without publishing a route."""
+        from sailworks.core.marine.routingresult import export_blockers
+
+        try:
+            model = self.controller.routing.show_native_result(result)
+        except (OSError, ValueError) as exc:
+            self.routing_inspector.show_error(f"Native diagnostic unavailable: {exc}")
+            self.routing_inspector_dock.show()
+            return
+        self._present_routing_result(model, route=None)
+        blockers = ", ".join(export_blockers(result))
+        self.routing_inspector.show_error(
+            "Native calculation diagnostic"
+            + (f": {blockers}" if blockers else "")
+            + ". This result is not a navigable or exportable route."
+        )
+        self.routing_inspector_dock.show()
 
     def _navigation_route_selected(self, route):
         coordinates = (

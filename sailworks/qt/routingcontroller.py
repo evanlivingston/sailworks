@@ -26,6 +26,8 @@ class RoutingController(QObject):
     preview_changed = Signal(object)
     isochrones_changed = Signal(object)
     completed = Signal(object)
+    native_diagnostic = Signal(object)
+    native_cleared = Signal()
     dismiss_preflight = Signal()
     _progress = Signal(int, float, object, object)
     _message = Signal(int, str)
@@ -37,6 +39,9 @@ class RoutingController(QObject):
         self.core = session_controller.core
         self.busy = False
         self.closed = False
+        self.backend = "legacy"
+        self.native_worker = None
+        self._native_diagnostic_token = None
         self.native_overlay = None
         self.native_selection = None
         # One independent selection per calculation, kept while the window
@@ -57,9 +62,16 @@ class RoutingController(QObject):
         self._finished.connect(self._finish)
         self.confirm = lambda report: False
 
-    def start(self, request, scenarios=()):
+    def start(self, request, scenarios=(), backend="legacy"):
         if self.busy or self.closed:
             return False
+        if backend not in ("legacy", "native"):
+            return self.fail("Choose the Legacy or Native calculation backend.")
+        if backend == "native":
+            for item in (request, *tuple(scenarios)):
+                refusal = self._native_parameter_refusal(item)
+                if refusal:
+                    return self.fail(refusal)
         if (
             self.session_controller.data.task.busy
             or self.session_controller.polars.task.busy
@@ -75,13 +87,20 @@ class RoutingController(QObject):
             sources = analysis.snapshot(required_fields=("wind",))
         except Exception as exc:
             return self.fail(str(exc))
+        # A new calculation never inherits a previous native overlay or its
+        # diagnostic inspection text.
+        self.clear_native_result()
+        self._native_diagnostic_token = None
         self.generation += 1
         token = self.generation
         self.request = request
+        self.backend = backend
         self.cancel_event = Event()
         cancel = self.cancel_event
         self.busy, self.error, self.percent = True, "", 0.0
-        self.message = "Calculating…"
+        self.message = (
+            "Native calculation queued…" if backend == "native" else "Calculating…"
+        )
         self.scenario_index, self.scenario_count, self.saved_count = (
             0,
             len(scenarios) or 1,
@@ -90,9 +109,10 @@ class RoutingController(QObject):
         providers = tuple(
             self.session_controller.charts.get_line_point_validity_providers()
         )
+        marine_manager = getattr(self.core, "marine_manager", None)
         selection = (
-            self.core.marine_manager.fields.snapshot(request.current_priority)
-            if request.use_currents
+            marine_manager.fields.snapshot(request.current_priority)
+            if request.use_currents and marine_manager is not None
             else None
         )
         self.changed.emit()
@@ -100,13 +120,34 @@ class RoutingController(QObject):
         self.isochrones_changed.emit(())
 
         def worker():
-            self._run_requests(
-                token, request, scenarios, sources, providers, cancel, selection
-            )
+            if backend == "native":
+                self._run_native_requests(
+                    token, request, scenarios, sources, providers, cancel, selection
+                )
+            else:
+                self._run_requests(
+                    token, request, scenarios, sources, providers, cancel, selection
+                )
 
         self.worker_thread = Thread(target=worker, name="qt-routing", daemon=True)
         self.worker_thread.start()
         return True
+
+    @staticmethod
+    def _native_parameter_refusal(request):
+        """Refuse a Native run that would silently drop a changed Legacy value."""
+        from sailworks.core.marine.nativerequest import (
+            changed_legacy_parameters,
+            unapplied_legacy_parameter_message,
+        )
+
+        try:
+            algorithm_name, changed = changed_legacy_parameters(request)
+        except ValueError as exc:
+            return str(exc)
+        if changed:
+            return unapplied_legacy_parameter_message(algorithm_name, changed)
+        return ""
 
     def _run_requests(
         self, token, request, scenarios, sources, providers, cancel, selection
@@ -124,6 +165,110 @@ class RoutingController(QObject):
             error = exc
         if not self.closed:
             self._finished.emit(token, None, error)
+
+    def _run_native_requests(
+        self, token, request, scenarios, sources, providers, cancel, selection
+    ):
+        """Run frozen selected requests in the bounded spawned native worker.
+
+        No legacy call is made on any failure. Only results whose independent
+        validation passes reach the routing collection; diagnostics are emitted
+        for inspection without becoming navigable/exportable routes.
+        """
+        from sailworks.core.marine.nativeworker import NativeRoutingWorker
+        from sailworks.core.marine.nativerequest import freeze_native_requests
+        from sailworks.core.marine.routingnative import to_routing_result
+        from sailworks.core.marine.routingresult import export_blockers
+
+        error = None
+        worker = None
+        marine_directory = (
+            str(self.core.marine_manager.directory)
+            if getattr(self.core, "marine_manager", None) is not None
+            else None
+        )
+        try:
+            items = tuple(scenarios) or (request,)
+            jobs = freeze_native_requests(
+                request,
+                scenarios,
+                sources,
+                providers,
+                selection,
+                marine_directory,
+                engine="main",
+            )
+            worker = NativeRoutingWorker()
+            self.native_worker = worker
+            for index, job in enumerate(jobs):
+                self._check(token)
+                self._ui_call(token, self._begin_native_scenario, index, len(jobs))
+                self._message.emit(
+                    token,
+                    f"Native calculation running ({index + 1}/{len(jobs)})…",
+                )
+                worker.submit(job)
+                status = None
+                while status is None:
+                    self._check(token)
+                    status = worker.poll(0.1)
+                self._check(token)
+                if status.state == "cancelled":
+                    raise RoutingCancelledError()
+                if status.state != "completed":
+                    raise RuntimeError(
+                        status.message or "native worker did not publish a result"
+                    )
+                run = status.payload
+                identity = run.get("engine_identity") if isinstance(run, dict) else None
+                if not isinstance(identity, dict):
+                    raise ValueError(
+                        "Native routing result did not report its engine identity"
+                    )
+                result = to_routing_result(
+                    run,
+                    calculation_id=job.calculation_id,
+                    generation=token,
+                    sequence=index,
+                    created_epoch_s=int(time.time()),
+                    identity=identity,
+                )
+                blockers = export_blockers(result)
+                if blockers:
+                    self._check(token)
+                    self._native_diagnostic_token = token
+                    self.native_diagnostic.emit(result)
+                    raise ValueError(
+                        "native calculation did not produce a validated route: "
+                        + ", ".join(blockers)
+                    )
+                self._ui_call(token, self._save_result, items[index], result)
+                self._message.emit(
+                    token,
+                    f"Native scenario {index + 1}/{len(jobs)} validated",
+                )
+        except Exception as exc:
+            error = exc
+        finally:
+            if worker is not None:
+                if self.native_worker is worker:
+                    self.native_worker = None
+                worker.shutdown()
+        if not self.closed:
+            self._finished.emit(token, None, error)
+
+    def _begin_native_scenario(self, index, count):
+        self.scenario_index = index
+        self.scenario_count = count
+        self.percent = 0.0
+        self.message = (
+            "Native calculation queued…"
+            if count == 1
+            else f"Native scenario {index + 1}/{count}: queued…"
+        )
+        self.preview_changed.emit(())
+        self.isochrones_changed.emit(())
+        self.changed.emit()
 
     def _scenario_jobs(self, request, scenarios, sources, providers, selection):
         """Freeze every serializable scenario input before any work starts."""
@@ -490,6 +635,7 @@ class RoutingController(QObject):
         self.native_overlay = None
         self.native_selection = None
         self._native_selections.clear()
+        self.native_cleared.emit()
         self.changed.emit()
 
     def cancel(self):
@@ -540,28 +686,49 @@ class RoutingController(QObject):
         self.busy = False
         self._parallel_mode = False
         self._parallel_progress = {}
+        if error is not None and self._native_diagnostic_token != token:
+            self.clear_native_result()
         self.preview_changed.emit(())
         self.isochrones_changed.emit(())
         if self.cancel_event.is_set() or isinstance(
             error, (RoutingCancelledError, DownloadCancelledError)
         ):
-            self.message = "Routing cancelled"
+            self.message = (
+                "Native routing cancelled"
+                if self.backend == "native"
+                else "Routing cancelled"
+            )
         elif error is not None:
             self.error = str(error) or (
                 "Choose a wind forecast covering the route area and time."
                 if isinstance(error, RoutingNoWindError)
                 else type(error).__name__
             )
-            self.message = "Routing failed: " + self.error
+            self.message = (
+                "Native calculation failed: "
+                if self.backend == "native"
+                else "Routing failed: "
+            ) + self.error
         else:
             assert self.request is not None
             self.percent = 100
-            self.message = (
-                f"{self.saved_count}/{self.scenario_count} scenarios complete"
-                if self.scenario_count > 1
-                else "Route calculated and saved · "
-                + ("currents included" if self.request.use_currents else "wind only")
-            )
+            if self.backend == "native":
+                self.message = (
+                    f"{self.saved_count}/{self.scenario_count} native scenarios validated"
+                    if self.scenario_count > 1
+                    else "Native route calculated and saved · validated"
+                )
+            else:
+                self.message = (
+                    f"{self.saved_count}/{self.scenario_count} scenarios complete"
+                    if self.scenario_count > 1
+                    else "Route calculated and saved · "
+                    + (
+                        "currents included"
+                        if self.request.use_currents
+                        else "wind only"
+                    )
+                )
         if self.scenario_count > 1 and error is not None:
             self.message += (
                 f" · {self.saved_count}/{self.scenario_count} scenarios saved"
@@ -573,4 +740,8 @@ class RoutingController(QObject):
         self.closed = True
         self.cancel_event.set()
         self.generation += 1
+        worker = self.native_worker
+        if worker is not None:
+            self.native_worker = None
+            worker.shutdown()
         self.dismiss_preflight.emit()
