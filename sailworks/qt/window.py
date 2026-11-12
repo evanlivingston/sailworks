@@ -951,10 +951,13 @@ class PreviewWindow(QMainWindow):
         self.routing_inspector_dock.show()
 
     def _navigation_route_selected(self, route):
-        coordinates = (
-            tuple((p[0], p[1]) for p in route.points) if route is not None else ()
-        )
-        speeds = tuple(p[5] or 0 for p in route.points) if route is not None else ()
+        points = [
+            point
+            for point in (route.points if route is not None else [])
+            if len(point) >= 6
+        ]
+        coordinates = tuple((p[0], p[1]) for p in points)
+        speeds = tuple(p[5] or 0 for p in points)
         self.map.set_route(coordinates, speeds)
         self.map.navigation.hl_routing = route.name if route is not None else None
         self._sync_route_isochrones()
