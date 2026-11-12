@@ -54,9 +54,12 @@ class FakeRouting(QObject):
     def __init__(self):
         super().__init__()
         self.busy = False
+        self.backend = "legacy"
         self.message = "Idle"
         self.percent = 0.0
         self.progress_indeterminate = False
+        self.native_started_at = None
+        self.native_counters = {}
         self.cancel_event = Event()
         self.calls = []
 
@@ -224,6 +227,96 @@ def test_panel_shows_determinate_native_progress_after_first_engine_update(app):
     panel.deleteLater()
 
 
+def test_panel_native_heartbeat_updates_elapsed_without_progress(app):
+    controller = FakeController()
+    panel = RoutingPanel(controller)
+    routing = controller.routing
+    routing.busy = True
+    routing.backend = "native"
+    routing.progress_indeterminate = False
+    routing.percent = 20.0
+    routing.message = "Native calculation · Forward isochrone (1/5) · effort 20%"
+    routing.native_started_at = time.monotonic() - 65
+    routing.native_counters = {
+        "generated_states": 2500,
+        "retained_states": 1000,
+        "land_checks": 0,
+        "closest_approach_nm": 6.25,
+    }
+    panel.refresh()
+
+    assert panel._native_elapsed_timer.isActive()
+    text = panel.status.text()
+    assert "Forward isochrone (1/5)" in text
+    assert "effort 20%" in text
+    assert "elapsed 01:05" in text
+    assert "retained 1,000/2,500 states" in text
+    assert "land checks 0" in text
+    assert "closest 6.2 nm" in text
+
+    # The elapsed line advances on the timer alone, with no progress message.
+    routing.native_started_at = time.monotonic() - 66
+    panel._native_elapsed_timer.timeout.emit()
+    assert "elapsed 01:06" in panel.status.text()
+    panel.deleteLater()
+
+
+def test_panel_native_heartbeat_omits_absent_counters(app):
+    controller = FakeController()
+    panel = RoutingPanel(controller)
+    routing = controller.routing
+    routing.busy = True
+    routing.backend = "native"
+    routing.native_started_at = time.monotonic()
+    routing.message = "Native calculation · Forward isochrone (1/5) · effort 20%"
+
+    routing.native_counters = {}
+    panel.refresh()
+    assert "states" not in panel.status.text()
+    assert "land checks" not in panel.status.text()
+    assert "closest" not in panel.status.text()
+
+    routing.native_counters = {"retained_states": 1234}
+    panel.refresh()
+    assert "retained 1,234 states" in panel.status.text()
+
+    routing.native_counters = {"generated_states": 4567}
+    panel.refresh()
+    assert "generated 4,567 states" in panel.status.text()
+    panel.deleteLater()
+
+
+def test_panel_native_heartbeat_timer_stops_on_finish_failure_and_cancel(app):
+    controller = FakeController()
+    panel = RoutingPanel(controller)
+    routing = controller.routing
+
+    def start_heartbeat():
+        routing.busy = True
+        routing.backend = "native"
+        routing.cancel_event = Event()
+        routing.native_started_at = time.monotonic()
+        panel.refresh()
+        assert panel._native_elapsed_timer.isActive()
+
+    start_heartbeat()
+    routing.busy = False
+    panel.refresh()
+    assert not panel._native_elapsed_timer.isActive()
+
+    start_heartbeat()
+    routing.busy = False
+    routing.message = "Native calculation failed: worker crashed"
+    panel.refresh()
+    assert not panel._native_elapsed_timer.isActive()
+
+    start_heartbeat()
+    routing.cancel_event.set()
+    panel.refresh()
+    assert not panel._native_elapsed_timer.isActive()
+    panel.deleteLater()
+
+
 def test_native_progress_percent_uses_attempt_window():
     assert _native_progress_percent(
         {
@@ -332,6 +425,10 @@ def test_controller_native_progress_sets_stage_and_rejects_stale_or_cancelled(ap
         "attempt": 2,
         "total_attempts": 3,
         "effort_percent": 100,
+        "generated_states": 2500,
+        "retained_states": 1000,
+        "land_checks": 50,
+        "closest_approach_nm": 2.5,
     }
     controller._apply_native_progress(1, update)
     assert controller.percent == pytest.approx(200.0 / 3.0)
@@ -339,6 +436,12 @@ def test_controller_native_progress_sets_stage_and_rejects_stale_or_cancelled(ap
     assert controller.progress_indeterminate is False
     assert "Forward isochrone (2/3)" in controller.message
     assert "effort 67%" in controller.message
+    assert controller.native_counters == {
+        "generated_states": 2500,
+        "retained_states": 1000,
+        "land_checks": 50,
+        "closest_approach_nm": 2.5,
+    }
 
     controller._apply_native_progress(
         0,
@@ -347,10 +450,15 @@ def test_controller_native_progress_sets_stage_and_rejects_stale_or_cancelled(ap
             "attempt": 3,
             "total_attempts": 3,
             "effort_percent": 100,
+            "generated_states": 9999,
+            "retained_states": 9999,
+            "land_checks": 9999,
+            "closest_approach_nm": 9.9,
         },
     )
     assert controller.percent == pytest.approx(200.0 / 3.0)
     assert "Forward isochrone" in controller.message
+    assert controller.native_counters["generated_states"] == 2500
 
     controller.cancel_event.set()
     controller._apply_native_progress(
@@ -360,9 +468,11 @@ def test_controller_native_progress_sets_stage_and_rejects_stale_or_cancelled(ap
             "attempt": 3,
             "total_attempts": 3,
             "effort_percent": 100,
+            "generated_states": 9999,
         },
     )
     assert controller.percent == pytest.approx(200.0 / 3.0)
+    assert controller.native_counters["generated_states"] == 2500
 
 
 def test_controller_clears_native_indeterminate_progress_on_finish_failure_and_cancel(
@@ -379,12 +489,14 @@ def test_controller_clears_native_indeterminate_progress_on_finish_failure_and_c
     controller._run_native_requests = run_native
     assert controller.start(_request(), backend="native")
     assert controller.progress_indeterminate is True
+    assert controller.native_started_at is not None
     deadline = time.monotonic() + 5
     while controller.busy and time.monotonic() < deadline:
         app.processEvents()
         time.sleep(0.01)
     assert seen["indeterminate"] is True
     assert controller.progress_indeterminate is False
+    assert controller.native_started_at is None
 
     failing = RoutingController(FakeSession())
     failing.busy = True
@@ -392,16 +504,20 @@ def test_controller_clears_native_indeterminate_progress_on_finish_failure_and_c
     failing.request = _request()
     failing.backend = "native"
     failing.progress_indeterminate = True
+    failing.native_started_at = time.monotonic()
     failing._finish(1, None, RuntimeError("failed"))
     assert failing.progress_indeterminate is False
+    assert failing.native_started_at is None
 
     cancelling = RoutingController(FakeSession())
     cancelling.busy = True
     cancelling.backend = "native"
     cancelling.progress_indeterminate = True
+    cancelling.native_started_at = time.monotonic()
     cancelling.cancel()
     assert cancelling.progress_indeterminate is False
     assert cancelling.percent == 0.0
+    assert cancelling.native_started_at is None
 
 
 def test_controller_start_native_uses_analysis_snapshot_and_finishes(app):
@@ -654,12 +770,18 @@ def test_controller_forwards_worker_progress_to_panel_state(tmp_path, monkeypatc
             "attempt": 1,
             "total_attempts": 5,
             "effort_percent": 100,
+            "generated_states": 1200,
+            "retained_states": 400,
         },
         {
             "stage": "validation",
             "attempt": 5,
             "total_attempts": 5,
             "effort_percent": 100,
+            "generated_states": 2400,
+            "retained_states": 900,
+            "land_checks": 70,
+            "closest_approach_nm": 1.25,
         },
     ]
     worker, _diagnostics = _install_fakes(
@@ -701,6 +823,12 @@ def test_controller_forwards_worker_progress_to_panel_state(tmp_path, monkeypatc
     assert states[2][2] == pytest.approx(99.0)
     assert states[2][2] < 100.0
     assert "Validation (5/5)" in states[2][4]
+    assert controller.native_counters == {
+        "generated_states": 2400,
+        "retained_states": 900,
+        "land_checks": 70,
+        "closest_approach_nm": 1.25,
+    }
     assert len(collection.elements) == 1
     assert worker.progress_updates == []
     assert worker.shutdown_called

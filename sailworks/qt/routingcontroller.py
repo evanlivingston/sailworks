@@ -93,9 +93,11 @@ class RoutingController(QObject):
         self.cancel_event = Event()
         self.generation = 0
         self.percent = 0.0
-        # The native engine has no intra-solve progress callback, so its runs
-        # expose an indeterminate state instead of a percentage.
+        # Native runs start indeterminate until the engine reports a usable
+        # attempt window, then show its derived percentage and live counters.
         self.progress_indeterminate = False
+        self.native_started_at = None
+        self.native_counters = {}
         self.message = "Wind-only routing"
         self.error = ""
         self.request = None
@@ -146,6 +148,8 @@ class RoutingController(QObject):
         cancel = self.cancel_event
         self.busy, self.error, self.percent = True, "", 0.0
         self.progress_indeterminate = backend == "native"
+        self.native_started_at = time.monotonic() if backend == "native" else None
+        self.native_counters = {}
         self.message = (
             "Native calculation queued…" if backend == "native" else "Calculating…"
         )
@@ -316,6 +320,7 @@ class RoutingController(QObject):
         self.scenario_count = count
         self.percent = 0.0
         self.progress_indeterminate = True
+        self.native_counters = {}
         self.message = (
             "Native calculation queued…"
             if count == 1
@@ -567,6 +572,8 @@ class RoutingController(QObject):
     def fail(self, message):
         self.error = self.message = message
         self.progress_indeterminate = False
+        self.native_started_at = None
+        self.native_counters = {}
         self.changed.emit()
         return False
 
@@ -701,6 +708,8 @@ class RoutingController(QObject):
             self.isochrones_changed.emit(())
             self.percent = 0.0
             self.progress_indeterminate = False
+            self.native_started_at = None
+            self.native_counters = {}
             self.message = "Cancelling…"
             self.changed.emit()
 
@@ -752,6 +761,17 @@ class RoutingController(QObject):
         if percent is not None:
             self.percent = percent
             self.progress_indeterminate = False
+        counter_keys = (
+            "generated_states",
+            "retained_states",
+            "land_checks",
+            "closest_approach_nm",
+        )
+        self.native_counters = {
+            key: update[key]
+            for key in counter_keys
+            if key in update and update[key] is not None
+        }
         stage = _NATIVE_PROGRESS_STAGES.get(
             str(update.get("stage", "")), str(update.get("stage", "Engine"))
         )
@@ -781,6 +801,7 @@ class RoutingController(QObject):
             return
         self.busy = False
         self.progress_indeterminate = False
+        self.native_started_at = None
         self._parallel_mode = False
         self._parallel_progress = {}
         if error is not None and self._native_diagnostic_token != token:
