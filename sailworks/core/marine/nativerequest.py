@@ -95,6 +95,21 @@ def _point(value, label):
     return (float(latitude), float(longitude))
 
 
+def _start_and_waypoints(request):
+    """Resolve the start the way the legacy track workflow does.
+
+    Choosing "First waypoint" leaves ``start`` empty and lets the route begin at
+    the track's first point. Native keeps that meaning: the first point becomes
+    the start and the remaining points stay as the waypoint chain.
+    """
+    waypoints = tuple(request.waypoints or ())
+    if request.start is not None:
+        return request.start, waypoints
+    if len(waypoints) >= 2:
+        return waypoints[0], waypoints[1:]
+    raise ValueError("Native routing requires an explicit start position")
+
+
 def freeze_native_requests(
     request: RouteRequest,
     scenarios: tuple[RouteRequest, ...],
@@ -166,8 +181,7 @@ def freeze_native_requests(
             or item.coastline_checks != request.coastline_checks
         ):
             raise ValueError("Native scenario changed frozen source selection")
-        if item.start is None:
-            raise ValueError("Native routing requires an explicit start position")
+        start, waypoints = _start_and_waypoints(item)
         departure = item.departure
         if departure.tzinfo is None or departure.utcoffset() is None:
             raise ValueError("Native departure requires an absolute time")
@@ -185,10 +199,10 @@ def freeze_native_requests(
                 engine=engine,
                 calculation_id=str(uuid4()),
                 name=item.name,
-                start=_point(item.start, "start"),
+                start=_point(start, "start"),
                 destination=_point(item.destination, "destination"),
                 departure_epoch_s=int(departure.astimezone(timezone.utc).timestamp()),
-                waypoints=tuple(_point(point, "waypoint") for point in item.waypoints),
+                waypoints=tuple(_point(point, "waypoint") for point in waypoints),
                 forecast=forecast,
                 current_field_ids=(
                     tuple(field.id for field in current_selection.fields)
