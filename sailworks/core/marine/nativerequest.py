@@ -184,7 +184,10 @@ def freeze_native_requests(
         start, waypoints = _start_and_waypoints(item)
         departure = item.departure
         if departure.tzinfo is None or departure.utcoffset() is None:
-            raise ValueError("Native departure requires an absolute time")
+            # The panel's departure is a naive local wall time, and legacy
+            # routes treat it that way. Attach the local offset instead of
+            # refusing a selection legacy accepts.
+            departure = departure.astimezone()
         algorithm_name, changed = changed_legacy_parameters(item)
         if changed:
             raise ValueError(

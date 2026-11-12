@@ -241,3 +241,19 @@ def test_unknown_parameter_is_rejected(polar):
     )
     with pytest.raises(ValueError, match="not_a_parameter"):
         freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+
+
+def test_naive_local_departure_is_interpreted_like_the_legacy_panel(polar):
+    local = datetime(2026, 1, 1, 9, 30)
+    (job,) = freeze_native_requests(
+        replace(_request(polar), departure=local, use_currents=False),
+        (),
+        _forecast(),
+        (),
+        None,
+        engine="main",
+    )
+
+    # The panel's departure has no offset and legacy routes read it as local
+    # wall time, so native attaches the local offset instead of refusing.
+    assert job.departure_epoch_s == int(local.astimezone().timestamp())
