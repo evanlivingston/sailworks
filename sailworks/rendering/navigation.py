@@ -117,9 +117,13 @@ def routing_summary(r):
         t_end = dateutil.parser.parse(points[-1][2])
         hours = (t_end - t_start).total_seconds() / 3600.0
         if hours > 0:
-            days = int(hours // 24)
-            rem_hours = hours % 24
-            dur_str = f"{days}d {rem_hours:.0f}h" if days > 0 else f"{rem_hours:.1f}h"
+            minutes = int(round(hours * 60))
+            days, minutes = divmod(minutes, 24 * 60)
+            hours_part, minutes_part = divmod(minutes, 60)
+            if days > 0:
+                dur_str = f"{days}d {hours_part}h {minutes_part:02d}m"
+            else:
+                dur_str = f"{hours_part}h {minutes_part:02d}m"
             avg_speed = total_dist / hours
     except Exception:
         pass
