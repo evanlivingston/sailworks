@@ -94,6 +94,14 @@ def measure() -> dict:
         retained["geometry_rebuilds_after_style"]
         - retained["geometry_rebuilds_after_first_frame"]
     )
+    report["retained"]["geometry_rebuilds_during_resize"] = (
+        retained["geometry_rebuilds_after_resize"]
+        - retained["geometry_rebuilds_before_resize"]
+    )
+    report["retained"]["matrix_updates_during_resize"] = (
+        retained["matrix_updates_after_resize"]
+        - retained["matrix_updates_before_resize"]
+    )
     return report
 
 

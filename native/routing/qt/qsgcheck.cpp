@@ -5,12 +5,14 @@
 // runtime is PySide6's bundled Qt; alignment is achieved by launching the app
 // with DYLD_FRAMEWORK_PATH pointing at the same Qt build as this item.
 
+#include <QtCore/QCoreApplication>
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
 #include <QtCore/QThread>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QImage>
+#include <QtGui/QMouseEvent>
 #include <QtQuick/QQuickItem>
 #include <QtQuick/QQuickView>
 #include <QtQuick/QtQuick>
@@ -36,13 +38,14 @@ qreal mercatorY(qreal latitude) {
 qreal mercatorX(qreal longitude) { return (longitude + 180.0) / 360.0; }
 
 QPointF projectPoint(qreal latitude, qreal longitude, qreal centerLat,
-                     qreal centerLon, qreal zoom) {
+                     qreal centerLon, qreal zoom,
+                     qreal width = kWidth, qreal height = kHeight) {
   const qreal world = 256.0 * std::pow(2.0, zoom);
   qreal dx = (longitude - centerLon) * world / 360.0;
   dx -= std::round(dx / world) * world;
   const qreal y = world * mercatorY(latitude);
   const qreal centerY = world * mercatorY(centerLat);
-  return {kWidth / 2.0 + dx, kHeight / 2.0 + y - centerY};
+  return {width / 2.0 + dx, height / 2.0 + y - centerY};
 }
 
 bool isInk(const QColor &colour) {
@@ -158,6 +161,53 @@ int main(int argc, char **argv) {
   }
   const qreal strokePixels = std::fabs(movedMidpoint.x() - midpoint.x());
 
+  // Resize: the camera translation depends on width()/height(), so the
+  // overlay must follow the chart without rebuilding segment geometry.
+  const int rebuildsBeforeResize = item->property("geometryRebuilds").toInt();
+  const int matricesBeforeResize = item->property("matrixUpdates").toInt();
+  // Resize the overlay host (the application resizes its sidecar), not the
+  // window, so the scene graph survives and only the camera translation moves.
+  constexpr qreal kResizedWidth = 240.0;
+  constexpr qreal kResizedHeight = 180.0;
+  view.rootObject()->setSize(QSizeF(kResizedWidth, kResizedHeight));
+  spin(app);
+  const QImage resized = view.grabWindow();
+  const QPointF resizedStart = projectPoint(
+      48.2, -123.7, kCenterLat, movedLon, kZoom + 0.5, kResizedWidth,
+      kResizedHeight);
+  const QPointF resizedEnd = projectPoint(
+      48.4, -123.5, kCenterLat, movedLon, kZoom + 0.5, kResizedWidth,
+      kResizedHeight);
+  const QPointF resizedMidpoint{(resizedStart.x() + resizedEnd.x()) / 2.0,
+                                (resizedStart.y() + resizedEnd.y()) / 2.0};
+  const int rebuildsAfterResize = item->property("geometryRebuilds").toInt();
+  const int matricesAfterResize = item->property("matrixUpdates").toInt();
+
+  // Mouse: the geometry-only item must not take the press a pan needs. The
+  // MouseArea below the overlay stands in for the viewport's pan handler.
+  QQuickItem *underlay =
+      view.rootObject()->findChild<QQuickItem *>("underlay");
+  const QPointF pressPoint(kResizedWidth / 2.0, kResizedHeight / 2.0);
+  const QPointF globalPoint = view.mapToGlobal(pressPoint.toPoint());
+  QMouseEvent hover(QEvent::MouseMove, pressPoint, globalPoint, Qt::NoButton,
+                    Qt::NoButton, Qt::NoModifier);
+  QCoreApplication::sendEvent(&view, &hover);
+  spin(app);
+  QMouseEvent press(QEvent::MouseButtonPress, pressPoint, globalPoint,
+                    Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+  QCoreApplication::sendEvent(&view, &press);
+  spin(app);
+  QMouseEvent release(QEvent::MouseButtonRelease, pressPoint, globalPoint,
+                      Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+  QCoreApplication::sendEvent(&view, &release);
+  spin(app);
+  const int acceptedButtons =
+      static_cast<int>(item->acceptedMouseButtons());
+  const bool underlayReceivedPress =
+      underlay != nullptr && underlay->property("presses").toInt() > 0;
+  const bool underlayReceivedHover =
+      underlay != nullptr && underlay->property("hovers").toInt() > 0;
+
   QJsonObject report;
   report["tool"] = "routing_retained_qsg_check";
   report["endpoint"] =
@@ -167,6 +217,8 @@ int main(int argc, char **argv) {
       {"ink_at_oracle_midpoint", inkAtOracle},
       {"ink_after_pan", inkNear(moved, movedMidpoint)},
       {"stale_ink_at_old_midpoint", inkNear(moved, midpoint)},
+      {"ink_after_resize", inkNear(resized, resizedMidpoint)},
+      {"stale_ink_at_pre_resize_midpoint", inkNear(resized, zoomedMidpoint)},
       {"highlight_survives_zoom", highlightSurvivesZoom},
       {"sampled_blue_minus_red",
        first.pixelColor(static_cast<int>(midpoint.x()),
@@ -190,6 +242,13 @@ int main(int argc, char **argv) {
       {"geometry_rebuilds_after_first_frame", rebuildsAfterFirst},
       {"geometry_rebuilds_after_style", rebuildsAfterStyle},
       {"geometry_rebuilds_after_pan", rebuildsAfterPan},
+      {"geometry_rebuilds_before_resize", rebuildsBeforeResize},
+      {"geometry_rebuilds_after_resize", rebuildsAfterResize},
+      {"matrix_updates_before_resize", matricesBeforeResize},
+      {"matrix_updates_after_resize", matricesAfterResize},
+      {"accepted_mouse_buttons", acceptedButtons},
+      {"underlay_received_press", underlayReceivedPress},
+      {"underlay_received_hover", underlayReceivedHover},
       {"matrix_updates", item->property("matrixUpdates").toInt()},
       {"pan_pixels", strokePixels},
   };
