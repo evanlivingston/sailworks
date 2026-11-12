@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-sudo add-apt-repository -y ppa:ubuntugis/ubuntugis-unstable
+# Use the Ubuntu archive GDAL so CI never depends on reachability of
+# api.launchpad.net. python_dep.sh pins the Python binding to whatever
+# gdal-config reports, so the pair stays self-consistent per release.
 sudo apt-get -o Acquire::Retries=3 update
 # libgdal-dev selects the matching runtime ABI on each Ubuntu release.
 # gdal-plugins is split out of the GDAL library package only from 24.04 on; on
