@@ -200,6 +200,15 @@ class RoutingPanel(QWidget):
         setup_layout.addWidget(section_label("Route setup"))
         form = QFormLayout()
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        self.backend = Dropdown("Calculation")
+        self.backend.addItem("Legacy (default)", "legacy")
+        self.backend.addItem("Native (experimental)", "native")
+        self.backend.setToolTip(
+            "Legacy runs the selected weatherrouting algorithm. Native runs the "
+            "bounded local native engine on the selected forecast and request."
+        )
+        self.backend.currentIndexChanged.connect(self._backend_changed)
+        form.addRow(self.backend)
         self.polar = Dropdown("Polar")
         self.polar.addItems(controller.core.polar_manager.polars)
         form.addRow(self.polar)
@@ -247,6 +256,10 @@ class RoutingPanel(QWidget):
         self.coastlines.toggled.connect(self._sync_coastline_clearance)
         self._sync_coastline_clearance(self.coastlines.isChecked())
         setup_layout.addLayout(form)
+        self.backend_note = QLabel()
+        self.backend_note.setWordWrap(True)
+        self.backend_note.setProperty("secondary", True)
+        setup_layout.addWidget(self.backend_note)
         hint = QLabel(
             "Choose a waypoint track or saved POI. "
             "You can also select start and destination points on the map."
@@ -274,6 +287,7 @@ class RoutingPanel(QWidget):
         self._build_safety_controls()
         form.addRow(self.parameters_section)
         self.inputs = (
+            self.backend,
             self.polar,
             self.algorithm,
             self.departure,
@@ -285,7 +299,9 @@ class RoutingPanel(QWidget):
         self.routing.confirm = self._confirm_current
         self.routing.changed.connect(self.refresh)
         controller.boat_changed.connect(self._boat_changed)
+        self.options_changed.connect(self._update_backend_note)
         self.refresh_destinations()
+        self._backend_changed()
         self.refresh()
 
     def _build_safety_controls(self):
@@ -398,6 +414,46 @@ class RoutingPanel(QWidget):
     def _sync_coastline_clearance(self, checked):
         self.coastline_label.setVisible(checked)
         self.coastline_clearance.setVisible(checked)
+
+    def _changed_legacy_parameter_names(self):
+        algorithm = self.algorithm.currentData()
+        if algorithm is None:
+            return ()
+        declared = getattr(algorithm, "PARAMS", {}) or {}
+        values = self._read_parameters()
+        return tuple(
+            sorted(
+                str(key)
+                for key, value in values.items()
+                if key not in declared or value != declared[key].default
+            )
+        )
+
+    def _update_backend_note(self, *_):
+        if self.backend.currentData() == "native":
+            changed = self._changed_legacy_parameter_names()
+            note = (
+                "Native (experimental) uses the selected forecast, currents, "
+                "polar, waypoints, safety limits and shoreline. It runs its own "
+                "engine options: the selected Legacy algorithm and Advanced "
+                "parameters are not applied. Native does not download missing "
+                "data."
+            )
+            if changed:
+                note += (
+                    " Changed Legacy parameters must be reset before a Native "
+                    "calculation: " + ", ".join(changed) + "."
+                )
+            self.backend_note.setText(note)
+        else:
+            self.backend_note.setText(
+                "Legacy (default) uses the selected algorithm and Advanced "
+                "parameters."
+            )
+
+    def _backend_changed(self, *_):
+        self._update_backend_note()
+        self.options_changed.emit()
 
     @staticmethod
     def _info_button(text):
@@ -661,6 +717,7 @@ class RoutingPanel(QWidget):
         cache[self.parameter_name] = self._read_parameters()
         return dict(
             parameters=cache,
+            backend=self.backend.currentData(),
             destination=self._selection_state(self.destination.currentData()),
             start=self._selection_state(self.start_mode.currentData()),
             departure=self.departure.dateTime().toPython().isoformat(),
@@ -730,6 +787,15 @@ class RoutingPanel(QWidget):
             except ValueError:
                 pass
         self.parameters_header.setChecked(saved.get("advanced_expanded") is True)
+        backend = saved.get("backend")
+        self.backend.setCurrentIndex(
+            max(
+                0,
+                self.backend.findData(
+                    backend if backend in ("legacy", "native") else "legacy"
+                ),
+            )
+        )
         self.use_currents.setChecked(saved.get("use_currents") is True)
         clearance_nm = saved.get("coastline_clearance_nm")
         if (
@@ -862,12 +928,24 @@ class RoutingPanel(QWidget):
             self.refresh()
 
     def _calculate(self):
+        backend = self.backend.currentData() or "legacy"
         try:
             request, scenarios = self._request()
+            if backend == "native":
+                from sailworks.core.marine.nativerequest import (
+                    changed_legacy_parameters,
+                    unapplied_legacy_parameter_message,
+                )
+
+                algorithm_name, changed = changed_legacy_parameters(request)
+                if changed:
+                    raise ValueError(
+                        unapplied_legacy_parameter_message(algorithm_name, changed)
+                    )
         except (ValueError, OverflowError) as error:
             self.status.setText(str(error))
             return
-        self.routing.start(request, scenarios)
+        self.routing.start(request, scenarios, backend=backend)
 
     def _request(self):
         target = self.destination.currentData()
