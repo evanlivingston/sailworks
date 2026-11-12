@@ -36,12 +36,17 @@ class NativeJobStatus:
         }
 
 
-def _worker_main(connection, engine: str) -> None:
-    """Child-process entry point; imports the bridge lazily."""
+def _worker_main(connection, job, engine: str) -> None:
+    """Child-process entry point; import provider handles only after spawn."""
     try:
-        import sailworks_native_routing as bridge
+        if job is None:
+            import sailworks_native_routing as bridge
 
-        payload = bridge.synthetic_route(engine)
+            payload = bridge.synthetic_route(engine)
+        else:
+            from .nativeexecution import run_native_request
+
+            payload = run_native_request(job)
         connection.send({"kind": "result", "payload": payload})
     except BaseException as exc:  # pragma: no cover - child process boundary
         connection.send({"kind": "failed", "message": str(exc)})
@@ -63,6 +68,7 @@ class NativeRoutingWorker:
         self._active_generation: Optional[int] = None
         self._superseded_generation: Optional[int] = None
         self._status: Optional[NativeJobStatus] = None
+        self._status_consumed = False
 
     @property
     def generation(self) -> int:
@@ -81,14 +87,26 @@ class NativeRoutingWorker:
     def status(self) -> Optional[NativeJobStatus]:
         return self._status
 
-    def submit(self, *, engine: str = "main") -> int:
-        """Start a calculation, superseding any running generation."""
+    def submit(self, job) -> int:
+        """Run a selected request; no fixture fallback on missing inputs."""
+        from .nativerequest import NativeRequest
+
+        if not isinstance(job, NativeRequest):
+            raise TypeError("submit requires a frozen NativeRequest")
+        return self._start(job, job.engine)
+
+    def submit_synthetic(self, *, engine: str = "main") -> int:
+        """Explicit diagnostic fixture only; never a selected user request."""
+        return self._start(None, engine)
+
+    def _start(self, job, engine: str) -> int:
+        """Start a bounded process, superseding any running generation."""
         self._supersede()
         self._generation += 1
         generation = self._generation
         parent, child = self._context.Pipe(duplex=False)
         process = self._context.Process(
-            target=_worker_main, args=(child, engine), daemon=True
+            target=_worker_main, args=(child, job, engine), daemon=True
         )
         try:
             process.start()
@@ -96,6 +114,7 @@ class NativeRoutingWorker:
             parent.close()
             child.close()
             self._status = None
+            self._status_consumed = False
             self._active_generation = None
             raise
         child.close()
@@ -103,13 +122,21 @@ class NativeRoutingWorker:
         self._connection = parent
         self._active_generation = generation
         self._status = NativeJobStatus(generation, "running")
+        self._status_consumed = False
         return generation
 
     def poll(self, timeout: float = 0.0) -> Optional[NativeJobStatus]:
-        """Return a terminal status once, or None while still running."""
+        """Return the terminal status once, or None while still running.
+
+        A terminal status stays inspectable through ``.status``. It is delivered
+        exactly once: by this call, by ``cancel()``, or by whichever runs first.
+        A caller that polls after ``cancel()`` still observes the cancellation.
+        """
         if self._status is not None and self._status.state != "running":
-            status, self._status = self._status, None
-            return status
+            if self._status_consumed:
+                return None
+            self._status_consumed = True
+            return self._status
         if self._active_generation is None:
             return None
         generation = self._active_generation
@@ -154,8 +181,11 @@ class NativeRoutingWorker:
             return None
         generation = self._active_generation
         self._terminate()
+        # The caller gets the status here, and a poll-only caller still gets it
+        # once from poll(); neither can turn it into a completion.
         return self._publish(
-            NativeJobStatus(generation, "cancelled", message="cancelled by caller")
+            NativeJobStatus(generation, "cancelled", message="cancelled by caller"),
+            consumed=False,
         )
 
     def shutdown(self) -> None:
@@ -163,6 +193,7 @@ class NativeRoutingWorker:
             self._terminate()
         self._active_generation = None
         self._status = None
+        self._status_consumed = True
 
     def _supersede(self) -> None:
         if self._active_generation is None:
@@ -190,7 +221,10 @@ class NativeRoutingWorker:
         self._process = None
         self._active_generation = None
 
-    def _publish(self, status: NativeJobStatus) -> NativeJobStatus:
+    def _publish(
+        self, status: NativeJobStatus, *, consumed: bool = True
+    ) -> NativeJobStatus:
         self._release()
         self._status = status
+        self._status_consumed = consumed
         return status

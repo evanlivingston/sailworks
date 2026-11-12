@@ -1,0 +1,224 @@
+"""The native input boundary must preserve every selected user setting."""
+
+from dataclasses import replace
+from datetime import datetime, timezone
+from pathlib import Path
+from pickle import dumps, loads
+from types import SimpleNamespace
+from uuid import UUID
+
+import pytest
+
+from sailworks.core.marine.nativerequest import freeze_native_requests
+from sailworks.core.routingjob import RouteRequest
+from sailworks.core.routingoptions import RouteScenario, scenario_request
+from sailworks.core.tranchestore import ResolvedForecast
+
+
+class Algorithm:
+    pass
+
+
+def _request(polar):
+    return RouteRequest(
+        name="selected-route",
+        start=(48.2, -123.7),
+        destination=(48.4, -123.5),
+        departure=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        polar_file=str(polar),
+        algorithm=Algorithm,
+        coastline_checks=False,
+        parameters=(),
+        waypoints=((48.3, -123.6), (48.4, -123.5)),
+        polar_efficiency=0.9,
+        use_currents=True,
+        current_priority="newest",
+        wind_speed_pct=10,
+        wind_dir_offset=12,
+        tws_max_kn=24,
+        min_sailing_speed_kn=3,
+        motor_speed_kn=6,
+        wave_correct=True,
+    )
+
+
+@pytest.fixture
+def polar():
+    return Path(__file__).resolve().parents[1] / "sailworks/data/polars/test.pol"
+
+
+def _forecast():
+    return ResolvedForecast(
+        selection=SimpleNamespace(tranche_id="selected", entry_id="run"),
+        tranche=SimpleNamespace(tranche_id="selected"),
+        entry=SimpleNamespace(artifacts=(SimpleNamespace(sha256="abc"),)),
+        artifact_paths=(Path("/local/selected/artifacts/abc"),),
+    )
+
+
+def test_all_selected_inputs_survive_spawn_serialization(polar):
+    request = _request(polar)
+    scenario = scenario_request(
+        request,
+        RouteScenario(
+            time_offset_hours=6,
+            wind_speed_pct=-20,
+            wind_dir_offset=-15,
+            polar_efficiency_pct=85,
+        ),
+    )
+    selection = SimpleNamespace(
+        fields=[SimpleNamespace(id="regional"), SimpleNamespace(id="global")],
+        priority="newest",
+    )
+    jobs = freeze_native_requests(
+        request,
+        (scenario,),
+        _forecast(),
+        (),
+        selection,
+        marine_directory="/local/marine",
+        engine="main",
+    )
+    (job,) = loads(dumps(jobs))
+    assert job.version == 1
+    assert job.engine == "main"
+    assert str(UUID(job.calculation_id)) == job.calculation_id
+    assert job.start == request.start
+    assert job.destination == request.destination
+    assert job.waypoints == request.waypoints
+    assert job.departure_epoch_s == int(scenario.departure.timestamp())
+    assert job.forecast.selection.entry_id == "run"
+    assert job.current_field_ids == ("regional", "global")
+    assert job.current_priority == "newest"
+    assert job.polar_rows and len(job.polar_sha256) == 64
+    assert job.polar_rows[0][0] == 4.0  # file-backed polar is already in knots
+    assert job.polar_rows[0][1][0] == pytest.approx((30.0, 6.7))
+    assert job.polar_efficiency == 0.85
+    assert job.wind_speed_pct == -20
+    assert job.wind_dir_offset == -15
+    assert job.tws_max_kn == 24
+    assert job.min_sailing_speed_kn == 3
+    assert job.motor_speed_kn == 6
+    assert job.wave_correct is True
+
+
+def test_unknown_shoreline_provider_is_not_silently_dropped(polar):
+    request = replace(_request(polar), use_currents=False, land_avoidance=True)
+    with pytest.raises(ValueError, match="shoreline provider"):
+        freeze_native_requests(
+            request, (), _forecast(), (object(),), None, engine="main"
+        )
+
+
+def test_missing_source_and_start_are_explicit(polar):
+    request = _request(polar)
+    with pytest.raises(ValueError, match="selected local fields"):
+        freeze_native_requests(
+            request, (), _forecast(), (), None, "/local/marine", engine="main"
+        )
+    with pytest.raises(ValueError, match="explicit start"):
+        freeze_native_requests(
+            replace(request, start=None, use_currents=False),
+            (),
+            _forecast(),
+            (),
+            None,
+            engine="main",
+        )
+
+
+def test_legacy_algorithm_parameters_cannot_be_ignored(polar):
+    request = replace(_request(polar), parameters=(("legacy_step", 5),))
+    with pytest.raises(ValueError, match="changed legacy algorithm parameters"):
+        freeze_native_requests(
+            request,
+            (),
+            _forecast(),
+            (),
+            SimpleNamespace(fields=(SimpleNamespace(id="field"),), priority="newest"),
+            "/local/marine",
+            engine="main",
+        )
+
+
+def test_alternatives_have_independent_calculation_identities(polar):
+    request = replace(_request(polar), use_currents=False)
+    early = scenario_request(request, RouteScenario(time_offset_hours=0))
+    later = scenario_request(request, RouteScenario(time_offset_hours=3))
+    jobs = freeze_native_requests(
+        request, (early, later), _forecast(), (), None, engine="original"
+    )
+    assert len(jobs) == 2
+    assert [job.engine for job in jobs] == ["original", "original"]
+    assert jobs[0].calculation_id != jobs[1].calculation_id
+    assert jobs[1].departure_epoch_s - jobs[0].departure_epoch_s == 3 * 3600
+
+
+def _panel_algorithm_and_parameters():
+    """Mirror RoutingPanel: the selected class plus every PARAMS widget value."""
+    import weatherrouting
+
+    algorithm = next(
+        entry["class"]
+        for entry in weatherrouting.list_routing_algorithms()
+        if entry["name"] == "LinearBestIsoRouter"
+    )
+    parameters = tuple(
+        (key, parameter.value) for key, parameter in algorithm.PARAMS.items()
+    )
+    return algorithm, parameters
+
+
+def test_default_panel_request_is_accepted_and_records_unapplied_defaults(polar):
+    """The panel always sends its algorithm PARAMS; defaults must not block it."""
+    from datetime import datetime, timezone
+
+    algorithm, parameters = _panel_algorithm_and_parameters()
+    assert len(parameters) == 3  # subdiv, concurrent, min_increase
+    request = RouteRequest(
+        name="routing-test",
+        start=(48.2, -123.7),
+        destination=(48.4, -123.5),
+        departure=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        polar_file=str(polar),
+        algorithm=algorithm,
+        coastline_checks=False,
+        parameters=parameters,
+    )
+    (job,) = freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+    assert job.legacy_algorithm == algorithm.__name__
+    assert dict(job.unchanged_legacy_parameters) == dict(parameters)
+
+
+def test_changed_panel_parameter_is_rejected_with_its_name(polar):
+    from datetime import datetime, timezone
+
+    algorithm, parameters = _panel_algorithm_and_parameters()
+    changed = tuple(
+        (key, 42.0 if key == "min_increase" else value) for key, value in parameters
+    )
+    request = RouteRequest(
+        name="routing-test",
+        start=(48.2, -123.7),
+        destination=(48.4, -123.5),
+        departure=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        polar_file=str(polar),
+        algorithm=algorithm,
+        coastline_checks=False,
+        parameters=changed,
+    )
+    with pytest.raises(ValueError, match="min_increase"):
+        freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+
+
+def test_unknown_parameter_is_rejected(polar):
+    algorithm, _ = _panel_algorithm_and_parameters()
+    request = replace(
+        _request(polar),
+        algorithm=algorithm,
+        use_currents=False,
+        parameters=(("not_a_parameter", 1),),
+    )
+    with pytest.raises(ValueError, match="not_a_parameter"):
+        freeze_native_requests(request, (), _forecast(), (), None, engine="main")

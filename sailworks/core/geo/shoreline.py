@@ -218,6 +218,79 @@ class ShorelineValidity:
                         valid[i] = False
         return valid.tolist()
 
+    def distance_to_forbidden_nm(self, latitude, longitude):
+        """Metric distance to selected GSHHS land, using clearance geometry.
+
+        The same local azimuthal equidistant projection and repaired polygons
+        as ``lines_validity`` define distance. Expand the spatial query until
+        the nearest polygon is strictly inside its unclipped search radius;
+        clipped rectangle edges can then never masquerade as shoreline.
+        This method is advisory to native search but also governs coastal
+        departure replay, so unknown geometry must raise rather than return a
+        made-up distance.
+        """
+        latitude = float(latitude)
+        longitude = float(longitude)
+        if (
+            not math.isfinite(latitude)
+            or not math.isfinite(longitude)
+            or not -90 <= latitude <= 90
+            or not -180 <= longitude <= 180
+        ):
+            raise ValueError("Invalid shoreline distance position")
+        if not self.points_validity([(latitude, longitude)])[0]:
+            return 0.0
+        source = osr.SpatialReference()
+        source.ImportFromEPSG(4326)
+        source.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        projected = osr.SpatialReference()
+        projected.SetFromUserInput(
+            f"+proj=aeqd +lat_0={latitude} +lon_0={longitude} "
+            "+datum=WGS84 +units=m +no_defs"
+        )
+        projected.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        transform = osr.CoordinateTransformation(source, projected)
+        point = ogr.Geometry(ogr.wkbPoint)
+        point.AddPoint(longitude, latitude)
+        if point.Transform(transform) != 0:
+            raise ValueError("Unable to project routing shoreline position")
+
+        radius_m = 1000.0
+        while radius_m <= 20_040_000.0:
+            padding = 2.0 * radius_m
+            lat_margin = padding / 110_000.0
+            south = max(-90.0, latitude - lat_margin)
+            north = min(90.0, latitude + lat_margin)
+            max_latitude = min(89.999, max(abs(south), abs(north)))
+            lon_margin = min(
+                180.0, lat_margin / max(math.cos(math.radians(max_latitude)), 1e-6)
+            )
+            west, east = longitude - lon_margin, longitude + lon_margin
+            bounds = (
+                ((-180.0, 180.0),)
+                if lon_margin == 180.0
+                else (
+                    ((max(-180.0, west), min(180.0, east)),)
+                    if west >= -180.0 and east <= 180.0
+                    else (
+                        ((west + 360.0, 180.0), (-180.0, east))
+                        if west < -180.0
+                        else ((west, 180.0), (-180.0, east - 360.0))
+                    )
+                )
+            )
+            nearest = math.inf
+            for left, right in bounds:
+                for geometry, _ in self._routing_land(left, south, right, north):
+                    local_land = geometry.Clone()
+                    if local_land.Transform(transform) != 0:
+                        raise ValueError("Unable to project routing shoreline geometry")
+                    nearest = min(nearest, local_land.Distance(point))
+            if nearest < radius_m:
+                return nearest / 1852.0
+            radius_m *= 2.0
+        raise ValueError("No selected GSHHS land found for metric distance query")
+
 
 class ShorelineGeometryCache:
     def __init__(self):

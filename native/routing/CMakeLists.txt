@@ -54,6 +54,8 @@ add_custom_command(
 
 add_library(sailworks_native_routing_core STATIC
   src/synthetic.cpp
+  src/sailworks_performance.cpp
+  src/user_request.cpp
   "${_routing_identity_header}")
 target_include_directories(sailworks_native_routing_core
   PUBLIC

@@ -32,7 +32,13 @@ from .routingresult import RoutingResult, canonical_utc
 # Statuses that cannot carry a reliable validation verdict. Their outcome stays
 # unknown rather than being reported as a failure of the searched route.
 UNVALIDATED_STATUSES = frozenset(
-    {"cancelled", "incomplete", "resource_limit_reached", "internal_error"}
+    {
+        "cancelled",
+        "incomplete",
+        "no_feasible_route",
+        "resource_limit_reached",
+        "internal_error",
+    }
 )
 
 
@@ -56,7 +62,7 @@ def polar_rows_from_polar(polar: Any) -> list[dict]:
     return rows
 
 
-def current_callable_from_selection(selection: Any):
+def current_callable_from_selection(selection: Any, *, include_provenance=False):
     """Adapt a Sailworks current selection into the native current callback.
 
     ``selection.sample(lat, lon, utc)`` returns the established record with a
@@ -71,6 +77,10 @@ def current_callable_from_selection(selection: Any):
         if getattr(sample, "status", None) != "available":
             return (0.0, 0.0, False)
         east, north = sample.values
+        if include_provenance:
+            if not getattr(sample, "dataset_id", None):
+                raise ValueError("Selected current sample has no dataset identity")
+            return (float(east), float(north), True, sample.dataset_id)
         return (float(east), float(north), True)
 
     return current
@@ -179,6 +189,9 @@ def _diagnostics(run: Mapping[str, Any]) -> dict[str, Any]:
         "digest",
         "inspection_geometry",
         "independent_validation",
+        "request_kind",
+        "input_fingerprints",
+        "scenario",
     ):
         if key in run:
             diagnostics[key] = run[key]

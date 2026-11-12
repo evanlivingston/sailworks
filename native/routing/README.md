@@ -70,14 +70,46 @@ to `build/native-routing/python`.
   `{true_wind_speed_knots, points: [(twa_degrees, speed_kn), ...]}` and must be
   strictly increasing in both axes with finite non-negative speeds.
   `polar_rows_from_polar()` converts a Sailworks/weatherrouting polar (radians,
-  m/s) without changing interpolation or efficiency.
+  m/s) without changing interpolation or efficiency. This entry point still
+  starts from the frozen synthetic request apart from start/destination/
+  departure/polar; it is a sampling adapter, not a user calculation.
+- `route_user_request(wind, current, coverage, polar, settings, land,
+  provider_identity, polar_identity, engine="main")` — a selected user request
+  with no fixture request values. `settings` must contain exactly `start`,
+  `destination`, `departure_epoch_s`, `use_currents`, `polar_efficiency`,
+  `tws_max_kn`, `min_sailing_speed_kn`, `motor_speed_kn`, `wave_correct`,
+  `coastline_checks`, `land_safety_margin_nm` and `waypoints`; unknown or
+  missing keys raise rather than being ignored. `waypoints` lists requested
+  points in order (the final point may equal the destination). More than one
+  leg routes each segment from the previous delivered position and arrival
+  time — the legacy waypoint workflow — then replays the whole delivered route
+  with the engine validator, so joins and cumulative timestamps are included.
+  `run.segments` reports per-leg status and validation; a failed leg keeps the
+  delivered prefix for diagnosis but the run is not accepted.
+- `land` is `None` for open water or an object with `point_forbidden(lat, lon)`,
+  `segment_forbidden(lat1, lon1, lat2, lon2, margin_nm)` and
+  `distance_nm(lat, lon)`. Sailworks passes a worker-local adapter over its
+  selected GSHHS predicate, so search, coastal departure and independent replay
+  share one shoreline definition. `land_safety_margin_nm` is the keep-off
+  distance; it must be zero unless `coastline_checks` is enabled.
+- Safety mapping: the wind cap, efficiency, speed-substitution motor fallback
+  and the wind-based wave proxy are applied by `SailworksPerformance` in both
+  search and replay. The engine's separate motor propulsion modes and its
+  wave-data penalty are not used, because they are different behavior from the
+  reviewed Sailworks policy.
+- Engine options (time step, heading step, search angle, destination tolerance,
+  resource limits) are the vendored engine defaults, not legacy algorithm
+  parameters. `request` in the payload records them so a result cannot imply
+  that an unexposed legacy parameter was applied.
 
 The synthetic polar uses the frozen contract angles 30, 60, 90, 120, 150 and
 180 degrees. There is no 0-degree row; the engine clamps lower true wind
 angles to the 30-degree row, which the identity records explicitly.
 
-Synthetic routes use `OpenWaterProvider`. There is no bundled shoreline,
-GSHHG dataset, depth provider, chart-hazard provider, real GRIB acquisition or
-host GUI orchestration. The Professional entry point accepts the Original
-engine result as an incumbent; this slice does not claim full Professional or
-cross-platform parity.
+Synthetic routes use `OpenWaterProvider`. A `route_user_request` call uses the
+selected shoreline adapter or open water when coastline checks are off. There is
+no bundled shoreline, GSHHG dataset, depth provider, chart-hazard provider, real
+GRIB acquisition or host GUI orchestration. The Professional entry point
+accepts the Original engine result as an incumbent; this slice does not claim
+full Professional or cross-platform parity, and other engines are not yet
+qualified on real selected requests.

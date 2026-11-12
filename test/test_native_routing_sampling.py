@@ -181,6 +181,20 @@ def test_current_selection_preserves_toward_components():
     assert selection.calls[0][2] == datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
+def test_current_selection_preserves_field_identity_when_requested():
+    from sailworks.core.marine.routingnative import current_callable_from_selection
+
+    selection = FakeCurrentSelection()
+    selection.dataset_id = "selected-field-hash"
+    current = current_callable_from_selection(selection, include_provenance=True)
+    assert current(48.2, -123.7, 1767225600) == (
+        0.4,
+        -0.2,
+        True,
+        "selected-field-hash",
+    )
+
+
 def test_missing_current_is_unavailable_not_calm():
     from sailworks.core.marine.routingnative import current_callable_from_selection
 
