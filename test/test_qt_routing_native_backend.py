@@ -127,10 +127,10 @@ def _request(**overrides):
 def test_panel_defaults_to_legacy_and_discloses_native_limits(app):
     panel = RoutingPanel(FakeController())
     assert panel.backend.currentData() == "legacy"
-    assert "Legacy (default)" in panel.backend_note.text()
+    assert "Legacy (default)" in panel.backend.toolTip()
 
     panel.backend.setCurrentIndex(panel.backend.findData("native"))
-    note = panel.backend_note.text()
+    note = panel.backend.toolTip()
     assert "experimental" in note
     assert "not applied" in note
     assert "does not download" in note
