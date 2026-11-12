@@ -162,3 +162,34 @@ def test_partial_points_are_skipped_beside_complete_ones():
 
     summary = routing_summary(MixedRoute())
     assert "nm" in summary
+
+
+def test_duration_keeps_minutes_instead_of_rounding_to_the_hour():
+    class Route(list):
+        def __init__(self):
+            super().__init__(
+                [
+                    (47.0, -125.0, "2026-01-01 00:00:00", 0, 0, 5.0, 90.0),
+                    (47.0, -121.5, "2026-01-02 18:25:00", 0, 0, 5.0, 90.0),
+                ]
+            )
+            self.provenance = None
+
+    summary = routing_summary(Route())
+
+    # 42 h 25 m must not read as "1d 18h" or "1d 19h".
+    assert "1d 18h 25m" in summary
+
+
+def test_short_duration_reports_hours_and_minutes():
+    class Route(list):
+        def __init__(self):
+            super().__init__(
+                [
+                    (47.0, -125.0, "2026-01-01 00:00:00", 0, 0, 5.0, 90.0),
+                    (47.0, -124.0, "2026-01-01 03:07:00", 0, 0, 5.0, 90.0),
+                ]
+            )
+            self.provenance = None
+
+    assert "3h 07m" in routing_summary(Route())
