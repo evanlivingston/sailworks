@@ -32,7 +32,11 @@ jobs:
 
     strategy:
       matrix:
-        python-version: ["3.12", "3.13"]
+        # Ubuntu 24.04 ships GDAL 3.8, which has no Python 3.13 support; the
+        # ubuntugis PPA that provided a newer GDAL also made every job depend on
+        # api.launchpad.net. Test the declared minimum (pyproject >= 3.12) from
+        # the Ubuntu archive instead.
+        python-version: ["3.12"]
 
     steps:
     - name: Checkout
