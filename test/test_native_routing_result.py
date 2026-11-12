@@ -168,6 +168,36 @@ def _record(**overrides):
     return RoutingResult(**values)
 
 
+def test_unsatisfiable_rounding_status_and_provenance_roundings_round_trip():
+    rounding = dict(
+        mark={"latitude": 48.0, "longitude": -124.0},
+        side="port",
+        radius_nm=0.5,
+        exit_bearing_min_deg=None,
+        exit_bearing_max_deg=None,
+        achieved_closest_distance_nm=None,
+        achieved_terminal_bearing_deg=None,
+        achieved_terminal_course_deg=None,
+        satisfied=False,
+        failure_code="side_unreachable",
+    )
+    record = _record(
+        status="unsatisfiable_rounding",
+        outcome=Outcome(False, False, Validation("unknown", False), {}),
+        provenance=Provenance(CREATED, "recorded", (rounding,)),
+        legs=(),
+        layers=(),
+        traces=(),
+    )
+    assert "status:unsatisfiable_rounding" in export_blockers(record)
+    assert not export_eligible(record)
+    encoded = record.to_dict()
+    assert encoded["provenance"]["roundings"][0]["failure_code"] == "side_unreachable"
+    decoded = RoutingResult.from_dict(encoded)
+    assert decoded.provenance.roundings[0]["side"] == "port"
+    assert decoded.status == "unsatisfiable_rounding"
+
+
 def test_schema_roundtrip_preserves_contours_times_previews_and_order():
     record = _record(previews=(_preview(),))
     encoded = record.to_json()

@@ -1,6 +1,7 @@
 #include "supercpn/weather_routing/Engine.h"
 #include "supercpn/weather_routing/PartialRoutes.h"
 #include "supercpn/weather_routing/CoastalEndpointPolicy.h"
+#include "supercpn/weather_routing/Rounding.h"
 
 #include <algorithm>
 #include <cmath>
@@ -62,10 +63,15 @@ RouteValidationResult validateRoute(const RoutingRequest& request,
   if (!closePoint(legs.front().start, request.start))
     return fail(std::move(result),
                 "route does not start at the requested position");
-  if (requireDestination && distanceNm(legs.back().end, request.destination) >
-                                request.options.destinationToleranceNm + 1e-9)
+  if (requireDestination && request.rounding) {
+    if (!roundingConstraintValid(*request.rounding))
+      return fail(std::move(result), "rounding spec is invalid");
+  } else if (requireDestination &&
+             distanceNm(legs.back().end, request.destination) >
+                 request.options.destinationToleranceNm + 1e-9) {
     return fail(std::move(result),
                 "route ends outside the configured destination tolerance");
+  }
   if (legs.front().startTime != request.departure)
     return fail(std::move(result),
                 "route departure timestamp differs from request");
@@ -80,6 +86,10 @@ RouteValidationResult validateRoute(const RoutingRequest& request,
   Duration totalWait{};
   double totalFuel{};
   std::optional<EnvironmentalSnapshot> previousEnvironment;
+  // Course over ground of the last replayed sample. Used only by the rounding
+  // predicate, never to infer a through-water heading.
+  double lastTerminalCourseDegrees =
+      legs.back().courseOverGroundDegrees;
   bool departureEgress = false;
   double departureClearanceNm = std::numeric_limits<double>::infinity();
   if (environment.landAndBoundaries &&
@@ -90,6 +100,8 @@ RouteValidationResult validateRoute(const RoutingRequest& request,
         departureClearanceNm < request.constraints.landSafetyMarginNm;
   }
 
+  double finalLegClosestApproachNm =
+      std::numeric_limits<double>::infinity();
   for (std::size_t legIndex = 0; legIndex < legs.size(); ++legIndex) {
     const RouteLeg& leg = legs[legIndex];
     const bool departureEgressAtLegStart = departureEgress;
@@ -185,7 +197,12 @@ RouteValidationResult validateRoute(const RoutingRequest& request,
           requireDestination && request.constraints.landSafetyMarginNm > 0.0 &&
           legIndex + 1 == legs.size();
       const double destinationIngressRadiusNm =
-          coastalEndpointReachNm(request.constraints.landSafetyMarginNm);
+          request.rounding
+              ? std::min(coastalEndpointReachNm(
+                             request.constraints.landSafetyMarginNm),
+                         request.rounding->radiusNm)
+              : coastalEndpointReachNm(
+                    request.constraints.landSafetyMarginNm);
       const double chordSafetyMarginNm =
           departureEgress ? 0.0 : request.constraints.landSafetyMarginNm;
       const auto chordForbiddenAt = [&](GeoPoint a, GeoPoint b, double margin) {
@@ -272,6 +289,7 @@ RouteValidationResult validateRoute(const RoutingRequest& request,
     GeoPoint replayPoint = leg.start;
     Duration elapsed{};
     double replayFuel{};
+    double closestOnLegNm = distanceNm(replayPoint, request.destination);
     bool destinationIngress = false;
     double priorDestinationDistance =
         distanceNm(replayPoint, request.destination);
@@ -411,9 +429,13 @@ RouteValidationResult validateRoute(const RoutingRequest& request,
       if (!std::isfinite(sog) || sog <= 0.05)
         return fail(std::move(result),
                     "route replay has no positive speed over ground");
+      const double terminalCourse = vectorDirectionToDegrees(ground);
+      lastTerminalCourseDegrees = terminalCourse;
       const GeoPoint next = destinationPoint(
-          replayPoint, vectorDirectionToDegrees(ground),
+          replayPoint, terminalCourse,
           sog * std::chrono::duration<double>(slice).count() / 3600.0);
+      closestOnLegNm =
+          std::min(closestOnLegNm, distanceNm(next, request.destination));
       if (environment.landAndBoundaries) {
         if (diagnostics) ++diagnostics->landChecks;
         if (departureEgress) {
@@ -437,6 +459,26 @@ RouteValidationResult validateRoute(const RoutingRequest& request,
           departureEgress =
               nextClearance + 1e-6 < request.constraints.landSafetyMarginNm;
         } else {
+          const bool finalIngressLeg =
+              requireDestination &&
+              request.constraints.landSafetyMarginNm > 0.0 &&
+              legIndex + 1 == legs.size();
+          const double destinationIngressRadiusNm =
+              request.rounding
+                  ? std::min(coastalEndpointReachNm(
+                                 request.constraints.landSafetyMarginNm),
+                             request.rounding->radiusNm)
+                  : coastalEndpointReachNm(
+                        request.constraints.landSafetyMarginNm);
+          const double nextDestinationDistance =
+              distanceNm(next, request.destination);
+          const bool insideIngress =
+              nextDestinationDistance <= destinationIngressRadiusNm + 1e-6;
+          // A rounding pass may legitimately move away from the mark after
+          // passing it. Keep the zero-margin relaxation only while the replay
+          // is actually inside the disc.
+          if (request.rounding && finalIngressLeg)
+            destinationIngress = insideIngress;
           bool forbidden =
               environment.landAndBoundaries
                   ->validationSegmentFromKnownSafeForbiddenAt(
@@ -444,18 +486,10 @@ RouteValidationResult validateRoute(const RoutingRequest& request,
                       destinationIngress
                           ? 0.0
                           : request.constraints.landSafetyMarginNm);
-          const bool finalIngressLeg =
-              requireDestination &&
-              request.constraints.landSafetyMarginNm > 0.0 &&
-              legIndex + 1 == legs.size();
-          const double destinationIngressRadiusNm =
-              coastalEndpointReachNm(request.constraints.landSafetyMarginNm);
-          const double nextDestinationDistance =
-              distanceNm(next, request.destination);
-          if (forbidden && finalIngressLeg &&
-              nextDestinationDistance <= destinationIngressRadiusNm + 1e-6 &&
+          if (forbidden && finalIngressLeg && insideIngress &&
               !destinationIngress &&
-              nextDestinationDistance + 1e-6 < priorDestinationDistance &&
+              (request.rounding ||
+               nextDestinationDistance + 1e-6 < priorDestinationDistance) &&
               !environment.landAndBoundaries
                    ->validationSegmentFromKnownSafeForbiddenAt(
                        replayPoint, next, leg.startTime + elapsed, 0.0)) {
@@ -465,7 +499,7 @@ RouteValidationResult validateRoute(const RoutingRequest& request,
           if (forbidden)
             return fail(std::move(result),
                         "forward replay intersects land or an exclusion zone");
-          if (destinationIngress &&
+          if (!request.rounding && destinationIngress &&
               nextDestinationDistance > priorDestinationDistance + 1e-6)
             return fail(
                 std::move(result),
@@ -528,7 +562,36 @@ RouteValidationResult validateRoute(const RoutingRequest& request,
       return fail(std::move(result), "route exceeds fuel limit");
     if (departureEgressAtLegStart)
       result.coastalDepartureEgressLegs = legIndex + 1;
+    if (legIndex + 1 == legs.size())
+      finalLegClosestApproachNm = closestOnLegNm;
     ++result.acceptedPrefixLegs;
+  }
+  if (requireDestination && request.rounding) {
+    RoundingMeasurement measured =
+        measureRounding(*request.rounding, legs.back().end,
+                        lastTerminalCourseDegrees, request.destination);
+    measured.closestDistanceNm = std::min(
+        measured.closestDistanceNm, finalLegClosestApproachNm);
+    result.rounding = measured;
+    if (diagnostics) {
+      diagnostics->roundingAttempted = true;
+      diagnostics->roundingFailureCode = measured.failureCode();
+      diagnostics->roundingClosestDistanceNm = measured.closestDistanceNm;
+      diagnostics->roundingTerminalBearingDegrees =
+          measured.terminalBearingToMarkDegrees;
+      diagnostics->roundingTerminalCourseDegrees =
+          measured.terminalCourseDegrees;
+    }
+    if (!measured.satisfied) {
+      std::ostringstream message;
+      message << "rounding not satisfied: " << measured.failureCode()
+              << " (endpoint distance " << distanceNm(legs.back().end,
+                                                      request.destination)
+              << " NM, terminal course " << measured.terminalCourseDegrees
+              << " deg, bearing to mark "
+              << measured.terminalBearingToMarkDegrees << " deg)";
+      return fail(std::move(result), message.str());
+    }
   }
   result.passed = true;
   return result;

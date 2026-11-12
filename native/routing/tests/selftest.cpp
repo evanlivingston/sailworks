@@ -7,6 +7,7 @@
 
 #include "native_routing_tree_identity.h"
 #include "sailworks_performance.h"
+#include "supercpn/weather_routing/Rounding.h"
 #include "synthetic.h"
 
 namespace {
@@ -55,6 +56,57 @@ int main() {
               near(observables.polarSpeed90At12, 3.0) &&
               near(observables.polarSpeed180At16, 5.2),
           "synthetic polar speeds do not match the fixture formula");
+
+  const wr::RoutingOptions defaults;
+  require(near(defaults.destinationToleranceNm, 1.0) &&
+              near(defaults.maximumSearchAngleDegrees, 120.0) &&
+              defaults.timeStep == wr::Duration{std::chrono::hours{1}},
+          "routing defaults are unchanged by rounding support");
+  const wr::GeoPoint mark{48.0, -123.0};
+  const wr::RoundingConstraint port{wr::RoundingSide::Port, 0.5, std::nullopt,
+                                    std::nullopt};
+  const wr::GeoPoint east = wr::destinationPoint(mark, 90.0, 0.4);
+  const auto portMeasurement = wr::measureRounding(port, east, 0.0, mark);
+  require(portMeasurement.satisfied,
+          "port rounding east of the mark with a north course is satisfied");
+  require(portMeasurement.failure == wr::RoundingFailure::None,
+          "satisfied port rounding has no failure code");
+  wr::RoundingConstraint starboard = port;
+  starboard.side = wr::RoundingSide::Starboard;
+  require(!wr::measureRounding(starboard, east, 0.0, mark).satisfied,
+          "starboard rejects a mark to port");
+  require(wr::measureRounding(port, wr::destinationPoint(mark, 90.0, 0.6),
+                              0.0, mark)
+                  .failure == wr::RoundingFailure::DistanceOutOfRange,
+          "rounding outside the radius is rejected");
+  wr::RoundingConstraint exit = port;
+  exit.exitBearingMinDegrees = 180.0;
+  exit.exitBearingMaxDegrees = 190.0;
+  require(wr::measureRounding(exit, east, 0.0, mark).failure ==
+              wr::RoundingFailure::ExitBearingOutOfRange,
+          "rounding outside the exit range is rejected");
+  wr::RoundingConstraint boundary = port;
+  boundary.exitBearingMinDegrees = 0.0;
+  boundary.exitBearingMaxDegrees = 0.0;
+  require(wr::measureRounding(boundary, east, 0.0, mark).satisfied,
+          "inclusive exit-range boundary is accepted");
+  require(wr::measureRounding(boundary, east, 0.1, mark).failure ==
+              wr::RoundingFailure::ExitBearingOutOfRange,
+          "exit bearing just outside the range is rejected");
+  require(wr::roundingConstraintValid(port),
+          "valid rounding spec is accepted");
+  wr::RoundingConstraint tiny = port;
+  tiny.radiusNm = 0.005;
+  require(wr::roundingGeometricallyImpossible(tiny),
+          "a radius below the lateral epsilon is unsatisfiable");
+  exit.exitBearingMaxDegrees = 20.0;
+  require(!wr::roundingConstraintValid(exit),
+          "wrapped exit range is rejected");
+  const auto targets = wr::roundingTargets(wr::GeoPoint{47.9, -123.0}, mark,
+                                           port);
+  require(!targets.empty(), "rounding targets are generated");
+  require(near(wr::distanceNm(targets.front(), mark), 0.5, 1e-3),
+          "rounding target lies on the radius circle");
 
   auto vessel = fixtureVesselConfiguration();
   vessel.profiles.front().efficiency = 0.85;

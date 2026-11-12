@@ -38,6 +38,7 @@ UNVALIDATED_STATUSES = frozenset(
         "no_feasible_route",
         "resource_limit_reached",
         "internal_error",
+        "unsatisfiable_rounding",
     }
 )
 
@@ -153,6 +154,7 @@ def to_routing_result(
         provenance=Provenance(
             canonical_utc(created_epoch_s),
             "recorded" if _environment_recorded(legs) else "absent",
+            tuple(run.get("roundings") or ()),
         ),
         legs=legs,
         layers=layers,

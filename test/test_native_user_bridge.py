@@ -61,6 +61,7 @@ SETTINGS = {
     "coastline_checks": False,
     "land_safety_margin_nm": 0.0,
     "waypoints": [],
+    "roundings": [],
 }
 
 

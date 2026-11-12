@@ -64,6 +64,12 @@ class FixtureWeatherProvider final : public wr::WeatherProvider {
   [[nodiscard]] wr::ParameterCoverage coverage(const char* identity) const;
 };
 
+struct RoundingReport {
+  std::optional<wr::GeoPoint> mark;
+  std::optional<wr::RoundingConstraint> rounding;
+  wr::RoundingMeasurement measurement;
+};
+
 struct SyntheticRun {
   std::string engine;
   // The contour incumbent is a separate solve, never an accepted result by
@@ -76,6 +82,7 @@ struct SyntheticRun {
   wr::RoutingEnvironment environment;
   wr::RoutingResult result;
   wr::RouteValidationResult independentValidation;
+  std::vector<RoundingReport> roundingReports;
   bool accepted{};
 };
 
@@ -136,9 +143,10 @@ struct ChainRun {
 // segment starts at the previous delivered position and departs at the previous
 // arrival time. The whole delivered route is then replayed once by the
 // engine's independent validator so joins and cumulative times are included.
-ChainRun runUserChain(const std::string& engine, wr::RoutingRequest request,
-                      wr::RoutingEnvironment environment,
-                      const std::vector<wr::GeoPoint>& chain);
+ChainRun runUserChain(
+    const std::string& engine, wr::RoutingRequest request,
+    wr::RoutingEnvironment environment, const std::vector<wr::GeoPoint>& chain,
+    const std::vector<std::optional<wr::RoundingConstraint>>& roundings = {});
 
 [[nodiscard]] bool isCompleteStatus(wr::RoutingStatus status);
 [[nodiscard]] std::string statusName(wr::RoutingStatus status);

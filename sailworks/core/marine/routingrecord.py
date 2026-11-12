@@ -30,6 +30,7 @@ STATUSES = frozenset(
         "no_feasible_route",
         "resource_limit_reached",
         "internal_error",
+        "unsatisfiable_rounding",
     }
 )
 VALIDATION_STATES = frozenset({"passed", "failed", "unknown"})
@@ -316,6 +317,7 @@ class Outcome:
 class Provenance:
     created_utc: str
     route_environment: str
+    roundings: Tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         epoch_from_utc(self.created_utc)
@@ -324,12 +326,26 @@ class Provenance:
             or self.route_environment not in ROUTE_ENVIRONMENTS
         ):
             raise SchemaError("route_environment must be recorded or absent")
+        if not isinstance(self.roundings, (list, tuple)):
+            raise SchemaError("provenance roundings must be a sequence")
+        for index, item in enumerate(self.roundings):
+            if not isinstance(item, Mapping):
+                raise SchemaError("provenance rounding must be a mapping")
+            for key in ("side", "radius_nm", "satisfied", "failure_code"):
+                if key not in item:
+                    raise SchemaError(f"provenance rounding[{index}] is missing {key}")
+        object.__setattr__(
+            self, "roundings", _json_value(tuple(self.roundings), "roundings")
+        )
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "created_utc": self.created_utc,
             "route_environment": self.route_environment,
         }
+        if self.roundings:
+            data["roundings"] = thaw_json(self.roundings)
+        return data
 
 
 @dataclass(frozen=True)

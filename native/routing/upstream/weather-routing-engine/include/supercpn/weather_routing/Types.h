@@ -366,9 +366,44 @@ class PartialRouteArchive;
 using RoutingPreviewCallback =
     std::function<void(std::shared_ptr<const RoutingPreview>)>;
 
+enum class RoundingSide { Port, Starboard };
+
+// Optional pass-and-exit rule for a leg target. The target point is the mark;
+// the route must finish inside the radius with the mark on the requested side
+// and, when set, on a terminal course inside the inclusive exit range.
+struct RoundingConstraint {
+  RoundingSide side{RoundingSide::Port};
+  double radiusNm{};
+  std::optional<double> exitBearingMinDegrees;
+  std::optional<double> exitBearingMaxDegrees;
+};
+
+enum class RoundingFailure {
+  None,
+  CoincidentEndpoint,
+  DistanceOutOfRange,
+  MarkAhead,
+  SideAmbiguous,
+  WrongSide,
+  ExitBearingOutOfRange,
+  NotEvaluated,
+};
+
+struct RoundingMeasurement {
+  bool satisfied{};
+  double closestDistanceNm{std::numeric_limits<double>::infinity()};
+  double terminalBearingToMarkDegrees{};
+  double terminalCourseDegrees{};
+  RoundingFailure failure{RoundingFailure::NotEvaluated};
+  std::string failureCode() const;
+};
+
 struct RoutingRequest {
   GeoPoint start;
   GeoPoint destination;
+  // When set, completion, terminal connection and independent replay all use
+  // the shared pass-and-exit predicate instead of the exact destination point.
+  std::optional<RoundingConstraint> rounding;
   TimePoint departure{};
   VesselConfiguration vessel;
   EnvironmentalPolicy environment;
@@ -472,7 +507,11 @@ enum class RoutingStatus {
   InvalidDestination,
   ValidationFailure,
   Cancelled,
-  InternalError
+  InternalError,
+  // A rounding was requested but no searched arrival satisfied the required
+  // side or exit bearing. This is never treated as an ordinary no-route or as
+  // a successful exact-point arrival.
+  UnsatisfiableRounding
 };
 
 enum class SolverPath {
@@ -609,6 +648,8 @@ struct RouteValidationResult {
   EnvironmentalSourceUsage environment;
   std::vector<EnvironmentalSourceTransition> sourceTransitions;
   bool estimatedPolarWind{};
+  // Present only when the request carried a rounding constraint.
+  std::optional<RoundingMeasurement> rounding;
 };
 
 struct PruningDiagnostics {
@@ -653,6 +694,13 @@ struct RoutingDiagnostics {
   std::uint64_t waitStates{};
   std::uint64_t validationSamples{};
   double closestApproachNm{std::numeric_limits<double>::infinity()};
+  // Best measured rounding attempt when a rounding was requested. Retained for
+  // structured failure diagnostics; it is never used to accept a route.
+  bool roundingAttempted{};
+  std::string roundingFailureCode;
+  double roundingClosestDistanceNm{std::numeric_limits<double>::infinity()};
+  double roundingTerminalBearingDegrees{};
+  double roundingTerminalCourseDegrees{};
   std::vector<std::string> resourceLimitEvents;
   std::vector<unsigned> effortTiersAttempted;
   unsigned completedEffortPercent{};

@@ -103,6 +103,10 @@ def run_native_request(job: NativeRequest, progress=None) -> dict:
         use_waves=job.wave_forecast is not None,
         coastline_checks=job.coastline_checks,
         waypoints=list(job.waypoints),
+        roundings=[
+            None if rounding is None else rounding.to_native()
+            for rounding in job.roundings
+        ],
         # The keep-off control is disabled with coastline checks off; the
         # legacy path ignores it then, so native does not apply it either. The
         # fingerprint below records whether it was applied.
@@ -227,6 +231,16 @@ def run_native_request(job: NativeRequest, progress=None) -> dict:
                 }
                 if job.wave_forecast is not None
                 else None
+            ),
+            **(
+                {
+                    "roundings": [
+                        None if rounding is None else rounding.to_native()
+                        for rounding in job.roundings
+                    ]
+                }
+                if job.roundings
+                else {}
             ),
         )
         run["scenario"] = dict(

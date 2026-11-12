@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QComboBox,
@@ -304,8 +307,51 @@ class RoutingInspectorPanel(QWidget):
                 lines.append(f"{name}: unknown")
         if values["missing"]:
             lines.append("missing: " + ", ".join(values["missing"]))
+        lines.append(self._rounding_text(leg))
         self.readout.setPlainText("\n".join(lines))
         self.leg_selected.emit(leg.leg_id)
+
+    @staticmethod
+    def _distance_nm(left, right):
+        latitude1, longitude1 = map(math.radians, (left[0], left[1]))
+        latitude2, longitude2 = map(math.radians, (right[0], right[1]))
+        dlat = latitude2 - latitude1
+        dlon = longitude2 - longitude1
+        a = (
+            math.sin(dlat / 2) ** 2
+            + math.cos(latitude1) * math.cos(latitude2) * math.sin(dlon / 2) ** 2
+        )
+        return 3440.065 * 2 * math.asin(math.sqrt(max(0.0, min(1.0, a))))
+
+    def _rounding_text(self, leg):
+        for report in self._result.provenance.roundings:
+            mark = report.get("mark")
+            if not isinstance(mark, Mapping):
+                continue
+            radius = report.get("radius_nm")
+            if radius is None:
+                continue
+            if (
+                self._distance_nm(
+                    (leg.end.lat, leg.end.lon), (mark["latitude"], mark["longitude"])
+                )
+                > float(radius) + 1e-3
+            ):
+                continue
+            side = report.get("side", "unknown")
+            achieved = report.get("achieved_closest_distance_nm")
+            terminal = report.get("achieved_terminal_course_deg")
+            satisfied = report.get("satisfied")
+            failure = report.get("failure_code", "unknown")
+            text = f"rounding: {side} {float(radius):.2f} nm"
+            if achieved is not None:
+                text += f", achieved {float(achieved):.2f} nm"
+            if terminal is not None:
+                text += f", terminal {float(terminal):.1f}°"
+            if not satisfied:
+                text += f" (not satisfied: {failure})"
+            return text
+        return "rounding: exact waypoint"
 
     def _diagnostics_text(self):
         if self._result is None:

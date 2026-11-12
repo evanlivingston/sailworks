@@ -10,7 +10,7 @@ from uuid import UUID
 
 import pytest
 
-from sailworks.core.marine.nativerequest import freeze_native_requests
+from sailworks.core.marine.nativerequest import Rounding, freeze_native_requests
 from sailworks.core.routingjob import RouteRequest
 from sailworks.core.routingoptions import RouteScenario, scenario_request
 from sailworks.core.tranchestore import ResolvedForecast
@@ -102,6 +102,77 @@ def test_all_selected_inputs_survive_spawn_serialization(polar):
     assert job.min_sailing_speed_kn == 3
     assert job.motor_speed_kn == 6
     assert job.wave_correct is True
+
+
+def test_roundings_align_with_chain_and_drop_start_point(polar):
+    rounding = Rounding("port", 0.5)
+    request = replace(
+        _request(polar),
+        use_currents=False,
+        start=None,
+        waypoints=((48.3, -123.6), (48.35, -123.55), (48.4, -123.5)),
+        roundings=(None, rounding, None),
+    )
+    (job,) = freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+    assert job.roundings == (rounding, None)
+
+
+def test_rounding_on_start_or_skipped_duplicate_is_rejected(polar):
+    base = replace(_request(polar), use_currents=False)
+    with pytest.raises(ValueError, match="first waypoint is the start"):
+        freeze_native_requests(
+            replace(
+                base,
+                start=None,
+                waypoints=((48.3, -123.6), (48.4, -123.5)),
+                roundings=(Rounding("port", 0.5), None),
+            ),
+            (),
+            _forecast(),
+            (),
+            None,
+            engine="main",
+        )
+    with pytest.raises(ValueError, match="duplicate waypoint"):
+        freeze_native_requests(
+            replace(
+                base,
+                waypoints=((48.3, -123.6), (48.3, -123.6), (48.4, -123.5)),
+                roundings=(None, Rounding("port", 0.5), None),
+            ),
+            (),
+            _forecast(),
+            (),
+            None,
+            engine="main",
+        )
+
+
+def test_rounding_disc_may_not_contain_a_previous_point(polar):
+    with pytest.raises(ValueError, match="previous route point"):
+        freeze_native_requests(
+            replace(
+                _request(polar),
+                use_currents=False,
+                waypoints=((48.3005, -123.6), (48.301, -123.6), (48.4, -123.5)),
+                roundings=(None, Rounding("port", 5.0), None),
+            ),
+            (),
+            _forecast(),
+            (),
+            None,
+            engine="main",
+        )
+
+
+def test_rounding_requires_the_native_engine(polar):
+    request = replace(
+        _request(polar),
+        use_currents=False,
+        roundings=(Rounding("port", 0.5), None),
+    )
+    with pytest.raises(ValueError, match="main or professional"):
+        freeze_native_requests(request, (), _forecast(), (), None, engine="standard")
 
 
 def test_unknown_shoreline_provider_is_not_silently_dropped(polar):

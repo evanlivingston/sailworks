@@ -26,6 +26,54 @@ WAVE_UNITS = {
 
 
 @dataclass(frozen=True)
+class Rounding:
+    """One pass-and-exit rule for a route mark."""
+
+    side: str
+    radius_nm: float
+    exit_bearing_min_deg: float | None = None
+    exit_bearing_max_deg: float | None = None
+
+    def __post_init__(self):
+        side = str(self.side).strip().lower()
+        if side not in ("port", "starboard"):
+            raise ValueError("Rounding side must be port or starboard")
+        object.__setattr__(self, "side", side)
+        if (
+            type(self.radius_nm) not in (int, float)
+            or not math.isfinite(self.radius_nm)
+            or self.radius_nm <= 0
+        ):
+            raise ValueError("Rounding radius must be finite and greater than zero")
+        object.__setattr__(self, "radius_nm", float(self.radius_nm))
+        minimum = self.exit_bearing_min_deg
+        maximum = self.exit_bearing_max_deg
+        if (minimum is None) != (maximum is None):
+            raise ValueError("Rounding exit bearing needs both a minimum and maximum")
+        if minimum is not None:
+            if (
+                type(minimum) not in (int, float)
+                or type(maximum) not in (int, float)
+                or not math.isfinite(minimum)
+                or not math.isfinite(maximum)
+                or not 0 <= minimum <= maximum < 360
+            ):
+                raise ValueError(
+                    "Rounding exit bearing range must satisfy 0 <= min <= max < 360"
+                )
+            object.__setattr__(self, "exit_bearing_min_deg", float(minimum))
+            object.__setattr__(self, "exit_bearing_max_deg", float(maximum))
+
+    def to_native(self) -> dict:
+        return dict(
+            side=self.side,
+            radius_nm=self.radius_nm,
+            exit_bearing_min_deg=self.exit_bearing_min_deg,
+            exit_bearing_max_deg=self.exit_bearing_max_deg,
+        )
+
+
+@dataclass(frozen=True)
 class NativeRequest:
     version: int
     engine: str
@@ -62,6 +110,9 @@ class NativeRequest:
     # binding. They stay optional so an untouched calculation keeps today's
     # wind-only path; the wind-based proxy is still controlled by wave_correct.
     wave_forecast: ResolvedForecast | None = None
+    # Aligned one-to-one with the chain marks after the start. Empty means no
+    # rounding anywhere; None keeps exact-point behaviour for that mark.
+    roundings: tuple[Rounding | None, ...] = ()
 
 
 def changed_legacy_parameters(request: RouteRequest) -> tuple[str, dict]:
@@ -214,6 +265,77 @@ def _start_and_waypoints(request):
     raise ValueError("Native routing requires an explicit start position")
 
 
+def _rounding(value):
+    if value is None:
+        return None
+    if isinstance(value, Rounding):
+        return value
+    if isinstance(value, dict):
+        return Rounding(**value)
+    raise ValueError("Rounding must be a Rounding record, mapping, or None")
+
+
+def _resolve_roundings(item, start, waypoints):
+    """Align panel roundings with the chain the bridge will build.
+
+    The panel supplies one entry per track point (or one for a POI/map
+    destination). The first track point becomes the start when Start is "First
+    waypoint", so its entry cannot carry a rounding. Consecutive duplicate
+    points are skipped by the bridge; a rounding on a skipped duplicate is
+    rejected rather than silently dropped.
+    """
+    raw = tuple(getattr(item, "roundings", ()) or ())
+    if not raw:
+        return ()
+    expected = len(item.waypoints) if item.waypoints else 1
+    if len(raw) != expected:
+        raise ValueError("Rounding specs must align one-to-one with the route points")
+    normalized = tuple(_rounding(value) for value in raw)
+    if not any(value is not None for value in normalized):
+        return ()
+    if item.start is None:
+        if normalized[0] is not None:
+            raise ValueError(
+                "The first waypoint is the start; remove its rounding spec"
+            )
+        normalized = normalized[1:]
+
+    if not waypoints:
+        chain = [start, item.destination]
+        marks = [(item.destination, normalized[0])]
+    else:
+        chain = [start]
+        marks = []
+        for point, rounding in zip(waypoints, normalized):
+            if point == chain[-1]:
+                if rounding is not None:
+                    raise ValueError(
+                        "Rounding is set on a duplicate waypoint that is skipped"
+                    )
+                continue
+            chain.append(point)
+            marks.append((point, rounding))
+        if chain[-1] != item.destination:
+            chain.append(item.destination)
+            marks.append((item.destination, None))
+
+    for index, (point, rounding) in enumerate(marks, start=1):
+        if rounding is None:
+            continue
+        for previous in chain[:index]:
+            if _distance_nm(previous, point) <= rounding.radius_nm + 1e-6:
+                raise ValueError("Rounding disc contains a previous route point")
+    rounded = [(point, rounding) for point, rounding in marks if rounding is not None]
+    for first in range(len(rounded)):
+        for second in range(first + 1, len(rounded)):
+            if (
+                _distance_nm(rounded[first][0], rounded[second][0])
+                < rounded[first][1].radius_nm + rounded[second][1].radius_nm
+            ):
+                raise ValueError("Rounding discs overlap")
+    return tuple(rounding for _, rounding in marks)
+
+
 def freeze_native_requests(
     request: RouteRequest,
     scenarios: tuple[RouteRequest, ...],
@@ -320,6 +442,14 @@ def freeze_native_requests(
             )
         destination = _point(item.destination, "destination")
         start_point = _point(start, "start")
+        resolved_waypoints = tuple(_point(point, "waypoint") for point in waypoints)
+        resolved_roundings = _resolve_roundings(item, start_point, resolved_waypoints)
+        if engine not in {"main", "professional"} and any(
+            rounding is not None for rounding in resolved_roundings
+        ):
+            raise ValueError(
+                "Rounding constraints require the main or professional native engine"
+            )
         if wave_forecast is not None:
             _check_wave_window(
                 wave_forecast.entry, start_point, destination, departure, wind_end
@@ -336,7 +466,7 @@ def freeze_native_requests(
                 start=start_point,
                 destination=destination,
                 departure_epoch_s=int(departure.astimezone(timezone.utc).timestamp()),
-                waypoints=tuple(_point(point, "waypoint") for point in waypoints),
+                waypoints=resolved_waypoints,
                 forecast=forecast,
                 current_field_ids=(
                     tuple(field.id for field in current_selection.fields)
@@ -362,6 +492,7 @@ def freeze_native_requests(
                 legacy_algorithm=algorithm_name,
                 unchanged_legacy_parameters=unchanged,
                 wave_forecast=wave_forecast,
+                roundings=resolved_roundings,
             )
         )
     return tuple(frozen)

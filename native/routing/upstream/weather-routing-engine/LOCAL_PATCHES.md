@@ -15,6 +15,12 @@ validation use the same rule; sailing, motor-sailing and other safety limits
 are unchanged. `LowWindMotor_tests.cpp` exercises Quick, Standard and
 Professional with calm, stronger wind, currents and changing thresholds.
 
+Mark rounding constraints (`rounding-constraints`) add an optional per-mark
+side, radius and exit-bearing range. Completion, terminal direct connection and
+independent replay share one pass-and-exit predicate; a route is accepted only
+when the replayed terminal course satisfies it. No rounding means the existing
+exact-point behaviour and no extra geometry.
+
 `../weather-routing-engine.version` identifies the imported upstream baseline.
 The integration repository also carries subsequent fixes; it is not a claim
 that this directory is byte-for-byte identical to that upstream commit.

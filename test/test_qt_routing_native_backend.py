@@ -19,6 +19,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 
+from sailworks.core.geo.track import Track
 from sailworks.core.marine.nativeworker import NativeJobStatus
 from sailworks.core.routingjob import RouteRequest
 from sailworks.qt.routingcontroller import (
@@ -167,6 +168,41 @@ def test_panel_native_refuses_changed_legacy_parameters_before_start(app):
     assert scenarios == ()
     assert request.start == (48.0, -123.5)
     assert request.destination == (48.4, -123.1)
+    panel.deleteLater()
+
+
+def test_panel_rounding_table_maps_to_request_and_start_is_exact(app):
+    controller = FakeController()
+    track = Track(
+        "race",
+        [(48.0, -123.5), (48.05, -123.45), (48.1, -123.4)],
+    )
+    controller.core.trackManager = (track,)
+    panel = RoutingPanel(controller)
+    panel.backend.setCurrentIndex(panel.backend.findData("native"))
+    panel.refresh_destinations()
+    panel.destination.setCurrentIndex(panel.destination.findText("Track: race"))
+    panel._plan_changed()
+
+    assert panel.roundings_table.isEnabled() is True
+    assert panel.roundings_table.rowCount() == 3
+    start_side = panel.roundings_table.cellWidget(0, 1)
+    assert start_side.isEnabled() is False
+    assert start_side.currentData() == "exact"
+
+    side = panel.roundings_table.cellWidget(1, 1)
+    side.setCurrentIndex(side.findData("port"))
+    panel.roundings_table.cellWidget(1, 2).setValue(0.4)
+    request, _scenarios = panel._request()
+
+    assert request.roundings[0] is None
+    assert request.roundings[1] == dict(
+        side="port",
+        radius_nm=0.4,
+        exit_bearing_min_deg=None,
+        exit_bearing_max_deg=None,
+    )
+    assert request.roundings[2] is None
     panel.deleteLater()
 
 

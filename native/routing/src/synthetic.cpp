@@ -13,6 +13,7 @@
 
 #include "original_routing/Engine.h"
 #include "supercpn/weather_routing/QuickEngine.h"
+#include "supercpn/weather_routing/Rounding.h"
 
 namespace sailworks::native_routing {
 namespace {
@@ -273,6 +274,8 @@ std::string statusName(wr::RoutingStatus status) {
     case wr::RoutingStatus::ValidationFailure: return "validation_failure";
     case wr::RoutingStatus::Cancelled: return "cancelled";
     case wr::RoutingStatus::InternalError: return "internal_error";
+    case wr::RoutingStatus::UnsatisfiableRounding:
+      return "unsatisfiable_rounding";
   }
   return "unknown";
 }
@@ -370,6 +373,22 @@ SyntheticRun runWithEngine(const std::string& engine,
   run.independentValidation = wr::RouteValidator{}.validate(
       run.request, run.environment, *run.environment.performance,
       run.result.legs);
+  if (run.request.rounding) {
+    RoundingReport report;
+    report.mark = run.request.destination;
+    report.rounding = *run.request.rounding;
+    if (run.result.validation.rounding) {
+      report.measurement = *run.result.validation.rounding;
+    } else if (run.independentValidation.rounding) {
+      report.measurement = *run.independentValidation.rounding;
+    } else if (!run.result.legs.empty()) {
+      const auto& leg = run.result.legs.back();
+      report.measurement = wr::measureRounding(
+          *run.request.rounding, leg.end, leg.courseOverGroundDegrees,
+          run.request.destination);
+    }
+    run.roundingReports.push_back(report);
+  }
   run.accepted = isCompleteStatus(run.result.status) &&
                  run.result.validation.passed &&
                  run.independentValidation.passed && !run.result.legs.empty();
@@ -488,11 +507,27 @@ void addChainDiagnostics(wr::RoutingDiagnostics& total,
 
 }  // namespace
 
-ChainRun runUserChain(const std::string& engine, wr::RoutingRequest request,
-                      wr::RoutingEnvironment environment,
-                      const std::vector<wr::GeoPoint>& chain) {
+ChainRun runUserChain(
+    const std::string& engine, wr::RoutingRequest request,
+    wr::RoutingEnvironment environment, const std::vector<wr::GeoPoint>& chain,
+    const std::vector<std::optional<wr::RoundingConstraint>>& roundings) {
   if (chain.size() < 2)
     throw std::invalid_argument("a waypoint chain needs at least one leg");
+  if (!roundings.empty() && roundings.size() != chain.size() - 1)
+    throw std::invalid_argument(
+        "rounding specs must align one-to-one with chain marks");
+  for (std::size_t index = 1; index < chain.size(); ++index) {
+    if (roundings.empty() || !roundings[index - 1]) continue;
+    const wr::RoundingConstraint& rounding = *roundings[index - 1];
+    if (!wr::roundingConstraintValid(rounding))
+      throw std::invalid_argument("rounding spec is invalid");
+    for (std::size_t previous = 0; previous < index; ++previous) {
+      if (wr::distanceNm(chain[previous], chain[index]) <=
+          rounding.radiusNm + 1e-6)
+        throw std::invalid_argument(
+            "rounding target has a previous mark inside its disc");
+    }
+  }
   if (!environment.grib || !environment.landAndBoundaries ||
       !environment.performance)
     throw std::invalid_argument("real request requires complete providers");
@@ -505,6 +540,7 @@ ChainRun runUserChain(const std::string& engine, wr::RoutingRequest request,
   request.start = chain.front();
   request.destination = chain.back();
   result.request = request;
+  if (!roundings.empty()) result.request.rounding = roundings.back();
   // Established by the segments below; the default is InternalError.
   result.result.status = wr::RoutingStatus::Complete;
   result.result.validation.passed = true;
@@ -535,10 +571,15 @@ ChainRun runUserChain(const std::string& engine, wr::RoutingRequest request,
     wr::RoutingRequest legRequest = request;
     legRequest.start = position;
     legRequest.destination = chain[index];
+    legRequest.rounding =
+        roundings.empty() ? std::nullopt : roundings[index - 1];
     legRequest.departure = departure;
     legRequest.limits.maximumRouteDuration =
         request.limits.maximumRouteDuration - elapsed;
     SyntheticRun leg = runWithEngine(engine, legRequest, environment);
+    result.roundingReports.insert(result.roundingReports.end(),
+                                  leg.roundingReports.begin(),
+                                  leg.roundingReports.end());
     ChainSegment summary;
     summary.index = index - 1;
     summary.status = leg.result.status;
@@ -625,12 +666,26 @@ ChainRun runUserChain(const std::string& engine, wr::RoutingRequest request,
       result.result.legs.back().endTime - result.result.legs.front().startTime;
   result.result.metrics.elapsed =
       std::chrono::duration_cast<wr::Duration>(result.result.metrics.elapsed);
+  if (!result.independentValidation.passed) {
+    const bool roundingFailure =
+        result.request.rounding &&
+        result.independentValidation.rounding &&
+        !result.independentValidation.rounding->satisfied;
+    result.result.status =
+        roundingFailure ? wr::RoutingStatus::UnsatisfiableRounding
+                        : wr::RoutingStatus::ValidationFailure;
+    result.result.validation.passed = false;
+    result.result.validation.failureReason =
+        result.independentValidation.failureReason;
+    result.result.message = result.independentValidation.failureReason;
+  } else {
+    result.result.message =
+        std::to_string(chainRun.segments.size()) + "-leg waypoint chain";
+  }
   result.accepted = chainRun.segments.size() > 0 &&
                     result.result.validation.passed &&
                     result.independentValidation.passed &&
                     !result.result.legs.empty();
-  result.result.message =
-      std::to_string(chainRun.segments.size()) + "-leg waypoint chain";
   return chainRun;
 }
 

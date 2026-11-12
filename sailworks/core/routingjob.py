@@ -397,6 +397,9 @@ class RouteRequest:
     coastline_checks: bool = True
     parameters: tuple = ()
     waypoints: tuple = ()
+    # One entry per route point (or one destination entry for a POI/map
+    # destination). None means exact-point arrival for that mark.
+    roundings: tuple = ()
     polar_efficiency: float = 1.0
     use_currents: bool = False
     auto_download: bool = False
