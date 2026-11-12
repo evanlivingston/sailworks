@@ -516,7 +516,7 @@ class RoutingPanel(QWidget):
         self.wave_data.blockSignals(True)
         try:
             self.wave_data.clear()
-            self.wave_data.addItem("None (wind proxy only)", "")
+            self.wave_data.addItem("None (no real wave heights)", "")
             for entry in entries:
                 label = (
                     f"{entry.model_id} · "
