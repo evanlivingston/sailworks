@@ -1,7 +1,9 @@
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #include "native_routing_tree_identity.h"
 #include "sailworks_performance.h"
@@ -84,6 +86,28 @@ int main() {
                                wr::ProfileRole::SailOnly, {}, 31.0, 90.0,
                                missingWaves).valid,
           "wind limit must reject search and independent replay candidates");
+
+  std::vector<wr::RoutingProgressUpdate> progress;
+  wr::RoutingRequest progressRequest = fixtureRequest(false, false);
+  progressRequest.progress = [&progress](const wr::RoutingProgressUpdate& update) {
+    progress.push_back(update);
+  };
+  const SyntheticRun progressRun =
+      runRequest("main", progressRequest, fixtureEnvironment());
+  require(progressRun.accepted,
+          "synthetic route with a progress callback was not accepted");
+  require(!progress.empty(),
+          "engine did not call the request progress callback");
+  require(progress.front().stage == wr::RoutingProgressStage::Preflight,
+          "progress did not begin at Preflight");
+  require(std::any_of(progress.begin(), progress.end(), [](const auto& update) {
+            return update.stage == wr::RoutingProgressStage::Validation;
+          }),
+          "progress never reached Validation");
+  require(progress.back().stage == wr::RoutingProgressStage::Complete,
+          "progress did not end at Complete");
+  require(progress.back().effortPercent > 0,
+          "progress did not report the engine effort percent");
 
   const SyntheticRun first = runSynthetic("main");
   const SyntheticRun second = runSynthetic("main");

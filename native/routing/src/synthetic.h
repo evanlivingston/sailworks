@@ -95,7 +95,8 @@ wr::RoutingRequest fixtureRequest(
     const FixtureRequestOverride& overrides = {});
 wr::RoutingEnvironment fixtureEnvironment();
 
-SyntheticRun runSynthetic(const std::string& engine);
+SyntheticRun runSynthetic(const std::string& engine,
+                          wr::RoutingProgressCallback progress = {});
 SyntheticRun runCancelled(const std::string& engine);
 SyntheticRun runInvalidDestination();
 
@@ -108,7 +109,8 @@ SyntheticRun runWithProvider(
     const std::string& engine, std::shared_ptr<wr::WeatherProvider> provider,
     bool cancelled = false,
     std::optional<wr::VesselConfiguration> vessel = std::nullopt,
-    const FixtureRequestOverride& requestOverrides = {});
+    const FixtureRequestOverride& requestOverrides = {},
+    wr::RoutingProgressCallback progress = {});
 
 // Explicit user request and environment: no fixture defaults or fixture data.
 SyntheticRun runRequest(const std::string& engine, wr::RoutingRequest request,

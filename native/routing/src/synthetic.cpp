@@ -378,9 +378,11 @@ SyntheticRun runWithEngine(const std::string& engine,
 
 }  // namespace
 
-SyntheticRun runSynthetic(const std::string& engine) {
-  return runWithEngine(engine, fixtureRequest(false, false),
-                       fixtureEnvironment());
+SyntheticRun runSynthetic(const std::string& engine,
+                          wr::RoutingProgressCallback progress) {
+  wr::RoutingRequest request = fixtureRequest(false, false);
+  request.progress = std::move(progress);
+  return runWithEngine(engine, request, fixtureEnvironment());
 }
 
 SyntheticRun runCancelled(const std::string& engine) {
@@ -392,10 +394,12 @@ SyntheticRun runWithProvider(const std::string& engine,
                              std::shared_ptr<wr::WeatherProvider> provider,
                              bool cancelled,
                              std::optional<wr::VesselConfiguration> vessel,
-                             const FixtureRequestOverride& requestOverrides) {
+                             const FixtureRequestOverride& requestOverrides,
+                             wr::RoutingProgressCallback progress) {
   wr::RoutingEnvironment environment = fixtureEnvironment();
   environment.grib = std::move(provider);
   wr::RoutingRequest request = fixtureRequest(cancelled, false, requestOverrides);
+  request.progress = std::move(progress);
   if (vessel.has_value()) {
     request.vessel = *vessel;
     environment.performance =

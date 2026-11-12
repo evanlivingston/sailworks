@@ -102,6 +102,21 @@ def test_capabilities_disclose_absent_geometry_and_time():
         capabilities["cancellation_scope"]
         == "pre-cancelled request only; no mid-route cancellation"
     )
+    assert capabilities["progress"] is True
+    assert capabilities["progress_updates"] is True
+    assert capabilities["progress_source"] == "engine"
+    assert "RoutingProgressUpdate" in capabilities["progress_contract"]
+    assert "No percentage is synthesized" in capabilities["progress_contract"]
+    assert capabilities["progress_stages"] == [
+        "preflight",
+        "current_coverage",
+        "forward_isochrone",
+        "reverse_recovery",
+        "frontier_recovery",
+        "graph_fallback",
+        "validation",
+        "complete",
+    ]
     assert capabilities["professional_incumbent_wired"] is True
     assert capabilities["professional_parity_claimed"] is False
     assert capabilities["gui"] is False
