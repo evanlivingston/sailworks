@@ -65,26 +65,43 @@ std::string progressStageName(wr::RoutingProgressStage stage) {
   return "unknown";
 }
 
-wr::RoutingProgressCallback makeProgressCallback(const py::object& callback) {
-  if (callback.is_none()) return {};
-  return [callback](const wr::RoutingProgressUpdate& update) {
-    try {
-      py::dict payload;
-      payload["stage"] = progressStageName(update.stage);
-      payload["attempt"] = update.attempt;
-      payload["total_attempts"] = update.totalAttempts;
-      payload["generated_states"] = update.generatedStates;
-      payload["retained_states"] = update.retainedStates;
-      payload["land_checks"] = update.landChecks;
-      if (std::isfinite(update.closestApproachNm))
-        payload["closest_approach_nm"] = update.closestApproachNm;
-      else
-        payload["closest_approach_nm"] = py::none();
-      payload["effort_percent"] = update.effortPercent;
-      callback(payload);
-    } catch (...) {
-      // Observation must never change the solve or leave a Python error set.
-      PyErr_Clear();
+// The progress checkpoint is the one place the engine cooperatively checks a
+// cancellation token. Forwarding an update stays an observation, except that a
+// set cancel event deliberately trips the token so the engine stops the search
+// instead of the caller killing the worker process.
+wr::RoutingProgressCallback makeProgressCallback(
+    const py::object& callback,
+    wr::CancellationToken token = wr::CancellationToken{},
+    const py::object& cancelEvent = py::none()) {
+  if (callback.is_none() && cancelEvent.is_none()) return {};
+  return [callback, token, cancelEvent](const wr::RoutingProgressUpdate& update) {
+    if (!callback.is_none()) {
+      try {
+        py::dict payload;
+        payload["stage"] = progressStageName(update.stage);
+        payload["attempt"] = update.attempt;
+        payload["total_attempts"] = update.totalAttempts;
+        payload["generated_states"] = update.generatedStates;
+        payload["retained_states"] = update.retainedStates;
+        payload["land_checks"] = update.landChecks;
+        if (std::isfinite(update.closestApproachNm))
+          payload["closest_approach_nm"] = update.closestApproachNm;
+        else
+          payload["closest_approach_nm"] = py::none();
+        payload["effort_percent"] = update.effortPercent;
+        callback(payload);
+      } catch (...) {
+        // A failed observer never changes the solve or leaves an error set.
+        PyErr_Clear();
+      }
+    }
+    if (!cancelEvent.is_none()) {
+      try {
+        if (py::cast<bool>(cancelEvent.attr("is_set")())) token.cancel();
+      } catch (...) {
+        // A cancellation probe never changes the solve or leaves an error set.
+        PyErr_Clear();
+      }
     }
   };
 }
@@ -835,7 +852,8 @@ py::dict runUserBridge(py::function wind, py::function current,
                            const std::string& providerIdentity,
                            const std::string& polarIdentity,
                            const std::string& engine,
-                           const py::object& progress) {
+                           const py::object& progress,
+                           const py::object& cancelEvent) {
   const std::set<std::string> required{
       "start", "destination", "departure_epoch_s", "use_currents",
       "polar_efficiency", "tws_max_kn", "min_sailing_speed_kn",
@@ -899,7 +917,11 @@ py::dict runUserBridge(py::function wind, py::function current,
   auto vessel = vesselFromPolar(polar, polarIdentity, "selected Sailworks polar");
   auto request = sailworks::native_routing::buildUserRequest(
       input, vessel, windCoverage, waveFieldsCoverage);
-  request.progress = makeProgressCallback(progress);
+  const wr::CancellationToken cancellation;
+  request.cancellation = cancellation;
+  // Install the checkpoint even without a progress callback so a cancel event
+  // still gets the engine's ~1 s cooperative checkpoints.
+  request.progress = makeProgressCallback(progress, cancellation, cancelEvent);
   wr::RoutingEnvironment environment;
   environment.grib = std::make_shared<PythonWeatherProvider>(
       std::move(wind), std::move(current), std::move(waves),
@@ -1010,7 +1032,12 @@ py::dict identityDict() {
   capabilities["independent_replay_validation"] = true;
   capabilities["cancellation_without_accepted_completion"] = true;
   capabilities["cancellation_scope"] =
-      "pre-cancelled request only; no mid-route cancellation";
+      "cooperative mid-route stop: the caller's cancel_event is polled at the "
+      "engine progress checkpoint (latency bounded by the engine's ~1 s "
+      "progress throttle) and trips RoutingRequest::cancellation; process "
+      "termination is only the fallback if the worker does not stop in time; "
+      "a cancelled run reports status 'cancelled' and never publishes an "
+      "accepted or partial route";
   capabilities["progress"] = true;
   capabilities["progress_updates"] = true;
   capabilities["progress_source"] = "engine";
@@ -1315,11 +1342,13 @@ PYBIND11_MODULE(sailworks_native_routing, module) {
                 const std::string& providerIdentity,
                 const std::string& polarIdentity,
                 const std::string& engine, py::object waves,
-                py::object waveCoverage, const py::object& progress) {
+                py::object waveCoverage, const py::object& progress,
+                const py::object& cancelEvent) {
                return runUserBridge(std::move(wind), std::move(current),
                                     std::move(waves), waveCoverage, coverage,
                                     polar, settings, land, providerIdentity,
-                                    polarIdentity, engine, progress);
+                                    polarIdentity, engine, progress,
+                                    cancelEvent);
              },
              py::arg("wind"), py::arg("current"), py::arg("coverage"),
              py::arg("polar"), py::arg("settings"), py::arg("land"),
@@ -1327,11 +1356,14 @@ PYBIND11_MODULE(sailworks_native_routing, module) {
              py::arg("engine") = "main", py::arg("waves") = py::none(),
              py::arg("wave_coverage") = py::none(),
              py::arg("progress") = py::none(),
+             py::arg("cancel_event") = py::none(),
              "Run a selected request, including its waypoint chain, through the "
              "native engine; reject unsupported settings rather than "
              "inheriting synthetic fixture defaults. Optional waves returns "
              "(height_m, period_s, direction_from_deg, available[, dataset[, "
              "model]]) and wave_coverage carries its area, times and dataset "
              "identity; use_waves makes missing wave coverage an explicit "
-             "failure.");
+             "failure. Optional cancel_event is polled at each engine progress "
+             "checkpoint; when it is set the engine stops cooperatively and "
+             "reports status 'cancelled'.");
 }

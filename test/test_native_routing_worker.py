@@ -21,6 +21,7 @@ if BUILD_PYTHON.is_dir():
     sys.path.insert(0, str(BUILD_PYTHON))
 
 from sailworks.core.marine.nativeworker import (  # noqa: E402
+    CANCEL_GRACE_SECONDS,
     NativeJobStatus,
     NativeProgressThrottle,
     NativeRoutingWorker,
@@ -226,3 +227,102 @@ def test_shutdown_releases_the_process():
     worker.shutdown()
     assert not worker.running
     assert worker.status is None
+
+
+class _RecordingEvent:
+    def __init__(self):
+        self.set_called = False
+
+    def set(self):
+        self.set_called = True
+
+
+class _CooperativeProcess:
+    """Child that exits by itself once the shared cancel event is set."""
+
+    exitcode = 0
+
+    def __init__(self):
+        self.joins = []
+        self.terminated = False
+        self.killed = False
+
+    def is_alive(self):
+        return not self.joins
+
+    def join(self, timeout=None):
+        self.joins.append(timeout)
+
+    def terminate(self):  # pragma: no cover - asserted not to run
+        self.terminated = True
+
+    def kill(self):  # pragma: no cover - asserted not to run
+        self.killed = True
+
+
+class _StubbornProcess:
+    """Child that ignores the event, forcing the termination fallback."""
+
+    exitcode = None
+
+    def __init__(self):
+        self.terminated = False
+        self.killed = False
+
+    def is_alive(self):
+        return True
+
+    def join(self, timeout=None):
+        pass
+
+    def terminate(self):
+        self.terminated = True
+
+    def kill(self):
+        self.killed = True
+
+
+def test_cancel_trips_the_shared_event_before_any_termination():
+    worker = NativeRoutingWorker()
+    event = _RecordingEvent()
+    process = _CooperativeProcess()
+    worker._cancel_event = event
+    worker._process = process
+    worker._connection = _FakeConnection([])
+    worker._active_generation = 1
+    worker._status = NativeJobStatus(1, "running")
+    worker._pending_progress = {"stage": "validation"}
+    try:
+        status = worker.cancel()
+
+        assert event.set_called
+        assert process.joins and process.joins[0] == CANCEL_GRACE_SECONDS
+        assert not process.terminated and not process.killed
+        assert status.state == "cancelled"
+        assert status.payload is None
+        assert worker.take_progress() is None
+        polled = worker.poll(0)
+        assert polled is not None and polled.state == "cancelled"
+        assert polled.payload is None
+        assert worker.poll(0) is None
+    finally:
+        worker.shutdown()
+
+
+def test_cancel_falls_back_to_termination_when_the_child_ignores_the_event():
+    worker = NativeRoutingWorker()
+    process = _StubbornProcess()
+    worker._cancel_event = _RecordingEvent()
+    worker._process = process
+    worker._connection = _FakeConnection([])
+    worker._active_generation = 1
+    worker._status = NativeJobStatus(1, "running")
+    try:
+        status = worker.cancel()
+
+        assert process.terminated
+        assert process.killed
+        assert status.state == "cancelled"
+        assert status.payload is None
+    finally:
+        worker.shutdown()

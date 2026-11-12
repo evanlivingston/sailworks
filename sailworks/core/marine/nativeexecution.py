@@ -49,12 +49,16 @@ def _shoreline(job):
     return SelectedShoreline(descriptor.path)
 
 
-def run_native_request(job: NativeRequest, progress=None) -> dict:
+def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> dict:
     """Run only inputs the real bridge currently honors; reject all others.
 
     ``progress`` receives the engine's ``RoutingProgressUpdate`` dictionaries
     unchanged. It is an observer only: a failing callback must not alter the
     solve or its accepted result.
+
+    ``cancel_event`` is polled at each engine progress checkpoint. Setting it
+    stops the search cooperatively, so the worker process stays reusable and a
+    cancelled run reports status ``cancelled`` without a route.
 
     No network or live process objects enter this path. BoundRoutingWind checks
     the selected artifact's digest, run, model, member and coherent wind bands.
@@ -173,6 +177,7 @@ def run_native_request(job: NativeRequest, progress=None) -> dict:
             job.polar_sha256,
             job.engine,
             progress=progress,
+            cancel_event=cancel_event,
             waves=selected_waves if waves is not None else None,
             wave_coverage=waves.coverage() if waves is not None else None,
         )

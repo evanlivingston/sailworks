@@ -98,10 +98,17 @@ def test_capabilities_disclose_absent_geometry_and_time():
     assert capabilities["deterministic_synthetic"] is True
     assert capabilities["independent_replay_validation"] is True
     assert capabilities["cancellation_without_accepted_completion"] is True
-    assert (
-        capabilities["cancellation_scope"]
-        == "pre-cancelled request only; no mid-route cancellation"
-    )
+    cancellation_scope = capabilities["cancellation_scope"]
+    assert isinstance(cancellation_scope, str)
+    scope = cancellation_scope.lower()
+    # A cooperative mid-route stop, checked at an engine progress checkpoint,
+    # with process termination reserved as the fallback.
+    assert "cooperative" in scope
+    assert "mid-route" in scope
+    assert "cancel" in scope
+    assert "checkpoint" in scope
+    assert "terminat" in scope
+    assert "fallback" in scope
     assert capabilities["progress"] is True
     assert capabilities["progress_updates"] is True
     assert capabilities["progress_source"] == "engine"
