@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sailworks.core.forecastboundrouting import BoundRoutingWind
+from sailworks.core.forecastboundrouting import BoundRoutingWind, BoundRoutingWaves
 from sailworks.core.marine.fields import FieldSelection, FieldStore
 
 from .nativerequest import NativeRequest
@@ -96,6 +96,7 @@ def run_native_request(job: NativeRequest) -> dict:
         min_sailing_speed_kn=job.min_sailing_speed_kn,
         motor_speed_kn=job.motor_speed_kn,
         wave_correct=job.wave_correct,
+        use_waves=job.wave_forecast is not None,
         coastline_checks=job.coastline_checks,
         waypoints=list(job.waypoints),
         # The keep-off control is disabled with coastline checks off; the
@@ -126,7 +127,10 @@ def run_native_request(job: NativeRequest) -> dict:
     from threading import Event
 
     wind = BoundRoutingWind(job.forecast, Event())
+    waves = None
     try:
+        if job.wave_forecast is not None:
+            waves = BoundRoutingWaves(job.wave_forecast, Event())
 
         def selected_wind(latitude, longitude, epoch_s):
             sample = wind.get_wind_at(
@@ -140,6 +144,14 @@ def run_native_request(job: NativeRequest) -> dict:
                 speed * (1 + job.wind_speed_pct / 100),
                 True,
             )
+
+        def selected_waves(latitude, longitude, epoch_s):
+            if waves is None:
+                return (0.0, 0.0, 0.0, False)
+            sample = waves.get_wave_at(
+                datetime.fromtimestamp(epoch_s, timezone.utc), latitude, longitude
+            )
+            return sample if sample is not None else (0.0, 0.0, 0.0, False)
 
         current = (
             current_callable_from_selection(selection, include_provenance=True)
@@ -156,7 +168,23 @@ def run_native_request(job: NativeRequest) -> dict:
             job.forecast.entry.artifacts[0].sha256,
             job.polar_sha256,
             job.engine,
+            waves=selected_waves if waves is not None else None,
+            wave_coverage=waves.coverage() if waves is not None else None,
         )
+        if run.get("status") == "wave_data_required":
+            provenance = run.get("wave_provenance") or {}
+            coverage_data = provenance.get("coverage") or {}
+            begins = coverage_data.get("begins")
+            ends = coverage_data.get("ends")
+            dataset = provenance.get("dataset_identity") or getattr(
+                job.wave_forecast.entry, "model_id", "selected wave data"
+            )
+            raise ValueError(
+                f"Wave data {dataset} does not cover the route window or route "
+                f"endpoints (coverage: {begins or 'unknown'} to "
+                f"{ends or 'unknown'}). No route was calculated and the wind "
+                "proxy was not substituted."
+            )
         run["request_kind"] = "selected-user-input"
         run["calculation_id"] = job.calculation_id
         run["engine_identity"] = bridge.identity()
@@ -180,6 +208,21 @@ def run_native_request(job: NativeRequest) -> dict:
             coastline_clearance_distance_m=(
                 job.coastline_clearance_distance_m if job.coastline_checks else None
             ),
+            wave=(
+                {
+                    "entry_id": job.wave_forecast.entry.entry_id,
+                    "model_id": job.wave_forecast.entry.model_id,
+                    "run_time": job.wave_forecast.entry.run_time.isoformat(),
+                    "artifact": job.wave_forecast.entry.artifacts[0].sha256,
+                    "fields": list(job.wave_forecast.entry.fields),
+                    "field_times": {
+                        field: [instant.isoformat() for instant in times]
+                        for field, times in job.wave_forecast.entry.field_times
+                    },
+                }
+                if job.wave_forecast is not None
+                else None
+            ),
         )
         run["scenario"] = dict(
             name=job.name,
@@ -199,3 +242,5 @@ def run_native_request(job: NativeRequest) -> dict:
         return run
     finally:
         wind.close()
+        if waves is not None:
+            waves.close()

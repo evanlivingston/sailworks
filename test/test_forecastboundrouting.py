@@ -7,6 +7,8 @@ from osgeo import gdal, osr
 
 from sailworks.core.forecastboundrouting import (
     BoundForecastError,
+    BoundRoutingWaves,
+    BoundWaveGrib,
     BoundWorkerGrib,
     calculate_bound_route,
 )
@@ -222,6 +224,7 @@ def test_bound_api_pins_provenance_to_the_published_tranche(tmp_path, monkeypatc
     assert provenance["artifact"]["sha256"] == captured.entry.artifacts[0].sha256
     assert result.provenance["weather_selection_mode"] == "tranche"
 
+
 def test_missing_bound_artifact_fails_before_any_reader_open(tmp_path, monkeypatch):
     from dataclasses import replace
 
@@ -296,3 +299,145 @@ def test_bound_frozen_current_wind_keeps_single_source_and_scenario_modifier(
         assert currents_wind.get_wind_at(RUN, 0.0, 0.0) == pytest.approx((105.0, 2.0))
     finally:
         wind.close()
+
+
+def wave_binding(tmp_path, model_id="GFSWAVE"):
+    store = TrancheStore(tmp_path)
+    source = tmp_path / "wave-download"
+    source.write_bytes(b"pinned wave bytes")
+    artifact = store.register_file(source)
+    fields = ("wave_height", "wave_period", "wave_direction")
+    configuration = ModelConfiguration(
+        model_id, fields, (-1, -1, 1, 1), "native", 3, (0, 3), 0
+    )
+    times = (RUN, RUN + timedelta(hours=3))
+    entry = ModelEntry(
+        model_id,
+        model_id,
+        RUN,
+        "deterministic",
+        fields,
+        ("0-SFC",),
+        (-1, -1, 1, 1),
+        "0.25deg",
+        times,
+        (artifact,),
+        ACQUIRED,
+        tuple((field, times) for field in fields),
+    )
+    tranche = ForecastTranche(f"{model_id}-batch", ACQUIRED, (configuration,), (entry,))
+    store.publish(tranche)
+    store.activate(AnalysisSelection(f"{model_id}-batch", model_id))
+    return store.resolve(AnalysisSelection(f"{model_id}-batch", model_id))
+
+
+def wave_band_metadata(element, hour):
+    metadata = band_metadata(element, hour)
+    metadata.update(
+        {
+            "GRIB_SHORT_NAME": "0-SFC",
+            "GRIB_UNIT": "[m]" if element == "SWH" else "[s]",
+        }
+    )
+    return metadata
+
+
+def wave_dataset(path):
+    values = {"SWH": 1.5, "MWP": 8.0, "MWD": 270.0}
+    rows = []
+    for hour in (0, 3):
+        rows.extend(
+            RasterBand(
+                wave_band_metadata(element, hour),
+                np.full((4, 4), values[element]),
+            )
+            for element in ("SWH", "MWP", "MWD")
+        )
+    return Dataset(rows, str(path))
+
+
+def test_bound_wave_reader_samples_published_waves_and_coverage(tmp_path, monkeypatch):
+    from threading import Event
+
+    captured = wave_binding(tmp_path)
+    patch_open(monkeypatch, wave_dataset(captured.artifact_paths[0]))
+    waves = BoundRoutingWaves(captured, Event())
+    try:
+        height, period, direction, available, dataset, model = waves.get_wave_at(
+            RUN, 0.0, 0.0
+        )
+        assert available is True
+        assert (height, period, direction) == pytest.approx((1.5, 8.0, 270.0))
+        assert dataset == f"GFSWAVE:{captured.entry.artifacts[0].sha256}"
+        assert model == "GFSWAVE"
+        coverage = waves.coverage()
+        assert coverage["start_epoch_s"] == int(RUN.timestamp())
+        assert coverage["end_epoch_s"] == int((RUN + timedelta(hours=3)).timestamp())
+        assert coverage["dataset_identity"] == dataset
+    finally:
+        waves.close()
+
+
+def test_bound_wave_reader_requires_all_three_fields(tmp_path):
+    from types import SimpleNamespace
+
+    captured = wave_binding(tmp_path)
+    entry = captured.entry
+    fields = ("wave_height", "wave_period")
+    partial_entry = SimpleNamespace(
+        entry_id=entry.entry_id,
+        model_id=entry.model_id,
+        member=entry.member,
+        artifacts=entry.artifacts,
+        fields=fields,
+        field_times=tuple(
+            (field, times) for field, times in entry.field_times if field in fields
+        ),
+        region=entry.region,
+        run_time=entry.run_time,
+    )
+    broken = SimpleNamespace(
+        selection=captured.selection,
+        tranche=SimpleNamespace(
+            tranche_id=captured.tranche.tranche_id, entries=(partial_entry,)
+        ),
+        entry=partial_entry,
+        artifact_paths=captured.artifact_paths,
+    )
+    with pytest.raises(BoundForecastError, match="wave_direction"):
+        BoundWaveGrib(broken)
+
+
+def era5_wave_dataset(path):
+    values = {"SWH": 2.5, "MWP": 9.0, "MWD": 300.0}
+    rows = []
+    for hour in (0, 3):
+        valid = int((RUN + timedelta(hours=hour)).timestamp())
+        for element in ("SWH", "MWP", "MWD"):
+            metadata = wave_band_metadata(element, hour)
+            metadata.update(
+                {
+                    "GRIB_REF_TIME": str(valid),
+                    "GRIB_FORECAST_SECONDS": "0",
+                    "GRIB_VALID_TIME": str(valid),
+                }
+            )
+            rows.append(RasterBand(metadata, np.full((4, 4), values[element])))
+    return Dataset(rows, str(path))
+
+
+def test_bound_wave_reader_accepts_era5_reanalysis_references(tmp_path, monkeypatch):
+    from threading import Event
+
+    captured = wave_binding(tmp_path, "ERA5")
+    patch_open(monkeypatch, era5_wave_dataset(captured.artifact_paths[0]))
+    waves = BoundRoutingWaves(captured, Event())
+    try:
+        height, period, direction, available, dataset, model = waves.get_wave_at(
+            RUN, 0.0, 0.0
+        )
+        assert available is True
+        assert (height, period, direction) == pytest.approx((2.5, 9.0, 300.0))
+        assert model == "ERA5"
+    finally:
+        waves.close()

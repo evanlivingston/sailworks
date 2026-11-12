@@ -1,12 +1,13 @@
 """Route using only the immutable weather binding captured by analysis state."""
 
 import hashlib
+import math
 from threading import Event, RLock
 
 from .forecastcapabilities import MODEL_CAPABILITIES
 from .gribmanager import GribManager
 from .grib import Grib, forecast_model_name
-from .gribsampling import model_key, number
+from .gribsampling import FIELDS, model_key, number
 from .routingjob import (
     RoutingCancelledError,
     WindFile,
@@ -19,6 +20,7 @@ from .tranchestore import ResolvedForecast
 
 _WIND_U = {"UGRD", "10U"}
 _WIND_V = {"VGRD", "10V"}
+_WAVE_ROUTING_FIELDS = ("wave_height", "wave_period", "wave_direction")
 
 
 class BoundForecastError(ValueError):
@@ -238,6 +240,209 @@ class BoundRoutingWind:
         for source in self.manager.gribs:
             source.close()
         self.manager.gribs.clear()
+
+
+class BoundWaveGrib(WorkerGrib):
+    """Private reader for one published wave artifact, with exact scope checks."""
+
+    def __init__(self, binding):
+        entry = binding.entry
+        if (
+            binding.selection.tranche_id != binding.tranche.tranche_id
+            or binding.selection.entry_id != entry.entry_id
+            or not any(
+                declared.entry_id == entry.entry_id and declared == entry
+                for declared in binding.tranche.entries
+            )
+        ):
+            raise BoundForecastError("Bound wave entry is not the selected entry")
+        if entry.member != "deterministic" or len(entry.artifacts) != 1:
+            raise BoundForecastError(
+                "Bound wave routing requires one deterministic artifact"
+            )
+        field_times = dict(entry.field_times)
+        missing = [
+            field
+            for field in _WAVE_ROUTING_FIELDS
+            if field not in entry.fields or not field_times.get(field)
+        ]
+        if missing:
+            raise BoundForecastError(
+                "Bound wave forecast lacks validated fields: " + ", ".join(missing)
+            )
+        if len(binding.artifact_paths) != 1:
+            raise BoundForecastError("Bound wave routing requires one artifact path")
+        path = binding.artifact_paths[0]
+        if not path.is_file() or path.is_symlink():
+            raise BoundForecastError("Bound wave artifact is missing or unsafe")
+        artifact = entry.artifacts[0]
+        digest = hashlib.sha256()
+        size = 0
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+                size += len(chunk)
+        if (
+            path.parent.name != "artifacts"
+            or path.name != artifact.sha256
+            or digest.hexdigest() != artifact.sha256
+            or size != artifact.size
+        ):
+            raise BoundForecastError("Bound wave artifact identity changed")
+        capability = MODEL_CAPABILITIES.get(entry.model_id)
+        provider_name = (
+            capability.provider_name if capability is not None else entry.model_id
+        )
+        wave_times = field_times["wave_height"]
+        hours = []
+        for instant in wave_times:
+            seconds = (instant - entry.run_time).total_seconds()
+            if seconds < 0 or seconds % 3600:
+                raise BoundForecastError(
+                    "Bound wave times must be exact run-relative hours"
+                )
+            hours.append(int(seconds // 3600))
+        centre = provider_name.split(" ", 1)[0]
+        south, west, north, east = entry.region
+        source = WindFile(
+            str(path),
+            provider_name,
+            centre,
+            (west, south, east, north),
+            entry.run_time,
+            max(hours),
+            entry.model_id,
+        )
+        try:
+            super().__init__(source)
+            if self.dataset is None:
+                raise BoundForecastError("Unable to open bound wave artifact")
+            self._validate_wave_records(binding)
+        except BaseException:
+            if hasattr(self, "dataset"):
+                cache = getattr(self, "_index_data", None)
+                if cache is not None:
+                    cache.cache_clear()
+                Grib.close(self)
+            raise
+
+    def _validate_wave_records(self, binding):
+        entry = binding.entry
+        display_only = entry.model_id not in MODEL_CAPABILITIES
+        expected = {
+            field: {
+                int(instant.timestamp()) for instant in dict(entry.field_times)[field]
+            }
+            for field in _WAVE_ROUTING_FIELDS
+        }
+        if any(not stamps for stamps in expected.values()):
+            raise BoundForecastError("Bound wave schedule is invalid")
+        elements = {field: set(FIELDS[field]) for field in _WAVE_ROUTING_FIELDS}
+        seen = {}
+        identities = set()
+        for record in self.sampling.records:
+            field = next(
+                (name for name, names in elements.items() if record.element in names),
+                None,
+            )
+            if field is None:
+                continue
+            valid = int(round(record.valid))
+            if valid not in expected[field]:
+                raise BoundForecastError(
+                    "Bound wave contains an unplanned forecast time"
+                )
+            reference = record.reference
+            normal_reference = reference == entry.run_time.timestamp()
+            # Reanalysis (ERA5) marks every valid time as its own reference.
+            reanalysis_reference = (
+                display_only and abs(reference - record.valid) <= 1e-6
+            )
+            if not (normal_reference or reanalysis_reference):
+                raise BoundForecastError(
+                    "Bound wave contains a different run or valid time"
+                )
+            identities.add(record.identity[1])
+            key = (field, valid)
+            seen[key] = seen.get(key, 0) + 1
+            if seen[key] > 1:
+                raise BoundForecastError("Bound wave contains duplicate records")
+        if len(identities) != 1:
+            raise BoundForecastError("Bound wave contains mixed model identities")
+        for field, stamps in expected.items():
+            for stamp in stamps:
+                if seen.get((field, stamp)) != 1:
+                    raise BoundForecastError(
+                        f"Bound wave lacks {field} at forecast hour "
+                        f"{int((stamp - entry.run_time.timestamp()) // 3600)}"
+                    )
+
+
+class BoundRoutingWaves:
+    """One strict wave source for a native calculation, with real coverage."""
+
+    def __init__(self, binding, cancel):
+        if not isinstance(binding, ResolvedForecast):
+            raise TypeError("wave binding must be ResolvedForecast")
+        self.cancel = cancel
+        self._query_lock = RLock()
+        self.binding = binding
+        self.source = BoundWaveGrib(binding)
+        self.sampler = self.source.sampler()
+        entry = binding.entry
+        artifact = entry.artifacts[0]
+        self.dataset_identity = f"{entry.model_id}:{artifact.sha256}"
+        self.model_identity = entry.model_id
+
+    def coverage(self):
+        entry = self.binding.entry
+        times = tuple(dict(entry.field_times)["wave_height"])
+        south, west, north, east = entry.region
+        return {
+            "south": float(south),
+            "west": float(west),
+            "north": float(north),
+            "east": float(east),
+            "start_epoch_s": int(times[0].timestamp()),
+            "end_epoch_s": int(times[-1].timestamp()),
+            "dataset_identity": self.dataset_identity,
+        }
+
+    def get_wave_at(self, instant, latitude, longitude):
+        """Return (height_m, period_s, direction_from_deg, available, ...)."""
+        if self.cancel.is_set():
+            raise RoutingCancelledError()
+        with self._query_lock:
+            if self.cancel.is_set():
+                raise RoutingCancelledError()
+            values = [
+                float(
+                    self.sampler.sample(field, instant, [latitude], [longitude])[0, 0]
+                )
+                for field in _WAVE_ROUTING_FIELDS
+            ]
+        if self.cancel.is_set():
+            raise RoutingCancelledError()
+        height, period, direction = values
+        if (
+            not math.isfinite(height)
+            or height < 0.0
+            or not math.isfinite(period)
+            or period <= 0.0
+            or not math.isfinite(direction)
+        ):
+            return None
+        return (
+            height,
+            period,
+            direction % 360.0,
+            True,
+            self.dataset_identity,
+            self.model_identity,
+        )
+
+    def close(self):
+        self.source.close()
 
 
 def calculate_bound_route(

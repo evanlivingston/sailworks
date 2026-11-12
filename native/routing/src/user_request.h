@@ -19,6 +19,7 @@ struct UserSettings {
   std::optional<double> minimumSailingKnots;
   double motorKnots{5.0};
   bool windBasedWaveProxy{};
+  bool useWaves{};
   double landSafetyMarginNm{};
   bool coastlineChecks{};
 };
@@ -28,6 +29,7 @@ struct UserSettings {
 // as search; the caller must retain the performance and shoreline providers.
 wr::RoutingRequest buildUserRequest(const UserSettings& settings,
                                     wr::VesselConfiguration& vessel,
-                                    const wr::ParameterCoverage& windCoverage);
+                                    const wr::ParameterCoverage& windCoverage,
+                                    const wr::ParameterCoverage& waveCoverage);
 
 }  // namespace sailworks::native_routing

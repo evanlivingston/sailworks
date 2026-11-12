@@ -193,6 +193,8 @@ def _diagnostics(run: Mapping[str, Any]) -> dict[str, Any]:
         "input_fingerprints",
         "scenario",
         "legacy_algorithm",
+        "wave_provenance",
+        "preflight",
     ):
         if key in run:
             diagnostics[key] = run[key]
@@ -220,9 +222,13 @@ def _feature_states(
     """Explicit per-feature state so absent services are never implied."""
 
     inspection = run.get("inspection_geometry")
+    provenance = run.get("wave_provenance")
+    waves = "absent"
+    if isinstance(provenance, Mapping) and provenance.get("uses_real_wave_heights"):
+        waves = "sampled"
     return {
         "weather_sampling": "sampled",
-        "waves": "absent",
+        "waves": waves,
         "shoreline": "unsupported",
         "depth": "unsupported",
         "chart_hazards": "unsupported",
@@ -296,10 +302,21 @@ def _leg_environment(
             "kn",
             "reported" if available else "unknown",
         )
-    # The bridge reports wave availability but not recorded wave values. Do not
-    # invent a height: absent waves stay unknown.
-    if leg.get("waves_available") is not None:
-        environment["waves_height_m"] = Observation(None, "m", "unknown")
+    # A wave sample is recorded only when the engine reports one. Unknown waves
+    # stay unknown; a wave-aware run never substitutes the wind proxy here.
+    waves_available = leg.get("waves_available") is True
+    for field, key, unit in (
+        ("wave_height_metres", "waves_height_m", "m"),
+        ("wave_period_seconds", "waves_period_s", "s"),
+        ("wave_direction_from_degrees", "waves_direction_from_deg", "deg"),
+    ):
+        if waves_available:
+            value = _optional_number(leg.get(field))
+            environment[key] = Observation(
+                value, unit, "reported" if value is not None else "unknown"
+            )
+        elif "waves_available" in leg:
+            environment[key] = Observation(None, unit, "unknown")
     if not any(
         observation.availability == "reported" for observation in environment.values()
     ):
@@ -318,6 +335,9 @@ READOUT_NUMBERS = (
     "true_wind_speed_knots",
     "true_wind_angle_degrees",
     "wind_gust_knots",
+    "wave_height_metres",
+    "wave_period_seconds",
+    "wave_direction_from_degrees",
     "estimated_fuel_litres",
 )
 READOUT_TEXT = ("propulsion_mode", "tack", "profile_identity", "profile_role")

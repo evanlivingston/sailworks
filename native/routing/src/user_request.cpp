@@ -17,7 +17,8 @@ void checkPoint(wr::GeoPoint point) {
 
 wr::RoutingRequest buildUserRequest(const UserSettings& settings,
                                     wr::VesselConfiguration& vessel,
-                                    const wr::ParameterCoverage& windCoverage) {
+                                    const wr::ParameterCoverage& windCoverage,
+                                    const wr::ParameterCoverage& waveCoverage) {
   checkPoint(settings.start);
   checkPoint(settings.destination);
   if (settings.start.latitude == settings.destination.latitude &&
@@ -42,7 +43,16 @@ wr::RoutingRequest buildUserRequest(const UserSettings& settings,
   vessel = request.vessel;
   request.environment.useWind = true;
   request.environment.useCurrent = settings.useCurrents;
-  request.environment.useWaves = false;
+  request.environment.useWaves = settings.useWaves;
+  if (settings.useWaves) {
+    if (!waveCoverage.available || !waveCoverage.begins || !waveCoverage.ends)
+      throw std::invalid_argument("selected wave coverage is unavailable");
+    // A calculation that asks for real wave data must fail when coverage is
+    // missing. It never falls back to the wind-based proxy silently.
+    request.environment.missingWaves =
+        wr::MissingWavePolicy::RequireExplicitAcknowledgement;
+    request.environment.missingWavesAcknowledged = false;
+  }
   request.environment.missingCurrent = wr::MissingCurrentPolicy::Disallow;
   request.objective.kind = wr::ObjectiveKind::FastestUnderSafetyLimits;
   if (!std::isfinite(settings.landSafetyMarginNm) ||
