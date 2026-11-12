@@ -165,9 +165,10 @@ SAFETY_HELP = {
         "the boat's motoring speed in calm conditions."
     ),
     "wave_proxy": (
-        "Reduces sailing speed when the wind exceeds 20 kn, down to 25% at "
-        "40 kn, as a stand-in for rough sea state. It uses forecast wind speed, "
-        "not wave height, and does not change the motoring speed."
+        "Reduces sailing speed by up to 25% when the wind exceeds 20 kn, "
+        "reaching the full 25% reduction at 40 kn and above, as a stand-in for "
+        "rough sea state. It uses forecast wind speed, not wave height, and "
+        "does not change the motoring speed."
     ),
 }
 
