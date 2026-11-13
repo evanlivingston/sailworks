@@ -6,11 +6,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QSignalBlocker, Qt
 from PySide6.QtGui import (
+    QColor,
     QFontMetrics,
     QGuiApplication,
     QHelpEvent,
     QImage,
     QMouseEvent,
+    QPalette,
     QWheelEvent,
 )
 from PySide6.QtWidgets import QApplication, QDialog, QFrame, QPushButton, QToolTip
@@ -56,7 +58,7 @@ from sailworks.qt.scenepanel import (
 )
 
 
-from sailworks.qt.theme import BORDER, PANEL, TEXT, TOOLTIP_STYLE
+from sailworks.qt.theme import BORDER, PANEL, SURFACE, TEXT, TOOLTIP_STYLE
 from sailworks.rendering.navigation import (
     routing_detail_fields,
     routing_point_cells,
@@ -1856,3 +1858,76 @@ def test_mark_headers_never_overlap_at_any_width(tmp_path):
     assert measured[960] == list(MARK_COLUMN_HEADERS) + [MARK_ROUNDING_HEADER]
     assert measured[200] == []
     assert len(measured[200]) < len(measured[304]) < len(measured[960])
+
+
+def tree_rgb(tree, point):
+    """Rendered pixel at ``point`` in the scene tree."""
+    image = tree.grab().toImage().convertToFormat(QImage.Format.Format_RGBA8888)
+    color = image.pixelColor(point)
+    return (color.red(), color.green(), color.blue())
+
+
+def colour_rgb(color):
+    return (color.red(), color.green(), color.blue())
+
+
+def row_background_point(rect):
+    """A point inside a row that no glyph, icon or branch arrow covers."""
+    return QPoint(rect.left() + 4, rect.bottom() - 2)
+
+
+def test_scene_tree_alternating_row_tint_is_subtle_and_theme_derived(tmp_path):
+    application()
+    panel = panel_for(tmp_path, tracks=[FakeTrack("t1", "Morning")])
+    tree = panel.tree
+    palette = tree.palette()
+    base = palette.color(QPalette.ColorRole.Base)
+    alternate = palette.color(QPalette.ColorRole.AlternateBase)
+
+    assert tree.alternatingRowColors()
+    assert base.name() == SURFACE
+    assert alternate != base
+    # A few percent lighter, not a visible band.
+    delta = max(
+        abs(first - second)
+        for first, second in zip(colour_rgb(base), colour_rgb(alternate))
+    )
+    assert 0 < delta <= 12
+
+
+def test_scene_tree_alternating_rows_paint_and_selection_wins(tmp_path):
+    application()
+    panel = panel_for(tmp_path, tracks=[FakeTrack("t1", "Morning")])
+    tree = panel.tree
+    panel.resize(480, 320)
+    panel.show()
+    QApplication.processEvents()
+    tree.clearSelection()
+    QApplication.processEvents()
+
+    palette = tree.palette()
+    base = colour_rgb(palette.color(QPalette.ColorRole.Base))
+    alternate = colour_rgb(palette.color(QPalette.ColorRole.AlternateBase))
+
+    root = tree.topLevelItem(0)
+    assert root.childCount() >= 2
+    first = tree.visualItemRect(root)
+    second = tree.visualItemRect(root.child(0))
+    third = tree.visualItemRect(root.child(1))
+    assert not first.isEmpty() and not second.isEmpty() and not third.isEmpty()
+    assert second.top() == first.bottom() + 1
+    assert third.top() > second.bottom()
+
+    top = tree_rgb(tree, row_background_point(first))
+    below = tree_rgb(tree, row_background_point(second))
+    assert top != below
+    assert {top, below} == {base, alternate}
+
+    # Selection keeps the normal highlight instead of a blend of stripe and
+    # highlight.
+    tree.setCurrentItem(root.child(1))
+    QApplication.processEvents()
+    highlight = colour_rgb(palette.color(QPalette.ColorRole.Highlight))
+    selected = tree_rgb(tree, row_background_point(third))
+    assert selected == highlight
+    assert selected not in (base, alternate)

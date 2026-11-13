@@ -51,7 +51,16 @@ from sailworks.rendering.navigation import (
     track_detail_fields,
 )
 from .pointeditdialog import PointEditDialog
-from .theme import BORDER, PANEL, TEXT, MenuBuilder, symbol_icon, ThemedMenu
+from .theme import (
+    BORDER,
+    PANEL,
+    SURFACE,
+    TEXT,
+    MenuBuilder,
+    alternate_row_base,
+    symbol_icon,
+    ThemedMenu,
+)
 
 NODE_ROLE = Qt.ItemDataRole.UserRole
 COORDINATE_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -378,6 +387,16 @@ class SceneTree(QTreeWidget):
         super().__init__(parent)
         self.panel = panel
         self.tooltip = SceneTooltip(self)
+        # Blender-style alternating rows: every row at every depth gets a barely
+        # visible tint over the panel surface. The row palette is set from the
+        # theme rather than inherited so the tint stays proportional when the
+        # application palette is not the dark one. Selection is painted on top
+        # by the style, so a selected row keeps the normal highlight.
+        palette = self.palette()
+        palette.setColor(QPalette.ColorRole.Base, QColor(SURFACE))
+        palette.setColor(QPalette.ColorRole.AlternateBase, alternate_row_base())
+        self.setPalette(palette)
+        self.setAlternatingRowColors(True)
         self.verticalScrollBar().valueChanged.connect(self.tooltip.hide)
         self.horizontalScrollBar().valueChanged.connect(self.tooltip.hide)
 
