@@ -53,6 +53,12 @@ class FakeRoute:
         self.uid = uid
         self.name = name
         self.visible = True
+        self.isochrones_visible = True
+        self.traces_visible = False
+        self.result_ref = None
+        self.loaded_result = None
+        self.result_error = None
+        self.contour_error = None
         self.points = [(48.1, -123.1), (48.2, -123.2)]
         self._names = {}
         self._roundings = {}
@@ -81,6 +87,10 @@ class FakePOI:
 
 
 class FakeCollection(list):
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.load_calls = []
+
     def save(self):
         pass
 
@@ -92,6 +102,13 @@ class FakeCollection(list):
         while f"{name}.{index:03d}" in existing:
             index += 1
         return f"{name}.{index:03d}"
+
+    def load_result(self, route):
+        self.load_calls.append(route)
+        error = getattr(route, "result_error", None)
+        if error is not None:
+            raise error
+        return getattr(route, "loaded_result", None)
 
 
 class FakeLibrary:
@@ -301,9 +318,245 @@ def test_expanding_route_shows_marks_and_rounding(tmp_path):
 
     row.setExpanded(True)
 
-    assert row.child(0).text(NAME_COLUMN) == "Mark 1"
-    assert row.child(0).data(NAME_COLUMN, ROUNDING_ROLE) == "Sail"
-    assert row.child(0).data(NAME_COLUMN, COORDINATE_ROLE) == ("48.100000, -123.100000")
+    legs = panel.tree_item(("routing-legs", KIND_ROUTING, "r1"))
+    mark = legs.child(0)
+    assert mark.text(NAME_COLUMN) == "Mark 1"
+    assert mark.data(NAME_COLUMN, ROUNDING_ROLE) == "Sail"
+    assert mark.data(NAME_COLUMN, COORDINATE_ROLE) == "48.100000, -123.100000"
+
+
+def test_route_isochrone_toggle_is_independent_of_route_visibility(tmp_path):
+    application()
+    route = FakeRoute("r1", "Route")
+    panel = panel_for(tmp_path, routes=[route])
+    emitted = []
+    panel.changed.connect(lambda: emitted.append(True))
+    routing_events = []
+    panel.routing_visibility_changed.connect(lambda: routing_events.append(True))
+    row = panel.item_row(KIND_ROUTING, "r1")
+    row.setExpanded(True)
+
+    isochrones = panel.tree_item(("routing-isochrones", KIND_ROUTING, "r1"))
+    assert isochrones is not None
+    assert isochrones.checkState(VISIBLE_COLUMN) == Qt.CheckState.Checked
+    assert isochrones.flags() & Qt.ItemFlag.ItemIsUserCheckable
+
+    isochrones.setCheckState(VISIBLE_COLUMN, Qt.CheckState.Unchecked)
+
+    assert route.isochrones_visible is False
+    assert route.visible is True
+    assert panel.scene.item(KIND_ROUTING, "r1").visible is True
+    assert emitted == [True]
+    assert routing_events == [True]
+
+    row.setCheckState(VISIBLE_COLUMN, Qt.CheckState.Unchecked)
+
+    assert route.visible is False
+    assert len(routing_events) == 2
+
+
+def test_isochrone_row_reports_unavailable_artifact(tmp_path):
+    application()
+    route = FakeRoute("r1", "Route")
+    route.contour_error = "OSError: artifact unavailable"
+    panel = panel_for(tmp_path, routes=[route])
+    row = panel.item_row(KIND_ROUTING, "r1")
+    row.setExpanded(True)
+
+    isochrones = panel.tree_item(("routing-isochrones", KIND_ROUTING, "r1"))
+    assert isochrones.text(NAME_COLUMN) == "Isochrones (unavailable)"
+    # The box never claims contours are present when the artifact is unreadable.
+    assert isochrones.checkState(VISIBLE_COLUMN) == Qt.CheckState.Unchecked
+    assert not (isochrones.flags() & Qt.ItemFlag.ItemIsUserCheckable)
+    tooltip = isochrones.toolTip(NAME_COLUMN)
+    assert "Isochrones unavailable" in tooltip
+    assert "artifact unavailable" in tooltip
+    # The persisted flag survives the unavailable presentation, so a later
+    # successful read restores the user's choice.
+    assert route.isochrones_visible is True
+    isochrones.setCheckState(VISIBLE_COLUMN, Qt.CheckState.Checked)
+    assert route.isochrones_visible is True
+
+
+def test_route_traces_toggle_is_independent_of_isochrones_and_route(
+    tmp_path,
+):
+    application()
+    route = FakeRoute("r1", "Route")
+    panel = panel_for(tmp_path, routes=[route])
+    emitted = []
+    panel.changed.connect(lambda: emitted.append(True))
+    routing_events = []
+    panel.routing_visibility_changed.connect(lambda: routing_events.append(True))
+    row = panel.item_row(KIND_ROUTING, "r1")
+    row.setExpanded(True)
+
+    isochrones = panel.tree_item(("routing-isochrones", KIND_ROUTING, "r1"))
+    traces = panel.tree_item(("routing-traces", KIND_ROUTING, "r1"))
+    assert traces is not None
+    assert traces.parent() is row
+    assert traces.text(NAME_COLUMN) == "Traces"
+    # Default off: the trace web hides until asked for, in every saved route.
+    assert traces.checkState(VISIBLE_COLUMN) == Qt.CheckState.Unchecked
+    assert traces.flags() & Qt.ItemFlag.ItemIsUserCheckable
+    assert isochrones.checkState(VISIBLE_COLUMN) == Qt.CheckState.Checked
+
+    traces.setCheckState(VISIBLE_COLUMN, Qt.CheckState.Checked)
+
+    assert route.traces_visible is True
+    assert route.isochrones_visible is True
+    assert route.visible is True
+    assert panel.scene.item(KIND_ROUTING, "r1").visible is True
+    assert emitted == [True]
+    assert routing_events == [True]
+
+    isochrones.setCheckState(VISIBLE_COLUMN, Qt.CheckState.Unchecked)
+
+    assert route.isochrones_visible is False
+    assert route.traces_visible is True
+    assert (
+        panel.tree_item(("routing-traces", KIND_ROUTING, "r1")).checkState(
+            VISIBLE_COLUMN
+        )
+        == Qt.CheckState.Checked
+    )
+
+
+def test_traces_row_is_a_sibling_overlay_not_a_scene_item(tmp_path):
+    application()
+    panel = panel_for(tmp_path, routes=[FakeRoute("r1", "Route")])
+    row = panel.item_row(KIND_ROUTING, "r1")
+    row.setExpanded(True)
+    traces = panel.tree_item(("routing-traces", KIND_ROUTING, "r1"))
+
+    # The traces row groups one route's overlay; it never becomes a scene item.
+    assert traces is not None
+    assert traces.parent() is row
+    assert traces is not panel.item_row(KIND_ROUTING, "r1")
+
+
+def test_legacy_route_marks_live_under_legs_wrapper_without_artifact(tmp_path):
+    application()
+    route = FakeRoute("r1", "Route")
+    panel = panel_for(tmp_path, routes=[route])
+    row = panel.item_row(KIND_ROUTING, "r1")
+    row.setExpanded(True)
+
+    assert panel.tree_item(("routing-isochrones", KIND_ROUTING, "r1")) is not None
+    legs = panel.tree_item(("routing-legs", KIND_ROUTING, "r1"))
+    assert legs is not None
+    assert legs.childCount() == 2
+    assert legs.child(0).text(NAME_COLUMN) == "Mark 1"
+    assert legs.child(0).flags() & Qt.ItemFlag.ItemIsEditable
+    assert panel.core.routingManager.load_calls == []
+
+    row.setExpanded(False)
+    row.setExpanded(True)
+    legs = panel.tree_item(("routing-legs", KIND_ROUTING, "r1"))
+    assert legs.childCount() == 2
+
+
+def test_drop_on_legs_does_not_move_a_scene_item_to_root(tmp_path):
+    application()
+    panel = panel_for(tmp_path, routes=[FakeRoute("r1", "Route")])
+    row = panel.item_row(KIND_ROUTING, "r1")
+    row.setExpanded(True)
+    legs = panel.tree_item(("routing-legs", KIND_ROUTING, "r1"))
+    calls = []
+    panel._move_to = lambda *args: calls.append(args)
+    panel.tree.itemAt = lambda _position: legs
+
+    class Event:
+        def source(self):
+            return panel.tree
+
+        def position(self):
+            return SimpleNamespace(toPoint=lambda: None)
+
+        def ignore(self):
+            calls.append("ignored")
+
+        def acceptProposedAction(self):
+            calls.append("accepted")
+
+    panel.drop_scene_items(Event())
+
+    assert calls == ["ignored"]
+
+
+def test_expanding_legs_reads_calculated_result_legs(tmp_path):
+    application()
+    route = FakeRoute("r1", "Route")
+    route.result_ref = "artifact"
+    route.loaded_result = SimpleNamespace(
+        legs=(
+            SimpleNamespace(
+                start=SimpleNamespace(lat=48.1, lon=-123.1),
+                end=SimpleNamespace(lat=48.2, lon=-123.2),
+            ),
+            SimpleNamespace(
+                start=SimpleNamespace(lat=48.2, lon=-123.2),
+                end=SimpleNamespace(lat=48.3, lon=-123.3),
+            ),
+        )
+    )
+    panel = panel_for(tmp_path, routes=[route])
+    row = panel.item_row(KIND_ROUTING, "r1")
+    row.setExpanded(True)
+
+    legs = panel.tree_item(("routing-legs", KIND_ROUTING, "r1"))
+    assert legs is not None
+    assert legs.childCount() == 2
+    assert panel.core.routingManager.load_calls == []
+
+    legs.setExpanded(True)
+
+    assert legs.childCount() == 4
+    assert legs.child(2).text(NAME_COLUMN).startswith("Leg 1:")
+    assert legs.child(2).data(NAME_COLUMN, COORDINATE_ROLE) == (
+        "48.10000, -123.10000 → 48.20000, -123.20000"
+    )
+    assert legs.child(3).text(NAME_COLUMN).startswith("Leg 2:")
+    assert panel.core.routingManager.load_calls == [route]
+
+    legs.setExpanded(False)
+    legs.setExpanded(True)
+
+    assert legs.childCount() == 4
+    assert panel.core.routingManager.load_calls == [route]
+
+
+def test_legs_wrapper_reports_unavailable_result(tmp_path):
+    application()
+    route = FakeRoute("r1", "Route")
+    route.result_ref = "artifact"
+    route.result_error = ValueError("artifact missing")
+    panel = panel_for(tmp_path, routes=[route])
+    row = panel.item_row(KIND_ROUTING, "r1")
+    row.setExpanded(True)
+
+    legs = panel.tree_item(("routing-legs", KIND_ROUTING, "r1"))
+    legs.setExpanded(True)
+
+    assert legs.childCount() == 3
+    assert legs.child(2).text(NAME_COLUMN) == "Result unavailable: artifact missing"
+
+
+def test_refresh_prunes_legs_expansion_for_removed_route(tmp_path):
+    application()
+    route = FakeRoute("r1", "Route")
+    route.result_ref = "artifact"
+    route.loaded_result = SimpleNamespace(legs=())
+    panel = panel_for(tmp_path, routes=[route])
+    row = panel.item_row(KIND_ROUTING, "r1")
+    row.setExpanded(True)
+    panel.tree_item(("routing-legs", KIND_ROUTING, "r1")).setExpanded(True)
+
+    panel.core.routingManager.clear()
+    panel.refresh()
+
+    assert (KIND_ROUTING, "r1") not in panel._expanded_legs
+    assert panel.item_row(KIND_ROUTING, "r1") is None
 
 
 def test_cycle_rounding_updates_route_mark(tmp_path):
@@ -321,7 +574,8 @@ def test_cycle_rounding_updates_route_mark(tmp_path):
 
     row = panel.item_row(KIND_ROUTING, "r1")
     row.setExpanded(True)
-    assert row.child(0).data(NAME_COLUMN, ROUNDING_ROLE) == "Stbd"
+    legs = panel.tree_item(("routing-legs", KIND_ROUTING, "r1"))
+    assert legs.child(0).data(NAME_COLUMN, ROUNDING_ROLE) == "Stbd"
 
 
 def test_edit_point_dialog_updates_name_and_rounding(tmp_path):

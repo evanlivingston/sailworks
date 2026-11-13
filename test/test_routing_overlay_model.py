@@ -295,6 +295,135 @@ def test_qml_payload_is_stable_across_style_changes():
     assert after["style_revision"] > before["style_revision"]
 
 
+def test_isochrone_time_payload_colours_and_legend_follow_epoch_order():
+    from sailworks.rendering.routingoverlay import (
+        ISOCHRONE_TIME_GRADIENT,
+        routing_overlay_data,
+    )
+
+    oldest = _layer(
+        "layer-old",
+        1767226500,
+        (Contour("c-old", True, (Point(48.0, -124.0), Point(48.1, -123.9))),),
+    )
+    newest = _layer(
+        "layer-new",
+        1767228300,
+        (Contour("c-new", True, (Point(48.2, -123.7), Point(48.3, -123.6))),),
+    )
+    model = RoutingOverlayModel(_result(layers=(newest, oldest)))
+
+    payload = routing_overlay_data(model, "time")
+
+    assert payload["isochrone_colour_by"] == "time"
+    # Layers and frontiers carry the same colour for a layer.
+    by_id = {layer["id"]: layer for layer in payload["layers"]}
+    by_frontier = {layer["layer_id"]: layer for layer in payload["frontiers"]}
+    assert by_id["layer-old"]["colour"] == by_frontier["layer-old"]["colour"]
+    # Oldest to newest: the gradient runs from its first to its last stop.
+    assert by_id["layer-old"]["colour"] == list(ISOCHRONE_TIME_GRADIENT[0])
+    assert by_id["layer-new"]["colour"] == list(ISOCHRONE_TIME_GRADIENT[-1])
+    legend = payload["legend"]
+    assert legend["title"] == "Isochrones (UTC)"
+    assert [entry[0] for entry in legend["entries"]] == ["00:15Z", "00:45Z"]
+    assert [entry[1] for entry in legend["entries"]] == [
+        list(ISOCHRONE_TIME_GRADIENT[0]),
+        list(ISOCHRONE_TIME_GRADIENT[-1]),
+    ]
+
+
+def test_uniform_isochrone_payload_is_unchanged_by_the_time_switch():
+    from sailworks.rendering.routingoverlay import routing_overlay_data
+
+    contour = Contour("c-0", True, (Point(48.0, -124.0), Point(48.1, -123.9)))
+    model = RoutingOverlayModel(_result(layers=(_layer(contours=(contour,)),)))
+
+    default = routing_overlay_data(model)
+    explicit = routing_overlay_data(model, "uniform")
+
+    assert explicit == default
+    assert "colour" not in default["layers"][0]
+    assert "colour" not in default["frontiers"][0]
+    assert "legend" not in default
+    assert "isochrone_colour_by" not in default
+
+
+def test_hidden_isochrones_produce_no_time_legend():
+    from sailworks.rendering.routingoverlay import routing_overlay_data
+
+    contour = Contour("c-0", True, (Point(48.0, -124.0), Point(48.1, -123.9)))
+    model = RoutingOverlayModel(_result(layers=(_layer(contours=(contour,)),)))
+
+    model.set_contours_visible(False)
+    payload = routing_overlay_data(model, "time")
+
+    assert payload["layers"] == []
+    assert payload["legend"]["entries"] == []
+
+
+def test_gradient_spreads_equal_epochs_and_singles():
+    from sailworks.rendering.routingoverlay import (
+        ISOCHRONE_TIME_GRADIENT,
+        _gradient_colour,
+        isochrone_time_colours,
+    )
+
+    contour = Contour("c-0", True, (Point(48.0, -124.0), Point(48.1, -123.9)))
+    model = RoutingOverlayModel(
+        _result(layers=(_layer("only", 1767226500, (contour,)),))
+    )
+    single = isochrone_time_colours(model.layers)
+    # A lone layer is mid-gradient, never the oldest deep blue.
+    assert single["only"] == _gradient_colour(0.5)
+    assert single["only"] != list(ISOCHRONE_TIME_GRADIENT[0])
+
+    model = RoutingOverlayModel(
+        _result(
+            layers=(
+                _layer(
+                    "b",
+                    1767226500,
+                    (Contour("c-b", True, (Point(48.2, -123.7), Point(48.3, -123.6))),),
+                ),
+                _layer(
+                    "a",
+                    1767226500,
+                    (Contour("c-a", True, (Point(48.4, -123.4), Point(48.5, -123.3))),),
+                ),
+            )
+        )
+    )
+    equal = isochrone_time_colours(model.layers)
+    assert equal["a"] == list(ISOCHRONE_TIME_GRADIENT[0])
+    assert equal["b"] == list(ISOCHRONE_TIME_GRADIENT[-1])
+    assert equal["a"] != equal["b"]
+
+
+def test_same_minute_legend_labels_are_distinguishable():
+    from sailworks.rendering.routingoverlay import isochrone_time_legend
+
+    contour = Contour("c-0", True, (Point(48.0, -124.0), Point(48.1, -123.9)))
+    model = RoutingOverlayModel(
+        _result(
+            layers=(
+                _layer("a", 1767226500, (contour,)),
+                _layer(
+                    "b",
+                    1767226510,
+                    (Contour("c-b", True, (Point(48.2, -123.7), Point(48.3, -123.6))),),
+                ),
+            )
+        )
+    )
+    legend = isochrone_time_legend(
+        model.layers, {"a": [0.0, 0.3, 0.85], "b": [0.65, 0.05, 0.05]}
+    )
+
+    labels = [entry[0] for entry in legend["entries"]]
+    assert len(set(labels)) == 2
+    assert labels == ["00:15:00Z", "00:15:10Z"]
+
+
 def test_overlay_model_loads_an_offline_result_file(tmp_path):
     contour = Contour("c-0", True, (Point(48.0, -124.0), Point(48.1, -123.9)))
     result = _result(layers=(_layer(contours=(contour,)),))
@@ -345,3 +474,49 @@ def test_hover_pick_is_bounded_and_does_not_touch_geometry():
 
     model.set_hover_trace(None)
     assert routing_overlay_data(model)["traces"][0]["hover"] is False
+
+
+def test_contour_toggle_hides_isochrones_without_losing_layer_state():
+    from sailworks.rendering.routingoverlay import routing_overlay_data
+
+    contour = Contour("c-0", True, (Point(48.0, -124.0), Point(48.1, -123.9)))
+    model = RoutingOverlayModel(_result(layers=(_layer(contours=(contour,)),)))
+    assert model.contours_visible is True
+    assert model.visible_polylines()
+    assert routing_overlay_data(model)["layers"]
+
+    model.set_contours_visible(False)
+
+    # Isochrones disappear, but the per-layer visibility is not overwritten.
+    assert model.contour_visible("layer-0") is False
+    assert model.is_layer_visible("layer-0") is True
+    assert model.visible_polylines() == ()
+    assert routing_overlay_data(model)["layers"] == []
+    assert routing_overlay_data(model)["frontiers"] == []
+
+    model.set_contours_visible(True)
+
+    assert model.contour_visible("layer-0") is True
+    assert model.visible_polylines()
+    assert routing_overlay_data(model)["layers"]
+
+
+def test_contour_toggle_leaves_traces_and_other_layers_alone():
+    from sailworks.rendering.routingoverlay import routing_overlay_data
+
+    contour = Contour("c-0", True, (Point(48.0, -124.0), Point(48.1, -123.9)))
+    trace = Trace("t-0", Point(48.10, -123.60), (Point(48.0, -123.7),))
+    model = RoutingOverlayModel(
+        _result(layers=(_layer(contours=(contour,)),), traces=(trace,))
+    )
+    model.set_contours_visible(False)
+
+    payload = routing_overlay_data(model)
+    assert payload["traces"]
+    assert payload["layers"] == []
+    assert model.trace_is_visible("t-0") is True
+
+    model.set_contours_visible(True)
+    payload = routing_overlay_data(model)
+    assert payload["traces"]
+    assert payload["layers"]

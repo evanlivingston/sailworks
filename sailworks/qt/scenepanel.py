@@ -23,6 +23,14 @@ from PySide6.QtWidgets import (
 
 from sailworks.common import resource_path
 from sailworks.core.geo.rounding import ROUNDING_SHORT, normalize_rounding
+from sailworks.core.geo.routing import (
+    DEFAULT_ISOCHRONE_COLOUR_MODE,
+    DEFAULT_ROUTE_COLOUR_MODE,
+    ISOCHRONE_COLOUR_MODE_LABELS,
+    ISOCHRONE_COLOUR_MODES,
+    ROUTE_COLOUR_MODE_LABELS,
+    ROUTE_COLOUR_MODES,
+)
 from sailworks.core.scene import (
     KIND_LOG,
     KIND_POI,
@@ -38,6 +46,7 @@ from .theme import MenuBuilder, symbol_icon, ThemedMenu
 NODE_ROLE = Qt.ItemDataRole.UserRole
 COORDINATE_ROLE = Qt.ItemDataRole.UserRole + 1
 ROUNDING_ROLE = Qt.ItemDataRole.UserRole + 2
+LEGS_LOADED_ROLE = Qt.ItemDataRole.UserRole + 3
 MUTED = QColor("#b0b0ad")
 POINT_COORDINATE = QColor("#8a8a87")
 ROUNDING_COLOR = QColor("#78aeed")
@@ -63,6 +72,17 @@ def _visibility_style():
         f'QTreeWidget::indicator:checked {{ image: url("{open_eye}"); }}'
         f'QTreeWidget::indicator:unchecked {{ image: url("{closed_eye}"); }}'
     )
+
+
+def _isochrone_modes_for(element):
+    """Isochrone modes this element can honour.
+
+    A legacy route has no referenced result artifact, so a Time choice would
+    persist and render nothing; only Uniform is offered.
+    """
+    if getattr(element, "result_ref", None) is None:
+        return ("uniform",)
+    return ISOCHRONE_COLOUR_MODES
 
 
 class SceneTree(QTreeWidget):
@@ -163,6 +183,7 @@ class ScenePanel(QWidget):
     fit_requested = Signal(object)
     delete_requested = Signal(object)
     move_point_requested = Signal(object, int)
+    routing_visibility_changed = Signal()
 
     def __init__(self, controller, parent=None, scene_path=None):
         super().__init__(parent)
@@ -172,6 +193,7 @@ class ScenePanel(QWidget):
         self.syncing = False
         self._rows = {}
         self._expanded_items = set()
+        self._expanded_legs = set()
         self._opened_logs = set()
         # Rebuilding clears the tree, so never do it from inside itemChanged:
         # deleting the emitting item there can crash Qt. Defer to the event loop.
@@ -354,6 +376,10 @@ class ScenePanel(QWidget):
             changed = self.scene.apply_visibility()
             if changed:
                 self._save_visible_elements(changed)
+            # Route identities are collection uids and stay stable, but drop
+            # expansion memory for routes that are no longer present.
+            self._expanded_items.intersection_update(self.scene.items)
+            self._expanded_legs.intersection_update(self.scene.items)
             self._rebuild()
         finally:
             self.syncing = False
@@ -505,10 +531,16 @@ class ScenePanel(QWidget):
         if live is None or live.element is None:
             return
         element = live.element
+        if entry.kind == KIND_ROUTING:
+            self._populate_routing_children(row, entry, element)
+            return
+        self._add_point_rows(row, entry, element, "Point")
+
+    def _add_point_rows(self, row, entry, element, default_label):
+        """Add editable mark rows for a track or routing element's positions."""
         rename_point = getattr(element, "rename_point", None)
         point_name = getattr(element, "point_name", None)
         point_rounding = getattr(element, "point_rounding", None)
-        default_label = "Mark" if entry.kind == KIND_ROUTING else "Point"
         for index, point in enumerate(element.points):
             name = point_name(index) if callable(point_name) else ""
             label = name or f"{default_label} {index + 1}"
@@ -531,6 +563,171 @@ class ScenePanel(QWidget):
             child.setFlags(flags)
             child.setForeground(NAME_COLUMN, QBrush(MUTED))
             row.addChild(child)
+
+    def _populate_routing_children(self, row, entry, element):
+        """Add calculated-result wrappers below a routing item.
+
+        These are display wrappers over the saved result, not editable
+        waypoints. Neither wrapper reads the artifact until Legs is expanded,
+        so a collapsed tree never hydrates contours.
+        """
+        identity = (entry.kind, entry.key)
+        visible = bool(getattr(element, "isochrones_visible", True))
+        # A recorded contour-read failure means the artifact is missing or
+        # corrupt. Show that instead of a checked box that would claim contours
+        # are present; the persisted visibility flag is left untouched so a
+        # later successful read restores the user's choice.
+        contour_error = getattr(element, "contour_error", None)
+        isochrones = QTreeWidgetItem(
+            ["Isochrones (unavailable)" if contour_error else "Isochrones", ""]
+        )
+        isochrones.setData(
+            NAME_COLUMN, NODE_ROLE, ("routing-isochrones", entry.kind, entry.key)
+        )
+        flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        if not contour_error:
+            flags |= Qt.ItemFlag.ItemIsUserCheckable
+        isochrones.setFlags(flags)
+        isochrones.setCheckState(
+            VISIBLE_COLUMN,
+            (
+                Qt.CheckState.Unchecked
+                if contour_error or not visible
+                else Qt.CheckState.Checked
+            ),
+        )
+        isochrones.setIcon(NAME_COLUMN, symbol_icon("isochrone-symbolic"))
+        if contour_error:
+            isochrones.setForeground(NAME_COLUMN, QBrush(MUTED))
+            isochrones.setToolTip(
+                NAME_COLUMN,
+                f"Isochrones unavailable: {contour_error}",
+            )
+        else:
+            isochrones.setToolTip(
+                NAME_COLUMN,
+                "Calculated isochrones. Their visibility is independent of the "
+                "route line.",
+            )
+        row.addChild(isochrones)
+        self._rows[("routing-isochrones", entry.kind, entry.key)] = isochrones
+
+        # Traces are their own layer: they stay available when the isochrones
+        # are hidden. Off by default because the dense trace web makes the map
+        # unreadable. Legacy routes keep the toggle but have no trace geometry.
+        traces = QTreeWidgetItem(["Traces", ""])
+        traces.setData(
+            NAME_COLUMN, NODE_ROLE, ("routing-traces", entry.kind, entry.key)
+        )
+        traces.setFlags(
+            Qt.ItemFlag.ItemIsEnabled
+            | Qt.ItemFlag.ItemIsSelectable
+            | Qt.ItemFlag.ItemIsUserCheckable
+        )
+        traces.setCheckState(
+            VISIBLE_COLUMN,
+            (
+                Qt.CheckState.Checked
+                if bool(getattr(element, "traces_visible", False))
+                else Qt.CheckState.Unchecked
+            ),
+        )
+        traces.setIcon(NAME_COLUMN, symbol_icon("track-symbolic"))
+        traces.setToolTip(
+            NAME_COLUMN,
+            "Routing traces. Independent of the route line and the isochrones. "
+            "Hidden by default because the trace web makes the map unreadable.",
+        )
+        row.addChild(traces)
+        self._rows[("routing-traces", entry.kind, entry.key)] = traces
+
+        # Route marks are editable waypoints, like track points, but they stay
+        # grouped with the calculated legs. Legacy routes without a result still
+        # get the wrapper so their marks keep one consistent location.
+        legs = QTreeWidgetItem(["Legs", ""])
+        legs.setData(NAME_COLUMN, NODE_ROLE, ("routing-legs", entry.kind, entry.key))
+        legs.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+        legs.setIcon(NAME_COLUMN, symbol_icon("track-symbolic"))
+        legs.setToolTip(
+            NAME_COLUMN,
+            "Route marks and calculated result legs. Expand to read calculated "
+            "legs from the saved result.",
+        )
+        legs.setChildIndicatorPolicy(QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator)
+        row.addChild(legs)
+        self._rows[("routing-legs", entry.kind, entry.key)] = legs
+        self._add_point_rows(legs, entry, element, "Mark")
+        if identity in self._expanded_legs:
+            legs.setExpanded(True)
+            self._populate_legs(legs, entry)
+
+    def _populate_legs(self, row, entry):
+        """Read calculated legs from the saved result, reporting load failures."""
+        if row.data(NAME_COLUMN, LEGS_LOADED_ROLE):
+            return
+        live = self.scene.live_entry(entry.kind, entry.key)
+        element = live.element if live is not None else None
+        if element is None:
+            row.setData(NAME_COLUMN, LEGS_LOADED_ROLE, True)
+            self._legs_failure(row, "route is no longer available")
+            return
+        if getattr(element, "result_ref", None) is None:
+            # Legacy routes have no calculated artifact; their inline contours
+            # stay available through the Isochrones toggle above.
+            return
+        row.setData(NAME_COLUMN, LEGS_LOADED_ROLE, True)
+        manager = getattr(self.core, "routingManager", None)
+        loader = getattr(manager, "load_result", None)
+        if not callable(loader):
+            self._legs_failure(row, "routing collection cannot load results")
+            return
+        try:
+            result = loader(element)
+        except (OSError, KeyError, ValueError, LookupError) as exc:
+            self._legs_failure(row, self._error_text(exc))
+            return
+        legs = tuple(getattr(result, "legs", ()))
+        if not legs:
+            child = QTreeWidgetItem(["No calculated legs", ""])
+            child.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            child.setForeground(NAME_COLUMN, QBrush(MUTED))
+            row.addChild(child)
+            return
+        for index, leg in enumerate(legs, 1):
+            start = getattr(leg, "start", None)
+            end = getattr(leg, "end", None)
+            label = f"Leg {index}"
+            coordinates = ""
+            if start is not None and end is not None:
+                coordinates = (
+                    f"{start.lat:.5f}, {start.lon:.5f} → "
+                    f"{end.lat:.5f}, {end.lon:.5f}"
+                )
+                label = f"{label}: {coordinates}"
+            child = QTreeWidgetItem([label, ""])
+            child.setData(
+                NAME_COLUMN,
+                NODE_ROLE,
+                ("routing-leg", entry.kind, entry.key, index - 1),
+            )
+            if coordinates:
+                child.setData(NAME_COLUMN, COORDINATE_ROLE, coordinates)
+            child.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            child.setForeground(NAME_COLUMN, QBrush(MUTED))
+            row.addChild(child)
+
+    @staticmethod
+    def _error_text(exc):
+        """User-readable failure text without a redundant class prefix."""
+        detail = str(exc).strip()
+        return detail or type(exc).__name__
+
+    def _legs_failure(self, row, detail):
+        child = QTreeWidgetItem([f"Result unavailable: {detail}", ""])
+        child.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        child.setForeground(NAME_COLUMN, QBrush(MUTED))
+        row.addChild(child)
+        row.setToolTip(NAME_COLUMN, f"Calculated legs unavailable: {detail}")
 
     def _first_selectable(self):
         for index in range(self.tree.topLevelItemCount()):
@@ -633,6 +830,35 @@ class ScenePanel(QWidget):
                 changed = (
                     self.scene.set_item_visible(node[1], node[2], visible) or changed
                 )
+        elif node[0] == "routing-isochrones":
+            entry = self.scene.live_entry(node[1], node[2])
+            element = entry.element if entry is not None else None
+            if element is None:
+                return
+            if getattr(element, "contour_error", None):
+                # The row reports an unreadable artifact and is not checkable;
+                # never let a displayed unchecked state overwrite the persisted
+                # visibility flag.
+                return
+            visible = row.checkState(VISIBLE_COLUMN) == Qt.CheckState.Checked
+            if bool(getattr(element, "isochrones_visible", True)) != visible:
+                element.isochrones_visible = visible
+                self._save_visible_elements({KIND_ROUTING})
+                self.changed.emit()
+                self.routing_visibility_changed.emit()
+            return
+        elif node[0] == "routing-traces":
+            entry = self.scene.live_entry(node[1], node[2])
+            element = entry.element if entry is not None else None
+            if element is None:
+                return
+            visible = row.checkState(VISIBLE_COLUMN) == Qt.CheckState.Checked
+            if bool(getattr(element, "traces_visible", False)) != visible:
+                element.traces_visible = visible
+                self._save_visible_elements({KIND_ROUTING})
+                self.changed.emit()
+                self.routing_visibility_changed.emit()
+            return
         elif node[0] == "point":
             self._rename_point(node, row.text(NAME_COLUMN))
             return
@@ -644,6 +870,8 @@ class ScenePanel(QWidget):
                 if applied:
                     self._save_visible_elements(applied)
                 self._refresh_timer.start(0)
+                if KIND_ROUTING in applied:
+                    self.routing_visibility_changed.emit()
 
     def _deferred_change(self):
         self.syncing = True
@@ -667,6 +895,12 @@ class ScenePanel(QWidget):
             item = self.scene.item(*identity)
             if item is not None:
                 self._populate_track_points(row, item)
+        elif node[0] == "routing-legs":
+            identity = (node[1], node[2])
+            self._expanded_legs.add(identity)
+            item = self.scene.item(*identity)
+            if item is not None:
+                self._populate_legs(row, item)
 
     def _collapsed_changed(self, row):
         if self.syncing:
@@ -678,6 +912,8 @@ class ScenePanel(QWidget):
             self.scene.set_group_collapsed(node[1], True)
         elif node[0] == "item" and node[1] in (KIND_TRACK, KIND_ROUTING):
             self._expanded_items.discard((node[1], node[2]))
+        elif node[0] == "routing-legs":
+            self._expanded_legs.discard((node[1], node[2]))
 
     def _rename_item(self, item, name):
         if item.kind == KIND_LOG:
@@ -811,6 +1047,8 @@ class ScenePanel(QWidget):
             self.syncing = False
         if changed or structural:
             self.changed.emit()
+        if KIND_ROUTING in changed:
+            self.routing_visibility_changed.emit()
 
     def _new_collection(self):
         parent = self._current_group()
@@ -910,6 +1148,40 @@ class ScenePanel(QWidget):
             builder.add("Group Selection", self._group_selection, key="G")
         if keys or groups:
             self._add_move_menu(builder, keys, groups, key="M")
+        colour_target = self._colour_by_target(node)
+        if colour_target is not None:
+            builder.section()
+            submenu = builder.add_menu("Colour by", key="U")
+            sub_builder = MenuBuilder(submenu)
+            current = getattr(colour_target, "colour_by", DEFAULT_ROUTE_COLOUR_MODE)
+            for mode in ROUTE_COLOUR_MODES:
+                action = sub_builder.add(
+                    ROUTE_COLOUR_MODE_LABELS[mode],
+                    lambda _checked=False, m=mode: self._set_colour_by(node, m),
+                )
+                action.setCheckable(True)
+                action.setChecked(mode == current)
+            # Isochrone portrayal is independent of the route-line mode and
+            # rides the same routing context menu.
+            submenu = builder.add_menu("Isochrones", key="I")
+            sub_builder = MenuBuilder(submenu)
+            current = getattr(
+                colour_target,
+                "isochrone_colour_by",
+                DEFAULT_ISOCHRONE_COLOUR_MODE,
+            )
+            modes = _isochrone_modes_for(colour_target)
+            if current not in modes:
+                current = DEFAULT_ISOCHRONE_COLOUR_MODE
+            for mode in modes:
+                action = sub_builder.add(
+                    ISOCHRONE_COLOUR_MODE_LABELS[mode],
+                    lambda _checked=False, m=mode: self._set_isochrone_colour_by(
+                        node, m
+                    ),
+                )
+                action.setCheckable(True)
+                action.setChecked(mode == current)
         if fit_nodes or point_element is not None:
             builder.section()
             if fit_nodes:
@@ -970,6 +1242,33 @@ class ScenePanel(QWidget):
         if menu.actions():
             menu.exec(self.tree.viewport().mapToGlobal(position))
 
+    def _colour_by_target(self, node):
+        """The routing element a colour-by menu action applies to, if any."""
+        if node is None or node[0] != "item" or node[1] != KIND_ROUTING:
+            return None
+        live = self.scene.live_entry(node[1], node[2])
+        return None if live is None else live.element
+
+    def _set_colour_by(self, node, mode):
+        element = self._colour_by_target(node)
+        if element is None or getattr(element, "colour_by", None) == mode:
+            return
+        # The property setter bumps the route revision, which invalidates the
+        # viewport overlay cache; emitting changed saves and repaints.
+        element.colour_by = mode
+        self.changed.emit()
+
+    def _set_isochrone_colour_by(self, node, mode):
+        element = self._colour_by_target(node)
+        if element is None or getattr(element, "isochrone_colour_by", None) == mode:
+            return
+        if mode == "time" and mode not in _isochrone_modes_for(element):
+            return
+        # Separate from route colour and from the isochrone eye toggle. The
+        # setter bumps the revision, invalidating cached overlay payloads.
+        element.isochrone_colour_by = mode
+        self.changed.emit()
+
     def _delete_groups(self, identifiers):
         changed = False
         for identifier in identifiers:
@@ -1006,6 +1305,15 @@ class ScenePanel(QWidget):
                     row.setExpanded(True)
             self.changed.emit()
 
+    @staticmethod
+    def _inside_legs(row):
+        while row is not None:
+            node = row.data(NAME_COLUMN, NODE_ROLE)
+            if node is not None and node[0] == "routing-legs":
+                return True
+            row = row.parent()
+        return False
+
     def drop_scene_items(self, event):
         if event.source() is not self.tree:
             event.ignore()
@@ -1019,6 +1327,13 @@ class ScenePanel(QWidget):
         elif node[0] == "item":
             item = self.scene.item(node[1], node[2])
             target = item.group if item is not None else None
+        elif node[0] in ("routing-isochrones", "routing-traces") or self._inside_legs(
+            target_row
+        ):
+            # These rows group one route's contents, not a collection. Dropping
+            # there must not move a scene item out to the root.
+            event.ignore()
+            return
         else:
             target = None
         self._move_to(self._selected_item_keys(), self._selected_groups(), target)

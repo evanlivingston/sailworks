@@ -6,6 +6,7 @@ from types import MethodType, SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QApplication
 
 from sailworks.core import storage
@@ -30,6 +31,7 @@ from sailworks.core.marine.routingrecord import (
 from sailworks.core.marine.routingresult import RoutingResult, canonical_utc
 from sailworks.core.marine.routingresultstore import RoutingResultStore
 from sailworks.core.marine.routingselection import RoutingSelection
+from sailworks.qt.routingcontroller import RoutingController
 from sailworks.qt.routinginspector import RoutingInspectorPanel
 from sailworks.qt.window import PreviewWindow
 
@@ -526,3 +528,136 @@ def test_non_complete_status_and_search_lines_differ():
     result = _result(status="incomplete")
     states = _states(result)
     assert states["status"] != states["search"]
+
+
+class _RestoreMap:
+    def __init__(self):
+        self.native_routing = None
+        self.navigation = SimpleNamespace(hl_routing=None)
+        self.route = None
+        self.isochrones = None
+
+    def set_route(self, coordinates, speeds):
+        self.route = (coordinates, speeds)
+
+    def set_isochrones(self, frontiers):
+        self.isochrones = tuple(frontiers)
+
+
+class _RestoreNavigation:
+    def __init__(self):
+        self.route = None
+        self.selected = []
+
+    def select_route(self, route):
+        self.route = route
+        self.selected.append(route)
+
+    def refresh(self):
+        pass
+
+
+class _RestoreSession(QObject):
+    def __init__(self, collection):
+        super().__init__()
+        self.core = SimpleNamespace(routingManager=collection)
+
+
+def _workspace_window(collection):
+    """A restored window with production routing methods over a fresh core."""
+    session = _RestoreSession(collection)
+    controller = RoutingController(session)
+    navigation = _RestoreNavigation()
+    window = SimpleNamespace(
+        controller=SimpleNamespace(core=session.core, routing=controller),
+        navigation_panel=navigation,
+        map=_RestoreMap(),
+        routing_inspector=Mock(),
+        routing_inspector_dock=Mock(),
+        _routing_active_route=None,
+        _routing_selection_changed=Mock(),
+        _routing_selection_unsubscribe=None,
+    )
+    for name in (
+        "_select_saved_route",
+        "_restore_saved_routing_overlay",
+        "_native_owns_route",
+        "_navigation_route_selected",
+        "_refresh_route_isochrone_row",
+        "_sync_route_isochrones",
+        "_show_saved_routing_route",
+        "_present_routing_result",
+    ):
+        setattr(window, name, MethodType(getattr(PreviewWindow, name), window))
+    return window, controller
+
+
+def test_workspace_restore_rebuilds_native_overlay_from_disk_without_recalculation(
+    tmp_path, app, monkeypatch
+):
+    monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path))
+    store = RoutingResultStore(tmp_path / "artifacts")
+    writer = RoutingCollection(store)
+    result = _result()
+    selection = RoutingSelection(result)
+    selection.select_layer("layer-1")
+    route = writer.save_result(
+        "restored",
+        result,
+        inspection_context=InspectionContext.from_selection(selection).to_dict(),
+    )
+    writer.append(route)
+    writer.save()
+
+    # Simulate an application restart: a fresh collection reads the route list
+    # from disk and no routing engine or solver is involved.
+    reader = RoutingCollection(store)
+    restored_route = reader.elements[0]
+    restored_route.isochrones_visible = False
+    loads = []
+    original_load = store.load_json
+    store.load_json = lambda ref: (loads.append(ref), original_load(ref))[1]
+    window, controller = _workspace_window(reader)
+
+    assert window._select_saved_route(restored_route) is True
+
+    model = controller.native_overlay
+    assert model is not None
+    assert window.map.native_routing is model
+    assert model.result.calculation_id == CALCULATION_A
+    assert model.contours_visible is False
+    assert window.navigation_panel.selected == [restored_route]
+    assert window.map.navigation.hl_routing == restored_route.name
+    assert window.map.route is not None
+    assert window.routing_inspector.set_result.called
+    # One artifact read restored the display; reselecting the same route must
+    # reuse the presented overlay instead of loading it again.
+    assert loads == [restored_route.result_ref]
+    window._select_saved_route(restored_route)
+    assert len(loads) == 1
+
+
+def test_workspace_restore_reports_missing_artifact_and_keeps_route_line(
+    tmp_path, app, monkeypatch
+):
+    monkeypatch.setattr(storage, "DATA_DIR", str(tmp_path))
+    store = RoutingResultStore(tmp_path / "artifacts")
+    writer = RoutingCollection(store)
+    route = writer.save_result("restored", _result())
+    writer.append(route)
+    writer.save()
+    store._path(route.result_ref.artifact_id).unlink()
+    store._cache.clear()
+    store._cache_bytes = 0
+
+    reader = RoutingCollection(store)
+    window, controller = _workspace_window(reader)
+
+    assert window._select_saved_route(reader.elements[0]) is False
+
+    assert controller.native_overlay is None
+    assert window.map.native_routing is None
+    assert window.map.route is not None
+    window.routing_inspector.show_error.assert_called_once()
+    message = window.routing_inspector.show_error.call_args.args[0]
+    assert "Routing result unavailable" in message

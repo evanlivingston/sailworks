@@ -98,7 +98,7 @@ class RetainedRoutingLayer:
             if model is not None:
                 if kind == "trace" and not model.traces_visible:
                     continue
-                if kind == "contour" and not model.is_layer_visible(layer_id):
+                if kind == "contour" and not model.contour_visible(layer_id):
                     continue
             start = camera.convert_geographic_to_screen(first[0], first[1])
             end = camera.convert_geographic_to_screen(second[0], second[1])

@@ -93,6 +93,35 @@ class NavigationScroll(QScrollArea):
         return QSize(0, 0)
 
 
+def _routing_owns_route(route, native, active_route):
+    """Whether a native overlay was presented for this route's result."""
+    if route is None or native is None:
+        return False
+    summary = getattr(route, "result_summary", None)
+    recorded = summary.get("calculation_id") if isinstance(summary, dict) else None
+    if recorded is not None:
+        return recorded == native.calculation_id
+    # A result presented specifically for this route is trusted even when the
+    # summary predates calculation ids.
+    return active_route is route
+
+
+def _routing_isochrone_mode(route, native, active_route):
+    """Isochrone mode for the canvases, or None to leave them unchanged.
+
+    An independently opened native result has no owning route, so its
+    presented mode is preserved. Legacy routes and a missing native overlay
+    stay uniform. Pure so partial window doubles need no extra bindings.
+    """
+    if native is None:
+        return "uniform"
+    if route is None:
+        return None
+    if _routing_owns_route(route, native, active_route):
+        return getattr(route, "isochrone_colour_by", "uniform")
+    return "uniform"
+
+
 class PreviewWindow(QMainWindow):
     def __init__(self, controller, workspace_path=None):
         super().__init__()
@@ -206,6 +235,9 @@ class PreviewWindow(QMainWindow):
         self.undo_stack = QUndoStack(self)
         self.scene_panel = ScenePanel(controller, self)
         self.scene_panel.changed.connect(self._scene_changed)
+        self.scene_panel.routing_visibility_changed.connect(
+            self._routing_visibility_changed
+        )
         self.scene_panel.selected.connect(self._scene_selected)
         self.scene_panel.open_requested.connect(self._scene_open)
         self.scene_panel.fit_requested.connect(self._scene_fit)
@@ -905,15 +937,39 @@ class PreviewWindow(QMainWindow):
         self._show_panel("polar-selector")
 
     def _select_saved_route(self, route):
+        # A successful restore selects the route itself while presenting the
+        # saved result. Select once here only when no restore will do so.
+        if not getattr(self, "_restoring_saved_routing", False):
+            if self._restore_saved_routing_overlay(route):
+                return True
         self.navigation_panel.select_route(route)
         self._navigation_route_selected(route)
+        return False
+
+    def _restore_saved_routing_overlay(self, route):
+        """Present a saved schema-v1 result without recalculating it.
+
+        Legacy routes keep their inline frontier path. A referenced result is
+        loaded once and then reused while that calculation stays active.
+        """
+        if route is None or getattr(route, "result_ref", None) is None:
+            return False
+        if self._native_owns_route(
+            route, getattr(self.controller.routing, "native_overlay", None)
+        ):
+            return False
+        self._restoring_saved_routing = True
+        try:
+            return self._show_saved_routing_route(route)
+        finally:
+            self._restoring_saved_routing = False
 
     def _routing_completed(self, route):
         self.scene_panel.refresh()
-        self._select_saved_route(route)
+        restored = self._select_saved_route(route)
         self.map.fit_route()
         self._refresh_routing_alternatives(select_route=route)
-        if getattr(route, "result_ref", None) is not None:
+        if getattr(route, "result_ref", None) is not None and not restored:
             self._show_saved_routing_route(route)
 
     def _native_cleared(self):
@@ -1173,6 +1229,7 @@ class PreviewWindow(QMainWindow):
             self.navigation_panel.add_point(coordinates)
 
     def _scene_changed(self):
+        self._sync_isochrone_colour_mode()
         self.navigation_panel.refresh()
         self._publish_race_track_overlay()
         for canvas in (self.map, self.log_map):
@@ -1478,16 +1535,130 @@ class PreviewWindow(QMainWindow):
                     if collection is not None:
                         collection.save()
 
+    def _routing_visibility_changed(self):
+        """Refresh isochrones when a scene toggle changes routing visibility.
+
+        This is deliberately separate from ``_scene_changed``: unrelated scene
+        edits must not hydrate a referenced result artifact.
+        """
+        self._sync_route_isochrones()
+        for canvas in (self.map, self.log_map):
+            invalidate = getattr(canvas, "invalidate_navigation", None)
+            if callable(invalidate):
+                invalidate()
+            refresh = getattr(canvas, "refresh_route_overlay", None)
+            if callable(refresh):
+                refresh()
+            canvas.update()
+
+    def _sync_isochrone_colour_mode(self):
+        """Apply the active route's mode on scene changes without artifact I/O."""
+        routing = getattr(self.controller, "routing", None)
+        native = getattr(routing, "native_overlay", None)
+        route = getattr(getattr(self, "navigation_panel", None), "route", None)
+        mode = _routing_isochrone_mode(
+            route, native, getattr(self, "_routing_active_route", None)
+        )
+        if mode is None:
+            return
+        for canvas in (getattr(self, "map", None), getattr(self, "log_map", None)):
+            if canvas is not None:
+                canvas.isochrone_colour_by = mode
+
+    def _native_owns_route(self, route, native):
+        """Whether a native overlay was presented for this route's result."""
+        return _routing_owns_route(
+            route, native, getattr(self, "_routing_active_route", None)
+        )
+
     def _sync_route_isochrones(self):
+        if getattr(self, "_syncing_route_isochrones", False):
+            # A row update requested by this sync must not re-enter it.
+            return
         if not self.controller.routing.busy:
             route = self.navigation_panel.route
-            self.map.set_isochrones(
-                route.isochrones if route is not None and route.visible else ()
+            show = (
+                route is not None
+                and bool(getattr(route, "visible", True))
+                and bool(getattr(route, "isochrones_visible", True))
             )
-            self.map.native_routing = self.controller.routing.native_overlay
+            # The row shows contour availability, so remember what it said
+            # before this sync hydrates the artifact and record a transition.
+            error_before = getattr(route, "contour_error", None)
+            # Do not hydrate a referenced artifact while the layer is hidden.
+            native = self.controller.routing.native_overlay
+            if native is not None and route is not None:
+                active = getattr(self, "_routing_active_route", None)
+                if self._native_owns_route(route, native):
+                    # Gate only the isochrone layers; each layer keeps its own
+                    # remembered visibility and the trace/path geometry stays.
+                    native.set_contours_visible(show)
+                elif active is not None:
+                    # A stale result presented for another route must never be
+                    # shown as if it were this route's isochrones.
+                    native = None
+                # When nothing was presented for a route, the overlay was opened
+                # as an independent result file and this route's toggle does not
+                # govern it.
+            self.map.set_isochrones(route.isochrones if show else ())
+            # The route records why its artifact could not be read; surface it
+            # through the map caption instead of leaving an empty caption that
+            # looks like a healthy result with no contours.
+            self.map.isochrone_error = getattr(route, "contour_error", None)
+            mode = _routing_isochrone_mode(
+                route, native, getattr(self, "_routing_active_route", None)
+            )
+            if mode is not None:
+                # Both canvases share the mode attribute so switching between
+                # the map and log views never shows a stale colour mode. Only
+                # the primary map presents the routing isochrones.
+                for canvas in (
+                    getattr(self, "map", None),
+                    getattr(self, "log_map", None),
+                ):
+                    if canvas is not None:
+                        canvas.isochrone_colour_by = mode
+            self.map.native_routing = native
+            # Traces use their own flag, independent of the contour gate: a
+            # hidden isochrone layer must not hide the trace web. Only the
+            # primary map hosts the native routing overlay (the log map is a
+            # separate log view and never receives ``native_routing``), so the
+            # flag is applied there and nowhere else.
+            traces_visible = bool(getattr(route, "traces_visible", False))
+            canvas_native = getattr(self.map, "native_routing", None)
+            if canvas_native is not None and self._native_owns_route(
+                route, canvas_native
+            ):
+                setter = getattr(canvas_native, "set_traces_visible", None)
+                if callable(setter):
+                    setter(traces_visible)
             selection = self.controller.routing.native_selection
-            if selection is not None and self.map.native_routing is not None:
-                self.map.native_routing.attach_selection(selection)
+            if selection is not None and native is not None:
+                native.attach_selection(selection)
+            if getattr(route, "contour_error", None) != error_before:
+                # Contour availability changed during this sync, so the Scene
+                # Collection row would otherwise stay one refresh behind and
+                # offer a checkbox for a result it no longer has.
+                self._refresh_route_isochrone_row()
+
+    def _refresh_route_isochrone_row(self):
+        """Rebuild the scene rows that show contour availability.
+
+        Called only when a sync changed ``contour_error``, so it stays one
+        explicit request instead of a full panel refresh on every sync. The
+        re-entry guard means a panel emitting its own change signal during the
+        rebuild cannot drive another sync and loop.
+        """
+        scene_panel = getattr(self, "scene_panel", None)
+        if scene_panel is None:
+            return
+        if getattr(self, "_syncing_route_isochrones", False):
+            return
+        self._syncing_route_isochrones = True
+        try:
+            scene_panel.refresh()
+        finally:
+            self._syncing_route_isochrones = False
 
     def _create_routing_inspector(self):
         self.routing_inspector = RoutingInspectorPanel(self)
@@ -1551,12 +1722,17 @@ class PreviewWindow(QMainWindow):
             )
             if manager is None:
                 raise ValueError("no routing collection is loaded")
+            # Selecting a saved route is the explicit retry point for a contour
+            # artifact that was missing or corrupt on an earlier visit. This
+            # only clears the remembered failure; the single read happens in
+            # the sync below, so repeated frames still never retry.
+            route.refresh_isochrones()
             result = manager.load_result(route)
             model = self.controller.routing.show_native_result(result)
         except (OSError, KeyError, ValueError) as exc:
             self.routing_inspector.show_error(f"Routing result unavailable: {exc}")
             self.routing_inspector_dock.show()
-            return
+            return False
         self._select_saved_route(route)
         from sailworks.core.marine.routinginspection import InspectionContext
 
@@ -1579,6 +1755,10 @@ class PreviewWindow(QMainWindow):
         self._present_routing_result(
             model, route=route, context=context, context_error=context_error
         )
+        # The active route is recorded by presentation, so reapply the saved
+        # isochrone toggle to the restored native layers now.
+        self._sync_route_isochrones()
+        return True
 
     def _present_routing_result(
         self, model, route=None, context=None, context_error=None
