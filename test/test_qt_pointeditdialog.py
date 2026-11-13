@@ -49,8 +49,11 @@ def test_dialog_edits_full_rounding_spec(app):
     dialog.deleteLater()
 
 
-def test_sail_to_mark_has_no_routing_spec(app):
+def test_sail_to_mark_has_no_routing_spec_and_hides_details(app):
     dialog = PointEditDialog("Mark", rounding=2)
+    assert dialog.rounding_details.isHidden() is True
     dialog.radius.setValue(2.0)
     assert dialog.point_rounding_spec() is None
+    dialog.rounding_combo.setCurrentIndex(dialog.rounding_combo.findData(ROUNDING_PORT))
+    assert dialog.rounding_details.isHidden() is False
     dialog.deleteLater()

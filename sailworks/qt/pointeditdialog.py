@@ -1,7 +1,6 @@
 """Properties dialog for a track or route point."""
 
 from PySide6.QtWidgets import (
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -10,6 +9,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QVBoxLayout,
+    QWidget,
 )
 
 from sailworks.core.geo.rounding import (
@@ -20,6 +20,7 @@ from sailworks.core.geo.rounding import (
     normalize_rounding,
     normalize_rounding_spec,
 )
+from .dropdown import Dropdown
 
 
 class PointEditDialog(QDialog):
@@ -42,18 +43,22 @@ class PointEditDialog(QDialog):
         self.name_edit = QLineEdit(str(name or ""))
         form.addRow("Name", self.name_edit)
         self.rounding_combo = None
+        self.rounding_details = None
         self.radius = None
         self.exit_min = None
         self.exit_max = None
         if rounding is not None:
-            self.rounding_combo = QComboBox()
+            self.rounding_combo = Dropdown("Rounding")
             for value, label in ROUNDING_LABELS.items():
                 self.rounding_combo.addItem(label, value)
             self.rounding_combo.setCurrentIndex(
                 self.rounding_combo.findData(normalize_rounding(rounding))
             )
-            form.addRow("Rounding", self.rounding_combo)
+            form.addRow(self.rounding_combo)
 
+            self.rounding_details = QWidget()
+            details = QFormLayout(self.rounding_details)
+            details.setContentsMargins(0, 0, 0, 0)
             self.radius = QDoubleSpinBox()
             self.radius.setRange(0.05, 1000.0)
             self.radius.setDecimals(2)
@@ -62,7 +67,7 @@ class PointEditDialog(QDialog):
             self.radius.setValue(
                 DEFAULT_ROUNDING_RADIUS_NM if radius_nm is None else float(radius_nm)
             )
-            form.addRow("Radius", self.radius)
+            details.addRow("Radius", self.radius)
 
             self.exit_min = QDoubleSpinBox()
             self.exit_min.setRange(-1, 360)
@@ -71,7 +76,7 @@ class PointEditDialog(QDialog):
             self.exit_min.setValue(
                 -1 if exit_bearing_min_deg is None else float(exit_bearing_min_deg)
             )
-            form.addRow("Exit min", self.exit_min)
+            details.addRow("Exit min", self.exit_min)
 
             self.exit_max = QDoubleSpinBox()
             self.exit_max.setRange(-1, 360)
@@ -80,15 +85,9 @@ class PointEditDialog(QDialog):
             self.exit_max.setValue(
                 -1 if exit_bearing_max_deg is None else float(exit_bearing_max_deg)
             )
-            form.addRow("Exit max", self.exit_max)
+            details.addRow("Exit max", self.exit_max)
+            form.addRow(self.rounding_details)
 
-            note = QLabel(
-                "Radius and exit apply only when Rounding is Port or Starboard. "
-                "Leave both exit fields at none for no exit-heading requirement."
-            )
-            note.setWordWrap(True)
-            note.setProperty("secondary", True)
-            form.addRow(note)
             self.rounding_combo.currentIndexChanged.connect(self._sync_rounding_fields)
             self._sync_rounding_fields()
         if coordinates is not None:
@@ -104,12 +103,13 @@ class PointEditDialog(QDialog):
         layout.addWidget(buttons)
 
     def _sync_rounding_fields(self, *_):
-        if self.rounding_combo is None:
+        if self.rounding_combo is None or self.rounding_details is None:
             return
         enabled = self.rounding_combo.currentData() in (
             ROUNDING_PORT,
             ROUNDING_STARBOARD,
         )
+        self.rounding_details.setVisible(enabled)
         for widget in (self.radius, self.exit_min, self.exit_max):
             if widget is not None:
                 widget.setEnabled(enabled)

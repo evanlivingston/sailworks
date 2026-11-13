@@ -259,15 +259,6 @@ class RoutingPanel(QWidget):
         self.start_mode.currentIndexChanged.connect(self._plan_changed)
         form.addRow(self.destination)
         form.addRow(self.start_mode)
-        self.rounding_hint = QLabel(
-            "Set a mark's rounding side, radius and optional exit heading in "
-            "Point Properties. Native routing reads it from each track point; "
-            "the start point is not a rounding mark, and standalone POI/map "
-            "destinations are exact for now."
-        )
-        self.rounding_hint.setWordWrap(True)
-        self.rounding_hint.setProperty("secondary", True)
-        form.addRow(self.rounding_hint)
         self.coastlines = QCheckBox("Check coastlines")
         self.coastlines.setChecked(True)
         form.addRow(self.coastlines)
