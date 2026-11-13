@@ -241,6 +241,42 @@ double terminalCourseDegrees(const Node& node) {
   return normalizeHeading(node.incomingHeading);
 }
 
+RoundingApproach closestRoundingApproach(
+    const std::vector<TimedMotionSegment>& segments, GeoPoint mark,
+    GeoPoint fallbackPoint, double fallbackCourse) {
+  RoundingApproach best{fallbackPoint, normalizeHeading(fallbackCourse)};
+  double bestDistance = distanceNm(fallbackPoint, mark);
+  const double cosLatitude =
+      std::cos(mark.latitude * std::numbers::pi / 180.0);
+  for (const TimedMotionSegment& segment : segments) {
+    const double dx =
+        (segment.end.longitude - segment.start.longitude) * cosLatitude;
+    const double dy = segment.end.latitude - segment.start.latitude;
+    const double ox =
+        (segment.start.longitude - mark.longitude) * cosLatitude;
+    const double oy = segment.start.latitude - mark.latitude;
+    const double denominator = dx * dx + dy * dy;
+    const double t =
+        denominator <= 1e-18
+            ? 0.0
+            : std::clamp(-(ox * dx + oy * dy) / denominator, 0.0, 1.0);
+    const double px = ox + t * dx;
+    const double py = oy + t * dy;
+    const double distance = std::hypot(px, py) * 60.0;
+    if (distance >= bestDistance) continue;
+    bestDistance = distance;
+    best.point = {
+        segment.start.latitude + t * (segment.end.latitude - segment.start.latitude),
+        segment.start.longitude +
+            t * (segment.end.longitude - segment.start.longitude)};
+    best.courseDegrees =
+        distanceNm(segment.start, segment.end) > 1e-9
+            ? initialBearingDegrees(segment.start, segment.end)
+            : normalizeHeading(fallbackCourse);
+  }
+  return best;
+}
+
 double oneLayerReachNm(Duration step) {
   return static_cast<double>(step.count()) / 3600.0 * 20.0;
 }
@@ -821,10 +857,14 @@ std::optional<Node> directConnection(
           if (!replay) break;
           bool acceptedArrival = false;
           if (request.rounding) {
+            const double terminalCourse =
+                terminalCourseDegrees(*replay, trialHeading);
+            const auto approach = closestRoundingApproach(
+                replay->segments, request.destination, replay->end,
+                terminalCourse);
             const auto measured = measureRounding(
-                *request.rounding, replay->end,
-                terminalCourseDegrees(*replay, trialHeading),
-                request.destination);
+                *request.rounding, replay->end, terminalCourse,
+                request.destination, approach);
             recordRoundingAttempt(request, measured, diagnostics);
             acceptedArrival = measured.satisfied;
           } else {
@@ -1501,9 +1541,13 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
       diagnostics.closestApproachNm =
           std::min(diagnostics.closestApproachNm, remaining);
       if (allowCompletion && request.rounding) {
+        const double terminalCourse = terminalCourseDegrees(from);
+        const auto approach = closestRoundingApproach(
+            from.incomingMotionSegments, request.destination, from.position,
+            terminalCourse);
         const auto measured =
-            measureRounding(*request.rounding, from.position,
-                            terminalCourseDegrees(from), request.destination);
+            measureRounding(*request.rounding, from.position, terminalCourse,
+                            request.destination, approach);
         recordRoundingAttempt(request, measured, diagnostics);
         if (measured.satisfied &&
             (!result.solution ||
@@ -1555,15 +1599,18 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
       const auto rank = [&](std::size_t i) {
         const Node& candidate = candidates[i];
         if (request.rounding) {
+          const double terminalCourse = terminalCourseDegrees(candidate);
+          const auto approach = closestRoundingApproach(
+              candidate.incomingMotionSegments, request.destination,
+              candidate.position, terminalCourse);
           const RoundingMeasurement measured = measureRounding(
-              *request.rounding, candidate.position,
-              terminalCourseDegrees(candidate), request.destination);
+              *request.rounding, candidate.position, terminalCourse,
+              request.destination, approach);
           recordRoundingAttempt(request, measured, diagnostics);
-          return std::tuple{roundingProgress(
-                                *request.rounding, candidate.position,
-                                terminalCourseDegrees(candidate),
-                                request.destination),
-                            stateCost(request, candidate), i};
+          return std::tuple{
+              roundingProgress(*request.rounding, candidate.position,
+                               terminalCourse, request.destination, approach),
+              stateCost(request, candidate), i};
         }
         return std::tuple{distanceNm(candidate.position, request.destination),
                           stateCost(request, candidate), i};
@@ -2932,9 +2979,13 @@ SearchArtifacts graphSearch(const RoutingRequest& request,
                                     request.options.destinationToleranceNm);
     bool roundingCapture = true;
     if (request.rounding) {
+      const double terminalCourse = terminalCourseDegrees(from);
+      const auto approach = closestRoundingApproach(
+          from.incomingMotionSegments, request.destination, from.position,
+          terminalCourse);
       const auto measured =
-          measureRounding(*request.rounding, from.position,
-                          terminalCourseDegrees(from), request.destination);
+          measureRounding(*request.rounding, from.position, terminalCourse,
+                          request.destination, approach);
       recordRoundingAttempt(request, measured, diagnostics);
       roundingCapture = measured.satisfied;
     }

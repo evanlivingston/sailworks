@@ -823,6 +823,15 @@ py::dict runDict(const SyntheticRun& run,
     } else {
       item["achieved_terminal_course_deg"] = py::none();
     }
+    if (report.measurement.hasApproach) {
+      item["closest_approach_course_deg"] =
+          report.measurement.closestApproachCourseDegrees;
+      item["closest_approach_bearing_deg"] =
+          report.measurement.closestApproachBearingToMarkDegrees;
+    } else {
+      item["closest_approach_course_deg"] = py::none();
+      item["closest_approach_bearing_deg"] = py::none();
+    }
     item["satisfied"] = report.measurement.satisfied;
     item["failure_code"] = report.measurement.failureCode();
     roundings.append(item);

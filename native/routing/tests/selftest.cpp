@@ -71,6 +71,15 @@ int main() {
           "port rounding east of the mark with a north course is satisfied");
   require(portMeasurement.failure == wr::RoundingFailure::None,
           "satisfied port rounding has no failure code");
+  const wr::GeoPoint south = wr::destinationPoint(mark, 180.0, 0.4);
+  require(wr::measureRounding(port, east, 0.0, mark,
+                              wr::RoundingApproach{south, 90.0})
+              .satisfied,
+          "port closest pass on the port side is accepted");
+  require(wr::measureRounding(port, east, 0.0, mark,
+                              wr::RoundingApproach{south, 270.0})
+                  .failure == wr::RoundingFailure::WrongSide,
+          "a starboard closest pass is rejected for a port rounding");
   wr::RoundingConstraint starboard = port;
   starboard.side = wr::RoundingSide::Starboard;
   require(!wr::measureRounding(starboard, east, 0.0, mark).satisfied,

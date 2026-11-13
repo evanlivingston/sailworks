@@ -394,6 +394,9 @@ struct RoundingMeasurement {
   double closestDistanceNm{std::numeric_limits<double>::infinity()};
   double terminalBearingToMarkDegrees{};
   double terminalCourseDegrees{};
+  double closestApproachBearingToMarkDegrees{};
+  double closestApproachCourseDegrees{};
+  bool hasApproach{};
   RoundingFailure failure{RoundingFailure::NotEvaluated};
   std::string failureCode() const;
 };

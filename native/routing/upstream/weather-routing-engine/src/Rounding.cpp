@@ -52,6 +52,19 @@ double bearingFromMarkForExit(RoundingSide side, double exitBearingDegrees) {
                           (side == RoundingSide::Port ? 90.0 : -90.0));
 }
 
+RoundingFailure sideFailure(double courseDegrees, double bearingToMarkDegrees,
+                            double distance, RoundingSide side) {
+  const double lateral =
+      cross(unitVector(courseDegrees), unitVector(bearingToMarkDegrees)) *
+      distance;
+  const bool port = side == RoundingSide::Port;
+  if ((port && lateral < 0.0) || (!port && lateral > 0.0))
+    return RoundingFailure::WrongSide;
+  if (std::abs(lateral) < kRoundingLateralEpsilonNm)
+    return RoundingFailure::SideAmbiguous;
+  return RoundingFailure::None;
+}
+
 void addTarget(std::vector<GeoPoint>& targets, GeoPoint point, double radiusNm,
                GeoPoint mark) {
   if (targets.size() >= kMaximumRoundingTargets) return;
@@ -100,10 +113,10 @@ std::string RoundingMeasurement::failureCode() const {
   return "not_evaluated";
 }
 
-RoundingMeasurement measureRounding(const RoundingConstraint& rounding,
-                                    GeoPoint endpoint,
-                                    double terminalCourseDegrees,
-                                    GeoPoint mark) {
+RoundingMeasurement measureRounding(
+    const RoundingConstraint& rounding, GeoPoint endpoint,
+    double terminalCourseDegrees, GeoPoint mark,
+    const std::optional<RoundingApproach>& approach) {
   RoundingMeasurement result;
   result.terminalCourseDegrees = normalizeHeading(terminalCourseDegrees);
   result.terminalBearingToMarkDegrees = initialBearingDegrees(endpoint, mark);
@@ -130,16 +143,41 @@ RoundingMeasurement measureRounding(const RoundingConstraint& rounding,
     return result;
   }
 
-  const double signedLateralNm = cross(course, toMark) * distance;
-  const bool port = rounding.side == RoundingSide::Port;
-  if ((port && signedLateralNm < 0.0) ||
-      (!port && signedLateralNm > 0.0)) {
-    result.failure = RoundingFailure::WrongSide;
+  const RoundingFailure endpointSide =
+      sideFailure(result.terminalCourseDegrees,
+                  result.terminalBearingToMarkDegrees, distance,
+                  rounding.side);
+  if (endpointSide != RoundingFailure::None) {
+    result.failure = endpointSide;
     return result;
   }
-  if (std::abs(signedLateralNm) < kRoundingLateralEpsilonNm) {
-    result.failure = RoundingFailure::SideAmbiguous;
-    return result;
+
+  if (approach.has_value()) {
+    result.hasApproach = true;
+    const double approachDistance =
+        distanceNm(approach->point, mark);
+    result.closestApproachBearingToMarkDegrees =
+        initialBearingDegrees(approach->point, mark);
+    result.closestApproachCourseDegrees =
+        normalizeHeading(approach->courseDegrees);
+    if (approachDistance < result.closestDistanceNm)
+      result.closestDistanceNm = approachDistance;
+    if (approachDistance <= kRoundingCoincidentEpsilonNm) {
+      result.failure = RoundingFailure::CoincidentEndpoint;
+      return result;
+    }
+    if (approachDistance > rounding.radiusNm + kRoundingDistanceEpsilonNm) {
+      result.failure = RoundingFailure::DistanceOutOfRange;
+      return result;
+    }
+    const RoundingFailure approachSide = sideFailure(
+        result.closestApproachCourseDegrees,
+        result.closestApproachBearingToMarkDegrees, approachDistance,
+        rounding.side);
+    if (approachSide != RoundingFailure::None) {
+      result.failure = approachSide;
+      return result;
+    }
   }
 
   if (rounding.exitBearingMinDegrees && rounding.exitBearingMaxDegrees) {
@@ -206,10 +244,13 @@ std::vector<GeoPoint> roundingTargets(GeoPoint from, GeoPoint mark,
   return targets;
 }
 
-double roundingProgress(const RoundingConstraint& rounding, GeoPoint endpoint,
-                        double terminalCourseDegrees, GeoPoint mark) {
+double roundingProgress(
+    const RoundingConstraint& rounding, GeoPoint endpoint,
+    double terminalCourseDegrees, GeoPoint mark,
+    const std::optional<RoundingApproach>& approach) {
   const RoundingMeasurement measured =
-      measureRounding(rounding, endpoint, terminalCourseDegrees, mark);
+      measureRounding(rounding, endpoint, terminalCourseDegrees, mark,
+                      approach);
   if (measured.satisfied) return 0.0;
 
   const double radius = std::max(1e-6, rounding.radiusNm);

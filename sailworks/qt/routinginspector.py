@@ -341,13 +341,16 @@ class RoutingInspectorPanel(QWidget):
             side = report.get("side", "unknown")
             achieved = report.get("achieved_closest_distance_nm")
             terminal = report.get("achieved_terminal_course_deg")
+            closest_course = report.get("closest_approach_course_deg")
             satisfied = report.get("satisfied")
             failure = report.get("failure_code", "unknown")
             name = report.get("mark_name")
             prefix = f"{name} — " if name else ""
             text = f"rounding: {prefix}{side} {float(radius):.2f} nm"
             if achieved is not None:
-                text += f", achieved {float(achieved):.2f} nm"
+                text += f", closest {float(achieved):.2f} nm"
+            if closest_course is not None:
+                text += f" at {float(closest_course):.1f}°"
             if terminal is not None:
                 text += f", terminal {float(terminal):.1f}°"
             if not satisfied:
@@ -380,7 +383,10 @@ class RoutingInspectorPanel(QWidget):
                     text += f", radius {float(radius):.2f} nm"
                 achieved = report.get("achieved_closest_distance_nm")
                 if achieved is not None:
-                    text += f", achieved {float(achieved):.2f} nm"
+                    text += f", closest {float(achieved):.2f} nm"
+                closest_course = report.get("closest_approach_course_deg")
+                if closest_course is not None:
+                    text += f" at {float(closest_course):.1f}°"
                 course = report.get("achieved_terminal_course_deg")
                 if course is not None:
                     text += f", terminal {float(course):.1f}°"

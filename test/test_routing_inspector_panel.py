@@ -124,7 +124,7 @@ def test_panel_diagnostics_lists_mark_roundings_by_name(app):
     text = panel.diagnostics.text()
     assert "Mark roundings:" in text
     assert "Duntze Rock: starboard" in text
-    assert "achieved 0.12 nm" in text
+    assert "closest 0.12 nm" in text
 
 
 def test_panel_readout_shows_recorded_values_and_unknown_absent_fields(app):

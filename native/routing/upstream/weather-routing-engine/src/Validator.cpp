@@ -100,8 +100,8 @@ RouteValidationResult validateRoute(const RoutingRequest& request,
         departureClearanceNm < request.constraints.landSafetyMarginNm;
   }
 
-  double finalLegClosestApproachNm =
-      std::numeric_limits<double>::infinity();
+  GeoPoint finalLegClosestApproachPoint{};
+  double finalLegClosestApproachCourseDegrees = 0.0;
   for (std::size_t legIndex = 0; legIndex < legs.size(); ++legIndex) {
     const RouteLeg& leg = legs[legIndex];
     const bool departureEgressAtLegStart = departureEgress;
@@ -290,6 +290,8 @@ RouteValidationResult validateRoute(const RoutingRequest& request,
     Duration elapsed{};
     double replayFuel{};
     double closestOnLegNm = distanceNm(replayPoint, request.destination);
+    GeoPoint closestOnLegPoint = replayPoint;
+    double closestOnLegCourseDegrees = leg.courseOverGroundDegrees;
     bool destinationIngress = false;
     double priorDestinationDistance =
         distanceNm(replayPoint, request.destination);
@@ -434,8 +436,12 @@ RouteValidationResult validateRoute(const RoutingRequest& request,
       const GeoPoint next = destinationPoint(
           replayPoint, terminalCourse,
           sog * std::chrono::duration<double>(slice).count() / 3600.0);
-      closestOnLegNm =
-          std::min(closestOnLegNm, distanceNm(next, request.destination));
+      const double nextDistance = distanceNm(next, request.destination);
+      if (nextDistance < closestOnLegNm) {
+        closestOnLegNm = nextDistance;
+        closestOnLegPoint = next;
+        closestOnLegCourseDegrees = terminalCourse;
+      }
       if (environment.landAndBoundaries) {
         if (diagnostics) ++diagnostics->landChecks;
         if (departureEgress) {
@@ -562,16 +568,19 @@ RouteValidationResult validateRoute(const RoutingRequest& request,
       return fail(std::move(result), "route exceeds fuel limit");
     if (departureEgressAtLegStart)
       result.coastalDepartureEgressLegs = legIndex + 1;
-    if (legIndex + 1 == legs.size())
-      finalLegClosestApproachNm = closestOnLegNm;
+    if (legIndex + 1 == legs.size()) {
+      finalLegClosestApproachPoint = closestOnLegPoint;
+      finalLegClosestApproachCourseDegrees = closestOnLegCourseDegrees;
+    }
     ++result.acceptedPrefixLegs;
   }
   if (requireDestination && request.rounding) {
+    const RoundingApproach approach{finalLegClosestApproachPoint,
+                                    finalLegClosestApproachCourseDegrees};
     RoundingMeasurement measured =
         measureRounding(*request.rounding, legs.back().end,
-                        lastTerminalCourseDegrees, request.destination);
-    measured.closestDistanceNm = std::min(
-        measured.closestDistanceNm, finalLegClosestApproachNm);
+                        lastTerminalCourseDegrees, request.destination,
+                        approach);
     result.rounding = measured;
     if (diagnostics) {
       diagnostics->roundingAttempted = true;
