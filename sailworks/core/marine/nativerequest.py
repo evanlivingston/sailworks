@@ -265,9 +265,11 @@ def _resolve_roundings(item, start, waypoints):
 
     The panel supplies one entry per track point (or one for a POI/map
     destination). The first track point becomes the start when Start is "First
-    waypoint", so its entry cannot carry a rounding. Consecutive duplicate
-    points are skipped by the bridge; a rounding on a skipped duplicate is
-    rejected rather than silently dropped.
+    waypoint", so its entry cannot carry a rounding. A mark at either end of
+    the track is an ending mark: the route must end exactly on it, so a
+    rounding on the final mark is dropped. Consecutive duplicate points are
+    skipped by the bridge; a rounding on a skipped duplicate is rejected rather
+    than silently dropped.
     """
     raw = tuple(getattr(item, "roundings", ()) or ())
     if not raw:
@@ -304,10 +306,21 @@ def _resolve_roundings(item, start, waypoints):
             chain.append(item.destination)
             marks.append((item.destination, None))
 
+    # A mark at either end of the track is an ending mark: the route must end
+    # exactly on it, so a rounding designated there is ignored for planning.
+    # The start cannot carry one (rejected above); a rounding on the final mark
+    # is dropped instead of letting it truncate the route short of the
+    # destination.
+    if marks and marks[-1][1] is not None:
+        marks[-1] = (marks[-1][0], None)
+
     # Radius is legacy metadata only. It must not reject a compliant route or
     # shape the chain: side-of-track acceptance belongs to the shared winding
     # evaluator, so nearby marks and overlapping legacy radii are allowed here.
-    return tuple(rounding for _, rounding in marks)
+    resolved = tuple(rounding for _, rounding in marks)
+    if not any(rounding is not None for rounding in resolved):
+        return ()
+    return resolved
 
 
 def freeze_native_requests(

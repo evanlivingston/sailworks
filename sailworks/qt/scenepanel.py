@@ -50,7 +50,7 @@ ROUNDING_ROLE = Qt.ItemDataRole.UserRole + 2
 DETAIL_ROLE = Qt.ItemDataRole.UserRole + 3
 MUTED = QColor("#b0b0ad")
 POINT_COORDINATE = QColor("#8a8a87")
-ROUNDING_COLOR = QColor("#78aeed")
+ROUNDING_COLOR = MUTED
 # Port and starboard are distinct side constraints; sail-to-mark and gate stay
 # neutral so only a real side choice draws the eye.
 ROUNDING_COLORS = {
@@ -61,7 +61,10 @@ ROUNDING_SIDES = {label: side for side, label in ROUNDING_SHORT.items()}
 ROUNDING_GAP = 8
 DETAIL_GAP = 12
 DETAIL_MIN_LABEL = 48
+# A point row gives up coordinate room before it gives up the name.
+POINT_MIN_LABEL = 56
 COORDINATE_FRACTION = 0.6
+COORDINATE_DECIMALS = (4, 2)
 NAME_COLUMN = 0
 VISIBLE_COLUMN = 1
 TYPE_ICONS = {
@@ -99,32 +102,68 @@ def rounding_color(short_label):
     return ROUNDING_COLORS.get(ROUNDING_SIDES.get(short_label), ROUNDING_COLOR)
 
 
+def _shorter_coordinate(text, decimals):
+    """Trim a ``lat, lon`` pair to ``decimals`` places, dropping zero tails."""
+    parts = []
+    for part in text.split(","):
+        number = part.strip()
+        if "." in number:
+            whole, fraction = number.split(".", 1)
+            fraction = fraction[:decimals].rstrip("0")
+            number = whole if not fraction else f"{whole}.{fraction}"
+        parts.append(number)
+    return ", ".join(parts)
+
+
+def fit_coordinate(text, metrics, width):
+    """Shorten a coordinate so its leading degrees stay readable.
+
+    Fewer decimal places come first: eliding the tail of a fixed-point
+    coordinate leaves a meaningless run of digits. Only a coordinate that still
+    does not fit is elided, and then from the right so the latitude survives.
+    """
+    if width <= 0 or not text:
+        return ""
+    if metrics.horizontalAdvance(text) <= width:
+        return text
+    shortest = text
+    for decimals in COORDINATE_DECIMALS:
+        shortened = _shorter_coordinate(text, decimals)
+        if shortened == shortest:
+            continue
+        shortest = shortened
+        if metrics.horizontalAdvance(shortened) <= width:
+            return shortened
+    # Elide the shortest form, not the original: the leading degrees of both
+    # the latitude and the longitude survive.
+    return metrics.elidedText(shortest, Qt.TextElideMode.ElideRight, width)
+
+
 def point_columns(rect, metrics, coordinate_text="", label_left=None):
     """Split the space right of the label into rounding and coordinate slots.
 
-    The coordinate slot is elided to the room the row actually has and
-    right-aligned, so every point shares one coordinate right edge and a narrow
-    panel never pushes the text over the decoration icon. The rounding slot has
-    a fixed width so its labels line up whichever side a mark carries. Both
-    slots start at or right of ``label_left``.
+    The rounding slot has a fixed width and a fixed position derived from the
+    row rect alone, so every point row starts its rounding label at the same x
+    whatever its coordinates are. The coordinate takes the room that remains
+    and is shortened to fit it. On a narrow panel the coordinate is shortened
+    and the rounding slot moved right before the name is reduced to nothing,
+    keeping a readable label.
     """
     left = rect.left() if label_left is None else max(rect.left(), label_left)
     right = rect.right()
     available = max(0, right - left + 1)
-    budget = int(available * COORDINATE_FRACTION)
-    shown = metrics.elidedText(str(coordinate_text), Qt.TextElideMode.ElideLeft, budget)
-    width = min(available, max(0, metrics.horizontalAdvance(shown)))
-    coordinate = QRect(right - width + 1, rect.top(), width, rect.height())
-    slot = min(
-        rounding_column_width(metrics),
-        max(0, coordinate.left() - left - ROUNDING_GAP),
-    )
-    rounding = QRect(
-        coordinate.left() - ROUNDING_GAP - slot,
-        rect.top(),
-        slot,
-        rect.height(),
-    )
+    slot = min(rounding_column_width(metrics), available)
+    reserve = int(available * COORDINATE_FRACTION)
+    rounding_left = right + 1 - reserve - ROUNDING_GAP - slot
+    minimum = min(POINT_MIN_LABEL, available)
+    if rounding_left - left - ROUNDING_GAP < minimum:
+        rounding_left = min(right + 1 - slot, left + minimum + ROUNDING_GAP)
+    rounding_left = max(left, rounding_left)
+    rounding = QRect(rounding_left, rect.top(), slot, rect.height())
+    coordinate_left = min(right + 1, rounding_left + slot + ROUNDING_GAP)
+    width = max(0, right - coordinate_left + 1)
+    coordinate = QRect(coordinate_left, rect.top(), width, rect.height())
+    shown = fit_coordinate(str(coordinate_text), metrics, width)
     return rounding, coordinate, shown
 
 
@@ -393,7 +432,7 @@ class SceneItemDelegate(QStyledItemDelegate):
         _, label_rect, rounding_rect, coordinate_rect, coordinate_text = row_geometry(
             rect, metrics, coordinates, icon_width
         )
-        label_width = max(0, rounding_rect.left() - label_rect.left() - 8)
+        label_width = max(0, rounding_rect.left() - label_rect.left() - ROUNDING_GAP)
         label_text = metrics.elidedText(
             str(label), Qt.TextElideMode.ElideRight, label_width
         )

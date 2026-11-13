@@ -275,6 +275,51 @@ def test_no_rounding_keeps_empty_roundings_payload():
     assert "roundings" not in run
 
 
+def test_rounded_destination_is_an_ending_mark():
+    from types import SimpleNamespace
+
+    from sailworks.core.marine.nativerequest import _resolve_roundings
+
+    destination = SETTINGS["destination"]
+    item = SimpleNamespace(
+        start=None,
+        destination=destination,
+        waypoints=[SETTINGS["start"], destination],
+        roundings=[None, {"side": "port"}],
+    )
+
+    # A mark at the end of the track is an ending mark: the rounding is
+    # ignored for planning instead of truncating the route short of it.
+    resolved = _resolve_roundings(item, SETTINGS["start"], (destination,))
+    assert resolved == ()
+
+    run = _run({**SETTINGS, "roundings": list(resolved)})
+    assert run["accepted"], run["message"]
+    end = run["legs"][-1]["end"]
+    assert _distance_nm((end["latitude"], end["longitude"]), destination) <= 1e-6
+
+
+def test_interior_rounding_survives_the_ending_mark_rule():
+    from types import SimpleNamespace
+
+    from sailworks.core.marine.nativerequest import _resolve_roundings
+
+    waypoint = (48.255, -123.60)
+    destination = SETTINGS["destination"]
+    item = SimpleNamespace(
+        start=None,
+        destination=destination,
+        waypoints=[SETTINGS["start"], waypoint, destination],
+        roundings=[None, {"side": "port"}, {"side": "starboard"}],
+    )
+
+    resolved = _resolve_roundings(item, SETTINGS["start"], (waypoint, destination))
+
+    assert resolved[0] is not None
+    assert resolved[0].side == "port"
+    assert resolved[1] is None
+
+
 def test_native_payload_never_sends_the_radius_as_a_constraint():
     from sailworks.core.marine.nativerequest import Rounding
 
@@ -301,14 +346,19 @@ def test_radius_no_longer_rejects_nearby_or_overlapping_marks():
 
     start = (48.0, -123.0)
     near_mark = (48.0005, -123.0)
+    destination = (48.2, -123.0)
     in_radius = Rounding("port", 5.0, name="near")
     item = SimpleNamespace(
         start=None,
-        waypoints=[start, near_mark],
-        destination=near_mark,
-        roundings=[None, in_radius],
+        waypoints=[start, near_mark, destination],
+        destination=destination,
+        roundings=[None, in_radius, None],
     )
-    assert _resolve_roundings(item, start, (near_mark,)) == (in_radius,)
+    # The near mark is interior, so the legacy radius still never gates it.
+    assert _resolve_roundings(item, start, (near_mark, destination)) == (
+        in_radius,
+        None,
+    )
 
     first_mark = (48.001, -123.0)
     second_mark = (48.002, -123.0)
@@ -316,9 +366,11 @@ def test_radius_no_longer_rejects_nearby_or_overlapping_marks():
     second = Rounding("starboard", 5.0, name="second")
     overlapping = SimpleNamespace(
         start=None,
-        waypoints=[start, first_mark, second_mark],
-        destination=second_mark,
-        roundings=[None, first, second],
+        waypoints=[start, first_mark, second_mark, destination],
+        destination=destination,
+        roundings=[None, first, second, None],
     )
-    resolved = _resolve_roundings(overlapping, start, (first_mark, second_mark))
-    assert resolved == (first, second)
+    resolved = _resolve_roundings(
+        overlapping, start, (first_mark, second_mark, destination)
+    )
+    assert resolved == (first, second, None)

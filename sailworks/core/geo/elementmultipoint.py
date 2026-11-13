@@ -170,8 +170,11 @@ class ElementMultiPoint(Element):
             spec is not None and spec["radius_nm"] != DEFAULT_ROUNDING_RADIUS_NM
             for spec in specs
         ):
+            # Write the radius the point actually carries: a legacy point with
+            # no stored radius must stay absent instead of gaining the default.
             c["point_rounding_radius_nm"] = [
-                None if spec is None else spec["radius_nm"] for spec in specs
+                None if spec is None else _point_rounding_radius(point)
+                for spec, point in zip(specs, self.points)
             ]
         return c
 

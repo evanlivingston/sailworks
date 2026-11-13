@@ -206,6 +206,24 @@ class TestElementMultiPoint(unittest.TestCase):
         loaded = ElementMultiPoint.from_json(payload)
         self.assertEqual(loaded.point_rounding_spec(1), spec)
 
+    def test_legacy_missing_radius_is_not_defaulted_on_save(self):
+        payload = {
+            "name": "Legacy",
+            "visible": True,
+            "points": [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+            "point_roundings": [None, ROUNDING_PORT, ROUNDING_PORT],
+            "point_rounding_radius_nm": [None, 0.25, None],
+        }
+        loaded = ElementMultiPoint.from_json(payload)
+        saved = loaded.to_json()
+
+        # A radius that was absent stays absent: load then save is idempotent.
+        self.assertEqual(saved["point_rounding_radius_nm"], [None, 0.25, None])
+        self.assertEqual(
+            ElementMultiPoint.from_json(saved).to_json()["point_rounding_radius_nm"],
+            [None, 0.25, None],
+        )
+
     def test_default_radius_is_implicit_and_exact_clears_spec(self):
         emp, _ = self._make([(1.0, 2.0, None)])
         emp.set_point_rounding_spec(0, {"side": "starboard"})

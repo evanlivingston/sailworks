@@ -29,7 +29,9 @@ from sailworks.qt.scenepanel import (
     DETAIL_GAP,
     DETAIL_MIN_LABEL,
     DETAIL_ROLE,
+    MUTED,
     NAME_COLUMN,
+    POINT_MIN_LABEL,
     ROUNDING_ROLE,
     VISIBLE_COLUMN,
     ScenePanel,
@@ -37,6 +39,7 @@ from sailworks.qt.scenepanel import (
     TOOLTIP_OFFSET_X,
     TOOLTIP_OFFSET_Y,
     detail_columns,
+    fit_coordinate,
     row_geometry,
     rounding_color,
     rounding_column_width,
@@ -432,6 +435,64 @@ def test_rounding_colours_distinguish_sides(tmp_path):
     assert sail.name() == gate.name()
     assert sail.name() != port.name()
     assert sail.name() != starboard.name()
+    # Sail to mark and Gate name no side, so they stay neutral rather than
+    # borrowing the accent colour.
+    assert sail.name() == MUTED.name()
+    assert gate.name() == MUTED.name()
+
+
+def test_rounding_slot_position_ignores_coordinate_width(tmp_path):
+    application()
+    panel = panel_for(tmp_path)
+    metrics = QFontMetrics(panel.tree.font())
+    rect = QRect(0, 0, 400, 20)
+
+    wide = row_geometry(rect, metrics, "48.100000, -123.100000", 20)
+    narrow = row_geometry(rect, metrics, "48.1, -123.1", 20)
+
+    # The rounding slot is authoritative: its left edge comes from the row, so
+    # rows with different coordinate widths still align their rounding labels.
+    assert wide[2].left() == narrow[2].left()
+    assert wide[2].width() == narrow[2].width()
+    assert wide[3].right() == narrow[3].right() == rect.right()
+
+
+def test_narrow_point_row_keeps_a_readable_name(tmp_path):
+    application()
+    panel = panel_for(tmp_path)
+    metrics = QFontMetrics(panel.tree.font())
+    rect = QRect(0, 0, 200, 20)
+    coordinates = "48.100000, -123.100000"
+
+    _, label_rect, rounding_rect, coordinate_rect, shown = row_geometry(
+        rect, metrics, coordinates, 20
+    )
+    label_width = rounding_rect.left() - label_rect.left() - 8
+    label = metrics.elidedText("Morning", Qt.TextElideMode.ElideRight, label_width)
+
+    assert label_width >= POINT_MIN_LABEL
+    assert label
+    # The coordinate is shortened rather than elided to a meaningless tail: the
+    # latitude and the longitude sign survive.
+    assert shown != coordinates
+    assert shown.startswith("48.1, -")
+    assert coordinate_rect.width() > 0
+
+
+def test_fit_coordinate_prefers_fewer_decimals_over_elision(tmp_path):
+    application()
+    panel = panel_for(tmp_path)
+    metrics = QFontMetrics(panel.tree.font())
+    full = "48.123456, -123.654321"
+
+    four = metrics.horizontalAdvance("48.1234, -123.6543")
+    assert fit_coordinate(full, metrics, four) == "48.1234, -123.6543"
+    two = metrics.horizontalAdvance("48.12, -123.65")
+    assert fit_coordinate(full, metrics, two) == "48.12, -123.65"
+    # Trailing zeros are dropped rather than padded.
+    short = metrics.horizontalAdvance("48.1, -123.1")
+    assert fit_coordinate("48.100000, -123.100000", metrics, short) == "48.1, -123.1"
+    assert fit_coordinate(full, metrics, 0) == ""
 
 
 def test_track_marks_carry_side_colours(tmp_path):
