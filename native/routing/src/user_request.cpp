@@ -4,6 +4,8 @@
 #include <cmath>
 #include <stdexcept>
 
+#include "supercpn/weather_routing/Rounding.h"
+
 namespace sailworks::native_routing {
 namespace {
 
@@ -33,6 +35,13 @@ wr::RoutingRequest buildUserRequest(const UserSettings& settings,
   wr::RoutingRequest request;
   request.start = settings.start;
   request.destination = settings.destination;
+  // A single-leg request carries exactly one rounding spec. A multi-leg chain
+  // receives its specs per leg in runUserChain instead.
+  if (settings.roundings.size() == 1 && settings.roundings.front()) {
+    if (!wr::roundingConstraintValid(*settings.roundings.front()))
+      throw std::invalid_argument("rounding spec is invalid");
+    request.rounding = *settings.roundings.front();
+  }
   request.departure = wr::TimePoint{wr::Duration{settings.departureEpochSeconds}};
   if (request.departure < *windCoverage.begins ||
       request.departure >= *windCoverage.ends)

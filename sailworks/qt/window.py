@@ -329,6 +329,8 @@ class PreviewWindow(QMainWindow):
         for action in self.panel_actions.values():
             view_menu.addAction(action)
         view_menu.addAction(header.toggleViewAction())
+        view_menu.addSeparator()
+        view_menu.addAction(self.routing_inspector_dock.toggleViewAction())
         self.ais_action = view_menu.addAction("AIS targets")
         self.ais_action.setCheckable(True)
         self.ais_action.setChecked(True)

@@ -10,7 +10,7 @@ from uuid import UUID
 
 import pytest
 
-from sailworks.core.marine.nativerequest import freeze_native_requests
+from sailworks.core.marine.nativerequest import Rounding, freeze_native_requests
 from sailworks.core.routingjob import RouteRequest
 from sailworks.core.routingoptions import RouteScenario, scenario_request
 from sailworks.core.tranchestore import ResolvedForecast
@@ -102,6 +102,118 @@ def test_all_selected_inputs_survive_spawn_serialization(polar):
     assert job.min_sailing_speed_kn == 3
     assert job.motor_speed_kn == 6
     assert job.wave_correct is True
+
+
+def test_roundings_align_with_chain_and_drop_start_point(polar):
+    rounding = Rounding("port", 0.5)
+    request = replace(
+        _request(polar),
+        use_currents=False,
+        start=None,
+        waypoints=((48.3, -123.6), (48.35, -123.55), (48.4, -123.5)),
+        roundings=(None, rounding, None),
+    )
+    (job,) = freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+    assert job.roundings == (rounding, None)
+
+
+def test_rounding_on_start_or_skipped_duplicate_is_rejected(polar):
+    base = replace(_request(polar), use_currents=False)
+    with pytest.raises(ValueError, match="first waypoint is the start"):
+        freeze_native_requests(
+            replace(
+                base,
+                start=None,
+                waypoints=((48.3, -123.6), (48.4, -123.5)),
+                roundings=(Rounding("port", 0.5), None),
+            ),
+            (),
+            _forecast(),
+            (),
+            None,
+            engine="main",
+        )
+    with pytest.raises(ValueError, match="duplicate waypoint"):
+        freeze_native_requests(
+            replace(
+                base,
+                waypoints=((48.3, -123.6), (48.3, -123.6), (48.4, -123.5)),
+                roundings=(None, Rounding("port", 0.5), None),
+            ),
+            (),
+            _forecast(),
+            (),
+            None,
+            engine="main",
+        )
+
+
+def test_legacy_radius_no_longer_rejects_containment_or_overlap(polar):
+    # Radius is inert metadata: a previous point inside it and two overlapping
+    # legacy radii are no longer planning constraints, so freezing succeeds.
+    first = Rounding("port", 5.0)
+    second = Rounding("starboard", 5.0)
+    request = replace(
+        _request(polar),
+        use_currents=False,
+        waypoints=((48.3005, -123.6), (48.301, -123.6), (48.4, -123.5)),
+        roundings=(first, second, None),
+    )
+    (job,) = freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+    assert job.roundings == (first, second, None)
+    for rounding in (first, second):
+        payload = rounding.to_native()
+        assert "radius_nm" not in payload
+        assert payload["side"] == rounding.side
+
+
+def test_rounding_name_survives_freeze_and_native_settings(polar):
+    rounding = Rounding("port", 0.5, name="Duntze Rock")
+    request = replace(
+        _request(polar),
+        use_currents=False,
+        roundings=(rounding, None),
+    )
+    (job,) = freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+    assert job.roundings[0].name == "Duntze Rock"
+    assert job.roundings[0].to_native()["name"] == "Duntze Rock"
+
+
+def test_rounding_report_gets_the_mark_name():
+    from types import SimpleNamespace
+
+    from sailworks.core.marine.nativeexecution import _attach_rounding_names
+
+    mark = (48.255, -123.6)
+    job = SimpleNamespace(
+        start=(48.25, -123.65),
+        waypoints=(mark,),
+        destination=mark,
+        roundings=(Rounding("starboard", 0.15, name="Duntze Rock"),),
+    )
+    run = {
+        "roundings": [
+            {
+                "mark": {"latitude": mark[0], "longitude": mark[1]},
+                "side": "starboard",
+                "radius_nm": 0.15,
+                "satisfied": True,
+                "failure_code": "none",
+            }
+        ]
+    }
+    _attach_rounding_names(run, job)
+    assert run["roundings"][0]["mark_name"] == "Duntze Rock"
+
+
+def test_rounding_requires_the_native_engine(polar):
+    request = replace(
+        _request(polar),
+        use_currents=False,
+        roundings=(Rounding("port", 0.5), None),
+    )
+    with pytest.raises(ValueError, match="main or professional"):
+        freeze_native_requests(request, (), _forecast(), (), None, engine="standard")
 
 
 def test_unknown_shoreline_provider_is_not_silently_dropped(polar):

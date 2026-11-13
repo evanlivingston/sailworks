@@ -6,6 +6,7 @@
 #include "supercpn/weather_routing/PartialRoutes.h"
 #include "supercpn/weather_routing/Preview.h"
 #include "supercpn/weather_routing/CoastalEndpointPolicy.h"
+#include "supercpn/weather_routing/Rounding.h"
 
 #include <algorithm>
 #include <array>
@@ -231,6 +232,109 @@ double stateCost(const RoutingRequest& request, const Node& node) {
   }
 }
 
+double terminalCourseDegrees(const Node& node) {
+  if (!node.incomingMotionSegments.empty()) {
+    const TimedMotionSegment& segment = node.incomingMotionSegments.back();
+    if (distanceNm(segment.start, segment.end) > 1e-9)
+      return initialBearingDegrees(segment.start, segment.end);
+  }
+  return normalizeHeading(node.incomingHeading);
+}
+
+// Replay the delivered motion segments into an ordered sub-track. The shared
+// closest-pass evaluator interpolates between these points, so a pass between
+// two recorded samples is still measured. With no recorded motion the fallback
+// endpoint is the whole sub-track.
+std::vector<GeoPoint> replayedSubTrack(
+    const std::vector<TimedMotionSegment>& segments, GeoPoint fallback) {
+  std::vector<GeoPoint> track;
+  if (segments.empty()) {
+    track.push_back(fallback);
+    return track;
+  }
+  track.push_back(segments.front().start);
+  for (const TimedMotionSegment& segment : segments) track.push_back(segment.end);
+  return track;
+}
+
+// Search refinement distance around a rounding mark. This is a solver decision
+// (the widest passing-point candidate), never a user radius or acceptance gate:
+// the closest-pass verdict has no distance threshold.
+constexpr double kRoundingApproachNm = 10.0;
+
+// Judge a rounding at a connection. For an interior chain mark the leg joins
+// the next course point, so the delivered arriving track is concatenated with
+// the outbound join and the exit course is that join's bearing. A terminal
+// destination is judged over the arriving track alone.
+RoundingMeasurement measureRoundingAtConnection(
+    const RoutingRequest& request, const std::vector<GeoPoint>& arriving,
+    GeoPoint endpoint, double terminalCourse) {
+  if (!request.rounding) return {};
+  std::vector<GeoPoint> subTrack = arriving;
+  double exitCourse = terminalCourse;
+  if (request.roundingNextPoint &&
+      distanceNm(endpoint, *request.roundingNextPoint) > 1e-6) {
+    subTrack.push_back(*request.roundingNextPoint);
+    exitCourse = initialBearingDegrees(endpoint, *request.roundingNextPoint);
+  }
+  return measureRounding(*request.rounding, subTrack, request.destination,
+                         exitCourse);
+}
+
+double oneLayerReachNm(Duration step) {
+  return static_cast<double>(step.count()) / 3600.0 * 20.0;
+}
+
+double approachEnvelopeNm(const RoutingRequest& request, Duration step) {
+  const double pointEnvelope =
+      std::max(request.options.destinationToleranceNm, oneLayerReachNm(step));
+  // A rounding mark is not a disc to reach: the leg only needs to get close
+  // enough to attempt a connection whose pass the evaluator can judge.
+  return request.rounding ? kRoundingApproachNm + pointEnvelope : pointEnvelope;
+}
+
+bool roundingStartAmbiguous(const RoutingRequest& request, GeoPoint start) {
+  if (!request.rounding) return false;
+  // Only a start on the mark itself leaves the closest-pass side undefined.
+  return distanceNm(start, request.destination) <= 1e-6;
+}
+
+// Hard bound on rounding search expansion. Every delivered rounding candidate
+// costs a full motion replay, so an exit range no candidate can satisfy would
+// otherwise be explored until the generated-state budget runs out. Counted at
+// the replay site in directConnection so cheap retained-node inspections do not
+// consume it, and every replay path shares one bound.
+constexpr std::uint64_t kMaximumRoundingAttempts = 20000;
+
+void recordRoundingAttempt(const RoutingRequest& request,
+                           const RoundingMeasurement& measurement,
+                           RoutingDiagnostics& diagnostics) {
+  if (!request.rounding) return;
+  diagnostics.roundingAttempted = true;
+  if (measurement.closestDistanceNm < diagnostics.roundingClosestDistanceNm) {
+    diagnostics.roundingClosestDistanceNm = measurement.closestDistanceNm;
+    diagnostics.roundingFailureCode = measurement.failureCode();
+    diagnostics.roundingTerminalBearingDegrees =
+        measurement.terminalBearingToMarkDegrees;
+    diagnostics.roundingTerminalCourseDegrees =
+        measurement.terminalCourseDegrees;
+  }
+}
+
+bool roundingExpansionExhausted(const RoutingRequest& request,
+                                const RoutingDiagnostics& diagnostics) {
+  return request.rounding &&
+         diagnostics.roundingAttempts >= kMaximumRoundingAttempts;
+}
+
+// Named reason for an exit range that the bounded search could not deliver.
+// Distinct from side_unreachable so a caller can tell a wrong-side delivery
+// from an outbound course no pass could produce.
+void noteRoundingExhaustion(RoutingDiagnostics& diagnostics) {
+  diagnostics.roundingAttempted = true;
+  diagnostics.roundingFailureCode = "exit_range_unreachable";
+}
+
 std::vector<double> headings(double step, double bearing, bool adaptive,
                              double refinedStep, double maximumSearchAngle) {
   std::set<int> values;
@@ -428,6 +532,15 @@ struct MotionReplay {
   double risk{};
   std::vector<TimedMotionSegment> segments;
 };
+
+double terminalCourseDegrees(const MotionReplay& replay, double fallback) {
+  if (!replay.segments.empty()) {
+    const TimedMotionSegment& segment = replay.segments.back();
+    if (distanceNm(segment.start, segment.end) > 1e-9)
+      return initialBearingDegrees(segment.start, segment.end);
+  }
+  return normalizeHeading(fallback);
+}
 
 // Integrate one fixed through-water course with the selected
 // propulsion/profile. Resolve the environment at every slice boundary as
@@ -683,8 +796,17 @@ std::optional<Node> directConnection(
     const VesselPerformanceModel& performanceModel, const Node& from,
     Duration maximumDuration, RoutingDiagnostics& diagnostics,
     bool refineBoundedTrial=false) {
-  const double distance = distanceNm(from.position, request.destination);
-  if (distance <= 1e-9) return {};
+  std::vector<GeoPoint> targets;
+  if (request.rounding) {
+    targets = roundingTargets(from.position, request.destination,
+                              *request.rounding, request.roundingNextPoint);
+  } else {
+    targets.push_back(request.destination);
+  }
+  if (targets.empty()) return {};
+  // A bounded rounding search stops spending motion replays on an exit range it
+  // has already exhausted.
+  if (roundingExpansionExhausted(request, diagnostics)) return {};
   const auto remainingHorizon=std::max(Duration::zero(),
       std::chrono::duration_cast<Duration>(request.departure+
           request.limits.maximumRouteDuration-from.time));
@@ -692,135 +814,155 @@ std::optional<Node> directConnection(
   // actual arrival horizon, rather than the ordinary approach window, clips
   // the solve. This avoids long speculative probes on distant offshore fans.
   refineBoundedTrial=refineBoundedTrial && maximumDuration==remainingHorizon;
-  const double groundCourse =
-      initialBearingDegrees(from.position, request.destination);
   const auto resolved = internal::resolveEnvironment(request, environment,
                                                      from.position, from.time);
   ++diagnostics.weatherSamples;
   if (resolved.failureStatus != RoutingStatus::Complete ||
       !hardEnvironmentConstraints(request, resolved.snapshot))
     return {};
-  const Vector2 targetUnit = speedDirectionToVector(1.0, groundCourse);
-  const double currentAlong =
-      resolved.snapshot.current.velocity.eastKnots * targetUnit.eastKnots +
-      resolved.snapshot.current.velocity.northKnots * targetUnit.northKnots;
   std::optional<Node> best;
-  for (int seed = -2; seed <= 2; ++seed) {
-    const double assumedHeading = normalizeHeading(groundCourse + seed * 5.0);
-    const double twa =
-        trueWindAngleDegrees(resolved.snapshot.wind.velocity, assumedHeading);
-    const auto options = performanceModel.candidatesAt(
-        from.position, from.time,
-        resolved.snapshot.wind.available
-            ? vectorMagnitudeKnots(resolved.snapshot.wind.velocity)
-            : 0.0,
-        twa, resolved.snapshot.waves, from.mode, from.modeDuration);
-    for (const auto& candidate : options) {
-      if (!candidate.valid) continue;
-      double trialHeading = assumedHeading;
-      const double initialGroundSpeed =
-          std::max(0.1, candidate.speedThroughWaterKnots + currentAlong);
-      Duration trialMoving{static_cast<std::int64_t>(
-          std::ceil(distance / initialGroundSpeed * 3600.0))};
-      std::optional<MotionReplay> accepted;
-      Duration acceptedPenalty{};
-      Tack acceptedTack{Tack::Unknown};
-      std::array<std::pair<double,Duration>,10> tried{};
-      std::size_t triedCount=0;
-      for (int iteration = 0; iteration < 10; ++iteration) {
-        const double trialTwa =
-            trueWindAngleDegrees(resolved.snapshot.wind.velocity, trialHeading);
-        const Tack nextTack =
-            tackFor(trialHeading, resolved.snapshot.wind.velocity);
-        const Duration penalty =
-            transitionPenalty(request, from, candidate.mode, nextTack,
-                              candidate.sailPlan, trialTwa);
-        // An initial VMG estimate can be too long even when evolving current
-        // permits arrival inside the window. Refine from the window boundary
-        // instead of treating that estimate as proof of infeasibility.
-        if (refineBoundedTrial && penalty < maximumDuration)
-          trialMoving=std::min(trialMoving,maximumDuration-penalty);
-        if (trialMoving <= Duration::zero() ||
-            trialMoving + penalty > maximumDuration)
-          break;
-        if (refineBoundedTrial) {
-          const auto trial=std::pair{trialHeading,trialMoving};
-          if (std::find(tried.begin(),tried.begin()+triedCount,trial)!=
-              tried.begin()+triedCount)break;
-          tried[triedCount++]=trial;
+  for (const GeoPoint& target : targets) {
+    const double distance = distanceNm(from.position, target);
+    if (distance <= 1e-9) continue;
+    const double groundCourse = initialBearingDegrees(from.position, target);
+    const Vector2 targetUnit = speedDirectionToVector(1.0, groundCourse);
+    const double currentAlong =
+        resolved.snapshot.current.velocity.eastKnots * targetUnit.eastKnots +
+        resolved.snapshot.current.velocity.northKnots * targetUnit.northKnots;
+    for (int seed = -2; seed <= 2; ++seed) {
+      const double assumedHeading = normalizeHeading(groundCourse + seed * 5.0);
+      const double twa =
+          trueWindAngleDegrees(resolved.snapshot.wind.velocity, assumedHeading);
+      const auto options = performanceModel.candidatesAt(
+          from.position, from.time,
+          resolved.snapshot.wind.available
+              ? vectorMagnitudeKnots(resolved.snapshot.wind.velocity)
+              : 0.0,
+          twa, resolved.snapshot.waves, from.mode, from.modeDuration);
+      for (const auto& candidate : options) {
+        if (!candidate.valid) continue;
+        double trialHeading = assumedHeading;
+        const double initialGroundSpeed =
+            std::max(0.1, candidate.speedThroughWaterKnots + currentAlong);
+        Duration trialMoving{static_cast<std::int64_t>(
+            std::ceil(distance / initialGroundSpeed * 3600.0))};
+        std::optional<MotionReplay> accepted;
+        Duration acceptedPenalty{};
+        Tack acceptedTack{Tack::Unknown};
+        std::array<std::pair<double,Duration>,10> tried{};
+        std::size_t triedCount=0;
+        for (int iteration = 0; iteration < 10; ++iteration) {
+          const double trialTwa =
+              trueWindAngleDegrees(resolved.snapshot.wind.velocity, trialHeading);
+          const Tack nextTack =
+              tackFor(trialHeading, resolved.snapshot.wind.velocity);
+          const Duration penalty =
+              transitionPenalty(request, from, candidate.mode, nextTack,
+                                candidate.sailPlan, trialTwa);
+          // An initial VMG estimate can be too long even when evolving current
+          // permits arrival inside the window. Refine from the window boundary
+          // instead of treating that estimate as proof of infeasibility.
+          if (refineBoundedTrial && penalty < maximumDuration)
+            trialMoving=std::min(trialMoving,maximumDuration-penalty);
+          if (trialMoving <= Duration::zero() ||
+              trialMoving + penalty > maximumDuration)
+            break;
+          if (refineBoundedTrial) {
+            const auto trial=std::pair{trialHeading,trialMoving};
+            if (std::find(tried.begin(),tried.begin()+triedCount,trial)!=
+                tried.begin()+triedCount)break;
+            tried[triedCount++]=trial;
+          }
+          RoutingStatus ignoredFailure = RoutingStatus::Complete;
+          auto replay = integrateMotion(
+              request, environment, performanceModel, from, trialHeading,
+              candidate, from.time + penalty, trialMoving,
+              // Destination connections are sparse and are the first complete
+              // routes offered to the independent one-minute validator. Match
+              // that cadence here so a five-minute sample cannot conceal a
+              // short hard wind-angle or weather-limit violation and force an
+              // otherwise avoidable recovery search.
+              Duration{std::chrono::minutes{1}}, diagnostics, &ignoredFailure);
+          if (!replay) break;
+          bool acceptedArrival = false;
+          if (request.rounding) {
+            const double terminalCourse =
+                terminalCourseDegrees(*replay, trialHeading);
+            const auto track =
+                replayedSubTrack(replay->segments, replay->end);
+            const auto measured = measureRoundingAtConnection(
+                request, track, replay->end, terminalCourse);
+            ++diagnostics.roundingAttempts;
+            recordRoundingAttempt(request, measured, diagnostics);
+            acceptedArrival = measured.satisfied;
+          } else {
+            acceptedArrival =
+                distanceNm(replay->end, target) <= 0.01;
+          }
+          if (acceptedArrival) {
+            accepted = std::move(replay);
+            acceptedPenalty = penalty;
+            acceptedTack = nextTack;
+            break;
+          }
+          const double achievedDistance = distanceNm(from.position, replay->end);
+          if (!std::isfinite(achievedDistance) || achievedDistance <= 0.01) break;
+          const double achievedBearing =
+              initialBearingDegrees(from.position, replay->end);
+          trialHeading =
+              normalizeHeading(trialHeading - angularDifferenceDegrees(
+                                                  achievedBearing, groundCourse));
+          const double scaledSeconds = static_cast<double>(trialMoving.count()) *
+                                       distance / achievedDistance;
+          trialMoving = Duration{static_cast<std::int64_t>(
+              std::max(1.0, std::round(scaledSeconds)))};
         }
-        RoutingStatus ignoredFailure = RoutingStatus::Complete;
-        auto replay = integrateMotion(
-            request, environment, performanceModel, from, trialHeading,
-            candidate, from.time + penalty, trialMoving,
-            // Destination connections are sparse and are the first complete
-            // routes offered to the independent one-minute validator. Match
-            // that cadence here so a five-minute sample cannot conceal a
-            // short hard wind-angle or weather-limit violation and force an
-            // otherwise avoidable recovery search.
-            Duration{std::chrono::minutes{1}}, diagnostics, &ignoredFailure);
-        if (!replay) break;
-        const double miss = distanceNm(replay->end, request.destination);
-        if (miss <= 0.01) {
-          accepted = std::move(replay);
-          acceptedPenalty = penalty;
-          acceptedTack = nextTack;
-          break;
-        }
-        const double achievedDistance = distanceNm(from.position, replay->end);
-        if (!std::isfinite(achievedDistance) || achievedDistance <= 0.01) break;
-        const double achievedBearing =
-            initialBearingDegrees(from.position, replay->end);
-        trialHeading =
-            normalizeHeading(trialHeading - angularDifferenceDegrees(
-                                                achievedBearing, groundCourse));
-        const double scaledSeconds = static_cast<double>(trialMoving.count()) *
-                                     distance / achievedDistance;
-        trialMoving = Duration{static_cast<std::int64_t>(
-            std::max(1.0, std::round(scaledSeconds)))};
+        if (!accepted) continue;
+        const Duration total = trialMoving + acceptedPenalty;
+        const double fuel = accepted->fuelLitres;
+        const Duration addedMotor =
+            isMotor(candidate.mode) ? trialMoving : Duration{};
+        if (!withinPropulsionLimits(request, from, addedMotor, fuel)) continue;
+        const GeoPoint delivered = request.rounding ? accepted->end : target;
+        const double deliveredDistance = distanceNm(from.position, delivered);
+        if (!(deliveredDistance > 1e-9)) continue;
+        const double groundSpeed =
+            deliveredDistance /
+            (std::chrono::duration<double>(trialMoving).count() / 3600.0);
+        const Vector2 groundVelocity = speedDirectionToVector(
+            groundSpeed, initialBearingDegrees(from.position, delivered));
+        Node node = from;
+        node.motionChecked = false;
+        node.position = delivered;
+        node.time = from.time + total;
+        node.incomingHeading = trialHeading;
+        node.tack = acceptedTack;
+        node.mode = candidate.mode;
+        node.role = candidate.role;
+        node.profileIdentity = candidate.profileIdentity;
+        node.sailPlan = candidate.sailPlan;
+        node.modeDuration = candidate.mode == from.mode
+                                ? from.modeDuration + trialMoving
+                                : trialMoving;
+        node.motorDuration += addedMotor;
+        node.fuel += fuel;
+        node.risk += accepted->risk;
+        node.manoeuvres +=
+            (candidate.mode != from.mode) +
+            (from.tack != Tack::Unknown && from.tack != acceptedTack);
+        node.incomingLeg = buildLeg(
+            request, from, resolved, candidate, trialHeading, groundVelocity,
+            delivered, total, acceptedTack, trialMoving,
+            Duration{std::chrono::minutes{1}});
+        node.incomingLeg.speedThroughWaterKnots =
+            accepted->averageSpeedThroughWaterKnots;
+        node.incomingLeg.estimatedFuelLitres = fuel;
+        node.incomingMotionSegments = accepted->segments;
+        if (nodeMotionForbidden(request, environment, node, diagnostics))
+          continue;
+        if (!best || stateCost(request, node) < stateCost(request, *best))
+          best = std::move(node);
       }
-      if (!accepted) continue;
-      const Duration total = trialMoving + acceptedPenalty;
-      const double fuel = accepted->fuelLitres;
-      const Duration addedMotor =
-          isMotor(candidate.mode) ? trialMoving : Duration{};
-      if (!withinPropulsionLimits(request, from, addedMotor, fuel)) continue;
-      const double groundSpeed =
-          distance /
-          (std::chrono::duration<double>(trialMoving).count() / 3600.0);
-      const Vector2 groundVelocity =
-          speedDirectionToVector(groundSpeed, groundCourse);
-      Node node = from;
-  node.motionChecked = false;
-      node.position = request.destination;
-      node.time = from.time + total;
-      node.incomingHeading = trialHeading;
-      node.tack = acceptedTack;
-      node.mode = candidate.mode;
-      node.role = candidate.role;
-      node.profileIdentity = candidate.profileIdentity;
-      node.sailPlan = candidate.sailPlan;
-      node.modeDuration = candidate.mode == from.mode
-                              ? from.modeDuration + trialMoving
-                              : trialMoving;
-      node.motorDuration += addedMotor;
-      node.fuel += fuel;
-      node.risk += accepted->risk;
-      node.manoeuvres +=
-          (candidate.mode != from.mode) +
-          (from.tack != Tack::Unknown && from.tack != acceptedTack);
-      node.incomingLeg = buildLeg(
-          request, from, resolved, candidate, trialHeading, groundVelocity,
-          request.destination, total, acceptedTack, trialMoving,
-          Duration{std::chrono::minutes{1}});
-      node.incomingLeg.speedThroughWaterKnots =
-          accepted->averageSpeedThroughWaterKnots;
-      node.incomingLeg.estimatedFuelLitres = fuel;
-      node.incomingMotionSegments = accepted->segments;
-      if (nodeMotionForbidden(request, environment, node, diagnostics))
-        continue;
-      if (!best || stateCost(request, node) < stateCost(request, *best))
-        best = std::move(node);
     }
   }
   return best;
@@ -1354,6 +1496,13 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
       result.reason = "routing cancelled";
       return result;
     }
+    if (roundingExpansionExhausted(request, diagnostics)) {
+      noteRoundingExhaustion(diagnostics);
+      result.failure = RoutingStatus::SearchIncomplete;
+      result.reason =
+          "rounding search expansion budget exhausted: exit range unreachable";
+      return result;
+    }
     const auto landRejectionsBeforeLayer = diagnostics.landRejections;
     const auto corridorPrunedBeforeLayer = diagnostics.pruned.outsideCorridor;
     std::vector<Node> candidates;
@@ -1405,9 +1554,11 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
             });
         const double nearestNm =
             distanceNm(result.nodes[*nearest].position, request.destination);
-        const double approachRadiusNm = std::max(
-            request.options.destinationToleranceNm * 4.0,
-            std::chrono::duration<double>(step).count() / 3600.0 * 10.0);
+        const double approachRadiusNm =
+            (request.rounding ? kRoundingApproachNm : 0.0) +
+            std::max(
+                request.options.destinationToleranceNm * 4.0,
+                std::chrono::duration<double>(step).count() / 3600.0 * 10.0);
         if (nearestNm <= approachRadiusNm)
           layerStep = request.options.minimumTimeStep;
       }
@@ -1420,14 +1571,26 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
     // predecessor can exhaust that budget and discard an already found
     // connection. Keep the same bounded alternatives for independent replay.
     for (const std::size_t index : result.retained) {
+      if (roundingExpansionExhausted(request, diagnostics)) break;
       const Node& from = result.nodes[index];
       const double remaining = distanceNm(from.position, request.destination);
       diagnostics.closestApproachNm =
           std::min(diagnostics.closestApproachNm, remaining);
-      if (allowCompletion &&
-          remaining <=
-              std::max(request.options.destinationToleranceNm,
-                       static_cast<double>(step.count()) / 3600.0 * 20.0)) {
+      if (allowCompletion && request.rounding) {
+        const double terminalCourse = terminalCourseDegrees(from);
+        const auto track =
+            replayedSubTrack(from.incomingMotionSegments, from.position);
+        const auto measured = measureRoundingAtConnection(
+            request, track, from.position, terminalCourse);
+        recordRoundingAttempt(request, measured, diagnostics);
+        if (measured.satisfied &&
+            (!result.solution ||
+             stateCost(request, from) <
+                 stateCost(request, result.nodes[*result.solution]))) {
+          result.solution = index;
+        }
+      }
+      if (allowCompletion && remaining <= approachEnvelopeNm(request, step)) {
         if (auto direct = directConnection(
                 request, environment, performance, from,
                 directConnectionWindow(request, from, layerStep * 2),
@@ -1450,7 +1613,11 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
         result.nodes.push_back(std::move(direct));
         result.alternativeSolutions.push_back(result.nodes.size() - 1);
       }
-      result.solution = result.alternativeSolutions.front();
+      const std::size_t directSolution = result.alternativeSolutions.front();
+      if (!result.solution ||
+          stateCost(request, result.nodes[directSolution]) <
+              stateCost(request, result.nodes[*result.solution]))
+        result.solution = directSolution;
       return result;
     }
     const auto finishGeneratedArrival = [&]() {
@@ -1464,8 +1631,19 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
       order.reserve(candidates.size());
       for (std::size_t i = 0; i < candidates.size(); ++i) order.push_back(i);
       const auto rank = [&](std::size_t i) {
-        return std::tuple{distanceNm(candidates[i].position, request.destination),
-                          stateCost(request, candidates[i]), i};
+        const Node& candidate = candidates[i];
+        if (request.rounding) {
+          const double terminalCourse = terminalCourseDegrees(candidate);
+          const auto track = replayedSubTrack(
+              candidate.incomingMotionSegments, candidate.position);
+          const RoundingMeasurement measured = measureRoundingAtConnection(
+              request, track, candidate.position, terminalCourse);
+          recordRoundingAttempt(request, measured, diagnostics);
+          return std::tuple{roundingProgress(measured),
+                            stateCost(request, candidate), i};
+        }
+        return std::tuple{distanceNm(candidate.position, request.destination),
+                          stateCost(request, candidate), i};
       };
       const auto count = std::min<std::size_t>(64, order.size());
       std::partial_sort(order.begin(), order.begin() + count, order.end(),
@@ -1475,10 +1653,10 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
       std::vector<std::pair<Node, Node>> arrivals;
       for (std::size_t n = 0; n < count; ++n) {
         if (request.cancellation.cancelled()) break;
+        if (roundingExpansionExhausted(request, diagnostics)) break;
         Node& from = candidates[order[n]];
         if (distanceNm(from.position, request.destination) >
-            std::max(request.options.destinationToleranceNm,
-                     static_cast<double>(step.count()) / 3600.0 * 20.0))
+            approachEnvelopeNm(request, step))
           break;
         if (from.time >= deadline ||
             nodeMotionForbidden(request, environment, from, diagnostics))
@@ -1525,9 +1703,12 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
       if (!allowCompletion || coastalDepartureEgress ||
           arrivalGeneratedStateReserve == 0)
         return false;
-      const double radius = std::max(
-          request.options.destinationToleranceNm * 4.0,
-          std::min(30.0, distanceNm(request.start, request.destination) * .1));
+      const double radius =
+          (request.rounding ? kRoundingApproachNm : 0.0) +
+          std::max(
+              request.options.destinationToleranceNm * 4.0,
+              std::min(30.0,
+                       distanceNm(request.start, request.destination) * .1));
       if (!std::any_of(result.retained.begin(), result.retained.end(),
                        [&](std::size_t i) {
                          return distanceNm(result.nodes[i].position,
@@ -1931,6 +2112,7 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
       // frontier: it hands retained chart-safe states to reverse recovery and
       // then graph fallback.
       const double approachRadiusNm =
+          (request.rounding ? kRoundingApproachNm : 0.0) +
           std::max({request.options.destinationToleranceNm * 4.0,
                     std::chrono::duration<double>(step).count() / 3600.0 * 10.0,
                     distanceNm(request.start, request.destination) * 0.30});
@@ -1957,9 +2139,12 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
         result.retained.empty() ? request.departure : result.nodes[result.retained.front()].time,
         diagnostics);
     ++layer;
-    if (!allowCompletion && (diagnostics.closestApproachNm <=
-                                 request.options.destinationToleranceNm * 3.0 ||
-                             layer >= 48)) {
+    if (!allowCompletion &&
+        (diagnostics.closestApproachNm <=
+             (request.rounding
+                  ? kRoundingApproachNm
+                  : request.options.destinationToleranceNm * 3.0) ||
+         layer >= 48)) {
       result.reason =
           "forward completion deliberately withheld for recovery test";
       return result;
@@ -2821,8 +3006,21 @@ SearchArtifacts graphSearch(const RoutingRequest& request,
     diagnostics.closestApproachNm =
         std::min(diagnostics.closestApproachNm, remaining);
     const double arrivalCaptureNm =
-        std::min(0.25, request.options.destinationToleranceNm);
-    if (entry.node != 0 && remaining <= arrivalCaptureNm) {
+        request.rounding ? kRoundingApproachNm
+                         : std::min(0.25,
+                                    request.options.destinationToleranceNm);
+    bool roundingCapture = true;
+    if (request.rounding) {
+      const double terminalCourse = terminalCourseDegrees(from);
+      const auto track =
+          replayedSubTrack(from.incomingMotionSegments, from.position);
+      const auto measured =
+          measureRounding(*request.rounding, track, request.destination,
+                          terminalCourse);
+      recordRoundingAttempt(request, measured, diagnostics);
+      roundingCapture = measured.satisfied;
+    }
+    if (entry.node != 0 && remaining <= arrivalCaptureNm && roundingCapture) {
       const auto validation =
           RouteValidator{}.validate(request, environment, performance,
                                     reconstruct(result, entry.node), nullptr);
@@ -2845,9 +3043,7 @@ SearchArtifacts graphSearch(const RoutingRequest& request,
       continue;
     }
     if (context.sanity() && from.time>=routeDeadline)continue;
-    if (remaining <=
-        std::max(request.options.destinationToleranceNm,
-                 static_cast<double>(step.count()) / 3600.0 * 20.0)) {
+    if (remaining <= approachEnvelopeNm(request, step)) {
       if (auto direct = directConnection(
               request, environment, performance, from,
               directConnectionWindow(request, from, step * 3), diagnostics,
@@ -3370,6 +3566,35 @@ RoutingResult Solver::routeMember(
     result.message = "destination coordinate is invalid";
     return result;
   }
+  if (request.rounding) {
+    if (!roundingConstraintValid(*request.rounding)) {
+      result.status = RoutingStatus::UnsatisfiableRounding;
+      result.message = "rounding spec is invalid";
+      result.diagnostics.roundingAttempted = true;
+      result.diagnostics.roundingFailureCode = "invalid_rounding";
+      return result;
+    }
+    if (roundingGeometricallyImpossible(request.destination, *request.rounding,
+                                        request.roundingNextPoint)) {
+      result.status = RoutingStatus::UnsatisfiableRounding;
+      result.message =
+          "rounding not satisfied: exit_range_unreachable (the required exit "
+          "range lies entirely beyond the departing leg toward the next course "
+          "point)";
+      result.diagnostics.roundingAttempted = true;
+      result.diagnostics.roundingFailureCode = "exit_range_unreachable";
+      return result;
+    }
+    if (roundingStartAmbiguous(request, request.start)) {
+      result.status = RoutingStatus::UnsatisfiableRounding;
+      result.message =
+          "rounding start lies inside the rounding disc; the pass is "
+          "ambiguous";
+      result.diagnostics.roundingAttempted = true;
+      result.diagnostics.roundingFailureCode = "ambiguous_start";
+      return result;
+    }
+  }
   if (environment.landAndBoundaries &&
       environment.landAndBoundaries->pointForbidden(request.start)) {
     result.status = RoutingStatus::InvalidStart;
@@ -3759,6 +3984,24 @@ RoutingResult Solver::routeMember(
     }
     if (latest.convergenceStalled) break;
   }
+  // Every further stage would spend the same rounding candidate budget on the
+  // same unreachable exit range, so return the named rejection instead of
+  // handing it to reverse or graph recovery.
+  if (!found && latest.failure != RoutingStatus::Cancelled &&
+      roundingExpansionExhausted(request, result.diagnostics)) {
+    noteRoundingExhaustion(result.diagnostics);
+    result.status = RoutingStatus::UnsatisfiableRounding;
+    std::ostringstream message;
+    message << "rounding not satisfied: exit_range_unreachable";
+    if (std::isfinite(result.diagnostics.roundingClosestDistanceNm)) {
+      message << " (closest " << result.diagnostics.roundingClosestDistanceNm
+              << " NM, terminal course "
+              << result.diagnostics.roundingTerminalCourseDegrees << " deg)";
+    }
+    result.message = message.str();
+    result.visualization.isochrones = latest.isochrones;
+    return result;
+  }
   result.diagnostics.forwardGeneratedStates =
       result.diagnostics.generatedStates -
       result.diagnostics.coastalEndpointGeneratedStates;
@@ -3906,6 +4149,32 @@ RoutingResult Solver::routeMember(
         latest.isochrones.empty() ? forwardIsochrones : latest.isochrones;
     result.status = latest.failure;
     result.message = latest.reason;
+    const bool roundingValidationFailure =
+        latest.failure == RoutingStatus::ValidationFailure &&
+        lastValidationFailure.rfind("rounding not satisfied", 0) == 0;
+    if (request.rounding &&
+        (roundingValidationFailure ||
+         ((latest.failure == RoutingStatus::NoFeasibleRoute ||
+           latest.failure == RoutingStatus::SearchIncomplete) &&
+          result.diagnostics.roundingAttempted))) {
+      result.status = RoutingStatus::UnsatisfiableRounding;
+      result.diagnostics.roundingAttempted = true;
+      if (result.diagnostics.roundingFailureCode.empty())
+        result.diagnostics.roundingFailureCode = "side_unreachable";
+      std::string outcomeCode = result.diagnostics.roundingFailureCode;
+      if (outcomeCode == "side_ambiguous" ||
+          outcomeCode == "coincident_endpoint")
+        outcomeCode = "side_unreachable";
+      std::ostringstream message;
+      message << "rounding not satisfied: " << outcomeCode;
+      if (std::isfinite(result.diagnostics.roundingClosestDistanceNm)) {
+        message << " (closest " << result.diagnostics.roundingClosestDistanceNm
+                << " NM, terminal course "
+                << result.diagnostics.roundingTerminalCourseDegrees
+                << " deg)";
+      }
+      result.message = message.str();
+    }
     return result;
   }
 

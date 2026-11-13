@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
+
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QComboBox,
@@ -304,14 +307,96 @@ class RoutingInspectorPanel(QWidget):
                 lines.append(f"{name}: unknown")
         if values["missing"]:
             lines.append("missing: " + ", ".join(values["missing"]))
+        lines.append(self._rounding_text(index, leg))
         self.readout.setPlainText("\n".join(lines))
         self.leg_selected.emit(leg.leg_id)
+
+    @staticmethod
+    def _distance_nm(left, right):
+        latitude1, longitude1 = map(math.radians, (left[0], left[1]))
+        latitude2, longitude2 = map(math.radians, (right[0], right[1]))
+        dlat = latitude2 - latitude1
+        dlon = longitude2 - longitude1
+        a = (
+            math.sin(dlat / 2) ** 2
+            + math.cos(latitude1) * math.cos(latitude2) * math.sin(dlon / 2) ** 2
+        )
+        return 3440.065 * 2 * math.asin(math.sqrt(max(0.0, min(1.0, a))))
+
+    @staticmethod
+    def _failure_text(report):
+        reason = report.get("failure_reason") or report.get("failure_code")
+        return str(reason or "unknown")
+
+    def _rounding_for_leg(self, index, leg):
+        """Return the rounding report carried by the leg ending nearest a mark."""
+        for report in self._result.provenance.roundings:
+            mark = report.get("mark")
+            if not isinstance(mark, Mapping):
+                continue
+            position = (mark["latitude"], mark["longitude"])
+            nearest = None
+            nearest_distance = None
+            for leg_index, candidate in enumerate(self._result.legs):
+                distance = self._distance_nm(
+                    (candidate.end.lat, candidate.end.lon), position
+                )
+                if nearest_distance is None or distance < nearest_distance:
+                    nearest_distance = distance
+                    nearest = leg_index
+            if nearest == index:
+                return report
+        return None
+
+    def _rounding_text(self, index, leg):
+        report = self._rounding_for_leg(index, leg)
+        if report is None:
+            return "rounding: exact waypoint"
+        name = report.get("mark_name")
+        prefix = f"{name} — " if name else ""
+        text = f"rounding: {prefix}requested {report.get('side', 'unknown')}"
+        text += f", achieved {report.get('achieved_side') or 'unknown'}"
+        passages = report.get("passage_count")
+        if isinstance(passages, (int, float)):
+            count = int(passages)
+            text += f", {count} passage" + ("" if count == 1 else "s")
+        terminal = report.get("achieved_terminal_course_deg")
+        if terminal is not None:
+            text += f", terminal {float(terminal):.1f}°"
+        if not report.get("satisfied", False):
+            text += f" (not satisfied: {self._failure_text(report)})"
+        return text
 
     def _diagnostics_text(self):
         if self._result is None:
             self.diagnostics.setText("No routing result loaded")
             return
         lines = [f"{state.code}: {state.state}" for state in diagnostics(self._result)]
+        roundings = self._result.provenance.roundings
+        if roundings:
+            lines.append("")
+            lines.append("Mark roundings:")
+            for report in roundings:
+                name = report.get("mark_name")
+                mark = report.get("mark")
+                if not name and isinstance(mark, Mapping):
+                    latitude = mark.get("latitude")
+                    longitude = mark.get("longitude")
+                    if latitude is not None and longitude is not None:
+                        name = f"{float(latitude):.4f}, {float(longitude):.4f}"
+                name = name or "mark"
+                text = f"{name}: requested {report.get('side', 'unknown')}"
+                text += f", achieved {report.get('achieved_side') or 'unknown'}"
+                passages = report.get("passage_count")
+                if isinstance(passages, (int, float)):
+                    count = int(passages)
+                    text += f", {count} passage" + ("" if count == 1 else "s")
+                course = report.get("achieved_terminal_course_deg")
+                if course is not None:
+                    text += f", terminal {float(course):.1f}°"
+                if not report.get("satisfied", False):
+                    text += f" (not satisfied: {self._failure_text(report)})"
+                lines.append("  " + text)
         if self._restore_missing:
             lines.append(
                 "inspection context: stored "

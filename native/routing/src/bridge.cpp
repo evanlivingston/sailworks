@@ -1,6 +1,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -11,6 +12,7 @@
 
 #include "native_routing_tree_identity.h"
 #include "sailworks_performance.h"
+#include "supercpn/weather_routing/Rounding.h"
 #include "synthetic.h"
 #include "user_request.h"
 
@@ -20,6 +22,10 @@ using sailworks::native_routing::SyntheticRun;
 using sailworks::native_routing::kKnotsPerMetreSecond;
 
 namespace {
+
+std::string roundingSideName(wr::RoundingSide side) {
+  return side == wr::RoundingSide::Port ? "port" : "starboard";
+}
 
 std::string warningName(wr::RoutingWarningCode code) {
   switch (code) {
@@ -339,6 +345,24 @@ py::dict diagnosticsDict(const wr::RoutingDiagnostics& diagnostics) {
   for (const auto& reason : diagnostics.stageStopReasons)
     reasons.append(reason);
   result["stage_stop_reasons"] = reasons;
+  if (diagnostics.roundingAttempted) {
+    const bool measured =
+        std::isfinite(diagnostics.roundingClosestDistanceNm);
+    result["rounding_attempted"] = true;
+    result["rounding_failure_code"] = diagnostics.roundingFailureCode;
+    if (measured) {
+      result["rounding_closest_distance_nm"] =
+          diagnostics.roundingClosestDistanceNm;
+      result["rounding_terminal_bearing_deg"] =
+          diagnostics.roundingTerminalBearingDegrees;
+      result["rounding_terminal_course_deg"] =
+          diagnostics.roundingTerminalCourseDegrees;
+    } else {
+      result["rounding_closest_distance_nm"] = py::none();
+      result["rounding_terminal_bearing_deg"] = py::none();
+      result["rounding_terminal_course_deg"] = py::none();
+    }
+  }
   return result;
 }
 
@@ -775,6 +799,68 @@ py::dict runDict(const SyntheticRun& run,
         "delivered-route rules; a join maneuver is counted in the segment "
         "that delivered it";
   }
+  py::list roundings;
+  for (const auto& report : run.roundingReports) {
+    if (!report.rounding) continue;
+    py::dict item;
+    if (report.mark) {
+      item["mark"] = geoPoint(*report.mark);
+    } else {
+      item["mark"] = py::none();
+    }
+    item["side"] = roundingSideName(report.rounding->side);
+    item["radius_nm"] = report.rounding->radiusNm;
+    if (report.rounding->exitBearingMinDegrees) {
+      item["exit_bearing_min_deg"] =
+          *report.rounding->exitBearingMinDegrees;
+    } else {
+      item["exit_bearing_min_deg"] = py::none();
+    }
+    if (report.rounding->exitBearingMaxDegrees) {
+      item["exit_bearing_max_deg"] =
+          *report.rounding->exitBearingMaxDegrees;
+    } else {
+      item["exit_bearing_max_deg"] = py::none();
+    }
+    if (std::isfinite(report.measurement.closestDistanceNm)) {
+      item["achieved_closest_distance_nm"] =
+          report.measurement.closestDistanceNm;
+    } else {
+      item["achieved_closest_distance_nm"] = py::none();
+    }
+    if (std::isfinite(report.measurement.terminalBearingToMarkDegrees)) {
+      item["achieved_terminal_bearing_deg"] =
+          report.measurement.terminalBearingToMarkDegrees;
+    } else {
+      item["achieved_terminal_bearing_deg"] = py::none();
+    }
+    if (std::isfinite(report.measurement.terminalCourseDegrees)) {
+      item["achieved_terminal_course_deg"] =
+          report.measurement.terminalCourseDegrees;
+    } else {
+      item["achieved_terminal_course_deg"] = py::none();
+    }
+    if (report.measurement.hasApproach) {
+      item["closest_approach_course_deg"] =
+          report.measurement.closestApproachCourseDegrees;
+      item["closest_approach_bearing_deg"] =
+          report.measurement.closestApproachBearingToMarkDegrees;
+    } else {
+      item["closest_approach_course_deg"] = py::none();
+      item["closest_approach_bearing_deg"] = py::none();
+    }
+    if (report.measurement.achievedSide) {
+      item["achieved_side"] = roundingSideName(*report.measurement.achievedSide);
+    } else {
+      item["achieved_side"] = py::none();
+    }
+    item["passage_count"] = report.measurement.passageCount;
+    item["satisfied"] = report.measurement.satisfied;
+    item["failure_code"] = report.measurement.failureCode();
+    item["failure_reason"] = report.measurement.failureReason();
+    roundings.append(item);
+  }
+  if (py::len(roundings) > 0) result["roundings"] = roundings;
   return result;
 }
 
@@ -858,7 +944,7 @@ py::dict runUserBridge(py::function wind, py::function current,
       "start", "destination", "departure_epoch_s", "use_currents",
       "polar_efficiency", "tws_max_kn", "min_sailing_speed_kn",
       "motor_speed_kn", "wave_correct", "coastline_checks",
-      "land_safety_margin_nm", "waypoints"};
+      "land_safety_margin_nm", "waypoints", "roundings"};
   const std::set<std::string> optional{"use_waves"};
   if (py::len(settings) < required.size() ||
       py::len(settings) > required.size() + optional.size())
@@ -900,6 +986,41 @@ py::dict runUserBridge(py::function wind, py::function current,
   input.coastlineChecks = py::cast<bool>(settings["coastline_checks"]);
   input.landSafetyMarginNm =
       py::cast<double>(settings["land_safety_margin_nm"]);
+  for (const auto& value : py::cast<py::sequence>(settings["roundings"])) {
+    if (value.is_none()) {
+      input.roundings.push_back(std::nullopt);
+      continue;
+    }
+    const auto item = py::reinterpret_borrow<py::dict>(value);
+    wr::RoundingConstraint rounding;
+    const std::string side = py::cast<std::string>(item["side"]);
+    if (side == "port") {
+      rounding.side = wr::RoundingSide::Port;
+    } else if (side == "starboard") {
+      rounding.side = wr::RoundingSide::Starboard;
+    } else {
+      throw py::value_error("rounding side must be port or starboard");
+    }
+    // Radius is legacy metadata, not part of the side-of-track contract.
+    // Older payloads carried it; the Python boundary no longer sends it, so
+    // keep the historical default for this additive stage.
+    constexpr double kLegacyRoundingRadiusNm = 0.5;
+    rounding.radiusNm = kLegacyRoundingRadiusNm;
+    if (item.contains("radius_nm") && !item["radius_nm"].is_none())
+      rounding.radiusNm = py::cast<double>(item["radius_nm"]);
+    if (item.contains("exit_bearing_min_deg") &&
+        !item["exit_bearing_min_deg"].is_none())
+      rounding.exitBearingMinDegrees =
+          py::cast<double>(item["exit_bearing_min_deg"]);
+    if (item.contains("exit_bearing_max_deg") &&
+        !item["exit_bearing_max_deg"].is_none())
+      rounding.exitBearingMaxDegrees =
+          py::cast<double>(item["exit_bearing_max_deg"]);
+    if (!wr::roundingConstraintValid(rounding))
+      throw py::value_error(
+          "rounding radius, side and exit bearing range are invalid");
+    input.roundings.push_back(rounding);
+  }
 
   if (polar.is_none())
     throw py::value_error("real request requires selected polar rows");
@@ -914,6 +1035,27 @@ py::dict runUserBridge(py::function wind, py::function current,
         providerIdentity + "-waves");
   if (input.useWaves && !waveFieldsCoverage.available)
     throw py::value_error("selected wave coverage is unavailable");
+  std::vector<wr::GeoPoint> chain{input.start};
+  for (const auto& value : py::cast<py::sequence>(settings["waypoints"])) {
+    const wr::GeoPoint next = point(value);
+    if (next.latitude == chain.back().latitude &&
+        next.longitude == chain.back().longitude)
+      continue;
+    chain.push_back(next);
+  }
+  if (chain.size() == 1 || chain.back().latitude != input.destination.latitude ||
+      chain.back().longitude != input.destination.longitude)
+    chain.push_back(input.destination);
+  if (!input.roundings.empty() &&
+      input.roundings.size() != chain.size() - 1)
+    throw py::value_error(
+        "rounding specs must align one-to-one with chain marks");
+  if (std::any_of(input.roundings.begin(), input.roundings.end(),
+                  [](const auto& rounding) { return rounding.has_value(); }) &&
+      engine != "main" && engine != "professional")
+    throw py::value_error(
+        "rounding constraints require the main or professional native engine");
+
   auto vessel = vesselFromPolar(polar, polarIdentity, "selected Sailworks polar");
   auto request = sailworks::native_routing::buildUserRequest(
       input, vessel, windCoverage, waveFieldsCoverage);
@@ -938,17 +1080,6 @@ py::dict runUserBridge(py::function wind, py::function current,
       std::move(vessel), input.maximumWindKnots, input.minimumSailingKnots,
       input.motorKnots, input.windBasedWaveProxy);
 
-  std::vector<wr::GeoPoint> chain{input.start};
-  for (const auto& value : py::cast<py::sequence>(settings["waypoints"])) {
-    const wr::GeoPoint next = point(value);
-    if (next.latitude == chain.back().latitude &&
-        next.longitude == chain.back().longitude)
-      continue;
-    chain.push_back(next);
-  }
-  if (chain.size() == 1 || chain.back().latitude != input.destination.latitude ||
-      chain.back().longitude != input.destination.longitude)
-    chain.push_back(input.destination);
   if (chain.size() == 2) {
     auto run = sailworks::native_routing::runRequest(
         engine, std::move(request), std::move(environment));
@@ -958,7 +1089,8 @@ py::dict runUserBridge(py::function wind, py::function current,
     return result;
   }
   const auto run = sailworks::native_routing::runUserChain(
-      engine, std::move(request), std::move(environment), chain);
+      engine, std::move(request), std::move(environment), chain,
+      input.roundings);
   py::dict result = runDict(run.result, &run.segments);
   result["wave_provenance"] = waveProvenanceDict(
       run.result.result, input.useWaves, input.windBasedWaveProxy);
@@ -1015,6 +1147,7 @@ py::dict identityDict() {
   addPatch("xweatherrouting-1.29.2-coastal-departure-validation");
   addPatch("xweatherrouting-1.29-low-wind-motor-headings");
   addPatch("weather-routing-1.17.5-bounded-progress-and-forward-retry");
+  addPatch("rounding-constraints");
   localPatches["count"] = static_cast<int>(patchEntries.size());
   localPatches["entries"] = patchEntries;
   localPatches["documentation"] =

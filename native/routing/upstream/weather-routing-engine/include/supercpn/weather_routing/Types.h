@@ -366,9 +366,80 @@ class PartialRouteArchive;
 using RoutingPreviewCallback =
     std::function<void(std::shared_ptr<const RoutingPreview>)>;
 
+enum class RoundingSide { Port, Starboard };
+
+// Legacy per-mark request carried by the radius-era engine. The target point
+// is the mark; `radiusNm` is legacy metadata and never a planning or acceptance
+// constraint in the shared closest-pass evaluator.
+struct RoundingConstraint {
+  RoundingSide side{RoundingSide::Port};
+  double radiusNm{};
+  std::optional<double> exitBearingMinDegrees;
+  std::optional<double> exitBearingMaxDegrees;
+};
+
+// Side-of-track rounding contract. Distance from the mark is never part of the
+// contract; the shared closest-pass evaluator in Rounding.h decides passage.
+struct RoundingSpec {
+  RoundingSide side{RoundingSide::Port};
+  std::optional<double> exitBearingMinDegrees;
+  std::optional<double> exitBearingMaxDegrees;
+};
+
+enum class RoundingFailure {
+  None,
+  // No ahead-to-astern ray crossing of the mark on the leg sub-track.
+  NotPassed,
+  // Two or more ahead-to-astern ray crossings: the route circles the mark.
+  CirclesMoreThanOnce,
+  // The closest pass runs through the mark, leaving no defined side.
+  AmbiguousPass,
+  // The closest pass is within the lateral ambiguity epsilon.
+  SideAmbiguous,
+  // The closest pass is on the opposite side of the request.
+  WrongSide,
+  // The delivered outbound course is outside the inclusive exit range.
+  ExitBearingOutOfRange,
+  NotEvaluated,
+};
+
+// Measured closest pass of one delivered leg sub-track. Distance is reported,
+// never gated: a wide pass on the requested side is compliant.
+struct RoundingMeasurement {
+  bool satisfied{};
+  double closestDistanceNm{std::numeric_limits<double>::infinity()};
+  GeoPoint closestPoint{};
+  double courseAtClosestDegrees{};
+  double bearingToMarkAtClosestDegrees{};
+  // cross(course, bearingToMark) * distance. Positive is port, negative is
+  // starboard.
+  double signedLateralNm{};
+  std::optional<RoundingSide> achievedSide;
+  int passageCount{};
+  bool exitRangeSatisfied{true};
+  RoundingFailure failure{RoundingFailure::NotEvaluated};
+  // Transitional diagnostics for the radius-era engine call sites. They mirror
+  // the delivered endpoint until the engine passes full leg sub-tracks.
+  double terminalBearingToMarkDegrees{};
+  double terminalCourseDegrees{};
+  double closestApproachBearingToMarkDegrees{};
+  double closestApproachCourseDegrees{};
+  bool hasApproach{};
+  std::string failureCode() const;
+  std::string failureReason() const;
+};
+
 struct RoutingRequest {
   GeoPoint start;
   GeoPoint destination;
+  // When set, completion, terminal connection and independent replay all use
+  // the shared pass-and-exit predicate instead of the exact destination point.
+  std::optional<RoundingConstraint> rounding;
+  // The next course point when this mark is an interior chain mark. Completion
+  // joins it, so the verdict is judged over the arriving track plus the
+  // outbound join instead of a disc around the mark. Absent for a terminal
+  // destination.
+  std::optional<GeoPoint> roundingNextPoint;
   TimePoint departure{};
   VesselConfiguration vessel;
   EnvironmentalPolicy environment;
@@ -472,7 +543,11 @@ enum class RoutingStatus {
   InvalidDestination,
   ValidationFailure,
   Cancelled,
-  InternalError
+  InternalError,
+  // A rounding was requested but no searched arrival satisfied the required
+  // side or exit bearing. This is never treated as an ordinary no-route or as
+  // a successful exact-point arrival.
+  UnsatisfiableRounding
 };
 
 enum class SolverPath {
@@ -609,6 +684,13 @@ struct RouteValidationResult {
   EnvironmentalSourceUsage environment;
   std::vector<EnvironmentalSourceTransition> sourceTransitions;
   bool estimatedPolarWind{};
+  // Present only when the request carried a rounding constraint.
+  std::optional<RoundingMeasurement> rounding;
+  // Independently replayed sub-track of each delivered leg, in order. This is
+  // diagnostic data used to judge an interior rounding mark over the
+  // concatenated arriving and departing track; it is never exported as route
+  // geometry.
+  std::vector<std::vector<GeoPoint>> replayedLegs;
 };
 
 struct PruningDiagnostics {
@@ -653,6 +735,17 @@ struct RoutingDiagnostics {
   std::uint64_t waitStates{};
   std::uint64_t validationSamples{};
   double closestApproachNm{std::numeric_limits<double>::infinity()};
+  // Best measured rounding attempt when a rounding was requested. Retained for
+  // structured failure diagnostics; it is never used to accept a route.
+  bool roundingAttempted{};
+  // Hard bound on rounding search expansion. Counts the rounding candidates
+  // that cost a motion replay, so an exit range no candidate can satisfy is
+  // rejected deterministically instead of being explored without limit.
+  std::uint64_t roundingAttempts{};
+  std::string roundingFailureCode;
+  double roundingClosestDistanceNm{std::numeric_limits<double>::infinity()};
+  double roundingTerminalBearingDegrees{};
+  double roundingTerminalCourseDegrees{};
   std::vector<std::string> resourceLimitEvents;
   std::vector<unsigned> effortTiersAttempted;
   unsigned completedEffortPercent{};

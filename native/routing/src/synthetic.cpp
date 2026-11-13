@@ -13,6 +13,7 @@
 
 #include "original_routing/Engine.h"
 #include "supercpn/weather_routing/QuickEngine.h"
+#include "supercpn/weather_routing/Rounding.h"
 
 namespace sailworks::native_routing {
 namespace {
@@ -273,6 +274,8 @@ std::string statusName(wr::RoutingStatus status) {
     case wr::RoutingStatus::ValidationFailure: return "validation_failure";
     case wr::RoutingStatus::Cancelled: return "cancelled";
     case wr::RoutingStatus::InternalError: return "internal_error";
+    case wr::RoutingStatus::UnsatisfiableRounding:
+      return "unsatisfiable_rounding";
   }
   return "unknown";
 }
@@ -370,6 +373,22 @@ SyntheticRun runWithEngine(const std::string& engine,
   run.independentValidation = wr::RouteValidator{}.validate(
       run.request, run.environment, *run.environment.performance,
       run.result.legs);
+  if (run.request.rounding) {
+    RoundingReport report;
+    report.mark = run.request.destination;
+    report.rounding = *run.request.rounding;
+    if (run.result.validation.rounding) {
+      report.measurement = *run.result.validation.rounding;
+    } else if (run.independentValidation.rounding) {
+      report.measurement = *run.independentValidation.rounding;
+    } else if (!run.result.legs.empty()) {
+      const auto& leg = run.result.legs.back();
+      report.measurement = wr::measureRounding(
+          *run.request.rounding, std::vector<wr::GeoPoint>{leg.start, leg.end},
+          run.request.destination, leg.courseOverGroundDegrees);
+    }
+    run.roundingReports.push_back(report);
+  }
   run.accepted = isCompleteStatus(run.result.status) &&
                  run.result.validation.passed &&
                  run.independentValidation.passed && !run.result.legs.empty();
@@ -488,11 +507,28 @@ void addChainDiagnostics(wr::RoutingDiagnostics& total,
 
 }  // namespace
 
-ChainRun runUserChain(const std::string& engine, wr::RoutingRequest request,
-                      wr::RoutingEnvironment environment,
-                      const std::vector<wr::GeoPoint>& chain) {
+ChainRun runUserChain(
+    const std::string& engine, wr::RoutingRequest request,
+    wr::RoutingEnvironment environment, const std::vector<wr::GeoPoint>& chain,
+    const std::vector<std::optional<wr::RoundingConstraint>>& roundings) {
   if (chain.size() < 2)
     throw std::invalid_argument("a waypoint chain needs at least one leg");
+  if (!roundings.empty() && roundings.size() != chain.size() - 1)
+    throw std::invalid_argument(
+        "rounding specs must align one-to-one with chain marks");
+  for (std::size_t index = 1; index < chain.size(); ++index) {
+    if (roundings.empty() || !roundings[index - 1]) continue;
+    const wr::RoundingConstraint& rounding = *roundings[index - 1];
+    if (!wr::roundingConstraintValid(rounding))
+      throw std::invalid_argument("rounding spec is invalid");
+    for (std::size_t previous = 0; previous < index; ++previous) {
+      // Only a coincident course point leaves the pass undefined. Legacy
+      // radius metadata never rejects a chain.
+      if (wr::distanceNm(chain[previous], chain[index]) <= 1e-6)
+        throw std::invalid_argument(
+            "rounding mark coincides with a previous course point");
+    }
+  }
   if (!environment.grib || !environment.landAndBoundaries ||
       !environment.performance)
     throw std::invalid_argument("real request requires complete providers");
@@ -505,6 +541,7 @@ ChainRun runUserChain(const std::string& engine, wr::RoutingRequest request,
   request.start = chain.front();
   request.destination = chain.back();
   result.request = request;
+  if (!roundings.empty()) result.request.rounding = roundings.back();
   // Established by the segments below; the default is InternalError.
   result.result.status = wr::RoutingStatus::Complete;
   result.result.validation.passed = true;
@@ -515,6 +552,11 @@ ChainRun runUserChain(const std::string& engine, wr::RoutingRequest request,
 
   wr::GeoPoint position = chain.front();
   wr::TimePoint departure = originalDeparture;
+  // Independently replayed sub-tracks per chain segment, used to judge each
+  // interior rounding mark over the concatenated arriving and departing track.
+  std::vector<std::vector<wr::GeoPoint>> allReplayedLegs;
+  std::vector<std::size_t> segmentFirstLeg(chain.size(), 0);
+  std::vector<std::size_t> segmentLegCount(chain.size(), 0);
   for (std::size_t index = 1; index < chain.size(); ++index) {
     const auto elapsed = departure - originalDeparture;
     if (elapsed >= request.limits.maximumRouteDuration) {
@@ -535,10 +577,27 @@ ChainRun runUserChain(const std::string& engine, wr::RoutingRequest request,
     wr::RoutingRequest legRequest = request;
     legRequest.start = position;
     legRequest.destination = chain[index];
+    legRequest.rounding =
+        roundings.empty() ? std::nullopt : roundings[index - 1];
+    // An interior rounding mark is not a stop: completion joins the next
+    // course point, so the engine judges the concatenated arriving and
+    // departing track. The final chain point has no next point.
+    legRequest.roundingNextPoint =
+        index + 1 < chain.size()
+            ? std::optional<wr::GeoPoint>(chain[index + 1])
+            : std::nullopt;
     legRequest.departure = departure;
     legRequest.limits.maximumRouteDuration =
         request.limits.maximumRouteDuration - elapsed;
     SyntheticRun leg = runWithEngine(engine, legRequest, environment);
+    segmentFirstLeg[index] = allReplayedLegs.size();
+    segmentLegCount[index] = leg.independentValidation.replayedLegs.size();
+    allReplayedLegs.insert(allReplayedLegs.end(),
+                           leg.independentValidation.replayedLegs.begin(),
+                           leg.independentValidation.replayedLegs.end());
+    result.roundingReports.insert(result.roundingReports.end(),
+                                  leg.roundingReports.begin(),
+                                  leg.roundingReports.end());
     ChainSegment summary;
     summary.index = index - 1;
     summary.status = leg.result.status;
@@ -621,16 +680,91 @@ ChainRun runUserChain(const std::string& engine, wr::RoutingRequest request,
   result.independentValidation = wr::RouteValidator{}.validate(
       result.request, environment, *environment.performance,
       result.result.legs);
+  // Interior rounding marks are judged over the concatenated sub-track from
+  // the previous course point through the next, not the arriving sub-run
+  // alone. The first and last points of that sub-track are course points
+  // (ending marks): exact endpoints with no side constraint. The report
+  // carries the measurement of that concatenated track.
+  std::optional<std::string> chainRoundingFailure;
+  if (!roundings.empty()) {
+    result.roundingReports.clear();
+    for (std::size_t index = 1; index < chain.size(); ++index) {
+      if (!roundings[index - 1]) continue;
+      const wr::RoundingConstraint& rounding = *roundings[index - 1];
+      const wr::GeoPoint mark = chain[index];
+      const bool terminal = index + 1 == chain.size();
+      std::vector<wr::GeoPoint> subTrack;
+      if (segmentLegCount[index] > 0 &&
+          segmentFirstLeg[index] + segmentLegCount[index] <=
+              allReplayedLegs.size()) {
+        subTrack =
+            allReplayedLegs[segmentFirstLeg[index] + segmentLegCount[index] - 1];
+      }
+      if (!terminal && segmentLegCount[index + 1] > 0 &&
+          segmentFirstLeg[index + 1] < allReplayedLegs.size()) {
+        for (const wr::GeoPoint& point :
+             allReplayedLegs[segmentFirstLeg[index + 1]]) {
+          if (!subTrack.empty() &&
+              wr::distanceNm(subTrack.back(), point) <= 1e-6)
+            continue;
+          subTrack.push_back(point);
+        }
+      }
+      if (subTrack.size() < 2) continue;
+      const std::size_t exitLeg =
+          terminal ? (result.result.legs.empty()
+                          ? 0
+                          : result.result.legs.size() - 1)
+                   : segmentFirstLeg[index + 1];
+      const double exitCourse =
+          exitLeg < result.result.legs.size()
+              ? result.result.legs[exitLeg].courseOverGroundDegrees
+              : 0.0;
+      RoundingReport report;
+      report.mark = mark;
+      report.rounding = rounding;
+      report.measurement =
+          wr::measureRounding(rounding, subTrack, mark, exitCourse);
+      result.roundingReports.push_back(report);
+      if (!report.measurement.satisfied && !chainRoundingFailure) {
+        chainRoundingFailure =
+            "rounding not satisfied: " + report.measurement.failureCode() +
+            " (" + report.measurement.failureReason() + ")";
+      }
+    }
+  }
+  if (chainRoundingFailure) {
+    result.result.status = wr::RoutingStatus::UnsatisfiableRounding;
+    result.result.validation.passed = false;
+    result.result.validation.failureReason = *chainRoundingFailure;
+    result.result.message = *chainRoundingFailure;
+    result.accepted = false;
+    return chainRun;
+  }
   result.result.metrics.elapsed =
       result.result.legs.back().endTime - result.result.legs.front().startTime;
   result.result.metrics.elapsed =
       std::chrono::duration_cast<wr::Duration>(result.result.metrics.elapsed);
+  if (!result.independentValidation.passed) {
+    const bool roundingFailure =
+        result.request.rounding &&
+        result.independentValidation.rounding &&
+        !result.independentValidation.rounding->satisfied;
+    result.result.status =
+        roundingFailure ? wr::RoutingStatus::UnsatisfiableRounding
+                        : wr::RoutingStatus::ValidationFailure;
+    result.result.validation.passed = false;
+    result.result.validation.failureReason =
+        result.independentValidation.failureReason;
+    result.result.message = result.independentValidation.failureReason;
+  } else {
+    result.result.message =
+        std::to_string(chainRun.segments.size()) + "-leg waypoint chain";
+  }
   result.accepted = chainRun.segments.size() > 0 &&
                     result.result.validation.passed &&
                     result.independentValidation.passed &&
                     !result.result.legs.empty();
-  result.result.message =
-      std::to_string(chainRun.segments.size()) + "-leg waypoint chain";
   return chainRun;
 }
 

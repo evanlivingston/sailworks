@@ -20,6 +20,7 @@ add_library(weather_routing_engine STATIC
   include/supercpn/weather_routing/ResourcePolicy.h
   include/supercpn/weather_routing/Types.h
   include/supercpn/weather_routing/PartialRoutes.h
+  include/supercpn/weather_routing/Rounding.h
   src/ArrivalPlanner.cpp
   src/Engine.cpp
   src/Ensemble.cpp
@@ -27,6 +28,7 @@ add_library(weather_routing_engine STATIC
   src/Geometry.cpp
   src/Polar.cpp
   src/Providers.cpp
+  src/Rounding.cpp
   src/RoutingInternal.h
   src/Validator.cpp)
 add_library(weather_routing_engine::weather_routing_engine

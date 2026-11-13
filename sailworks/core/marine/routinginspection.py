@@ -169,6 +169,9 @@ _STATUS_DETAIL = {
         "resource exhausted: the search stopped at a configured resource limit"
     ),
     "internal_error": "internal error: the engine reported an internal failure",
+    "unsatisfiable_rounding": (
+        "unsatisfiable rounding: the mark side or exit bearing was not reached"
+    ),
     "wave_data_required": (
         "wave data required: the selected wave source does not cover the "
         "route window; no route was calculated"
@@ -294,6 +297,10 @@ def diagnostics(result: RoutingResult) -> Tuple[DiagnosticState, ...]:
                 "resource exhausted: stopped at a configured resource limit"
             ),
             "internal_error": "internal error: engine reported an internal failure",
+            "unsatisfiable_rounding": (
+                "unsatisfiable rounding: the mark side or exit bearing was "
+                "not reached"
+            ),
         }.get(result.status, f"search ended: {result.status}")
         states.append(DiagnosticState("search", search_detail))
     resource = _resource_state(result)

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 #include "supercpn/weather_routing/Providers.h"
 
@@ -22,6 +23,9 @@ struct UserSettings {
   bool useWaves{};
   double landSafetyMarginNm{};
   bool coastlineChecks{};
+  // Aligned one-to-one with the chain marks after the start. Empty means no
+  // rounding anywhere. Null entries keep exact-point behaviour for that mark.
+  std::vector<std::optional<wr::RoundingConstraint>> roundings;
 };
 
 // No fixture request, weather, polar, source or fixed six-hour limit enters

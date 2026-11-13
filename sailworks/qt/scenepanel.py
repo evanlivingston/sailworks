@@ -977,13 +977,19 @@ class ScenePanel(QWidget):
         if not 0 <= index < len(element.points):
             return
         point_rounding = getattr(element, "point_rounding", None)
+        point_spec = getattr(element, "point_rounding_spec", None)
         current_rounding = normalize_rounding(
             point_rounding(index) if callable(point_rounding) else None
         )
+        current_spec = point_spec(index) if callable(point_spec) else None
+        spec = current_spec or {}
         dialog = PointEditDialog(
             element.point_name(index),
             rounding=current_rounding,
             coordinates=tuple(element.points[index][:2]),
+            radius_nm=spec.get("radius_nm"),
+            exit_bearing_min_deg=spec.get("exit_bearing_min_deg"),
+            exit_bearing_max_deg=spec.get("exit_bearing_max_deg"),
             parent=self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -992,14 +998,31 @@ class ScenePanel(QWidget):
         name = dialog.point_name()
         if name != element.point_name(index):
             changed = element.rename_point(index, name) or changed
-        rounding = dialog.point_rounding()
-        set_rounding = getattr(element, "set_point_rounding", None)
-        if (
-            rounding is not None
-            and callable(set_rounding)
-            and normalize_rounding(current_rounding) != rounding
-        ):
-            changed = set_rounding(index, rounding) or changed
+        spec_getter = getattr(dialog, "point_rounding_spec", None)
+        set_spec = getattr(element, "set_point_rounding_spec", None)
+        if callable(spec_getter) and callable(set_spec):
+            new_spec = spec_getter()
+            if new_spec is not None:
+                if new_spec != current_spec:
+                    changed = set_spec(index, new_spec) or changed
+            else:
+                rounding = dialog.point_rounding()
+                set_rounding = getattr(element, "set_point_rounding", None)
+                if (
+                    rounding is not None
+                    and callable(set_rounding)
+                    and normalize_rounding(current_rounding) != rounding
+                ):
+                    changed = set_rounding(index, rounding) or changed
+        else:
+            rounding = dialog.point_rounding()
+            set_rounding = getattr(element, "set_point_rounding", None)
+            if (
+                rounding is not None
+                and callable(set_rounding)
+                and normalize_rounding(current_rounding) != rounding
+            ):
+                changed = set_rounding(index, rounding) or changed
         if changed:
             self.changed.emit()
         self.refresh()

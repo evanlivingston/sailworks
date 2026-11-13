@@ -12,6 +12,32 @@ from .nativerequest import NativeRequest
 from .routingnative import current_callable_from_selection
 
 
+def _attach_rounding_names(run, job):
+    """Add the mark's display name to each bridge rounding report."""
+    reports = run.get("roundings")
+    if not reports:
+        return
+    chain = [job.start]
+    for point in job.waypoints:
+        if point != chain[-1]:
+            chain.append(point)
+    if chain[-1] != job.destination:
+        chain.append(job.destination)
+    marks = chain[1:]
+    for report in reports:
+        mark = report.get("mark")
+        if not isinstance(mark, dict):
+            continue
+        latitude = mark.get("latitude")
+        longitude = mark.get("longitude")
+        for point, rounding in zip(marks, job.roundings):
+            if rounding is None or not rounding.name:
+                continue
+            if abs(point[0] - latitude) < 1e-9 and abs(point[1] - longitude) < 1e-9:
+                report["mark_name"] = rounding.name
+                break
+
+
 class SelectedShoreline:
     """Worker-local adapter over the selected GSHHS descriptor.
 
@@ -107,6 +133,10 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
         use_waves=job.wave_forecast is not None,
         coastline_checks=job.coastline_checks,
         waypoints=list(job.waypoints),
+        roundings=[
+            None if rounding is None else rounding.to_native()
+            for rounding in job.roundings
+        ],
         # The keep-off control is disabled with coastline checks off; the
         # legacy path ignores it then, so native does not apply it either. The
         # fingerprint below records whether it was applied.
@@ -181,6 +211,7 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
             waves=selected_waves if waves is not None else None,
             wave_coverage=waves.coverage() if waves is not None else None,
         )
+        _attach_rounding_names(run, job)
         if run.get("status") == "wave_data_required":
             provenance = run.get("wave_provenance") or {}
             coverage_data = provenance.get("coverage") or {}
@@ -232,6 +263,16 @@ def run_native_request(job: NativeRequest, progress=None, cancel_event=None) -> 
                 }
                 if job.wave_forecast is not None
                 else None
+            ),
+            **(
+                {
+                    "roundings": [
+                        None if rounding is None else rounding.to_native()
+                        for rounding in job.roundings
+                    ]
+                }
+                if job.roundings
+                else {}
             ),
         )
         run["scenario"] = dict(

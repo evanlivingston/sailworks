@@ -8,7 +8,12 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QDialog
 
 from sailworks.core.geo.elementmultipoint import NamedPoint
-from sailworks.core.geo.rounding import ROUNDING_GATE, ROUNDING_PORT, ROUNDING_STARBOARD
+from sailworks.core.geo.rounding import (
+    ROUNDING_GATE,
+    ROUNDING_PORT,
+    ROUNDING_SAIL_TO,
+    ROUNDING_STARBOARD,
+)
 from sailworks.core.scene import KIND_LOG, KIND_POI, KIND_ROUTING, KIND_TRACK
 from sailworks.qt.scenepanel import (
     COORDINATE_ROLE,
@@ -628,6 +633,45 @@ def test_edit_track_point_dialog_sets_rounding(tmp_path):
     row = panel.item_row(KIND_TRACK, "t1")
     row.setExpanded(True)
     assert row.child(0).data(NAME_COLUMN, ROUNDING_ROLE) == "Stbd"
+
+
+def test_edit_point_can_clear_full_rounding_spec_to_sail_to_mark(tmp_path):
+    application()
+    track = FakeTrack("t1", "Morning")
+    track._roundings[0] = ROUNDING_GATE
+    track.point_rounding_spec = lambda index: (
+        {
+            "side": "port",
+            "radius_nm": 2.0,
+            "exit_bearing_min_deg": 30.0,
+            "exit_bearing_max_deg": 60.0,
+        }
+        if index == 0
+        else None
+    )
+    track.set_point_rounding_spec = lambda index, spec: False
+    panel = panel_for(tmp_path, tracks=[track])
+
+    class Dialog:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def exec(self):
+            return QDialog.DialogCode.Accepted
+
+        def point_name(self):
+            return ""
+
+        def point_rounding(self):
+            return ROUNDING_SAIL_TO
+
+        def point_rounding_spec(self):
+            return None
+
+    with patch("sailworks.qt.scenepanel.PointEditDialog", Dialog):
+        panel._edit_point(("point", KIND_TRACK, "t1", 0))
+
+    assert track.point_rounding(0) == ROUNDING_SAIL_TO
 
 
 def test_double_click_item_name_renames_track(tmp_path):

@@ -1010,6 +1010,13 @@ class RoutingPanel(QWidget):
                     "data to None or switch to Native."
                 )
             request, scenarios = self._request()
+            if backend != "native" and any(
+                rounding is not None for rounding in request.roundings
+            ):
+                raise ValueError(
+                    "Mark rounding requires the Native backend. Set Calculation "
+                    "to Native, or remove the rounding from the track points."
+                )
             if backend == "native":
                 from sailworks.core.marine.nativerequest import (
                     changed_legacy_parameters,
@@ -1051,6 +1058,30 @@ class RoutingPanel(QWidget):
         polar = self.polar.currentText()
         if not polar:
             raise ValueError("No local polar is available.")
+        roundings = ()
+        if isinstance(target, Track):
+            spec_getter = getattr(target, "point_rounding_spec", None)
+            if callable(spec_getter):
+                values = []
+                for index in range(len(waypoints)):
+                    spec = spec_getter(index)
+                    if spec is not None:
+                        # The persisted radius is inert legacy metadata on the
+                        # point; the native request carries side and optional
+                        # exit bearings only.
+                        spec = {
+                            "side": spec["side"],
+                            "exit_bearing_min_deg": spec.get("exit_bearing_min_deg"),
+                            "exit_bearing_max_deg": spec.get("exit_bearing_max_deg"),
+                        }
+                        name = target.point_name(index)
+                        if name:
+                            spec["name"] = name
+                    values.append(spec)
+                roundings = tuple(values)
+            if roundings and self.start_mode.currentData() == "first-track-point":
+                # The first point is the start, not a rounding mark.
+                roundings = (None,) + roundings[1:]
         request = RouteRequest(
             "routing-" + Path(polar).stem,
             start,
@@ -1061,6 +1092,7 @@ class RoutingPanel(QWidget):
             self.coastlines.isChecked(),
             parameters=tuple(self._read_parameters().items()),
             waypoints=waypoints,
+            roundings=roundings,
             use_currents=self.use_currents.isChecked(),
             auto_download=self.use_currents.isChecked(),
             current_priority=self.current_priority.currentData(),

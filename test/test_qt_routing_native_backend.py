@@ -19,6 +19,7 @@ pytest.importorskip("PySide6")
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 
+from sailworks.core.geo.track import Track
 from sailworks.core.marine.nativeworker import NativeJobStatus
 from sailworks.core.routingjob import RouteRequest
 from sailworks.qt.routingcontroller import (
@@ -167,6 +168,66 @@ def test_panel_native_refuses_changed_legacy_parameters_before_start(app):
     assert scenarios == ()
     assert request.start == (48.0, -123.5)
     assert request.destination == (48.4, -123.1)
+    panel.deleteLater()
+
+
+def test_panel_refuses_legacy_calculation_when_a_mark_has_rounding(app):
+    controller = FakeController()
+    track = Track(
+        "race",
+        [(48.0, -123.5), (48.05, -123.45), (48.1, -123.4)],
+    )
+    track.set_point_rounding_spec(1, {"side": "starboard", "radius_nm": 0.3})
+    controller.core.trackManager = (track,)
+    panel = RoutingPanel(controller)
+    panel.refresh_destinations()
+    panel.destination.setCurrentIndex(panel.destination.findText("Track: race"))
+    panel._plan_changed()
+
+    assert panel.backend.currentData() == "legacy"
+    panel._calculate()
+
+    assert controller.routing.calls == []
+    assert "requires the Native backend" in panel.status.text()
+    panel.deleteLater()
+
+
+def test_panel_reads_mark_rounding_from_track_points(app):
+    controller = FakeController()
+    track = Track(
+        "race",
+        [(48.0, -123.5), (48.05, -123.45), (48.1, -123.4)],
+    )
+    track.set_point_rounding_spec(0, {"side": "starboard", "radius_nm": 3.0})
+    track.rename_point(1, "Duntze Rock")
+    track.set_point_rounding_spec(
+        1,
+        {
+            "side": "port",
+            "radius_nm": 0.4,
+            "exit_bearing_min_deg": 30,
+            "exit_bearing_max_deg": 60,
+        },
+    )
+    track.set_point_rounding_spec(2, None)
+    controller.core.trackManager = (track,)
+    panel = RoutingPanel(controller)
+    panel.backend.setCurrentIndex(panel.backend.findData("native"))
+    panel.refresh_destinations()
+    panel.destination.setCurrentIndex(panel.destination.findText("Track: race"))
+    panel._plan_changed()
+
+    request, _scenarios = panel._request()
+
+    # The first track point is the start, so its mark rounding is not applied.
+    assert request.roundings[0] is None
+    assert request.roundings[1] == dict(
+        side="port",
+        exit_bearing_min_deg=30.0,
+        exit_bearing_max_deg=60.0,
+        name="Duntze Rock",
+    )
+    assert request.roundings[2] is None
     panel.deleteLater()
 
 

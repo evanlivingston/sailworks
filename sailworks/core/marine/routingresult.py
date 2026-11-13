@@ -37,6 +37,7 @@ from .routingrecord import (
     epoch_from_utc,
     is_int,
     text,
+    thaw_json,
 )
 
 
@@ -199,8 +200,17 @@ def _outcome_from_dict(value: Any) -> Outcome:
 
 
 def _provenance_from_dict(value: Any) -> Provenance:
-    data = _object(value, "provenance", required=("created_utc", "route_environment"))
-    return Provenance(data["created_utc"], data["route_environment"])
+    data = _object(
+        value,
+        "provenance",
+        required=("created_utc", "route_environment"),
+        optional=("roundings",),
+    )
+    return Provenance(
+        data["created_utc"],
+        data["route_environment"],
+        tuple(data.get("roundings") or ()),
+    )
 
 
 def _capabilities_from_dict(value: Any) -> Capabilities:
@@ -455,7 +465,7 @@ def _provenance_from_native(value: Any) -> Provenance:
         value,
         "provenance",
         required=("created_epoch_s", "route_environment"),
-        optional=("created_utc",),
+        optional=("created_utc", "roundings"),
     )
     epoch_s = data["created_epoch_s"]
     utc = data.get("created_utc")
@@ -463,7 +473,11 @@ def _provenance_from_native(value: Any) -> Provenance:
         utc = canonical_utc(epoch_s)
     else:
         check_utc_epoch(epoch_s, utc, "provenance created")
-    return Provenance(utc, data["route_environment"])
+    return Provenance(
+        utc,
+        data["route_environment"],
+        tuple(data.get("roundings") or ()),
+    )
 
 
 @dataclass(frozen=True)
@@ -537,6 +551,7 @@ class RoutingResult:
             "no_feasible_route",
             "resource_limit_reached",
             "internal_error",
+            "unsatisfiable_rounding",
         }:
             if self.outcome.accepted or self.outcome.delivered:
                 raise SchemaError(
@@ -739,6 +754,11 @@ class RoutingResult:
             "provenance": {
                 "created_epoch_s": epoch_from_utc(self.provenance.created_utc),
                 "route_environment": self.provenance.route_environment,
+                **(
+                    {"roundings": thaw_json(self.provenance.roundings)}
+                    if self.provenance.roundings
+                    else {}
+                ),
             },
             "legs": [
                 {

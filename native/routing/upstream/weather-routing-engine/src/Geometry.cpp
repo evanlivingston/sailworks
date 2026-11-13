@@ -141,6 +141,8 @@ std::string toString(RoutingStatus status) {
       return "cancelled";
     case RoutingStatus::InternalError:
       return "internal_error";
+    case RoutingStatus::UnsatisfiableRounding:
+      return "unsatisfiable_rounding";
   }
   return "internal_error";
 }

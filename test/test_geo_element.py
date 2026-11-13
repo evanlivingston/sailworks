@@ -190,6 +190,59 @@ class TestElementMultiPoint(unittest.TestCase):
         self.assertEqual(emp.point_rounding(1), ROUNDING_PORT)
         self.assertEqual(emp.point_name(1), "Mark")
 
+    def test_full_rounding_spec_survives_json_roundtrip(self):
+        emp, _ = self._make([(1.0, 2.0, None), (3.0, 4.0, None)])
+        spec = {
+            "side": "port",
+            "radius_nm": 2.5,
+            "exit_bearing_min_deg": 30,
+            "exit_bearing_max_deg": 60,
+        }
+        self.assertTrue(emp.set_point_rounding_spec(1, spec))
+        self.assertEqual(emp.point_rounding_spec(1), spec)
+        payload = emp.to_json()
+
+        self.assertEqual(payload["point_rounding_radius_nm"], [None, 2.5])
+        self.assertEqual(payload["point_rounding_exit_min_deg"], [None, 30.0])
+        self.assertEqual(payload["point_rounding_exit_max_deg"], [None, 60.0])
+        loaded = ElementMultiPoint.from_json(payload)
+        self.assertEqual(loaded.point_rounding_spec(1), spec)
+
+    def test_default_radius_is_implicit_and_exact_clears_spec(self):
+        emp, _ = self._make([(1.0, 2.0, None)])
+        emp.set_point_rounding_spec(0, {"side": "starboard"})
+        self.assertEqual(
+            emp.point_rounding_spec(0),
+            {
+                "side": "starboard",
+                "radius_nm": 0.5,
+                "exit_bearing_min_deg": None,
+                "exit_bearing_max_deg": None,
+            },
+        )
+        self.assertNotIn("point_rounding_radius_nm", emp.to_json())
+        emp.set_point_rounding_spec(0, None)
+        self.assertIsNone(emp.point_rounding_spec(0))
+
+    def test_rounding_spec_preserved_by_rename_move_and_duplicate(self):
+        emp, _ = self._make([(1.0, 2.0, None)])
+        emp.set_point_rounding_spec(
+            0,
+            {
+                "side": "starboard",
+                "radius_nm": 1.5,
+                "exit_bearing_min_deg": 90,
+                "exit_bearing_max_deg": 110,
+            },
+        )
+        emp.rename_point(0, "Mark")
+        emp.move(0, 5.0, 6.0)
+        self.assertEqual(emp.point_rounding_spec(0)["radius_nm"], 1.5)
+        self.assertEqual(emp.point_rounding_spec(0)["side"], "starboard")
+        emp.duplicate(0)
+        self.assertEqual(emp.point_rounding_spec(1)["radius_nm"], 1.5)
+        self.assertEqual(emp.point_rounding_spec(1)["exit_bearing_max_deg"], 110)
+
     def test_move(self):
         emp, col = self._make([(1.0, 2.0, None)])
         emp.move(0, 5.0, 6.0)
