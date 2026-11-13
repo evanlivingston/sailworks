@@ -1,1 +1,0 @@
-{"timestamp": "2026-11-13T17:32:32.534161+00:00", "level": "INFO", "logger": "auto_workflow.main", "message": "DRY RUN - Discovery only", "module": "main", "function": "main", "line": 277, "taskName": null}
