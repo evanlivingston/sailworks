@@ -311,24 +311,6 @@ def test_expanding_route_shows_marks_and_rounding(tmp_path):
     assert row.child(0).data(NAME_COLUMN, COORDINATE_ROLE) == ("48.100000, -123.100000")
 
 
-def test_cycle_rounding_updates_route_mark(tmp_path):
-    application()
-    route = FakeRoute("r1", "Route")
-    panel = panel_for(tmp_path, routes=[route])
-    node = ("point", KIND_ROUTING, "r1", 0)
-
-    panel._cycle_rounding(node)
-    assert route.point_rounding(0) == ROUNDING_GATE
-    panel._cycle_rounding(node)
-    assert route.point_rounding(0) == ROUNDING_PORT
-    panel._cycle_rounding(node)
-    assert route.point_rounding(0) == ROUNDING_STARBOARD
-
-    row = panel.item_row(KIND_ROUTING, "r1")
-    row.setExpanded(True)
-    assert row.child(0).data(NAME_COLUMN, ROUNDING_ROLE) == "Stbd"
-
-
 def test_edit_point_dialog_updates_name_and_rounding(tmp_path):
     application()
     route = FakeRoute("r1", "Route")
@@ -389,8 +371,6 @@ def test_edit_point_can_clear_full_rounding_spec_to_sail_to_mark(tmp_path):
         {
             "side": "port",
             "radius_nm": 2.0,
-            "exit_bearing_min_deg": 30.0,
-            "exit_bearing_max_deg": 60.0,
         }
         if index == 0
         else None

@@ -1,4 +1,4 @@
-"""The mark properties dialog edits side and exit bearings, not a radius."""
+"""The mark properties dialog edits rounding side, not a radius or exit range."""
 
 import os
 
@@ -25,32 +25,16 @@ def test_dialog_has_no_radius_control(app):
     dialog.deleteLater()
 
 
-def test_dialog_edits_rounding_side_and_exit_bearings(app):
-    dialog = PointEditDialog(
-        "Mark",
-        rounding=ROUNDING_PORT,
-        radius_nm=2.0,
-        exit_bearing_min_deg=30,
-        exit_bearing_max_deg=60,
-    )
-    assert dialog.point_rounding_spec() == {
-        "side": "port",
-        "radius_nm": 2.0,
-        "exit_bearing_min_deg": 30.0,
-        "exit_bearing_max_deg": 60.0,
-    }
+def test_dialog_edits_rounding_side(app):
+    dialog = PointEditDialog("Mark", rounding=ROUNDING_PORT, radius_nm=2.0)
+    assert dialog.point_rounding_spec() == {"side": "port", "radius_nm": 2.0}
 
     dialog.rounding_combo.setCurrentIndex(
         dialog.rounding_combo.findData(ROUNDING_STARBOARD)
     )
-    dialog.exit_min.setValue(-1)
-    dialog.exit_max.setValue(-1)
-    assert dialog.point_rounding_spec() == {
-        "side": "starboard",
-        "radius_nm": 2.0,
-        "exit_bearing_min_deg": None,
-        "exit_bearing_max_deg": None,
-    }
+    assert dialog.point_rounding_spec() == {"side": "starboard", "radius_nm": 2.0}
+    assert not hasattr(dialog, "exit_min")
+    assert not hasattr(dialog, "exit_max")
     dialog.deleteLater()
 
 
@@ -66,10 +50,9 @@ def test_dialog_preserves_inert_radius_untouched(app):
         dialog.deleteLater()
 
 
-def test_sail_to_mark_has_no_routing_spec_and_hides_details(app):
+def test_sail_to_mark_has_no_routing_spec(app):
     dialog = PointEditDialog("Mark", rounding=2)
-    assert dialog.rounding_details.isHidden() is True
     assert dialog.point_rounding_spec() is None
     dialog.rounding_combo.setCurrentIndex(dialog.rounding_combo.findData(ROUNDING_PORT))
-    assert dialog.rounding_details.isHidden() is False
+    assert dialog.point_rounding_spec() == {"side": "port", "radius_nm": 0.5}
     dialog.deleteLater()

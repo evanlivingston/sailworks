@@ -752,8 +752,6 @@ class ScenePanel(QWidget):
             rounding=current_rounding,
             coordinates=tuple(element.points[index][:2]),
             radius_nm=spec.get("radius_nm"),
-            exit_bearing_min_deg=spec.get("exit_bearing_min_deg"),
-            exit_bearing_max_deg=spec.get("exit_bearing_max_deg"),
             parent=self,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -788,22 +786,6 @@ class ScenePanel(QWidget):
             ):
                 changed = set_rounding(index, rounding) or changed
         if changed:
-            self.changed.emit()
-        self.refresh()
-
-    def _cycle_rounding(self, node):
-        element = self._point_element(node)
-        if element is None:
-            return
-        set_rounding = getattr(element, "set_point_rounding", None)
-        if not callable(set_rounding):
-            return
-        index = int(node[3])
-        point_rounding = getattr(element, "point_rounding", None)
-        current = normalize_rounding(
-            point_rounding(index) if callable(point_rounding) else None
-        )
-        if set_rounding(index, (current + 1) % 4):
             self.changed.emit()
         self.refresh()
 
@@ -947,11 +929,6 @@ class ScenePanel(QWidget):
                     "Move",
                     lambda: self._move_point(node),
                     key="V",
-                )
-                builder.add(
-                    "Cycle Rounding",
-                    lambda: self._cycle_rounding(node),
-                    key="C",
                 )
         if rename or open_log:
             builder.section()

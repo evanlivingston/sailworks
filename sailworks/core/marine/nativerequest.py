@@ -27,12 +27,10 @@ WAVE_UNITS = {
 
 @dataclass(frozen=True)
 class Rounding:
-    """One pass-and-exit rule for a route mark."""
+    """One pass rule for a route mark: which side to leave it on."""
 
     side: str
     radius_nm: float | None = None
-    exit_bearing_min_deg: float | None = None
-    exit_bearing_max_deg: float | None = None
     name: str = ""
 
     def __post_init__(self):
@@ -50,31 +48,12 @@ class Rounding:
             raise ValueError("Rounding radius must be a finite number or None")
         else:
             object.__setattr__(self, "radius_nm", float(radius))
-        minimum = self.exit_bearing_min_deg
-        maximum = self.exit_bearing_max_deg
-        if (minimum is None) != (maximum is None):
-            raise ValueError("Rounding exit bearing needs both a minimum and maximum")
-        if minimum is not None:
-            if (
-                type(minimum) not in (int, float)
-                or type(maximum) not in (int, float)
-                or not math.isfinite(minimum)
-                or not math.isfinite(maximum)
-                or not 0 <= minimum <= maximum < 360
-            ):
-                raise ValueError(
-                    "Rounding exit bearing range must satisfy 0 <= min <= max < 360"
-                )
-            object.__setattr__(self, "exit_bearing_min_deg", float(minimum))
-            object.__setattr__(self, "exit_bearing_max_deg", float(maximum))
 
     def to_native(self) -> dict:
         # Radius is legacy point metadata, never a planning or acceptance
-        # constraint: the native contract is side-of-track plus exit bearings.
+        # constraint: the native contract is side of track only.
         return dict(
             side=self.side,
-            exit_bearing_min_deg=self.exit_bearing_min_deg,
-            exit_bearing_max_deg=self.exit_bearing_max_deg,
             name=self.name,
         )
 

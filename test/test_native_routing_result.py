@@ -173,8 +173,6 @@ def test_unsatisfiable_rounding_status_and_provenance_roundings_round_trip():
         mark={"latitude": 48.0, "longitude": -124.0},
         side="port",
         radius_nm=0.5,
-        exit_bearing_min_deg=None,
-        exit_bearing_max_deg=None,
         achieved_closest_distance_nm=None,
         achieved_terminal_bearing_deg=None,
         achieved_terminal_course_deg=None,

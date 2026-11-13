@@ -3,13 +3,10 @@
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFormLayout,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QVBoxLayout,
-    QWidget,
 )
 
 from sailworks.core.geo.rounding import (
@@ -31,8 +28,6 @@ class PointEditDialog(QDialog):
         rounding=None,
         coordinates=None,
         radius_nm=None,
-        exit_bearing_min_deg=None,
-        exit_bearing_max_deg=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -46,8 +41,6 @@ class PointEditDialog(QDialog):
         # The persisted radius is inert legacy metadata: it is carried through
         # untouched so saving the dialog never rewrites or drops it.
         self.radius_nm = radius_nm
-        self.exit_min = None
-        self.exit_max = None
         if rounding is not None:
             self.rounding_combo = Dropdown("Rounding")
             for value, label in ROUNDING_LABELS.items():
@@ -57,30 +50,6 @@ class PointEditDialog(QDialog):
             )
             form.addRow(self.rounding_combo)
 
-            self.rounding_details = QWidget()
-            details = QFormLayout(self.rounding_details)
-            details.setContentsMargins(0, 0, 0, 0)
-            self.exit_min = QDoubleSpinBox()
-            self.exit_min.setRange(-1, 360)
-            self.exit_min.setDecimals(1)
-            self.exit_min.setSpecialValueText("none")
-            self.exit_min.setValue(
-                -1 if exit_bearing_min_deg is None else float(exit_bearing_min_deg)
-            )
-            details.addRow("Exit min", self.exit_min)
-
-            self.exit_max = QDoubleSpinBox()
-            self.exit_max.setRange(-1, 360)
-            self.exit_max.setDecimals(1)
-            self.exit_max.setSpecialValueText("none")
-            self.exit_max.setValue(
-                -1 if exit_bearing_max_deg is None else float(exit_bearing_max_deg)
-            )
-            details.addRow("Exit max", self.exit_max)
-            form.addRow(self.rounding_details)
-
-            self.rounding_combo.currentIndexChanged.connect(self._sync_rounding_fields)
-            self._sync_rounding_fields()
         if coordinates is not None:
             form.addRow(
                 "Position", QLabel(f"{coordinates[0]:.6f}, {coordinates[1]:.6f}")
@@ -92,50 +61,6 @@ class PointEditDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
-
-    def _sync_rounding_fields(self, *_):
-        if self.rounding_combo is None or self.rounding_details is None:
-            return
-        enabled = self.rounding_combo.currentData() in (
-            ROUNDING_PORT,
-            ROUNDING_STARBOARD,
-        )
-        self.rounding_details.setVisible(enabled)
-        for widget in (self.exit_min, self.exit_max):
-            if widget is not None:
-                widget.setEnabled(enabled)
-
-    def accept(self):
-        if self.rounding_combo is not None and self.rounding_combo.currentData() in (
-            ROUNDING_PORT,
-            ROUNDING_STARBOARD,
-        ):
-            minimum = self.exit_min.value()
-            maximum = self.exit_max.value()
-            has_minimum = minimum >= 0
-            has_maximum = maximum >= 0
-            if has_minimum != has_maximum:
-                QMessageBox.warning(
-                    self,
-                    "Rounding",
-                    "Set both exit bearings, or leave both at none.",
-                )
-                return
-            if has_minimum and maximum >= 360:
-                QMessageBox.warning(
-                    self,
-                    "Rounding",
-                    "Exit maximum must be less than 360 degrees.",
-                )
-                return
-            if has_minimum and minimum > maximum:
-                QMessageBox.warning(
-                    self,
-                    "Rounding",
-                    "Exit minimum must not be greater than exit maximum.",
-                )
-                return
-        super().accept()
 
     def point_name(self):
         return self.name_edit.text().strip()
@@ -151,13 +76,9 @@ class PointEditDialog(QDialog):
         side = self.rounding_combo.currentData()
         if side not in (ROUNDING_PORT, ROUNDING_STARBOARD):
             return None
-        minimum = self.exit_min.value()
-        maximum = self.exit_max.value()
         return normalize_rounding_spec(
             {
                 "side": "port" if side == ROUNDING_PORT else "starboard",
                 "radius_nm": self.radius_nm,
-                "exit_bearing_min_deg": None if minimum < 0 else minimum,
-                "exit_bearing_max_deg": None if maximum < 0 else maximum,
             }
         )
