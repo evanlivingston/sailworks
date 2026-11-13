@@ -142,29 +142,41 @@ def fit_coordinate(text, metrics, width):
 def point_columns(rect, metrics, coordinate_text="", label_left=None):
     """Split the space right of the label into rounding and coordinate slots.
 
-    The rounding slot has a fixed width and a fixed position derived from the
-    row rect alone, so every point row starts its rounding label at the same x
-    whatever its coordinates are. The coordinate takes the room that remains
-    and is shortened to fit it. On a narrow panel the coordinate is shortened
-    and the rounding slot moved right before the name is reduced to nothing,
-    keeping a readable label.
+    The name is placed first: ``POINT_MIN_LABEL`` and the gap that separates it
+    from the rounding slot are reserved before either right-hand slot is
+    allocated. The rounding slot has a fixed width and a position derived from
+    the row rect alone, so every point row that shows a rounding label starts it
+    at the same x whatever its coordinates are. The coordinate takes the room
+    that remains to the right of the rounding slot and is shortened to fit it.
+    A row too narrow for the rounding slot beside a readable name shows the
+    elided name alone rather than an empty name with right-hand fields.
     """
     left = rect.left() if label_left is None else max(rect.left(), label_left)
     right = rect.right()
     available = max(0, right - left + 1)
-    slot = min(rounding_column_width(metrics), available)
-    reserve = int(available * COORDINATE_FRACTION)
-    rounding_left = right + 1 - reserve - ROUNDING_GAP - slot
+    slot = rounding_column_width(metrics)
     minimum = min(POINT_MIN_LABEL, available)
-    if rounding_left - left - ROUNDING_GAP < minimum:
-        rounding_left = min(right + 1 - slot, left + minimum + ROUNDING_GAP)
-    rounding_left = max(left, rounding_left)
+    remaining = available - minimum - ROUNDING_GAP
+    if slot <= 0 or remaining < slot:
+        # No rounding slot fits beside a readable name, so the name takes the
+        # row and the coordinate is dropped rather than pushing the name out.
+        empty = QRect(right + 1, rect.top(), 0, rect.height())
+        return empty, empty, ""
+    reserve = int(available * COORDINATE_FRACTION)
+    reserve = max(0, min(reserve, remaining - slot - ROUNDING_GAP))
+    gap = ROUNDING_GAP if reserve > 0 else 0
+    rounding_left = right + 1 - reserve - gap - slot
     rounding = QRect(rounding_left, rect.top(), slot, rect.height())
-    coordinate_left = min(right + 1, rounding_left + slot + ROUNDING_GAP)
+    coordinate_left = min(right + 1, rounding_left + slot + gap)
     width = max(0, right - coordinate_left + 1)
     coordinate = QRect(coordinate_left, rect.top(), width, rect.height())
     shown = fit_coordinate(str(coordinate_text), metrics, width)
     return rounding, coordinate, shown
+
+
+def point_label_width(label_rect, rounding_rect):
+    """Width a point row's name may use before the rounding slot starts."""
+    return max(0, rounding_rect.left() - label_rect.left() - ROUNDING_GAP)
 
 
 def row_geometry(rect, metrics, coordinates, icon_width):
@@ -432,7 +444,7 @@ class SceneItemDelegate(QStyledItemDelegate):
         _, label_rect, rounding_rect, coordinate_rect, coordinate_text = row_geometry(
             rect, metrics, coordinates, icon_width
         )
-        label_width = max(0, rounding_rect.left() - label_rect.left() - ROUNDING_GAP)
+        label_width = point_label_width(label_rect, rounding_rect)
         label_text = metrics.elidedText(
             str(label), Qt.TextElideMode.ElideRight, label_width
         )
@@ -445,7 +457,7 @@ class SceneItemDelegate(QStyledItemDelegate):
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
             label_text,
         )
-        if rounding_text:
+        if rounding_text and rounding_rect.width() > 0:
             painter.setPen(label_color if selected else rounding_color(rounding_text))
             painter.drawText(
                 rounding_rect,
