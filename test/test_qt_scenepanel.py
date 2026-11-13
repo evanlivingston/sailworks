@@ -43,6 +43,7 @@ from sailworks.qt.scenepanel import (
     TOOLTIP_OFFSET_Y,
     detail_columns,
     fit_coordinate,
+    point_detail_columns,
     point_label_width,
     row_geometry,
     rounding_color,
@@ -53,6 +54,8 @@ from sailworks.qt.scenepanel import (
 from sailworks.qt.theme import BORDER, PANEL, TEXT, TOOLTIP_STYLE
 from sailworks.rendering.navigation import (
     routing_detail_fields,
+    routing_point_cells,
+    routing_point_detail_fields,
     routing_summary,
     track_detail_fields,
 )
@@ -758,6 +761,21 @@ def rendered_point_rects(panel, track, width):
     return recorder.rects
 
 
+def rendered_routing_mark_rects(panel, route, width):
+    """Routing mark-row rects from rendering the panel at a given width."""
+    tree = panel.tree
+    recorder = PointRectRecorder(tree)
+    tree.setItemDelegateForColumn(NAME_COLUMN, recorder)
+    panel.resize(width, 320)
+    panel.show()
+    QApplication.processEvents()
+    panel.item_row(KIND_ROUTING, route.uid).setExpanded(True)
+    panel.tree_item(("routing-legs", KIND_ROUTING, route.uid)).setExpanded(True)
+    QApplication.processEvents()
+    tree.grab()
+    return recorder.rects
+
+
 def test_narrow_point_row_keeps_a_readable_name(tmp_path):
     application()
     track = FakeTrack("t1", "Morning")
@@ -1176,6 +1194,17 @@ def route_with_points(name="routing-J120-hugo-1"):
     return route
 
 
+def route_with_detail_points():
+    """Route whose points carry the serialized figures the table shows."""
+    route = FakeRoute("r1", "Detailed")
+    route.points = [
+        (48.0, -123.0, "2026-01-01T00:00:00", 45.0, 12.5, 6.4, 270.0),
+        (48.5, -123.5, "2026-01-01T01:00:00", 50.0, 14.0, 7.1, 280.0),
+        (49.0, -124.0, "2026-01-01T02:00:00", 55.0, 15.5, 8.2, 290.0),
+    ]
+    return route
+
+
 def test_routing_row_tooltip_shows_navigation_summary(tmp_path):
     application()
     route = route_with_points()
@@ -1279,6 +1308,142 @@ def test_point_rows_keep_rounding_and_coordinates_without_detail_fields(tmp_path
     assert child.data(NAME_COLUMN, DETAIL_ROLE) is None
     assert child.data(NAME_COLUMN, COORDINATE_ROLE) == "48.000000, -123.000000"
     assert child.data(NAME_COLUMN, ROUNDING_ROLE) == ROUNDING_SHORT[ROUNDING_SAIL_TO]
+
+
+def test_routing_mark_rows_carry_the_table_figures(tmp_path):
+    application()
+    route = route_with_detail_points()
+    panel = panel_for(tmp_path, routes=[route])
+    row = panel.item_row(KIND_ROUTING, "r1")
+
+    row.setExpanded(True)
+    marks = panel.tree_item(("routing-legs", KIND_ROUTING, "r1"))
+
+    # The table's display strings, shared through routing_point_cells.
+    assert list(routing_point_cells(route.points[0])) == [
+        "01/01 00:00",
+        "45°",
+        "12.5",
+        "6.4",
+        "270°",
+    ]
+    for index, point in enumerate(route.points):
+        assert marks.child(index).data(NAME_COLUMN, DETAIL_ROLE) == list(
+            routing_point_cells(point)
+        )
+    assert [label for label, _ in routing_point_detail_fields(route.points[0])] == [
+        "time",
+        "twa",
+        "tws",
+        "speed",
+        "brg",
+    ]
+
+
+# The delegate allows a 16px decoration plus a 4px gap before the label.
+ROUTING_MARK_ICON_WIDTH = 20
+
+
+def routing_mark_segments(panel, route, width, index=0):
+    """Detail segments the delegate draws on a rendered routing mark row.
+
+    ``row_geometry`` and ``point_detail_columns`` are the delegate's own
+    layout, fed the rect the tree really renders.
+    """
+    metrics = QFontMetrics(panel.tree.font())
+    rects = rendered_routing_mark_rects(panel, route, width)
+    rect = rects[("point", KIND_ROUTING, route.uid, index)]
+    paint_rect = rect.adjusted(4, 0, -4, 0)
+    point = route.points[index]
+    coordinates = f"{point[0]:.6f}, {point[1]:.6f}"
+    _, label_rect, rounding_rect, coordinate_rect, shown = row_geometry(
+        paint_rect, metrics, coordinates, ROUTING_MARK_ICON_WIDTH
+    )
+    values = [value for _, value in routing_point_detail_fields(point)]
+    segments = point_detail_columns(paint_rect, metrics, values, coordinate_rect, shown)
+    return (
+        paint_rect,
+        metrics,
+        label_rect,
+        rounding_rect,
+        coordinate_rect,
+        shown,
+        segments,
+        values,
+    )
+
+
+def test_routing_mark_details_adapt_to_the_panel_width(tmp_path):
+    application()
+    route = route_with_detail_points()
+    panel = panel_for(tmp_path, routes=[route])
+    expected = [value for _, value in routing_point_detail_fields(route.points[0])]
+
+    measured = {}
+    for width in (960, 700, 480):
+        (
+            paint_rect,
+            metrics,
+            label_rect,
+            rounding_rect,
+            coordinate_rect,
+            shown,
+            segments,
+            values,
+        ) = routing_mark_segments(panel, route, width)
+        measured[width] = (paint_rect.width(), segments)
+        assert values == expected
+        texts = [text for text, _ in segments]
+        # Kept fields are a prefix: the lowest priority drops first.
+        assert texts == expected[: len(texts)]
+
+        label_width = point_label_width(label_rect, rounding_rect)
+        assert label_width >= POINT_MIN_LABEL
+        label = metrics.elidedText("Mark 1", Qt.TextElideMode.ElideRight, label_width)
+        assert label and label != "…"
+
+        if segments:
+            # The rounding slot, the details and the coordinate never overlap.
+            assert rounding_rect.width() > 0
+            assert segments[0][1].left() > rounding_rect.right()
+            assert segments[-1][1].right() < (
+                coordinate_rect.right() - metrics.horizontalAdvance(shown)
+            )
+            for earlier, later in zip(segments, segments[1:]):
+                assert later[1].left() - earlier[1].right() - 1 == DETAIL_GAP
+
+    wide, medium, narrow = (measured[width] for width in (960, 700, 480))
+    assert wide[1] and len(wide[1]) == len(expected)
+    assert 0 < len(medium[1]) < len(expected)
+    assert narrow[1] == []
+
+
+def test_narrow_routing_mark_row_keeps_name_rounding_and_coordinate(tmp_path):
+    application()
+    route = route_with_detail_points()
+    route.set_point_rounding(0, ROUNDING_PORT)
+    panel = panel_for(tmp_path, routes=[route])
+    (
+        paint_rect,
+        metrics,
+        label_rect,
+        rounding_rect,
+        coordinate_rect,
+        shown,
+        segments,
+        values,
+    ) = routing_mark_segments(panel, route, 480)
+    coordinates = "48.000000, -123.000000"
+
+    assert values
+    assert segments == []
+    # No detail block consumes room, so the coordinate keeps its full text and
+    # the right-aligned slot it has always had.
+    assert shown == coordinates
+    assert coordinate_rect.right() == paint_rect.right()
+    assert rounding_rect.width() == rounding_column_width(metrics)
+    assert rounding_rect.right() < coordinate_rect.left()
+    assert point_label_width(label_rect, rounding_rect) >= POINT_MIN_LABEL
 
 
 def detail_width(metrics, values, label_left, count):

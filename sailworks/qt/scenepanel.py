@@ -46,6 +46,7 @@ from sailworks.core.scene import (
 )
 from sailworks.rendering.navigation import (
     routing_detail_fields,
+    routing_point_detail_fields,
     routing_summary,
     track_detail_fields,
 )
@@ -200,12 +201,12 @@ def row_geometry(rect, metrics, coordinates, icon_width):
     return icon, label, rounding, coordinate, shown
 
 
-def detail_columns(rect, metrics, values, label_left):
+def detail_columns(rect, metrics, values, label_left, min_label=DETAIL_MIN_LABEL):
     """Rects for the detail segments a row can show, highest priority first.
 
     The values are painted as separate right-aligned segments ending at the
     row's right edge, in priority order from left to right. Segments are kept
-    only while the block leaves ``DETAIL_MIN_LABEL`` pixels for the label, so a
+    only while the block leaves ``min_label`` pixels for the label, so a
     narrow panel drops the lowest priority fields instead of painting them over
     the name. A value that does not fit stops the block, keeping the order
     intact rather than skipping to a shorter lower priority field.
@@ -219,7 +220,7 @@ def detail_columns(rect, metrics, values, label_left):
             continue
         text_width = metrics.horizontalAdvance(text)
         added = text_width + (DETAIL_GAP if kept else 0)
-        if width + added + DETAIL_MIN_LABEL > available:
+        if width + added + min_label > available:
             break
         kept.append((text, text_width))
         width += added
@@ -235,6 +236,24 @@ def detail_columns(rect, metrics, values, label_left):
         right -= text_width + DETAIL_GAP
     columns.reverse()
     return columns
+
+
+def point_detail_columns(rect, metrics, values, coordinate_rect, coordinate_text):
+    """Rects for a point row's detail segments, highest priority first.
+
+    Point rows already place the name, the rounding slot and the right-aligned
+    coordinate. Details use only the slack left of the coordinate, so those
+    three keep their positions and a row too narrow for any detail is drawn
+    exactly like a point row without detail fields.
+    """
+    natural = metrics.horizontalAdvance(str(coordinate_text or ""))
+    left = coordinate_rect.left()
+    right = coordinate_rect.right() - natural - DETAIL_GAP
+    available = right - left + 1
+    if available <= 0:
+        return []
+    block = QRect(left, rect.top(), available, rect.height())
+    return detail_columns(block, metrics, values, left, min_label=0)
 
 
 def _visibility_style():
@@ -470,6 +489,13 @@ class SceneItemDelegate(QStyledItemDelegate):
         label_text = metrics.elidedText(
             str(label), Qt.TextElideMode.ElideRight, label_width
         )
+        segments = (
+            point_detail_columns(
+                rect, metrics, details, coordinate_rect, coordinate_text
+            )
+            if details
+            else []
+        )
 
         painter.save()
         painter.setFont(adjusted.font)
@@ -486,6 +512,14 @@ class SceneItemDelegate(QStyledItemDelegate):
                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                 rounding_text,
             )
+        if segments:
+            painter.setPen(coordinate_color)
+            for text, segment in segments:
+                painter.drawText(
+                    segment,
+                    Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                    text,
+                )
         painter.setPen(coordinate_color)
         painter.drawText(
             coordinate_rect,
@@ -926,6 +960,10 @@ class ScenePanel(QWidget):
                     ROUNDING_ROLE,
                     ROUNDING_SHORT[rounding_value],
                 )
+            if entry.kind == KIND_ROUTING:
+                details = [value for _, value in routing_point_detail_fields(point)]
+                if details:
+                    child.setData(NAME_COLUMN, DETAIL_ROLE, details)
             child.setToolTip(
                 NAME_COLUMN,
                 "\n".join(

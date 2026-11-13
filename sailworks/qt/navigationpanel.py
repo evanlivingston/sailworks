@@ -30,7 +30,7 @@ from sailworks.core.aismanager import SHIP_TYPE_COLORS
 from sailworks.core.geo.rounding import ROUNDING_SHORT, normalize_rounding
 from .backgroundtask import BackgroundTask
 from .theme import MenuBuilder, ThemedMenu
-from sailworks.rendering.navigation import routing_summary
+from sailworks.rendering.navigation import routing_point_cells, routing_summary
 
 
 def table(headers, editable=False):
@@ -576,21 +576,11 @@ class NavigationPanel(QWidget):
             if len(point) >= 7
         ]
         for i, p in enumerate(points):
-            try:
-                stamp = dateutil.parser.parse(str(p[2]))
-                stamp = stamp.astimezone() if stamp.tzinfo is not None else stamp
-                label = stamp.strftime("%d/%m %H:%M")
-            except (ValueError, TypeError):
-                label = str(p[2])
             rounding = point_rounding(i) if callable(point_rounding) else None
             rows.append(
                 (
                     i + 1,
-                    label,
-                    f"{p[3]:.0f}°" if p[3] else "",
-                    f"{p[4]:.1f}" if p[4] else "",
-                    f"{p[5]:.1f}" if p[5] else "",
-                    f"{p[6]:.0f}°" if p[6] else "",
+                    *routing_point_cells(p),
                     ROUNDING_SHORT[normalize_rounding(rounding)],
                 )
             )

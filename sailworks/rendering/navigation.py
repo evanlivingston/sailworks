@@ -88,6 +88,51 @@ def _route_datetime(value):
     return dateutil.parser.parse(value)
 
 
+ROUTING_POINT_FIELDS = ("time", "twa", "tws", "speed", "brg")
+
+
+def routing_point_time_label(value):
+    """Display string for a route point's time cell.
+
+    A timestamp that carries a timezone is shown in local time; a legacy naive
+    time is shown as written. An unparseable value falls back to its text.
+    """
+    try:
+        stamp = dateutil.parser.parse(str(value))
+        stamp = stamp.astimezone() if stamp.tzinfo is not None else stamp
+        return stamp.strftime("%d/%m %H:%M")
+    except (ValueError, TypeError):
+        return str(value)
+
+
+def routing_point_cells(point):
+    """The navigation table's display strings for one route point.
+
+    ``point`` is a serialized route point, with time, TWA, TWS, speed and
+    bearing at indices 2 to 6. A missing figure stays empty rather than showing
+    zero, so the table and the scene tree cannot disagree.
+    """
+    return (
+        routing_point_time_label(point[2]),
+        f"{point[3]:.0f}°" if point[3] else "",
+        f"{point[4]:.1f}" if point[4] else "",
+        f"{point[5]:.1f}" if point[5] else "",
+        f"{point[6]:.0f}°" if point[6] else "",
+    )
+
+
+def routing_point_detail_fields(point):
+    """Ordered (label, value) detail fields for a routing mark row.
+
+    The same order as the navigation table, so time is the highest priority
+    segment and bearing the first to drop. A point without the serialized
+    figures has no fields.
+    """
+    if len(point) < 7:
+        return []
+    return list(zip(ROUTING_POINT_FIELDS, routing_point_cells(point)))
+
+
 def routing_detail_fields(r):
     """Ordered (label, value) figures for a routing, highest priority first.
 
