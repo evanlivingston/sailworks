@@ -18,6 +18,14 @@ MUTED = "#b0b0ad"
 ACCENT = "#3584e4"
 BORDER = "#454545"
 
+# Tooltip chrome: the native frame is a white outline that clashes with the
+# dark panels, so tooltips use the same surface, text and border as the rest.
+TOOLTIP_STYLE = (
+    f"QToolTip {{ background: {PANEL}; color: {TEXT};"
+    f" border: 1px solid {BORDER}; border-radius: 4px;"
+    " padding: 4px 6px; }"
+)
+
 
 logger = logging.getLogger("sailworks")
 
@@ -194,7 +202,7 @@ def apply_theme(app: QApplication):
         palette.setColor(QPalette.ColorGroup.Disabled, role, QColor("#777774"))
     app.setPalette(palette)
     install_wheel_guard(app)
-    app.setStyleSheet("""
+    app.setStyleSheet(TOOLTIP_STYLE + """
         QToolBar { spacing: 8px; padding: 5px 8px; border: none;
                    border-bottom: 1px solid #454545; }
         QToolBar QToolButton { padding: 5px 9px; border-radius: 6px; }

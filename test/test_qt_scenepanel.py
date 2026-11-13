@@ -4,23 +4,57 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt
+from PySide6.QtGui import (
+    QFontMetrics,
+    QGuiApplication,
+    QHelpEvent,
+    QMouseEvent,
+    QWheelEvent,
+)
+from PySide6.QtWidgets import QApplication, QDialog, QFrame, QPushButton, QToolTip
 
 from sailworks.core.geo.elementmultipoint import NamedPoint
 from sailworks.core.geo.rounding import (
     ROUNDING_GATE,
     ROUNDING_PORT,
     ROUNDING_SAIL_TO,
+    ROUNDING_SHORT,
     ROUNDING_STARBOARD,
 )
+from sailworks.core import utils
 from sailworks.core.scene import KIND_LOG, KIND_POI, KIND_ROUTING, KIND_TRACK
 from sailworks.qt.scenepanel import (
     COORDINATE_ROLE,
+    DETAIL_GAP,
+    DETAIL_MIN_LABEL,
+    DETAIL_ROLE,
+    MUTED,
     NAME_COLUMN,
+    NODE_ROLE,
+    POINT_MIN_LABEL,
+    ROUNDING_GAP,
     ROUNDING_ROLE,
     VISIBLE_COLUMN,
+    SceneItemDelegate,
     ScenePanel,
+    SceneTooltip,
+    TOOLTIP_OFFSET_X,
+    TOOLTIP_OFFSET_Y,
+    detail_columns,
+    fit_coordinate,
+    point_label_width,
+    row_geometry,
+    rounding_color,
+    rounding_column_width,
+)
+
+
+from sailworks.qt.theme import BORDER, PANEL, TEXT, TOOLTIP_STYLE
+from sailworks.rendering.navigation import (
+    routing_detail_fields,
+    routing_summary,
+    track_detail_fields,
 )
 
 
@@ -67,9 +101,13 @@ class FakeRoute:
         self.points = [(48.1, -123.1), (48.2, -123.2)]
         self._names = {}
         self._roundings = {}
+        self.provenance = {}
 
     def point_name(self, index):
         return self._names.get(index, "")
+
+    def __iter__(self):
+        return iter(self.points)
 
     def rename_point(self, index, name):
         self._names[index] = str(name).strip()
@@ -197,6 +235,29 @@ def test_panel_builds_default_tree_and_items(tmp_path):
     assert panel.item_row(KIND_TRACK, "t1") is not None
     assert panel.item_row(KIND_POI, "p1") is not None
     assert panel.item_row(KIND_LOG, "log-1") is not None
+
+
+def test_panel_has_no_collection_or_group_buttons(tmp_path):
+    application()
+    panel = panel_for(tmp_path, tracks=[FakeTrack("t1", "Morning")])
+
+    assert not hasattr(panel, "new_button")
+    assert not hasattr(panel, "group_button")
+    labels = [button.text() for button in panel.findChildren(QPushButton)]
+    assert "+ Collection" not in labels
+    assert "Group Selection" not in labels
+
+
+def test_new_collection_action_remains_available(tmp_path):
+    application()
+    panel = panel_for(tmp_path, tracks=[FakeTrack("t1", "Morning")])
+
+    with patch.object(
+        panel.scene, "create_group", wraps=panel.scene.create_group
+    ) as create_group:
+        panel._new_collection()
+
+    create_group.assert_called_once()
 
 
 def test_toggling_item_updates_element_visibility(tmp_path):
@@ -564,23 +625,255 @@ def test_refresh_prunes_legs_expansion_for_removed_route(tmp_path):
     assert panel.item_row(KIND_ROUTING, "r1") is None
 
 
-def test_cycle_rounding_updates_route_mark(tmp_path):
+def test_point_row_rects_never_overlap_icon_or_each_other(tmp_path):
     application()
-    route = FakeRoute("r1", "Route")
-    panel = panel_for(tmp_path, routes=[route])
-    node = ("point", KIND_ROUTING, "r1", 0)
+    panel = panel_for(tmp_path)
+    metrics = QFontMetrics(panel.tree.font())
+    coordinates = "48.100000, -123.100000"
 
-    panel._cycle_rounding(node)
-    assert route.point_rounding(0) == ROUNDING_GATE
-    panel._cycle_rounding(node)
-    assert route.point_rounding(0) == ROUNDING_PORT
-    panel._cycle_rounding(node)
-    assert route.point_rounding(0) == ROUNDING_STARBOARD
+    for width in (200, 600):
+        rect = QRect(0, 0, width - 8, 20)
+        icon, label, rounding, coordinate, _ = row_geometry(
+            rect, metrics, coordinates, 20
+        )
 
-    row = panel.item_row(KIND_ROUTING, "r1")
+        assert icon.right() <= label.left()
+        assert rounding.left() >= label.left()
+        assert coordinate.left() >= label.left()
+        assert rounding.right() <= coordinate.left()
+        assert coordinate.right() <= rect.right()
+
+
+def test_narrow_panel_elides_coordinates_instead_of_overlapping(tmp_path):
+    application()
+    panel = panel_for(tmp_path)
+    metrics = QFontMetrics(panel.tree.font())
+    coordinates = "48.100000, -123.100000"
+    rect = QRect(0, 0, 192, 20)
+
+    _, label, rounding, coordinate, shown = row_geometry(rect, metrics, coordinates, 20)
+
+    assert shown != coordinates
+    assert shown
+    assert rounding.left() >= label.left()
+    assert coordinate.right() <= rect.right()
+
+
+def test_coordinates_share_one_right_edge_and_rounding_slot_is_fixed(tmp_path):
+    application()
+    panel = panel_for(tmp_path)
+    metrics = QFontMetrics(panel.tree.font())
+    rect = QRect(0, 0, 400, 20)
+    coordinates = "48.100000, -123.100000"
+
+    sail = row_geometry(rect, metrics, coordinates, 20)
+    stbd = row_geometry(rect, metrics, coordinates, 20)
+
+    # The rounding slot is sized for the widest short label, so Sail and Stbd
+    # occupy the same slot and the coordinates keep one right edge.
+    assert sail[2].left() == stbd[2].left()
+    assert sail[2].width() == stbd[2].width()
+    assert sail[3].left() == stbd[3].left()
+    assert sail[3].right() == stbd[3].right() == rect.right()
+    assert rounding_column_width(metrics) >= max(
+        metrics.horizontalAdvance(label) for label in ROUNDING_SHORT.values()
+    )
+
+
+def test_rounding_colours_distinguish_sides(tmp_path):
+    application()
+
+    port = rounding_color(ROUNDING_SHORT[ROUNDING_PORT])
+    starboard = rounding_color(ROUNDING_SHORT[ROUNDING_STARBOARD])
+    sail = rounding_color(ROUNDING_SHORT[ROUNDING_SAIL_TO])
+    gate = rounding_color(ROUNDING_SHORT[ROUNDING_GATE])
+
+    assert port.name() != starboard.name()
+    assert sail.name() == gate.name()
+    assert sail.name() != port.name()
+    assert sail.name() != starboard.name()
+    # Sail to mark and Gate name no side, so they stay neutral rather than
+    # borrowing the accent colour.
+    assert sail.name() == MUTED.name()
+    assert gate.name() == MUTED.name()
+
+
+def test_rounding_slot_position_ignores_coordinate_width(tmp_path):
+    application()
+    panel = panel_for(tmp_path)
+    metrics = QFontMetrics(panel.tree.font())
+    rect = QRect(0, 0, 400, 20)
+
+    wide = row_geometry(rect, metrics, "48.100000, -123.100000", 20)
+    narrow = row_geometry(rect, metrics, "48.1, -123.1", 20)
+
+    # The rounding slot is authoritative: its left edge comes from the row, so
+    # rows with different coordinate widths still align their rounding labels.
+    assert wide[2].left() == narrow[2].left()
+    assert wide[2].width() == narrow[2].width()
+    assert wide[3].right() == narrow[3].right() == rect.right()
+
+
+class PointRectRecorder(SceneItemDelegate):
+    """Records the real option rect the delegate receives for point rows."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.rects = {}
+
+    def paint(self, painter, option, index):
+        node = index.data(NODE_ROLE)
+        if isinstance(node, tuple) and node[:1] == ("point",):
+            self.rects[node] = QRect(option.rect)
+        super().paint(painter, option, index)
+
+
+def rendered_point_rects(panel, track, width):
+    """Point-row rects from rendering the panel at a given width."""
+    tree = panel.tree
+    recorder = PointRectRecorder(tree)
+    tree.setItemDelegateForColumn(NAME_COLUMN, recorder)
+    panel.resize(width, 320)
+    panel.show()
+    QApplication.processEvents()
+    panel.item_row(KIND_TRACK, track.uid).setExpanded(True)
+    QApplication.processEvents()
+    tree.grab()
+    return recorder.rects
+
+
+def test_narrow_point_row_keeps_a_readable_name(tmp_path):
+    application()
+    track = FakeTrack("t1", "Morning")
+    track.set_point_rounding(0, ROUNDING_PORT)
+    panel = panel_for(tmp_path, tracks=[track])
+    metrics = QFontMetrics(panel.tree.font())
+
+    rect = rendered_point_rects(panel, track, 200)[("point", KIND_TRACK, "t1", 0)]
+    # The real rect has already lost the tree indentation and the visibility
+    # column, so it is the narrow row a synthetic full-width rect hid.
+    assert rect.width() < 100
+    paint_rect = rect.adjusted(4, 0, -4, 0)
+    _, label_rect, rounding_rect, coordinate_rect, shown = row_geometry(
+        paint_rect, metrics, "51.123457, -1.234568", 0
+    )
+    label_width = point_label_width(label_rect, rounding_rect)
+    label = metrics.elidedText("Morning", Qt.TextElideMode.ElideRight, label_width)
+
+    assert label_width >= POINT_MIN_LABEL
+    assert label and label != "…"
+    assert metrics.horizontalAdvance(label) <= label_width
+    assert label_rect.left() + label_width <= rounding_rect.left()
+    # The rounding slot and the coordinate are dropped before the name shrinks.
+    assert rounding_rect.width() == 0
+    assert coordinate_rect.width() == 0
+    assert shown == ""
+
+
+def test_point_row_shows_name_then_rounding_then_coordinates(tmp_path):
+    application()
+    track = FakeTrack("t1", "Morning")
+    track.set_point_rounding(0, ROUNDING_PORT)
+    track.set_point_rounding(1, ROUNDING_STARBOARD)
+    panel = panel_for(tmp_path, tracks=[track])
+    metrics = QFontMetrics(panel.tree.font())
+    slot_width = rounding_column_width(metrics)
+    coordinates = "51.123457, -1.234568"
+
+    measured = {}
+    for width in (200, 224, 304, 400, 600):
+        rects = rendered_point_rects(panel, track, width)
+        first = rects[("point", KIND_TRACK, "t1", 0)]
+        second = rects[("point", KIND_TRACK, "t1", 1)]
+        paint_rect = first.adjusted(4, 0, -4, 0)
+        _, label_rect, rounding_rect, coordinate_rect, shown = row_geometry(
+            paint_rect, metrics, coordinates, 0
+        )
+        label_width = point_label_width(label_rect, rounding_rect)
+        label = metrics.elidedText("Morning", Qt.TextElideMode.ElideRight, label_width)
+        measured[width] = (
+            paint_rect.width(),
+            label_width,
+            rounding_rect,
+            coordinate_rect,
+            shown,
+        )
+
+        # The name survives at every width and never reaches a right-hand slot.
+        assert label and label != "…"
+        assert label_width >= POINT_MIN_LABEL
+        assert metrics.horizontalAdvance(label) <= label_width
+        assert label_rect.left() + label_width <= rounding_rect.left()
+
+        # The coordinate is placed from what is left, so it never moves the
+        # name or the rounding slot.
+        _, short_label, short_rounding, _, _ = row_geometry(
+            paint_rect, metrics, "51.1, -1.2", 0
+        )
+        assert point_label_width(short_label, short_rounding) == label_width
+        assert short_rounding.left() == rounding_rect.left()
+
+        # Rows at one width share the rounding slot's x.
+        other = second.adjusted(4, 0, -4, 0)
+        _, _, other_rounding, _, _ = row_geometry(other, metrics, coordinates, 0)
+        assert other_rounding.left() == rounding_rect.left()
+
+        if rounding_rect.width():
+            assert rounding_rect.width() == slot_width
+            assert coordinate_rect.left() >= rounding_rect.right() + 1
+            assert coordinate_rect.right() == paint_rect.right()
+            assert shown
+            # A coordinate with no room left elides to the ellipsis itself.
+            assert metrics.horizontalAdvance(shown) <= max(
+                coordinate_rect.width(), metrics.horizontalAdvance("…")
+            )
+        else:
+            assert coordinate_rect.width() == 0
+            assert shown == ""
+
+    assert measured[200][2].width() == 0
+    assert measured[200][3].width() == 0
+    assert measured[600][2].width() == slot_width
+    for width, (paint_width, _, rounding_rect, coordinate_rect, _) in measured.items():
+        # The rounding slot is drawn exactly when it still fits beside the
+        # name's floor, and never at the name's expense.
+        fits = (
+            paint_width - min(POINT_MIN_LABEL, paint_width) - ROUNDING_GAP >= slot_width
+        )
+        assert bool(rounding_rect.width()) == fits, width
+        assert bool(coordinate_rect.width()) == fits, width
+    assert measured[600][3].width() > measured[304][3].width()
+
+
+def test_fit_coordinate_prefers_fewer_decimals_over_elision(tmp_path):
+    application()
+    panel = panel_for(tmp_path)
+    metrics = QFontMetrics(panel.tree.font())
+    full = "48.123456, -123.654321"
+
+    four = metrics.horizontalAdvance("48.1234, -123.6543")
+    assert fit_coordinate(full, metrics, four) == "48.1234, -123.6543"
+    two = metrics.horizontalAdvance("48.12, -123.65")
+    assert fit_coordinate(full, metrics, two) == "48.12, -123.65"
+    # Trailing zeros are dropped rather than padded.
+    short = metrics.horizontalAdvance("48.1, -123.1")
+    assert fit_coordinate("48.100000, -123.100000", metrics, short) == "48.1, -123.1"
+    assert fit_coordinate(full, metrics, 0) == ""
+
+
+def test_track_marks_carry_side_colours(tmp_path):
+    application()
+    track = FakeTrack("t1", "Morning")
+    track.set_point_rounding(0, ROUNDING_PORT)
+    track.set_point_rounding(1, ROUNDING_STARBOARD)
+    panel = panel_for(tmp_path, tracks=[track])
+    row = panel.item_row(KIND_TRACK, "t1")
+
     row.setExpanded(True)
-    legs = panel.tree_item(("routing-legs", KIND_ROUTING, "r1"))
-    assert legs.child(0).data(NAME_COLUMN, ROUNDING_ROLE) == "Stbd"
+
+    port = rounding_color(row.child(0).data(NAME_COLUMN, ROUNDING_ROLE))
+    starboard = rounding_color(row.child(1).data(NAME_COLUMN, ROUNDING_ROLE))
+    assert port.name() != starboard.name()
 
 
 def test_edit_point_dialog_updates_name_and_rounding(tmp_path):
@@ -643,8 +936,6 @@ def test_edit_point_can_clear_full_rounding_spec_to_sail_to_mark(tmp_path):
         {
             "side": "port",
             "radius_nm": 2.0,
-            "exit_bearing_min_deg": 30.0,
-            "exit_bearing_max_deg": 60.0,
         }
         if index == 0
         else None
@@ -856,3 +1147,367 @@ def test_scene_hides_library_logs_when_none_is_loaded(tmp_path):
     panel = panel_for(tmp_path, logs=[log_entry(tmp_path)])
 
     assert panel.item_row(KIND_LOG, "log-1") is None
+
+
+def route_with_points(name="routing-J120-hugo-1"):
+    """Fake route carrying positions, so its navigation summary is non-empty."""
+    route = FakeRoute("r1", name)
+    route.points = [
+        (48.0, -123.0, "2026-01-01T00:00:00", None, None, 6.0),
+        (48.5, -123.5, "2026-01-01T01:00:00", None, None, 6.0),
+        (49.0, -124.0, "2026-01-01T02:00:00", None, None, 6.0),
+    ]
+    return route
+
+
+def test_routing_row_tooltip_shows_navigation_summary(tmp_path):
+    application()
+    route = route_with_points()
+    panel = panel_for(tmp_path, routes=[route])
+    row = panel.item_row(KIND_ROUTING, "r1")
+
+    tooltip = row.toolTip(NAME_COLUMN)
+    summary = routing_summary(route)
+
+    # The summary alone: the row already shows the name and the icon the type.
+    assert summary
+    assert tooltip == summary
+    assert "routing-J120-hugo-1" not in tooltip
+    assert "Routing" not in tooltip
+    assert "waypoints" not in tooltip
+    assert not tooltip.endswith("\n")
+
+
+def test_point_row_tooltip_shows_side_and_coordinate(tmp_path):
+    application()
+    route = FakeRoute("r1", "Route")
+    route.set_point_rounding(0, ROUNDING_PORT)
+    panel = panel_for(tmp_path, routes=[route])
+    row = panel.item_row(KIND_ROUTING, "r1")
+
+    row.setExpanded(True)
+    marks = panel.tree_item(("routing-legs", KIND_ROUTING, "r1"))
+    tooltip = marks.child(0).toolTip(NAME_COLUMN)
+
+    assert tooltip == "Leave to port\n48.100000, -123.100000"
+    assert "Mark 1" not in tooltip
+    assert not tooltip.endswith("\n")
+
+
+def test_routing_detail_fields_match_the_summary(tmp_path):
+    application()
+    route = route_with_points()
+
+    fields = routing_detail_fields(route)
+
+    assert [label for label, _ in fields] == ["distance", "duration", "speed"]
+    # One source: the tree segments are exactly the summary's figures.
+    assert [value for _, value in fields] == routing_summary(route).split(" | ")
+    distance = sum(
+        utils.point_distance(
+            route.points[index - 1][0],
+            route.points[index - 1][1],
+            route.points[index][0],
+            route.points[index][1],
+        )
+        for index in range(1, len(route.points))
+    )
+    assert fields[0][1] == "%.0f nm" % distance
+    assert fields[1][1] == "2h 00m"
+    assert fields[2][1] == "avg %.1f kts" % (distance / 2)
+
+
+def test_track_detail_fields_show_mark_count_then_distance(tmp_path):
+    application()
+    points = [(51.0, -1.0), (51.5, -1.5), (52.0, -2.0)]
+
+    fields = track_detail_fields(points)
+
+    assert [label for label, _ in fields] == ["marks", "distance"]
+    assert fields[0][1] == "3 marks"
+    distance = utils.point_distance(51.0, -1.0, 51.5, -1.5) + utils.point_distance(
+        51.5, -1.5, 52.0, -2.0
+    )
+    assert fields[1][1] == "%.1f nm" % distance
+
+
+def test_scene_rows_carry_detail_fields_for_their_type(tmp_path):
+    application()
+    route = route_with_points()
+    track = FakeTrack("t1", "Morning")
+    track.points = [(51.0, -1.0), (51.5, -1.5), (52.0, -2.0)]
+    panel = panel_for(
+        tmp_path, tracks=[track], routes=[route], pois=[FakePOI("p1", "Harbor")]
+    )
+
+    route_values = [value for _, value in routing_detail_fields(route)]
+    track_values = [value for _, value in track_detail_fields(track.points)]
+
+    assert panel.item_row(KIND_ROUTING, "r1").data(NAME_COLUMN, DETAIL_ROLE) == (
+        route_values
+    )
+    assert panel.item_row(KIND_TRACK, "t1").data(NAME_COLUMN, DETAIL_ROLE) == (
+        track_values
+    )
+    assert panel.item_row(KIND_POI, "p1").data(NAME_COLUMN, DETAIL_ROLE) is None
+
+
+def test_point_rows_keep_rounding_and_coordinates_without_detail_fields(tmp_path):
+    application()
+    panel = panel_for(tmp_path, routes=[route_with_points()])
+    row = panel.item_row(KIND_ROUTING, "r1")
+
+    row.setExpanded(True)
+    child = panel.tree_item(("routing-legs", KIND_ROUTING, "r1")).child(0)
+
+    assert child.data(NAME_COLUMN, DETAIL_ROLE) is None
+    assert child.data(NAME_COLUMN, COORDINATE_ROLE) == "48.000000, -123.000000"
+    assert child.data(NAME_COLUMN, ROUNDING_ROLE) == ROUNDING_SHORT[ROUNDING_SAIL_TO]
+
+
+def detail_width(metrics, values, label_left, count):
+    """Row width that fits exactly ``count`` detail values plus the label."""
+    widths = [metrics.horizontalAdvance(value) for value in values[:count]]
+    return label_left + DETAIL_MIN_LABEL + sum(widths) + DETAIL_GAP * (count - 1)
+
+
+def test_narrow_row_keeps_only_the_highest_priority_detail(tmp_path):
+    application()
+    panel = panel_for(tmp_path)
+    metrics = QFontMetrics(panel.tree.font())
+    label_left = 24
+    cases = (
+        (["108 nm", "2h 00m", "avg 54.0 kts"], "108 nm"),
+        (["3 marks", "21.4 nm"], "3 marks"),
+    )
+
+    for values, first in cases:
+        narrow = QRect(0, 0, detail_width(metrics, values, label_left, 1) + 2, 20)
+        wide = QRect(
+            0, 0, detail_width(metrics, values, label_left, len(values)) + 2, 20
+        )
+
+        assert [
+            text for text, _ in detail_columns(narrow, metrics, values, label_left)
+        ] == [first]
+        assert [
+            text for text, _ in detail_columns(wide, metrics, values, label_left)
+        ] == values
+
+
+def test_detail_segments_never_overlap_the_label_or_each_other(tmp_path):
+    application()
+    panel = panel_for(tmp_path)
+    metrics = QFontMetrics(panel.tree.font())
+    label_left = 24
+    values = ["108 nm", "2h 00m", "avg 54.0 kts"]
+
+    for count in (1, 2, 3):
+        rect = QRect(0, 0, detail_width(metrics, values, label_left, count) + 2, 20)
+        segments = detail_columns(rect, metrics, values, label_left)
+
+        assert len(segments) == count
+        assert segments[-1][1].right() == rect.right()
+        assert segments[0][1].left() - label_left >= DETAIL_MIN_LABEL
+        for earlier, later in zip(segments, segments[1:]):
+            assert later[1].left() - earlier[1].right() - 1 == DETAIL_GAP
+
+
+def test_application_stylesheet_styles_tooltips(tmp_path):
+    # The installed application sheet starts with the tooltip rule, which
+    # replaces the native white frame with the panel surface and border.
+    rule = TOOLTIP_STYLE
+
+    assert rule.startswith("QToolTip")
+    assert "background:" in rule
+    assert "border: 1px solid #454545" in rule
+    assert "white" not in rule
+    assert "#ffffff" not in rule.lower()
+
+
+def shown_panel(tmp_path, **kwargs):
+    panel = panel_for(tmp_path, **kwargs)
+    panel.resize(360, 420)
+    panel.show()
+    QApplication.processEvents()
+    return panel
+
+
+def row_tooltip_event(panel, item):
+    """Tooltip event over ``item``, positioned inside the visible viewport."""
+    panel.tree.scrollToItem(item)
+    QApplication.processEvents()
+    point = panel.tree.visualItemRect(item).center()
+    assert panel.tree.itemAt(point) is item
+    return QHelpEvent(
+        QEvent.Type.ToolTip,
+        point,
+        panel.tree.viewport().mapToGlobal(point),
+    )
+
+
+def deliver_tooltip(panel, item):
+    """Send a tooltip event to the tree viewport; True means it was consumed."""
+    return QApplication.sendEvent(panel.tree.viewport(), row_tooltip_event(panel, item))
+
+
+def test_scene_tooltip_is_a_frameless_tooltip_window():
+    application()
+    tooltip = SceneTooltip()
+
+    assert isinstance(tooltip, QFrame)
+    assert tooltip.windowType() == Qt.WindowType.ToolTip
+    assert tooltip.windowFlags() & Qt.WindowType.FramelessWindowHint
+    assert tooltip.frameShape() == QFrame.Shape.NoFrame
+    # Never takes focus, so showing it cannot disturb the tree selection.
+    assert tooltip.focusPolicy() == Qt.FocusPolicy.NoFocus
+    assert tooltip.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+
+
+def test_scene_tooltip_uses_the_panel_theme():
+    application()
+    style = SceneTooltip().styleSheet()
+
+    assert PANEL in style
+    assert TEXT in style
+    assert BORDER in style
+    assert "border-radius" in style
+    assert "padding" in style
+
+
+def test_scene_tooltip_shows_on_routing_row_and_suppresses_native(tmp_path):
+    application()
+    route = route_with_points()
+    panel = shown_panel(tmp_path, routes=[route])
+    row = panel.item_row(KIND_ROUTING, "r1")
+
+    assert deliver_tooltip(panel, row) is True
+
+    assert panel.tree.tooltip.isVisible()
+    assert panel.tree.tooltip.label.text() == row.toolTip(NAME_COLUMN)
+    assert panel.tree.tooltip.label.text() == routing_summary(route)
+    assert "waypoints" not in panel.tree.tooltip.label.text()
+    assert not QToolTip.isVisible()
+
+
+def test_scene_tooltip_suppresses_the_native_tooltip(tmp_path):
+    application()
+    panel = shown_panel(tmp_path, routes=[route_with_points()])
+    row = panel.item_row(KIND_ROUTING, "r1")
+
+    assert panel.tree.viewportEvent(row_tooltip_event(panel, row)) is True
+    assert panel.tree.tooltip.isVisible()
+    assert not QToolTip.isVisible()
+
+
+def test_scene_tooltip_shows_on_point_row(tmp_path):
+    application()
+    route = FakeRoute("r1", "Route")
+    route.set_point_rounding(0, ROUNDING_PORT)
+    panel = shown_panel(tmp_path, routes=[route])
+    row = panel.item_row(KIND_ROUTING, "r1")
+    row.setExpanded(True)
+    point = panel.tree_item(("routing-legs", KIND_ROUTING, "r1")).child(0)
+
+    assert deliver_tooltip(panel, point) is True
+
+    shown = panel.tree.tooltip.label.text()
+    assert panel.tree.tooltip.isVisible()
+    assert shown == point.toolTip(NAME_COLUMN)
+    assert shown == "Leave to port\n48.100000, -123.100000"
+
+
+def test_scene_tooltip_hides_when_the_pointer_leaves_or_moves(tmp_path):
+    application()
+    panel = shown_panel(tmp_path, routes=[route_with_points()])
+    row = panel.item_row(KIND_ROUTING, "r1")
+    viewport = panel.tree.viewport()
+
+    assert deliver_tooltip(panel, row) is True
+    QApplication.sendEvent(viewport, QEvent(QEvent.Type.Leave))
+    assert not panel.tree.tooltip.isVisible()
+
+    assert deliver_tooltip(panel, row) is True
+    point = viewport.rect().center()
+    # Synthetic mouse events are routed by QApplication, so hand this one to
+    # the viewport directly, as the scroll area does for real moves.
+    move = QMouseEvent(
+        QEvent.Type.MouseMove,
+        point,
+        viewport.mapToGlobal(point),
+        Qt.MouseButton.NoButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    panel.tree.viewportEvent(move)
+    assert not panel.tree.tooltip.isVisible()
+
+
+def test_scene_tooltip_hides_on_scroll_and_when_the_tree_hides(tmp_path):
+    application()
+    panel = shown_panel(tmp_path, routes=[route_with_points()])
+    row = panel.item_row(KIND_ROUTING, "r1")
+    viewport = panel.tree.viewport()
+
+    assert deliver_tooltip(panel, row) is True
+    point = viewport.rect().center()
+    QApplication.sendEvent(
+        viewport,
+        QWheelEvent(
+            point,
+            viewport.mapToGlobal(point),
+            QPoint(0, 0),
+            QPoint(0, -120),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase,
+            False,
+        ),
+    )
+    assert not panel.tree.tooltip.isVisible()
+
+    assert deliver_tooltip(panel, row) is True
+    panel.tree.hide()
+    assert not panel.tree.tooltip.isVisible()
+
+
+def test_scene_tooltip_is_kept_on_screen():
+    application()
+    tooltip = SceneTooltip()
+    tooltip.label.setText("Route\n3 waypoints\nWind 6 kn")
+    tooltip.adjustSize()
+    screen = QGuiApplication.primaryScreen().availableGeometry()
+    outside = QPoint(screen.right() + 400, screen.bottom() + 400)
+
+    position = tooltip._clamped_position(outside)
+
+    assert screen.contains(QRect(position, tooltip.sizeHint()))
+
+
+def test_scene_tooltip_is_offset_from_the_pointer():
+    application()
+    tooltip = SceneTooltip()
+    screen = QGuiApplication.primaryScreen().availableGeometry()
+    anchor = screen.center()
+
+    tooltip.show_text("Route\n3 waypoints\nWind 6 kn", anchor)
+    try:
+        shown = tooltip.pos()
+        assert shown.x() >= anchor.x() + TOOLTIP_OFFSET_X
+        assert shown.y() >= anchor.y() + TOOLTIP_OFFSET_Y
+        assert screen.contains(QRect(shown, tooltip.size()))
+    finally:
+        tooltip.hide()
+
+
+def test_scene_tooltip_is_clamped_near_an_edge():
+    application()
+    tooltip = SceneTooltip()
+    screen = QGuiApplication.primaryScreen().availableGeometry()
+    anchor = QPoint(screen.right() - 2, screen.bottom() - 2)
+
+    tooltip.show_text("Route\n3 waypoints\nWind 6 kn", anchor)
+    try:
+        assert screen.contains(QRect(tooltip.pos(), tooltip.size()))
+    finally:
+        tooltip.hide()

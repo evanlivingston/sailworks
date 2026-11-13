@@ -1067,13 +1067,8 @@ class RoutingPanel(QWidget):
                     spec = spec_getter(index)
                     if spec is not None:
                         # The persisted radius is inert legacy metadata on the
-                        # point; the native request carries side and optional
-                        # exit bearings only.
-                        spec = {
-                            "side": spec["side"],
-                            "exit_bearing_min_deg": spec.get("exit_bearing_min_deg"),
-                            "exit_bearing_max_deg": spec.get("exit_bearing_max_deg"),
-                        }
+                        # point; the native request carries the side only.
+                        spec = {"side": spec["side"]}
                         name = target.point_name(index)
                         if name:
                             spec["name"] = name

@@ -27,12 +27,10 @@ WAVE_UNITS = {
 
 @dataclass(frozen=True)
 class Rounding:
-    """One pass-and-exit rule for a route mark."""
+    """One pass rule for a route mark: which side to leave it on."""
 
     side: str
     radius_nm: float | None = None
-    exit_bearing_min_deg: float | None = None
-    exit_bearing_max_deg: float | None = None
     name: str = ""
 
     def __post_init__(self):
@@ -50,31 +48,12 @@ class Rounding:
             raise ValueError("Rounding radius must be a finite number or None")
         else:
             object.__setattr__(self, "radius_nm", float(radius))
-        minimum = self.exit_bearing_min_deg
-        maximum = self.exit_bearing_max_deg
-        if (minimum is None) != (maximum is None):
-            raise ValueError("Rounding exit bearing needs both a minimum and maximum")
-        if minimum is not None:
-            if (
-                type(minimum) not in (int, float)
-                or type(maximum) not in (int, float)
-                or not math.isfinite(minimum)
-                or not math.isfinite(maximum)
-                or not 0 <= minimum <= maximum < 360
-            ):
-                raise ValueError(
-                    "Rounding exit bearing range must satisfy 0 <= min <= max < 360"
-                )
-            object.__setattr__(self, "exit_bearing_min_deg", float(minimum))
-            object.__setattr__(self, "exit_bearing_max_deg", float(maximum))
 
     def to_native(self) -> dict:
         # Radius is legacy point metadata, never a planning or acceptance
-        # constraint: the native contract is side-of-track plus exit bearings.
+        # constraint: the native contract is side of track only.
         return dict(
             side=self.side,
-            exit_bearing_min_deg=self.exit_bearing_min_deg,
-            exit_bearing_max_deg=self.exit_bearing_max_deg,
             name=self.name,
         )
 
@@ -286,9 +265,11 @@ def _resolve_roundings(item, start, waypoints):
 
     The panel supplies one entry per track point (or one for a POI/map
     destination). The first track point becomes the start when Start is "First
-    waypoint", so its entry cannot carry a rounding. Consecutive duplicate
-    points are skipped by the bridge; a rounding on a skipped duplicate is
-    rejected rather than silently dropped.
+    waypoint", so its entry cannot carry a rounding. A mark at either end of
+    the track is an ending mark: the route must end exactly on it, so a
+    rounding on the final mark is dropped. Consecutive duplicate points are
+    skipped by the bridge; a rounding on a skipped duplicate is rejected rather
+    than silently dropped.
     """
     raw = tuple(getattr(item, "roundings", ()) or ())
     if not raw:
@@ -325,10 +306,21 @@ def _resolve_roundings(item, start, waypoints):
             chain.append(item.destination)
             marks.append((item.destination, None))
 
+    # A mark at either end of the track is an ending mark: the route must end
+    # exactly on it, so a rounding designated there is ignored for planning.
+    # The start cannot carry one (rejected above); a rounding on the final mark
+    # is dropped instead of letting it truncate the route short of the
+    # destination.
+    if marks and marks[-1][1] is not None:
+        marks[-1] = (marks[-1][0], None)
+
     # Radius is legacy metadata only. It must not reject a compliant route or
     # shape the chain: side-of-track acceptance belongs to the shared winding
     # evaluator, so nearby marks and overlapping legacy radii are allowed here.
-    return tuple(rounding for _, rounding in marks)
+    resolved = tuple(rounding for _, rounding in marks)
+    if not any(rounding is not None for rounding in resolved):
+        return ()
+    return resolved
 
 
 def freeze_native_requests(

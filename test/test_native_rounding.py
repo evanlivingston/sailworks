@@ -3,7 +3,6 @@
 import math
 import os
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -97,8 +96,6 @@ def test_rounding_pass_is_reported_without_a_radius_gate():
     rounding = {
         "side": "port",
         "radius_nm": 0.5,
-        "exit_bearing_min_deg": None,
-        "exit_bearing_max_deg": None,
     }
     run = _run({**SETTINGS, "roundings": [rounding]})
     assert run["accepted"], run["message"]
@@ -113,82 +110,10 @@ def test_rounding_pass_is_reported_without_a_radius_gate():
     assert report["achieved_closest_distance_nm"] > 0.0
 
 
-def test_rounding_exit_range_is_enforced_and_both_sides_are_available():
-    port = _run(
-        {
-            **SETTINGS,
-            "roundings": [
-                {
-                    "side": "port",
-                    "radius_nm": 0.5,
-                    "exit_bearing_min_deg": 30,
-                    "exit_bearing_max_deg": 60,
-                }
-            ],
-        }
-    )
-    starboard = _run(
-        {
-            **SETTINGS,
-            "roundings": [
-                {
-                    "side": "starboard",
-                    "radius_nm": 0.5,
-                    "exit_bearing_min_deg": 30,
-                    "exit_bearing_max_deg": 60,
-                }
-            ],
-        }
-    )
-    assert port["accepted"], port["message"]
-    assert starboard["accepted"], starboard["message"]
-    port_report = port["roundings"][0]
-    starboard_report = starboard["roundings"][0]
-    assert 30 <= port_report["achieved_terminal_course_deg"] <= 60
-    assert 30 <= starboard_report["achieved_terminal_course_deg"] <= 60
-    assert port_report["achieved_terminal_bearing_deg"] != pytest.approx(
-        starboard_report["achieved_terminal_bearing_deg"]
-    )
-
-
-def test_single_bearing_exit_ranges_are_accepted_quickly():
-    # 000 and 359 are both feasible. The passing point is placed where the ray
-    # from the current position at the required bearing meets the perpendicular
-    # from the mark, so the departing leg leaves exactly on that course while
-    # the mark stays abeam on the required side. Both must be accepted, and the
-    # bounded search must reach them quickly instead of exhausting its budget.
-    for exit_bearing in (0, 359):
-        started = time.perf_counter()
-        run = _run(
-            {
-                **SETTINGS,
-                "roundings": [
-                    {
-                        "side": "port",
-                        "radius_nm": 0.5,
-                        "exit_bearing_min_deg": exit_bearing,
-                        "exit_bearing_max_deg": exit_bearing,
-                    }
-                ],
-            }
-        )
-        elapsed = time.perf_counter() - started
-        assert run["accepted"], run["message"]
-        report = run["roundings"][0]
-        assert report["satisfied"] is True
-        assert report["achieved_side"] == "port"
-        assert report["achieved_terminal_course_deg"] == pytest.approx(
-            exit_bearing, abs=1e-6
-        )
-        assert (
-            elapsed < 10.0
-        ), f"exit range {exit_bearing}-{exit_bearing} took {elapsed:.1f}s"
-
-
-def test_interior_exit_range_away_from_the_next_leg_is_rejected():
-    # The departing leg leaves the interior mark and must reach the next course
-    # point, so a range more than a right angle away from that bearing is
-    # provably unreachable. The preflight rejects it before the search starts.
+def test_interior_mark_rounding_is_judged_on_side_only():
+    # This mark was once rejected by the exit-range preflight because the
+    # departing leg toward the next course point could not deliver the range.
+    # Rounding is side only now, so the same geometry must be accepted.
     waypoint = (48.255, -123.60)
     run = _run(
         {
@@ -198,16 +123,14 @@ def test_interior_exit_range_away_from_the_next_leg_is_rejected():
                 {
                     "side": "port",
                     "radius_nm": 0.15,
-                    "exit_bearing_min_deg": 200,
-                    "exit_bearing_max_deg": 230,
                 },
                 None,
             ],
         }
     )
-    assert not run["accepted"], run["message"]
-    assert run["status"] == "unsatisfiable_rounding"
-    assert "exit_range_unreachable" in run["message"]
+    assert run["accepted"], run["message"]
+    assert run["roundings"][0]["satisfied"] is True
+    assert run["roundings"][0]["achieved_side"] == "port"
 
 
 def test_rounding_runs_are_deterministic():
@@ -217,8 +140,6 @@ def test_rounding_runs_are_deterministic():
             {
                 "side": "port",
                 "radius_nm": 0.5,
-                "exit_bearing_min_deg": 30,
-                "exit_bearing_max_deg": 60,
             }
         ],
     }
@@ -238,8 +159,6 @@ def test_tiny_legacy_radius_does_not_make_a_rounding_unsatisfiable():
                 {
                     "side": "port",
                     "radius_nm": 0.005,
-                    "exit_bearing_min_deg": None,
-                    "exit_bearing_max_deg": None,
                 }
             ],
         }
@@ -259,8 +178,6 @@ def test_wide_correct_side_pass_is_accepted_without_a_detour():
     rounding = {
         "side": "starboard",
         "radius_nm": 0.01,
-        "exit_bearing_min_deg": None,
-        "exit_bearing_max_deg": None,
     }
     run = _run({**SETTINGS, "roundings": [rounding]})
     assert run["accepted"], run["message"]
@@ -298,8 +215,6 @@ def test_rounding_rejects_invalid_specs_before_dispatch():
                     {
                         "side": "port",
                         "radius_nm": radius,
-                        "exit_bearing_min_deg": None,
-                        "exit_bearing_max_deg": None,
                     }
                 ],
             }
@@ -310,35 +225,8 @@ def test_rounding_rejects_invalid_specs_before_dispatch():
         payloads.append((run["legs"], run["digest"], report))
     assert all(payload == payloads[0] for payload in payloads)
 
-    # Genuine spec errors are still rejected before dispatch: an unknown side,
-    # an inverted exit range, a range outside 0..360, and a half-specified
-    # range (the parser requires both bounds).
-    for rounding in (
-        {"side": "east", "radius_nm": 0.5},
-        {
-            "side": "port",
-            "radius_nm": 0.5,
-            "exit_bearing_min_deg": 300,
-            "exit_bearing_max_deg": 20,
-        },
-        {
-            "side": "port",
-            "radius_nm": 0.5,
-            "exit_bearing_min_deg": -10,
-            "exit_bearing_max_deg": 20,
-        },
-        {
-            "side": "port",
-            "radius_nm": 0.5,
-            "exit_bearing_min_deg": 0,
-            "exit_bearing_max_deg": 360,
-        },
-        {
-            "side": "port",
-            "radius_nm": 0.5,
-            "exit_bearing_min_deg": 20,
-        },
-    ):
+    # Genuine spec errors are still rejected before dispatch: an unknown side.
+    for rounding in ({"side": "east", "radius_nm": 0.5},):
         with pytest.raises(ValueError):
             _run({**SETTINGS, "roundings": [rounding]})
 
@@ -353,8 +241,6 @@ def test_mixed_chain_rounds_only_the_requested_mark():
                 {
                     "side": "port",
                     "radius_nm": 0.15,
-                    "exit_bearing_min_deg": None,
-                    "exit_bearing_max_deg": None,
                 },
                 None,
             ],
@@ -389,6 +275,51 @@ def test_no_rounding_keeps_empty_roundings_payload():
     assert "roundings" not in run
 
 
+def test_rounded_destination_is_an_ending_mark():
+    from types import SimpleNamespace
+
+    from sailworks.core.marine.nativerequest import _resolve_roundings
+
+    destination = SETTINGS["destination"]
+    item = SimpleNamespace(
+        start=None,
+        destination=destination,
+        waypoints=[SETTINGS["start"], destination],
+        roundings=[None, {"side": "port"}],
+    )
+
+    # A mark at the end of the track is an ending mark: the rounding is
+    # ignored for planning instead of truncating the route short of it.
+    resolved = _resolve_roundings(item, SETTINGS["start"], (destination,))
+    assert resolved == ()
+
+    run = _run({**SETTINGS, "roundings": list(resolved)})
+    assert run["accepted"], run["message"]
+    end = run["legs"][-1]["end"]
+    assert _distance_nm((end["latitude"], end["longitude"]), destination) <= 1e-6
+
+
+def test_interior_rounding_survives_the_ending_mark_rule():
+    from types import SimpleNamespace
+
+    from sailworks.core.marine.nativerequest import _resolve_roundings
+
+    waypoint = (48.255, -123.60)
+    destination = SETTINGS["destination"]
+    item = SimpleNamespace(
+        start=None,
+        destination=destination,
+        waypoints=[SETTINGS["start"], waypoint, destination],
+        roundings=[None, {"side": "port"}, {"side": "starboard"}],
+    )
+
+    resolved = _resolve_roundings(item, SETTINGS["start"], (waypoint, destination))
+
+    assert resolved[0] is not None
+    assert resolved[0].side == "port"
+    assert resolved[1] is None
+
+
 def test_native_payload_never_sends_the_radius_as_a_constraint():
     from sailworks.core.marine.nativerequest import Rounding
 
@@ -396,8 +327,8 @@ def test_native_payload_never_sends_the_radius_as_a_constraint():
         payload = Rounding(side, 2.5).to_native()
         assert "radius_nm" not in payload
         assert payload["side"] == side
-        assert payload["exit_bearing_min_deg"] is None
-        assert payload["exit_bearing_max_deg"] is None
+        assert "exit_bearing_min_deg" not in payload
+        assert "exit_bearing_max_deg" not in payload
 
 
 def test_legacy_radius_metadata_still_round_trips():
@@ -415,14 +346,19 @@ def test_radius_no_longer_rejects_nearby_or_overlapping_marks():
 
     start = (48.0, -123.0)
     near_mark = (48.0005, -123.0)
+    destination = (48.2, -123.0)
     in_radius = Rounding("port", 5.0, name="near")
     item = SimpleNamespace(
         start=None,
-        waypoints=[start, near_mark],
-        destination=near_mark,
-        roundings=[None, in_radius],
+        waypoints=[start, near_mark, destination],
+        destination=destination,
+        roundings=[None, in_radius, None],
     )
-    assert _resolve_roundings(item, start, (near_mark,)) == (in_radius,)
+    # The near mark is interior, so the legacy radius still never gates it.
+    assert _resolve_roundings(item, start, (near_mark, destination)) == (
+        in_radius,
+        None,
+    )
 
     first_mark = (48.001, -123.0)
     second_mark = (48.002, -123.0)
@@ -430,9 +366,11 @@ def test_radius_no_longer_rejects_nearby_or_overlapping_marks():
     second = Rounding("starboard", 5.0, name="second")
     overlapping = SimpleNamespace(
         start=None,
-        waypoints=[start, first_mark, second_mark],
-        destination=second_mark,
-        roundings=[None, first, second],
+        waypoints=[start, first_mark, second_mark, destination],
+        destination=destination,
+        roundings=[None, first, second, None],
     )
-    resolved = _resolve_roundings(overlapping, start, (first_mark, second_mark))
-    assert resolved == (first, second)
+    resolved = _resolve_roundings(
+        overlapping, start, (first_mark, second_mark, destination)
+    )
+    assert resolved == (first, second, None)
