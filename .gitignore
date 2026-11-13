@@ -26,3 +26,9 @@ coverage.xml
 .opencode/
 native/geometry/target/
 sailworks/_geometry_native*.so
+
+# Auto-workflow
+tools/auto_workflow/logs/
+tools/auto_workflow/state.json
+tools/auto_workflow/.lock
+tools/auto_workflow/config.local.yaml

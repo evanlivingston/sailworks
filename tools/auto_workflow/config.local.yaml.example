@@ -1,0 +1,45 @@
+# Local configuration override for auto-workflow
+# Copy to config.local.yaml and modify as needed
+# This file is gitignored
+
+# schedule:
+#   cron: "0 2 * * *"  # Daily at 2 AM UTC
+#   enabled: true
+
+# discovery:
+#   ocr_enabled: true
+#   static_analysis_enabled: true
+#   test_analysis_enabled: true
+#   pattern_mining_enabled: true
+#   perf_regression_enabled: true
+
+# implementation:
+#   max_issues_per_run: 1
+#   subagent_tier: "medium"
+#   max_implementation_minutes: 30
+
+# review:
+#   ocr_max_iterations: 5
+#   ocr_blocker_threshold: "major"
+#   ocr_auto_fix_types: ["blocker", "major"]
+#   ocr_skip_types: ["suggestion"]
+
+# merge:
+#   auto_merge: true
+#   merge_method: "squash"
+#   require_tests_pass: true
+#   require_ocr_clean: true
+
+# worktree:
+#   base_path: "~/wt"
+#   prune_on_start: true
+#   prune_on_end: true
+
+# github:
+#   repo: "evanlivingston/sailworks"
+#   base_branch: "dev"
+#   pr_labels: ["automated", "auto-workflow"]
+
+# logging:
+#   level: "DEBUG"
+#   dir: "tools/auto_workflow/logs"
