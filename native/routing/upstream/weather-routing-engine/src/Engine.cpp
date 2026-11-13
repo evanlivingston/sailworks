@@ -241,40 +241,44 @@ double terminalCourseDegrees(const Node& node) {
   return normalizeHeading(node.incomingHeading);
 }
 
-RoundingApproach closestRoundingApproach(
-    const std::vector<TimedMotionSegment>& segments, GeoPoint mark,
-    GeoPoint fallbackPoint, double fallbackCourse) {
-  RoundingApproach best{fallbackPoint, normalizeHeading(fallbackCourse)};
-  double bestDistance = distanceNm(fallbackPoint, mark);
-  const double cosLatitude =
-      std::cos(mark.latitude * std::numbers::pi / 180.0);
-  for (const TimedMotionSegment& segment : segments) {
-    const double dx =
-        (segment.end.longitude - segment.start.longitude) * cosLatitude;
-    const double dy = segment.end.latitude - segment.start.latitude;
-    const double ox =
-        (segment.start.longitude - mark.longitude) * cosLatitude;
-    const double oy = segment.start.latitude - mark.latitude;
-    const double denominator = dx * dx + dy * dy;
-    const double t =
-        denominator <= 1e-18
-            ? 0.0
-            : std::clamp(-(ox * dx + oy * dy) / denominator, 0.0, 1.0);
-    const double px = ox + t * dx;
-    const double py = oy + t * dy;
-    const double distance = std::hypot(px, py) * 60.0;
-    if (distance >= bestDistance) continue;
-    bestDistance = distance;
-    best.point = {
-        segment.start.latitude + t * (segment.end.latitude - segment.start.latitude),
-        segment.start.longitude +
-            t * (segment.end.longitude - segment.start.longitude)};
-    best.courseDegrees =
-        distanceNm(segment.start, segment.end) > 1e-9
-            ? initialBearingDegrees(segment.start, segment.end)
-            : normalizeHeading(fallbackCourse);
+// Replay the delivered motion segments into an ordered sub-track. The shared
+// closest-pass evaluator interpolates between these points, so a pass between
+// two recorded samples is still measured. With no recorded motion the fallback
+// endpoint is the whole sub-track.
+std::vector<GeoPoint> replayedSubTrack(
+    const std::vector<TimedMotionSegment>& segments, GeoPoint fallback) {
+  std::vector<GeoPoint> track;
+  if (segments.empty()) {
+    track.push_back(fallback);
+    return track;
   }
-  return best;
+  track.push_back(segments.front().start);
+  for (const TimedMotionSegment& segment : segments) track.push_back(segment.end);
+  return track;
+}
+
+// Search refinement distance around a rounding mark. This is a solver decision
+// (the widest passing-point candidate), never a user radius or acceptance gate:
+// the closest-pass verdict has no distance threshold.
+constexpr double kRoundingApproachNm = 10.0;
+
+// Judge a rounding at a connection. For an interior chain mark the leg joins
+// the next course point, so the delivered arriving track is concatenated with
+// the outbound join and the exit course is that join's bearing. A terminal
+// destination is judged over the arriving track alone.
+RoundingMeasurement measureRoundingAtConnection(
+    const RoutingRequest& request, const std::vector<GeoPoint>& arriving,
+    GeoPoint endpoint, double terminalCourse) {
+  if (!request.rounding) return {};
+  std::vector<GeoPoint> subTrack = arriving;
+  double exitCourse = terminalCourse;
+  if (request.roundingNextPoint &&
+      distanceNm(endpoint, *request.roundingNextPoint) > 1e-6) {
+    subTrack.push_back(*request.roundingNextPoint);
+    exitCourse = initialBearingDegrees(endpoint, *request.roundingNextPoint);
+  }
+  return measureRounding(*request.rounding, subTrack, request.destination,
+                         exitCourse);
 }
 
 double oneLayerReachNm(Duration step) {
@@ -284,14 +288,15 @@ double oneLayerReachNm(Duration step) {
 double approachEnvelopeNm(const RoutingRequest& request, Duration step) {
   const double pointEnvelope =
       std::max(request.options.destinationToleranceNm, oneLayerReachNm(step));
-  return request.rounding ? request.rounding->radiusNm + pointEnvelope
-                          : pointEnvelope;
+  // A rounding mark is not a disc to reach: the leg only needs to get close
+  // enough to attempt a connection whose pass the evaluator can judge.
+  return request.rounding ? kRoundingApproachNm + pointEnvelope : pointEnvelope;
 }
 
 bool roundingStartAmbiguous(const RoutingRequest& request, GeoPoint start) {
   if (!request.rounding) return false;
-  return distanceNm(start, request.destination) <=
-         request.rounding->radiusNm + 1e-6;
+  // Only a start on the mark itself leaves the closest-pass side undefined.
+  return distanceNm(start, request.destination) <= 1e-6;
 }
 
 void recordRoundingAttempt(const RoutingRequest& request,
@@ -773,7 +778,7 @@ std::optional<Node> directConnection(
   std::vector<GeoPoint> targets;
   if (request.rounding) {
     targets = roundingTargets(from.position, request.destination,
-                              *request.rounding);
+                              *request.rounding, request.roundingNextPoint);
   } else {
     targets.push_back(request.destination);
   }
@@ -859,12 +864,10 @@ std::optional<Node> directConnection(
           if (request.rounding) {
             const double terminalCourse =
                 terminalCourseDegrees(*replay, trialHeading);
-            const auto approach = closestRoundingApproach(
-                replay->segments, request.destination, replay->end,
-                terminalCourse);
-            const auto measured = measureRounding(
-                *request.rounding, replay->end, terminalCourse,
-                request.destination, approach);
+            const auto track =
+                replayedSubTrack(replay->segments, replay->end);
+            const auto measured = measureRoundingAtConnection(
+                request, track, replay->end, terminalCourse);
             recordRoundingAttempt(request, measured, diagnostics);
             acceptedArrival = measured.satisfied;
           } else {
@@ -1520,7 +1523,7 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
         const double nearestNm =
             distanceNm(result.nodes[*nearest].position, request.destination);
         const double approachRadiusNm =
-            (request.rounding ? request.rounding->radiusNm : 0.0) +
+            (request.rounding ? kRoundingApproachNm : 0.0) +
             std::max(
                 request.options.destinationToleranceNm * 4.0,
                 std::chrono::duration<double>(step).count() / 3600.0 * 10.0);
@@ -1542,12 +1545,10 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
           std::min(diagnostics.closestApproachNm, remaining);
       if (allowCompletion && request.rounding) {
         const double terminalCourse = terminalCourseDegrees(from);
-        const auto approach = closestRoundingApproach(
-            from.incomingMotionSegments, request.destination, from.position,
-            terminalCourse);
-        const auto measured =
-            measureRounding(*request.rounding, from.position, terminalCourse,
-                            request.destination, approach);
+        const auto track =
+            replayedSubTrack(from.incomingMotionSegments, from.position);
+        const auto measured = measureRoundingAtConnection(
+            request, track, from.position, terminalCourse);
         recordRoundingAttempt(request, measured, diagnostics);
         if (measured.satisfied &&
             (!result.solution ||
@@ -1600,17 +1601,13 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
         const Node& candidate = candidates[i];
         if (request.rounding) {
           const double terminalCourse = terminalCourseDegrees(candidate);
-          const auto approach = closestRoundingApproach(
-              candidate.incomingMotionSegments, request.destination,
-              candidate.position, terminalCourse);
-          const RoundingMeasurement measured = measureRounding(
-              *request.rounding, candidate.position, terminalCourse,
-              request.destination, approach);
+          const auto track = replayedSubTrack(
+              candidate.incomingMotionSegments, candidate.position);
+          const RoundingMeasurement measured = measureRoundingAtConnection(
+              request, track, candidate.position, terminalCourse);
           recordRoundingAttempt(request, measured, diagnostics);
-          return std::tuple{
-              roundingProgress(*request.rounding, candidate.position,
-                               terminalCourse, request.destination, approach),
-              stateCost(request, candidate), i};
+          return std::tuple{roundingProgress(measured),
+                            stateCost(request, candidate), i};
         }
         return std::tuple{distanceNm(candidate.position, request.destination),
                           stateCost(request, candidate), i};
@@ -1673,7 +1670,7 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
           arrivalGeneratedStateReserve == 0)
         return false;
       const double radius =
-          (request.rounding ? request.rounding->radiusNm : 0.0) +
+          (request.rounding ? kRoundingApproachNm : 0.0) +
           std::max(
               request.options.destinationToleranceNm * 4.0,
               std::min(30.0,
@@ -2081,7 +2078,7 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
       // frontier: it hands retained chart-safe states to reverse recovery and
       // then graph fallback.
       const double approachRadiusNm =
-          (request.rounding ? request.rounding->radiusNm : 0.0) +
+          (request.rounding ? kRoundingApproachNm : 0.0) +
           std::max({request.options.destinationToleranceNm * 4.0,
                     std::chrono::duration<double>(step).count() / 3600.0 * 10.0,
                     distanceNm(request.start, request.destination) * 0.30});
@@ -2110,8 +2107,9 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
     ++layer;
     if (!allowCompletion &&
         (diagnostics.closestApproachNm <=
-             (request.rounding ? request.rounding->radiusNm
-                               : request.options.destinationToleranceNm * 3.0) ||
+             (request.rounding
+                  ? kRoundingApproachNm
+                  : request.options.destinationToleranceNm * 3.0) ||
          layer >= 48)) {
       result.reason =
           "forward completion deliberately withheld for recovery test";
@@ -2974,18 +2972,17 @@ SearchArtifacts graphSearch(const RoutingRequest& request,
     diagnostics.closestApproachNm =
         std::min(diagnostics.closestApproachNm, remaining);
     const double arrivalCaptureNm =
-        request.rounding ? request.rounding->radiusNm
+        request.rounding ? kRoundingApproachNm
                          : std::min(0.25,
                                     request.options.destinationToleranceNm);
     bool roundingCapture = true;
     if (request.rounding) {
       const double terminalCourse = terminalCourseDegrees(from);
-      const auto approach = closestRoundingApproach(
-          from.incomingMotionSegments, request.destination, from.position,
-          terminalCourse);
+      const auto track =
+          replayedSubTrack(from.incomingMotionSegments, from.position);
       const auto measured =
-          measureRounding(*request.rounding, from.position, terminalCourse,
-                          request.destination, approach);
+          measureRounding(*request.rounding, track, request.destination,
+                          terminalCourse);
       recordRoundingAttempt(request, measured, diagnostics);
       roundingCapture = measured.satisfied;
     }
@@ -3546,8 +3543,8 @@ RoutingResult Solver::routeMember(
     if (roundingGeometricallyImpossible(*request.rounding)) {
       result.status = RoutingStatus::UnsatisfiableRounding;
       result.message =
-          "rounding not satisfied: side_unreachable (radius is smaller than "
-          "the unambiguous side epsilon)";
+          "rounding not satisfied: side_unreachable (no passing point on the "
+          "required side)";
       result.diagnostics.roundingAttempted = true;
       result.diagnostics.roundingFailureCode = "side_unreachable";
       return result;

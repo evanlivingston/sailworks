@@ -247,16 +247,14 @@ int main() {
 
   // The legacy radius field is inert: the same geometry gives the same verdict
   // at any radius.
-  const wr::GeoPoint radiusEndpoint = pointAt(20.0, 10.0);
-  const wr::RoundingApproach radiusApproach{pointAt(20.0, -10.0), 0.0};
+  const std::vector<wr::GeoPoint> radiusTrack{pointAt(20.0, -10.0),
+                                              pointAt(20.0, 10.0)};
   const wr::RoundingConstraint tinyRadius{wr::RoundingSide::Port, 1e-6,
                                           std::nullopt, std::nullopt};
   const wr::RoundingConstraint hugeRadius{wr::RoundingSide::Port, 1e6,
                                           std::nullopt, std::nullopt};
-  const auto tinyVerdict = wr::measureRounding(tinyRadius, radiusEndpoint,
-                                               0.0, mark, radiusApproach);
-  const auto hugeVerdict = wr::measureRounding(hugeRadius, radiusEndpoint,
-                                               0.0, mark, radiusApproach);
+  const auto tinyVerdict = wr::measureRounding(tinyRadius, radiusTrack, mark, 0.0);
+  const auto hugeVerdict = wr::measureRounding(hugeRadius, radiusTrack, mark, 0.0);
   require(tinyVerdict.satisfied && hugeVerdict.satisfied &&
               tinyVerdict.failure == hugeVerdict.failure &&
               tinyVerdict.passageCount == 1 &&
@@ -264,10 +262,58 @@ int main() {
           "radius has no effect on a correct-side pass");
   const wr::RoundingConstraint hugeStarboard{wr::RoundingSide::Starboard, 1e6,
                                              std::nullopt, std::nullopt};
-  require(wr::measureRounding(hugeStarboard, radiusEndpoint, 0.0, mark,
-                              radiusApproach)
-                  .failure == wr::RoundingFailure::WrongSide,
+  require(wr::measureRounding(hugeStarboard, radiusTrack, mark, 0.0).failure ==
+              wr::RoundingFailure::WrongSide,
           "a huge radius never rescues a wrong-side pass");
+
+  // An interior mark is judged over the concatenated arriving and departing
+  // track. The arriving sub-run alone passes on port; the departure brings the
+  // track closer on starboard, so the concatenated verdict is wrong side.
+  const std::vector<wr::GeoPoint> arrivingPort{pointAt(-10.0, -10.0),
+                                               pointAt(10.0, -10.0)};
+  const auto arrivingAlone =
+      wr::measureRounding(portSpec, arrivingPort, mark, 90.0);
+  require(arrivingAlone.satisfied &&
+              arrivingAlone.achievedSide == wr::RoundingSide::Port,
+          "the arriving sub-run alone passes on port");
+  std::vector<wr::GeoPoint> concatenated = arrivingPort;
+  concatenated.push_back(pointAt(0.0, -2.0));
+  concatenated.push_back(pointAt(-10.0, -10.0));
+  const auto concatenatedVerdict =
+      wr::measureRounding(portSpec, concatenated, mark, 0.0);
+  require(!concatenatedVerdict.satisfied &&
+              concatenatedVerdict.achievedSide ==
+                  wr::RoundingSide::Starboard &&
+              concatenatedVerdict.failure == wr::RoundingFailure::WrongSide &&
+              concatenatedVerdict.failureCode() == "wrong_side",
+          "the concatenated track rejects a wrong-side pass the arriving "
+          "sub-run alone would accept");
+
+  // Ending marks are exact course points with no side constraint.
+  const std::vector<wr::GeoPoint> exactEnding{pointAt(-10.0, 10.0), mark};
+  const auto endingExact = wr::measureEndingMark(exactEnding, mark);
+  require(endingExact.satisfied &&
+              endingExact.failure == wr::RoundingFailure::None,
+          "an ending mark reached exactly is satisfied with no side "
+          "constraint");
+  const std::vector<wr::GeoPoint> offsetEnding{pointAt(-10.0, 10.0),
+                                               pointAt(0.5, 0.0)};
+  const auto endingOffset = wr::measureEndingMark(offsetEnding, mark);
+  require(!endingOffset.satisfied &&
+              endingOffset.failure == wr::RoundingFailure::NotPassed,
+          "an ending mark that is not reached exactly is rejected");
+
+  // Terminal candidates are a bounded solver decision, not a radius circle.
+  const wr::RoundingConstraint tinyCandidateRadius{
+      wr::RoundingSide::Port, 1e-6, std::nullopt, std::nullopt};
+  const auto candidates =
+      wr::roundingTargets(pointAt(-30.0, 0.0), mark, tinyCandidateRadius);
+  bool wideCandidate = false;
+  for (const auto& candidate : candidates)
+    if (wr::distanceNm(candidate, mark) >= 9.0) wideCandidate = true;
+  require(!candidates.empty() && candidates.size() <= 10 && wideCandidate,
+          "the candidate set stays bounded and includes a wide passing point "
+          "even when the legacy radius is tiny");
 
   // The legacy radius is optional: a payload that omits it is valid, and any
   // arbitrary legacy value produces the same verdict.
@@ -282,10 +328,10 @@ int main() {
   require(wr::roundingConstraintValid(smallLegacyRadius) &&
               wr::roundingConstraintValid(largeLegacyRadius),
           "legacy radii are not validated");
-  const auto smallLegacyVerdict = wr::measureRounding(
-      smallLegacyRadius, radiusEndpoint, 0.0, mark, radiusApproach);
-  const auto largeLegacyVerdict = wr::measureRounding(
-      largeLegacyRadius, radiusEndpoint, 0.0, mark, radiusApproach);
+  const auto smallLegacyVerdict =
+      wr::measureRounding(smallLegacyRadius, radiusTrack, mark, 0.0);
+  const auto largeLegacyVerdict =
+      wr::measureRounding(largeLegacyRadius, radiusTrack, mark, 0.0);
   require(smallLegacyVerdict.satisfied && largeLegacyVerdict.satisfied &&
               smallLegacyVerdict.failure == largeLegacyVerdict.failure &&
               smallLegacyVerdict.passageCount ==

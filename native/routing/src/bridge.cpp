@@ -832,8 +832,15 @@ py::dict runDict(const SyntheticRun& run,
       item["closest_approach_course_deg"] = py::none();
       item["closest_approach_bearing_deg"] = py::none();
     }
+    if (report.measurement.achievedSide) {
+      item["achieved_side"] = roundingSideName(*report.measurement.achievedSide);
+    } else {
+      item["achieved_side"] = py::none();
+    }
+    item["passage_count"] = report.measurement.passageCount;
     item["satisfied"] = report.measurement.satisfied;
     item["failure_code"] = report.measurement.failureCode();
+    item["failure_reason"] = report.measurement.failureReason();
     roundings.append(item);
   }
   if (py::len(roundings) > 0) result["roundings"] = roundings;

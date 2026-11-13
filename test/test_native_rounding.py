@@ -92,7 +92,7 @@ def _distance_nm(left, right):
     return 3440.065 * 2 * math.asin(math.sqrt(a))
 
 
-def test_rounding_endpoint_is_within_radius_and_reported():
+def test_rounding_pass_is_reported_without_a_radius_gate():
     rounding = {
         "side": "port",
         "radius_nm": 0.5,
@@ -104,10 +104,12 @@ def test_rounding_endpoint_is_within_radius_and_reported():
     assert run["roundings"], run
     report = run["roundings"][0]
     assert report["side"] == "port"
+    # The radius is inert metadata; the report is the measured closest pass.
     assert report["radius_nm"] == 0.5
     assert report["satisfied"] is True
-    endpoint = (run["legs"][-1]["end"]["latitude"], run["legs"][-1]["end"]["longitude"])
-    assert _distance_nm(endpoint, SETTINGS["destination"]) <= 0.5 + 1e-3
+    assert report["achieved_side"] == "port"
+    assert report["passage_count"] == 1
+    assert report["achieved_closest_distance_nm"] > 0.0
 
 
 def test_rounding_exit_range_is_enforced_and_both_sides_are_available():
@@ -168,7 +170,7 @@ def test_rounding_runs_are_deterministic():
     assert first["metrics"] == second["metrics"]
 
 
-def test_rounding_too_small_for_an_unambiguous_side_is_unsatisfiable():
+def test_tiny_legacy_radius_does_not_make_a_rounding_unsatisfiable():
     run = _run(
         {
             **SETTINGS,
@@ -182,21 +184,94 @@ def test_rounding_too_small_for_an_unambiguous_side_is_unsatisfiable():
             ],
         }
     )
-    assert run["accepted"] is False
-    assert run["status"] == "unsatisfiable_rounding"
-    assert "side_unreachable" in run["message"]
-    assert run["diagnostics"]["rounding_attempted"] is True
+    # The passing distance is a solver decision, so a legacy radius far below
+    # the unambiguous pass distance is inert rather than unsatisfiable.
+    assert run["accepted"], run["message"]
+    report = run["roundings"][0]
+    assert report["satisfied"] is True
+    assert report["achieved_side"] == "port"
+    assert report["passage_count"] == 1
+
+
+def test_wide_correct_side_pass_is_accepted_without_a_detour():
+    # A destination rounding is accepted however wide the pass is; distance is
+    # never a gate, so the solver must not add legs to shrink it.
+    rounding = {
+        "side": "starboard",
+        "radius_nm": 0.01,
+        "exit_bearing_min_deg": None,
+        "exit_bearing_max_deg": None,
+    }
+    run = _run({**SETTINGS, "roundings": [rounding]})
+    assert run["accepted"], run["message"]
+    report = run["roundings"][0]
+    assert report["satisfied"] is True
+    assert report["achieved_side"] == "starboard"
+    assert report["passage_count"] == 1
+    assert run["legs"]
+
+
+def test_no_rounding_chain_is_byte_identical_across_runs():
+    waypoint = (48.255, -123.60)
+    settings = {
+        **SETTINGS,
+        "waypoints": [list(waypoint), list(SETTINGS["destination"])],
+    }
+    first = _run(settings)
+    second = _run(settings)
+    assert first["accepted"], first["message"]
+    assert "roundings" not in first
+    assert first["digest"] == second["digest"]
+    assert first["legs"] == second["legs"]
 
 
 def test_rounding_rejects_invalid_specs_before_dispatch():
+    # The radius is inert metadata under the amended contract: zero, negative,
+    # tiny and huge values are all accepted and never shape the route. The
+    # native payload differs only in the echoed radius.
+    payloads = []
+    for radius in (0, -1, 0.001, 1000):
+        run = _run(
+            {
+                **SETTINGS,
+                "roundings": [
+                    {
+                        "side": "port",
+                        "radius_nm": radius,
+                        "exit_bearing_min_deg": None,
+                        "exit_bearing_max_deg": None,
+                    }
+                ],
+            }
+        )
+        assert run["accepted"], run["message"]
+        report = dict(run["roundings"][0])
+        assert report.pop("radius_nm") == float(radius)
+        payloads.append((run["legs"], run["digest"], report))
+    assert all(payload == payloads[0] for payload in payloads)
+
+    # Genuine spec errors are still rejected before dispatch: an unknown side,
+    # an inverted exit range, a range outside 0..360, and a half-specified
+    # range (the parser requires both bounds).
     for rounding in (
-        {"side": "port", "radius_nm": 0.0},
         {"side": "east", "radius_nm": 0.5},
         {
             "side": "port",
             "radius_nm": 0.5,
             "exit_bearing_min_deg": 300,
             "exit_bearing_max_deg": 20,
+        },
+        {
+            "side": "port",
+            "radius_nm": 0.5,
+            "exit_bearing_min_deg": -10,
+            "exit_bearing_max_deg": 20,
+        },
+        {
+            "side": "port",
+            "radius_nm": 0.5,
+            "exit_bearing_min_deg": 0,
+            "exit_bearing_max_deg": 360,
         },
         {
             "side": "port",
@@ -232,11 +307,12 @@ def test_mixed_chain_rounds_only_the_requested_mark():
         "latitude": waypoint[0],
         "longitude": waypoint[1],
     }
-    first_leg_end = run["legs"][0]["end"]
-    assert (
-        _distance_nm((first_leg_end["latitude"], first_leg_end["longitude"]), waypoint)
-        <= 0.15 + 1e-3
-    )
+    # The interior mark is judged over the concatenated arriving and departing
+    # sub-track; the passing distance is a solver decision, not the radius.
+    assert report["satisfied"] is True
+    assert report["achieved_side"] == "port"
+    assert report["passage_count"] == 1
+    assert report["achieved_closest_distance_nm"] > 0.0
     destination = run["legs"][-1]["end"]
     assert (
         _distance_nm(

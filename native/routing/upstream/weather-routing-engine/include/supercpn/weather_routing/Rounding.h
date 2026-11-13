@@ -17,12 +17,6 @@ bool roundingConstraintValid(const RoundingConstraint& rounding);
 // never be geometrically impossible.
 bool roundingGeometricallyImpossible(const RoundingConstraint& rounding);
 
-// Closest delivered point to the mark and the course over ground there.
-struct RoundingApproach {
-  GeoPoint point;
-  double courseDegrees{};
-};
-
 // Shared closest-pass evaluator for engine completion and independent replay.
 //
 // `subTrack` is the delivered leg sub-track in order (the leg from the previous
@@ -46,26 +40,37 @@ RoundingMeasurement measureRounding(const RoundingSpec& rounding,
                                     const std::vector<GeoPoint>& subTrack,
                                     GeoPoint mark, double exitCourseDegrees);
 
-// Transitional adapter for the radius-era engine call sites. It reconstructs
-// the two-sample sub-track from the recorded closest approach and the delivered
-// endpoint; the engine will pass full leg sub-tracks once completion is wired
-// to the shared predicate. No radius gate is applied.
-RoundingMeasurement measureRounding(
-    const RoundingConstraint& rounding, GeoPoint endpoint,
-    double terminalCourseDegrees, GeoPoint mark,
-    const std::optional<RoundingApproach>& approach = std::nullopt);
+// Convert the legacy radius-carrying request into the side/exit contract. The
+// radius is dropped: it is never a planning or acceptance constraint.
+RoundingSpec roundingSpec(const RoundingConstraint& rounding);
 
-// Deterministic, bounded terminal candidates for a radius-era direct
-// connection. No candidate is exported unless it was replayed and accepted by
-// the shared predicate.
-std::vector<GeoPoint> roundingTargets(GeoPoint from, GeoPoint mark,
-                                      const RoundingConstraint& rounding);
+// Concatenated sub-track overload for the legacy request type. The engine and
+// the synthetic chain pass the full delivered track (the leg from the previous
+// course point through the next, or to the delivered final endpoint), not just
+// the arriving sub-run.
+RoundingMeasurement measureRounding(const RoundingConstraint& rounding,
+                                    const std::vector<GeoPoint>& subTrack,
+                                    GeoPoint mark, double exitCourseDegrees);
 
-// Scalar progress for ranking already-generated arrival candidates. Lower is
-// closer to satisfying the rounding; zero means satisfied.
-double roundingProgress(
-    const RoundingConstraint& rounding, GeoPoint endpoint,
-    double terminalCourseDegrees, GeoPoint mark,
-    const std::optional<RoundingApproach>& approach = std::nullopt);
+// Ending-mark verdict. The sub-track must reach the mark exactly; no side or
+// exit constraint applies. The first and last points of a concatenated
+// sub-track are course points (ending marks), not rounding marks.
+RoundingMeasurement measureEndingMark(const std::vector<GeoPoint>& subTrack,
+                                      GeoPoint mark);
+
+// Deterministic, bounded passing-point candidates on the required side. The
+// distances are a solver decision (0.1, 0.5, 2 and 10 NM) plus the two
+// tangents from the current position; no user radius shapes the set. No
+// candidate is exported unless it was replayed and accepted by the shared
+// predicate.
+std::vector<GeoPoint> roundingTargets(
+    GeoPoint from, GeoPoint mark, const RoundingConstraint& rounding,
+    std::optional<GeoPoint> nextPoint = std::nullopt);
+
+// Scalar progress for an already-measured candidate. Lower is closer to
+// satisfying the rounding; zero means satisfied.
+double roundingProgress(const RoundingMeasurement& measured);
+
+
 
 }  // namespace supercpn::weather_routing

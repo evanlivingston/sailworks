@@ -435,6 +435,11 @@ struct RoutingRequest {
   // When set, completion, terminal connection and independent replay all use
   // the shared pass-and-exit predicate instead of the exact destination point.
   std::optional<RoundingConstraint> rounding;
+  // The next course point when this mark is an interior chain mark. Completion
+  // joins it, so the verdict is judged over the arriving track plus the
+  // outbound join instead of a disc around the mark. Absent for a terminal
+  // destination.
+  std::optional<GeoPoint> roundingNextPoint;
   TimePoint departure{};
   VesselConfiguration vessel;
   EnvironmentalPolicy environment;
@@ -681,6 +686,11 @@ struct RouteValidationResult {
   bool estimatedPolarWind{};
   // Present only when the request carried a rounding constraint.
   std::optional<RoundingMeasurement> rounding;
+  // Independently replayed sub-track of each delivered leg, in order. This is
+  // diagnostic data used to judge an interior rounding mark over the
+  // concatenated arriving and departing track; it is never exported as route
+  // geometry.
+  std::vector<std::vector<GeoPoint>> replayedLegs;
 };
 
 struct PruningDiagnostics {

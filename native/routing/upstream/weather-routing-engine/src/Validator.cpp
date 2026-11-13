@@ -100,8 +100,6 @@ RouteValidationResult validateRoute(const RoutingRequest& request,
         departureClearanceNm < request.constraints.landSafetyMarginNm;
   }
 
-  GeoPoint finalLegClosestApproachPoint{};
-  double finalLegClosestApproachCourseDegrees = 0.0;
   for (std::size_t legIndex = 0; legIndex < legs.size(); ++legIndex) {
     const RouteLeg& leg = legs[legIndex];
     const bool departureEgressAtLegStart = departureEgress;
@@ -183,6 +181,7 @@ RouteValidationResult validateRoute(const RoutingRequest& request,
       previousModeDuration = Duration{};
       if (departureEgressAtLegStart)
         result.coastalDepartureEgressLegs = legIndex + 1;
+      result.replayedLegs.push_back({leg.start, leg.end});
       ++result.acceptedPrefixLegs;
       continue;
     }
@@ -196,13 +195,10 @@ RouteValidationResult validateRoute(const RoutingRequest& request,
       const bool destinationIngressLeg =
           requireDestination && request.constraints.landSafetyMarginNm > 0.0 &&
           legIndex + 1 == legs.size();
-      const double destinationIngressRadiusNm =
-          request.rounding
-              ? std::min(coastalEndpointReachNm(
-                             request.constraints.landSafetyMarginNm),
-                         request.rounding->radiusNm)
-              : coastalEndpointReachNm(
-                    request.constraints.landSafetyMarginNm);
+      // A rounding mark is not a disc: coastal ingress uses the configured
+      // endpoint reach, never a rounding distance.
+      const double destinationIngressRadiusNm = coastalEndpointReachNm(
+          request.constraints.landSafetyMarginNm);
       const double chordSafetyMarginNm =
           departureEgress ? 0.0 : request.constraints.landSafetyMarginNm;
       const auto chordForbiddenAt = [&](GeoPoint a, GeoPoint b, double margin) {
@@ -289,9 +285,8 @@ RouteValidationResult validateRoute(const RoutingRequest& request,
     GeoPoint replayPoint = leg.start;
     Duration elapsed{};
     double replayFuel{};
-    double closestOnLegNm = distanceNm(replayPoint, request.destination);
-    GeoPoint closestOnLegPoint = replayPoint;
-    double closestOnLegCourseDegrees = leg.courseOverGroundDegrees;
+    std::vector<GeoPoint> replayedPoints;
+    replayedPoints.push_back(replayPoint);
     bool destinationIngress = false;
     double priorDestinationDistance =
         distanceNm(replayPoint, request.destination);
@@ -436,12 +431,6 @@ RouteValidationResult validateRoute(const RoutingRequest& request,
       const GeoPoint next = destinationPoint(
           replayPoint, terminalCourse,
           sog * std::chrono::duration<double>(slice).count() / 3600.0);
-      const double nextDistance = distanceNm(next, request.destination);
-      if (nextDistance < closestOnLegNm) {
-        closestOnLegNm = nextDistance;
-        closestOnLegPoint = next;
-        closestOnLegCourseDegrees = terminalCourse;
-      }
       if (environment.landAndBoundaries) {
         if (diagnostics) ++diagnostics->landChecks;
         if (departureEgress) {
@@ -469,13 +458,10 @@ RouteValidationResult validateRoute(const RoutingRequest& request,
               requireDestination &&
               request.constraints.landSafetyMarginNm > 0.0 &&
               legIndex + 1 == legs.size();
-          const double destinationIngressRadiusNm =
-              request.rounding
-                  ? std::min(coastalEndpointReachNm(
-                                 request.constraints.landSafetyMarginNm),
-                             request.rounding->radiusNm)
-                  : coastalEndpointReachNm(
-                        request.constraints.landSafetyMarginNm);
+          // A rounding mark is not a disc: coastal ingress uses the
+          // configured endpoint reach, never a rounding distance.
+          const double destinationIngressRadiusNm = coastalEndpointReachNm(
+              request.constraints.landSafetyMarginNm);
           const double nextDestinationDistance =
               distanceNm(next, request.destination);
           const bool insideIngress =
@@ -514,6 +500,7 @@ RouteValidationResult validateRoute(const RoutingRequest& request,
           priorDestinationDistance = nextDestinationDistance;
         }
       }
+      replayedPoints.push_back(next);
       replayPoint = next;
       replayFuel += achievable.fuelLitresPerHour *
                     std::chrono::duration<double>(slice).count() / 3600.0;
@@ -568,19 +555,31 @@ RouteValidationResult validateRoute(const RoutingRequest& request,
       return fail(std::move(result), "route exceeds fuel limit");
     if (departureEgressAtLegStart)
       result.coastalDepartureEgressLegs = legIndex + 1;
-    if (legIndex + 1 == legs.size()) {
-      finalLegClosestApproachPoint = closestOnLegPoint;
-      finalLegClosestApproachCourseDegrees = closestOnLegCourseDegrees;
-    }
+    result.replayedLegs.push_back(std::move(replayedPoints));
     ++result.acceptedPrefixLegs;
   }
   if (requireDestination && request.rounding) {
-    const RoundingApproach approach{finalLegClosestApproachPoint,
-                                    finalLegClosestApproachCourseDegrees};
+    // Judge the rounding over the whole replayed final sub-track, not the
+    // arriving endpoint alone. An interior chain mark carries
+    // roundingNextPoint, so the arriving replay is concatenated with the
+    // outbound join; the chain-level independent replay replaces that straight
+    // join with the actual departing leg. A terminal destination has no next
+    // point and is judged over the arriving track alone.
+    std::vector<GeoPoint> fallbackTrack{legs.back().start, legs.back().end};
+    const std::vector<GeoPoint>& finalTrack =
+        result.replayedLegs.empty() ? fallbackTrack
+                                    : result.replayedLegs.back();
+    std::vector<GeoPoint> subTrack = finalTrack;
+    double exitCourse = lastTerminalCourseDegrees;
+    if (request.roundingNextPoint && !finalTrack.empty() &&
+        distanceNm(finalTrack.back(), *request.roundingNextPoint) > 1e-6) {
+      subTrack.push_back(*request.roundingNextPoint);
+      exitCourse =
+          initialBearingDegrees(finalTrack.back(), *request.roundingNextPoint);
+    }
     RoundingMeasurement measured =
-        measureRounding(*request.rounding, legs.back().end,
-                        lastTerminalCourseDegrees, request.destination,
-                        approach);
+        measureRounding(*request.rounding, subTrack, request.destination,
+                        exitCourse);
     result.rounding = measured;
     if (diagnostics) {
       diagnostics->roundingAttempted = true;
