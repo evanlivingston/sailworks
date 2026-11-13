@@ -976,7 +976,13 @@ py::dict runUserBridge(py::function wind, py::function current,
     } else {
       throw py::value_error("rounding side must be port or starboard");
     }
-    rounding.radiusNm = py::cast<double>(item["radius_nm"]);
+    // Radius is legacy metadata, not part of the side-of-track contract.
+    // Older payloads carried it; the Python boundary no longer sends it, so
+    // keep the historical default for this additive stage.
+    constexpr double kLegacyRoundingRadiusNm = 0.5;
+    rounding.radiusNm = kLegacyRoundingRadiusNm;
+    if (item.contains("radius_nm") && !item["radius_nm"].is_none())
+      rounding.radiusNm = py::cast<double>(item["radius_nm"]);
     if (item.contains("exit_bearing_min_deg") &&
         !item["exit_bearing_min_deg"].is_none())
       rounding.exitBearingMinDegrees =

@@ -148,21 +148,23 @@ def test_rounding_on_start_or_skipped_duplicate_is_rejected(polar):
         )
 
 
-def test_rounding_disc_may_not_contain_a_previous_point(polar):
-    with pytest.raises(ValueError, match="previous route point"):
-        freeze_native_requests(
-            replace(
-                _request(polar),
-                use_currents=False,
-                waypoints=((48.3005, -123.6), (48.301, -123.6), (48.4, -123.5)),
-                roundings=(None, Rounding("port", 5.0), None),
-            ),
-            (),
-            _forecast(),
-            (),
-            None,
-            engine="main",
-        )
+def test_legacy_radius_no_longer_rejects_containment_or_overlap(polar):
+    # Radius is inert metadata: a previous point inside it and two overlapping
+    # legacy radii are no longer planning constraints, so freezing succeeds.
+    first = Rounding("port", 5.0)
+    second = Rounding("starboard", 5.0)
+    request = replace(
+        _request(polar),
+        use_currents=False,
+        waypoints=((48.3005, -123.6), (48.301, -123.6), (48.4, -123.5)),
+        roundings=(first, second, None),
+    )
+    (job,) = freeze_native_requests(request, (), _forecast(), (), None, engine="main")
+    assert job.roundings == (first, second, None)
+    for rounding in (first, second):
+        payload = rounding.to_native()
+        assert "radius_nm" not in payload
+        assert payload["side"] == rounding.side
 
 
 def test_rounding_name_survives_freeze_and_native_settings(polar):

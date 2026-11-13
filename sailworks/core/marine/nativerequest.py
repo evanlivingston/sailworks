@@ -67,9 +67,10 @@ class Rounding:
             object.__setattr__(self, "exit_bearing_max_deg", float(maximum))
 
     def to_native(self) -> dict:
+        # Radius is legacy point metadata, never a planning or acceptance
+        # constraint: the native contract is side-of-track plus exit bearings.
         return dict(
             side=self.side,
-            radius_nm=self.radius_nm,
             exit_bearing_min_deg=self.exit_bearing_min_deg,
             exit_bearing_max_deg=self.exit_bearing_max_deg,
             name=self.name,
@@ -322,20 +323,9 @@ def _resolve_roundings(item, start, waypoints):
             chain.append(item.destination)
             marks.append((item.destination, None))
 
-    for index, (point, rounding) in enumerate(marks, start=1):
-        if rounding is None:
-            continue
-        for previous in chain[:index]:
-            if _distance_nm(previous, point) <= rounding.radius_nm + 1e-6:
-                raise ValueError("Rounding disc contains a previous route point")
-    rounded = [(point, rounding) for point, rounding in marks if rounding is not None]
-    for first in range(len(rounded)):
-        for second in range(first + 1, len(rounded)):
-            if (
-                _distance_nm(rounded[first][0], rounded[second][0])
-                < rounded[first][1].radius_nm + rounded[second][1].radius_nm
-            ):
-                raise ValueError("Rounding discs overlap")
+    # Radius is legacy metadata only. It must not reject a compliant route or
+    # shape the chain: side-of-track acceptance belongs to the shared winding
+    # evaluator, so nearby marks and overlapping legacy radii are allowed here.
     return tuple(rounding for _, rounding in marks)
 
 

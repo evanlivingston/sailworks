@@ -19,7 +19,14 @@ Mark rounding constraints (`rounding-constraints`) add an optional per-mark
 side, radius and exit-bearing range. Completion, terminal direct connection and
 independent replay share one pass-and-exit predicate; a route is accepted only
 when the replayed terminal course satisfies it. No rounding means the existing
-exact-point behaviour and no extra geometry.
+exact-point behaviour and no extra geometry. The additive side-of-track
+evaluator in `Winding.h/.cpp` applies the issue's taut-string reduction, closes
+the reduced sub-track with a chord back to its first point, and applies the
+signed closed-loop winding decision table, including the multi-lap
+`UnsatisfiableRounding` reason; the radius predicate above stays compiled
+unchanged in this stage. The
+Python/native payload no longer sends a radius as a constraint: it remains
+legacy point metadata, parsed and preserved but never planned against.
 
 `../weather-routing-engine.version` identifies the imported upstream baseline.
 The integration repository also carries subsequent fixes; it is not a claim

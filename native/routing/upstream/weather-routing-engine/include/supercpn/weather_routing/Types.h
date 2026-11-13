@@ -378,6 +378,14 @@ struct RoundingConstraint {
   std::optional<double> exitBearingMaxDegrees;
 };
 
+// Side-of-track rounding contract. Distance from the mark is never part of the
+// contract; the shared taut-string evaluator in Winding.h decides passage.
+struct RoundingSpec {
+  RoundingSide side{RoundingSide::Port};
+  std::optional<double> exitBearingMinDegrees;
+  std::optional<double> exitBearingMaxDegrees;
+};
+
 enum class RoundingFailure {
   None,
   CoincidentEndpoint,

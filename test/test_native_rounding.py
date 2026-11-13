@@ -251,3 +251,52 @@ def test_no_rounding_keeps_empty_roundings_payload():
     run = _run(SETTINGS)
     assert run["accepted"], run["message"]
     assert "roundings" not in run
+
+
+def test_native_payload_never_sends_the_radius_as_a_constraint():
+    from sailworks.core.marine.nativerequest import Rounding
+
+    for side in ("port", "starboard"):
+        payload = Rounding(side, 2.5).to_native()
+        assert "radius_nm" not in payload
+        assert payload["side"] == side
+        assert payload["exit_bearing_min_deg"] is None
+        assert payload["exit_bearing_max_deg"] is None
+
+
+def test_legacy_radius_metadata_still_round_trips():
+    from sailworks.core.geo.rounding import normalize_rounding_spec
+
+    spec = normalize_rounding_spec({"side": "port", "radius_nm": 2.5})
+    assert spec["side"] == "port"
+    assert spec["radius_nm"] == 2.5
+
+
+def test_radius_no_longer_rejects_nearby_or_overlapping_marks():
+    from types import SimpleNamespace
+
+    from sailworks.core.marine.nativerequest import Rounding, _resolve_roundings
+
+    start = (48.0, -123.0)
+    near_mark = (48.0005, -123.0)
+    in_radius = Rounding("port", 5.0, name="near")
+    item = SimpleNamespace(
+        start=None,
+        waypoints=[start, near_mark],
+        destination=near_mark,
+        roundings=[None, in_radius],
+    )
+    assert _resolve_roundings(item, start, (near_mark,)) == (in_radius,)
+
+    first_mark = (48.001, -123.0)
+    second_mark = (48.002, -123.0)
+    first = Rounding("port", 5.0, name="first")
+    second = Rounding("starboard", 5.0, name="second")
+    overlapping = SimpleNamespace(
+        start=None,
+        waypoints=[start, first_mark, second_mark],
+        destination=second_mark,
+        roundings=[None, first, second],
+    )
+    resolved = _resolve_roundings(overlapping, start, (first_mark, second_mark))
+    assert resolved == (first, second)

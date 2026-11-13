@@ -2,12 +2,14 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <numbers>
 #include <string>
 #include <vector>
 
 #include "native_routing_tree_identity.h"
 #include "sailworks_performance.h"
 #include "supercpn/weather_routing/Rounding.h"
+#include "supercpn/weather_routing/Winding.h"
 #include "synthetic.h"
 
 namespace {
@@ -116,6 +118,199 @@ int main() {
   require(!targets.empty(), "rounding targets are generated");
   require(near(wr::distanceNm(targets.front(), mark), 0.5, 1e-3),
           "rounding target lies on the radius circle");
+
+  // Shared taut-string winding evaluator: side-of-track rounding contract.
+  const wr::RoundingSpec portSpec{wr::RoundingSide::Port, std::nullopt,
+                                  std::nullopt};
+  const wr::RoundingSpec starboardSpec{wr::RoundingSide::Starboard,
+                                       std::nullopt, std::nullopt};
+  const auto loopTrack = [](const wr::GeoPoint& centre, double radiusNm,
+                            double startBearing, double sweepDegrees,
+                            int steps) {
+    std::vector<wr::GeoPoint> track;
+    for (int step = 0; step <= steps; ++step) {
+      const double fraction = static_cast<double>(step) / steps;
+      track.push_back(wr::destinationPoint(
+          centre, startBearing + sweepDegrees * fraction, radiusNm));
+    }
+    return track;
+  };
+
+  // A decreasing compass bearing is counter-clockwise: the mark stays on the
+  // boat's port side and the winding is positive.
+  const auto portTrack = loopTrack(mark, 1.0, 90.0, -359.9999, 72);
+  const auto portPass = wr::measureWinding(portTrack, mark, portSpec);
+  require(portPass.satisfied && portPass.defined,
+          "port loop is accepted as a port rounding");
+  require(near(portPass.winding, 1.0, 1e-6) && portPass.passCount == 1,
+          "port loop has winding +1 and one pass");
+  require(portPass.achievedSide == wr::RoundingSide::Port &&
+              portPass.failure == wr::WindingFailure::None &&
+              portPass.failureCode() == "none",
+          "port loop reports the port side and no failure");
+
+  const auto starboardTrack = loopTrack(mark, 1.0, 90.0, 359.9999, 72);
+  const auto starboardPass =
+      wr::measureWinding(starboardTrack, mark, starboardSpec);
+  require(starboardPass.satisfied && near(starboardPass.winding, -1.0, 1e-6),
+          "starboard loop has winding -1 and is accepted");
+  require(starboardPass.achievedSide == wr::RoundingSide::Starboard,
+          "starboard loop reports the starboard side");
+
+  // An ordinary half-turn pass is integral only because of the closing chord:
+  // the reduced sub-track alone sweeps a fractional turn.
+  const std::vector<wr::GeoPoint> ordinaryPass{
+      wr::destinationPoint(mark, 200.0, 1.0),
+      wr::destinationPoint(mark, 90.0, 1.5),
+      wr::destinationPoint(mark, 340.0, 1.0)};
+  double openSweepDegrees = 0.0;
+  double openPrevious = wr::initialBearingDegrees(mark, ordinaryPass.front());
+  for (std::size_t index = 1; index < ordinaryPass.size(); ++index) {
+    const double bearing =
+        wr::initialBearingDegrees(mark, ordinaryPass[index]);
+    openSweepDegrees +=
+        -std::remainder(bearing - openPrevious, 360.0);
+    openPrevious = bearing;
+  }
+  const double openTurns = openSweepDegrees / 360.0;
+  require(std::abs(openTurns - std::round(openTurns)) > 1e-6,
+          "an ordinary pass is not integral before the closing chord");
+  const auto ordinary = wr::measureWinding(ordinaryPass, mark, portSpec);
+  require(ordinary.satisfied && ordinary.defined &&
+              near(ordinary.winding, 1.0, 1e-6) &&
+              ordinary.achievedSide == wr::RoundingSide::Port,
+          "the closing chord makes an ordinary port pass integral");
+
+  require(wr::measureWinding(portTrack, mark, starboardSpec).failure ==
+              wr::WindingFailure::WrongSide,
+          "a correct pass on the other side is rejected as wrong side");
+  require(wr::measureWinding(portTrack, mark, starboardSpec).failureCode() ==
+              "rounding_wrong_side",
+          "wrong-side failure has a stable code");
+
+  // Out and back around different radii leaves the net winding at zero: the
+  // mark was never passed, even though the terminal endpoint is far away.
+  std::vector<wr::GeoPoint> zeroTrack;
+  for (int step = 0; step <= 18; ++step)
+    zeroTrack.push_back(wr::destinationPoint(mark, step * 5.0, 2.0));
+  for (int step = 17; step >= 0; --step)
+    zeroTrack.push_back(wr::destinationPoint(mark, step * 5.0, 1.0));
+  const auto zeroPass = wr::measureWinding(zeroTrack, mark, portSpec);
+  require(!zeroPass.satisfied &&
+              zeroPass.failure == wr::WindingFailure::NotPassed,
+          "zero net winding means the mark was not passed");
+  require(zeroPass.failureReason() == "mark not passed on this leg",
+          "not-passed failure names the reason");
+
+  // Two laps on the requested side are rejected, never accepted as a second
+  // pass.
+  const auto doublePort =
+      wr::measureWinding(loopTrack(mark, 1.0, 90.0, -719.9999, 144), mark,
+                         portSpec);
+  require(doublePort.failure == wr::WindingFailure::CirclesMoreThanOnce &&
+              doublePort.achievedSide == wr::RoundingSide::Port &&
+              doublePort.passCount == 2,
+          "two port laps are rejected despite the matching side");
+  require(doublePort.failureReason() ==
+                  "route circles the rounding mark more than once" &&
+              doublePort.failureCode() ==
+                  "route_circles_rounding_mark_more_than_once",
+          "multi-lap failure carries the named reason");
+
+  // Many short legs whose local bearing increments disagree still decide on
+  // the net taut string.
+  std::vector<wr::GeoPoint> zigzag;
+  int contestedIncrements = 0;
+  double previousBearing = 0.0;
+  for (int step = 0; step <= 360; ++step) {
+    const double fraction = static_cast<double>(step) / 360.0;
+    const double bearing =
+        90.0 - 360.0 * fraction -
+        20.0 * std::sin(12.0 * static_cast<double>(std::numbers::pi) *
+                        fraction);
+    zigzag.push_back(
+        wr::destinationPoint(mark, bearing, step % 2 == 0 ? 1.0 : 1.4));
+    if (step > 0) {
+      const double current =
+          wr::initialBearingDegrees(mark, zigzag.back());
+      if (std::remainder(current - previousBearing, 360.0) > 0.0)
+        ++contestedIncrements;
+      previousBearing = current;
+    } else {
+      previousBearing = wr::initialBearingDegrees(mark, zigzag.back());
+    }
+  }
+  const auto zigzagPass = wr::measureWinding(zigzag, mark, portSpec);
+  require(contestedIncrements > 0,
+          "many-leg track has locally reversed bearing increments");
+  require(zigzagPass.satisfied &&
+              near(zigzagPass.winding, 1.0, 1e-6) &&
+              zigzagPass.achievedSide == wr::RoundingSide::Port,
+          "net winding accepts a many-leg port pass");
+
+  // A square-ish closed zigzag at the integer boundary is unambiguous on both
+  // sides. A delivered near-lap is completed by its chord, and a sub-track
+  // that already ends at its start has a zero-length chord to skip.
+  const auto squarePort = loopTrack(mark, 2.0, 45.0, -359.9999, 4);
+  const auto squareStarboard = loopTrack(mark, 2.0, 45.0, 359.9999, 4);
+  require(wr::measureWinding(squarePort, mark, portSpec).satisfied &&
+              near(wr::measureWinding(squarePort, mark, portSpec).winding, 1.0,
+                   1e-6),
+          "square-ish port zigzag lands exactly on integral winding");
+  require(wr::measureWinding(squareStarboard, mark, starboardSpec).satisfied &&
+              near(wr::measureWinding(squareStarboard, mark, starboardSpec)
+                       .winding,
+                   -1.0, 1e-6),
+          "square-ish starboard zigzag lands exactly on integral winding");
+  // The closing chord is part of the closed loop, so a delivered arc a small
+  // fraction short of a full turn is still exactly one lap.
+  const auto nearLap = wr::measureWinding(
+      loopTrack(mark, 1.0, 90.0, -359.999, 72), mark, portSpec);
+  require(nearLap.satisfied && near(nearLap.winding, 1.0, 1e-6),
+          "the closing chord completes a near-lap to one lap");
+  // A sub-track that already ends at its start has a zero-length chord: skip
+  // it rather than treating it as a chord through the mark.
+  const auto explicitLap = wr::measureWinding(
+      loopTrack(mark, 1.0, 90.0, -360.0, 72), mark, portSpec);
+  require(explicitLap.satisfied && near(explicitLap.winding, 1.0, 1e-6),
+          "zero-length closing chords are skipped, not rejected");
+
+  // Degenerate tracks: on the mark, through the mark, a closing chord through
+  // the mark, and a pure retrace.
+  require(wr::measureWinding({mark, wr::destinationPoint(mark, 0.0, 1.0)},
+                             mark, portSpec)
+                  .failure == wr::WindingFailure::Ambiguous,
+          "a sub-track starting on the mark is ambiguous");
+  require(wr::measureWinding({wr::destinationPoint(mark, 180.0, 1.0),
+                              wr::destinationPoint(mark, 0.0, 1.0)},
+                             mark, portSpec)
+                  .failure == wr::WindingFailure::Ambiguous,
+          "a sub-track passing through the mark is ambiguous");
+  require(wr::measureWinding({wr::destinationPoint(mark, 0.0, 1.0),
+                              wr::destinationPoint(mark, 90.0, 1.0),
+                              wr::destinationPoint(mark, 180.0, 1.0)},
+                             mark, portSpec)
+                  .failure == wr::WindingFailure::Ambiguous,
+          "a closing chord through the mark is ambiguous");
+  const wr::GeoPoint retraceStart = wr::destinationPoint(mark, 90.0, 1.0);
+  const wr::GeoPoint retraceFar = wr::destinationPoint(mark, 90.0, 5.0);
+  const wr::GeoPoint retraceEnd = wr::destinationPoint(mark, 180.0, 1.0);
+  const std::vector<wr::GeoPoint> retraceTrack{
+      retraceStart, retraceFar, retraceStart, retraceEnd};
+  const auto reducedRetrace = wr::reduceTautString(retraceTrack);
+  require(reducedRetrace.size() == 2 &&
+              near(wr::distanceNm(reducedRetrace[0], retraceStart), 0.0) &&
+              near(wr::distanceNm(reducedRetrace[1], retraceEnd), 0.0),
+          "taut-string reduction collapses a retrace to outbound geometry");
+  // The out-and-back excursion must contribute nothing to the closed loop.
+  const auto retraceMeasurement =
+      wr::measureWinding(retraceTrack, mark, portSpec);
+  const auto outboundMeasurement =
+      wr::measureWinding({retraceStart, retraceEnd}, mark, portSpec);
+  require(retraceMeasurement.defined == outboundMeasurement.defined &&
+              near(retraceMeasurement.winding, outboundMeasurement.winding,
+                   1e-6),
+          "a retrace contributes nothing to the closed-loop winding");
 
   auto vessel = fixtureVesselConfiguration();
   vessel.profiles.front().efficiency = 0.85;
