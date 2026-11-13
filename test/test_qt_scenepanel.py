@@ -4,7 +4,8 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QRect, Qt
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import QApplication, QDialog
 
 from sailworks.core.geo.elementmultipoint import NamedPoint
@@ -12,6 +13,7 @@ from sailworks.core.geo.rounding import (
     ROUNDING_GATE,
     ROUNDING_PORT,
     ROUNDING_SAIL_TO,
+    ROUNDING_SHORT,
     ROUNDING_STARBOARD,
 )
 from sailworks.core.scene import KIND_LOG, KIND_POI, KIND_ROUTING, KIND_TRACK
@@ -21,6 +23,9 @@ from sailworks.qt.scenepanel import (
     ROUNDING_ROLE,
     VISIBLE_COLUMN,
     ScenePanel,
+    point_columns,
+    rounding_color,
+    rounding_column_width,
 )
 
 
@@ -309,6 +314,53 @@ def test_expanding_route_shows_marks_and_rounding(tmp_path):
     assert row.child(0).text(NAME_COLUMN) == "Mark 1"
     assert row.child(0).data(NAME_COLUMN, ROUNDING_ROLE) == "Sail"
     assert row.child(0).data(NAME_COLUMN, COORDINATE_ROLE) == ("48.100000, -123.100000")
+
+
+def test_rounding_column_is_fixed_width(tmp_path):
+    application()
+    panel = panel_for(tmp_path)
+    metrics = QFontMetrics(panel.tree.font())
+    rect = QRect(0, 0, 260, 20)
+
+    rounding, coordinate = point_columns(rect, metrics)
+
+    assert rounding.width() == rounding_column_width(metrics)
+    # Sized for the longest short label, so no side can widen the column.
+    for label in ROUNDING_SHORT.values():
+        assert metrics.horizontalAdvance(label) <= rounding.width()
+    # The coordinate column keeps a constant right edge, and the rounding
+    # column a constant left edge, whichever side a mark carries.
+    assert coordinate.right() == rect.right()
+    assert rounding.left() == coordinate.left() - 10 - rounding.width()
+
+
+def test_rounding_colours_distinguish_sides(tmp_path):
+    application()
+
+    port = rounding_color(ROUNDING_SHORT[ROUNDING_PORT])
+    starboard = rounding_color(ROUNDING_SHORT[ROUNDING_STARBOARD])
+    sail = rounding_color(ROUNDING_SHORT[ROUNDING_SAIL_TO])
+    gate = rounding_color(ROUNDING_SHORT[ROUNDING_GATE])
+
+    assert port.name() != starboard.name()
+    assert sail.name() == gate.name()
+    assert sail.name() != port.name()
+    assert sail.name() != starboard.name()
+
+
+def test_track_marks_carry_side_colours(tmp_path):
+    application()
+    track = FakeTrack("t1", "Morning")
+    track.set_point_rounding(0, ROUNDING_PORT)
+    track.set_point_rounding(1, ROUNDING_STARBOARD)
+    panel = panel_for(tmp_path, tracks=[track])
+    row = panel.item_row(KIND_TRACK, "t1")
+
+    row.setExpanded(True)
+
+    port = rounding_color(row.child(0).data(NAME_COLUMN, ROUNDING_ROLE))
+    starboard = rounding_color(row.child(1).data(NAME_COLUMN, ROUNDING_ROLE))
+    assert port.name() != starboard.name()
 
 
 def test_edit_point_dialog_updates_name_and_rounding(tmp_path):
