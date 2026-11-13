@@ -1040,6 +1040,13 @@ class RoutingPanel(QWidget):
                     "data to None or switch to Native."
                 )
             request, scenarios = self._request()
+            if backend != "native" and any(
+                rounding is not None for rounding in request.roundings
+            ):
+                raise ValueError(
+                    "Mark rounding requires the Native backend. Set Calculation "
+                    "to Native, or remove the rounding from the track points."
+                )
             if backend == "native":
                 from sailworks.core.marine.nativerequest import (
                     changed_legacy_parameters,

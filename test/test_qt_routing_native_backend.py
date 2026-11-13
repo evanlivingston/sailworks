@@ -171,6 +171,27 @@ def test_panel_native_refuses_changed_legacy_parameters_before_start(app):
     panel.deleteLater()
 
 
+def test_panel_refuses_legacy_calculation_when_a_mark_has_rounding(app):
+    controller = FakeController()
+    track = Track(
+        "race",
+        [(48.0, -123.5), (48.05, -123.45), (48.1, -123.4)],
+    )
+    track.set_point_rounding_spec(1, {"side": "starboard", "radius_nm": 0.3})
+    controller.core.trackManager = (track,)
+    panel = RoutingPanel(controller)
+    panel.refresh_destinations()
+    panel.destination.setCurrentIndex(panel.destination.findText("Track: race"))
+    panel._plan_changed()
+
+    assert panel.backend.currentData() == "legacy"
+    panel._calculate()
+
+    assert controller.routing.calls == []
+    assert "requires the Native backend" in panel.status.text()
+    panel.deleteLater()
+
+
 def test_panel_reads_mark_rounding_from_track_points(app):
     controller = FakeController()
     track = Track(
