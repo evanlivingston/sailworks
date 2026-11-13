@@ -1,50 +1,63 @@
 #pragma once
 
+#include <optional>
+#include <string>
 #include <vector>
 
 #include "supercpn/weather_routing/Types.h"
 
 namespace supercpn::weather_routing {
 
-// Structural validation shared by the engine and the bridge. A valid spec has
-// a finite positive radius, a known side and either both or neither exit
-// bounds, ordered without wrap-around.
+// Structural validation for the transitional radius-carrying request. The
+// radius is legacy metadata and never a planning or acceptance constraint.
 bool roundingConstraintValid(const RoundingConstraint& rounding);
 
-// True when the radius is too small for the shared predicate's unambiguous-side
-// lateral epsilon. The spec is well-formed but can never be satisfied.
+// Retained for the preflight call site that still carries the legacy radius.
+// The closest-pass predicate has no distance gate, so a well-formed spec can
+// never be geometrically impossible.
 bool roundingGeometricallyImpossible(const RoundingConstraint& rounding);
 
-// Closest replayed point to the mark and the course at that point. The
-// rounding requires the mark on the requested side at this pass as well as at
-// the delivered endpoint.
+// Closest delivered point to the mark and the course over ground there.
 struct RoundingApproach {
   GeoPoint point;
   double courseDegrees{};
 };
 
-// One shared definition for engine completion and independent replay.
-// `terminalCourseDegrees` is the course over ground of the last replayed
-// sample, not the requested through-water heading. When `approach` is set,
-// the route must also come within the radius and keep the mark on the
-// requested side at its closest pass.
+// Shared closest-pass evaluator for engine completion and independent replay.
+//
+// `subTrack` is the delivered leg sub-track in order (the leg from the previous
+// course point to the next, or to the delivered final endpoint). Distance and
+// course are evaluated continuously over every segment: the mark is projected
+// onto each segment's great circle, clamped to the segment endpoints, and the
+// distance, course and bearing are all derived from that interpolated point, so
+// a closest pass between two recorded points is measured on the interpolation.
+//
+// The mark must be passed: zero ray crossings is NotPassed. A passage is an
+// ahead-to-astern crossing of the ray from the mark along the bearing from the
+// mark to the closest-pass point, so a lap counts one crossing rather than one
+// per delivered segment. Two or more crossings are rejected as
+// CirclesMoreThanOnce. The side is judged at the closest pass from
+// the signed lateral cross(course, bearingToMark) * distance: port requires a
+// positive lateral, starboard a negative one, and |lateral| within 0.01 NM is
+// ambiguous. `exitCourseDegrees` is the delivered outbound course (the first
+// replayed point of the next leg to the second, or the terminal course for the
+// destination) and must lie in the inclusive exit range when one is set.
+RoundingMeasurement measureRounding(const RoundingSpec& rounding,
+                                    const std::vector<GeoPoint>& subTrack,
+                                    GeoPoint mark, double exitCourseDegrees);
+
+// Transitional adapter for the radius-era engine call sites. It reconstructs
+// the two-sample sub-track from the recorded closest approach and the delivered
+// endpoint; the engine will pass full leg sub-tracks once completion is wired
+// to the shared predicate. No radius gate is applied.
 RoundingMeasurement measureRounding(
     const RoundingConstraint& rounding, GeoPoint endpoint,
     double terminalCourseDegrees, GeoPoint mark,
     const std::optional<RoundingApproach>& approach = std::nullopt);
 
-inline bool roundingSatisfied(
-    const RoundingConstraint& rounding, GeoPoint endpoint,
-    double terminalCourseDegrees, GeoPoint mark,
-    const std::optional<RoundingApproach>& approach = std::nullopt) {
-  return measureRounding(rounding, endpoint, terminalCourseDegrees, mark,
-                         approach)
-      .satisfied;
-}
-
-// Deterministic, bounded terminal candidates for a rounding direct connection.
-// No candidate is exported unless it was replayed and accepted by the shared
-// predicate.
+// Deterministic, bounded terminal candidates for a radius-era direct
+// connection. No candidate is exported unless it was replayed and accepted by
+// the shared predicate.
 std::vector<GeoPoint> roundingTargets(GeoPoint from, GeoPoint mark,
                                       const RoundingConstraint& rounding);
 

@@ -368,9 +368,9 @@ using RoutingPreviewCallback =
 
 enum class RoundingSide { Port, Starboard };
 
-// Optional pass-and-exit rule for a leg target. The target point is the mark;
-// the route must finish inside the radius with the mark on the requested side
-// and, when set, on a terminal course inside the inclusive exit range.
+// Legacy per-mark request carried by the radius-era engine. The target point
+// is the mark; `radiusNm` is legacy metadata and never a planning or acceptance
+// constraint in the shared closest-pass evaluator.
 struct RoundingConstraint {
   RoundingSide side{RoundingSide::Port};
   double radiusNm{};
@@ -379,7 +379,7 @@ struct RoundingConstraint {
 };
 
 // Side-of-track rounding contract. Distance from the mark is never part of the
-// contract; the shared taut-string evaluator in Winding.h decides passage.
+// contract; the shared closest-pass evaluator in Rounding.h decides passage.
 struct RoundingSpec {
   RoundingSide side{RoundingSide::Port};
   std::optional<double> exitBearingMinDegrees;
@@ -388,25 +388,45 @@ struct RoundingSpec {
 
 enum class RoundingFailure {
   None,
-  CoincidentEndpoint,
-  DistanceOutOfRange,
-  MarkAhead,
+  // No ahead-to-astern ray crossing of the mark on the leg sub-track.
+  NotPassed,
+  // Two or more ahead-to-astern ray crossings: the route circles the mark.
+  CirclesMoreThanOnce,
+  // The closest pass runs through the mark, leaving no defined side.
+  AmbiguousPass,
+  // The closest pass is within the lateral ambiguity epsilon.
   SideAmbiguous,
+  // The closest pass is on the opposite side of the request.
   WrongSide,
+  // The delivered outbound course is outside the inclusive exit range.
   ExitBearingOutOfRange,
   NotEvaluated,
 };
 
+// Measured closest pass of one delivered leg sub-track. Distance is reported,
+// never gated: a wide pass on the requested side is compliant.
 struct RoundingMeasurement {
   bool satisfied{};
   double closestDistanceNm{std::numeric_limits<double>::infinity()};
+  GeoPoint closestPoint{};
+  double courseAtClosestDegrees{};
+  double bearingToMarkAtClosestDegrees{};
+  // cross(course, bearingToMark) * distance. Positive is port, negative is
+  // starboard.
+  double signedLateralNm{};
+  std::optional<RoundingSide> achievedSide;
+  int passageCount{};
+  bool exitRangeSatisfied{true};
+  RoundingFailure failure{RoundingFailure::NotEvaluated};
+  // Transitional diagnostics for the radius-era engine call sites. They mirror
+  // the delivered endpoint until the engine passes full leg sub-tracks.
   double terminalBearingToMarkDegrees{};
   double terminalCourseDegrees{};
   double closestApproachBearingToMarkDegrees{};
   double closestApproachCourseDegrees{};
   bool hasApproach{};
-  RoundingFailure failure{RoundingFailure::NotEvaluated};
   std::string failureCode() const;
+  std::string failureReason() const;
 };
 
 struct RoutingRequest {
