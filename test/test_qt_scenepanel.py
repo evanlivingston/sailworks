@@ -58,6 +58,7 @@ class FakeRoute:
         self.result_ref = None
         self.loaded_result = None
         self.result_error = None
+        self.contour_error = None
         self.points = [(48.1, -123.1), (48.2, -123.2)]
         self._names = {}
         self._roundings = {}
@@ -352,6 +353,29 @@ def test_route_isochrone_toggle_is_independent_of_route_visibility(tmp_path):
 
     assert route.visible is False
     assert len(routing_events) == 2
+
+
+def test_isochrone_row_reports_unavailable_artifact(tmp_path):
+    application()
+    route = FakeRoute("r1", "Route")
+    route.contour_error = "OSError: artifact unavailable"
+    panel = panel_for(tmp_path, routes=[route])
+    row = panel.item_row(KIND_ROUTING, "r1")
+    row.setExpanded(True)
+
+    isochrones = panel.tree_item(("routing-isochrones", KIND_ROUTING, "r1"))
+    assert isochrones.text(NAME_COLUMN) == "Isochrones (unavailable)"
+    # The box never claims contours are present when the artifact is unreadable.
+    assert isochrones.checkState(VISIBLE_COLUMN) == Qt.CheckState.Unchecked
+    assert not (isochrones.flags() & Qt.ItemFlag.ItemIsUserCheckable)
+    tooltip = isochrones.toolTip(NAME_COLUMN)
+    assert "Isochrones unavailable" in tooltip
+    assert "artifact unavailable" in tooltip
+    # The persisted flag survives the unavailable presentation, so a later
+    # successful read restores the user's choice.
+    assert route.isochrones_visible is True
+    isochrones.setCheckState(VISIBLE_COLUMN, Qt.CheckState.Checked)
+    assert route.isochrones_visible is True
 
 
 def test_route_traces_toggle_is_independent_of_isochrones_and_route(

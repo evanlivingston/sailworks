@@ -275,7 +275,6 @@ def test_repeated_eye_toggle_after_reopen_restores_the_same_contours():
     first_on = frontier_payload(window.map.frames[-1])
     first_ids = contour_ids(native)
     first_overlay = routing_overlay_data(native)
-    first_style = native.style_revision
     geometry = native.geometry_digest
     assert loads == [store]
     assert native.contours_visible is True
@@ -283,7 +282,7 @@ def test_repeated_eye_toggle_after_reopen_restores_the_same_contours():
     assert first_overlay["layers"]
     assert window.map.native_routing is native
 
-    for cycle in range(2):
+    for _cycle in range(2):
         style_before_off = native.style_revision
         # OFF: only the isochrone display is gated.
         route.isochrones_visible = False
@@ -306,11 +305,9 @@ def test_repeated_eye_toggle_after_reopen_restores_the_same_contours():
         assert contour_ids(native) == first_ids
         restored = routing_overlay_data(native)
         expected = dict(first_overlay)
-        # The style revision advances on each toggle so the layer redraws, but
-        # geometry, layer/trace/path identities and colours stay identical.
-        assert restored.pop("style_revision") == style_before_off + 2
-        assert native.style_revision == first_style + 2 * (cycle + 1)
-        assert native.style_revision > first_style
+        # Toggling changes only the style signature that drives the repaint.
+        # Geometry, layer/trace/path identities and colours stay identical.
+        assert restored.pop("style_revision") != style_before_off
         expected.pop("style_revision")
         assert restored == expected
         assert restored["layers"] == first_overlay["layers"]
@@ -370,6 +367,35 @@ def test_missing_or_corrupt_artifact_with_checked_eye_is_disclosed(exc):
     assert route.export_eligible is False
 
 
+def test_unavailable_isochrones_reach_the_map_caption():
+    from sailworks.qt.viewportmap import _routing_absence_caption
+
+    route = route_with_summary(isochrones=True)
+    route.result_ref = object()
+    route.collection = SimpleNamespace(result_store=object())
+    route._isochrones = None
+
+    def unavailable(_store):
+        raise OSError("artifact missing")
+
+    route.load_result = unavailable
+    window = fake_window(route, None)
+
+    PreviewWindow._sync_route_isochrones(window)
+
+    assert route.contour_error
+    assert window.map.isochrone_error == route.contour_error
+    caption = _routing_absence_caption(None, window.map.isochrone_error)
+    assert caption.startswith("Isochrones unavailable: ")
+    assert "artifact missing" in caption
+
+
+def test_healthy_route_has_no_isochrone_caption():
+    from sailworks.qt.viewportmap import _routing_absence_caption
+
+    assert _routing_absence_caption(None) == ""
+
+
 def test_legacy_route_eye_toggle_keeps_inline_contours_visible():
     """A legacy route has no artifact; toggling only gates its inline frontiers."""
     inline = [[(48.0, -124.0), (48.1, -123.9)]]
@@ -400,22 +426,28 @@ def test_legacy_route_eye_toggle_keeps_inline_contours_visible():
     assert native.contours_visible is True
 
 
-def test_trace_visibility_syncs_both_canvases_independently_of_isochrones():
+def test_trace_visibility_applies_to_the_owning_map_only():
     route = route_with_summary(isochrones=False)
     route.traces_visible = True
     native = FakeNative(CALCULATION)
+    # The log map never receives ``native_routing`` from the sync path. Give it
+    # an unrelated overlay to prove that only the owning map is updated.
     other = FakeNative(CALCULATION)
     window = fake_window(route, native, active_route=route)
     window.log_map.native_routing = other
 
     PreviewWindow._sync_route_isochrones(window)
 
-    # Hiding the isochrones must not hide the trace web, and both canvases that
-    # present this route's overlay receive the same flag.
+    # Hiding the isochrones must not hide the trace web, independently of the
+    # contour gate.
     assert window.map.frames == [()]
     assert native.contours_visible is False
     assert native.traces_visible is True
-    assert other.traces_visible is True
+    # Only the primary map owns the route's native overlay, so the second
+    # canvas keeps its own overlay state untouched.
+    assert window.log_map.native_routing is other
+    assert other.contours_visible is None
+    assert other.traces_visible is None
 
 
 def test_trace_visibility_false_is_applied_to_native():

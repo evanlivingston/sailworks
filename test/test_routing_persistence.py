@@ -492,6 +492,26 @@ def test_missing_or_corrupt_artifact_shows_no_contours_without_raising(
     assert reloaded.export_eligible is False
 
 
+def test_refresh_after_the_artifact_returns_restores_contours(tmp_path, monkeypatch):
+    writer, store = _collection(tmp_path, monkeypatch)
+    route = writer.save_result("alpha", _result())
+    reloaded = Routing.from_json(route.to_json())
+    reloaded.collection = writer
+    artifact = store._path(reloaded.result_ref.artifact_id)
+    saved = artifact.read_bytes()
+
+    # Prune the artifact: the failed read is remembered, not retried.
+    artifact.unlink()
+    assert reloaded.isochrones == ()
+    assert reloaded.contour_error
+
+    # The artifact returns; an explicit refresh restores the contours.
+    artifact.write_bytes(saved)
+    reloaded.refresh_isochrones()
+    assert reloaded.isochrones
+    assert reloaded.contour_error is None
+
+
 def test_artifact_mismatched_generation_is_rejected(tmp_path, monkeypatch):
     writer, store = _collection(tmp_path, monkeypatch)
     route = writer.save_result("alpha", _result())

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from PySide6.QtCore import Qt
 
 import sailworks.core.storage as storage
@@ -16,6 +17,7 @@ from sailworks.core.marine.routingrecord import (
     Outcome,
     Point,
     Provenance,
+    SchemaError,
     Validation,
 )
 from sailworks.core.marine.routingresult import RoutingResult, canonical_utc
@@ -617,3 +619,95 @@ def test_cached_tacks_reload_when_result_ref_is_replaced():
     route.result_ref = object()
     assert route.leg_tacks() == ("port",)
     assert len(calls) == 2
+
+
+def test_tack_colours_require_aligned_legs(tmp_path, monkeypatch):
+    collection = _collection(tmp_path, monkeypatch)
+    route = collection.save_result("native", _result(_legs()))
+    # A mid-route waypoint insert leaves the recorded per-leg readouts at the
+    # old count. The colours must go unknown rather than shift onto the wrong
+    # legs, exactly like the sail markers disable on a mismatch.
+    route._leg_readouts = (
+        {"tack": "port"},
+        {"tack": "starboard"},
+        {"tack": "port"},
+    )
+    route._leg_readouts_ref = route.result_ref
+    route.colour_by = "tack"
+
+    overlay = _overlay(route).route_overlay_data(EPOCH + 450)[0]
+
+    assert overlay["segment_colors"] == [
+        list(ROUTE_UNKNOWN_COLOUR[:3]),
+        list(ROUTE_UNKNOWN_COLOUR[:3]),
+    ]
+
+
+def test_failed_isochrone_read_is_cached_until_explicit_refresh():
+    route = Routing("lazy", result_ref=object(), result_summary={})
+    route._isochrones = None
+    route.collection = SimpleNamespace(result_store=object())
+    calls = []
+
+    def unavailable(_store):
+        calls.append(1)
+        raise OSError("artifact unavailable")
+
+    route.load_result = unavailable
+
+    # Repeated frames and visibility toggles must not retry artifact I/O.
+    for _toggle in range(3):
+        assert route.isochrones == ()
+        route.isochrones_visible = not route.isochrones_visible
+    assert route.isochrones == ()
+    assert len(calls) == 1
+    assert "artifact unavailable" in (route.contour_error or "")
+
+    # An explicit refresh performs exactly one more read.
+    route.refresh_isochrones()
+    assert route.contour_error is None
+    assert route.isochrones == ()
+    assert len(calls) == 2
+
+
+def test_profile_identity_falls_back_to_recorded_sail_plan():
+    route = Routing("plans", result_ref=object(), result_summary={})
+    route.collection = SimpleNamespace(result_store=object())
+    route.load_result = lambda _store: SimpleNamespace(
+        legs=(
+            SimpleNamespace(readout={"sail_plan": 2}),
+            SimpleNamespace(readout={"sail_plan": 3.0}),
+            SimpleNamespace(readout={"sail_plan": 3, "profile_identity": "J1"}),
+        )
+    )
+
+    # Absent identity text falls back to the recorded plan selector, so a plan
+    # change still marks; recorded identity text wins when present.
+    assert route.leg_profile_identities() == ("2", "3", "J1")
+
+
+def test_profile_identity_stays_unknown_without_identity_or_sail_plan():
+    route = Routing("plans", result_ref=object(), result_summary={})
+    route.collection = SimpleNamespace(result_store=object())
+    route.load_result = lambda _store: SimpleNamespace(
+        legs=(
+            SimpleNamespace(readout={}),
+            SimpleNamespace(readout={"sail_plan": None}),
+            SimpleNamespace(readout={"sail_plan": True}),
+            SimpleNamespace(readout={"sail_plan": "2"}),
+        )
+    )
+
+    assert route.leg_profile_identities() == (None, None, None, None)
+
+
+def test_isochrones_visible_requires_a_boolean():
+    payload = Routing("route", [], [], True).to_json()
+    payload.pop("isochrones_visible", None)
+    assert Routing.from_json(payload).isochrones_visible is True
+
+    for value in ("false", 1):
+        payload = Routing("route", [], [], True).to_json()
+        payload["isochrones_visible"] = value
+        with pytest.raises(SchemaError):
+            Routing.from_json(payload)

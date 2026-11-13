@@ -405,7 +405,13 @@ class NavigationRenderer:
         if mode == "tack":
             loader = getattr(route, "leg_tacks", None)
             if callable(loader):
-                tacks = loader()
+                recorded = loader()
+                # Only trust recorded tacks when they line up one-for-one with
+                # the displayed legs, the same guard the sail markers use. A
+                # mid-route point insert would otherwise shift every colour
+                # onto the wrong leg; mismatched readouts stay unknown.
+                if len(recorded) == legs:
+                    tacks = recorded
         segment_colours = []
         for index in range(legs):
             speed = points[index + 1][2] if mode == "speed" else None

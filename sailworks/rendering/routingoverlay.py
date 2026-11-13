@@ -392,23 +392,6 @@ def _gradient_colour(position: float) -> list:
     ]
 
 
-def _epoch_value(value) -> Optional[int]:
-    """Return a non-negative whole epoch, accepting int-like numerics.
-
-    Saved results may carry numpy integers or whole floats from other writers.
-    Anything fractional, negative, boolean or non-numeric is unusable.
-    """
-    if isinstance(value, bool):
-        return None
-    try:
-        epoch = int(value)
-        if float(value) != epoch:
-            return None
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return epoch if epoch >= 0 else None
-
-
 def _epoch_label(epoch_s: int, show_date: bool, show_seconds: bool = False) -> str:
     from datetime import datetime, timezone
 
@@ -418,42 +401,28 @@ def _epoch_label(epoch_s: int, show_date: bool, show_seconds: bool = False) -> s
 
 
 def isochrone_time_colours(layers):
-    """Colour usable layers from their recorded epoch, oldest to newest.
+    """Colour layers from their recorded epoch, oldest to newest.
 
-    Returns ``(colours, unavailable_layer_ids)``. A layer with no usable epoch
-    is left without a colour so it draws uniformly; the caller discloses that
-    instead of inventing a time or downgrading every layer. Positions are
-    index-based, so equal epochs still spread across the gradient and a lone
-    visible layer gets a mid-gradient colour rather than the oldest extreme.
+    Schema-v1 ``Layer`` records always carry a usable epoch, so every displayed
+    layer gets a gradient position. Positions are index-based, so equal epochs
+    still spread across the gradient and a lone visible layer gets a
+    mid-gradient colour rather than the oldest extreme.
     """
-    usable = []
-    unavailable = []
-    for layer in layers:
-        epoch = _epoch_value(getattr(layer, "epoch_s", None))
-        if epoch is None:
-            unavailable.append(layer.layer_id)
-        else:
-            usable.append((epoch, layer.layer_id))
-    usable.sort()
+    usable = sorted((layer.epoch_s, layer.layer_id) for layer in layers)
     last = len(usable) - 1
-    colours = {
+    return {
         layer_id: _gradient_colour(index / last if last else 0.5)
         for index, (_epoch, layer_id) in enumerate(usable)
     }
-    return colours, tuple(unavailable)
 
 
-def isochrone_time_legend(layers, colours, unavailable=()) -> dict:
+def isochrone_time_legend(layers, colours) -> dict:
     """Gradient legend entries oldest to newest, with distinguishable labels."""
     from datetime import datetime, timezone
 
-    usable = []
-    for layer in layers:
-        epoch = _epoch_value(getattr(layer, "epoch_s", None))
-        if epoch is None or layer.layer_id not in colours:
-            continue
-        usable.append((epoch, layer.layer_id))
-    usable.sort()
+    usable = sorted(
+        (layer.epoch_s, layer.layer_id) for layer in layers if layer.layer_id in colours
+    )
     days = {
         datetime.fromtimestamp(epoch, tz=timezone.utc).date()
         for epoch, _layer_id in usable
@@ -470,15 +439,7 @@ def isochrone_time_legend(layers, colours, unavailable=()) -> dict:
         if counters[label] > 1:
             label = f"{label} #{counters[label]}"
         entries.append([label, list(colours[layer_id])])
-    legend = {"title": "Isochrones (UTC)", "entries": entries}
-    if unavailable:
-        count = len(unavailable)
-        legend["note"] = (
-            f"{count} layer without recorded time (uniform)"
-            if count == 1
-            else f"{count} layers without recorded time (uniform)"
-        )
-    return legend
+    return {"title": "Isochrones (UTC)", "entries": entries}
 
 
 def _selected_trace_ids(model: RoutingOverlayModel):
@@ -503,9 +464,8 @@ def routing_overlay_data(
     proximity-joined preview without changing the QML consumer.
 
     ``isochrone_colour_by="time"`` adds a gradient colour to each visible layer
-    and frontier plus a legend keyed to the layers' recorded epochs. When the
-    epochs are unavailable the payload reports the uniform fallback explicitly
-    instead of inventing times. The uniform payload is unchanged.
+    and frontier plus a legend keyed to the layers' recorded epochs. The
+    uniform payload is unchanged.
     """
 
     if not isinstance(model, RoutingOverlayModel):
@@ -515,9 +475,8 @@ def routing_overlay_data(
         layer for layer in model.layers if model.contour_visible(layer.layer_id)
     ]
     layer_colours = {}
-    unavailable = ()
     if mode == "time":
-        layer_colours, unavailable = isochrone_time_colours(visible_layers)
+        layer_colours = isochrone_time_colours(visible_layers)
     layers = []
     frontiers = []
     for layer in visible_layers:
@@ -586,17 +545,8 @@ def routing_overlay_data(
         "exclusions": [],
     }
     if mode == "time":
-        # Time stays selected even when a layer has no usable epoch: that layer
-        # draws uniformly and the fallback is surfaced, never silently applied
-        # to the whole result.
+        # Every schema-v1 layer carries a recorded epoch, so time is always
+        # representable and is never downgraded to a uniform colour.
         payload["isochrone_colour_by"] = "time"
-        payload["legend"] = isochrone_time_legend(
-            visible_layers, layer_colours, unavailable
-        )
-        if unavailable:
-            payload["isochrone_fallback"] = (
-                "no recorded layer times"
-                if len(unavailable) == len(visible_layers)
-                else f"{len(unavailable)} layer(s) without recorded time"
-            )
+        payload["legend"] = isochrone_time_legend(visible_layers, layer_colours)
     return payload

@@ -1595,12 +1595,17 @@ class PreviewWindow(QMainWindow):
                 # as an independent result file and this route's toggle does not
                 # govern it.
             self.map.set_isochrones(route.isochrones if show else ())
+            # The route records why its artifact could not be read; surface it
+            # through the map caption instead of leaving an empty caption that
+            # looks like a healthy result with no contours.
+            self.map.isochrone_error = getattr(route, "contour_error", None)
             mode = _routing_isochrone_mode(
                 route, native, getattr(self, "_routing_active_route", None)
             )
             if mode is not None:
-                # Both canvases read the same attribute, so a scene-panel
-                # change repaints either view immediately.
+                # Both canvases share the mode attribute so switching between
+                # the map and log views never shows a stale colour mode. Only
+                # the primary map presents the routing isochrones.
                 for canvas in (
                     getattr(self, "map", None),
                     getattr(self, "log_map", None),
@@ -1609,19 +1614,15 @@ class PreviewWindow(QMainWindow):
                         canvas.isochrone_colour_by = mode
             self.map.native_routing = native
             # Traces use their own flag, independent of the contour gate: a
-            # hidden isochrone layer must not hide the trace web. Apply it to
-            # every canvas that currently presents this route's overlay, the
-            # same way the isochrone colour mode is synced on both. Legacy
-            # routes have no trace geometry, so only the saved flag changes.
+            # hidden isochrone layer must not hide the trace web. Only the
+            # primary map hosts the native routing overlay (the log map is a
+            # separate log view and never receives ``native_routing``), so the
+            # flag is applied there and nowhere else.
             traces_visible = bool(getattr(route, "traces_visible", False))
-            for canvas in (getattr(self, "map", None), getattr(self, "log_map", None)):
-                if canvas is None:
-                    continue
-                canvas_native = getattr(canvas, "native_routing", None)
-                if canvas_native is None:
-                    continue
-                if not self._native_owns_route(route, canvas_native):
-                    continue
+            canvas_native = getattr(self.map, "native_routing", None)
+            if canvas_native is not None and self._native_owns_route(
+                route, canvas_native
+            ):
                 setter = getattr(canvas_native, "set_traces_visible", None)
                 if callable(setter):
                     setter(traces_visible)

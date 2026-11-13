@@ -876,6 +876,7 @@ def _viewport_overlay_key(host):
         _overlay_ais(host),
         id(frame),
         id(getattr(host, "native_routing", None)),
+        getattr(host, "isochrone_error", None),
         getattr(getattr(host, "native_routing", None), "geometry_revision", -1),
         getattr(host, "isochrone_colour_by", DEFAULT_ISOCHRONE_COLOUR_MODE),
         bool(getattr(host, "_retained_active", False)),
@@ -1064,7 +1065,10 @@ def _build_viewport_route_overlay(host):
         "caption": _viewport_caption(
             host.move_callback,
             host.controller.chart_errors,
-            _routing_absence_caption(getattr(host, "native_routing", None)),
+            _routing_absence_caption(
+                getattr(host, "native_routing", None),
+                getattr(host, "isochrone_error", None),
+            ),
         ),
         "dashboard_visible": host.dashboard_visible,
     }
@@ -1237,11 +1241,13 @@ def _routing_overlay(host):
     return isochrone_overlay_data(host.isochrone_frame)
 
 
-def _routing_absence_caption(model):
+def _routing_absence_caption(model, isochrone_error=None):
     """Disclosure for missing routing geometry or trace times."""
-    if model is None:
-        return ""
     parts = []
+    if isochrone_error:
+        parts.append(f"Isochrones unavailable: {isochrone_error}")
+    if model is None:
+        return " · ".join(parts)
     state = model.geometry_state
     if state == "absent":
         parts.append("No routing layers in this result")

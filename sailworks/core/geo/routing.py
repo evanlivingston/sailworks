@@ -200,6 +200,11 @@ class Routing(Track):
         # A failed read is remembered so frames never retry artifact I/O; an
         # explicit mode change calls refresh_leg_tacks() to try again.
         self._leg_readouts_failed = False
+        # Contour hydration gets the same treatment: a missing or corrupt
+        # artifact is read once, then remembered until an explicit refresh or a
+        # mode change asks for it again.
+        self._contour_read_failed = False
+        self._contour_read_ref = None
 
     @property
     def colour_by(self):
@@ -225,6 +230,10 @@ class Routing(Track):
         if mode == self._isochrone_colour_by:
             return
         self._isochrone_colour_by = mode
+        if self._contour_read_failed:
+            # An explicit mode change is the retry point for contour colours,
+            # the same way a route colour change retries the leg readouts.
+            self.refresh_isochrones()
         self.touch()
 
     @property
@@ -300,16 +309,32 @@ class Routing(Track):
     def leg_profile_identities(self):
         """Recorded per-leg sail-plan identities, in leg order.
 
-        The identity is the engine's ``profile_identity`` readout. A missing,
-        blank or non-text value stays ``None`` so callers cannot mistake an
-        unknown plan for a recorded one, and therefore never invent a sail
-        change at an unknown boundary.
+        The identity is the engine's ``profile_identity`` readout. When that
+        text is absent the recorded ``sail_plan`` selector is used instead, so
+        a plan change still marks at a plan boundary. A leg with neither value
+        stays ``None`` so callers cannot mistake an unknown plan for a recorded
+        one, and therefore never invent a sail change at an unknown boundary.
         """
         identities = []
         for readout in self._leg_readout_values():
             value = readout.get("profile_identity")
-            identities.append(value if isinstance(value, str) and value else None)
+            identity = value if isinstance(value, str) and value else None
+            if identity is None:
+                plan = readout.get("sail_plan")
+                if type(plan) in (int, float):
+                    identity = str(int(plan)) if float(plan).is_integer() else str(plan)
+            identities.append(identity)
         return tuple(identities)
+
+    def refresh_isochrones(self):
+        """Drop a recorded contour-read failure so the next access retries once.
+
+        Explicit user actions (a colour-mode change or a caller-provided
+        refresh) use this; repeated display frames must not.
+        """
+        self._contour_read_failed = False
+        self._contour_read_ref = None
+        self.contour_error = None
 
     @property
     def isochrones(self):
@@ -318,12 +343,19 @@ class Routing(Track):
         Legacy routes and freshly calculated schema routes already carry their
         frontiers. A route reloaded from the collection starts with ``None`` so
         opening the collection never reads the artifact store or its traces.
+        A failed read stays failed until an explicit refresh clears it, so
+        repeated frames do not re-read the same missing artifact.
         """
         if self._isochrones is not None:
             return self._isochrones
         if self.result_ref is None:
             self._isochrones = []
             return self._isochrones
+        if self._contour_read_failed and self._contour_read_ref != self.result_ref:
+            # A replaced reference is a new artifact worth one attempt.
+            self.refresh_isochrones()
+        if self._contour_read_failed:
+            return ()
         store = self._attached_store()
         if store is None:
             # No collection yet: leave the cache unset so a later attach still
@@ -333,8 +365,11 @@ class Routing(Track):
             result = self.load_result(store)
         except (OSError, KeyError, ValueError) as exc:
             # Missing, pruned or corrupt artifact: show no contours rather than
-            # raising from a display slot, and keep the route unverified.
+            # raising from a display slot, and keep the route unverified. The
+            # failure is remembered so every later frame does not retry it.
             self.contour_error = f"{type(exc).__name__}: {exc}"
+            self._contour_read_failed = True
+            self._contour_read_ref = self.result_ref
             return ()
         self.contour_error = None
         self._isochrones = contour_frontiers(result)
@@ -455,6 +490,11 @@ class Routing(Track):
             from sailworks.core.marine.routingrecord import SchemaError
 
             raise SchemaError("traces_visible must be a boolean")
+        isochrones_visible = j.get("isochrones_visible", True)
+        if type(isochrones_visible) is not bool:
+            from sailworks.core.marine.routingrecord import SchemaError
+
+            raise SchemaError("isochrones_visible must be a boolean")
         result_ref = j.get("result_ref")
         result_schema = j.get("result_schema")
         if result_ref is not None or result_schema is not None:
@@ -473,7 +513,7 @@ class Routing(Track):
                 result_ref=_artifact_ref_from_json(result_ref),
                 result_summary=_summary_from_json(j.get("result_summary")),
                 inspection_context=j.get("inspection_context"),
-                isochrones_visible=bool(j.get("isochrones_visible", True)),
+                isochrones_visible=isochrones_visible,
                 colour_by=normalize_route_colour_mode(j.get("colour_by")),
                 isochrone_colour_by=normalize_isochrone_colour_by(
                     j.get("isochrone_colour_by")
@@ -487,7 +527,7 @@ class Routing(Track):
             ic,
             d.visible,
             provenance=j.get("provenance"),
-            isochrones_visible=bool(j.get("isochrones_visible", True)),
+            isochrones_visible=isochrones_visible,
             colour_by=normalize_route_colour_mode(j.get("colour_by")),
             isochrone_colour_by=normalize_isochrone_colour_by(
                 j.get("isochrone_colour_by")

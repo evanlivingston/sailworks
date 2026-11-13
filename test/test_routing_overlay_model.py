@@ -361,85 +361,62 @@ def test_hidden_isochrones_produce_no_time_legend():
     assert payload["legend"]["entries"] == []
 
 
-def test_missing_layer_times_mark_only_that_layer_and_disclose_it(monkeypatch):
-    from types import SimpleNamespace
-
-    from sailworks.rendering import routingoverlay
-
-    contour = Contour("c-0", True, (Point(48.0, -124.0), Point(48.1, -123.9)))
-    model = RoutingOverlayModel(_result(layers=(_layer(contours=(contour,)),)))
-    monkeypatch.setattr(
-        routingoverlay,
-        "isochrone_time_colours",
-        lambda _layers: ({}, ("layer-0",)),
-    )
-
-    payload = routingoverlay.routing_overlay_data(model, "time")
-
-    # Time is never silently downgraded for the whole result.
-    assert payload["isochrone_colour_by"] == "time"
-    assert payload["isochrone_fallback"] == "no recorded layer times"
-    assert "colour" not in payload["layers"][0]
-    assert payload["legend"]["entries"] == []
-    assert "without recorded time" in payload["legend"]["note"]
-
-
-def test_numeric_epochs_are_accepted_and_only_bad_layers_are_uniform():
-    from types import SimpleNamespace
-
-    from sailworks.rendering.routingoverlay import isochrone_time_colours
-
-    layers = (
-        SimpleNamespace(layer_id="whole-float", epoch_s=1767226500.0),
-        SimpleNamespace(layer_id="int", epoch_s=1767228300),
-        SimpleNamespace(layer_id="fraction", epoch_s=1767226500.5),
-        SimpleNamespace(layer_id="boolean", epoch_s=True),
-        SimpleNamespace(layer_id="missing", epoch_s=None),
-    )
-    colours, unavailable = isochrone_time_colours(layers)
-
-    assert set(colours) == {"whole-float", "int"}
-    assert unavailable == ("fraction", "boolean", "missing")
-
-
-def test_degenerate_gradient_spreads_equal_epochs_and_singles():
-    from types import SimpleNamespace
-
+def test_gradient_spreads_equal_epochs_and_singles():
     from sailworks.rendering.routingoverlay import (
         ISOCHRONE_TIME_GRADIENT,
         _gradient_colour,
         isochrone_time_colours,
     )
 
-    single, _unavailable = isochrone_time_colours(
-        (SimpleNamespace(layer_id="only", epoch_s=1767226500),)
+    contour = Contour("c-0", True, (Point(48.0, -124.0), Point(48.1, -123.9)))
+    model = RoutingOverlayModel(
+        _result(layers=(_layer("only", 1767226500, (contour,)),))
     )
+    single = isochrone_time_colours(model.layers)
     # A lone layer is mid-gradient, never the oldest deep blue.
     assert single["only"] == _gradient_colour(0.5)
     assert single["only"] != list(ISOCHRONE_TIME_GRADIENT[0])
 
-    equal, _unavailable = isochrone_time_colours(
-        (
-            SimpleNamespace(layer_id="b", epoch_s=1767226500),
-            SimpleNamespace(layer_id="a", epoch_s=1767226500),
+    model = RoutingOverlayModel(
+        _result(
+            layers=(
+                _layer(
+                    "b",
+                    1767226500,
+                    (Contour("c-b", True, (Point(48.2, -123.7), Point(48.3, -123.6))),),
+                ),
+                _layer(
+                    "a",
+                    1767226500,
+                    (Contour("c-a", True, (Point(48.4, -123.4), Point(48.5, -123.3))),),
+                ),
+            )
         )
     )
+    equal = isochrone_time_colours(model.layers)
     assert equal["a"] == list(ISOCHRONE_TIME_GRADIENT[0])
     assert equal["b"] == list(ISOCHRONE_TIME_GRADIENT[-1])
     assert equal["a"] != equal["b"]
 
 
-def test_same_minute_legend_labels_are_distinguishable(monkeypatch):
-    from types import SimpleNamespace
-
+def test_same_minute_legend_labels_are_distinguishable():
     from sailworks.rendering.routingoverlay import isochrone_time_legend
 
-    layers = (
-        SimpleNamespace(layer_id="a", epoch_s=1767226500),
-        SimpleNamespace(layer_id="b", epoch_s=1767226510),
+    contour = Contour("c-0", True, (Point(48.0, -124.0), Point(48.1, -123.9)))
+    model = RoutingOverlayModel(
+        _result(
+            layers=(
+                _layer("a", 1767226500, (contour,)),
+                _layer(
+                    "b",
+                    1767226510,
+                    (Contour("c-b", True, (Point(48.2, -123.7), Point(48.3, -123.6))),),
+                ),
+            )
+        )
     )
     legend = isochrone_time_legend(
-        layers, {"a": [0.0, 0.3, 0.85], "b": [0.65, 0.05, 0.05]}
+        model.layers, {"a": [0.0, 0.3, 0.85], "b": [0.65, 0.05, 0.05]}
     )
 
     labels = [entry[0] for entry in legend["entries"]]

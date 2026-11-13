@@ -573,25 +573,42 @@ class ScenePanel(QWidget):
         """
         identity = (entry.kind, entry.key)
         visible = bool(getattr(element, "isochrones_visible", True))
-        isochrones = QTreeWidgetItem(["Isochrones", ""])
+        # A recorded contour-read failure means the artifact is missing or
+        # corrupt. Show that instead of a checked box that would claim contours
+        # are present; the persisted visibility flag is left untouched so a
+        # later successful read restores the user's choice.
+        contour_error = getattr(element, "contour_error", None)
+        isochrones = QTreeWidgetItem(
+            ["Isochrones (unavailable)" if contour_error else "Isochrones", ""]
+        )
         isochrones.setData(
             NAME_COLUMN, NODE_ROLE, ("routing-isochrones", entry.kind, entry.key)
         )
-        isochrones.setFlags(
-            Qt.ItemFlag.ItemIsEnabled
-            | Qt.ItemFlag.ItemIsSelectable
-            | Qt.ItemFlag.ItemIsUserCheckable
-        )
+        flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
+        if not contour_error:
+            flags |= Qt.ItemFlag.ItemIsUserCheckable
+        isochrones.setFlags(flags)
         isochrones.setCheckState(
             VISIBLE_COLUMN,
-            Qt.CheckState.Checked if visible else Qt.CheckState.Unchecked,
+            (
+                Qt.CheckState.Unchecked
+                if contour_error or not visible
+                else Qt.CheckState.Checked
+            ),
         )
         isochrones.setIcon(NAME_COLUMN, symbol_icon("isochrone-symbolic"))
-        isochrones.setToolTip(
-            NAME_COLUMN,
-            "Calculated isochrones. Their visibility is independent of the "
-            "route line.",
-        )
+        if contour_error:
+            isochrones.setForeground(NAME_COLUMN, QBrush(MUTED))
+            isochrones.setToolTip(
+                NAME_COLUMN,
+                f"Isochrones unavailable: {contour_error}",
+            )
+        else:
+            isochrones.setToolTip(
+                NAME_COLUMN,
+                "Calculated isochrones. Their visibility is independent of the "
+                "route line.",
+            )
         row.addChild(isochrones)
         self._rows[("routing-isochrones", entry.kind, entry.key)] = isochrones
 
@@ -817,6 +834,11 @@ class ScenePanel(QWidget):
             entry = self.scene.live_entry(node[1], node[2])
             element = entry.element if entry is not None else None
             if element is None:
+                return
+            if getattr(element, "contour_error", None):
+                # The row reports an unreadable artifact and is not checkable;
+                # never let a displayed unchecked state overwrite the persisted
+                # visibility flag.
                 return
             visible = row.checkState(VISIBLE_COLUMN) == Qt.CheckState.Checked
             if bool(getattr(element, "isochrones_visible", True)) != visible:
