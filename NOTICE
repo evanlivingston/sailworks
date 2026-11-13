@@ -11,8 +11,10 @@ version. See LICENSE for the full text.
 
 Sailworks is a fork of GWeatherRouting
 (https://github.com/dakk/gweatherrouting), originally written by Davide Gessa
-and contributors. The fork point is commit a750e4d on the `dev` branch. The
-complete record of changes since that commit is the project's git history.
+and contributors. The fork point is upstream commit `db7c0dce` on the `dev`
+branch (2026-09-02), the last commit authored upstream before Sailworks
+development began. The complete record of changes since that commit is the
+project's git history.
 
 Since the fork point this project has been renamed from GWeatherRouting to
 Sailworks (Python package, distribution name, command line entry points and
