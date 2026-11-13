@@ -32,19 +32,13 @@ h3:not(#hero h3) {
   <div id="hero-left">  <!-- Start Hero Left -->
     <h2 style="font-size: 60px; font-weight: bold; margin: 2rem auto 0;">Sailworks</h2>
     <h3 style="font-weight: bold; margin-top: 0;">Open-source sailing routing and navigation</h3>
-    <p>Sailworks is an open-source sailing routing and navigation software written using Python and Gtk4.</p>
+    <p>Sailworks is an open-source sailing routing and navigation application written in Python with a Qt 6 interface.</p>
     <div class="homepage-button-container">
       <div class="homepage-button-container-row">
-          <a href="https://flathub.org/apps/org.sailworks.sailworks" class="homepage-button primary-button"><i class="fa fa-download"></i> Install from Flathub</a>
+          <a href="./docs/quickstart.html" class="homepage-button primary-button"><i class="fa fa-rocket"></i> Quickstart</a>
       </div>
       <div class="homepage-button-container-row">
-          <a href="https://github.com/evanlivingston/sailworks/releases/latest" class="homepage-button-link"><i class="fa fa-linux"></i> Download AppImage →</a>
-      </div>
-      <div class="homepage-button-container-row">
-          <a href="https://github.com/evanlivingston/sailworks/releases/latest" class="homepage-button-link"><i class="fa fa-windows"></i> Download for Windows →</a>
-      </div>
-      <div class="homepage-button-container-row">
-          <a href="./docs/quickstart.html" class="homepage-button-link">Quickstart →</a>
+          <a href="https://github.com/evanlivingston/sailworks#installation" class="homepage-button-link">Install from source →</a>
       </div>
     </div>
   </div>

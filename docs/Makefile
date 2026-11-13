@@ -4,7 +4,9 @@
 # You can set these variables from the command line, and also
 # from the environment for the first two.
 SPHINXOPTS    ?=
-SPHINXBUILD   ?= sphinx-build
+# Prefer the project virtual environment so `make docs` works without
+# activating it; fall back to a system sphinx-build when there is no venv.
+SPHINXBUILD   ?= $(if $(wildcard ../.venv/bin/sphinx-build),../.venv/bin/sphinx-build,sphinx-build)
 SOURCEDIR     = source
 BUILDDIR      = build
 

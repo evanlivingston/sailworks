@@ -1,4 +1,6 @@
-.PHONY: docs
+.PHONY: docs manual manual-check
+
+PYTHON ?= .venv/bin/python
 
 install:
 	pip install .
@@ -14,3 +16,11 @@ setup-macos:
 
 docs:
 	make -C docs html
+
+# Regenerate the manual screenshots from the running application, then check
+# that the committed images still match their manifest.
+manual:
+	$(PYTHON) tools/capture_manual.py --all
+
+manual-check:
+	$(PYTHON) tools/capture_manual.py --check

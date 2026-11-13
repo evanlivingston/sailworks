@@ -208,8 +208,8 @@ receive-only. An N2K ASCII gateway must reassemble fast-packet and ISO transport
 before forwarding them. Saving an NMEA log while NMEA 2000 data is present also writes a
 `.n2k.log` companion with the original PGN payloads. W2K-1 EBL logs can be copied into the
 library with **Logs → Log library → Sync W2K-1**. See the
-[quickstart](docs/source/docs/quickstart.md#recording-nmea-2000-instruments) for gateway setup
-and the Actisense simulator.
+[instruments and logs](docs/source/docs/instruments-logs.md#recording-nmea-2000-instruments)
+page for gateway setup and the Actisense simulator.
 
 ## Development
 

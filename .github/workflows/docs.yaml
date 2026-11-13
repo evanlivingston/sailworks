@@ -3,7 +3,7 @@ name: docs
 on:
   push:
     branches:
-      - master
+      - dev
   pull_request:
     types: [opened, synchronize, reopened]
 
@@ -14,8 +14,8 @@ jobs:
   docs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Install dependencies
@@ -27,12 +27,15 @@ jobs:
           python tools/check_doc_anchors.py
       - name: Sphinx build
         run: |
-          sphinx-build docs/source _build
+          sphinx-build -W docs/source docs/build/html
+      - name: Check manual screenshots match manifest
+        run: |
+          python tools/capture_manual.py --check
       - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v3
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+        uses: peaceiris/actions-gh-pages@v4
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
         with:
           publish_branch: gh-pages
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: _build/
+          publish_dir: docs/build/html
           force_orphan: true
