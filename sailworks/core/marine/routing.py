@@ -11,7 +11,7 @@ from time import monotonic
 from collections import OrderedDict
 from copy import copy
 from dataclasses import dataclass
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 from pyproj import Geod
@@ -256,6 +256,14 @@ class FractionalRoutingGrib(Grib):
     """Compatibility wrapper using the shared space/time sampler."""
 
     def __init__(self, grib):
+        super().__init__(
+            path="",
+            name="fractional",
+            centre="",
+            bounds=((0, 0), (0, 0)),
+            start_time=datetime.now(),
+            last_forecast=0,
+        )
         self.grib = grib
 
     def __getattr__(self, name):

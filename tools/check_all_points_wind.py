@@ -84,7 +84,7 @@ def application(report, data, output, deadline):  # noqa: C901
     controller.settings["gribArrowOnGround"] = True
     canvas = ViewportMap(controller)
     canvas.resize(710, 743)
-    panel = WeatherPanel(controller, lambda: canvas, lambda: None, lambda: None)
+    panel = WeatherPanel(controller, lambda: canvas, lambda: None)
     report["observations"] = {}
     choice = None
 

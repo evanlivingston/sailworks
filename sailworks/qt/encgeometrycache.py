@@ -195,6 +195,8 @@ class ViewportS57ChartDrawer(S57ChartDrawer):
     """
 
     def __init__(self, cell_path="", cache=None, palette=""):
+        # This drawer is a wrapper that uses bind() for setup, not __init__
+        # It intentionally doesn't call VectorChartDrawer.__init__
         self._cell_path = cell_path
         self._shared_cache = cache if cache is not None else PreparedFeatureCache()
         self.palette = palette

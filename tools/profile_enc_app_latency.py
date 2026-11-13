@@ -30,7 +30,7 @@ def application(report, data, output, deadline):  # noqa: C901 - one bounded ses
     controller.settings["gribWindStyle"] = "barbs"
     canvas = ViewportMap(controller)
     canvas.resize(710, 743)
-    panel = WeatherPanel(controller, lambda: canvas, lambda: None, lambda: None)
+    panel = WeatherPanel(controller, lambda: canvas, lambda: None)
     report["stages"] = {}
 
     def wait(predicate, seconds=20):

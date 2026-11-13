@@ -1156,6 +1156,7 @@ class PreviewWindow(QMainWindow):
                     canvas.offsets = ()
                     canvas.position = None
                 except Exception:
+                    # Canvas may not have these attributes in all configurations
                     pass
         else:
             try:
@@ -1205,10 +1206,12 @@ class PreviewWindow(QMainWindow):
                 canvas.race_positions = positions
                 canvas.race_boat_markers = markers
             except Exception:
+                # Not all canvases support race boat positions
                 pass
             try:
                 canvas.refresh_route_overlay()
             except Exception:
+                # Canvas may not have route overlay
                 pass
             canvas.invalidate_navigation()
             canvas.update()

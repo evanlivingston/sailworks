@@ -59,6 +59,7 @@ class WorkspaceStateStore:
             if isinstance(saved, dict) and saved.get("version") == self.VERSION:
                 return mapping(saved.get("state"))
         except (OSError, ValueError):
+            # File missing, corrupt, or wrong version - start fresh
             pass
         return {}
 
