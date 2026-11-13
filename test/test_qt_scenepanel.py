@@ -31,6 +31,9 @@ from sailworks.qt.scenepanel import (
     DETAIL_MIN_LABEL,
     DETAIL_ROLE,
     MUTED,
+    MARK_COLUMN_HEADERS,
+    MARK_HEADERS_ROLE,
+    MARK_ROUNDING_HEADER,
     NAME_COLUMN,
     NODE_ROLE,
     POINT_MIN_LABEL,
@@ -43,7 +46,9 @@ from sailworks.qt.scenepanel import (
     TOOLTIP_OFFSET_X,
     TOOLTIP_OFFSET_Y,
     detail_columns,
-    point_detail_columns,
+    mark_column_widths,
+    mark_columns,
+    mark_header_columns,
     point_label_width,
     row_geometry,
     rounding_color,
@@ -653,7 +658,7 @@ def test_point_row_rects_never_overlap_icon_or_each_other(tmp_path):
     for width in (200, 600):
         rect = QRect(0, 0, width - 8, 20)
         icon, label, rounding = row_geometry(rect, metrics, 20)
-        segments = point_detail_columns(rect, metrics, values, label.left(), rounding)
+        segments = mark_columns(rect, metrics, values, label.left(), rounding)
 
         assert icon.right() <= label.left()
         assert rounding.left() >= label.left()
@@ -675,13 +680,11 @@ def test_narrow_point_row_drops_details_instead_of_overlapping(tmp_path):
 
     narrow = QRect(0, 0, 96, 20)
     _, label, rounding = row_geometry(narrow, metrics, 20)
-    assert point_detail_columns(narrow, metrics, values, label.left(), rounding) == []
+    assert mark_columns(narrow, metrics, values, label.left(), rounding) == []
 
     wide = QRect(0, 0, 760, 20)
     _, wide_label, wide_rounding = row_geometry(wide, metrics, 20)
-    segments = point_detail_columns(
-        wide, metrics, values, wide_label.left(), wide_rounding
-    )
+    segments = mark_columns(wide, metrics, values, wide_label.left(), wide_rounding)
     assert [text for text, _ in segments] == values
 
 
@@ -729,7 +732,7 @@ def test_rounding_slot_position_ignores_detail_fields(tmp_path):
     rect = QRect(0, 0, 400, 20)
 
     _, label, rounding = row_geometry(rect, metrics, 20)
-    segments = point_detail_columns(
+    segments = mark_columns(
         rect, metrics, ["01/01 00:00", "45°"], label.left(), rounding
     )
 
@@ -1344,7 +1347,7 @@ ROUTING_MARK_ICON_WIDTH = 20
 def routing_mark_segments(panel, route, width, index=0):
     """Detail segments the delegate draws on a rendered routing mark row.
 
-    ``row_geometry`` and ``point_detail_columns`` are the delegate's own
+    ``row_geometry`` and ``mark_columns`` are the delegate's own
     layout, fed the rect the tree really renders.
     """
     metrics = QFontMetrics(panel.tree.font())
@@ -1356,7 +1359,7 @@ def routing_mark_segments(panel, route, width, index=0):
         paint_rect, metrics, ROUTING_MARK_ICON_WIDTH
     )
     values = [value for _, value in routing_point_detail_fields(point)]
-    segments = point_detail_columns(
+    segments = mark_columns(
         paint_rect, metrics, values, label_rect.left(), rounding_rect
     )
     return paint_rect, metrics, label_rect, rounding_rect, segments, values
@@ -1391,10 +1394,12 @@ def test_routing_mark_details_adapt_to_the_panel_width(tmp_path):
             assert rounding_rect.width() > 0
             assert segments[-1][1].right() < rounding_rect.left()
             assert segments[0][1].left() - label_rect.left() >= POINT_MIN_LABEL
-            for text, segment in segments:
-                # Each segment is exactly as wide as its glyphs, so disjoint
-                # rects cannot overlap the glyphs of a neighbour.
-                assert segment.width() == metrics.horizontalAdvance(text)
+            widths = mark_column_widths(metrics)
+            for index, (text, segment) in enumerate(segments):
+                # Each segment is a fixed column sized for its widest expected
+                # value, so its right edge is shared by every row.
+                assert segment.width() == widths[index]
+                assert segment.width() >= metrics.horizontalAdvance(text)
             for earlier, later in zip(segments, segments[1:]):
                 assert later[1].left() - earlier[1].right() - 1 == DETAIL_GAP
 
@@ -1681,3 +1686,173 @@ def test_scene_tooltip_is_clamped_near_an_edge():
         assert screen.contains(QRect(tooltip.pos(), tooltip.size()))
     finally:
         tooltip.hide()
+
+
+class MarkHeaderRecorder(SceneItemDelegate):
+    """Records each row's real rect and the headers the delegate paints."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.rects = {}
+        self.headers = {}
+
+    def paint(self, painter, option, index):
+        node = index.data(NODE_ROLE)
+        if isinstance(node, tuple):
+            self.rects[node] = QRect(option.rect)
+        super().paint(painter, option, index)
+
+    def _paint_mark_headers(self, painter, option, index):
+        self.headers[index.data(NODE_ROLE)] = [
+            (text, QRect(segment))
+            for text, segment in self._header_segments(option, index)
+        ]
+        super()._paint_mark_headers(painter, option, index)
+
+
+def rendered_mark_headers(panel, route, width, expanded=True):
+    """Render the panel at ``width`` and record rows plus painted headers."""
+    tree = panel.tree
+    recorder = MarkHeaderRecorder(tree)
+    tree.setItemDelegateForColumn(NAME_COLUMN, recorder)
+    panel.resize(width, 320)
+    panel.show()
+    QApplication.processEvents()
+    panel.item_row(KIND_ROUTING, route.uid).setExpanded(True)
+    panel.tree_item(("routing-legs", KIND_ROUTING, route.uid)).setExpanded(expanded)
+    QApplication.processEvents()
+    tree.grab()
+    return recorder
+
+
+def mark_value_columns(recorder, route, index, metrics):
+    """The fixed columns and rounding slot for one rendered mark row."""
+    rect = recorder.rects[("point", KIND_ROUTING, route.uid, index)]
+    paint_rect = rect.adjusted(4, 0, -4, 0)
+    _, label_rect, rounding_rect = row_geometry(
+        paint_rect, metrics, ROUTING_MARK_ICON_WIDTH
+    )
+    values = [value for _, value in routing_point_detail_fields(route.points[index])]
+    columns = mark_columns(
+        paint_rect, metrics, values, label_rect.left(), rounding_rect
+    )
+    return columns, rounding_rect
+
+
+def test_expanded_marks_row_paints_headers_aligned_with_values(tmp_path):
+    application()
+    route = route_with_detail_points()
+    panel = panel_for(tmp_path, routes=[route])
+    metrics = QFontMetrics(panel.tree.font())
+    node = ("routing-legs", KIND_ROUTING, route.uid)
+
+    recorder = rendered_mark_headers(panel, route, 700)
+    headers = recorder.headers[node]
+    assert [text for text, _ in headers] == list(MARK_COLUMN_HEADERS) + [
+        MARK_ROUNDING_HEADER
+    ]
+
+    columns, rounding_rect = mark_value_columns(recorder, route, 0, metrics)
+    assert len(headers) == len(columns) + 1
+    for (_, header_rect), (_, column) in zip(headers, columns):
+        assert header_rect.right() == column.right()
+    assert headers[-1][1].right() == rounding_rect.right()
+
+
+def test_collapsed_marks_row_paints_no_headers(tmp_path):
+    application()
+    route = route_with_detail_points()
+    panel = panel_for(tmp_path, routes=[route])
+    node = ("routing-legs", KIND_ROUTING, route.uid)
+
+    recorder = rendered_mark_headers(panel, route, 700, expanded=False)
+    assert node in recorder.rects
+    assert node not in recorder.headers
+    assert not panel.tree_item(node).data(NAME_COLUMN, MARK_HEADERS_ROLE)
+
+    expanded = rendered_mark_headers(panel, route, 700)
+    assert expanded.headers[node]
+    panel.tree_item(node).setExpanded(False)
+    QApplication.processEvents()
+    assert not panel.tree_item(node).data(NAME_COLUMN, MARK_HEADERS_ROLE)
+
+
+def test_mark_columns_share_one_right_edge_across_rows(tmp_path):
+    application()
+    route = FakeRoute("r1", "Mixed")
+    route.points = [
+        (48.0, -123.0, "2026-01-01T00:00:00", 91.0, 12.5, 6.4, 91.0),
+        (48.5, -123.5, "2026-01-01T01:00:00", 157.0, 14.0, 7.1, 157.0),
+    ]
+    panel = panel_for(tmp_path, routes=[route])
+    metrics = QFontMetrics(panel.tree.font())
+
+    recorder = rendered_mark_headers(panel, route, 700)
+    first, _ = mark_value_columns(recorder, route, 0, metrics)
+    second, _ = mark_value_columns(recorder, route, 1, metrics)
+
+    assert first[1][0] == "91°"
+    assert second[1][0] == "157°"
+    assert metrics.horizontalAdvance(first[1][0]) != metrics.horizontalAdvance(
+        second[1][0]
+    )
+    # Same column, same slot: the right edge comes from the grid, not the text.
+    assert [rect.right() for _, rect in first] == [rect.right() for _, rect in second]
+    assert [rect.width() for _, rect in first] == [rect.width() for _, rect in second]
+
+
+def test_narrow_marks_row_drops_a_column_and_its_header(tmp_path):
+    application()
+    route = route_with_detail_points()
+    panel = panel_for(tmp_path, routes=[route])
+    metrics = QFontMetrics(panel.tree.font())
+    node = ("routing-legs", KIND_ROUTING, route.uid)
+
+    shown_counts = []
+    for width in (700, 480, 360):
+        recorder = rendered_mark_headers(panel, route, width)
+        columns, rounding = mark_value_columns(recorder, route, 0, metrics)
+        expected = [
+            (MARK_COLUMN_HEADERS[index], column_rect)
+            for index, (_, column_rect) in enumerate(columns)
+        ]
+        expected.append((MARK_ROUNDING_HEADER, rounding))
+        shown = recorder.headers[node]
+        # Every header sits on a shown column, at exactly that column's right
+        # edge, and a dropped column has no header left behind.
+        assert [text for text, _ in shown] == [text for text, _ in expected]
+        for (_, header_rect), (_, column_rect) in zip(shown, expected):
+            assert header_rect.right() == column_rect.right()
+        shown_counts.append(len(columns))
+
+    # Narrowing drops columns from the right, each with its header.
+    assert shown_counts[0] == len(MARK_COLUMN_HEADERS)
+    assert shown_counts == sorted(shown_counts, reverse=True)
+    assert shown_counts[-1] < shown_counts[0]
+
+
+def test_mark_headers_never_overlap_at_any_width(tmp_path):
+    application()
+    route = route_with_detail_points()
+    panel = panel_for(tmp_path, routes=[route])
+    metrics = QFontMetrics(panel.tree.font())
+    node = ("routing-legs", KIND_ROUTING, route.uid)
+
+    measured = {}
+    for width in (200, 304, 480, 700, 960):
+        recorder = rendered_mark_headers(panel, route, width)
+        headers = recorder.headers.get(node, [])
+        columns, _ = mark_value_columns(recorder, route, 0, metrics)
+        measured[width] = [text for text, _ in headers]
+        # A header exists only for a column whose values are shown; the
+        # rounding header stands alone when no numeric column fits.
+        assert len(headers) in (len(columns), len(columns) + 1)
+        for text, rect in headers:
+            assert metrics.horizontalAdvance(text) <= rect.width()
+        for earlier, later in zip(headers, headers[1:]):
+            assert later[1].left() > earlier[1].right()
+
+    # Columns drop from the right as the panel narrows.
+    assert measured[960] == list(MARK_COLUMN_HEADERS) + [MARK_ROUNDING_HEADER]
+    assert measured[200] == []
+    assert len(measured[200]) < len(measured[304]) < len(measured[960])

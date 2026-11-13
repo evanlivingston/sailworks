@@ -60,6 +60,9 @@ DETAIL_ROLE = Qt.ItemDataRole.UserRole + 3
 # Dev's routing-legs grouping caches its children, so it needs its own role now
 # that the point-detail fields claim +3.
 LEGS_LOADED_ROLE = Qt.ItemDataRole.UserRole + 4
+# Set on the Marks row while it is expanded, so the delegate knows to paint the
+# column headers there.
+MARK_HEADERS_ROLE = Qt.ItemDataRole.UserRole + 5
 MUTED = QColor("#b0b0ad")
 POINT_DETAIL = QColor("#8a8a87")
 ROUNDING_COLOR = MUTED
@@ -75,6 +78,17 @@ DETAIL_GAP = 12
 DETAIL_MIN_LABEL = 48
 # A point row gives up detail fields before it gives up the name.
 POINT_MIN_LABEL = 56
+# Routing mark rows share a fixed column grid so a column's right edge is the
+# same on every row. Each width is sized for the widest realistic value, never
+# for the row's own text, and the headers reuse those widths so a header drops
+# with its column. The placeholders use the widest digits of a proportional
+# font: a sample like "08/11 12:01" is narrower than a real "01/01 00:00"
+# because "1" advances less than "8".
+MARK_COLUMN_WIDEST = ("88/88 88:88", "888°", "888.8", "888.8", "888°")
+MARK_COLUMN_HEADERS = ("Time", "TWA", "TWS", "Speed", "Brg")
+# The rounding slot is only as wide as "Stbd", so the full "Rounding" header
+# would crowd its neighbour; the column gets the short form instead.
+MARK_ROUNDING_HEADER = "Rnd"
 NAME_COLUMN = 0
 VISIBLE_COLUMN = 1
 TYPE_ICONS = {
@@ -182,22 +196,70 @@ def detail_columns(rect, metrics, values, label_left, min_label=DETAIL_MIN_LABEL
     return columns
 
 
-def point_detail_columns(rect, metrics, values, label_left, rounding_rect):
-    """Rects for a point row's detail segments, highest priority first.
+def mark_column_widths(metrics):
+    """Fixed width per routing mark column, sized for its widest value or header."""
+    return tuple(
+        max(metrics.horizontalAdvance(widest), metrics.horizontalAdvance(header))
+        for widest, header in zip(MARK_COLUMN_WIDEST, MARK_COLUMN_HEADERS)
+    )
 
-    Point rows paint the name and the right-aligned rounding label. Details
-    fill the slack left of the rounding slot, which is the room the coordinate
-    slot used to hold, and stop while ``POINT_MIN_LABEL`` remains for the name.
-    A row too narrow for any detail is drawn exactly like a point row without
-    detail fields.
+
+def mark_columns(rect, metrics, values, label_left, rounding_rect):
+    """Rects for a routing mark row's fixed columns, highest priority first.
+
+    Every column keeps the same width on every row, so a value's right edge
+    does not depend on the text beside it. Columns are laid out right to left
+    from the rounding slot and drop whole from the right (bearing first, then
+    speed, TWS, TWA and time) while ``POINT_MIN_LABEL`` remains for the name.
+    A column with no value keeps its slot so the rows below stay aligned.
     """
+    widths = mark_column_widths(metrics)
     right = (
         rounding_rect.left() if rounding_rect.width() > 0 else rect.right() + 1
     ) - DETAIL_GAP
-    if right <= label_left:
-        return []
-    block = QRect(label_left, rect.top(), right - label_left, rect.height())
-    return detail_columns(block, metrics, values, label_left, min_label=POINT_MIN_LABEL)
+    limit = label_left + POINT_MIN_LABEL
+    kept = 0
+    used = 0
+    for width in widths:
+        added = width + (DETAIL_GAP if kept else 0)
+        if right - used - added + 1 < limit:
+            break
+        kept += 1
+        used += added
+    columns = []
+    edge = right
+    for index in range(kept - 1, -1, -1):
+        width = widths[index]
+        text = str(values[index] or "") if index < len(values) else ""
+        columns.append(
+            (text, QRect(edge - width + 1, rect.top(), width, rect.height()))
+        )
+        edge -= width + DETAIL_GAP
+    columns.reverse()
+    return columns
+
+
+def mark_header_columns(rect, metrics, icon_width, indent):
+    """Header text and rects for an expanded Marks row.
+
+    ``rect`` is the Marks row's own paint rect. Its mark rows sit one
+    indentation level below and share its right edge, so shifting by
+    ``indent`` reproduces their column geometry; the headers then end at
+    exactly the same right edges as the values beneath them and drop with a
+    column the row is too narrow to show.
+    """
+    child = rect.adjusted(indent, 0, 0, 0)
+    _, label, rounding = row_geometry(child, metrics, icon_width)
+    columns = mark_columns(child, metrics, (), label.left(), rounding)
+    pairs = [
+        (MARK_COLUMN_HEADERS[index], column)
+        for index, (_, column) in enumerate(columns)
+    ]
+    if rounding.width() > 0 and (
+        metrics.horizontalAdvance(MARK_ROUNDING_HEADER) <= rounding.width()
+    ):
+        pairs.append((MARK_ROUNDING_HEADER, rounding))
+    return pairs
 
 
 def _visibility_style():
@@ -378,6 +440,8 @@ class SceneItemDelegate(QStyledItemDelegate):
         details = index.data(DETAIL_ROLE) or ()
         if coordinates is None and not details:
             super().paint(painter, option, index)
+            if index.data(MARK_HEADERS_ROLE):
+                self._paint_mark_headers(painter, option, index)
             return
 
         adjusted = QStyleOptionViewItem(option)
@@ -429,9 +493,7 @@ class SceneItemDelegate(QStyledItemDelegate):
         rounding_text = str(index.data(ROUNDING_ROLE) or "")
         _, label_rect, rounding_rect = row_geometry(rect, metrics, icon_width)
         segments = (
-            point_detail_columns(
-                rect, metrics, details, label_rect.left(), rounding_rect
-            )
+            mark_columns(rect, metrics, details, label_rect.left(), rounding_rect)
             if details
             else []
         )
@@ -463,11 +525,53 @@ class SceneItemDelegate(QStyledItemDelegate):
         if segments:
             painter.setPen(detail_color)
             for text, segment in segments:
+                if not text:
+                    continue
                 painter.drawText(
                     segment,
                     Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                     text,
                 )
+        painter.restore()
+
+    def _header_segments(self, option, index):
+        """Header text and rects for an expanded Marks row."""
+        adjusted = QStyleOptionViewItem(option)
+        self.initStyleOption(adjusted, index)
+        widget = adjusted.widget
+        rect = adjusted.rect.adjusted(4, 0, -4, 0)
+        metrics = adjusted.fontMetrics
+        icon_width = 0
+        if index.data(Qt.ItemDataRole.DecorationRole) is not None:
+            size = adjusted.decorationSize
+            if size is None or size.width() <= 0:
+                size = widget.iconSize() if widget is not None else None
+            icon_width = (size.width() if size is not None else 16) + 4
+        indent = widget.indentation() if widget is not None else 0
+        return mark_header_columns(rect, metrics, icon_width, indent)
+
+    def _paint_mark_headers(self, painter, option, index):
+        """Paint the mark column headers on the Marks row that heads them."""
+        segments = self._header_segments(option, index)
+        if not segments:
+            return
+        adjusted = QStyleOptionViewItem(option)
+        self.initStyleOption(adjusted, index)
+        selected = bool(adjusted.state & QStyle.StateFlag.State_Selected)
+        color = (
+            adjusted.palette.color(QPalette.ColorRole.HighlightedText)
+            if selected
+            else POINT_DETAIL
+        )
+        painter.save()
+        painter.setFont(adjusted.font)
+        painter.setPen(color)
+        for text, segment in segments:
+            painter.drawText(
+                segment,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                text,
+            )
         painter.restore()
 
     @staticmethod
@@ -1018,6 +1122,7 @@ class ScenePanel(QWidget):
         self._rows[("routing-legs", entry.kind, entry.key)] = legs
         self._add_point_rows(legs, entry, element, "Mark")
         if identity in self._expanded_legs:
+            legs.setData(NAME_COLUMN, MARK_HEADERS_ROLE, True)
             legs.setExpanded(True)
             self._populate_legs(legs, entry)
 
@@ -1258,6 +1363,7 @@ class ScenePanel(QWidget):
         elif node[0] == "routing-legs":
             identity = (node[1], node[2])
             self._expanded_legs.add(identity)
+            row.setData(NAME_COLUMN, MARK_HEADERS_ROLE, True)
             item = self.scene.item(*identity)
             if item is not None:
                 self._populate_legs(row, item)
@@ -1274,6 +1380,7 @@ class ScenePanel(QWidget):
             self._expanded_items.discard((node[1], node[2]))
         elif node[0] == "routing-legs":
             self._expanded_legs.discard((node[1], node[2]))
+            row.setData(NAME_COLUMN, MARK_HEADERS_ROLE, False)
 
     def _rename_item(self, item, name):
         if item.kind == KIND_LOG:
