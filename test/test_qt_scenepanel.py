@@ -4,9 +4,15 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QRect, Qt
-from PySide6.QtGui import QFontMetrics
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt
+from PySide6.QtGui import (
+    QFontMetrics,
+    QGuiApplication,
+    QHelpEvent,
+    QMouseEvent,
+    QWheelEvent,
+)
+from PySide6.QtWidgets import QApplication, QDialog, QFrame, QToolTip
 
 from sailworks.core.geo.elementmultipoint import NamedPoint
 from sailworks.core.geo.rounding import (
@@ -23,10 +29,17 @@ from sailworks.qt.scenepanel import (
     ROUNDING_ROLE,
     VISIBLE_COLUMN,
     ScenePanel,
-    point_columns,
+    SceneTooltip,
+    TOOLTIP_OFFSET_X,
+    TOOLTIP_OFFSET_Y,
+    row_geometry,
     rounding_color,
     rounding_column_width,
 )
+
+
+from sailworks.qt.theme import BORDER, PANEL, TEXT, TOOLTIP_STYLE
+from sailworks.rendering.navigation import routing_summary
 
 
 class FakeTrack:
@@ -66,9 +79,13 @@ class FakeRoute:
         self.points = [(48.1, -123.1), (48.2, -123.2)]
         self._names = {}
         self._roundings = {}
+        self.provenance = {}
 
     def point_name(self, index):
         return self._names.get(index, "")
+
+    def __iter__(self):
+        return iter(self.points)
 
     def rename_point(self, index, name):
         self._names[index] = str(name).strip()
@@ -316,22 +333,59 @@ def test_expanding_route_shows_marks_and_rounding(tmp_path):
     assert row.child(0).data(NAME_COLUMN, COORDINATE_ROLE) == ("48.100000, -123.100000")
 
 
-def test_rounding_column_is_fixed_width(tmp_path):
+def test_point_row_rects_never_overlap_icon_or_each_other(tmp_path):
     application()
     panel = panel_for(tmp_path)
     metrics = QFontMetrics(panel.tree.font())
-    rect = QRect(0, 0, 260, 20)
+    coordinates = "48.100000, -123.100000"
 
-    rounding, coordinate = point_columns(rect, metrics)
+    for width in (200, 600):
+        rect = QRect(0, 0, width - 8, 20)
+        icon, label, rounding, coordinate, _ = row_geometry(
+            rect, metrics, coordinates, 20
+        )
 
-    assert rounding.width() == rounding_column_width(metrics)
-    # Sized for the longest short label, so no side can widen the column.
-    for label in ROUNDING_SHORT.values():
-        assert metrics.horizontalAdvance(label) <= rounding.width()
-    # The coordinate column keeps a constant right edge, and the rounding
-    # column a constant left edge, whichever side a mark carries.
-    assert coordinate.right() == rect.right()
-    assert rounding.left() == coordinate.left() - 10 - rounding.width()
+        assert icon.right() <= label.left()
+        assert rounding.left() >= label.left()
+        assert coordinate.left() >= label.left()
+        assert rounding.right() <= coordinate.left()
+        assert coordinate.right() <= rect.right()
+
+
+def test_narrow_panel_elides_coordinates_instead_of_overlapping(tmp_path):
+    application()
+    panel = panel_for(tmp_path)
+    metrics = QFontMetrics(panel.tree.font())
+    coordinates = "48.100000, -123.100000"
+    rect = QRect(0, 0, 192, 20)
+
+    _, label, rounding, coordinate, shown = row_geometry(rect, metrics, coordinates, 20)
+
+    assert shown != coordinates
+    assert shown
+    assert rounding.left() >= label.left()
+    assert coordinate.right() <= rect.right()
+
+
+def test_coordinates_share_one_right_edge_and_rounding_slot_is_fixed(tmp_path):
+    application()
+    panel = panel_for(tmp_path)
+    metrics = QFontMetrics(panel.tree.font())
+    rect = QRect(0, 0, 400, 20)
+    coordinates = "48.100000, -123.100000"
+
+    sail = row_geometry(rect, metrics, coordinates, 20)
+    stbd = row_geometry(rect, metrics, coordinates, 20)
+
+    # The rounding slot is sized for the widest short label, so Sail and Stbd
+    # occupy the same slot and the coordinates keep one right edge.
+    assert sail[2].left() == stbd[2].left()
+    assert sail[2].width() == stbd[2].width()
+    assert sail[3].left() == stbd[3].left()
+    assert sail[3].right() == stbd[3].right() == rect.right()
+    assert rounding_column_width(metrics) >= max(
+        metrics.horizontalAdvance(label) for label in ROUNDING_SHORT.values()
+    )
 
 
 def test_rounding_colours_distinguish_sides(tmp_path):
@@ -634,3 +688,247 @@ def test_scene_hides_library_logs_when_none_is_loaded(tmp_path):
     panel = panel_for(tmp_path, logs=[log_entry(tmp_path)])
 
     assert panel.item_row(KIND_LOG, "log-1") is None
+
+
+def route_with_points(name="routing-J120-hugo-1"):
+    """Fake route carrying positions, so its navigation summary is non-empty."""
+    route = FakeRoute("r1", name)
+    route.points = [
+        (48.0, -123.0, "2026-01-01T00:00:00", None, None, 6.0),
+        (48.5, -123.5, "2026-01-01T01:00:00", None, None, 6.0),
+        (49.0, -124.0, "2026-01-01T02:00:00", None, None, 6.0),
+    ]
+    return route
+
+
+def test_routing_row_tooltip_shows_navigation_summary(tmp_path):
+    application()
+    route = route_with_points()
+    panel = panel_for(tmp_path, routes=[route])
+    row = panel.item_row(KIND_ROUTING, "r1")
+
+    tooltip = row.toolTip(NAME_COLUMN)
+    summary = routing_summary(route)
+
+    # The summary alone: the row already shows the name and the icon the type.
+    assert summary
+    assert tooltip == summary
+    assert "routing-J120-hugo-1" not in tooltip
+    assert "Routing" not in tooltip
+    assert "waypoints" not in tooltip
+    assert not tooltip.endswith("\n")
+
+
+def test_point_row_tooltip_shows_side_and_coordinate(tmp_path):
+    application()
+    route = FakeRoute("r1", "Route")
+    route.set_point_rounding(0, ROUNDING_PORT)
+    panel = panel_for(tmp_path, routes=[route])
+    row = panel.item_row(KIND_ROUTING, "r1")
+
+    row.setExpanded(True)
+    tooltip = row.child(0).toolTip(NAME_COLUMN)
+
+    assert tooltip == "Leave to port\n48.100000, -123.100000"
+    assert "Mark 1" not in tooltip
+    assert not tooltip.endswith("\n")
+
+
+def test_application_stylesheet_styles_tooltips(tmp_path):
+    # The installed application sheet starts with the tooltip rule, which
+    # replaces the native white frame with the panel surface and border.
+    rule = TOOLTIP_STYLE
+
+    assert rule.startswith("QToolTip")
+    assert "background:" in rule
+    assert "border: 1px solid #454545" in rule
+    assert "white" not in rule
+    assert "#ffffff" not in rule.lower()
+
+
+def shown_panel(tmp_path, **kwargs):
+    panel = panel_for(tmp_path, **kwargs)
+    panel.resize(360, 420)
+    panel.show()
+    QApplication.processEvents()
+    return panel
+
+
+def row_tooltip_event(panel, item):
+    """Tooltip event over ``item``, positioned inside the visible viewport."""
+    panel.tree.scrollToItem(item)
+    QApplication.processEvents()
+    point = panel.tree.visualItemRect(item).center()
+    assert panel.tree.itemAt(point) is item
+    return QHelpEvent(
+        QEvent.Type.ToolTip,
+        point,
+        panel.tree.viewport().mapToGlobal(point),
+    )
+
+
+def deliver_tooltip(panel, item):
+    """Send a tooltip event to the tree viewport; True means it was consumed."""
+    return QApplication.sendEvent(panel.tree.viewport(), row_tooltip_event(panel, item))
+
+
+def test_scene_tooltip_is_a_frameless_tooltip_window():
+    application()
+    tooltip = SceneTooltip()
+
+    assert isinstance(tooltip, QFrame)
+    assert tooltip.windowType() == Qt.WindowType.ToolTip
+    assert tooltip.windowFlags() & Qt.WindowType.FramelessWindowHint
+    assert tooltip.frameShape() == QFrame.Shape.NoFrame
+    # Never takes focus, so showing it cannot disturb the tree selection.
+    assert tooltip.focusPolicy() == Qt.FocusPolicy.NoFocus
+    assert tooltip.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+
+
+def test_scene_tooltip_uses_the_panel_theme():
+    application()
+    style = SceneTooltip().styleSheet()
+
+    assert PANEL in style
+    assert TEXT in style
+    assert BORDER in style
+    assert "border-radius" in style
+    assert "padding" in style
+
+
+def test_scene_tooltip_shows_on_routing_row_and_suppresses_native(tmp_path):
+    application()
+    route = route_with_points()
+    panel = shown_panel(tmp_path, routes=[route])
+    row = panel.item_row(KIND_ROUTING, "r1")
+
+    assert deliver_tooltip(panel, row) is True
+
+    assert panel.tree.tooltip.isVisible()
+    assert panel.tree.tooltip.label.text() == row.toolTip(NAME_COLUMN)
+    assert panel.tree.tooltip.label.text() == routing_summary(route)
+    assert "waypoints" not in panel.tree.tooltip.label.text()
+    assert not QToolTip.isVisible()
+
+
+def test_scene_tooltip_suppresses_the_native_tooltip(tmp_path):
+    application()
+    panel = shown_panel(tmp_path, routes=[route_with_points()])
+    row = panel.item_row(KIND_ROUTING, "r1")
+
+    assert panel.tree.viewportEvent(row_tooltip_event(panel, row)) is True
+    assert panel.tree.tooltip.isVisible()
+    assert not QToolTip.isVisible()
+
+
+def test_scene_tooltip_shows_on_point_row(tmp_path):
+    application()
+    route = FakeRoute("r1", "Route")
+    route.set_point_rounding(0, ROUNDING_PORT)
+    panel = shown_panel(tmp_path, routes=[route])
+    row = panel.item_row(KIND_ROUTING, "r1")
+    row.setExpanded(True)
+    point = row.child(0)
+
+    assert deliver_tooltip(panel, point) is True
+
+    shown = panel.tree.tooltip.label.text()
+    assert panel.tree.tooltip.isVisible()
+    assert shown == point.toolTip(NAME_COLUMN)
+    assert shown == "Leave to port\n48.100000, -123.100000"
+
+
+def test_scene_tooltip_hides_when_the_pointer_leaves_or_moves(tmp_path):
+    application()
+    panel = shown_panel(tmp_path, routes=[route_with_points()])
+    row = panel.item_row(KIND_ROUTING, "r1")
+    viewport = panel.tree.viewport()
+
+    assert deliver_tooltip(panel, row) is True
+    QApplication.sendEvent(viewport, QEvent(QEvent.Type.Leave))
+    assert not panel.tree.tooltip.isVisible()
+
+    assert deliver_tooltip(panel, row) is True
+    point = viewport.rect().center()
+    # Synthetic mouse events are routed by QApplication, so hand this one to
+    # the viewport directly, as the scroll area does for real moves.
+    move = QMouseEvent(
+        QEvent.Type.MouseMove,
+        point,
+        viewport.mapToGlobal(point),
+        Qt.MouseButton.NoButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    panel.tree.viewportEvent(move)
+    assert not panel.tree.tooltip.isVisible()
+
+
+def test_scene_tooltip_hides_on_scroll_and_when_the_tree_hides(tmp_path):
+    application()
+    panel = shown_panel(tmp_path, routes=[route_with_points()])
+    row = panel.item_row(KIND_ROUTING, "r1")
+    viewport = panel.tree.viewport()
+
+    assert deliver_tooltip(panel, row) is True
+    point = viewport.rect().center()
+    QApplication.sendEvent(
+        viewport,
+        QWheelEvent(
+            point,
+            viewport.mapToGlobal(point),
+            QPoint(0, 0),
+            QPoint(0, -120),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase,
+            False,
+        ),
+    )
+    assert not panel.tree.tooltip.isVisible()
+
+    assert deliver_tooltip(panel, row) is True
+    panel.tree.hide()
+    assert not panel.tree.tooltip.isVisible()
+
+
+def test_scene_tooltip_is_kept_on_screen():
+    application()
+    tooltip = SceneTooltip()
+    tooltip.label.setText("Route\n3 waypoints\nWind 6 kn")
+    tooltip.adjustSize()
+    screen = QGuiApplication.primaryScreen().availableGeometry()
+    outside = QPoint(screen.right() + 400, screen.bottom() + 400)
+
+    position = tooltip._clamped_position(outside)
+
+    assert screen.contains(QRect(position, tooltip.sizeHint()))
+
+
+def test_scene_tooltip_is_offset_from_the_pointer():
+    application()
+    tooltip = SceneTooltip()
+    screen = QGuiApplication.primaryScreen().availableGeometry()
+    anchor = screen.center()
+
+    tooltip.show_text("Route\n3 waypoints\nWind 6 kn", anchor)
+    try:
+        shown = tooltip.pos()
+        assert shown.x() >= anchor.x() + TOOLTIP_OFFSET_X
+        assert shown.y() >= anchor.y() + TOOLTIP_OFFSET_Y
+        assert screen.contains(QRect(shown, tooltip.size()))
+    finally:
+        tooltip.hide()
+
+
+def test_scene_tooltip_is_clamped_near_an_edge():
+    application()
+    tooltip = SceneTooltip()
+    screen = QGuiApplication.primaryScreen().availableGeometry()
+    anchor = QPoint(screen.right() - 2, screen.bottom() - 2)
+
+    tooltip.show_text("Route\n3 waypoints\nWind 6 kn", anchor)
+    try:
+        assert screen.contains(QRect(tooltip.pos(), tooltip.size()))
+    finally:
+        tooltip.hide()

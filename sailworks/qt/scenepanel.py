@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QPalette
+from PySide6.QtCore import QEvent, QPoint, QRect, QSignalBlocker, Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor, QCursor, QFont, QGuiApplication, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QHeaderView,
+    QLabel,
     QPushButton,
     QStyle,
     QStyledItemDelegate,
@@ -22,18 +23,24 @@ from PySide6.QtWidgets import (
 )
 
 from sailworks.common import resource_path
-from sailworks.core.geo.rounding import ROUNDING_SHORT, normalize_rounding
+from sailworks.core.geo.rounding import (
+    ROUNDING_PORT,
+    ROUNDING_SHORT,
+    ROUNDING_STARBOARD,
+    normalize_rounding,
+    rounding_label,
+)
 from sailworks.core.scene import (
     KIND_LOG,
     KIND_POI,
     KIND_ROUTING,
     KIND_TRACK,
-    TYPE_TITLES,
     SceneCollection,
     SceneEntry,
 )
+from sailworks.rendering.navigation import routing_summary
 from .pointeditdialog import PointEditDialog
-from .theme import MenuBuilder, symbol_icon, ThemedMenu
+from .theme import BORDER, PANEL, TEXT, MenuBuilder, symbol_icon, ThemedMenu
 
 NODE_ROLE = Qt.ItemDataRole.UserRole
 COORDINATE_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -41,6 +48,15 @@ ROUNDING_ROLE = Qt.ItemDataRole.UserRole + 2
 MUTED = QColor("#b0b0ad")
 POINT_COORDINATE = QColor("#8a8a87")
 ROUNDING_COLOR = QColor("#78aeed")
+# Port and starboard are distinct side constraints; sail-to-mark and gate stay
+# neutral so only a real side choice draws the eye.
+ROUNDING_COLORS = {
+    ROUNDING_PORT: QColor("#d05a4f"),
+    ROUNDING_STARBOARD: QColor("#4e9d63"),
+}
+ROUNDING_SIDES = {label: side for side, label in ROUNDING_SHORT.items()}
+ROUNDING_GAP = 8
+COORDINATE_FRACTION = 0.6
 NAME_COLUMN = 0
 VISIBLE_COLUMN = 1
 TYPE_ICONS = {
@@ -49,6 +65,72 @@ TYPE_ICONS = {
     KIND_POI: "poi-symbolic",
     KIND_LOG: "information-symbolic",
 }
+
+
+def item_tooltip(entry, element, detail):
+    """Tooltip for a scene item row: the navigation summary or name and detail.
+
+    A routing row shows only its navigation summary, since the row already
+    carries the name and the icon carries the type. Other rows keep the name
+    and detail. Empty fields are dropped so the tooltip never ends in a blank
+    line.
+    """
+    if entry.kind == KIND_ROUTING:
+        return routing_summary(element) if element is not None else ""
+    return "\n".join(line for line in (entry.name, detail) if line)
+
+
+def rounding_column_width(metrics):
+    """Fixed width for the rounding slot, sized for the longest short label."""
+    widest = max(
+        (metrics.horizontalAdvance(label) for label in ROUNDING_SHORT.values()),
+        default=0,
+    )
+    return widest + 6
+
+
+def rounding_color(short_label):
+    """Label colour for a rounding short label; neutral unless it names a side."""
+    return ROUNDING_COLORS.get(ROUNDING_SIDES.get(short_label), ROUNDING_COLOR)
+
+
+def point_columns(rect, metrics, coordinate_text="", label_left=None):
+    """Split the space right of the label into rounding and coordinate slots.
+
+    The coordinate slot is elided to the room the row actually has and
+    right-aligned, so every point shares one coordinate right edge and a narrow
+    panel never pushes the text over the decoration icon. The rounding slot has
+    a fixed width so its labels line up whichever side a mark carries. Both
+    slots start at or right of ``label_left``.
+    """
+    left = rect.left() if label_left is None else max(rect.left(), label_left)
+    right = rect.right()
+    available = max(0, right - left + 1)
+    budget = int(available * COORDINATE_FRACTION)
+    shown = metrics.elidedText(str(coordinate_text), Qt.TextElideMode.ElideLeft, budget)
+    width = min(available, max(0, metrics.horizontalAdvance(shown)))
+    coordinate = QRect(right - width + 1, rect.top(), width, rect.height())
+    slot = min(
+        rounding_column_width(metrics),
+        max(0, coordinate.left() - left - ROUNDING_GAP),
+    )
+    rounding = QRect(
+        coordinate.left() - ROUNDING_GAP - slot,
+        rect.top(),
+        slot,
+        rect.height(),
+    )
+    return rounding, coordinate, shown
+
+
+def row_geometry(rect, metrics, coordinates, icon_width):
+    """Rects a point row paints into: icon, label, rounding and coordinates."""
+    icon = QRect(rect.left(), rect.top(), icon_width, rect.height())
+    label = rect.adjusted(icon_width, 0, 0, 0)
+    rounding, coordinate, shown = point_columns(
+        rect, metrics, coordinates, label.left()
+    )
+    return icon, label, rounding, coordinate, shown
 
 
 def _visibility_style():
@@ -65,15 +147,143 @@ def _visibility_style():
     )
 
 
+SCENE_TOOLTIP_STYLE = (
+    f"QFrame#scene-tooltip {{ background: {PANEL}; color: {TEXT};"
+    f" border: 1px solid {BORDER}; border-radius: 4px; padding: 4px 6px; }}"
+    f"QFrame#scene-tooltip QLabel {{ background: transparent; color: {TEXT}; }}"
+)
+
+
+TOOLTIP_OFFSET_X = 16
+TOOLTIP_OFFSET_Y = 20
+
+
+class SceneTooltip(QFrame):
+    """Themed tooltip window for the scene tree.
+
+    The native tooltip keeps its white frame on macOS whatever the application
+    stylesheet says, so the scene tree draws its own frame instead, matching the
+    application's panels.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("scene-tooltip")
+        self.setWindowFlags(
+            Qt.WindowType.ToolTip
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.NoDropShadowWindowHint
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setFrameShadow(QFrame.Shadow.Plain)
+        self.setLineWidth(0)
+        self.setStyleSheet(SCENE_TOOLTIP_STYLE)
+
+        self.label = QLabel(self)
+        self.label.setTextFormat(Qt.TextFormat.PlainText)
+        self.label.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.label.setStyleSheet(f"background: transparent; color: {TEXT};")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.label)
+        self.hide()
+
+    def show_text(self, text, position=None):
+        """Show ``text`` at the global ``position``, kept inside the screen."""
+        if not text:
+            self.hide()
+            return
+        self.label.setText(text)
+        self.adjustSize()
+        anchor = QCursor.pos() if position is None else position
+        self.move(self._clamped_position(anchor))
+        self.show()
+
+    def _clamped_position(self, anchor):
+        """Anchor position moved clear of the pointer and onto the screen.
+
+        The tooltip sits below and to the right of the anchor so the pointer
+        does not cover its text, then moves back inside the available
+        geometry of the screen it is on.
+        """
+        screen = QGuiApplication.screenAt(anchor) or QGuiApplication.primaryScreen()
+        if screen is None:
+            return QPoint(anchor.x() + TOOLTIP_OFFSET_X, anchor.y() + TOOLTIP_OFFSET_Y)
+        bounds = screen.availableGeometry()
+        size = self.sizeHint()
+        x = min(
+            max(anchor.x() + TOOLTIP_OFFSET_X, bounds.left()),
+            bounds.right() - size.width() + 1,
+        )
+        y = min(
+            max(anchor.y() + TOOLTIP_OFFSET_Y, bounds.top()),
+            bounds.bottom() - size.height() + 1,
+        )
+        return QPoint(x, y)
+
+
 class SceneTree(QTreeWidget):
-    """Tree widget that hands drops back to the scene panel."""
+    """Tree widget that hands drops back to the scene panel.
+
+    It also shows a themed tooltip for its rows and suppresses the native one,
+    whose white frame cannot be styled away on macOS.
+    """
 
     def __init__(self, panel, parent=None):
         super().__init__(parent)
         self.panel = panel
+        self.tooltip = SceneTooltip(self)
+        self.verticalScrollBar().valueChanged.connect(self.tooltip.hide)
+        self.horizontalScrollBar().valueChanged.connect(self.tooltip.hide)
 
     def dropEvent(self, event):  # noqa: N802 - Qt virtual method name
         self.panel.drop_scene_items(event)
+
+    def _hide_tooltip(self):
+        # Qt can deliver viewport events while the base class is still being
+        # constructed, before the tooltip exists.
+        tooltip = getattr(self, "tooltip", None)
+        if tooltip is not None:
+            tooltip.hide()
+
+    def viewportEvent(self, event):  # noqa: N802 - Qt virtual method name
+        kind = event.type()
+        if kind == QEvent.Type.ToolTip:
+            return self._show_row_tooltip(event)
+        if kind in (
+            QEvent.Type.Leave,
+            QEvent.Type.Hide,
+            QEvent.Type.Wheel,
+            QEvent.Type.MouseButtonPress,
+        ):
+            self._hide_tooltip()
+        elif kind == QEvent.Type.MouseMove:
+            # Hiding on every move also covers moving to a row without a
+            # tooltip; Qt re-sends the tooltip event once the pointer settles.
+            self._hide_tooltip()
+        return super().viewportEvent(event)
+
+    def hideEvent(self, event):  # noqa: N802 - Qt virtual method name
+        self._hide_tooltip()
+        super().hideEvent(event)
+
+    def _show_row_tooltip(self, event):
+        """Show the themed tooltip for the row under the cursor.
+
+        Returns True so Qt does not show the native tooltip as well.
+        """
+        item = self.itemAt(event.pos())
+        text = "" if item is None else item.toolTip(NAME_COLUMN)
+        if not text:
+            self.tooltip.hide()
+            return False
+        self.tooltip.show_text(text, self.viewport().mapToGlobal(event.pos()))
+        return True
 
 
 class SceneItemDelegate(QStyledItemDelegate):
@@ -116,16 +326,11 @@ class SceneItemDelegate(QStyledItemDelegate):
             if size is None or size.width() <= 0:
                 size = widget.iconSize() if widget is not None else None
             icon_width = (size.width() if size is not None else 16) + 4
-        label_rect = rect.adjusted(icon_width, 0, 0, 0)
         rounding_text = str(index.data(ROUNDING_ROLE) or "")
-        rounding_width = metrics.horizontalAdvance(rounding_text)
-        coordinate_text = metrics.elidedText(
-            str(coordinates), Qt.TextElideMode.ElideLeft, int(rect.width() * 0.6)
+        _, label_rect, rounding_rect, coordinate_rect, coordinate_text = row_geometry(
+            rect, metrics, coordinates, icon_width
         )
-        coordinate_width = metrics.horizontalAdvance(coordinate_text)
-        label_width = max(
-            0, label_rect.width() - coordinate_width - rounding_width - 16
-        )
+        label_width = max(0, rounding_rect.left() - label_rect.left() - 8)
         label_text = metrics.elidedText(
             str(label), Qt.TextElideMode.ElideRight, label_width
         )
@@ -139,15 +344,15 @@ class SceneItemDelegate(QStyledItemDelegate):
             label_text,
         )
         if rounding_text:
-            painter.setPen(label_color if selected else ROUNDING_COLOR)
+            painter.setPen(label_color if selected else rounding_color(rounding_text))
             painter.drawText(
-                rect.adjusted(0, 0, -(coordinate_width + 12), 0),
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                rounding_rect,
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                 rounding_text,
             )
         painter.setPen(coordinate_color)
         painter.drawText(
-            rect,
+            coordinate_rect,
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
             coordinate_text,
         )
@@ -476,10 +681,8 @@ class ScenePanel(QWidget):
             row.setFlags(flags)
             live = self.scene.live_entry(entry.kind, entry.key)
             detail = live.detail if live is not None else ""
-            row.setToolTip(
-                NAME_COLUMN,
-                f"{entry.name}\n{TYPE_TITLES.get(entry.kind, '')}\n{detail}",
-            )
+            element = live.element if live is not None else None
+            row.setToolTip(NAME_COLUMN, item_tooltip(entry, element, detail))
             if not self.scene.effective_visible(entry.kind, entry.key):
                 row.setForeground(NAME_COLUMN, QBrush(MUTED))
             parent_item.addChild(row)
@@ -518,12 +721,25 @@ class ScenePanel(QWidget):
                 NAME_COLUMN, NODE_ROLE, ("point", entry.kind, entry.key, index)
             )
             child.setData(NAME_COLUMN, COORDINATE_ROLE, coordinates)
+            rounding_value = (
+                normalize_rounding(point_rounding(index))
+                if callable(point_rounding)
+                else None
+            )
             if callable(point_rounding):
                 child.setData(
                     NAME_COLUMN,
                     ROUNDING_ROLE,
-                    ROUNDING_SHORT[normalize_rounding(point_rounding(index))],
+                    ROUNDING_SHORT[rounding_value],
                 )
+            child.setToolTip(
+                NAME_COLUMN,
+                "\n".join(
+                    text
+                    for text in (rounding_label(rounding_value), coordinates)
+                    if text
+                ),
+            )
             child.setIcon(NAME_COLUMN, symbol_icon("poi-symbolic"))
             flags = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
             if callable(rename_point):
