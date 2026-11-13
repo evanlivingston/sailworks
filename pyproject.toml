@@ -73,6 +73,14 @@ test = [
     "gcsfs",
     "google-auth",
 ]
+# `uv sync --group docs` installs what `make docs` needs locally; the docs CI
+# workflow installs the same four packages.
+docs = [
+    "sphinx",
+    "pydata-sphinx-theme",
+    "sphinx-design",
+    "myst-parser",
+]
 dev = [
     "black",
     # Development relies on the satellite basemap, so a local sync installs
