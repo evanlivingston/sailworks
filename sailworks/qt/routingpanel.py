@@ -9,9 +9,7 @@ from typing import cast
 import weatherrouting
 from PySide6.QtCore import QDateTime, QPoint, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QCheckBox,
-    QComboBox,
     QDateTimeEdit,
     QDoubleSpinBox,
     QSpinBox,
@@ -19,12 +17,9 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QFormLayout,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QProgressBar,
     QPushButton,
-    QTableWidget,
-    QTableWidgetItem,
     QTabWidget,
     QScrollArea,
     QFrame,
@@ -264,33 +259,15 @@ class RoutingPanel(QWidget):
         self.start_mode.currentIndexChanged.connect(self._plan_changed)
         form.addRow(self.destination)
         form.addRow(self.start_mode)
-        self._rounding_values = {}
-        self._rounding_points = ()
-        self.roundings_table = QTableWidget(0, 5)
-        self.roundings_table.setHorizontalHeaderLabels(
-            ("Mark", "Rounding", "Radius nm", "Exit min", "Exit max")
+        self.rounding_hint = QLabel(
+            "Set a mark's rounding side, radius and optional exit heading in "
+            "Point Properties. Native routing reads it from each track point; "
+            "the start point is not a rounding mark, and standalone POI/map "
+            "destinations are exact for now."
         )
-        self.roundings_table.verticalHeader().setVisible(False)
-        self.roundings_table.setSelectionMode(
-            QAbstractItemView.SelectionMode.NoSelection
-        )
-        self.roundings_table.setEditTriggers(
-            QAbstractItemView.EditTrigger.NoEditTriggers
-        )
-        header = self.roundings_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column in range(1, 5):
-            header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
-        self.roundings_table.setMaximumHeight(170)
-        self.roundings_table.setToolTip(
-            "Optional pass-and-exit rule for each route mark. Exact keeps the "
-            "existing sail-to-the-point behaviour."
-        )
-        form.addRow("Mark roundings", self.roundings_table)
-        self.rounding_note = QLabel()
-        self.rounding_note.setWordWrap(True)
-        self.rounding_note.setProperty("secondary", True)
-        form.addRow(self.rounding_note)
+        self.rounding_hint.setWordWrap(True)
+        self.rounding_hint.setProperty("secondary", True)
+        form.addRow(self.rounding_hint)
         self.coastlines = QCheckBox("Check coastlines")
         self.coastlines.setChecked(True)
         form.addRow(self.coastlines)
@@ -351,7 +328,6 @@ class RoutingPanel(QWidget):
             self.departure,
             self.destination,
             self.start_mode,
-            self.roundings_table,
             self.coastlines,
             self.coastline_clearance,
         )
@@ -529,10 +505,6 @@ class RoutingPanel(QWidget):
     def _backend_changed(self, *_):
         self._refresh_wave_sources()
         self._update_backend_note()
-        if hasattr(self, "roundings_table"):
-            self.roundings_table.setEnabled(
-                not self.routing.busy and self.backend.currentData() == "native"
-            )
         self.options_changed.emit()
 
     def _wave_changed(self, *_):
@@ -852,17 +824,11 @@ class RoutingPanel(QWidget):
     def saved_options(self):
         cache = dict(self.parameter_cache)
         cache[self.parameter_name] = self._read_parameters()
-        self._capture_roundings()
-        roundings = [
-            dict(point=list(key), **values)
-            for key, values in self._rounding_values.items()
-        ]
         return dict(
             parameters=cache,
             backend=self.backend.currentData(),
             destination=self._selection_state(self.destination.currentData()),
             start=self._selection_state(self.start_mode.currentData()),
-            roundings=roundings,
             departure=self.departure.dateTime().toPython().isoformat(),
             advanced_expanded=self.parameters_header.isChecked(),
             use_currents=self.use_currents.isChecked(),
@@ -906,28 +872,6 @@ class RoutingPanel(QWidget):
                 pass
         # Preserve the validated cache while replacing the initially displayed defaults.
         self.parameter_name = ""
-        self._rounding_values = {}
-        for item in saved.get("roundings") or ():
-            if not isinstance(item, dict):
-                continue
-            point = item.get("point")
-            side = item.get("side")
-            radius = item.get("radius_nm")
-            if (
-                not isinstance(point, (list, tuple))
-                or len(point) != 2
-                or side not in ("port", "starboard")
-                or type(radius) not in (int, float)
-                or not math.isfinite(radius)
-                or radius <= 0
-            ):
-                continue
-            self._rounding_values[self._rounding_key(point)] = dict(
-                side=side,
-                radius_nm=float(radius),
-                exit_bearing_min_deg=item.get("exit_bearing_min_deg"),
-                exit_bearing_max_deg=item.get("exit_bearing_max_deg"),
-            )
         destination = mapping(saved.get("destination"))
         start = mapping(saved.get("start"))
         for combo, key, saved_value in (
@@ -1050,154 +994,6 @@ class RoutingPanel(QWidget):
         self._plan_changed()
         self.refresh()
 
-    @staticmethod
-    def _rounding_key(point):
-        return (round(float(point[0]), 9), round(float(point[1]), 9))
-
-    def _read_rounding_row(self, row):
-        side = self.roundings_table.cellWidget(row, 1)
-        if side is None or side.currentData() not in ("port", "starboard"):
-            return None
-        radius = self.roundings_table.cellWidget(row, 2)
-        exit_min = self.roundings_table.cellWidget(row, 3)
-        exit_max = self.roundings_table.cellWidget(row, 4)
-        return dict(
-            side=side.currentData(),
-            radius_nm=radius.value(),
-            exit_bearing_min_deg=(exit_min.value() if exit_min.value() >= 0 else None),
-            exit_bearing_max_deg=(exit_max.value() if exit_max.value() >= 0 else None),
-        )
-
-    def _capture_roundings(self):
-        for row, point in enumerate(self._rounding_points):
-            if row >= self.roundings_table.rowCount():
-                break
-            key = self._rounding_key(point)
-            values = self._read_rounding_row(row)
-            if values is None:
-                self._rounding_values.pop(key, None)
-            else:
-                self._rounding_values[key] = values
-
-    def _rounding_rows(self):
-        rows = []
-        for row in range(self.roundings_table.rowCount()):
-            if row == 0 and self.start_mode.currentData() == "first-track-point":
-                rows.append(None)
-            else:
-                rows.append(self._read_rounding_row(row))
-        return tuple(rows)
-
-    def _sync_rounding_row(self, row, start_row=None):
-        side = self.roundings_table.cellWidget(row, 1)
-        if side is None:
-            return
-        if start_row is None:
-            start_row = (
-                row == 0 and self.start_mode.currentData() == "first-track-point"
-            )
-        if start_row:
-            index = side.findData("exact")
-            if index >= 0:
-                side.setCurrentIndex(index)
-            side.setEnabled(False)
-        exact = side.currentData() == "exact"
-        for column in (2, 3, 4):
-            widget = self.roundings_table.cellWidget(row, column)
-            if widget is not None:
-                widget.setEnabled(not exact)
-
-    def _rounding_changed(self, row):
-        self._sync_rounding_row(row)
-        self.options_changed.emit()
-
-    def _rebuild_roundings(self, points, target):
-        self._capture_roundings()
-        previous = tuple(self._rounding_points)
-        current = tuple(tuple(point) for point in points)
-        self._rounding_points = current
-        table = self.roundings_table
-        table.blockSignals(True)
-        table.setRowCount(len(current))
-        for row, point in enumerate(current):
-            name = ""
-            if isinstance(target, Track):
-                try:
-                    name = target.point_name(row)
-                except (AttributeError, IndexError):
-                    name = ""
-            if not name:
-                name = "Destination" if len(current) == 1 else f"Point {row + 1}"
-            start_row = (
-                row == 0 and self.start_mode.currentData() == "first-track-point"
-            )
-            item = QTableWidgetItem(name + (" (start)" if start_row else ""))
-            item.setToolTip(f"{point[0]:.6f}, {point[1]:.6f}")
-            table.setItem(row, 0, item)
-
-            side = QComboBox()
-            side.addItem("Exact", "exact")
-            side.addItem("Port", "port")
-            side.addItem("Starboard", "starboard")
-            radius = QDoubleSpinBox()
-            radius.setRange(0.05, 50.0)
-            radius.setDecimals(2)
-            radius.setSingleStep(0.1)
-            radius.setSuffix(" nm")
-            radius.setValue(0.5)
-            exit_min = QDoubleSpinBox()
-            exit_min.setRange(-1, 360)
-            exit_min.setDecimals(1)
-            exit_min.setSpecialValueText("none")
-            exit_min.setValue(-1)
-            exit_max = QDoubleSpinBox()
-            exit_max.setRange(-1, 360)
-            exit_max.setDecimals(1)
-            exit_max.setSpecialValueText("none")
-            exit_max.setValue(-1)
-
-            values = self._rounding_values.get(self._rounding_key(point))
-            if values is None and isinstance(target, Track):
-                try:
-                    legacy = target.point_rounding(row)
-                except (AttributeError, IndexError):
-                    legacy = None
-                if legacy == 0:
-                    values = dict(side="port", radius_nm=0.5)
-                elif legacy == 1:
-                    values = dict(side="starboard", radius_nm=0.5)
-            if values:
-                side.setCurrentIndex(max(0, side.findData(values.get("side", "exact"))))
-                radius.setValue(float(values.get("radius_nm", 0.5)))
-                minimum = values.get("exit_bearing_min_deg")
-                maximum = values.get("exit_bearing_max_deg")
-                exit_min.setValue(-1 if minimum is None else float(minimum))
-                exit_max.setValue(-1 if maximum is None else float(maximum))
-
-            table.setCellWidget(row, 1, side)
-            table.setCellWidget(row, 2, radius)
-            table.setCellWidget(row, 3, exit_min)
-            table.setCellWidget(row, 4, exit_max)
-            self._sync_rounding_row(row, start_row)
-            side.currentIndexChanged.connect(
-                lambda *_, r=row: self._rounding_changed(r)
-            )
-            radius.valueChanged.connect(lambda *_, r=row: self._rounding_changed(r))
-            exit_min.valueChanged.connect(lambda *_, r=row: self._rounding_changed(r))
-            exit_max.valueChanged.connect(lambda *_, r=row: self._rounding_changed(r))
-        table.blockSignals(False)
-        if previous != current:
-            current_keys = {self._rounding_key(point) for point in current}
-            stale = any(key not in current_keys for key in self._rounding_values)
-            self.rounding_note.setText(
-                "Rounding settings for points that are no longer on the route "
-                "were not applied."
-                if stale
-                else ""
-            )
-        else:
-            self.rounding_note.setText("")
-
     def _plan_changed(self, *_):
         target = self.destination.currentData()
         points = (
@@ -1205,7 +1001,6 @@ class RoutingPanel(QWidget):
             if isinstance(target, Track)
             else ([target] if target is not None else [])
         )
-        self._rebuild_roundings(points, target)
         start = self._start_position(points)
         self.plan_changed.emit(
             tuple(([start] if start is not None else []) + list(points))
@@ -1295,6 +1090,14 @@ class RoutingPanel(QWidget):
         polar = self.polar.currentText()
         if not polar:
             raise ValueError("No local polar is available.")
+        roundings = ()
+        if isinstance(target, Track):
+            spec_getter = getattr(target, "point_rounding_spec", None)
+            if callable(spec_getter):
+                roundings = tuple(spec_getter(index) for index in range(len(waypoints)))
+            if roundings and self.start_mode.currentData() == "first-track-point":
+                # The first point is the start, not a rounding mark.
+                roundings = (None,) + roundings[1:]
         request = RouteRequest(
             "routing-" + Path(polar).stem,
             start,
@@ -1305,7 +1108,7 @@ class RoutingPanel(QWidget):
             self.coastlines.isChecked(),
             parameters=tuple(self._read_parameters().items()),
             waypoints=waypoints,
-            roundings=self._rounding_rows(),
+            roundings=roundings,
             use_currents=self.use_currents.isChecked(),
             auto_download=self.use_currents.isChecked(),
             current_priority=self.current_priority.currentData(),
@@ -1406,9 +1209,6 @@ class RoutingPanel(QWidget):
             not busy
             and self.backend.currentData() == "native"
             and bool(self._wave_entries)
-        )
-        self.roundings_table.setEnabled(
-            not busy and self.backend.currentData() == "native"
         )
         for enabled, values in self.comparison_axes.values():
             enabled.setEnabled(not busy)

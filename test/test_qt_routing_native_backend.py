@@ -171,12 +171,23 @@ def test_panel_native_refuses_changed_legacy_parameters_before_start(app):
     panel.deleteLater()
 
 
-def test_panel_rounding_table_maps_to_request_and_start_is_exact(app):
+def test_panel_reads_mark_rounding_from_track_points(app):
     controller = FakeController()
     track = Track(
         "race",
         [(48.0, -123.5), (48.05, -123.45), (48.1, -123.4)],
     )
+    track.set_point_rounding_spec(0, {"side": "starboard", "radius_nm": 3.0})
+    track.set_point_rounding_spec(
+        1,
+        {
+            "side": "port",
+            "radius_nm": 0.4,
+            "exit_bearing_min_deg": 30,
+            "exit_bearing_max_deg": 60,
+        },
+    )
+    track.set_point_rounding_spec(2, None)
     controller.core.trackManager = (track,)
     panel = RoutingPanel(controller)
     panel.backend.setCurrentIndex(panel.backend.findData("native"))
@@ -184,23 +195,15 @@ def test_panel_rounding_table_maps_to_request_and_start_is_exact(app):
     panel.destination.setCurrentIndex(panel.destination.findText("Track: race"))
     panel._plan_changed()
 
-    assert panel.roundings_table.isEnabled() is True
-    assert panel.roundings_table.rowCount() == 3
-    start_side = panel.roundings_table.cellWidget(0, 1)
-    assert start_side.isEnabled() is False
-    assert start_side.currentData() == "exact"
-
-    side = panel.roundings_table.cellWidget(1, 1)
-    side.setCurrentIndex(side.findData("port"))
-    panel.roundings_table.cellWidget(1, 2).setValue(0.4)
     request, _scenarios = panel._request()
 
+    # The first track point is the start, so its mark rounding is not applied.
     assert request.roundings[0] is None
     assert request.roundings[1] == dict(
         side="port",
         radius_nm=0.4,
-        exit_bearing_min_deg=None,
-        exit_bearing_max_deg=None,
+        exit_bearing_min_deg=30.0,
+        exit_bearing_max_deg=60.0,
     )
     assert request.roundings[2] is None
     panel.deleteLater()
