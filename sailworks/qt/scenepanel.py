@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from PySide6.QtCore import QRect, QSignalBlocker, Qt, QTimer, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -22,12 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from sailworks.common import resource_path
-from sailworks.core.geo.rounding import (
-    ROUNDING_PORT,
-    ROUNDING_SHORT,
-    ROUNDING_STARBOARD,
-    normalize_rounding,
-)
+from sailworks.core.geo.rounding import ROUNDING_SHORT, normalize_rounding
 from sailworks.core.scene import (
     KIND_LOG,
     KIND_POI,
@@ -45,19 +40,7 @@ COORDINATE_ROLE = Qt.ItemDataRole.UserRole + 1
 ROUNDING_ROLE = Qt.ItemDataRole.UserRole + 2
 MUTED = QColor("#b0b0ad")
 POINT_COORDINATE = QColor("#8a8a87")
-# Mid-tone hues: legible against both the dark panel and a light system
-# palette, so the tree keeps working if the theme changes.
-ROUNDING_COLORS = {
-    ROUNDING_PORT: QColor("#d05a4f"),
-    ROUNDING_STARBOARD: QColor("#4e9d63"),
-}
-# Sail-to-mark and gate are not side constraints: they stay neutral.
-ROUNDING_COLOR = MUTED
-ROUNDING_SIDES = {label: side for side, label in ROUNDING_SHORT.items()}
-# Fixed column geometry: the coordinate text is measured against a sample so
-# every row reserves the same width regardless of its actual numbers.
-COORDINATE_SAMPLE = "-123.456789, -123.456789"
-ROUNDING_GAP = 10
+ROUNDING_COLOR = QColor("#78aeed")
 NAME_COLUMN = 0
 VISIBLE_COLUMN = 1
 TYPE_ICONS = {
@@ -66,46 +49,6 @@ TYPE_ICONS = {
     KIND_POI: "poi-symbolic",
     KIND_LOG: "information-symbolic",
 }
-
-
-def coordinate_column_width(metrics):
-    """Fixed width reserved for a point's coordinate text."""
-    return metrics.horizontalAdvance(COORDINATE_SAMPLE)
-
-
-def rounding_column_width(metrics):
-    """Fixed width for the rounding column, sized for the longest short label."""
-    widest = max(
-        (metrics.horizontalAdvance(label) for label in ROUNDING_SHORT.values()),
-        default=0,
-    )
-    return widest + 6
-
-
-def point_columns(rect, metrics):
-    """Split a point row into its fixed rounding and coordinate columns.
-
-    Both widths are constant, so the rounding labels and the coordinates line
-    up down the list whichever side a mark carries.
-    """
-    coordinate = QRect(
-        rect.right() - coordinate_column_width(metrics) + 1,
-        rect.top(),
-        coordinate_column_width(metrics),
-        rect.height(),
-    )
-    rounding = QRect(
-        coordinate.left() - ROUNDING_GAP - rounding_column_width(metrics),
-        rect.top(),
-        rounding_column_width(metrics),
-        rect.height(),
-    )
-    return rounding, coordinate
-
-
-def rounding_color(short_label):
-    """Label colour for a rounding short label; neutral unless it names a side."""
-    return ROUNDING_COLORS.get(ROUNDING_SIDES.get(short_label), ROUNDING_COLOR)
 
 
 def _visibility_style():
@@ -175,13 +118,14 @@ class SceneItemDelegate(QStyledItemDelegate):
             icon_width = (size.width() if size is not None else 16) + 4
         label_rect = rect.adjusted(icon_width, 0, 0, 0)
         rounding_text = str(index.data(ROUNDING_ROLE) or "")
-        rounding_rect, coordinate_rect = point_columns(rect, metrics)
+        rounding_width = metrics.horizontalAdvance(rounding_text)
         coordinate_text = metrics.elidedText(
-            str(coordinates),
-            Qt.TextElideMode.ElideLeft,
-            coordinate_rect.width(),
+            str(coordinates), Qt.TextElideMode.ElideLeft, int(rect.width() * 0.6)
         )
-        label_width = max(0, rounding_rect.left() - label_rect.left() - 8)
+        coordinate_width = metrics.horizontalAdvance(coordinate_text)
+        label_width = max(
+            0, label_rect.width() - coordinate_width - rounding_width - 16
+        )
         label_text = metrics.elidedText(
             str(label), Qt.TextElideMode.ElideRight, label_width
         )
@@ -195,15 +139,15 @@ class SceneItemDelegate(QStyledItemDelegate):
             label_text,
         )
         if rounding_text:
-            painter.setPen(label_color if selected else rounding_color(rounding_text))
+            painter.setPen(label_color if selected else ROUNDING_COLOR)
             painter.drawText(
-                rounding_rect,
-                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                rect.adjusted(0, 0, -(coordinate_width + 12), 0),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                 rounding_text,
             )
         painter.setPen(coordinate_color)
         painter.drawText(
-            coordinate_rect,
+            rect,
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
             coordinate_text,
         )

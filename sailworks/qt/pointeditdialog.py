@@ -7,6 +7,8 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QLabel,
     QLineEdit,
+    QStyle,
+    QStyleOptionFrame,
     QVBoxLayout,
 )
 
@@ -17,17 +19,15 @@ from sailworks.core.geo.rounding import (
     normalize_rounding,
     normalize_rounding_spec,
 )
-from .dropdown import FIELD_FRACTION, Dropdown
+from .dropdown import Dropdown
 
 # One label column, one field column: every row starts at the same x.
 LABEL_COLUMN = 0
 FIELD_COLUMN = 1
 MARGIN = 12
 SPACING = 8
-# The dropdown paints its value inside the right-hand FIELD_FRACTION of the
-# widget: 8px of left padding, a 26px chevron and 2px of field margins. Ask
-# for enough width that the longest rounding label is never elided.
-DROPDOWN_CHROME = 44
+# Value padding, chevron and field margins the dropdown draws inside its width.
+DROPDOWN_CHROME = 40
 
 
 class PointEditDialog(QDialog):
@@ -77,6 +77,9 @@ class PointEditDialog(QDialog):
             self.rounding_combo.setCurrentIndex(
                 self.rounding_combo.findData(normalize_rounding(rounding))
             )
+            # Align the value with the Name field's text and keep the longest
+            # rounding label inside the field without eliding it.
+            self.rounding_combo.setValueInset(self._line_edit_text_inset())
             self.rounding_combo.setMinimumWidth(self._rounding_width())
             form.addWidget(self.rounding_label, row, LABEL_COLUMN)
             form.addWidget(self.rounding_combo, row, FIELD_COLUMN)
@@ -107,14 +110,25 @@ class PointEditDialog(QDialog):
         label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         return label
 
+    def _line_edit_text_inset(self):
+        """Left padding the Name field applies before its text."""
+        edit = self.name_edit
+        option = QStyleOptionFrame()
+        option.initFrom(edit)
+        option.rect = edit.rect()
+        contents = edit.style().subElementRect(
+            QStyle.SubElement.SE_LineEditContents, option, edit
+        )
+        return max(0, contents.left()) + edit.textMargins().left()
+
     def _rounding_width(self):
-        """Width that keeps the longest rounding label inside the field."""
+        """Minimum width that keeps the longest rounding label inside the field."""
         metrics = self.rounding_combo.fontMetrics()
         widest = max(
             (metrics.horizontalAdvance(label) for label in ROUNDING_LABELS.values()),
             default=0,
         )
-        return int((widest + DROPDOWN_CHROME + 8) / FIELD_FRACTION)
+        return widest + DROPDOWN_CHROME
 
     def point_name(self):
         return self.name_edit.text().strip()

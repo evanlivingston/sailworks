@@ -8,6 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("PySide6")
 
+from PySide6.QtCore import QPoint
 from PySide6.QtWidgets import QApplication
 
 from sailworks.core.geo.rounding import (
@@ -15,8 +16,7 @@ from sailworks.core.geo.rounding import (
     ROUNDING_PORT,
     ROUNDING_STARBOARD,
 )
-from sailworks.qt.dropdown import FIELD_FRACTION
-from sailworks.qt.pointeditdialog import DROPDOWN_CHROME, PointEditDialog
+from sailworks.qt.pointeditdialog import PointEditDialog
 
 
 @pytest.fixture
@@ -98,13 +98,30 @@ def test_rounding_combo_is_at_least_as_wide_as_the_name_field(app):
     dialog.deleteLater()
 
 
+def test_rounding_value_starts_at_the_name_field_text(app):
+    dialog = PointEditDialog("Mark", rounding=ROUNDING_PORT, coordinates=(51.5, -1.25))
+    dialog.show()
+    app.processEvents()
+
+    combo = dialog.rounding_combo
+    value_x = combo.mapTo(dialog, QPoint(int(combo.value_rect().left()), 0)).x()
+    name_x = dialog.name_edit.mapTo(
+        dialog, QPoint(dialog._line_edit_text_inset(), 0)
+    ).x()
+
+    # No label band is reserved, so the value lines up with the Name field.
+    assert value_x == name_x
+    assert combo.value_rect().left() < combo.width() * 0.25
+    dialog.deleteLater()
+
+
 def test_rounding_combo_does_not_truncate_the_longest_label(app):
     dialog = PointEditDialog("Mark", rounding=ROUNDING_PORT)
+    dialog.show()
+    app.processEvents()
+
     metrics = dialog.rounding_combo.fontMetrics()
     widest = max(metrics.horizontalAdvance(label) for label in ROUNDING_LABELS.values())
 
-    # The dropdown paints the value inside the right-hand FIELD_FRACTION of the
-    # widget, minus the padding and chevron it reserves.
-    available = int(dialog.rounding_combo.minimumWidth() * FIELD_FRACTION)
-    assert available - DROPDOWN_CHROME >= widest
+    assert dialog.rounding_combo.value_rect().width() >= widest
     dialog.deleteLater()
