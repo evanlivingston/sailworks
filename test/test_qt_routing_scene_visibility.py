@@ -91,9 +91,11 @@ def fake_window(route, native, *, active_route=None, busy=False):
         native_selection=None,
     )
     window = SimpleNamespace(
-        navigation_panel=SimpleNamespace(route=route, refresh=lambda: None),
         controller=SimpleNamespace(
             routing=routing,
+            core=SimpleNamespace(
+                routingManager=SimpleNamespace(get_active=lambda: route)
+            ),
             time_control=SimpleNamespace(time=0),
         ),
         map=FakeMap(),
@@ -675,7 +677,9 @@ def test_reselecting_a_saved_route_retries_the_contours_once(monkeypatch):
     native = RoutingOverlayModel(result)
     window = fake_window(route, native, active_route=route)
     window.controller.core = SimpleNamespace(
-        routingManager=SimpleNamespace(load_result=lambda _route: result)
+        routingManager=SimpleNamespace(
+            load_result=lambda _route: result, get_active=lambda: route
+        )
     )
     window.controller.routing.show_native_result = lambda _result: SimpleNamespace(
         result=result

@@ -8,6 +8,9 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFormLayout,
     QFrame,
     QHeaderView,
     QLabel,
@@ -50,6 +53,7 @@ from sailworks.rendering.navigation import (
     routing_summary,
     track_detail_fields,
 )
+from .navigationcommands import RemovePointCommand
 from .pointeditdialog import PointEditDialog
 from .theme import (
     BORDER,
@@ -643,11 +647,12 @@ class ScenePanel(QWidget):
     move_point_requested = Signal(object, int)
     routing_visibility_changed = Signal()
 
-    def __init__(self, controller, parent=None, scene_path=None):
+    def __init__(self, controller, parent=None, scene_path=None, undo_stack=None):
         super().__init__(parent)
         self.controller = controller
         self.core = controller.core
         self.scene = SceneCollection(scene_path)
+        self.undo_stack = undo_stack
         self.syncing = False
         self._rows = {}
         self._expanded_items = set()
@@ -1455,6 +1460,119 @@ class ScenePanel(QWidget):
         if element is not None:
             self.move_point_requested.emit(element, int(node[3]))
 
+    def _track_element(self, node):
+        if node is None or node[1] != KIND_TRACK:
+            return None
+        entry = self.scene.live_entry(node[1], node[2])
+        element = entry.element if entry is not None else None
+        if element is None or not callable(getattr(element, "add", None)):
+            return None
+        return element
+
+    def _point_target(self):
+        """The track that receives a point added outside the tree."""
+        manager = self.core.trackManager
+        get_active = getattr(manager, "get_active", None)
+        active = get_active() if callable(get_active) else None
+        if active is not None:
+            return active
+        elements = list(manager)
+        if len(elements) > 1:
+            return None
+        if elements:
+            active = elements[0]
+        else:
+            new_element = getattr(manager, "new_element", None)
+            if not callable(new_element):
+                return None
+            active = new_element(points=[])
+        set_active = getattr(manager, "set_active", None)
+        if callable(set_active):
+            set_active(active)
+        return active
+
+    def add_point(self, coordinates):
+        """Append a point to the track being edited, creating one if needed."""
+        element = self._point_target()
+        if element is None:
+            return None
+        return self._append_point(element, coordinates)
+
+    def add_poi(self, coordinates):
+        """Create a POI at the requested position."""
+        create = getattr(self.core.poiManager, "create", None)
+        if not callable(create):
+            return None
+        poi = create(tuple(coordinates))
+        self._points_changed()
+        return poi
+
+    def add_navigation_request(self, kind, coordinates):
+        """Route a map request to a POI mark or a track point."""
+        if kind == "poi":
+            return self.add_poi(coordinates)
+        return self.add_point(coordinates)
+
+    def _append_point(self, element, coordinates):
+        add = getattr(element, "add", None)
+        if not callable(add):
+            return None
+        add(coordinates[0], coordinates[1])
+        self._points_changed()
+        return element
+
+    def _points_changed(self):
+        self.changed.emit()
+        self.refresh()
+
+    def _add_point(self, node):
+        element = self._track_element(node) or self._point_target()
+        if element is None:
+            return
+        default = tuple(element.points[-1][:2]) if len(element) else (0.0, 0.0)
+
+        def add(coordinates):
+            self._append_point(element, coordinates)
+
+        self._coordinates_dialog("Add track point", default, add)
+
+    def _delete_point(self, node):
+        element = self._point_element(node)
+        if element is None:
+            return
+        index = int(node[3])
+        if not 0 <= index < len(element):
+            return
+        if self.undo_stack is None:
+            element.remove(index)
+            self._points_changed()
+            return
+        self.undo_stack.push(RemovePointCommand(self._points_changed, element, [index]))
+
+    def _coordinates_dialog(self, title, default, callback):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        form = QFormLayout(dialog)
+        latitude, longitude = QDoubleSpinBox(), QDoubleSpinBox()
+        for control, limit, value in (
+            (latitude, 90, default[0]),
+            (longitude, 180, default[1]),
+        ):
+            control.setRange(-limit, limit)
+            control.setDecimals(6)
+            control.setValue(value)
+        form.addRow("Latitude", latitude)
+        form.addRow("Longitude", longitude)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            callback((latitude.value(), longitude.value()))
+        dialog.deleteLater()
+
     def _edit_point(self, node):
         element = self._point_element(node)
         if element is None:
@@ -1621,6 +1739,12 @@ class ScenePanel(QWidget):
         fit_nodes = self._nodes_for_fit(nodes)
         delete_nodes = self._nodes_for_delete(nodes)
         point_element = self._point_element(node)
+        track_element = self._track_element(node)
+        point_delete = point_element is not None and not node[2].startswith("race:")
+        if point_delete:
+            delete_nodes = [
+                candidate for candidate in delete_nodes if candidate != node
+            ]
         rename = (
             len(groups) == 1 and node is not None and node[0] == "group"
         ) or point_element is not None
@@ -1673,10 +1797,16 @@ class ScenePanel(QWidget):
                 )
                 action.setCheckable(True)
                 action.setChecked(mode == current)
-        if fit_nodes or point_element is not None:
+        if fit_nodes or point_element is not None or track_element is not None:
             builder.section()
             if fit_nodes:
                 builder.add("Fit", lambda: self.fit_requested.emit(fit_nodes), key="F")
+            if track_element is not None:
+                builder.add(
+                    "Add Point…",
+                    lambda: self._add_point(node),
+                    key="P",
+                )
             if point_element is not None:
                 builder.add(
                     "Edit…",
@@ -1684,7 +1814,7 @@ class ScenePanel(QWidget):
                     key="E",
                 )
                 builder.add(
-                    "Move",
+                    "Move Point",
                     lambda: self._move_point(node),
                     key="V",
                 )
@@ -1692,7 +1822,7 @@ class ScenePanel(QWidget):
             builder.section()
             if rename:
                 builder.add(
-                    "Rename",
+                    "Rename Point" if point_element is not None else "Rename",
                     lambda: self.tree.editItem(row, NAME_COLUMN),
                     key="R",
                 )
@@ -1705,6 +1835,8 @@ class ScenePanel(QWidget):
                     key="O",
                 )
         destructive = []
+        if point_delete:
+            destructive.append(("Delete Point", lambda: self._delete_point(node), "D"))
         if delete_nodes:
             destructive.append(
                 (

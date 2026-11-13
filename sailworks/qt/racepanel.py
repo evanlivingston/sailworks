@@ -474,12 +474,6 @@ class RacesPanel(QWidget):
         manager.append(track)
         manager.set_active(track)
         window = self.window()
-        navigation = getattr(window, "navigation_panel", None)
-        if navigation is not None:
-            navigation.refresh()
-            refresh_points = getattr(navigation, "refresh_points", None)
-            if callable(refresh_points):
-                refresh_points()
         canvas = getattr(window, "map", None)
         if canvas is not None:
             canvas.fit_coordinates(points)

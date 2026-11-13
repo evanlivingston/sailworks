@@ -163,9 +163,8 @@ def test_native_saved_route_has_summary_point_rows_and_speed_coloring(
     tmp_path, monkeypatch
 ):
     pytest.importorskip("PySide6")
-    from PySide6.QtWidgets import QApplication, QTableWidget
+    from PySide6.QtWidgets import QApplication
 
-    from sailworks.qt.navigationpanel import NavigationPanel
     from sailworks.qt.window import PreviewWindow
 
     application = QApplication.instance() or QApplication([])
@@ -175,18 +174,7 @@ def test_native_saved_route_has_summary_point_rows_and_speed_coloring(
     assert routing_summary(route)
     assert route.points[0][2] == canonical_utc(EPOCH)
     assert route.points[-1][2] == canonical_utc(EPOCH + 2100)
-
-    panel = SimpleNamespace(
-        route=route,
-        route_points=QTableWidget(0, 7),
-        point_rounding=None,
-    )
-    NavigationPanel.refresh_route_points(panel)
-    assert panel.route_points.rowCount() == 3
-    assert panel.route_points.item(0, 1).text()
-    assert panel.route_points.item(0, 4).text()
-    assert panel.route_points.item(0, 5).text()
-    assert panel.route_points.item(0, 6).text()
+    assert len(route.points) == 3
 
     calls = []
 
@@ -209,7 +197,6 @@ def test_native_saved_route_has_summary_point_rows_and_speed_coloring(
         (48.8, -123.0),
     )
     assert calls[0][1] == (5.2, 5.2, 5.2)
-    panel.route_points.deleteLater()
     application.processEvents()
 
 

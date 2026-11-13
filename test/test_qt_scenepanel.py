@@ -13,6 +13,7 @@ from PySide6.QtGui import (
     QImage,
     QMouseEvent,
     QPalette,
+    QUndoStack,
     QWheelEvent,
 )
 from PySide6.QtWidgets import QApplication, QDialog, QFrame, QPushButton, QToolTip
@@ -58,7 +59,7 @@ from sailworks.qt.scenepanel import (
 )
 
 
-from sailworks.qt.theme import BORDER, PANEL, SURFACE, TEXT, TOOLTIP_STYLE
+from sailworks.qt.theme import BORDER, PANEL, SURFACE, TEXT, TOOLTIP_STYLE, ThemedMenu
 from sailworks.rendering.navigation import (
     routing_detail_fields,
     routing_point_cells,
@@ -78,7 +79,16 @@ class FakeTrack:
         self._roundings = {}
 
     def __len__(self):
-        return 2
+        return len(self.points)
+
+    def add(self, lat, lon, t=None):
+        self.points.append(NamedPoint((lat, lon), ""))
+
+    def remove(self, index):
+        del self.points[index]
+
+    def move(self, index, lat, lon):
+        self.points[index] = NamedPoint((lat, lon), self._names.get(index, ""))
 
     def point_name(self, index):
         return self._names.get(index, "") or getattr(self.points[index], "name", "")
@@ -143,9 +153,28 @@ class FakeCollection(list):
     def __init__(self, *args):
         super().__init__(*args)
         self.load_calls = []
+        self._active = None
 
     def save(self):
         pass
+
+    def get_active(self):
+        return self._active
+
+    def set_active(self, element):
+        self._active = element
+
+    def new_element(self, points=None):
+        element = FakeTrack(f"track-{len(self) + 1}", "New track")
+        element.points = list(points or [])
+        self.append(element)
+        return element
+
+    def create(self, coordinates):
+        poi = FakePOI(f"poi-{len(self) + 1}", "New POI")
+        poi.position = tuple(coordinates)
+        self.append(poi)
+        return poi
 
     def get_unique_name(self, name):
         existing = {item.name for item in self}
@@ -215,7 +244,15 @@ def log_entry(tmp_path, identifier="log-1", name="Saturday.log"):
     }
 
 
-def panel_for(tmp_path, tracks=(), routes=(), pois=(), logs=(), loaded_log=None):
+def panel_for(
+    tmp_path,
+    tracks=(),
+    routes=(),
+    pois=(),
+    logs=(),
+    loaded_log=None,
+    undo_stack=None,
+):
     core = FakeCore()
     core.trackManager.extend(tracks)
     core.routingManager.extend(routes)
@@ -223,6 +260,7 @@ def panel_for(tmp_path, tracks=(), routes=(), pois=(), logs=(), loaded_log=None)
     return ScenePanel(
         FakeController(core, FakeLibrary(logs), FakeSession(loaded_log)),
         scene_path=tmp_path / "scene.json",
+        undo_stack=undo_stack,
     )
 
 
@@ -1931,3 +1969,136 @@ def test_scene_tree_alternating_rows_paint_and_selection_wins(tmp_path):
     selected = tree_rgb(tree, row_background_point(third))
     assert selected == highlight
     assert selected not in (base, alternate)
+
+
+def context_menu_labels(panel, row):
+    labels = []
+
+    def capture(menu, *_args):
+        labels.extend(action.text() for action in menu.actions())
+        return None
+
+    with (
+        patch.object(panel.tree, "itemAt", lambda position: row),
+        patch.object(ThemedMenu, "exec", capture),
+    ):
+        panel._context_menu(QPoint(0, 0))
+    return labels
+
+
+def assert_action(labels, label):
+    texts = [text.replace("&", "") for text in labels]
+    assert any(label in text for text in texts), (label, labels)
+
+
+def test_track_row_context_menu_offers_add_point(tmp_path):
+    application()
+    panel = panel_for(tmp_path, tracks=[FakeTrack("t1", "Morning")])
+    row = panel.item_row(KIND_TRACK, "t1")
+
+    labels = context_menu_labels(panel, row)
+
+    assert_action(labels, "Add Point")
+    assert not any("Delete Point" in text for text in labels)
+
+
+def test_point_row_context_menu_offers_point_editing(tmp_path):
+    application()
+    panel = panel_for(tmp_path, tracks=[FakeTrack("t1", "Morning")])
+    row = panel.item_row(KIND_TRACK, "t1")
+    row.setExpanded(True)
+
+    labels = context_menu_labels(panel, row.child(0))
+
+    for label in (
+        "Add Point",
+        "Rename Point",
+        "Move Point",
+        "Delete Point",
+        "Edit",
+    ):
+        assert_action(labels, label)
+
+
+def test_add_point_action_appends_to_track(tmp_path):
+    application()
+    track = FakeTrack("t1", "Morning")
+    panel = panel_for(tmp_path, tracks=[track])
+    seen = {}
+
+    def dialog(title, default, callback):
+        seen["default"] = default
+        callback((53.5, -3.25))
+
+    panel._coordinates_dialog = dialog
+    panel._add_point(("item", KIND_TRACK, "t1"))
+
+    assert len(track) == 3
+    assert tuple(track.points[-1][:2]) == (53.5, -3.25)
+    assert seen["default"] == (52.0, -2.0)
+
+
+def test_add_point_action_creates_track_when_none_exists(tmp_path):
+    application()
+    panel = panel_for(tmp_path)
+    panel._coordinates_dialog = lambda title, default, callback: callback((10.0, 20.0))
+
+    panel._add_point(None)
+
+    tracks = panel.core.trackManager
+    assert len(tracks) == 1
+    assert tuple(tracks[0].points[0][:2]) == (10.0, 20.0)
+    assert tracks.get_active() is tracks[0]
+
+
+def test_delete_point_action_is_undoable(tmp_path):
+    application()
+    track = FakeTrack("t1", "Morning")
+    stack = QUndoStack()
+    panel = panel_for(tmp_path, tracks=[track], undo_stack=stack)
+
+    panel._delete_point(("point", KIND_TRACK, "t1", 0))
+
+    assert len(track) == 1
+    assert stack.count() == 1
+    stack.undo()
+    assert len(track) == 2
+    assert tuple(track.points[0][:2]) == (51.1234567, -1.2345678)
+
+
+def test_map_request_adds_point_from_the_scene_tree(tmp_path):
+    application()
+    track = FakeTrack("t1", "Morning")
+    panel = panel_for(tmp_path, tracks=[track])
+    panel.core.trackManager.set_active(track)
+
+    panel.add_navigation_request("point", (54.0, -4.0))
+
+    assert tuple(track.points[-1][:2]) == (54.0, -4.0)
+
+
+def test_map_request_adds_poi_from_the_scene_tree(tmp_path):
+    application()
+    panel = panel_for(tmp_path)
+
+    poi = panel.add_navigation_request("poi", (54.0, -4.0))
+
+    assert tuple(poi.position) == (54.0, -4.0)
+    assert len(panel.core.poiManager) == 1
+
+
+def test_window_navigation_request_uses_scene_panel(tmp_path):
+    from sailworks.qt.window import PreviewWindow
+
+    application()
+    track = FakeTrack("t1", "Morning")
+    panel = panel_for(tmp_path, tracks=[track])
+    panel.core.trackManager.set_active(track)
+    shown = []
+
+    window = SimpleNamespace(scene_panel=panel, _show_panel=shown.append)
+
+    PreviewWindow._navigation_request(window, "point", (55.0, -5.0))
+
+    assert tuple(track.points[-1][:2]) == (55.0, -5.0)
+    assert shown == ["scene"]

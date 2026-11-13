@@ -544,19 +544,6 @@ class _RestoreMap:
         self.isochrones = tuple(frontiers)
 
 
-class _RestoreNavigation:
-    def __init__(self):
-        self.route = None
-        self.selected = []
-
-    def select_route(self, route):
-        self.route = route
-        self.selected.append(route)
-
-    def refresh(self):
-        pass
-
-
 class _RestoreSession(QObject):
     def __init__(self, collection):
         super().__init__()
@@ -567,10 +554,8 @@ def _workspace_window(collection):
     """A restored window with production routing methods over a fresh core."""
     session = _RestoreSession(collection)
     controller = RoutingController(session)
-    navigation = _RestoreNavigation()
     window = SimpleNamespace(
         controller=SimpleNamespace(core=session.core, routing=controller),
-        navigation_panel=navigation,
         map=_RestoreMap(),
         routing_inspector=Mock(),
         routing_inspector_dock=Mock(),
@@ -626,7 +611,6 @@ def test_workspace_restore_rebuilds_native_overlay_from_disk_without_recalculati
     assert window.map.native_routing is model
     assert model.result.calculation_id == CALCULATION_A
     assert model.contours_visible is False
-    assert window.navigation_panel.selected == [restored_route]
     assert window.map.navigation.hl_routing == restored_route.name
     assert window.map.route is not None
     assert window.routing_inspector.set_result.called

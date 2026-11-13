@@ -83,29 +83,6 @@ def test_chart_child_is_disposed_not_weather_only_replaced(presenter):
     presenter.canvas._invalidate_base.assert_called_once()
 
 
-def test_track_point_fit_action_fits_selected_point_only():
-    from sailworks.qt.navigationpanel import NavigationPanel
-
-    class Track:
-        points = [(48.1, -123.1, None), (48.2, -123.2, None)]
-
-        def __len__(self):
-            return len(self.points)
-
-    track = Track()
-    panel = SimpleNamespace(
-        core=SimpleNamespace(trackManager=SimpleNamespace(get_active=lambda: track)),
-        point_index=1,
-        canvas=SimpleNamespace(fit_coordinates=Mock()),
-        fit_track=Mock(),
-    )
-
-    NavigationPanel.fit_track_point(panel)
-
-    panel.canvas.fit_coordinates.assert_called_once_with([(48.2, -123.2)])
-    panel.fit_track.assert_not_called()
-
-
 def test_legacy_recovery_disables_both_viewport_weather_and_enc(presenter):
     presenter.widget = Mock()
     presenter.canvas.controller.settings.gribWindStyle = "legacy"
