@@ -331,9 +331,19 @@ class Provenance:
         for index, item in enumerate(self.roundings):
             if not isinstance(item, Mapping):
                 raise SchemaError("provenance rounding must be a mapping")
-            for key in ("side", "radius_nm", "satisfied", "failure_code"):
+            for key in ("side", "satisfied", "failure_code"):
                 if key not in item:
                     raise SchemaError(f"provenance rounding[{index}] is missing {key}")
+            # radius_nm is inert legacy metadata: the native payload omits it
+            # while older records still carry it. It is optional (empty default
+            # None) and never validated or rewritten here.
+            minimum = item.get("exit_bearing_min_deg")
+            maximum = item.get("exit_bearing_max_deg")
+            if (minimum is None) != (maximum is None):
+                raise SchemaError(
+                    f"provenance rounding[{index}] needs both exit bearings "
+                    "or neither"
+                )
         object.__setattr__(
             self, "roundings", _json_value(tuple(self.roundings), "roundings")
         )

@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
 )
 
 from sailworks.core.geo.rounding import (
-    DEFAULT_ROUNDING_RADIUS_NM,
     ROUNDING_LABELS,
     ROUNDING_PORT,
     ROUNDING_STARBOARD,
@@ -44,7 +43,9 @@ class PointEditDialog(QDialog):
         form.addRow("Name", self.name_edit)
         self.rounding_combo = None
         self.rounding_details = None
-        self.radius = None
+        # The persisted radius is inert legacy metadata: it is carried through
+        # untouched so saving the dialog never rewrites or drops it.
+        self.radius_nm = radius_nm
         self.exit_min = None
         self.exit_max = None
         if rounding is not None:
@@ -59,16 +60,6 @@ class PointEditDialog(QDialog):
             self.rounding_details = QWidget()
             details = QFormLayout(self.rounding_details)
             details.setContentsMargins(0, 0, 0, 0)
-            self.radius = QDoubleSpinBox()
-            self.radius.setRange(0.05, 1000.0)
-            self.radius.setDecimals(2)
-            self.radius.setSingleStep(0.1)
-            self.radius.setSuffix(" nm")
-            self.radius.setValue(
-                DEFAULT_ROUNDING_RADIUS_NM if radius_nm is None else float(radius_nm)
-            )
-            details.addRow("Radius", self.radius)
-
             self.exit_min = QDoubleSpinBox()
             self.exit_min.setRange(-1, 360)
             self.exit_min.setDecimals(1)
@@ -110,7 +101,7 @@ class PointEditDialog(QDialog):
             ROUNDING_STARBOARD,
         )
         self.rounding_details.setVisible(enabled)
-        for widget in (self.radius, self.exit_min, self.exit_max):
+        for widget in (self.exit_min, self.exit_max):
             if widget is not None:
                 widget.setEnabled(enabled)
 
@@ -165,7 +156,7 @@ class PointEditDialog(QDialog):
         return normalize_rounding_spec(
             {
                 "side": "port" if side == ROUNDING_PORT else "starboard",
-                "radius_nm": self.radius.value(),
+                "radius_nm": self.radius_nm,
                 "exit_bearing_min_deg": None if minimum < 0 else minimum,
                 "exit_bearing_max_deg": None if maximum < 0 else maximum,
             }

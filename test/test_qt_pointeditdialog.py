@@ -1,4 +1,4 @@
-"""The mark properties dialog edits the full rounding constraint."""
+"""The mark properties dialog edits side and exit bearings, not a radius."""
 
 import os
 
@@ -19,7 +19,13 @@ def app():
     return QApplication.instance() or QApplication([])
 
 
-def test_dialog_edits_full_rounding_spec(app):
+def test_dialog_has_no_radius_control(app):
+    dialog = PointEditDialog("Mark", rounding=ROUNDING_PORT, radius_nm=2.0)
+    assert not hasattr(dialog, "radius")
+    dialog.deleteLater()
+
+
+def test_dialog_edits_rounding_side_and_exit_bearings(app):
     dialog = PointEditDialog(
         "Mark",
         rounding=ROUNDING_PORT,
@@ -37,22 +43,32 @@ def test_dialog_edits_full_rounding_spec(app):
     dialog.rounding_combo.setCurrentIndex(
         dialog.rounding_combo.findData(ROUNDING_STARBOARD)
     )
-    dialog.radius.setValue(1.5)
     dialog.exit_min.setValue(-1)
     dialog.exit_max.setValue(-1)
     assert dialog.point_rounding_spec() == {
         "side": "starboard",
-        "radius_nm": 1.5,
+        "radius_nm": 2.0,
         "exit_bearing_min_deg": None,
         "exit_bearing_max_deg": None,
     }
     dialog.deleteLater()
 
 
+def test_dialog_preserves_inert_radius_untouched(app):
+    for radius in (None, 0.0, -1.5, 7.25):
+        dialog = PointEditDialog("Mark", rounding=ROUNDING_PORT, radius_nm=radius)
+        spec = dialog.point_rounding_spec()
+        if radius is None:
+            # A missing radius keeps the parser fallback, never a control value.
+            assert spec["radius_nm"] > 0
+        else:
+            assert spec["radius_nm"] == radius
+        dialog.deleteLater()
+
+
 def test_sail_to_mark_has_no_routing_spec_and_hides_details(app):
     dialog = PointEditDialog("Mark", rounding=2)
     assert dialog.rounding_details.isHidden() is True
-    dialog.radius.setValue(2.0)
     assert dialog.point_rounding_spec() is None
     dialog.rounding_combo.setCurrentIndex(dialog.rounding_combo.findData(ROUNDING_PORT))
     assert dialog.rounding_details.isHidden() is False

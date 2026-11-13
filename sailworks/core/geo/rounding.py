@@ -45,16 +45,18 @@ def normalize_rounding_spec(spec):
 
     A spec is ``{"side": "port"|"starboard", "radius_nm": float,
     "exit_bearing_min_deg": float|None, "exit_bearing_max_deg": float|None}``.
-    Invalid radii fall back to the default; incomplete or invalid exit ranges
-    are cleared rather than partially applied.
+    The radius is inert legacy metadata: an explicit number is echoed exactly,
+    including zero and negative values, and only an absent or non-numeric value
+    falls back to the default. Incomplete or invalid exit ranges are cleared
+    rather than partially applied.
     """
     if not isinstance(spec, Mapping):
         return None
     side = str(spec.get("side", "")).strip().lower()
     if side not in ("port", "starboard"):
         return None
-    radius = spec.get("radius_nm", DEFAULT_ROUNDING_RADIUS_NM)
-    if type(radius) not in (int, float) or not math.isfinite(radius) or radius <= 0:
+    radius = spec.get("radius_nm")
+    if type(radius) not in (int, float) or not math.isfinite(radius):
         radius = DEFAULT_ROUNDING_RADIUS_NM
     minimum = spec.get("exit_bearing_min_deg")
     maximum = spec.get("exit_bearing_max_deg")

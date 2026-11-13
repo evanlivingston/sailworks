@@ -30,7 +30,7 @@ class Rounding:
     """One pass-and-exit rule for a route mark."""
 
     side: str
-    radius_nm: float
+    radius_nm: float | None = None
     exit_bearing_min_deg: float | None = None
     exit_bearing_max_deg: float | None = None
     name: str = ""
@@ -41,13 +41,15 @@ class Rounding:
         if side not in ("port", "starboard"):
             raise ValueError("Rounding side must be port or starboard")
         object.__setattr__(self, "side", side)
-        if (
-            type(self.radius_nm) not in (int, float)
-            or not math.isfinite(self.radius_nm)
-            or self.radius_nm <= 0
-        ):
-            raise ValueError("Rounding radius must be finite and greater than zero")
-        object.__setattr__(self, "radius_nm", float(self.radius_nm))
+        # Radius is inert legacy metadata: it is parsed and round-tripped but
+        # never constrains planning or acceptance, so any value is valid.
+        radius = self.radius_nm
+        if radius is None:
+            object.__setattr__(self, "radius_nm", None)
+        elif type(radius) not in (int, float) or not math.isfinite(radius):
+            raise ValueError("Rounding radius must be a finite number or None")
+        else:
+            object.__setattr__(self, "radius_nm", float(radius))
         minimum = self.exit_bearing_min_deg
         maximum = self.exit_bearing_max_deg
         if (minimum is None) != (maximum is None):

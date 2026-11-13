@@ -307,7 +307,7 @@ class RoutingInspectorPanel(QWidget):
                 lines.append(f"{name}: unknown")
         if values["missing"]:
             lines.append("missing: " + ", ".join(values["missing"]))
-        lines.append(self._rounding_text(leg))
+        lines.append(self._rounding_text(index, leg))
         self.readout.setPlainText("\n".join(lines))
         self.leg_selected.emit(leg.leg_id)
 
@@ -323,40 +323,49 @@ class RoutingInspectorPanel(QWidget):
         )
         return 3440.065 * 2 * math.asin(math.sqrt(max(0.0, min(1.0, a))))
 
-    def _rounding_text(self, leg):
+    @staticmethod
+    def _failure_text(report):
+        reason = report.get("failure_reason") or report.get("failure_code")
+        return str(reason or "unknown")
+
+    def _rounding_for_leg(self, index, leg):
+        """Return the rounding report carried by the leg ending nearest a mark."""
         for report in self._result.provenance.roundings:
             mark = report.get("mark")
             if not isinstance(mark, Mapping):
                 continue
-            radius = report.get("radius_nm")
-            if radius is None:
-                continue
-            if (
-                self._distance_nm(
-                    (leg.end.lat, leg.end.lon), (mark["latitude"], mark["longitude"])
+            position = (mark["latitude"], mark["longitude"])
+            nearest = None
+            nearest_distance = None
+            for leg_index, candidate in enumerate(self._result.legs):
+                distance = self._distance_nm(
+                    (candidate.end.lat, candidate.end.lon), position
                 )
-                > float(radius) + 1e-3
-            ):
-                continue
-            side = report.get("side", "unknown")
-            achieved = report.get("achieved_closest_distance_nm")
-            terminal = report.get("achieved_terminal_course_deg")
-            closest_course = report.get("closest_approach_course_deg")
-            satisfied = report.get("satisfied")
-            failure = report.get("failure_code", "unknown")
-            name = report.get("mark_name")
-            prefix = f"{name} — " if name else ""
-            text = f"rounding: {prefix}{side} {float(radius):.2f} nm"
-            if achieved is not None:
-                text += f", closest {float(achieved):.2f} nm"
-            if closest_course is not None:
-                text += f" at {float(closest_course):.1f}°"
-            if terminal is not None:
-                text += f", terminal {float(terminal):.1f}°"
-            if not satisfied:
-                text += f" (not satisfied: {failure})"
-            return text
-        return "rounding: exact waypoint"
+                if nearest_distance is None or distance < nearest_distance:
+                    nearest_distance = distance
+                    nearest = leg_index
+            if nearest == index:
+                return report
+        return None
+
+    def _rounding_text(self, index, leg):
+        report = self._rounding_for_leg(index, leg)
+        if report is None:
+            return "rounding: exact waypoint"
+        name = report.get("mark_name")
+        prefix = f"{name} — " if name else ""
+        text = f"rounding: {prefix}requested {report.get('side', 'unknown')}"
+        text += f", achieved {report.get('achieved_side') or 'unknown'}"
+        passages = report.get("passage_count")
+        if isinstance(passages, (int, float)):
+            count = int(passages)
+            text += f", {count} passage" + ("" if count == 1 else "s")
+        terminal = report.get("achieved_terminal_course_deg")
+        if terminal is not None:
+            text += f", terminal {float(terminal):.1f}°"
+        if not report.get("satisfied", False):
+            text += f" (not satisfied: {self._failure_text(report)})"
+        return text
 
     def _diagnostics_text(self):
         if self._result is None:
@@ -376,26 +385,17 @@ class RoutingInspectorPanel(QWidget):
                     if latitude is not None and longitude is not None:
                         name = f"{float(latitude):.4f}, {float(longitude):.4f}"
                 name = name or "mark"
-                side = report.get("side", "unknown")
-                text = f"{name}: {side}"
-                radius = report.get("radius_nm")
-                if radius is not None:
-                    text += f", radius {float(radius):.2f} nm"
-                achieved = report.get("achieved_closest_distance_nm")
-                if achieved is not None:
-                    text += f", closest {float(achieved):.2f} nm"
-                closest_course = report.get("closest_approach_course_deg")
-                if closest_course is not None:
-                    text += f" at {float(closest_course):.1f}°"
+                text = f"{name}: requested {report.get('side', 'unknown')}"
+                text += f", achieved {report.get('achieved_side') or 'unknown'}"
+                passages = report.get("passage_count")
+                if isinstance(passages, (int, float)):
+                    count = int(passages)
+                    text += f", {count} passage" + ("" if count == 1 else "s")
                 course = report.get("achieved_terminal_course_deg")
                 if course is not None:
                     text += f", terminal {float(course):.1f}°"
                 if not report.get("satisfied", False):
-                    text += (
-                        " (not satisfied: "
-                        + str(report.get("failure_code", "unknown"))
-                        + ")"
-                    )
+                    text += f" (not satisfied: {self._failure_text(report)})"
                 lines.append("  " + text)
         if self._restore_missing:
             lines.append(
