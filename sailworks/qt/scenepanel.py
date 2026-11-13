@@ -9,10 +9,8 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QFrame,
-    QHBoxLayout,
     QHeaderView,
     QLabel,
-    QPushButton,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -38,13 +36,18 @@ from sailworks.core.scene import (
     SceneCollection,
     SceneEntry,
 )
-from sailworks.rendering.navigation import routing_summary
+from sailworks.rendering.navigation import (
+    routing_detail_fields,
+    routing_summary,
+    track_detail_fields,
+)
 from .pointeditdialog import PointEditDialog
 from .theme import BORDER, PANEL, TEXT, MenuBuilder, symbol_icon, ThemedMenu
 
 NODE_ROLE = Qt.ItemDataRole.UserRole
 COORDINATE_ROLE = Qt.ItemDataRole.UserRole + 1
 ROUNDING_ROLE = Qt.ItemDataRole.UserRole + 2
+DETAIL_ROLE = Qt.ItemDataRole.UserRole + 3
 MUTED = QColor("#b0b0ad")
 POINT_COORDINATE = QColor("#8a8a87")
 ROUNDING_COLOR = QColor("#78aeed")
@@ -56,6 +59,8 @@ ROUNDING_COLORS = {
 }
 ROUNDING_SIDES = {label: side for side, label in ROUNDING_SHORT.items()}
 ROUNDING_GAP = 8
+DETAIL_GAP = 12
+DETAIL_MIN_LABEL = 48
 COORDINATE_FRACTION = 0.6
 NAME_COLUMN = 0
 VISIBLE_COLUMN = 1
@@ -131,6 +136,43 @@ def row_geometry(rect, metrics, coordinates, icon_width):
         rect, metrics, coordinates, label.left()
     )
     return icon, label, rounding, coordinate, shown
+
+
+def detail_columns(rect, metrics, values, label_left):
+    """Rects for the detail segments a row can show, highest priority first.
+
+    The values are painted as separate right-aligned segments ending at the
+    row's right edge, in priority order from left to right. Segments are kept
+    only while the block leaves ``DETAIL_MIN_LABEL`` pixels for the label, so a
+    narrow panel drops the lowest priority fields instead of painting them over
+    the name. A value that does not fit stops the block, keeping the order
+    intact rather than skipping to a shorter lower priority field.
+    """
+    available = max(0, rect.right() - label_left + 1)
+    kept = []
+    width = 0
+    for value in values:
+        text = str(value or "")
+        if not text:
+            continue
+        text_width = metrics.horizontalAdvance(text)
+        added = text_width + (DETAIL_GAP if kept else 0)
+        if width + added + DETAIL_MIN_LABEL > available:
+            break
+        kept.append((text, text_width))
+        width += added
+    columns = []
+    right = rect.right()
+    for text, text_width in reversed(kept):
+        columns.append(
+            (
+                text,
+                QRect(right - text_width + 1, rect.top(), text_width, rect.height()),
+            )
+        )
+        right -= text_width + DETAIL_GAP
+    columns.reverse()
+    return columns
 
 
 def _visibility_style():
@@ -287,11 +329,17 @@ class SceneTree(QTreeWidget):
 
 
 class SceneItemDelegate(QStyledItemDelegate):
-    """Paint point coordinates and mark rounding in a point's name cell."""
+    """Paint a row's detail fields, point coordinates and mark rounding.
+
+    Point rows keep the rounding slot and the right-aligned coordinates. Track
+    and routing rows carry detail fields instead, painted as right-aligned
+    segments before the label so they never cover the name.
+    """
 
     def paint(self, painter, option, index):
         coordinates = index.data(COORDINATE_ROLE)
-        if coordinates is None:
+        details = index.data(DETAIL_ROLE) or ()
+        if coordinates is None and not details:
             super().paint(painter, option, index)
             return
 
@@ -326,6 +374,21 @@ class SceneItemDelegate(QStyledItemDelegate):
             if size is None or size.width() <= 0:
                 size = widget.iconSize() if widget is not None else None
             icon_width = (size.width() if size is not None else 16) + 4
+
+        if coordinates is None:
+            self._paint_details(
+                painter,
+                adjusted,
+                rect,
+                metrics,
+                icon_width,
+                label,
+                details,
+                label_color,
+                coordinate_color,
+            )
+            return
+
         rounding_text = str(index.data(ROUNDING_ROLE) or "")
         _, label_rect, rounding_rect, coordinate_rect, coordinate_text = row_geometry(
             rect, metrics, coordinates, icon_width
@@ -356,6 +419,44 @@ class SceneItemDelegate(QStyledItemDelegate):
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
             coordinate_text,
         )
+        painter.restore()
+
+    @staticmethod
+    def _paint_details(
+        painter,
+        option,
+        rect,
+        metrics,
+        icon_width,
+        label,
+        details,
+        label_color,
+        detail_color,
+    ):
+        """Paint the label followed by the detail segments that fit."""
+        label_rect = rect.adjusted(icon_width, 0, 0, 0)
+        segments = detail_columns(rect, metrics, details, label_rect.left())
+        detail_left = segments[0][1].left() if segments else rect.right() + 1
+        label_text = metrics.elidedText(
+            str(label),
+            Qt.TextElideMode.ElideRight,
+            max(0, detail_left - label_rect.left() - DETAIL_GAP),
+        )
+        painter.save()
+        painter.setFont(option.font)
+        painter.setPen(label_color)
+        painter.drawText(
+            label_rect,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            label_text,
+        )
+        painter.setPen(detail_color)
+        for text, segment in segments:
+            painter.drawText(
+                segment,
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                text,
+            )
         painter.restore()
 
 
@@ -418,16 +519,6 @@ class ScenePanel(QWidget):
         self.tree.itemDoubleClicked.connect(self._double_clicked)
         self.tree.customContextMenuRequested.connect(self._context_menu)
         layout.addWidget(self.tree, 1)
-
-        row = QHBoxLayout()
-        row.setSpacing(6)
-        self.new_button = QPushButton("+ Collection")
-        self.new_button.clicked.connect(self._new_collection)
-        row.addWidget(self.new_button)
-        self.group_button = QPushButton("Group Selection")
-        self.group_button.clicked.connect(self._group_selection)
-        row.addWidget(self.group_button)
-        layout.addLayout(row)
 
         self.refresh()
 
@@ -652,6 +743,21 @@ class ScenePanel(QWidget):
             self._add_groups(row, group.id)
             self._add_items(row, group.id)
 
+    @staticmethod
+    def _detail_fields(kind, element):
+        """Ordered (label, value) detail fields for a row, highest priority first.
+
+        Only routings and tracks carry them; collections, groups, POIs and logs
+        have no extra detail worth a segment.
+        """
+        if element is None:
+            return []
+        if kind == KIND_ROUTING:
+            return routing_detail_fields(element)
+        if kind == KIND_TRACK:
+            return track_detail_fields(getattr(element, "points", ()))
+        return []
+
     def _add_items(self, parent_item, group_id):
         for entry in self.scene.items_in(group_id):
             row = QTreeWidgetItem([entry.name, ""])
@@ -682,6 +788,9 @@ class ScenePanel(QWidget):
             live = self.scene.live_entry(entry.kind, entry.key)
             detail = live.detail if live is not None else ""
             element = live.element if live is not None else None
+            fields = self._detail_fields(entry.kind, element)
+            if fields:
+                row.setData(NAME_COLUMN, DETAIL_ROLE, [value for _, value in fields])
             row.setToolTip(NAME_COLUMN, item_tooltip(entry, element, detail))
             if not self.scene.effective_visible(entry.kind, entry.key):
                 row.setForeground(NAME_COLUMN, QBrush(MUTED))

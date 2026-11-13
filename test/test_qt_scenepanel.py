@@ -12,7 +12,7 @@ from PySide6.QtGui import (
     QMouseEvent,
     QWheelEvent,
 )
-from PySide6.QtWidgets import QApplication, QDialog, QFrame, QToolTip
+from PySide6.QtWidgets import QApplication, QDialog, QFrame, QPushButton, QToolTip
 
 from sailworks.core.geo.elementmultipoint import NamedPoint
 from sailworks.core.geo.rounding import (
@@ -22,9 +22,13 @@ from sailworks.core.geo.rounding import (
     ROUNDING_SHORT,
     ROUNDING_STARBOARD,
 )
+from sailworks.core import utils
 from sailworks.core.scene import KIND_LOG, KIND_POI, KIND_ROUTING, KIND_TRACK
 from sailworks.qt.scenepanel import (
     COORDINATE_ROLE,
+    DETAIL_GAP,
+    DETAIL_MIN_LABEL,
+    DETAIL_ROLE,
     NAME_COLUMN,
     ROUNDING_ROLE,
     VISIBLE_COLUMN,
@@ -32,6 +36,7 @@ from sailworks.qt.scenepanel import (
     SceneTooltip,
     TOOLTIP_OFFSET_X,
     TOOLTIP_OFFSET_Y,
+    detail_columns,
     row_geometry,
     rounding_color,
     rounding_column_width,
@@ -39,7 +44,11 @@ from sailworks.qt.scenepanel import (
 
 
 from sailworks.qt.theme import BORDER, PANEL, TEXT, TOOLTIP_STYLE
-from sailworks.rendering.navigation import routing_summary
+from sailworks.rendering.navigation import (
+    routing_detail_fields,
+    routing_summary,
+    track_detail_fields,
+)
 
 
 class FakeTrack:
@@ -202,6 +211,29 @@ def test_panel_builds_default_tree_and_items(tmp_path):
     assert panel.item_row(KIND_TRACK, "t1") is not None
     assert panel.item_row(KIND_POI, "p1") is not None
     assert panel.item_row(KIND_LOG, "log-1") is not None
+
+
+def test_panel_has_no_collection_or_group_buttons(tmp_path):
+    application()
+    panel = panel_for(tmp_path, tracks=[FakeTrack("t1", "Morning")])
+
+    assert not hasattr(panel, "new_button")
+    assert not hasattr(panel, "group_button")
+    labels = [button.text() for button in panel.findChildren(QPushButton)]
+    assert "+ Collection" not in labels
+    assert "Group Selection" not in labels
+
+
+def test_new_collection_action_remains_available(tmp_path):
+    application()
+    panel = panel_for(tmp_path, tracks=[FakeTrack("t1", "Morning")])
+
+    with patch.object(
+        panel.scene, "create_group", wraps=panel.scene.create_group
+    ) as create_group:
+        panel._new_collection()
+
+    create_group.assert_called_once()
 
 
 def test_toggling_item_updates_element_visibility(tmp_path):
@@ -732,6 +764,125 @@ def test_point_row_tooltip_shows_side_and_coordinate(tmp_path):
     assert tooltip == "Leave to port\n48.100000, -123.100000"
     assert "Mark 1" not in tooltip
     assert not tooltip.endswith("\n")
+
+
+def test_routing_detail_fields_match_the_summary(tmp_path):
+    application()
+    route = route_with_points()
+
+    fields = routing_detail_fields(route)
+
+    assert [label for label, _ in fields] == ["distance", "duration", "speed"]
+    # One source: the tree segments are exactly the summary's figures.
+    assert [value for _, value in fields] == routing_summary(route).split(" | ")
+    distance = sum(
+        utils.point_distance(
+            route.points[index - 1][0],
+            route.points[index - 1][1],
+            route.points[index][0],
+            route.points[index][1],
+        )
+        for index in range(1, len(route.points))
+    )
+    assert fields[0][1] == "%.0f nm" % distance
+    assert fields[1][1] == "2h 00m"
+    assert fields[2][1] == "avg %.1f kts" % (distance / 2)
+
+
+def test_track_detail_fields_show_mark_count_then_distance(tmp_path):
+    application()
+    points = [(51.0, -1.0), (51.5, -1.5), (52.0, -2.0)]
+
+    fields = track_detail_fields(points)
+
+    assert [label for label, _ in fields] == ["marks", "distance"]
+    assert fields[0][1] == "3 marks"
+    distance = utils.point_distance(51.0, -1.0, 51.5, -1.5) + utils.point_distance(
+        51.5, -1.5, 52.0, -2.0
+    )
+    assert fields[1][1] == "%.1f nm" % distance
+
+
+def test_scene_rows_carry_detail_fields_for_their_type(tmp_path):
+    application()
+    route = route_with_points()
+    track = FakeTrack("t1", "Morning")
+    track.points = [(51.0, -1.0), (51.5, -1.5), (52.0, -2.0)]
+    panel = panel_for(
+        tmp_path, tracks=[track], routes=[route], pois=[FakePOI("p1", "Harbor")]
+    )
+
+    route_values = [value for _, value in routing_detail_fields(route)]
+    track_values = [value for _, value in track_detail_fields(track.points)]
+
+    assert panel.item_row(KIND_ROUTING, "r1").data(NAME_COLUMN, DETAIL_ROLE) == (
+        route_values
+    )
+    assert panel.item_row(KIND_TRACK, "t1").data(NAME_COLUMN, DETAIL_ROLE) == (
+        track_values
+    )
+    assert panel.item_row(KIND_POI, "p1").data(NAME_COLUMN, DETAIL_ROLE) is None
+
+
+def test_point_rows_keep_rounding_and_coordinates_without_detail_fields(tmp_path):
+    application()
+    panel = panel_for(tmp_path, routes=[route_with_points()])
+    row = panel.item_row(KIND_ROUTING, "r1")
+
+    row.setExpanded(True)
+    child = row.child(0)
+
+    assert child.data(NAME_COLUMN, DETAIL_ROLE) is None
+    assert child.data(NAME_COLUMN, COORDINATE_ROLE) == "48.000000, -123.000000"
+    assert child.data(NAME_COLUMN, ROUNDING_ROLE) == ROUNDING_SHORT[ROUNDING_SAIL_TO]
+
+
+def detail_width(metrics, values, label_left, count):
+    """Row width that fits exactly ``count`` detail values plus the label."""
+    widths = [metrics.horizontalAdvance(value) for value in values[:count]]
+    return label_left + DETAIL_MIN_LABEL + sum(widths) + DETAIL_GAP * (count - 1)
+
+
+def test_narrow_row_keeps_only_the_highest_priority_detail(tmp_path):
+    application()
+    panel = panel_for(tmp_path)
+    metrics = QFontMetrics(panel.tree.font())
+    label_left = 24
+    cases = (
+        (["108 nm", "2h 00m", "avg 54.0 kts"], "108 nm"),
+        (["3 marks", "21.4 nm"], "3 marks"),
+    )
+
+    for values, first in cases:
+        narrow = QRect(0, 0, detail_width(metrics, values, label_left, 1) + 2, 20)
+        wide = QRect(
+            0, 0, detail_width(metrics, values, label_left, len(values)) + 2, 20
+        )
+
+        assert [
+            text for text, _ in detail_columns(narrow, metrics, values, label_left)
+        ] == [first]
+        assert [
+            text for text, _ in detail_columns(wide, metrics, values, label_left)
+        ] == values
+
+
+def test_detail_segments_never_overlap_the_label_or_each_other(tmp_path):
+    application()
+    panel = panel_for(tmp_path)
+    metrics = QFontMetrics(panel.tree.font())
+    label_left = 24
+    values = ["108 nm", "2h 00m", "avg 54.0 kts"]
+
+    for count in (1, 2, 3):
+        rect = QRect(0, 0, detail_width(metrics, values, label_left, count) + 2, 20)
+        segments = detail_columns(rect, metrics, values, label_left)
+
+        assert len(segments) == count
+        assert segments[-1][1].right() == rect.right()
+        assert segments[0][1].left() - label_left >= DETAIL_MIN_LABEL
+        for earlier, later in zip(segments, segments[1:]):
+            assert later[1].left() - earlier[1].right() - 1 == DETAIL_GAP
 
 
 def test_application_stylesheet_styles_tooltips(tmp_path):

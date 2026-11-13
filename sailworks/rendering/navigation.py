@@ -62,8 +62,12 @@ def _route_datetime(value):
     return dateutil.parser.parse(value)
 
 
-def routing_summary(r):
-    """Build a short summary string for a routing.
+def routing_detail_fields(r):
+    """Ordered (label, value) figures for a routing, highest priority first.
+
+    Distance, duration and average speed are the same display strings the
+    routing summary uses, so the tooltip and the scene tree cannot disagree.
+    A route with too few complete points has no fields.
 
     Saved routes may carry partial points (for example a two-value coordinate
     without time or speed). They are skipped rather than allowed to crash the
@@ -77,7 +81,7 @@ def routing_summary(r):
     """
     points = [point for point in r if len(point) >= 6]
     if len(points) < 2:
-        return ""
+        return []
     total_dist = 0.0
     total_speed = 0.0
     speed_count = 0
@@ -90,25 +94,6 @@ def routing_summary(r):
             total_speed += speed
             speed_count += 1
     total_dist_nm = total_dist
-    provenance = r.provenance or {}
-    source_note = ""
-    if provenance.get("routing") == "isochrone-with-currents":
-        currents = provenance["currents"]
-        selected = currents["selected_sources"]
-        used = set(currents["actual_sources"])
-        models = sorted({s["model"] for s in selected if s["dataset_id"] in used})
-        source_note = " | currents: " + ", ".join(models) + " · coverage checked"
-        resolutions = {s["dataset_id"]: s.get("resolution_m") for s in selected}
-        finest = min(
-            (r for r in (s.get("resolution_m") for s in selected) if r is not None),
-            default=None,
-        )
-        if finest is not None and any(
-            resolutions.get(i, finest) > finest for i in used
-        ):
-            source_note += " · incl. fallback"
-    elif provenance.get("routing") == "wind-only":
-        source_note = " | wind only"
     dur_str = None
     avg_speed = None
     leg_mean = False
@@ -130,15 +115,75 @@ def routing_summary(r):
     if avg_speed is None and speed_count:
         avg_speed = total_speed / speed_count
         leg_mean = True
-    parts = ["%.0f nm" % total_dist_nm]
+    fields = [("distance", "%.0f nm" % total_dist_nm)]
     if dur_str:
-        parts.append(dur_str)
+        fields.append(("duration", dur_str))
     if avg_speed is not None:
         avg_str = "avg %.1f kts" % avg_speed
         if leg_mean:
             avg_str += " (leg mean)"
-        parts.append(avg_str)
-    return " | ".join(parts) + source_note
+        fields.append(("speed", avg_str))
+    return fields
+
+
+def track_detail_fields(points):
+    """Ordered (label, value) detail fields for a track row.
+
+    Mark count first and total distance second, so a narrow scene tree keeps
+    the count. Distance sums the same great-circle legs the routing figures
+    use.
+    """
+    points = list(points)
+    distance = 0.0
+    for index in range(1, len(points)):
+        distance += utils.point_distance(
+            points[index - 1][0],
+            points[index - 1][1],
+            points[index][0],
+            points[index][1],
+        )
+    count = len(points)
+    return [
+        ("marks", f"{count} mark" if count == 1 else f"{count} marks"),
+        ("distance", "%.1f nm" % distance),
+    ]
+
+
+def _routing_source_note(r):
+    """Provenance note appended to a routing summary, or an empty string."""
+    provenance = r.provenance or {}
+    source_note = ""
+    if provenance.get("routing") == "isochrone-with-currents":
+        currents = provenance["currents"]
+        selected = currents["selected_sources"]
+        used = set(currents["actual_sources"])
+        models = sorted({s["model"] for s in selected if s["dataset_id"] in used})
+        source_note = " | currents: " + ", ".join(models) + " · coverage checked"
+        resolutions = {s["dataset_id"]: s.get("resolution_m") for s in selected}
+        finest = min(
+            (r for r in (s.get("resolution_m") for s in selected) if r is not None),
+            default=None,
+        )
+        if finest is not None and any(
+            resolutions.get(i, finest) > finest for i in used
+        ):
+            source_note += " · incl. fallback"
+    elif provenance.get("routing") == "wind-only":
+        source_note = " | wind only"
+    return source_note
+
+
+def routing_summary(r):
+    """Build a short summary string for a routing.
+
+    The figures come from ``routing_detail_fields`` so the tooltip and the
+    scene tree show the same distance, duration and average speed. A route
+    with too few complete points has no summary.
+    """
+    fields = routing_detail_fields(r)
+    if not fields:
+        return ""
+    return " | ".join(value for _, value in fields) + _routing_source_note(r)
 
 
 class NavigationRenderer:
