@@ -663,11 +663,35 @@ def test_failed_isochrone_read_is_cached_until_explicit_refresh():
     assert len(calls) == 1
     assert "artifact unavailable" in (route.contour_error or "")
 
-    # An explicit refresh performs exactly one more read.
+    # An explicit refresh clears the failure marker so the next access retries
+    # the read exactly once. A retry that fails again keeps the route marked
+    # unavailable rather than masking the still-missing artifact.
     route.refresh_isochrones()
-    assert route.contour_error is None
+    assert route.contour_error
     assert route.isochrones == ()
     assert len(calls) == 2
+    assert "artifact unavailable" in (route.contour_error or "")
+
+    # Only a read that actually yields frontiers clears the recorded error.
+    def available(_store):
+        calls.append(1)
+        return SimpleNamespace(
+            layers=(
+                SimpleNamespace(
+                    contours=(
+                        SimpleNamespace(
+                            points=(SimpleNamespace(lat=48.0, lon=-124.0),),
+                        ),
+                    ),
+                ),
+            )
+        )
+
+    route.load_result = available
+    route.refresh_isochrones()
+    assert route.isochrones == [[(48.0, -124.0)]]
+    assert route.contour_error is None
+    assert len(calls) == 3
 
 
 def test_profile_identity_falls_back_to_recorded_sail_plan():

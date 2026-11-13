@@ -1572,6 +1572,9 @@ class PreviewWindow(QMainWindow):
         )
 
     def _sync_route_isochrones(self):
+        if getattr(self, "_syncing_route_isochrones", False):
+            # A row update requested by this sync must not re-enter it.
+            return
         if not self.controller.routing.busy:
             route = self.navigation_panel.route
             show = (
@@ -1579,6 +1582,9 @@ class PreviewWindow(QMainWindow):
                 and bool(getattr(route, "visible", True))
                 and bool(getattr(route, "isochrones_visible", True))
             )
+            # The row shows contour availability, so remember what it said
+            # before this sync hydrates the artifact and record a transition.
+            error_before = getattr(route, "contour_error", None)
             # Do not hydrate a referenced artifact while the layer is hidden.
             native = self.controller.routing.native_overlay
             if native is not None and route is not None:
@@ -1629,6 +1635,30 @@ class PreviewWindow(QMainWindow):
             selection = self.controller.routing.native_selection
             if selection is not None and native is not None:
                 native.attach_selection(selection)
+            if getattr(route, "contour_error", None) != error_before:
+                # Contour availability changed during this sync, so the Scene
+                # Collection row would otherwise stay one refresh behind and
+                # offer a checkbox for a result it no longer has.
+                self._refresh_route_isochrone_row()
+
+    def _refresh_route_isochrone_row(self):
+        """Rebuild the scene rows that show contour availability.
+
+        Called only when a sync changed ``contour_error``, so it stays one
+        explicit request instead of a full panel refresh on every sync. The
+        re-entry guard means a panel emitting its own change signal during the
+        rebuild cannot drive another sync and loop.
+        """
+        scene_panel = getattr(self, "scene_panel", None)
+        if scene_panel is None:
+            return
+        if getattr(self, "_syncing_route_isochrones", False):
+            return
+        self._syncing_route_isochrones = True
+        try:
+            scene_panel.refresh()
+        finally:
+            self._syncing_route_isochrones = False
 
     def _create_routing_inspector(self):
         self.routing_inspector = RoutingInspectorPanel(self)
@@ -1692,6 +1722,11 @@ class PreviewWindow(QMainWindow):
             )
             if manager is None:
                 raise ValueError("no routing collection is loaded")
+            # Selecting a saved route is the explicit retry point for a contour
+            # artifact that was missing or corrupt on an earlier visit. This
+            # only clears the remembered failure; the single read happens in
+            # the sync below, so repeated frames still never retry.
+            route.refresh_isochrones()
             result = manager.load_result(route)
             model = self.controller.routing.show_native_result(result)
         except (OSError, KeyError, ValueError) as exc:

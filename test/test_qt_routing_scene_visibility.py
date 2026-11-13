@@ -107,8 +107,14 @@ def fake_window(route, native, *, active_route=None, busy=False):
     # rather than a partial stand-in. Isochrone mode resolution itself is a
     # module-level pure function, so it needs no binding.
     window._native_owns_route = MethodType(PreviewWindow._native_owns_route, window)
+    window._refresh_route_isochrone_row = MethodType(
+        PreviewWindow._refresh_route_isochrone_row, window
+    )
     window._sync_isochrone_colour_mode = MethodType(
         PreviewWindow._sync_isochrone_colour_mode, window
+    )
+    window._sync_route_isochrones = MethodType(
+        PreviewWindow._sync_route_isochrones, window
     )
     return window
 
@@ -502,3 +508,212 @@ def test_legacy_route_trace_toggle_persists_without_trace_geometry():
     payload = restored.to_json()
     assert payload["traces_visible"] is True
     assert payload["isochrones"] == []
+
+
+def _unavailable_route(exc=OSError("artifact missing"), isochrones=True):
+    route = route_with_summary(isochrones=isochrones)
+    route.result_ref = object()
+    route.collection = SimpleNamespace(result_store=object())
+    route._isochrones = None
+
+    def unavailable(_store):
+        raise exc
+
+    route.load_result = unavailable
+    return route
+
+
+def test_failed_contour_retry_keeps_the_route_unavailable():
+    """A mode change retries once; a failed retry must not clear the error."""
+    route = _unavailable_route()
+    attempts = []
+    unavailable = route.load_result
+
+    def counting(store):
+        attempts.append(store)
+        return unavailable(store)
+
+    route.load_result = counting
+    assert route.isochrones == ()
+    assert route.contour_error
+    error = route.contour_error
+    attempts.clear()
+    visible_before = route.isochrones_visible
+
+    route.isochrone_colour_by = "time"
+
+    # The setter only schedules the retry; it must not clear the error before
+    # the artifact has been read successfully.
+    assert route.isochrone_colour_by == "time"
+    assert route.contour_error == error
+    assert route.isochrones == ()
+    assert attempts, "the mode change should retry the contour read"
+    assert route.contour_error == error
+    assert route.isochrones_visible is visible_before
+
+    # The retry failed again, so later frames must not re-read the artifact.
+    attempted = len(attempts)
+    assert route.isochrones == ()
+    assert len(attempts) == attempted
+    assert route.contour_error == error
+
+
+def test_successful_contour_retry_clears_the_error():
+    result = _result(
+        layers=(
+            _layer(
+                "layer-0",
+                contours=(Contour("c-closed", True, (Point(48.0, -124.0),)),),
+            ),
+        )
+    )
+    route = _unavailable_route()
+    state = {"missing": True}
+
+    def load_result(_store):
+        if state["missing"]:
+            raise OSError("artifact missing")
+        return result
+
+    route.load_result = load_result
+    assert route.isochrones == ()
+    assert route.contour_error
+
+    state["missing"] = False
+    route.refresh_isochrones()
+    assert route.isochrones == [[(48.0, -124.0)]]
+    assert route.contour_error is None
+
+
+class _RecordingScenePanel:
+    def __init__(self):
+        self.refreshes = 0
+
+    def refresh(self):
+        self.refreshes += 1
+
+
+class _ReentrantScenePanel:
+    """Refresh that feeds back into the isochrone sync, as a signal would."""
+
+    def __init__(self, window):
+        self.window = window
+        self.refreshes = 0
+
+    def refresh(self):
+        self.refreshes += 1
+        PreviewWindow._sync_route_isochrones(self.window)
+
+
+def test_corrupt_artifact_refreshes_the_scene_row_once_per_transition():
+    route = _unavailable_route()
+    window = fake_window(route, None, active_route=route)
+    panel = _RecordingScenePanel()
+    window.scene_panel = panel
+
+    PreviewWindow._sync_route_isochrones(window)
+
+    # The first sync after selection sets the error and asks for the row to be
+    # rebuilt, so the unavailable row appears without a manual refresh.
+    assert route.contour_error
+    assert panel.refreshes == 1
+    assert window.map.isochrone_error == route.contour_error
+
+    # An unchanged failure is not a transition and must not rebuild the panel.
+    PreviewWindow._sync_route_isochrones(window)
+    assert panel.refreshes == 1
+
+
+def test_scene_row_refresh_cannot_re_enter_the_isochrone_sync():
+    route = _unavailable_route()
+    window = fake_window(route, None, active_route=route)
+    window.scene_panel = _ReentrantScenePanel(window)
+
+    PreviewWindow._sync_route_isochrones(window)
+
+    assert window.scene_panel.refreshes == 1
+
+
+def test_healthy_route_never_requests_a_scene_row_refresh():
+    route = route_with_summary(isochrones=True)
+    route.isochrones = [[(48.0, -124.0), (48.1, -123.9)]]
+    window = fake_window(route, None, active_route=route)
+    panel = _RecordingScenePanel()
+    window.scene_panel = panel
+
+    PreviewWindow._sync_route_isochrones(window)
+
+    assert panel.refreshes == 0
+    assert window.map.isochrone_error is None
+
+
+def test_reselecting_a_saved_route_retries_the_contours_once(monkeypatch):
+    result = _result(
+        layers=(
+            _layer(
+                "layer-0",
+                contours=(Contour("c-closed", True, (Point(48.0, -124.0),)),),
+            ),
+        )
+    )
+    route = route_with_summary(result.calculation_id, isochrones=True)
+    route.result_ref = object()
+    store = object()
+    route.collection = SimpleNamespace(result_store=store)
+    route._isochrones = None
+    route.inspection_context = {"calculation_id": result.calculation_id}
+    state = {"missing": True}
+    attempts = []
+
+    def load_result(_store):
+        attempts.append(_store)
+        if state["missing"]:
+            raise OSError("artifact missing")
+        return result
+
+    route.load_result = load_result
+    native = RoutingOverlayModel(result)
+    window = fake_window(route, native, active_route=route)
+    window.controller.core = SimpleNamespace(
+        routingManager=SimpleNamespace(load_result=lambda _route: result)
+    )
+    window.controller.routing.show_native_result = lambda _result: SimpleNamespace(
+        result=result
+    )
+    window._select_saved_route = lambda _route: None
+    panel = _RecordingScenePanel()
+    window.scene_panel = panel
+
+    def present(model, route=None, context=None, context_error=None):
+        window._routing_active_route = route
+        PreviewWindow._sync_route_isochrones(window)
+
+    window._present_routing_result = present
+    monkeypatch.setattr(
+        "sailworks.core.marine.routinginspection.InspectionContext.from_dict",
+        classmethod(
+            lambda _cls, _payload: SimpleNamespace(calculation_id=result.calculation_id)
+        ),
+    )
+
+    # First selection: the artifact is missing, so the route stays unavailable
+    # after exactly one read attempt and the row is rebuilt once.
+    assert PreviewWindow._show_saved_routing_route(window, route) is True
+    assert route.contour_error
+    assert attempts == [store]
+    assert panel.refreshes == 1
+
+    # Display frames still never retry the failed read.
+    PreviewWindow._sync_route_isochrones(window)
+    assert attempts == [store]
+
+    # Re-selecting after the artifact is restored retries exactly once and
+    # brings the contours back without a colour-mode change.
+    state["missing"] = False
+    assert PreviewWindow._show_saved_routing_route(window, route) is True
+    assert attempts == [store, store]
+    assert route.contour_error is None
+    assert route.isochrones == [[(48.0, -124.0)]]
+    # FakeMap stores each frame as the tuple of frontiers it was handed.
+    assert window.map.frames[-1] == ([(48.0, -124.0)],)
+    assert panel.refreshes == 2

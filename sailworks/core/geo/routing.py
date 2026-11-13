@@ -290,7 +290,11 @@ class Routing(Track):
             self._leg_readouts_ref = self.result_ref
             self.contour_error = f"{type(exc).__name__}: {exc}"
             return ()
-        self.contour_error = None
+        # A successful leg read proves the artifact readable, but it must not
+        # clear a pending contour failure: only ``isochrones`` clears that,
+        # after the load and the frontier hydration both succeed.
+        if not self._contour_read_failed:
+            self.contour_error = None
         self._leg_readouts = tuple(
             getattr(leg, "readout", None) or {} for leg in getattr(result, "legs", ())
         )
@@ -314,6 +318,12 @@ class Routing(Track):
         a plan change still marks at a plan boundary. A leg with neither value
         stays ``None`` so callers cannot mistake an unknown plan for a recorded
         one, and therefore never invent a sail change at an unknown boundary.
+
+        The two sources are compared as text tokens, not by kind: a numeric
+        ``sail_plan`` is stringified to the same token an equal
+        ``profile_identity`` string would produce, so equal values never mark
+        whatever kind they came from. Different kinds with different values do
+        mark, which is the conservative direction for a sail-change boundary.
         """
         identities = []
         for readout in self._leg_readout_values():
@@ -330,11 +340,12 @@ class Routing(Track):
         """Drop a recorded contour-read failure so the next access retries once.
 
         Explicit user actions (a colour-mode change or a caller-provided
-        refresh) use this; repeated display frames must not.
+        refresh) use this; repeated display frames must not. Only the retry's
+        own success clears ``contour_error``, so a still-missing artifact keeps
+        the route marked unavailable while the attempt is made.
         """
         self._contour_read_failed = False
         self._contour_read_ref = None
-        self.contour_error = None
 
     @property
     def isochrones(self):
@@ -371,8 +382,11 @@ class Routing(Track):
             self._contour_read_failed = True
             self._contour_read_ref = self.result_ref
             return ()
+        # Only a read that produced frontiers clears the recorded failure: a
+        # retry that fails again leaves the route marked unavailable.
+        frontiers = contour_frontiers(result)
+        self._isochrones = frontiers
         self.contour_error = None
-        self._isochrones = contour_frontiers(result)
         return self._isochrones
 
     @isochrones.setter

@@ -583,6 +583,7 @@ def _workspace_window(collection):
         "_restore_saved_routing_overlay",
         "_native_owns_route",
         "_navigation_route_selected",
+        "_refresh_route_isochrone_row",
         "_sync_route_isochrones",
         "_show_saved_routing_route",
         "_present_routing_result",

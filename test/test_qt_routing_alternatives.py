@@ -14,6 +14,9 @@ def _route(name, *, has_result=True, calculation_id=None):
         result_ref=object() if has_result else None,
         result_summary=summary,
         inspection_context={},
+        # A real ``Routing`` exposes this; selection flows call it to request
+        # one explicit contour retry.
+        refresh_isochrones=lambda: None,
     )
 
 
