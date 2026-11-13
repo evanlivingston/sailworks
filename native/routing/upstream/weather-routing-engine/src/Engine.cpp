@@ -299,6 +299,13 @@ bool roundingStartAmbiguous(const RoutingRequest& request, GeoPoint start) {
   return distanceNm(start, request.destination) <= 1e-6;
 }
 
+// Hard bound on rounding search expansion. Every delivered rounding candidate
+// costs a full motion replay, so an exit range no candidate can satisfy would
+// otherwise be explored until the generated-state budget runs out. Counted at
+// the replay site in directConnection so cheap retained-node inspections do not
+// consume it, and every replay path shares one bound.
+constexpr std::uint64_t kMaximumRoundingAttempts = 20000;
+
 void recordRoundingAttempt(const RoutingRequest& request,
                            const RoundingMeasurement& measurement,
                            RoutingDiagnostics& diagnostics) {
@@ -312,6 +319,20 @@ void recordRoundingAttempt(const RoutingRequest& request,
     diagnostics.roundingTerminalCourseDegrees =
         measurement.terminalCourseDegrees;
   }
+}
+
+bool roundingExpansionExhausted(const RoutingRequest& request,
+                                const RoutingDiagnostics& diagnostics) {
+  return request.rounding &&
+         diagnostics.roundingAttempts >= kMaximumRoundingAttempts;
+}
+
+// Named reason for an exit range that the bounded search could not deliver.
+// Distinct from side_unreachable so a caller can tell a wrong-side delivery
+// from an outbound course no pass could produce.
+void noteRoundingExhaustion(RoutingDiagnostics& diagnostics) {
+  diagnostics.roundingAttempted = true;
+  diagnostics.roundingFailureCode = "exit_range_unreachable";
 }
 
 std::vector<double> headings(double step, double bearing, bool adaptive,
@@ -783,6 +804,9 @@ std::optional<Node> directConnection(
     targets.push_back(request.destination);
   }
   if (targets.empty()) return {};
+  // A bounded rounding search stops spending motion replays on an exit range it
+  // has already exhausted.
+  if (roundingExpansionExhausted(request, diagnostics)) return {};
   const auto remainingHorizon=std::max(Duration::zero(),
       std::chrono::duration_cast<Duration>(request.departure+
           request.limits.maximumRouteDuration-from.time));
@@ -868,6 +892,7 @@ std::optional<Node> directConnection(
                 replayedSubTrack(replay->segments, replay->end);
             const auto measured = measureRoundingAtConnection(
                 request, track, replay->end, terminalCourse);
+            ++diagnostics.roundingAttempts;
             recordRoundingAttempt(request, measured, diagnostics);
             acceptedArrival = measured.satisfied;
           } else {
@@ -1471,6 +1496,13 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
       result.reason = "routing cancelled";
       return result;
     }
+    if (roundingExpansionExhausted(request, diagnostics)) {
+      noteRoundingExhaustion(diagnostics);
+      result.failure = RoutingStatus::SearchIncomplete;
+      result.reason =
+          "rounding search expansion budget exhausted: exit range unreachable";
+      return result;
+    }
     const auto landRejectionsBeforeLayer = diagnostics.landRejections;
     const auto corridorPrunedBeforeLayer = diagnostics.pruned.outsideCorridor;
     std::vector<Node> candidates;
@@ -1539,6 +1571,7 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
     // predecessor can exhaust that budget and discard an already found
     // connection. Keep the same bounded alternatives for independent replay.
     for (const std::size_t index : result.retained) {
+      if (roundingExpansionExhausted(request, diagnostics)) break;
       const Node& from = result.nodes[index];
       const double remaining = distanceNm(from.position, request.destination);
       diagnostics.closestApproachNm =
@@ -1620,6 +1653,7 @@ SearchArtifacts forwardSearch(const RoutingRequest& request,
       std::vector<std::pair<Node, Node>> arrivals;
       for (std::size_t n = 0; n < count; ++n) {
         if (request.cancellation.cancelled()) break;
+        if (roundingExpansionExhausted(request, diagnostics)) break;
         Node& from = candidates[order[n]];
         if (distanceNm(from.position, request.destination) >
             approachEnvelopeNm(request, step))
@@ -3540,13 +3574,15 @@ RoutingResult Solver::routeMember(
       result.diagnostics.roundingFailureCode = "invalid_rounding";
       return result;
     }
-    if (roundingGeometricallyImpossible(*request.rounding)) {
+    if (roundingGeometricallyImpossible(request.destination, *request.rounding,
+                                        request.roundingNextPoint)) {
       result.status = RoutingStatus::UnsatisfiableRounding;
       result.message =
-          "rounding not satisfied: side_unreachable (no passing point on the "
-          "required side)";
+          "rounding not satisfied: exit_range_unreachable (the required exit "
+          "range lies entirely beyond the departing leg toward the next course "
+          "point)";
       result.diagnostics.roundingAttempted = true;
-      result.diagnostics.roundingFailureCode = "side_unreachable";
+      result.diagnostics.roundingFailureCode = "exit_range_unreachable";
       return result;
     }
     if (roundingStartAmbiguous(request, request.start)) {
@@ -3947,6 +3983,24 @@ RoutingResult Solver::routeMember(
       break;
     }
     if (latest.convergenceStalled) break;
+  }
+  // Every further stage would spend the same rounding candidate budget on the
+  // same unreachable exit range, so return the named rejection instead of
+  // handing it to reverse or graph recovery.
+  if (!found && latest.failure != RoutingStatus::Cancelled &&
+      roundingExpansionExhausted(request, result.diagnostics)) {
+    noteRoundingExhaustion(result.diagnostics);
+    result.status = RoutingStatus::UnsatisfiableRounding;
+    std::ostringstream message;
+    message << "rounding not satisfied: exit_range_unreachable";
+    if (std::isfinite(result.diagnostics.roundingClosestDistanceNm)) {
+      message << " (closest " << result.diagnostics.roundingClosestDistanceNm
+              << " NM, terminal course "
+              << result.diagnostics.roundingTerminalCourseDegrees << " deg)";
+    }
+    result.message = message.str();
+    result.visualization.isochrones = latest.isochrones;
+    return result;
   }
   result.diagnostics.forwardGeneratedStates =
       result.diagnostics.generatedStates -

@@ -3,6 +3,7 @@
 import math
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -150,6 +151,65 @@ def test_rounding_exit_range_is_enforced_and_both_sides_are_available():
     )
 
 
+def test_single_bearing_exit_ranges_are_accepted_quickly():
+    # 000 and 359 are both feasible. The passing point is placed where the ray
+    # from the current position at the required bearing meets the perpendicular
+    # from the mark, so the departing leg leaves exactly on that course while
+    # the mark stays abeam on the required side. Both must be accepted, and the
+    # bounded search must reach them quickly instead of exhausting its budget.
+    for exit_bearing in (0, 359):
+        started = time.perf_counter()
+        run = _run(
+            {
+                **SETTINGS,
+                "roundings": [
+                    {
+                        "side": "port",
+                        "radius_nm": 0.5,
+                        "exit_bearing_min_deg": exit_bearing,
+                        "exit_bearing_max_deg": exit_bearing,
+                    }
+                ],
+            }
+        )
+        elapsed = time.perf_counter() - started
+        assert run["accepted"], run["message"]
+        report = run["roundings"][0]
+        assert report["satisfied"] is True
+        assert report["achieved_side"] == "port"
+        assert report["achieved_terminal_course_deg"] == pytest.approx(
+            exit_bearing, abs=1e-6
+        )
+        assert (
+            elapsed < 10.0
+        ), f"exit range {exit_bearing}-{exit_bearing} took {elapsed:.1f}s"
+
+
+def test_interior_exit_range_away_from_the_next_leg_is_rejected():
+    # The departing leg leaves the interior mark and must reach the next course
+    # point, so a range more than a right angle away from that bearing is
+    # provably unreachable. The preflight rejects it before the search starts.
+    waypoint = (48.255, -123.60)
+    run = _run(
+        {
+            **SETTINGS,
+            "waypoints": [list(waypoint), list(SETTINGS["destination"])],
+            "roundings": [
+                {
+                    "side": "port",
+                    "radius_nm": 0.15,
+                    "exit_bearing_min_deg": 200,
+                    "exit_bearing_max_deg": 230,
+                },
+                None,
+            ],
+        }
+    )
+    assert not run["accepted"], run["message"]
+    assert run["status"] == "unsatisfiable_rounding"
+    assert "exit_range_unreachable" in run["message"]
+
+
 def test_rounding_runs_are_deterministic():
     settings = {
         **SETTINGS,
@@ -230,7 +290,7 @@ def test_rounding_rejects_invalid_specs_before_dispatch():
     # tiny and huge values are all accepted and never shape the route. The
     # native payload differs only in the echoed radius.
     payloads = []
-    for radius in (0, -1, 0.001, 1000):
+    for radius in (0, -1, 0.001, 0.5, 1000):
         run = _run(
             {
                 **SETTINGS,

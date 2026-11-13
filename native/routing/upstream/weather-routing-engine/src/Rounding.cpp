@@ -209,11 +209,26 @@ bool roundingConstraintValid(const RoundingConstraint& rounding) {
   return validExitRange(rounding);
 }
 
-bool roundingGeometricallyImpossible(const RoundingConstraint&) {
-  // The closest-pass predicate has no distance gate, so no well-formed spec is
-  // geometrically impossible. Kept for the preflight call site until the
-  // legacy radius field is removed.
-  return false;
+bool roundingGeometricallyImpossible(GeoPoint mark,
+                                     const RoundingConstraint& rounding,
+                                     std::optional<GeoPoint> nextPoint) {
+  // Structural validation owns malformed ranges; the preflight only judges a
+  // well-formed range, and only for the one case where geometry decides it.
+  if (!validExitRange(rounding)) return false;
+  if (!rounding.exitBearingMinDegrees || !rounding.exitBearingMaxDegrees)
+    return false;
+  if (!nextPoint) return false;
+  if (distanceNm(mark, *nextPoint) <= kRoundingCoincidentEpsilonNm) return false;
+  const double outbound = initialBearingDegrees(mark, *nextPoint);
+  const double minimum = *rounding.exitBearingMinDegrees;
+  const double maximum = *rounding.exitBearingMaxDegrees;
+  if (outbound >= minimum && outbound <= maximum) return false;
+  // The range does not wrap (minimum <= maximum), so the nearest endpoint is
+  // the true angular distance from the outbound bearing to the whole range.
+  const double gap =
+      std::min(std::abs(angularDifferenceDegrees(outbound, minimum)),
+               std::abs(angularDifferenceDegrees(outbound, maximum)));
+  return gap > 90.0;
 }
 
 std::string RoundingMeasurement::failureCode() const {
@@ -430,8 +445,35 @@ std::vector<GeoPoint> roundingTargets(GeoPoint from, GeoPoint mark,
         rounding.side == RoundingSide::Port ? 90.0 : -90.0;
     const std::array<double, 3> exits{
         minimum, normalizeHeading((minimum + maximum) / 2.0), maximum};
-    for (const double exit : exits)
-      addTarget(targets, destinationPoint(mark, exit + exitSideOffset, 0.5));
+    for (const double exit : exits) {
+      if (nextPoint) {
+        // Interior mark: the passing point sits abeam of the mark on the
+        // required side, so the outbound tangent of the point itself is the
+        // exit course. The departing leg to the next course point decides
+        // whether that tangent is deliverable, and the preflight has already
+        // rejected a range the leg cannot reach.
+        addTarget(targets, destinationPoint(mark, exit + exitSideOffset, 0.5));
+        continue;
+      }
+      // Terminal mark: the delivered outbound course is the course of the
+      // final leg into the passing point, not an abeam assumption. Place the
+      // point where the ray from the current position at bearing `exit` meets
+      // the perpendicular from the mark, so the departing leg leaves exactly
+      // on `exit` while the mark is abeam on the required side. A point that
+      // cannot deliver the course, lies behind the current position, or puts
+      // the mark on the wrong side is not a candidate.
+      const LocalOffset offset = localOffset(mark, from);
+      const double radians = exit * std::numbers::pi / 180.0;
+      const double along =
+          offset.eastNm * std::sin(radians) + offset.northNm * std::cos(radians);
+      const double lateral =
+          offset.eastNm * std::cos(radians) - offset.northNm * std::sin(radians);
+      if (along <= kRoundingCoincidentEpsilonNm) continue;
+      if (std::abs(lateral) <= kRoundingLateralEpsilonNm) continue;
+      const bool portSide = rounding.side == RoundingSide::Port;
+      if (portSide != (lateral < 0.0)) continue;
+      addTarget(targets, destinationPoint(from, exit, along));
+    }
   }
 
   return targets;

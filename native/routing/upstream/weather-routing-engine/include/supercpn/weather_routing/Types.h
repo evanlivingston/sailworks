@@ -738,6 +738,10 @@ struct RoutingDiagnostics {
   // Best measured rounding attempt when a rounding was requested. Retained for
   // structured failure diagnostics; it is never used to accept a route.
   bool roundingAttempted{};
+  // Hard bound on rounding search expansion. Counts the rounding candidates
+  // that cost a motion replay, so an exit range no candidate can satisfy is
+  // rejected deterministically instead of being explored without limit.
+  std::uint64_t roundingAttempts{};
   std::string roundingFailureCode;
   double roundingClosestDistanceNm{std::numeric_limits<double>::infinity()};
   double roundingTerminalBearingDegrees{};
